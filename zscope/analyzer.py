@@ -1,0 +1,372 @@
+"""
+Main analyzer logic for Z-SCOPE.
+Orchestrates the analysis process using LLM, CodeIndex, and SnapshotStore.
+"""
+
+import json
+import logging
+import time
+import datetime
+from typing import Dict, Any, List, Optional, Set
+
+from .config import ZScopeConfig
+from .code_index import CodeIndex
+from .snapshot_store import SnapshotStore
+from .tools_runtime import ToolsRuntime
+from .llm_client import LLMClient
+from .report import FinalReport, Issue, ReportGenerator
+from .utils import validate_json_schema
+
+logger = logging.getLogger(__name__)
+
+
+# System Prompt Definitions
+SYSTEM_PROMPT = """
+You are Z-SCOPE, an advanced static analysis engine for C/C++ projects.
+Your goal is to detect REAL defects (functionality bugs, reliability issues, performance bottlenecks, race conditions, resource leaks).
+DO NOT report stylistic issues, naming conventions, or readability suggestions.
+
+PROCESS:
+1. You will be given an entry function to analyze.
+2. You must analyze it thoroughly, understanding its logic, resource management, and error handling.
+3. If the function calls other functions in the project, use the 'get_function_impl' or 'get_function_snapshot' tools to understand them.
+   - Do not guess what a callee does if it's critical to the correctness of the caller.
+   - You don't need to analyze generic C standard library functions (like malloc, printf) unless misused.
+4. Maintain a depth-limited analysis (default max depth 3).
+5. For every function you analyze, you MUST produce a 'function_snapshot' JSON summary. This serves as a cache for future analysis.
+6. Finally, produce a 'final_report' JSON with all found issues.
+
+OUTPUT FORMATS:
+You must strictly output JSON blocks for specific phases.
+
+[Schema: Function Snapshot] - Output this when you have finished analyzing a specific function.
+{
+  "type": "function_snapshot",
+  "func_name": "...",
+  "location": "path:line-line",
+  "summary": "Brief semantic summary...",
+  "inputs": [{"name":"...","type":"...","role":"..."}],
+  "outputs": [{"kind":"return","type":"...","meaning":"..."}],
+  "resources": {
+    "allocates_memory": true/false,
+    "frees_memory": true/false,
+    "locks": [{"lock":"...","mode":"...","balanced":true/false}],
+    "file_io": true/false,
+    "network_io": true/false
+  },
+  "error_handling": {
+    "checks_parameters": true/false,
+    "checks_alloc_failure": true/false,
+    "rollback_on_error": "none|partial|full"
+  },
+  "concurrency": {
+    "thread_safe": "unknown|likely_yes|likely_no",
+    "uses_global_state": true/false
+  },
+  "semantic_fingerprint": {
+    "normalized_hash_hint": "string summary of logic for change detection",
+    "key_semantics": ["invariant1", "invariant2"]
+  },
+  "suspicious_points": [
+    {
+      "location": "path:line",
+      "type": "bug_type",
+      "description": "...",
+      "confidence": 0.0-1.0,
+      "impact_category": "functionality|reliability|performance"
+    }
+  ],
+  "callees": ["func1", "func2"]
+}
+
+[Schema: Final Report] - Output this when you are done with the entire task.
+{
+  "type": "final_report",
+  "entry_function": "...",
+  "overall_verdict": "no_issue_found|issues_found|insufficient_info",
+  "issues": [
+    {
+      "id": "unique_id",
+      "function": "...",
+      "location": "path:line-line",
+      "category": "functionality|reliability|performance",
+      "subcategory": "e.g. memory_leak",
+      "description": "...",
+      "root_cause": "...",
+      "suggested_fix": "...",
+      "confidence": 0.8,
+      "impact_level": "low|medium|high|critical"
+    }
+  ],
+  "notes": ["..."]
+}
+
+[Schema: Refresh Decision] - Output this when asked to compare old snapshot with new code.
+{
+  "type": "snapshot_refresh_decision",
+  "func_name": "...",
+  "refresh_needed": true/false,
+  "reason": "...",
+  "what_changed": ["..."],
+  "risk_if_not_refreshed": "low|medium|high"
+}
+"""
+
+
+class Analyzer:
+    """
+    Main analyzer class.
+    """
+
+    def __init__(self, config: ZScopeConfig):
+        self.config = config
+        self.code_index = CodeIndex(
+            config.project.project_root, config.project.compile_commands_path
+        )
+        self.snapshot_store = SnapshotStore(Path(config.analysis.snapshot_dir))
+        self.tools_runtime = ToolsRuntime(self.code_index, self.snapshot_store)
+        self.llm_client = LLMClient(config.llm)
+        self.report_generator = ReportGenerator(config.project.project_root)
+        
+        self.analyzed_functions: Set[str] = set()
+        self.issues: List[Issue] = []
+
+    def run(self) -> Dict[str, Any]:
+        """
+        Run the analysis.
+        """
+        entry_func = self.config.project.entry_function
+        logger.info(f"Starting analysis on entry function: {entry_func}")
+
+        # Get entry function implementation
+        entry_impl = self.code_index.get_function_impl(entry_func)
+        if not entry_impl:
+            logger.error(f"Entry function '{entry_func}' not found.")
+            return {"error": "Entry function not found"}
+
+        # Prepare initial messages
+        task_prompt = f"""
+TARGET: Analyze function '{entry_func}' in project '{self.config.project.project_root}'.
+TASK: {self.config.project.task_description}
+
+Here is the implementation of the entry function:
+```c
+{entry_impl['code']}
+```
+Location: {entry_impl['file']}:{entry_impl['start_line']}-{entry_impl['end_line']}
+
+Start by analyzing this function. If it calls other project functions that are relevant to the check, use tools to retrieve them.
+If you encounter a function that has a snapshot, you can read the snapshot first.
+"""
+
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": task_prompt},
+        ]
+
+        # Run conversation loop
+        result = self.llm_client.run_conversation_with_tools(
+            messages=messages,
+            tools_schema=self.tools_runtime.get_tools_schema(),
+            tool_executor=self._tool_executor_wrapper,
+            max_iterations=self.config.analysis.max_tool_iterations,
+        )
+
+        # Process final result
+        final_content = result["content"]
+        final_report = self._extract_final_report(final_content)
+        
+        if not final_report:
+            # If LLM didn't output a JSON report, try to parse what it said or force a report
+            logger.warning("No structured final report found in LLM output. Attempting fallback.")
+            # In a real system, we might ask LLM to format it again. 
+            # For now, we wrap the text content.
+            final_report = FinalReport(
+                entry_function=entry_func,
+                overall_verdict="insufficient_info",
+                notes=[f"LLM did not provide structured output. Raw output: {final_content[:500]}..."]
+            )
+
+        # Update metadata
+        final_report.metadata = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "version": "0.1.0",
+            "iterations": result.get("iterations", 0),
+        }
+
+        # Save reports
+        json_path = self.report_generator.save_json_report(final_report)
+        md_path = self.report_generator.save_markdown_report(final_report)
+
+        logger.info(f"Analysis complete. Report saved to {json_path} and {md_path}")
+        return final_report.to_dict()
+
+    def _tool_executor_wrapper(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Wrapper to intercept tool execution for snapshot logic."""
+        
+        # Intercept get_function_impl to check for snapshot refresh
+        if tool_name == "get_function_impl" and self.config.analysis.enable_snapshot_cache:
+            func_name = args.get("func_name")
+            return self._smart_get_implementation(func_name, args)
+
+        return self.tools_runtime.execute_tool(tool_name, args)
+
+    def _smart_get_implementation(self, func_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Smart implementation retrieval:
+        1. Get current code.
+        2. Check if snapshot exists.
+        3. If snapshot exists, check if code changed (hash check).
+        4. If code changed, ask LLM if refresh is needed.
+        """
+        # 1. Get real implementation
+        impl_result = self.tools_runtime.execute_tool("get_function_impl", args)
+        if not impl_result.get("success"):
+            return impl_result
+        
+        current_code = impl_result["data"]["code"]
+        
+        # 2. Check snapshot status
+        needs_refresh, reason = self.snapshot_store.needs_refresh(func_name, current_code)
+        
+        if not needs_refresh and reason != "no_snapshot":
+            # Snapshot is valid and up to date (or only cosmetic changes)
+            logger.info(f"Using cached snapshot for '{func_name}' (reason: {reason})")
+            snapshot = self.snapshot_store.load_snapshot(func_name)
+            return {
+                "success": True, 
+                "data": impl_result["data"], 
+                "snapshot": snapshot, 
+                "note": "Snapshot allows skipping deep analysis if irrelevant."
+            }
+
+        if reason == "code_changed":
+            # 3. Ask LLM if we really need to refresh (semantic check)
+            # This requires a mini-LLM call.
+            logger.info(f"Code changed for '{func_name}', checking with LLM if refresh needed...")
+            snapshot = self.snapshot_store.load_snapshot(func_name)
+            decision = self._ask_refresh_decision(func_name, snapshot, current_code)
+            
+            if not decision.get("refresh_needed"):
+                logger.info(f"LLM decided refresh NOT needed for '{func_name}'")
+                return {
+                    "success": True,
+                    "data": impl_result["data"],
+                    "snapshot": snapshot,
+                    "note": "Code changed but LLM deemed snapshot still valid."
+                }
+            
+            logger.info(f"Refresh needed for '{func_name}': {decision.get('reason')}")
+
+        # If we are here, we return the code and expect the LLM to analyze it and produce a new snapshot
+        return impl_result
+
+    def _ask_refresh_decision(self, func_name: str, old_snapshot: Dict[str, Any], new_code: str) -> Dict[str, Any]:
+        """Ask LLM if snapshot needs refresh."""
+        prompt = f"""
+Function '{func_name}' has changed.
+Old Snapshot Summary: {old_snapshot.get('summary')}
+Old Fingerprint: {old_snapshot.get('semantic_fingerprint')}
+
+New Code:
+```c
+{new_code}
+```
+
+Determine if the semantic contract/behavior relevant to defect attributes (resources, errors, concurrency) has changed.
+Output a JSON of type 'snapshot_refresh_decision'.
+"""
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt}
+        ]
+        
+        # Use a separate simpler call (no tools)
+        try:
+            response = self.llm_client.chat_completion(messages, max_tokens=500)
+            content = response["choices"][0]["message"]["content"]
+            decision = self._extract_json_block(content, "snapshot_refresh_decision")
+            return decision or {"refresh_needed": True, "reason": "Failed to parse decision"}
+        except Exception as e:
+            logger.error(f"Failed to get refresh decision: {e}")
+            return {"refresh_needed": True, "reason": "Error calling LLM"}
+
+    def _extract_final_report(self, text: str) -> Optional[FinalReport]:
+        """Parse final report from text."""
+        data = self._extract_json_block(text, "final_report")
+        if not data:
+            return None
+            
+        try:
+            issues = [Issue(**i) for i in data.get("issues", [])]
+            return FinalReport(
+                entry_function=data.get("entry_function", ""),
+                overall_verdict=data.get("overall_verdict", "insufficient_info"),
+                issues=issues,
+                notes=data.get("notes", [])
+            )
+        except Exception as e:
+            logger.error(f"Failed to parse FinalReport object: {e}")
+            return None
+
+    def _extract_json_block(self, text: str, type_hint: str = None) -> Optional[Dict[str, Any]]:
+        """
+        Extract JSON block from text. 
+        Handles markdown code blocks and raw JSON.
+        """
+        # Try finding markdown code blocks first
+        import re
+        matches = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        
+        candidates = matches + [text]
+        
+        for candidate in candidates:
+            try:
+                # Naive cleanup for non-strict JSON logic if needed, but lets try parse
+                data = json.loads(candidate)
+                if isinstance(data, dict):
+                    if type_hint and data.get("type") != type_hint:
+                        continue
+                        
+                    # Also, if we find a snapshot, save it!
+                    if data.get("type") == "function_snapshot":
+                        self._save_snapshot_from_llm(data)
+                        
+                    return data
+            except json.JSONDecodeError:
+                continue
+                
+        # Fallback: try finding just the { ... } object if mixed with text and no backticks
+        try:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end != -1:
+                json_str = text[start : end + 1]
+                data = json.loads(json_str)
+                if type_hint and data.get("type") == type_hint:
+                    return data
+                if data.get("type") == "function_snapshot":
+                    self._save_snapshot_from_llm(data)
+                    if type_hint == "function_snapshot": 
+                         return data
+        except:
+            pass
+            
+        return None
+
+    def _save_snapshot_from_llm(self, snapshot_data: Dict[str, Any]) -> None:
+        """Save a snapshot emitted by LLM."""
+        func_name = snapshot_data.get("func_name")
+        if not func_name:
+            return
+            
+        # We need the code implementation to calculate hash for the snapshot
+        # Since we might be inside the analysis loop, we can fetch it again from index
+        impl = self.code_index.get_function_impl(func_name)
+        if impl:
+            self.snapshot_store.save_snapshot(
+                func_name=func_name,
+                snapshot=snapshot_data,
+                code=impl["code"],
+                location=f"{impl['file']}:{impl['start_line']}"
+            )
