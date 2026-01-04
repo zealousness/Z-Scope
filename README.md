@@ -1,6 +1,6 @@
 # Z-SCOPE
 
-**Z-SCOPE** (Zeal + Scope) is an AI-powered static analysis tool for C projects. It uses Large Language Models (LLMs) to perform deep semantic analysis of code, looking for real defects like resource leaks, concurrency issues, and logic bugs, while ignoring stylistic complaints.
+**Z-SCOPE** is an AI-powered static analysis tool for C projects. It uses Large Language Models (LLMs) to perform deep semantic analysis of code, looking for real defects like resource leaks, concurrency issues, and logic bugs, while ignoring stylistic complaints.
 
 ## Features
 
