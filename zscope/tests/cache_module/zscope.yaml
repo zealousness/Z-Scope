@@ -1,0 +1,37 @@
+# ZScope Configuration for Cache Module Testing
+
+llm:
+  provider: ollama
+  base_url: http://host.docker.internal:11434/v1
+  model: alibayram/Qwen3-30B-A3B-Instruct-2507:latest
+  api_key: ""
+  temperature: 0.1
+  max_tokens: 8192
+
+project:
+  root: .
+  entry_function: cache_get
+  task: |
+    Perform comprehensive memory safety analysis on this cache module's public API.
+    Focus on:
+    1. Buffer overflow vulnerabilities
+    2. Memory leaks (allocations not freed, pointer overwrites)
+    3. Resource leaks (file descriptors, sockets)
+    4. Use of untrusted data as array index or memory offset
+    5. Memory accumulation (orphaned allocations)
+    6. Stack memory being returned to caller
+    
+    Analyze cross-file function calls to track resource management across the codebase.
+  compile_commands: compile_commands.json
+
+indexing:
+  backend: ccls
+  ccls_config: .ccls
+  ccls_path: ccls
+
+analysis:
+  max_recursion_depth: 6
+  max_function_lines: 600
+  max_tool_iterations: 150
+  snapshot_dir: .zscope_snapshots_cache
+  enable_snapshot_cache: true

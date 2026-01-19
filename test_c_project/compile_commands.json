@@ -1,0 +1,7 @@
+[
+  {
+    "directory": "/app/test_c_project",
+    "command": "gcc -c -o sample.o sample.c",
+    "file": "sample.c"
+  }
+]
