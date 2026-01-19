@@ -1,0 +1,223 @@
+"""
+Configuration management for Z-SCOPE.
+"""
+
+import os
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional, Dict, Any, List
+import logging
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LLMConfig:
+    """Configuration for LLM client."""
+
+    provider: str = "openai"  # openai or ollama
+    api_key: str = ""
+    base_url: str = "https://api.openai.com/v1"
+    model: Optional[str] = None
+    temperature: float = 0.1
+    max_tokens: int = 4096
+    timeout: int = 120
+    max_retries: int = 3
+
+
+@dataclass
+class IndexingConfig:
+    """Configuration for code indexing."""
+
+    backend: str = "libclang"  # ccls, libclang, or regex
+    ccls_config: Optional[str] = None
+    ccls_path: str = "ccls"
+
+
+@dataclass
+class AnalysisConfig:
+    """Configuration for analysis behavior."""
+
+    max_recursion_depth: int = 3
+    max_function_lines: int = 500
+    max_tool_iterations: int = 50
+    snapshot_dir: str = ".zscope_snapshots"
+    enable_snapshot_cache: bool = True
+
+
+@dataclass
+class ProjectConfig:
+    """Configuration for the C project being analyzed."""
+
+    project_root: Path
+    entry_function: str
+    task_description: str
+    compile_commands_path: Optional[Path] = None
+
+    def __post_init__(self):
+        self.project_root = Path(self.project_root).resolve()
+        if self.compile_commands_path:
+            self.compile_commands_path = Path(self.compile_commands_path).resolve()
+        elif (self.project_root / "compile_commands.json").exists():
+            self.compile_commands_path = self.project_root / "compile_commands.json"
+
+
+@dataclass
+class ZScopeConfig:
+    """Main configuration container."""
+
+    llm: LLMConfig
+    indexing: IndexingConfig
+    analysis: AnalysisConfig
+    project: ProjectConfig
+
+
+class ConfigLoader:
+    """Load and parse ZScope configuration from YAML files."""
+
+    DEFAULT_CONFIG_LOCATIONS = [
+        "./zscope.yaml",
+        "~/.zscope/config.yaml",
+        "/etc/zscope/config.yaml",
+    ]
+
+    @staticmethod
+    def _expand_env_vars(value: Any) -> Any:
+        """Recursively expand environment variables in config values."""
+        if isinstance(value, str):
+            # Replace ${VAR} or $VAR with environment variable
+            def replace_var(match):
+                var_name = match.group(1) or match.group(2)
+                return os.environ.get(var_name, match.group(0))
+
+            return re.sub(r"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)", replace_var, value)
+        elif isinstance(value, dict):
+            return {k: ConfigLoader._expand_env_vars(v) for k, v in value.items()}
+        elif isinstance(value, list):
+            return [ConfigLoader._expand_env_vars(item) for item in value]
+        return value
+
+    @staticmethod
+    def load(config_path: Optional[str] = None) -> ZScopeConfig:
+        """
+        Load configuration from YAML file.
+
+        Args:
+            config_path: Path to config file. If None, searches default locations.
+
+        Returns:
+            ZScopeConfig instance
+
+        Raises:
+            FileNotFoundError: If config file not found
+            ValueError: If config is invalid
+        """
+        if yaml is None:
+            raise ImportError("PyYAML is required for config file support. Install with: pip install pyyaml")
+
+        # Find config file
+        config_file = None
+        if config_path:
+            config_file = Path(config_path).expanduser()
+            if not config_file.exists():
+                raise FileNotFoundError(f"Config file not found: {config_file}")
+        else:
+            for loc in ConfigLoader.DEFAULT_CONFIG_LOCATIONS:
+                potential_path = Path(loc).expanduser()
+                if potential_path.exists():
+                    config_file = potential_path
+                    logger.info(f"Using config file: {config_file}")
+                    break
+
+        if not config_file:
+            raise FileNotFoundError(
+                f"No config file found. Searched: {ConfigLoader.DEFAULT_CONFIG_LOCATIONS}"
+            )
+
+        # Load YAML
+        with open(config_file, "r", encoding="utf-8") as f:
+            raw_config = yaml.safe_load(f)
+
+        if not isinstance(raw_config, dict):
+            raise ValueError(f"Invalid config file: {config_file}")
+
+        # Expand environment variables
+        raw_config = ConfigLoader._expand_env_vars(raw_config)
+
+        # Parse sections
+        try:
+            # LLM config
+            llm_data = raw_config.get("llm", {})
+            llm_config = LLMConfig(
+                provider=llm_data.get("provider", "openai"),
+                api_key=llm_data.get("api_key", ""),
+                base_url=llm_data.get("base_url", "https://api.openai.com/v1"),
+                model=llm_data.get("model"),
+                temperature=llm_data.get("temperature", 0.1),
+                max_tokens=llm_data.get("max_tokens", 4096),
+                timeout=llm_data.get("timeout", 120),
+                max_retries=llm_data.get("max_retries", 3),
+            )
+
+            # Indexing config
+            indexing_data = raw_config.get("indexing", {})
+            indexing_config = IndexingConfig(
+                backend=indexing_data.get("backend", "libclang"),
+                ccls_config=indexing_data.get("ccls_config"),
+                ccls_path=indexing_data.get("ccls_path", "ccls"),
+            )
+
+            # Analysis config
+            analysis_data = raw_config.get("analysis", {})
+            analysis_config = AnalysisConfig(
+                max_recursion_depth=analysis_data.get("max_recursion_depth", 3),
+                max_function_lines=analysis_data.get("max_function_lines", 500),
+                max_tool_iterations=analysis_data.get("max_tool_iterations", 50),
+                snapshot_dir=analysis_data.get("snapshot_dir", ".zscope_snapshots"),
+                enable_snapshot_cache=analysis_data.get("enable_snapshot_cache", True),
+            )
+
+            # Project config
+            project_data = raw_config.get("project", {})
+            if not project_data:
+                raise ValueError("Missing required 'project' section in config")
+
+            project_root = project_data.get("root")
+            if not project_root:
+                raise ValueError("Missing required 'project.root' in config")
+
+            entry_function = project_data.get("entry_function")
+            if not entry_function:
+                raise ValueError("Missing required 'project.entry_function' in config")
+
+            task_description = project_data.get("task")
+            if not task_description:
+                raise ValueError("Missing required 'project.task' in config")
+
+            compile_commands = project_data.get("compile_commands")
+            compile_commands_path = Path(compile_commands) if compile_commands else None
+
+            project_config = ProjectConfig(
+                project_root=Path(project_root),
+                entry_function=entry_function,
+                task_description=task_description,
+                compile_commands_path=compile_commands_path,
+            )
+
+            return ZScopeConfig(
+                llm=llm_config,
+                indexing=indexing_config,
+                analysis=analysis_config,
+                project=project_config,
+            )
+
+        except KeyError as e:
+            raise ValueError(f"Missing required config key: {e}")
+        except Exception as e:
+            raise ValueError(f"Invalid config format: {e}")

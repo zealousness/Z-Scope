@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  zscope:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: zscope-linux:latest
+    container_name: zscope-verification
+    # volumes:
+      # Mount source for live development (optional)
+      # - ./zscope:/app/zscope
+      # - ./test_c_project:/app/test_c_project
+      # Mount for output files
+      # - ./output:/app/output
+    environment:
+      # Optional: Set these via .env file or command line
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4}
+    # Enable access to host machine's Ollama server
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    working_dir: /app
+    stdin_open: true
+    tty: true

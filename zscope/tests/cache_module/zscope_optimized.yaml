@@ -1,0 +1,70 @@
+# Optimized ZScope Configuration for Maximum Defect Detection
+
+llm:
+  provider: ollama  
+  base_url: http://host.docker.internal:11434/v1
+  model: alibayram/Qwen3-30B-A3B-Instruct-2507:latest
+  api_key: ""
+  temperature: 0.2  # Slightly higher for more creative defect finding
+  max_tokens: 16384  # Double the context for complex analysis
+
+project:
+  root: .
+  entry_function: cache_get  # Start with the function that has buffer overflow
+  task: |
+    **CRITICAL DEFECT DETECTION TASK**
+    
+    You MUST perform deep, thorough analysis to find ALL memory safety defects in this codebase.
+    Focus on these SPECIFIC defect categories:
+    
+    1. **Buffer Overflows/Out-of-bounds Access**
+       - memcpy/strcpy without size validation
+       - Array access with unchecked indices
+       - Writing beyond allocated buffer size
+    
+    2. **Memory Leaks**
+       - Allocated memory not freed on all paths
+       - Pointer overwritten before free
+       - malloc failures not handled, leaking previous allocations
+    
+    3. **Resource Leaks (File Descriptors)**
+       - open() not matched with close() on ALL error paths
+       - Early returns that skip cleanup
+    
+    4. **Use of Untrusted Data**
+       - External data used as array index without bounds checking
+       - Count/size from external source used without validation
+       - Potential integer overflow leading to buffer overflow
+    
+    5. **Memory Accumulation/Orphaned Memory**
+       - List nodes removed from data structure but not freed
+       - Memory detached from tracking but never released
+       - Memory accessible only through abandoned pointers
+    
+    6. **Stack Memory Issues**
+       - Returning pointers to local/stack variables
+       - Passing stack addresses that outlive scope
+    
+    **ANALYSIS REQUIREMENTS:**
+    - Trace EVERY function call deeply (at least 4-5 levels)
+    - Check ALL error paths for proper cleanup
+    - Examine cross-file dependencies carefully
+    - Look at memcpy, malloc, free patterns closely
+    - Verify buffer sizes match copy operations
+    - Track resource lifecycle (allocate → use → free)
+    
+    **OUTPUT REQUIREMENT:**
+    You MUST produce a final_report JSON with ALL defects found.
+    Even minor suspicious patterns should be reported with appropriate confidence level.
+  
+  compile_commands: compile_commands.json
+
+indexing:
+  backend: libclang  # Use libclang (CCLS not working yet)
+
+analysis:
+  max_recursion_depth: 8  # Increased from 6 to trace deeper
+  max_function_lines: 1000  # Increased to avoid truncation
+  max_tool_iterations: 200  # More iterations for thorough analysis  
+  snapshot_dir: .zscope_snapshots_cache
+  enable_snapshot_cache: false  # Disable to force fresh analysis every time
