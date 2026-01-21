@@ -4,6 +4,7 @@ Handles conversion of analysis results to JSON and Markdown formats.
 """
 
 import json
+import datetime
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -51,55 +52,43 @@ class FinalReport:
 class ReportGenerator:
     """Generates reports in various formats."""
 
-    def __init__(self, output_dir: Path):
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self, project_root: Path):
+        self.project_root = Path(project_root)
 
     def save_json_report(self, report: FinalReport, filename: str = "report.json") -> Path:
         """Save report as JSON."""
-        output_path = self.output_dir / filename
+        output_path = self.project_root / filename
         data = report.to_dict()
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         return output_path
 
-    def save_markdown_report(self, report: FinalReport, filename: str = "report.md") -> Path:
-        """Save report as Markdown."""
-        output_path = self.output_dir / filename
-        content = self._generate_markdown(report)
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        return output_path
+    def save_markdown_report(self, report: FinalReport) -> Path:
+        """保存中文分析结论报告。"""
+        md_content = f"""# Z-SCOPE 分析报告
 
-    def _generate_markdown(self, report: FinalReport) -> str:
-        """Generate Markdown content from report."""
-        lines = []
-        lines.append(f"# Z-SCOPE Analysis Report")
-        lines.append(f"**Entry Function**: `{report.entry_function}`")
-        lines.append(f"**Overall Verdict**: {self._format_verdict(report.overall_verdict)}")
-        
-        if report.metadata:
-            lines.append(f"**Analyzed at**: {report.metadata.get('timestamp', 'N/A')}")
-            lines.append(f"**Tool Version**: {report.metadata.get('version', 'N/A')}")
+**分析时间**: {report.metadata.get('timestamp', '未记录')}
+**入口函数**: `{report.entry_function}`
+**整体结论**: {self._translate_verdict(report.overall_verdict)}
 
-        lines.append("\n## Executive Summary")
+## 缺陷摘要统计
+
+"""
         if not report.issues:
-            lines.append("No issues were found during the analysis.")
+            md_content += "未发现显著缺陷。\n"
         else:
-            critical_count = sum(1 for i in report.issues if i.impact_level == "critical")
-            high_count = sum(1 for i in report.issues if i.impact_level == "high")
-            medium_count = sum(1 for i in report.issues if i.impact_level == "medium")
-            low_count = sum(1 for i in report.issues if i.impact_level == "low")
-            
-            lines.append("| Impact Level | Count |")
-            lines.append("| :--- | :--- |")
-            lines.append(f"| 🔴 Critical | {critical_count} |")
-            lines.append(f"| 🟠 High | {high_count} |")
-            lines.append(f"| 🟡 Medium | {medium_count} |")
-            lines.append(f"| 🔵 Low | {low_count} |")
+            critical = sum(1 for i in report.issues if i.impact_level.lower() == "critical")
+            high = sum(1 for i in report.issues if i.impact_level.lower() == "high")
+            medium = sum(1 for i in report.issues if i.impact_level.lower() == "medium")
+            low = sum(1 for i in report.issues if i.impact_level.lower() == "low")
 
-        if report.issues:
-            lines.append("\n## Detected Issues")
+            md_content += f"| 严重等级 | 数量 |\n| :--- | :--- |\n"
+            md_content += f"| 🔴 Critical | {critical} |\n"
+            md_content += f"| 🟠 High | {high} |\n"
+            md_content += f"| 🟡 Medium | {medium} |\n"
+            md_content += f"| 🔵 Low | {low} |\n\n"
+
+            md_content += "## 缺陷列表\n\n"
             for issue in report.issues:
                 icon = {
                     "critical": "🔴",
@@ -108,27 +97,29 @@ class ReportGenerator:
                     "low": "🔵"
                 }.get(issue.impact_level.lower(), "⚪")
                 
-                lines.append(f"\n### {icon} [{issue.id}] {issue.category}: {issue.subcategory}")
-                lines.append(f"- **Function**: `{issue.function}`")
-                lines.append(f"- **Location**: `{issue.location}`")
-                lines.append(f"- **Confidence**: {issue.confidence:.0%}")
-                lines.append(f"\n**Description**:\n{issue.description}")
-                lines.append(f"\n**Root Cause**:\n{issue.root_cause}")
-                lines.append(f"\n**Suggested Fix**:\n> {issue.suggested_fix}")
-                lines.append("\n---")
+                md_content += f"### {icon} [{issue.id}] {issue.category}: {issue.subcategory}\n"
+                md_content += f"- **所在函数**: `{issue.function}`\n"
+                md_content += f"- **代码位置**: `{issue.location}`\n"
+                md_content += f"- **置信度**: {issue.confidence:.0%}\n"
+                md_content += f"\n**问题描述**:\n{issue.description}\n"
+                md_content += f"\n**根本原因**:\n{issue.root_cause}\n"
+                md_content += f"\n**修复建议**:\n> {issue.suggested_fix}\n"
+                md_content += "\n---\n"
 
         if report.notes:
-            lines.append("\n## Analysis Notes")
+            md_content += "\n## 分析备注\n"
             for note in report.notes:
-                lines.append(f"- {note}")
+                md_content += f"- {note}\n"
 
-        return "\n".join(lines)
+        path = self.project_root / "report.md"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(md_content)
+        return path
 
-    def _format_verdict(self, verdict: str) -> str:
-        if verdict == "no_issue_found":
-            return "✅ No Issues Found"
-        elif verdict == "issues_found":
-            return "⚠️ Issues Found"
-        elif verdict == "insufficient_info":
-            return "❓ Insufficient Information"
-        return verdict
+    def _translate_verdict(self, verdict: str) -> str:
+        translations = {
+            "issues_found": "🔴 发现缺陷",
+            "no_issue_found": "🟢 未发现明显问题",
+            "insufficient_info": "🟡 信息不足，无法下定论"
+        }
+        return translations.get(verdict, verdict)

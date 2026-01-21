@@ -1,9 +1,11 @@
-# ZScope Configuration for Multi-file Test Project
+# ZScope Multi-Agent Configuration for Multi-file Test Project
 
 llm:
   provider: openai
   base_url: https://api.siliconflow.cn/v1
-  model: Qwen/Qwen3-Coder-480B-A35B-Instruct
+  models:
+    - Qwen/Qwen3-Coder-480B-A35B-Instruct
+    - Qwen/Qwen3-Coder-30B-A3B-Instruct
   api_key: REDACTED_REVOKED_CREDENTIAL
   temperature: 0.1
   max_tokens: 4096
@@ -11,17 +13,20 @@ llm:
 project:
   root: ./test/test_c_project_multi
   entry_function: main
-  task: "Analyze for memory leaks, buffer overflows, and resource management issues across multiple files"
+  agents:
+    - name: semantic_modeler
+      enabled: true
+    - name: vulnerability_analyzer
+      task: "深度检查内存泄漏、缓冲区溢出以及跨文件的资源管理问题。"
+      enabled: true
   compile_commands: compile_commands.json
 
 indexing:
   backend: libclang
-  ccls_config: .ccls
-  ccls_path: ccls
 
 analysis:
-  max_recursion_depth: 5  # Higher for cross-file analysis
+  max_recursion_depth: 5
   max_function_lines: 500
-  max_tool_iterations: 100  # More iterations for complex projects
+  max_tool_iterations: 100
   snapshot_dir: .zscope_snapshots
   enable_snapshot_cache: true

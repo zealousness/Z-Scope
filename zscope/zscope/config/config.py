@@ -24,11 +24,19 @@ class LLMConfig:
     provider: str = "openai"  # openai or ollama
     api_key: str = ""
     base_url: str = "https://api.openai.com/v1"
-    model: Optional[str] = None
+    models: List[str] = field(default_factory=list)
     temperature: float = 0.1
     max_tokens: int = 4096
     timeout: int = 120
-    max_retries: int = 3
+    max_retries: int = 2
+
+
+@dataclass
+class AgentConfig:
+    """Configuration for a specific agent."""
+    name: str
+    task: Optional[str] = None
+    enabled: bool = True
 
 
 @dataclass
@@ -57,7 +65,7 @@ class ProjectConfig:
 
     project_root: Path
     entry_function: str
-    task_description: str
+    agents: List[AgentConfig] = field(default_factory=list)
     compile_commands_path: Optional[Path] = None
 
     def __post_init__(self):
@@ -107,19 +115,9 @@ class ConfigLoader:
     def load(config_path: Optional[str] = None) -> ZScopeConfig:
         """
         Load configuration from YAML file.
-
-        Args:
-            config_path: Path to config file. If None, searches default locations.
-
-        Returns:
-            ZScopeConfig instance
-
-        Raises:
-            FileNotFoundError: If config file not found
-            ValueError: If config is invalid
         """
         if yaml is None:
-            raise ImportError("PyYAML is required for config file support. Install with: pip install pyyaml")
+            raise ImportError("PyYAML is required for config file support.")
 
         # Find config file
         config_file = None
@@ -136,9 +134,7 @@ class ConfigLoader:
                     break
 
         if not config_file:
-            raise FileNotFoundError(
-                f"No config file found. Searched: {ConfigLoader.DEFAULT_CONFIG_LOCATIONS}"
-            )
+            raise FileNotFoundError("No config file found.")
 
         # Load YAML
         with open(config_file, "r", encoding="utf-8") as f:
@@ -154,15 +150,19 @@ class ConfigLoader:
         try:
             # LLM config
             llm_data = raw_config.get("llm", {})
+            models = llm_data.get("models", [])
+            if not models and llm_data.get("model"):
+                models = [llm_data.get("model")]
+
             llm_config = LLMConfig(
                 provider=llm_data.get("provider", "openai"),
                 api_key=llm_data.get("api_key", ""),
                 base_url=llm_data.get("base_url", "https://api.openai.com/v1"),
-                model=llm_data.get("model"),
+                models=models,
                 temperature=llm_data.get("temperature", 0.1),
                 max_tokens=llm_data.get("max_tokens", 4096),
                 timeout=llm_data.get("timeout", 120),
-                max_retries=llm_data.get("max_retries", 3),
+                max_retries=llm_data.get("max_retries", 2),
             )
 
             # Indexing config
@@ -186,19 +186,29 @@ class ConfigLoader:
             # Project config
             project_data = raw_config.get("project", {})
             if not project_data:
-                raise ValueError("Missing required 'project' section in config")
+                raise ValueError("Missing 'project' section")
 
             project_root = project_data.get("root")
             if not project_root:
-                raise ValueError("Missing required 'project.root' in config")
+                raise ValueError("Missing 'project.root'")
 
             entry_function = project_data.get("entry_function")
             if not entry_function:
-                raise ValueError("Missing required 'project.entry_function' in config")
+                raise ValueError("Missing 'project.entry_function'")
 
-            task_description = project_data.get("task")
-            if not task_description:
-                raise ValueError("Missing required 'project.task' in config")
+            # Parse Agents
+            agents_data = project_data.get("agents", [])
+            agents = []
+            for a in agents_data:
+                agents.append(AgentConfig(
+                    name=a.get("name"),
+                    task=a.get("task"),
+                    enabled=a.get("enabled", True)
+                ))
+            
+            # Fallback for old 'task' field
+            if not agents and project_data.get("task"):
+                 agents.append(AgentConfig(name="vulnerability_analyzer", task=project_data.get("task")))
 
             compile_commands = project_data.get("compile_commands")
             compile_commands_path = Path(compile_commands) if compile_commands else None
@@ -206,7 +216,7 @@ class ConfigLoader:
             project_config = ProjectConfig(
                 project_root=Path(project_root),
                 entry_function=entry_function,
-                task_description=task_description,
+                agents=agents,
                 compile_commands_path=compile_commands_path,
             )
 
