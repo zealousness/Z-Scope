@@ -30,13 +30,12 @@ int safe_strlen(const char* str) {
 }
 
 /**
- * Malloc with error checking - DEFECT: Doesn't return NULL on failure!
+ * Malloc with error checking
  */
 void* safe_malloc(size_t size) {
     void* ptr = malloc(size);
     if (ptr == NULL) {
         fprintf(stderr, "ERROR: safe_malloc failed for size %zu\n", size);
-        // DEFECT: Should return NULL, but continues anyway
     }
     return ptr;  // Returns NULL even after error message!
 }
