@@ -30,7 +30,7 @@ dev = [
 ]
 
 [project.scripts]
-zscope = "zscope.cli:main"
+zscope = "zscope.cli.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["zscope*"]

@@ -7,9 +7,9 @@ import logging
 import sys
 from pathlib import Path
 
-from .config import ZScopeConfig, LLMConfig, AnalysisConfig, ProjectConfig, IndexingConfig, ConfigLoader
-from .analyzer import Analyzer
-from .utils import setup_logging
+from ..config.config import ZScopeConfig, LLMConfig, AnalysisConfig, ProjectConfig, IndexingConfig, ConfigLoader
+from ..core.analyzer import Analyzer
+from ..common.utils import setup_logging
 
 @click.command()
 @click.option(

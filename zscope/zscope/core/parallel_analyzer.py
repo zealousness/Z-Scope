@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 
-from .config import ZScopeConfig
+from ..config.config import ZScopeConfig
 from .analyzer import Analyzer
-from .code_index import CodeIndex
+from ..retrieval.code_index import CodeIndex
 
 logger = logging.getLogger(__name__)
 
