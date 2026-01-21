@@ -1,74 +1,31 @@
-# ZScope Configuration File
-# Learn more: https://github.com/yourusername/zscope
+# Z-SCOPE Global Configuration
 
-# LLM Configuration
 llm:
-  # Provider: "openai" or "ollama"
   provider: openai
-  
-  # API endpoint
-  # For Ollama: http://localhost:11434/v1
-  # For OpenAI: https://api.openai.com/v1
   base_url: https://api.siliconflow.cn/v1
-  
-  # Model name
-  model: Qwen/Qwen3-Coder-480B-A35B-Instruct
-  
-  # API key (not needed for Ollama)
+  models:
+    - Qwen/Qwen3-Coder-480B-A35B-Instruct
+    - Qwen/Qwen3-Coder-30B-A3B-Instruct
   api_key: REDACTED_REVOKED_CREDENTIAL
-  
-  # Generation parameters
   temperature: 0.1
   max_tokens: 4096
-  timeout: 120
-  max_retries: 3
 
-# Project Configuration
 project:
-  # Project root directory (absolute or relative to config file)
-  root: ./test_c_project
-  
-  # Entry function to start analysis
-  entry_function: process_data_packet
-  
-  # Analysis task description
-  task: "Check for buffer overflows, memory leaks, and resource leaks"
-  
-  # Path to compile_commands.json (optional, auto-detected if in project root)
-  compile_commands: compile_commands.json
+  root: .
+  entry_function: main
+  agents:
+    - name: semantic_modeler
+      enabled: true
+    - name: vulnerability_analyzer
+      task: "查找逻辑漏洞、内存安全问题和并发风险。"
+      enabled: true
 
-# Code Indexing Configuration
 indexing:
-  # Backend: "ccls", "libclang", or "regex"
-  # ccls - Best for code navigation and call graphs (requires ccls installed)
-  # libclang - Good balance, requires compile_commands.json
-  # regex - Fallback, works without dependencies
   backend: libclang
-  
-  # CCLS configuration file (optional, for ccls backend)
-  ccls_config: .ccls
-  
-  # Path to ccls binary (if not in PATH)
-  ccls_path: ccls
 
-# Analysis Behavior
 analysis:
-  # Maximum recursion depth when following function calls
   max_recursion_depth: 3
-  
-  # Maximum function size to analyze (lines)
   max_function_lines: 500
-  
-  # Maximum LLM tool iterations
   max_tool_iterations: 50
-  
-  # Snapshot cache directory
   snapshot_dir: .zscope_snapshots
-  
-  # Enable semantic snapshot caching
   enable_snapshot_cache: true
-
-# Environment variable expansion is supported
-# Use ${VAR_NAME} or $VAR_NAME syntax
-# Example:
-#   api_key: ${OPENAI_API_KEY}
