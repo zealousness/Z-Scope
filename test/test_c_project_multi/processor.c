@@ -19,7 +19,6 @@ DataPacket* create_packet(const char* input, size_t size) {
         return NULL;
     }
     
-    // DEFECT: No bounds checking!
     strcpy(packet->data, input);  // Buffer overflow risk
     
     packet->size = size;
@@ -63,7 +62,6 @@ void free_packet(DataPacket* packet) {
 
 /**
  * Process multiple packets
- * DEFECT: Doesn't clean up on error
  */
 int process_batch(char** inputs, int count) {
     if (!inputs || count <= 0) {
@@ -79,7 +77,6 @@ int process_batch(char** inputs, int count) {
     for (int i = 0; i < count; i++) {
         packets[i] = create_packet(inputs[i], strlen(inputs[i]));
         if (!packets[i]) {
-            // DEFECT: Memory leak - previously allocated packets not freed!
             free(packets);
             return -1;
         }
@@ -88,7 +85,6 @@ int process_batch(char** inputs, int count) {
     // Process all packets
     for (int i = 0; i < count; i++) {
         if (process_packet(packets[i]) != 0) {
-            // DEFECT: Another leak - don't free packets on error
             free(packets);
             return -1;
         }

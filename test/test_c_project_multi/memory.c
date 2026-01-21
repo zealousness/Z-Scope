@@ -16,7 +16,6 @@ MemoryPool* create_memory_pool(int initial_capacity) {
     pool->sizes = (size_t*)calloc(initial_capacity, sizeof(size_t));
     
     if (!pool->blocks || !pool->sizes) {
-        // DEFECT: Memory leak - pool not freed if allocation fails
         free(pool->blocks);
         free(pool->sizes);
         return NULL;
@@ -74,7 +73,7 @@ char* create_buffer(size_t size) {
 }
 
 /**
- * Resize buffer - DEFECT: Doesn't free old buffer!
+ * Resize buffer
  */
 void resize_buffer(char** buffer, size_t new_size) {
     if (!buffer) {
@@ -89,7 +88,6 @@ void resize_buffer(char** buffer, size_t new_size) {
     if (*buffer) {
         // Copy old data
         memcpy(new_buffer, *buffer, new_size / 2);  // Assume old was half size
-        // DEFECT: Old buffer not freed! Memory leak!
     }
     
     *buffer = new_buffer;
