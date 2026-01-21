@@ -10,13 +10,13 @@ import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Set
 
-from .config import ZScopeConfig
-from .code_index import CodeIndex
+from ..config.config import ZScopeConfig
+from ..retrieval.code_index import CodeIndex
 from .snapshot_store import SnapshotStore
 from .tools_runtime import ToolsRuntime
-from .llm_client import LLMClient
+from ..llm.llm_client import LLMClient
 from .report import FinalReport, Issue, ReportGenerator
-from .utils import validate_json_schema
+from ..common.utils import validate_json_schema
 
 logger = logging.getLogger(__name__)
 
