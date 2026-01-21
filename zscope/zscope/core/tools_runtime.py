@@ -5,7 +5,7 @@ Tools runtime - implements functions callable by LLM via tool/function calling.
 import logging
 from typing import Dict, Any, Optional, List
 
-from .code_index import CodeIndex
+from ..retrieval.code_index import CodeIndex
 from .snapshot_store import SnapshotStore
 
 logger = logging.getLogger(__name__)

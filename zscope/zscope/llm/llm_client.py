@@ -9,7 +9,7 @@ from typing import List, Dict, Any, Optional
 
 import requests
 
-from .config import LLMConfig
+from ..config.config import LLMConfig
 
 logger = logging.getLogger(__name__)
 

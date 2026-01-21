@@ -8,7 +8,7 @@ import sqlite3
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from .utils import compute_code_hash, compute_semantic_fingerprint
+from ..common.utils import compute_code_hash, compute_semantic_fingerprint
 
 logger = logging.getLogger(__name__)
 
