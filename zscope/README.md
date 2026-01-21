@@ -1,43 +1,44 @@
 # Z-SCOPE
 
-**Z-SCOPE** 是一款基于 AI 的 C 项目静态分析工具。它利用大语言模型（LLM）对代码进行深度的语义分析，旨在发现真实的程序缺陷（如资源泄漏、并发问题和逻辑漏洞），同时忽略无关紧要的风格问题。
+**Z-SCOPE** 是一款基于 **多智能体（Multi-Agent）** 协作的 C 项目深度静态分析工具。它通过模拟资深安全研究员的思考过程，利用大语言模型（LLM）对代码进行深度的语义建模与漏洞扫描，旨在精准发现内存安全、逻辑漏洞及跨文件资源管理问题。
 
 ## 核心特性
 
-- **语义分析**：不仅限于正则表达式或标准的静态分析 AST 检查。利用 LLM 理解代码逻辑意图。
-- **增量分析**：缓存函数的“语义快照”。如果代码变更但语义未变（如重命名变量），则跳过重新分析。
-- **工具辅助**：LLM 可以请求查看被调用函数实现，跨越函数边界追踪逻辑。
-- **结构化报告**：提供 JSON 和 Markdown 格式的报告，包含置信度评分和影响级别。
+- **多智能体分治**：采用 `语义建模 Agent` 与 `漏洞扫描 Agent` 独立协作，保证分析深度与准确性。
+- **高可用模型降级**：支持多模型优先级配置，当高参数模型（如 Qwen-480B）响应异常时，自动平滑切换至后续模型（如 Qwen-30B）。
+- **语义快照缓存**：对函数行为进行语义指纹提取，代码微调不触发语义变化时，可利用缓存加速分析。
+- **纯 YAML 驱动**：废弃繁琐的命令行参数，所有分析任务、智能体配比及 LLM 参数均通过 `zscope.yaml` 灵活定制。
+- **全中文报告**：最终分析结论、漏洞描述及修复建议均以中文输出，降低阅读成本。
 
 ## 系统架构
 
-Z-SCOPE 采用代理（Agentic）循环架构，协调代码检索、状态管理和 LLM 推理。
+Z-SCOPE 采用灵活的插件化架构，将公共框架能力（LLM 访问、模型降级、工具调用）与具体的分析逻辑解耦。
 
 ```mermaid
 graph TD
     User([用户/项目]) --> CLI[CLI 命令行]
-    CLI --> Config[配置加载器]
-    Config --> Analyzer[分析器核心]
+    CLI --> Config[Yaml 配置加载]
     
-    subgraph "核心引擎"
-        Analyzer --> ToolRuntime[工具运行时]
-        Analyzer --> LLMClient[LLM 客户端]
-        ToolRuntime --> CodeIndex[代码索引 (libclang/Regex)]
-        ToolRuntime --> SnapshotStore[快照存储 (SQLite)]
+    subgraph Agents [多智能体系统]
+        Config --> Modeler[语义建模 Agent]
+        Config --> Analyzer[漏洞扫描 Agent]
     end
     
-    LLMClient --> SiliconFlow["LLM API (硅基流动/OpenAI)"]
-    CodeIndex --> CFiles["C 源代码 (.c/.h)"]
-    CFiles --> CompilationDB["编译数据库 (compile_commands.json)"]
+    subgraph Framework [核心框架层]
+        Modeler --> ToolBus[工具总线]
+        Analyzer --> ToolBus
+        Modeler --> LLM[LLM 客户端]
+        Analyzer --> LLM
+    end
     
-    Analyzer --> Reports["分析报告 (Markdown/JSON)"]
+    subgraph Infrastructure [基础设施]
+        LLM --> Fallback["模型自动回退 (Priority List)"]
+        ToolBus --> CodeIndex["代码索引 (Regex/LibClang)"]
+        ToolBus --> SnapStore["快照数据库 (SQLite)"]
+    end
+    
+    Analyzer --> Reports["中文分析报告 (Markdown/JSON)"]
 ```
-
-### 主要组件说明
-- **Analyzer (分析器)**：流程编排核心，负责维护与 LLM 的对话上下文和决策循环。
-- **Code Index (代码索引)**：基于 `libclang` 或正则解析，负责精确定位函数定义和跨文件搜索。
-- **Snapshot Store (快照存储)**：持久化存储函数的语义指纹，支持智能缓存。
-- **Tool Runtime (工具运行时)**：为 LLM 提供一组“能力接口”（如 `get_function_impl`），使其能探索代码库。
 
 ## 安装指南
 
@@ -48,37 +49,44 @@ graph TD
 git clone https://github.com/zealousness/Z-Scope.git
 cd Z-Scope
 
-# 安装依赖
+# 安装核心包
 python -m pip install -e zscope
 ```
 
-## 使用说明
+## 快速上手
 
-### 1. 准备工作
-- **编译数据库**：为了获得最佳效果，请为 C 项目生成 `compile_commands.json`（例如使用 CMake 时设置 `set(CMAKE_EXPORT_COMPILE_COMMANDS ON)`）。
-- **LLM API**：配置 Silicon Flow 或其他兼容 OpenAI 的 API 密钥。
+### 1. 配置 `zscope.yaml`
+在项目根目录创建或编辑配置文件，支持配置多个模型优先级：
 
-### 2. 运行分析
+```yaml
+llm:
+  provider: openai
+  base_url: https://api.siliconflow.cn/v1
+  models:
+    - Qwen/Qwen3-Coder-480B-A35B-Instruct # 优先级 1
+    - Qwen/Qwen3-Coder-30B-A3B-Instruct  # 优先级 2
+  api_key: ${SILICON_FLOW_KEY}
 
-可以通过配置文件 `zscope.yaml` 进行简单运行：
-
-```bash
-$env:PYTHONPATH="zscope"
-python -m zscope.cli.cli --config zscope.yaml
+project:
+  root: ./my_c_project
+  entry_function: main
+  agents:
+    - name: semantic_modeler
+      enabled: true
+    - name: vulnerability_analyzer
+      task: "检查跨文件的内存分配与释放一致性"
+      enabled: true
 ```
 
-或者使用命令行参数：
+### 2. 执行分析
 
 ```bash
-python -m zscope.cli.cli \
-  --project ./test/test_c_project_multi \
-  --entry main \
-  --task "检查内存泄漏和缓冲区溢出"
+zscope --config zscope.yaml
 ```
 
 ## 输出结果
 
-分析完成后，Z-SCOPE 会生成：
-- `report.json`：全量分析数据的机器可读报告。
-- `report.md`：包含缺陷详情和修复建议的人类可读总结。
-- `.zscope_snapshots/`：存储缓存语义快照的目录。
+分析完成后，Z-SCOPE 将在项目目录下生成：
+- `report.md`：**中文分析报告**，包含缺陷严重等级、根本原因分析及代码修复建议。
+- `report.json`：全量序列化数据，便于平台集成。
+- `.zscope_snapshots/`：存储函数的语义建模快照。
