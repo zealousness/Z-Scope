@@ -14,7 +14,9 @@ from ..config.config import ZScopeConfig
 from ..retrieval.code_index import CodeIndex
 from .snapshot_store import SnapshotStore
 from .tools_runtime import ToolsRuntime
-from ..llm.llm_client import LLMClient
+from ..framework.llm_client import LLMClient
+from ..agents.semantic_modeler.agent import SemanticModeler
+from ..agents.vulnerability_analyzer.agent import VulnerabilityAnalyzer
 from .report import FinalReport, Issue, ReportGenerator
 from ..common.utils import validate_json_schema
 
@@ -125,53 +127,99 @@ class Analyzer:
             config.project.project_root, config.project.compile_commands_path
         )
         self.snapshot_store = SnapshotStore(Path(config.analysis.snapshot_dir))
-        self.tools_runtime = ToolsRuntime(self.code_index, self.snapshot_store)
-        self.llm_client = LLMClient(config.llm)
+        self.llm_client = LLMClient(
+            api_key=config.llm.api_key,
+            base_url=config.llm.base_url,
+            models=config.llm.models,
+            timeout=config.llm.timeout,
+            max_retries=config.llm.max_retries
+        )
         self.report_generator = ReportGenerator(config.project.project_root)
         
         self.analyzed_functions: Set[str] = set()
         self.issues: List[Issue] = []
 
     def run(self) -> Dict[str, Any]:
-        """
-        Run the analysis.
-        """
+        """Run the multi-agent analysis."""
         entry_func = self.config.project.entry_function
-        logger.info(f"Starting analysis on entry function: {entry_func}")
+        logger.info(f"Starting multi-agent analysis on entry function: {entry_func}")
 
-        # Get entry function implementation
-        entry_impl = self.code_index.get_function_impl(entry_func)
-        if not entry_impl:
-            logger.error(f"Entry function '{entry_func}' not found.")
+        impl_result = self.code_index.get_function_impl(entry_func)
+        if not impl_result:
             return {"error": "Entry function not found"}
 
-        # Prepare initial messages
-        task_prompt = f"""
-TARGET: Analyze function '{entry_func}' in project '{self.config.project.project_root}'.
-TASK: {self.config.project.task_description}
+        # Initialize common context
+        agent_context = {
+            "func_name": entry_func,
+            "code": impl_result["code"],
+            "location": f"{impl_result['file']}:{impl_result['start_line']}"
+        }
 
-Here is the implementation of the entry function:
-```c
-{entry_impl['code']}
-```
-Location: {entry_impl['file']}:{entry_impl['start_line']}-{entry_impl['end_line']}
+        issues = []
+        notes = []
 
-Start by analyzing this function. If it calls other project functions that are relevant to the check, use tools to retrieve them.
-If you encounter a function that has a snapshot, you can read the snapshot first.
-"""
+        # 1. Run Semantic Modeler (modeling logic)
+        semantic_agent = SemanticModeler(self.llm_client, self._get_tools())
+        logger.info("Running Semantic Modeler agent...")
+        s_resp = semantic_agent.run(agent_context)
+        if s_resp.success:
+            # Save snapshot to store
+            self.snapshot_store.save_snapshot(
+                entry_func, s_resp.data, agent_context["code"], agent_context["location"]
+            )
+            notes.append(f"Successfully modeled function: {entry_func}")
+        else:
+            logger.warning(f"Semantic modeling failed: {s_resp.error}")
+            notes.append(f"Semantic modeling failed: {s_resp.error}")
 
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": task_prompt},
-        ]
+        # 2. Run Vulnerability Analyzer for each configured task
+        analyzer_agent = VulnerabilityAnalyzer(self.llm_client, self._get_tools())
+        for agent_cfg in self.config.project.agents:
+            if not agent_cfg.enabled or agent_cfg.name != "vulnerability_analyzer":
+                continue
+            
+            logger.info(f"Running Vulnerability Analyzer agent for task: {agent_cfg.task}")
+            agent_context["task"] = agent_cfg.task
+            v_resp = analyzer_agent.run(agent_context)
+            
+            if v_resp.success:
+                issues.extend(v_resp.data.get("issues", []))
+                notes.append(f"Analyzed task: {agent_cfg.task}")
+            else:
+                logger.error(f"Vulnerability analysis failed: {v_resp.error}")
+                notes.append(f"Vulnerability analysis failed: {v_resp.error}")
 
-        # Run conversation loop
-        result = self.llm_client.run_conversation_with_tools(
-            messages=messages,
-            tools_schema=self.tools_runtime.get_tools_schema(),
-            tool_executor=self._tool_executor_wrapper,
-            max_iterations=self.config.analysis.max_tool_iterations,
+        # Construct Final Report
+        final_report = FinalReport(
+            entry_function=entry_func,
+            overall_verdict="issues_found" if issues else "no_issue_found",
+            issues=[Issue(**i) for i in issues],
+            notes=notes
         )
+
+        final_report.metadata = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "version": "0.1.0"
+        }
+
+        # Save results
+        self.report_generator.save_json_report(final_report)
+        self.report_generator.save_markdown_report(final_report)
+
+        return final_report.to_dict()
+
+    def _get_tools(self) -> List[Any]:
+        """Initialize and return the set of tools."""
+        from ..tools.code_retrieval import GetFunctionImplTool
+        from ..tools.snapshot_tool import GetFunctionSnapshotTool
+        from ..tools.utils import ListFunctionsTool, GetFileSnippetTool
+        
+        return [
+            GetFunctionImplTool(self.code_index),
+            GetFunctionSnapshotTool(self.snapshot_store),
+            ListFunctionsTool(self.code_index),
+            GetFileSnippetTool(self.code_index)
+        ]
 
         # CRITICAL FIX: Explicitly demand JSON final_report if not provided
         final_content = result["content"]
