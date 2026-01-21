@@ -1,64 +1,84 @@
 # Z-SCOPE
 
-**Z-SCOPE** is an AI-powered static analysis tool for C projects. It uses Large Language Models (LLMs) to perform deep semantic analysis of code, looking for real defects like resource leaks, concurrency issues, and logic bugs, while ignoring stylistic complaints.
+**Z-SCOPE** 是一款基于 AI 的 C 项目静态分析工具。它利用大语言模型（LLM）对代码进行深度的语义分析，旨在发现真实的程序缺陷（如资源泄漏、并发问题和逻辑漏洞），同时忽略无关紧要的风格问题。
 
-## Features
+## 核心特性
 
-- **Semantic Analysis**: Goes beyond regex or standard static analysis AST checks. Uses LLM to understand intent.
-- **Incremental Analysis**: Caches "semantic snapshots" of functions. If code changes but semantics don't (e.g., rename variable), it skips re-analysis.
-- **Tool-Assisted**: The LLM can request to see callee functions to trace logic across boundaries.
-- **Structured Reporting**: Outputs JSON and Markdown reports with confidence scores and impact levels.
+- **语义分析**：不仅限于正则表达式或标准的静态分析 AST 检查。利用 LLM 理解代码逻辑意图。
+- **增量分析**：缓存函数的“语义快照”。如果代码变更但语义未变（如重命名变量），则跳过重新分析。
+- **工具辅助**：LLM 可以请求查看被调用函数实现，跨越函数边界追踪逻辑。
+- **结构化报告**：提供 JSON 和 Markdown 格式的报告，包含置信度评分和影响级别。
 
-## Installation
+## 系统架构
 
-Requires Python 3.9+.
+Z-SCOPE 采用代理（Agentic）循环架构，协调代码检索、状态管理和 LLM 推理。
 
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/zscope.git
-cd zscope
-
-# Install dependencies
-pip install -e .
+```mermaid
+graph TD
+    User([用户/项目]) --> CLI[CLI 命令行]
+    CLI --> Config[配置加载器]
+    Config --> Analyzer[分析器核心]
+    
+    subgraph "核心引擎"
+        Analyzer --> ToolRuntime[工具运行时]
+        Analyzer --> LLMClient[LLM 客户端]
+        ToolRuntime --> CodeIndex[代码索引 (libclang/Regex)]
+        ToolRuntime --> SnapshotStore[快照存储 (SQLite)]
+    end
+    
+    LLMClient --> SiliconFlow["LLM API (硅基流动/OpenAI)"]
+    CodeIndex --> CFiles["C 源代码 (.c/.h)"]
+    CFiles --> CompilationDB["编译数据库 (compile_commands.json)"]
+    
+    Analyzer --> Reports["分析报告 (Markdown/JSON)"]
 ```
 
-## Usage
+### 主要组件说明
+- **Analyzer (分析器)**：流程编排核心，负责维护与 LLM 的对话上下文和决策循环。
+- **Code Index (代码索引)**：基于 `libclang` 或正则解析，负责精确定位函数定义和跨文件搜索。
+- **Snapshot Store (快照存储)**：持久化存储函数的语义指纹，支持智能缓存。
+- **Tool Runtime (工具运行时)**：为 LLM 提供一组“能力接口”（如 `get_function_impl`），使其能探索代码库。
 
-### Prerequisites
-1. **Compile Commands**: For best results, generate a `compile_commands.json` for your C project (e.g., using CMake `set(CMAKE_EXPORT_COMPILE_COMMANDS ON)`). If not available, Z-SCOPE acts in "best-effort" regex mode.
-2. **LLM Access**: You need access to an OpenAI-compatible API (e.g., OpenAI, Azure OpenAI, vLLM, text-generation-webui).
+## 安装指南
 
-### Running Analysis
+需要 Python 3.9+。
 
 ```bash
-python -m zscope.cli \
-  --project /path/to/my/c_project \
-  --entry "process_data_packet" \
-  --task "Check for buffer overflows and memory leaks in packet handling logic." \
-  --base-url "https://api.openai.com/v1" \
-  --api-key "sk-..." \
-  --model "gpt-4"
+# 克隆仓库
+git clone https://github.com/zealousness/Z-Scope.git
+cd Z-Scope
+
+# 安装依赖
+python -m pip install -e zscope
 ```
 
-### Arguments
+## 使用说明
 
-- `--project / -p`: Absolute path to the root of your C project.
-- `--entry / -e`: Name of the C function to start analyzing.
-- `--task / -t`: Natural language description of what you want to check.
-- `--base-url`: URL of the LLM API.
-- `--api-key`: API Key for authentication.
-- `--compile-db`: (Optional) Path to `compile_commands.json`.
+### 1. 准备工作
+- **编译数据库**：为了获得最佳效果，请为 C 项目生成 `compile_commands.json`（例如使用 CMake 时设置 `set(CMAKE_EXPORT_COMPILE_COMMANDS ON)`）。
+- **LLM API**：配置 Silicon Flow 或其他兼容 OpenAI 的 API 密钥。
 
-## Output
+### 2. 运行分析
 
-After running, Z-SCOPE creates:
-- `report.json`: Machine-readable full report.
-- `report.md`: Human-readable summary.
-- `.zscope_snapshots/`: Directory containing cached function semantics.
+可以通过配置文件 `zscope.yaml` 进行简单运行：
 
-## Architecture
+```bash
+$env:PYTHONPATH="zscope"
+python -m zscope.cli.cli --config zscope.yaml
+```
 
-- **Code Index**: Locates function definitions using libclang or regex.
-- **Snapshot Store**: SQLite-backed storage for function semantic fingerprints.
-- **Tool Runtime**: Exposes tools (`get_function_impl`, `get_function_snapshot`) to the LLM.
-- **Analyzer**: Orchestrates the agentic loop.
+或者使用命令行参数：
+
+```bash
+python -m zscope.cli.cli \
+  --project ./test/test_c_project_multi \
+  --entry main \
+  --task "检查内存泄漏和缓冲区溢出"
+```
+
+## 输出结果
+
+分析完成后，Z-SCOPE 会生成：
+- `report.json`：全量分析数据的机器可读报告。
+- `report.md`：包含缺陷详情和修复建议的人类可读总结。
+- `.zscope_snapshots/`：存储缓存语义快照的目录。
