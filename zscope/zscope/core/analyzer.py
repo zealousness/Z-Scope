@@ -91,7 +91,8 @@ You must strictly output JSON blocks for specific phases.
     {
       "id": "unique_id",
       "function": "...",
-      "location": "path:line-line",
+      "location": "Optional guess of location",
+      "code_snippet": "Exact problematic code snippet from the source (IMPORTANT: This will be used to find the exact line number)",
       "category": "functionality|reliability|performance",
       "subcategory": "e.g. memory_leak",
       "description": "...",
@@ -189,11 +190,14 @@ class Analyzer:
                 logger.error(f"Vulnerability analysis failed: {v_resp.error}")
                 notes.append(f"Vulnerability analysis failed: {v_resp.error}")
 
+        # 3. Resolve locations using snippets
+        self._resolve_issue_locations(issues)
+
         # Construct Final Report
         final_report = FinalReport(
             entry_function=entry_func,
             overall_verdict="issues_found" if issues else "no_issue_found",
-            issues=[Issue(**i) for i in issues],
+            issues=[Issue(**i) for i in issues if isinstance(i, dict)] or [i for i in issues if isinstance(i, Issue)],
             notes=notes
         )
 
@@ -243,7 +247,8 @@ Based on your analysis, create a JSON object with this EXACT structure:
     {
       "id": "ISSUE_1",
       "function": "function_name",
-      "location": "file:line-line",
+      "location": "filename:line (optional guess)",
+      "code_snippet": "Exact code snippet from the source (used to resolve accurate location)",
       "category": "reliability",
       "subcategory": "buffer_overflow|memory_leak|resource_leak|etc",
       "description": "Clear description of the defect",
@@ -468,3 +473,59 @@ Output a JSON of type 'snapshot_refresh_decision'.
                 code=impl["code"],
                 location=f"{impl['file']}:{impl['start_line']}"
             )
+
+    def _resolve_issue_locations(self, issues: List[Dict[str, Any]]) -> None:
+        """Resolve exact line numbers for issues using code snippets."""
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+                
+            snippet = issue.get("code_snippet")
+            if not snippet:
+                continue
+                
+            func_name = issue.get("function")
+            if not func_name:
+                continue
+                
+            # Try to find the file from the function name
+            func_info = self.code_index.get_function_impl(func_name)
+            if not func_info:
+                continue
+                
+            relative_file = func_info["file"]
+            abs_file = self.config.project.project_root / relative_file
+            
+            if not abs_file.exists():
+                continue
+                
+            try:
+                with open(abs_file, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                
+                # Clean snippet for better matching: strip and ignore common prefix/suffix artifacts
+                clean_snippet = snippet.strip().strip('`').strip()
+                if not clean_snippet:
+                    continue
+                    
+                # Search for the snippet
+                # 1. Exact match
+                index = content.find(clean_snippet)
+                if index == -1:
+                    # 2. Try matching without leading/trailing whitespace lines
+                    lines = [line.strip() for line in clean_snippet.split('\n') if line.strip()]
+                    if lines:
+                        first_line = lines[0]
+                        if len(first_line) > 10:
+                            index = content.find(first_line)
+                
+                if index != -1:
+                    # Calculate line number
+                    line_no = content[:index].count("\n") + 1
+                    issue["location"] = f"{relative_file}:{line_no}"
+                    logger.info(f"Resolved location for {issue.get('id')} to {issue['location']}")
+                else:
+                    logger.debug(f"Could not resolve location for {issue.get('id')} using snippet")
+                    
+            except Exception as e:
+                logger.error(f"Error resolving location for {issue.get('id')}: {e}")

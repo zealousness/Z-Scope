@@ -340,11 +340,17 @@ class ParallelAnalyzer:
                     if isinstance(conf, float):
                         conf = f"{conf:.2f}"
                         
+                    snippet = issue.get("code_snippet")
                     md.extend([
                         f"#### {idx}. [{impact}] {issue.get('id', f'ISSUE_{idx}')}: {issue.get('function', 'N/A')}",
                         f"- **Location**: `{issue.get('location', 'N/A')}`",
                         f"- **Confidence**: `{conf}`",
                         f"- **Category**: {issue.get('category', 'N/A')} ({issue.get('subcategory', 'N/A')})",
+                    ])
+                    if snippet:
+                        md.append(f"- **Relevant Code**:\n```c\n{snippet}\n```")
+                    
+                    md.extend([
                         f"- **Description**: {issue.get('description', 'N/A')}",
                         f"- **Root Cause**: {issue.get('root_cause', 'N/A')}",
                         f"- **Suggested Fix**: {issue.get('suggested_fix', 'N/A')}",

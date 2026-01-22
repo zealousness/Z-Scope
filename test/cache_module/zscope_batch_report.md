@@ -2,8 +2,8 @@
 
 ## Summary
 - **Functions Analyzed**: 5
-- **Issues Found**: 5
-- **No Issues Found**: 0
+- **Issues Found**: 4
+- **No Issues Found**: 1
 - **Errors**: 0
 - **Total Issues Detected**: 9
 
@@ -11,92 +11,161 @@
 
 | Function | Verdict | Issues | Duration |
 | :--- | :--- | :--- | :--- |
-| cache_clear | issues_found | 2 | 65.7s |
-| cache_create | issues_found | 2 | 61.3s |
-| cache_get | issues_found | 1 | 63.9s |
-| cache_put | issues_found | 3 | 99.6s |
-| cache_save | issues_found | 1 | 52.2s |
+| cache_clear | issues_found | 3 | 85.1s |
+| cache_create | no_issue_found | 0 | 194.9s |
+| cache_get | issues_found | 1 | 185.8s |
+| cache_put | issues_found | 3 | 124.8s |
+| cache_save | issues_found | 2 | 59.1s |
 
 ## Detected Issues
 
 ### Entry Function: `cache_clear`
 
 #### 1. [HIGH] ISSUE_1: cache_clear
-- **Location**: `src/cache.c:10`
+- **Location**: `src\cache_core.c:299`
 - **Confidence**: `0.95`
 - **Category**: reliability (memory_leak)
-- **Description**: Memory leak due to failure to free AVL tree node key and value memory.
-- **Root Cause**: While avl_delete frees node memory, it does not free the key or value memory stored in the nodes. The cache_clear function does not explicitly free these either.
-- **Suggested Fix**: Explicitly free the key and value memory for each node before deleting it from the AVL tree.
+- **Relevant Code**:
+```c
+extern int lru_remove_node_buggy(lru_node_t** head, lru_node_t** tail, const char* key);
+        lru_remove_node_buggy(&handle->lru_head, &handle->lru_tail, key);
+```
+- **Description**: The code calls 'lru_remove_node_buggy' to remove a node from the LRU queue but does not free the node itself, leading to a memory leak.
+- **Root Cause**: The 'lru_remove_node_buggy' function only unlinks the node from the LRU queue but does not deallocate the memory of the node.
+- **Suggested Fix**: After calling 'lru_remove_node_buggy', explicitly free the node's memory. Alternatively, modify 'lru_remove_node_buggy' to handle memory deallocation.
 
-#### 2. [HIGH] ISSUE_2: cache_clear
-- **Location**: `src/cache.c:18`
+#### 2. [CRITICAL] ISSUE_2: cache_clear
+- **Location**: `src\cache_core.c:215`
 - **Confidence**: `0.90`
-- **Category**: reliability (memory_leak)
-- **Description**: Memory leak in LRU queue due to failure to free node memory.
-- **Root Cause**: The lru_remove_node_buggy function only unlinks the node from the LRU queue but does not free the node's memory.
-- **Suggested Fix**: Modify lru_remove_node_buggy to free the node memory after unlinking it, or explicitly free the node memory in cache_clear after calling lru_remove_node_buggy.
+- **Category**: functionality (buffer_overflow)
+- **Relevant Code**:
+```c
+avl_node_t* nodes[10000];
+    int count = 0;
+    avl_get_all_nodes(handle->index_root, nodes, &count, 10000);
+```
+- **Description**: Fixed-size array 'nodes[10000]' is used to store AVL nodes, which can lead to buffer overflow if the number of nodes exceeds 10000.
+- **Root Cause**: The function assumes a maximum of 10000 nodes, which is not guaranteed and can be exceeded in real scenarios.
+- **Suggested Fix**: Dynamically allocate the 'nodes' array based on the actual number of nodes in the AVL tree.
 
-### Entry Function: `cache_create`
-
-#### 1. [HIGH] ISSUE_1: cache_create
-- **Location**: `src\cache_core.c:41`
-- **Confidence**: `0.95`
-- **Category**: reliability (memory_safety)
-- **Description**: 在复制 config->storage_path 到 handle->storage_path 时，strncpy 未确保目标字符串以 '\0' 结尾。虽然 strncpy 限制了复制长度，但如果源字符串长度等于或超过目标缓冲区大小，将不会添加终止符。
-- **Root Cause**: strncpy 不会在复制达到最大长度时自动添加字符串终止符 '\0'，这可能导致后续字符串操作中发生越界读取。
-- **Suggested Fix**: 在 strncpy 调用后显式添加终止符，例如：strncpy(handle->storage_path, config->storage_path, sizeof(handle->storage_path) - 1); handle->storage_path[sizeof(handle->storage_path) - 1] = '\0';
-
-#### 2. [CRITICAL] ISSUE_2: cache_create
-- **Location**: `src\cache_core.c:29`
-- **Confidence**: `0.90`
-- **Category**: functionality (initialization_error)
-- **Description**: 在分配 handle 后立即使用 memset 将整个结构体清零，这会覆盖掉之前对 handle->config 的赋值。
-- **Root Cause**: memset(handle, 0, sizeof(struct cache_manager)) 在 handle->config = *config 之后执行，导致 config 的内容被清零。
-- **Suggested Fix**: 调整初始化顺序，先执行 memset 清零操作，再进行字段赋值，例如将 memset 移到 handle 分配后立即执行。
+#### 3. [HIGH] ISSUE_3: cache_clear
+- **Location**: `src\cache_core.c:177`
+- **Confidence**: `0.85`
+- **Category**: reliability (use_after_free)
+- **Relevant Code**:
+```c
+handle->index_root = avl_delete(handle->index_root, key);
+```
+- **Description**: Potential use-after-free vulnerability when accessing 'nodes[i]->key' after calling 'avl_delete', which frees the node.
+- **Root Cause**: The 'avl_delete' function frees the node memory, but the loop continues to access 'nodes[i]->key' which may result in accessing freed memory.
+- **Suggested Fix**: Store the key in a temporary buffer before calling 'avl_delete' to avoid accessing freed memory.
 
 ### Entry Function: `cache_get`
 
 #### 1. [CRITICAL] ISSUE_1: cache_get
-- **Location**: `src\cache_core.c:145`
+- **Location**: `src\cache_core.c:149`
 - **Confidence**: `0.95`
 - **Category**: reliability (buffer_overflow)
-- **Description**: The function does not check if the output buffer size is sufficient before copying data. It directly uses node->value_size as the size parameter for memcpy, which can lead to a buffer overflow if buffer_size is smaller than node->value_size.
-- **Root Cause**: Missing boundary check against buffer_size before memcpy operation.
-- **Suggested Fix**: Add a check to ensure buffer_size is at least as large as node->value_size before memcpy, and use the smaller of the two sizes to prevent overflow.
+- **Relevant Code**:
+```c
+    // Copy value to output buffer
+    memcpy(value_out, node->value, node->value_size);
+
+```
+- **Description**: The function does not check if the output buffer (value_out) is large enough to hold the data being copied. It directly uses node->value_size as the size for memcpy, which can lead to a buffer overflow if buffer_size is smaller than node->value_size.
+- **Root Cause**: Missing validation of buffer_size against node->value_size before performing memcpy operation.
+- **Suggested Fix**: Add a check to ensure buffer_size is sufficient before copying data. If buffer_size is smaller than node->value_size, either return an error or copy only up to buffer_size bytes and null-terminate if applicable.
 
 ### Entry Function: `cache_put`
 
-#### 1. [HIGH] ISSUE_1: cache_put
-- **Location**: `src/main.c:30`
+#### 1. [HIGH] ISSUE_1: avl_insert
+- **Location**: `src\cache_index.c:77`
 - **Confidence**: `0.95`
 - **Category**: reliability (memory_leak)
-- **Description**: 在调用avl_insert更新现有键的值时，如果malloc失败，原value内存未被释放，导致内存泄漏。
-- **Root Cause**: avl_insert函数在更新现有节点值时，先分配新内存，如果成功则直接替换原value指针，但未释放原内存。
-- **Suggested Fix**: 在avl_insert函数中更新现有节点值时，应先保存原value指针，分配新内存成功后再释放原内存。
+- **Relevant Code**:
+```c
+        void* new_value = malloc(value_size);
+        if (new_value) {
+            root->value = new_value;
+            memcpy(root->value, value, value_size);
+            root->value_size = value_size;
+        }
+```
+- **Description**: 在更新现有节点的值时，如果 malloc 失败，旧的 value 内存不会被释放，导致内存泄漏。
+- **Root Cause**: 在 avl_insert 函数中，当更新现有节点的值时，代码先分配新内存，如果分配成功则更新指针，但没有释放旧的内存。
+- **Suggested Fix**: 在分配新内存之前保存旧的 value 指针，如果新内存分配失败，则恢复旧指针；如果成功，则释放旧内存。
 
-#### 2. [MEDIUM] ISSUE_2: cache_put
-- **Location**: `src/main.c:25`
+#### 2. [HIGH] ISSUE_2: lru_remove_lru
+- **Location**: `src\cache_queue.c:57`
 - **Confidence**: `0.90`
-- **Category**: reliability (memory_leak)
-- **Description**: 在缓存满时调用lru_remove_lru移除LRU项后，avl_delete可能失败，但未检查返回值，导致stats和内存使用量不一致。
-- **Root Cause**: avl_delete调用后未检查返回值，如果删除失败，stats.total_entries和memory_used仍会减少，但实际内存未释放。
-- **Suggested Fix**: 检查avl_delete的返回值，只有在删除成功时才更新stats.total_entries和memory_used。
+- **Category**: reliability (concurrency_issue)
+- **Relevant Code**:
+```c
+    static char removed_key[64];
+    strncpy(removed_key, lru->key, sizeof(removed_key) - 1);
+    removed_key[sizeof(removed_key) - 1] = '\0';
+    
+    // Remove from list
+    if (lru->prev) {
+        lru->prev->next = NULL;
+        *tail = lru->prev;
+    } else {
+        *head = *tail = NULL;
+    }
+    
+    free(lru);
+    
+    return removed_key;
+```
+- **Description**: 使用静态缓冲区返回被删除的键，这在并发环境中是不安全的，可能导致数据竞争。
+- **Root Cause**: lru_remove_lru 函数使用静态字符数组 removed_key 来返回被删除的键，这在多线程环境中会导致数据竞争。
+- **Suggested Fix**: 修改函数签名，让调用者提供一个缓冲区来存储返回的键，或者动态分配内存来存储键并在文档中说明调用者需要释放它。
 
 #### 3. [MEDIUM] ISSUE_3: cache_put
-- **Location**: `src/main.c:45`
+- **Location**: `src\cache_core.c:86`
 - **Confidence**: `0.85`
-- **Category**: reliability (memory_leak)
-- **Description**: 在调用lru_create_node创建LRU节点失败时，未回滚已进行的操作，可能导致内存泄漏或状态不一致。
-- **Root Cause**: 如果lru_create_node失败返回NULL，函数继续执行但未清理已分配的资源或回滚AVL树的插入操作。
-- **Suggested Fix**: 在lru_create_node失败时，应删除刚插入AVL树的节点，并返回错误码。
+- **Category**: functionality (logic_error)
+- **Relevant Code**:
+```c
+    if (!existing && handle->stats.total_entries >= handle->config.max_entries) {
+        // Evict LRU
+        char* lru_key = lru_remove_lru(&handle->lru_head, &handle->lru_tail);
+        if (lru_key) {
+            handle->index_root = avl_delete(handle->index_root, lru_key);
+            handle->stats.total_entries--;
+        }
+    }
+```
+- **Description**: 在驱逐LRU项后，没有更新 stats.memory_used，这会导致内存使用统计不准确。
+- **Root Cause**: 当驱逐LRU项时，代码从索引和LRU队列中删除了项，但没有从内存使用统计中减去被驱逐项的大小。
+- **Suggested Fix**: 在驱逐项后，从 stats.memory_used 中减去被驱逐项的大小。
 
 ### Entry Function: `cache_save`
 
 #### 1. [HIGH] ISSUE_1: storage_save_cache
-- **Location**: `src\cache_storage.c:70-100`
+- **Location**: `src\cache_storage.c:88`
 - **Confidence**: `0.95`
 - **Category**: reliability (resource_leak)
-- **Description**: 文件描述符泄漏：在 write_all 或 save_tree_node 失败时，函数返回 -1 但未关闭已打开的文件描述符 fd。
-- **Root Cause**: 在调用 write_all 或 save_tree_node 失败时，函数直接返回 -1，跳过了 close(fd) 语句，导致文件描述符未被释放。
-- **Suggested Fix**: 在所有返回 -1 的路径上确保调用 close(fd)，或者使用 goto 统一错误处理路径以确保资源释放。
+- **Relevant Code**:
+```c
+if (write_all(fd, &header, sizeof(header)) < 0) {
+        return -1;
+    }
+```
+- **Description**: 在写入文件头失败时，函数直接返回-1，但没有关闭已打开的文件描述符，导致文件描述符泄露。
+- **Root Cause**: 在文件头写入失败时，未调用close(fd)就直接返回错误码。
+- **Suggested Fix**: 在所有提前返回的路径上确保调用close(fd)，或使用goto统一错误处理路径。
+
+#### 2. [HIGH] ISSUE_2: storage_save_cache
+- **Location**: `src\cache_storage.c:94`
+- **Confidence**: `0.95`
+- **Category**: reliability (resource_leak)
+- **Relevant Code**:
+```c
+if (result < 0) {
+        return -1;
+    }
+```
+- **Description**: 在保存树节点失败时，函数直接返回-1，但没有关闭已打开的文件描述符，导致文件描述符泄露。
+- **Root Cause**: 在保存树节点失败时，未调用close(fd)就直接返回错误码。
+- **Suggested Fix**: 在所有提前返回的路径上确保调用close(fd)，或使用goto统一错误处理路径。
