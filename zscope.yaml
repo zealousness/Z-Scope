@@ -12,7 +12,8 @@ llm:
 
 project:
   root: .
-  entry_function: main
+  entry_function: main  # Used in single-function mode
+  # entry_functions_list: example_functions.json  # Uncomment to activate batch mode
   agents:
     - name: semantic_modeler
       enabled: true
@@ -29,3 +30,4 @@ analysis:
   max_tool_iterations: 50
   snapshot_dir: .zscope_snapshots
   enable_snapshot_cache: true
+  parallel_workers: 5  # Number of concurrent workers for batch analysis
