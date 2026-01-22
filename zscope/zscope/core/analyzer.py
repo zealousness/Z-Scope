@@ -322,14 +322,15 @@ Output ONLY the JSON, no other text. If you found defects, list them all. If you
             return impl_result
         
         current_code = impl_result["data"]["code"]
+        file_path = impl_result["data"]["file"]  # Extract file path
         
-        # 2. Check snapshot status
-        needs_refresh, reason = self.snapshot_store.needs_refresh(func_name, current_code)
+        # 2. Check snapshot status with file_path
+        needs_refresh, reason = self.snapshot_store.needs_refresh(func_name, current_code, file_path)
         
         if not needs_refresh and reason != "no_snapshot":
             # Snapshot is valid and up to date (or only cosmetic changes)
-            logger.info(f"Using cached snapshot for '{func_name}' (reason: {reason})")
-            snapshot = self.snapshot_store.load_snapshot(func_name)
+            logger.info(f"Using cached snapshot for '{func_name}' in '{file_path}' (reason: {reason})")
+            snapshot = self.snapshot_store.load_snapshot(func_name, file_path)
             return {
                 "success": True, 
                 "data": impl_result["data"], 
@@ -340,8 +341,8 @@ Output ONLY the JSON, no other text. If you found defects, list them all. If you
         if reason == "code_changed":
             # 3. Ask LLM if we really need to refresh (semantic check)
             # This requires a mini-LLM call.
-            logger.info(f"Code changed for '{func_name}', checking with LLM if refresh needed...")
-            snapshot = self.snapshot_store.load_snapshot(func_name)
+            logger.info(f"Code changed for '{func_name}' in '{file_path}', checking with LLM if refresh needed...")
+            snapshot = self.snapshot_store.load_snapshot(func_name, file_path)
             decision = self._ask_refresh_decision(func_name, snapshot, current_code)
             
             if not decision.get("refresh_needed"):

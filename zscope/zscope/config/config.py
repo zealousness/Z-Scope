@@ -57,6 +57,7 @@ class AnalysisConfig:
     max_tool_iterations: int = 50
     snapshot_dir: str = ".zscope_snapshots"
     enable_snapshot_cache: bool = True
+    parallel_workers: int = 3  # Number of concurrent workers for batch analysis
 
 
 @dataclass
@@ -67,6 +68,7 @@ class ProjectConfig:
     entry_function: str
     agents: List[AgentConfig] = field(default_factory=list)
     compile_commands_path: Optional[Path] = None
+    entry_functions_list: Optional[Path] = None  # Path to JSON file for batch mode
 
     def __post_init__(self):
         self.project_root = Path(self.project_root).resolve()
@@ -74,6 +76,13 @@ class ProjectConfig:
             self.compile_commands_path = Path(self.compile_commands_path).resolve()
         elif (self.project_root / "compile_commands.json").exists():
             self.compile_commands_path = self.project_root / "compile_commands.json"
+        
+        # Resolve entry_functions_list path relative to project root
+        if self.entry_functions_list:
+            if not Path(self.entry_functions_list).is_absolute():
+                self.entry_functions_list = (self.project_root / self.entry_functions_list).resolve()
+            else:
+                self.entry_functions_list = Path(self.entry_functions_list).resolve()
 
 
 @dataclass
@@ -181,6 +190,7 @@ class ConfigLoader:
                 max_tool_iterations=analysis_data.get("max_tool_iterations", 50),
                 snapshot_dir=analysis_data.get("snapshot_dir", ".zscope_snapshots"),
                 enable_snapshot_cache=analysis_data.get("enable_snapshot_cache", True),
+                parallel_workers=analysis_data.get("parallel_workers", 3),
             )
 
             # Project config
@@ -212,12 +222,17 @@ class ConfigLoader:
 
             compile_commands = project_data.get("compile_commands")
             compile_commands_path = Path(compile_commands) if compile_commands else None
+            
+            # Parse entry_functions_list for batch mode
+            entry_functions_list = project_data.get("entry_functions_list")
+            entry_functions_list_path = Path(entry_functions_list) if entry_functions_list else None
 
             project_config = ProjectConfig(
                 project_root=Path(project_root),
                 entry_function=entry_function,
                 agents=agents,
                 compile_commands_path=compile_commands_path,
+                entry_functions_list=entry_functions_list_path,
             )
 
             return ZScopeConfig(

@@ -1,0 +1,17 @@
+{
+    "functions": [
+        {
+            "function_name": "main",
+            "custom_prompt": "分析主程序入口的错误处理逻辑和资源管理"
+        },
+        {
+            "function_name": "process_data",
+            "custom_prompt": "检查数据处理中的类型转换安全性和边界条件",
+            "file_path": "test/test_c_project_multi/processor.c"
+        },
+        {
+            "function_name": "create_memory_pool",
+            "custom_prompt": "重点检查内存分配、内存泄漏和并发安全问题"
+        }
+    ]
+}

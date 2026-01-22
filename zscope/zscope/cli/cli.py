@@ -8,7 +8,10 @@ import sys
 from pathlib import Path
 
 from ..config.config import ZScopeConfig, LLMConfig, AnalysisConfig, ProjectConfig, IndexingConfig, ConfigLoader
+from ..config.function_entry import FunctionListLoader
 from ..core.analyzer import Analyzer
+from ..core.parallel_analyzer import ParallelAnalyzer
+from ..retrieval.code_index import CodeIndex
 from ..common.utils import setup_logging
 
 @click.command()
@@ -38,21 +41,61 @@ def main(
     try:
         zscope_config = ConfigLoader.load(str(config))
         logger.info(f"Loaded configuration from: {config}")
-        logger.info(f"Entry function: {zscope_config.project.entry_function}")
-
-        analyzer = Analyzer(zscope_config)
-        result = analyzer.run()
         
-        overall_verdict = result.get("overall_verdict", "unknown")
-        issues_count = len(result.get("issues", []))
-        
-        click.echo(f"\nAnalysis Complete. Verdict: {overall_verdict}. Issues found: {issues_count}")
-        click.echo(f"Reports saved in: {zscope_config.project.project_root}")
-        
-        if issues_count > 0:
-            sys.exit(1)
+        # Detect batch mode vs single mode
+        if zscope_config.project.entry_functions_list:
+            # Batch mode
+            logger.info(f"Batch mode activated: {zscope_config.project.entry_functions_list}")
+            entries = FunctionListLoader.load(zscope_config.project.entry_functions_list)
+            logger.info(f"Loaded {len(entries)} function entries")
+            
+            # Build code index once (shared across all analyses)
+            logger.info("Building shared code index...")
+            code_index = CodeIndex(
+                zscope_config.project.project_root,
+                zscope_config.project.compile_commands_path
+            )
+            
+            # Create parallel analyzer with shared code index
+            parallel_analyzer = ParallelAnalyzer(zscope_config, code_index=code_index)
+            
+            # Run batch analysis
+            results = parallel_analyzer.analyze_function_entries(entries)
+            
+            # Generate combined report
+            report_path = zscope_config.project.project_root / "zscope_batch_report.json"
+            combined_report = parallel_analyzer.generate_combined_report(results, report_path)
+            
+            total_issues = combined_report["summary"]["total_issues"]
+            functions_analyzed = combined_report["summary"]["functions_analyzed"]
+            
+            click.echo(f"\nBatch Analysis Complete.")
+            click.echo(f"Functions analyzed: {functions_analyzed}")
+            click.echo(f"Total issues found: {total_issues}")
+            click.echo(f"Report saved: {report_path}")
+            
+            if total_issues > 0:
+                sys.exit(1)
+            else:
+                sys.exit(0)
         else:
-            sys.exit(0)
+            # Single function mode
+            entry_function = zscope_config.project.entry_function
+            logger.info(f"Single mode: entry function = {entry_function}")
+
+            analyzer = Analyzer(zscope_config)
+            result = analyzer.run()
+            
+            overall_verdict = result.get("overall_verdict", "unknown")
+            issues_count = len(result.get("issues", []))
+            
+            click.echo(f"\nAnalysis Complete. Verdict: {overall_verdict}. Issues found: {issues_count}")
+            click.echo(f"Reports saved in: {zscope_config.project.project_root}")
+            
+            if issues_count > 0:
+                sys.exit(1)
+            else:
+                sys.exit(0)
 
     except Exception as e:
         logger.error(f"Analysis failed: {e}", exc_info=True)
@@ -61,3 +104,4 @@ def main(
 
 if __name__ == "__main__":
     main()
+
