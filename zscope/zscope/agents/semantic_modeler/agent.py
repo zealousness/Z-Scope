@@ -43,6 +43,8 @@ Schema:
   "callees": ["func1", "func2"]
 }
 
+You MUST provide all descriptive fields (summary, meaning, key_semantics) in Chinese.
+
 Focus ONLY on documenting the function accurately. Do not look for bugs unless they are part of the semantic behavior.
 """
 

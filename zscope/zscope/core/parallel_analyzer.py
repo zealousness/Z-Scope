@@ -265,6 +265,99 @@ class ParallelAnalyzer:
             logger.info(f"Combined report saved to: {output_path}")
         
         return combined_report
+
+    def generate_combined_markdown_report(
+        self, 
+        results: Dict[str, ParallelAnalysisResult], 
+        output_path: Path
+    ) -> str:
+        """
+        Generate a human-readable Markdown report for batch analysis.
+        
+        Args:
+            results: Dict of function name to analysis result
+            output_path: Path to save combined report
+            
+        Returns:
+            Markdown report content
+        """
+        summary = {
+            "total": len(results),
+            "issues_found": sum(1 for r in results.values() if r.verdict == "issues_found"),
+            "no_issue": sum(1 for r in results.values() if r.verdict == "no_issue_found"),
+            "error": sum(1 for r in results.values() if r.verdict == "error"),
+            "total_issues": sum(len(r.issues) for r in results.values()),
+        }
+        
+        md = [
+            "# Z-SCOPE Batch Analysis Report",
+            "",
+            "## Summary",
+            f"- **Functions Analyzed**: {summary['total']}",
+            f"- **Issues Found**: {summary['issues_found']}",
+            f"- **No Issues Found**: {summary['no_issue']}",
+            f"- **Errors**: {summary['error']}",
+            f"- **Total Issues Detected**: {summary['total_issues']}",
+            "",
+            "## Function Details",
+            "",
+            "| Function | Verdict | Issues | Duration |",
+            "| :--- | :--- | :--- | :--- |"
+        ]
+        
+        for name, res in sorted(results.items()):
+            duration_str = f"{res.duration_seconds:.1f}s" if res.duration_seconds else "N/A"
+            md.append(f"| {name} | {res.verdict} | {len(res.issues)} | {duration_str} |")
+        
+        md.append("")
+        md.append("## Detected Issues")
+        md.append("")
+        
+        # Group issues by analyzed_from (entry function)
+        issues_by_entry = {}
+        for r in results.values():
+            if r.verdict == "issues_found":
+                issues_by_entry[r.function_name] = r.issues
+
+        if not issues_by_entry:
+            md.append("*No issues detected.*")
+        else:
+            for entry_func, issues in sorted(issues_by_entry.items()):
+                md.append(f"### Entry Function: `{entry_func}`")
+                md.append("")
+                
+                # Simple deduplication per entry if needed
+                seen_in_entry = set()
+                
+                for idx, issue in enumerate(issues, 1):
+                    issue_key = f"{issue.get('location', 'N/A')}:{issue.get('description', '')[:50]}"
+                    if issue_key in seen_in_entry:
+                        continue
+                    seen_in_entry.add(issue_key)
+                    
+                    impact = str(issue.get("impact_level", "UNKNOWN")).upper()
+                    conf = issue.get("confidence", "N/A")
+                    if isinstance(conf, float):
+                        conf = f"{conf:.2f}"
+                        
+                    md.extend([
+                        f"#### {idx}. [{impact}] {issue.get('id', f'ISSUE_{idx}')}: {issue.get('function', 'N/A')}",
+                        f"- **Location**: `{issue.get('location', 'N/A')}`",
+                        f"- **Confidence**: `{conf}`",
+                        f"- **Category**: {issue.get('category', 'N/A')} ({issue.get('subcategory', 'N/A')})",
+                        f"- **Description**: {issue.get('description', 'N/A')}",
+                        f"- **Root Cause**: {issue.get('root_cause', 'N/A')}",
+                        f"- **Suggested Fix**: {issue.get('suggested_fix', 'N/A')}",
+                        ""
+                    ])
+                
+        content = "\n".join(md)
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(content)
+            
+        logger.info(f"Markdown report saved to: {output_path}")
+        return content
+
     
     def _deduplicate_issues(self, issues: List[Dict]) -> List[Dict]:
         """Remove duplicate issues based on location and description."""

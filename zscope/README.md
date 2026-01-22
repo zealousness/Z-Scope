@@ -70,7 +70,7 @@ llm:
 
 project:
   root: .
-  entry_function: main                      # 单函数模式入口
+  entry_function: main                      # 单函数模式入口 (可选，如果启用了批量模式)
   # entry_functions_list: entry_funcs.json  # 开启批量扫描模式
   agents:
     - name: semantic_modeler
@@ -115,5 +115,6 @@ zscope --config zscope.yaml
 
 分析完成后，Z-SCOPE 将在项目目录下生成：
 - `report.md`：**中文分析报告**，包含缺陷等级、根本原因分析及修复建议。
-- `zscope_batch_report.json`：批量扫描汇总报告（仅批量模式）。
+- `zscope_batch_report.json`：批量扫描汇总报告 (JSON 格式)。
+- `zscope_batch_report.md`：**批量扫描汇总报告 (Markdown 格式)**，方便快速查阅。
 - `.zscope_snapshots/`：存储函数的语义建模快照（SQLite + JSON）。
