@@ -65,7 +65,7 @@ class ProjectConfig:
     """Configuration for the C project being analyzed."""
 
     project_root: Path
-    entry_function: str
+    entry_function: Optional[str] = None
     agents: List[AgentConfig] = field(default_factory=list)
     compile_commands_path: Optional[Path] = None
     entry_functions_list: Optional[Path] = None  # Path to JSON file for batch mode
@@ -203,8 +203,10 @@ class ConfigLoader:
                 raise ValueError("Missing 'project.root'")
 
             entry_function = project_data.get("entry_function")
-            if not entry_function:
-                raise ValueError("Missing 'project.entry_function'")
+            entry_functions_list = project_data.get("entry_functions_list")
+            
+            if not entry_function and not entry_functions_list:
+                raise ValueError("Either 'project.entry_function' or 'project.entry_functions_list' must be provided.")
 
             # Parse Agents
             agents_data = project_data.get("agents", [])
@@ -232,7 +234,7 @@ class ConfigLoader:
                 entry_function=entry_function,
                 agents=agents,
                 compile_commands_path=compile_commands_path,
-                entry_functions_list=entry_functions_list_path,
+                entry_functions_list=Path(entry_functions_list) if entry_functions_list else None,
             )
 
             return ZScopeConfig(

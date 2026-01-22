@@ -62,9 +62,12 @@ def main(
             # Run batch analysis
             results = parallel_analyzer.analyze_function_entries(entries)
             
-            # Generate combined report
-            report_path = zscope_config.project.project_root / "zscope_batch_report.json"
-            combined_report = parallel_analyzer.generate_combined_report(results, report_path)
+            # Generate reports
+            json_report_path = zscope_config.project.project_root / "zscope_batch_report.json"
+            md_report_path = zscope_config.project.project_root / "zscope_batch_report.md"
+            
+            combined_report = parallel_analyzer.generate_combined_report(results, json_report_path)
+            parallel_analyzer.generate_combined_markdown_report(results, md_report_path)
             
             total_issues = combined_report["summary"]["total_issues"]
             functions_analyzed = combined_report["summary"]["functions_analyzed"]
@@ -72,7 +75,7 @@ def main(
             click.echo(f"\nBatch Analysis Complete.")
             click.echo(f"Functions analyzed: {functions_analyzed}")
             click.echo(f"Total issues found: {total_issues}")
-            click.echo(f"Report saved: {report_path}")
+            click.echo(f"Reports saved: {json_report_path}, {md_report_path}")
             
             if total_issues > 0:
                 sys.exit(1)
@@ -81,6 +84,10 @@ def main(
         else:
             # Single function mode
             entry_function = zscope_config.project.entry_function
+            if not entry_function:
+                 click.echo("Error: No entry function or entry functions list provided.")
+                 sys.exit(1)
+                 
             logger.info(f"Single mode: entry function = {entry_function}")
 
             analyzer = Analyzer(zscope_config)
