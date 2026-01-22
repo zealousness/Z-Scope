@@ -24,6 +24,7 @@ class Issue:
     suggested_fix: str
     confidence: float
     impact_level: str  # low, medium, high, critical
+    code_snippet: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -101,6 +102,8 @@ class ReportGenerator:
                 md_content += f"- **所在函数**: `{issue.function}`\n"
                 md_content += f"- **代码位置**: `{issue.location}`\n"
                 md_content += f"- **置信度**: {issue.confidence:.0%}\n"
+                if issue.code_snippet:
+                    md_content += f"\n**相关代码**:\n```c\n{issue.code_snippet}\n```\n"
                 md_content += f"\n**问题描述**:\n{issue.description}\n"
                 md_content += f"\n**根本原因**:\n{issue.root_cause}\n"
                 md_content += f"\n**修复建议**:\n> {issue.suggested_fix}\n"
