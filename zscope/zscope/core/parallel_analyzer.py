@@ -12,6 +12,7 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 
 from ..config.config import ZScopeConfig
+from ..config.function_entry import FunctionEntry
 from .analyzer import Analyzer
 from ..retrieval.code_index import CodeIndex
 
@@ -36,21 +37,77 @@ class ParallelAnalyzer:
     simultaneously, significantly reducing total analysis time.
     """
     
-    def __init__(self, config: ZScopeConfig, max_workers: int = 3):
+    def __init__(self, config: ZScopeConfig, code_index: Optional[CodeIndex] = None):
         """
         Initialize parallel analyzer.
         
         Args:
             config: Base ZScope configuration
-            max_workers: Maximum number of concurrent LLM sessions (default: 3)
+            code_index: Optional shared CodeIndex to avoid rebuilding
         """
         self.base_config = config
-        self.max_workers = min(max_workers, 3)  # Cap at 3 to avoid overwhelming LLM
-        self.code_index = CodeIndex(
-            config.project.project_root, 
-            config.project.compile_commands_path
-        )
+        self.max_workers = config.analysis.parallel_workers
         
+        # Use provided code_index or create new one
+        if code_index:
+            self.code_index = code_index
+        else:
+            self.code_index = CodeIndex(
+                config.project.project_root, 
+                config.project.compile_commands_path
+            )
+        
+        
+    def analyze_function_entries(
+        self,
+        entries: List[FunctionEntry],
+        progress_callback: Optional[callable] = None
+    ) -> Dict[str, ParallelAnalysisResult]:
+        """
+        Analyze multiple function entries with custom prompts.
+        
+        Args:
+            entries: List of FunctionEntry objects with function names and custom prompts
+            progress_callback: Optional callback(completed, total, func_name) for progress
+            
+        Returns:
+            Dict mapping function name to analysis result
+        """
+        results = {}
+        total = len(entries)
+        completed = 0
+        
+        logger.info(f"Starting parallel analysis of {total} function entries with {self.max_workers} workers")
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # Submit all analysis tasks
+            future_to_entry = {
+                executor.submit(self._analyze_single_entry, entry): entry
+                for entry in entries
+            }
+            
+            # Collect results as they complete
+            for future in concurrent.futures.as_completed(future_to_entry):
+                entry = future_to_entry[future]
+                completed += 1
+                
+                try:
+                    result = future.result()
+                    results[entry.function_name] = result
+                    logger.info(f"[{completed}/{total}] {entry.function_name}: {result.verdict} ({len(result.issues)} issues)")
+                except Exception as e:
+                    logger.error(f"[{completed}/{total}] {entry.function_name}: ERROR - {e}")
+                    results[entry.function_name] = ParallelAnalysisResult(
+                        function_name=entry.function_name,
+                        verdict="error",
+                        error=str(e)
+                    )
+                
+                if progress_callback:
+                    progress_callback(completed, total, entry.function_name)
+        
+        return results
+    
     def analyze_functions(
         self, 
         function_names: List[str],
@@ -66,57 +123,29 @@ class ParallelAnalyzer:
         Returns:
             Dict mapping function name to analysis result
         """
-        results = {}
-        total = len(function_names)
-        completed = 0
-        
-        logger.info(f"Starting parallel analysis of {total} functions with {self.max_workers} workers")
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # Submit all analysis tasks
-            future_to_func = {
-                executor.submit(self._analyze_single_function, func_name): func_name
-                for func_name in function_names
-            }
-            
-            # Collect results as they complete
-            for future in concurrent.futures.as_completed(future_to_func):
-                func_name = future_to_func[future]
-                completed += 1
-                
-                try:
-                    result = future.result()
-                    results[func_name] = result
-                    logger.info(f"[{completed}/{total}] {func_name}: {result.verdict} ({len(result.issues)} issues)")
-                except Exception as e:
-                    logger.error(f"[{completed}/{total}] {func_name}: ERROR - {e}")
-                    results[func_name] = ParallelAnalysisResult(
-                        function_name=func_name,
-                        verdict="error",
-                        error=str(e)
-                    )
-                
-                if progress_callback:
-                    progress_callback(completed, total, func_name)
-        
-        return results
+        # Convert to FunctionEntry objects
+        entries = [FunctionEntry(function_name=name) for name in function_names]
+        return self.analyze_function_entries(entries, progress_callback)
+
     
-    def _analyze_single_function(self, func_name: str) -> ParallelAnalysisResult:
-        """Analyze a single function and return result."""
+    def _analyze_single_entry(self, entry: FunctionEntry) -> ParallelAnalysisResult:
+        """Analyze a single function entry with optional custom prompt."""
         start_time = time.time()
         
         try:
-            # Create a config copy with this function as entry point
-            config_copy = self._create_config_for_function(func_name)
+            # Create a config copy with this function as entry point and custom prompt
+            config_copy = self._create_config_for_entry(entry)
             
             # Create analyzer and run
             analyzer = Analyzer(config_copy)
+            # Pass the shared code index to avoid rebuilding
+            analyzer.code_index = self.code_index
             report_dict = analyzer.run()
             
             duration = time.time() - start_time
             
             return ParallelAnalysisResult(
-                function_name=func_name,
+                function_name=entry.function_name,
                 verdict=report_dict.get("overall_verdict", "unknown"),
                 issues=report_dict.get("issues", []),
                 duration_seconds=duration
@@ -125,17 +154,27 @@ class ParallelAnalyzer:
         except Exception as e:
             duration = time.time() - start_time
             return ParallelAnalysisResult(
-                function_name=func_name,
+                function_name=entry.function_name,
                 verdict="error",
                 error=str(e),
                 duration_seconds=duration
             )
     
-    def _create_config_for_function(self, func_name: str) -> ZScopeConfig:
-        """Create a ZScopeConfig copy with the specified entry function."""
+    def _create_config_for_entry(self, entry: FunctionEntry) -> ZScopeConfig:
+        """Create a ZScopeConfig copy with the specified entry and custom prompt."""
         from copy import deepcopy
         config = deepcopy(self.base_config)
-        config.project.entry_function = func_name
+        config.project.entry_function = entry.function_name
+        
+        # Merge custom prompt with agent tasks
+        if entry.custom_prompt:
+            for agent_cfg in config.project.agents:
+                if agent_cfg.name == "vulnerability_analyzer" and agent_cfg.task:
+                    # Append custom prompt to base task
+                    agent_cfg.task = f"{agent_cfg.task}\n\n额外关注点：{entry.custom_prompt}"
+                elif agent_cfg.name == "vulnerability_analyzer":
+                    agent_cfg.task = entry.custom_prompt
+        
         return config
     
     def get_public_api_functions(self, header_files: Optional[List[str]] = None) -> List[str]:
