@@ -43,9 +43,7 @@ class AgentConfig:
 class IndexingConfig:
     """Configuration for code indexing."""
 
-    backend: str = "libclang"  # ccls, libclang, or regex
-    ccls_config: Optional[str] = None
-    ccls_path: str = "ccls"
+    backend: str = "clangd"  # clangd or regex
 
 
 @dataclass
@@ -177,9 +175,7 @@ class ConfigLoader:
             # Indexing config
             indexing_data = raw_config.get("indexing", {})
             indexing_config = IndexingConfig(
-                backend=indexing_data.get("backend", "libclang"),
-                ccls_config=indexing_data.get("ccls_config"),
-                ccls_path=indexing_data.get("ccls_path", "ccls"),
+                backend=indexing_data.get("backend", "clangd"),
             )
 
             # Analysis config
