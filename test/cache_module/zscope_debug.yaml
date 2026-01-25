@@ -14,6 +14,8 @@ project:
     - name: vulnerability_analyzer
       task: "分析 C 语言代码中的内存安全、逻辑漏洞、资源泄露和并发安全性。"
       enabled: true
+    - name: validator_agent
+      enabled: true  # Set to false to skip validation step
 
 indexing:
   backend: regex

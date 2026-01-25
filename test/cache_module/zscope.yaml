@@ -2,15 +2,12 @@
 
 llm:
   provider: openai
-  #base_url: https://api.siliconflow.cn/v1
-  base_url: http://localhost:11434/v1
+  base_url: https://api.siliconflow.cn/v1
   models:
-    #- Qwen/Qwen3-Coder-30B-A3B-Instruct
-    #- Qwen/Qwen3-Coder-480B-A35B-Instruct
-    - alibayram/Qwen3-30B-A3B-Instruct-2507:latest
-  #api_key: sk-bsmfjfhzehkxvollbeazfgswoxytcvitdsqnivbyjnnipnbg
+    - Qwen/Qwen3-Coder-30B-A3B-Instruct
+  api_key: sk-bsmfjfhzehkxvollbeazfgswoxytcvitdsqnivbyjnnipnbg
   temperature: 0.1
-  max_tokens: 8192
+  max_tokens: 16384
 
 # project:
 #   root: .
@@ -26,6 +23,8 @@ project:
     - name: vulnerability_analyzer
       task: "分析 C 语言代码中的内存安全、逻辑漏洞、资源泄露和并发安全性。"
       enabled: true
+    - name: validator_agent
+      enabled: true  # Set to false to skip validation step
 
 indexing:
   backend: libclang
