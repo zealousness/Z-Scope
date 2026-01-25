@@ -218,6 +218,19 @@ class LSPClient:
         result = self.send_request("textDocument/references", params)
         return result if result else []
 
+    def get_type_definition(self, file_path: Path, line: int, character: int) -> List[Dict[str, Any]]:
+        """textDocument/typeDefinition"""
+        params = {
+            "textDocument": {"uri": file_path.as_uri()},
+            "position": {"line": line - 1, "character": character}
+        }
+        result = self.send_request("textDocument/typeDefinition", params)
+        if not result:
+            return []
+        if isinstance(result, dict):
+            return [result]
+        return result
+
     def get_document_symbols(self, file_path: Path) -> List[Dict[str, Any]]:
         """textDocument/documentSymbol"""
         params = {
