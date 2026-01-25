@@ -1,23 +1,19 @@
 {
     "functions": [
         {
-            "function_name": "cache_create",
-            "custom_prompt": "分析内存分配逻辑。假设传入的 config 指针在调用前已通过基础合法性检查。"
+            "function_name": "cache_create"
         },
         {
-            "function_name": "cache_put",
-            "custom_prompt": "检查并发安全。注意：此函数在当前版本中假定不会被重入调用。"
+            "function_name": "cache_put"
         },
         {
-            "function_name": "cache_save",
-            "custom_prompt": "重点检查 storage_save_cache 中的文件描述符管理。假设 storage_path 始终指向一个可写的有效路径。"
+            "function_name": "cache_save"
         },
         {
             "function_name": "cache_clear"
         },
         {
-            "function_name": "cache_get",
-            "custom_prompt": "检查缓冲区管理和边界检查。重点关注 memcpy 调用。"
+            "function_name": "cache_get"
         }
     ]
 }

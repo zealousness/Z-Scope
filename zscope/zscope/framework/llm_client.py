@@ -23,7 +23,8 @@ class LLMClient:
         base_url: str,
         models: List[str],
         timeout: int = 120,
-        max_retries: int = 2
+        max_retries: int = 2,
+        max_tokens: int = 4096
     ):
         """
         Initialize LLM client.
@@ -40,6 +41,7 @@ class LLMClient:
         self.models = models
         self.timeout = timeout
         self.max_retries = max_retries
+        self.max_tokens = max_tokens
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -53,7 +55,7 @@ class LLMClient:
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: float = 0.1,
-        max_tokens: int = 4096,
+        max_tokens: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Send chat completion request with model fallback.
@@ -67,7 +69,7 @@ class LLMClient:
                 "model": model,
                 "messages": messages,
                 "temperature": temperature,
-                "max_tokens": max_tokens,
+                "max_tokens": max_tokens or self.max_tokens,
             }
 
             if tools:
@@ -76,7 +78,10 @@ class LLMClient:
 
             for attempt in range(self.max_retries + 1):
                 try:
-                    url = f"{self.base_url}/chat/completions"
+                    url = self.base_url
+                    if "/chat/completions" not in url:
+                        url = f"{self.base_url}/chat/completions"
+                    
                     response = self.session.post(
                         url, json=payload, timeout=self.timeout
                     )
@@ -170,9 +175,22 @@ class LLMClient:
                         "content": json.dumps({"error": str(e)}),
                     })
 
+        if iterations >= max_iterations:
+            logger.warning(f"Conversation reached max iterations ({max_iterations}). Possible loop.")
+            # Log the last 2 assistant messages and tool results for debugging
+            history_summary = []
+            for msg in conversation[-4:]:
+                role = msg.get("role")
+                if role == "assistant":
+                    content = msg.get("content") or "Tool Call"
+                    history_summary.append(f"Assistant: {content[:100]}...")
+                elif role == "tool":
+                    history_summary.append(f"Tool Result: {msg.get('content')[:100]}...")
+            logger.debug(f"Last steps: {history_summary}")
+
         return {
-            "content": "",
+            "content": conversation[-1].get("content", "") if not message.get("tool_calls") else "",
             "conversation": conversation,
             "iterations": iterations,
-            "truncated": True,
+            "truncated": iterations >= max_iterations,
         }

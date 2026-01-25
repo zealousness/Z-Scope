@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Z-SCOPE | AI 代码审计看板</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.4.19/dist/full.css" rel="stylesheet" type="text/css" />
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-c.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@400;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .code-font { font-family: 'Fira Code', monospace; }
+        .glass {
+            background: rgba(23, 23, 23, 0.7);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+    </style>
+</head>
+<body class="bg-neutral-950 text-neutral-200 min-h-screen" x-data="zscopeApp()">
+    
+    <!-- Navigation -->
+    <nav class="glass sticky top-0 z-50 px-6 py-4 flex justify-between items-center">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 bg-primary rounded-lg flex items-center justify-center font-bold text-white">Z</div>
+            <h1 class="text-xl font-bold tracking-tight">Z-SCOPE <span class="text-xs font-normal opacity-50">v0.1.0</span></h1>
+        </div>
+        <div class="flex gap-4 items-center">
+            <div class="badge badge-outline gap-2" :class="statusClass">
+                <span class="w-2 h-2 rounded-full" :class="statusDotClass"></span>
+                <span x-text="statusText">正在加载...</span>
+            </div>
+            <button @click="refreshData()" class="btn btn-ghost btn-sm">刷新</button>
+        </div>
+    </nav>
+
+    <main class="p-6 grid grid-cols-12 gap-6 h-[calc(100vh-80px)]">
+        
+        <!-- Sidebar: Findings List -->
+        <div class="col-span-3 flex flex-col gap-4 overflow-hidden">
+            <div class="flex justify-between items-center px-2">
+                <h2 class="font-semibold text-sm uppercase tracking-wider opacity-60">审计发现 (<span x-text="findings.length">0</span>)</h2>
+            </div>
+            <div class="flex-1 overflow-y-auto pr-2 space-y-2">
+                <template x-for="finding in findings" :key="finding.id">
+                    <div @click="selectFinding(finding)" 
+                         class="p-4 rounded-xl cursor-pointer transition-all border border-transparent hover:glass"
+                         :class="selectedFinding?.id === finding.id ? 'glass border-primary/50' : 'bg-neutral-900'">
+                        <div class="flex justify-between items-start mb-2">
+                            <span class="badge badge-xs" :class="getSeverityClass(finding.impact_level)" x-text="finding.impact_level"></span>
+                            <span class="text-[10px] opacity-40" x-text="finding.subcategory"></span>
+                        </div>
+                        <h3 class="font-semibold text-sm truncate" x-text="finding.function"></h3>
+                        <p class="text-xs opacity-60 line-clamp-2 mt-1" x-text="finding.description"></p>
+                    </div>
+                </template>
+            </div>
+        </div>
+
+        <!-- Main Content: Code & Reasoning -->
+        <div class="col-span-9 flex flex-col gap-6 overflow-hidden">
+            <template x-if="selectedFinding">
+                <div class="contents">
+                    <!-- Top Section: Code View -->
+                    <div class="flex-1 glass rounded-2xl overflow-hidden flex flex-col">
+                        <div class="p-4 border-b border-white/10 flex justify-between items-center bg-white/5">
+                            <div class="flex items-center gap-2">
+                                <span class="text-sm code-font opacity-80" x-text="selectedFinding.location || selectedFinding.function"></span>
+                            </div>
+                            <div class="flex gap-2">
+                                <button @click="triage('confirmed')" class="btn btn-success btn-xs">确认逻辑</button>
+                                <button @click="triage('false_positive')" class="btn btn-error btn-xs">误报标记</button>
+                            </div>
+                        </div>
+                        <div class="flex-1 overflow-auto bg-[#1e1e1e] relative">
+                            <pre class="m-0 p-6 text-sm"><code class="language-c" x-text="selectedFinding.code_snippet"></code></pre>
+                        </div>
+                    </div>
+
+                    <!-- Bottom Section: Analysis -->
+                    <div class="h-1/3 grid grid-cols-2 gap-6">
+                        <div class="glass rounded-2xl p-6 overflow-y-auto">
+                            <h3 class="text-sm font-bold mb-3 flex items-center gap-2 text-primary">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                                AI 推理链 (Chain of Thought)
+                            </h3>
+                            <div class="text-sm leading-relaxed opacity-80 whitespace-pre-wrap" x-text="selectedFinding.reasoning_process || '暂无推理过程'"></div>
+                        </div>
+                        <div class="glass rounded-2xl p-6 overflow-y-auto border-l-4" :class="getBorderClass(selectedFinding.impact_level)">
+                            <h3 class="text-sm font-bold mb-3 text-white">漏洞详情</h3>
+                            <div class="space-y-4">
+                                <div>
+                                    <h4 class="text-[10px] uppercase opacity-40 font-bold">根本原因</h4>
+                                    <p class="text-sm mt-1" x-text="selectedFinding.root_cause"></p>
+                                </div>
+                                <div>
+                                    <h4 class="text-[10px] uppercase opacity-40 font-bold">修复建议</h4>
+                                    <p class="text-sm mt-1 text-success" x-text="selectedFinding.suggested_fix"></p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </template>
+            <template x-if="!selectedFinding">
+                <div class="flex-1 glass rounded-3xl flex flex-center items-center justify-center opacity-30 flex-col gap-4">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                    <p class="text-lg">请从左侧选择一条审计发现进行分析</p>
+                </div>
+            </template>
+        </div>
+    </main>
+
+    <script>
+        function zscopeApp() {
+            return {
+                findings: [],
+                selectedFinding: null,
+                statusText: '就绪',
+                statusClass: 'badge-ghost',
+                statusDotClass: 'bg-ghost',
+
+                init() {
+                    this.refreshData();
+                },
+
+                refreshData() {
+                    this.statusText = '同步中...';
+                    fetch('/api/findings')
+                        .then(res => res.json())
+                        .then(data => {
+                            if (data.findings) {
+                                this.findings = data.findings;
+                                if (this.findings.length > 0 && !this.selectedFinding) {
+                                    this.selectFinding(this.findings[0]);
+                                }
+                            }
+                            this.statusText = '在线';
+                            this.statusClass = 'badge-success/20 text-success';
+                            this.statusDotClass = 'bg-success';
+                        })
+                        .catch(err => {
+                            this.statusText = '离线';
+                            this.statusClass = 'badge-error/20 text-error';
+                            this.statusDotClass = 'bg-error';
+                        });
+                },
+
+                selectFinding(finding) {
+                    this.selectedFinding = finding;
+                    this.$nextTick(() => {
+                        Prism.highlightAll();
+                    });
+                },
+
+                getSeverityClass(level) {
+                    const classes = {
+                        'critical': 'badge-error',
+                        'high': 'badge-warning',
+                        'medium': 'badge-info',
+                        'low': 'badge-ghost'
+                    };
+                    return classes[level?.toLowerCase()] || 'badge-ghost';
+                },
+
+                getBorderClass(level) {
+                    const classes = {
+                        'critical': 'border-error',
+                        'high': 'border-warning',
+                        'medium': 'border-info',
+                        'low': 'border-neutral'
+                    };
+                    return classes[level?.toLowerCase()] || 'border-neutral';
+                },
+
+                triage(status) {
+                    fetch('/api/triage', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            id: this.selectedFinding.id,
+                            status: status,
+                            timestamp: new Date().toISOString()
+                        })
+                    }).then(() => {
+                        alert(`已成功标记为: ${status === 'confirmed' ? '确认漏洞' : '误报'}`);
+                    });
+                }
+            }
+        }
+    </script>
+</body>
+</html>

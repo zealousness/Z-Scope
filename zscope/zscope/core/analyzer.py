@@ -7,6 +7,7 @@ import json
 import logging
 import time
 import datetime
+import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Set
 
@@ -17,6 +18,7 @@ from .tools_runtime import ToolsRuntime
 from ..framework.llm_client import LLMClient
 from ..agents.semantic_modeler.agent import SemanticModeler
 from ..agents.vulnerability_analyzer.agent import VulnerabilityAnalyzer
+from ..agents.validator_agent.agent import ValidatorAgent
 from .report import FinalReport, Issue, ReportGenerator
 from ..common.utils import validate_json_schema
 
@@ -133,7 +135,8 @@ class Analyzer:
             base_url=config.llm.base_url,
             models=config.llm.models,
             timeout=config.llm.timeout,
-            max_retries=config.llm.max_retries
+            max_retries=config.llm.max_retries,
+            max_tokens=config.llm.max_tokens
         )
         self.report_generator = ReportGenerator(config.project.project_root)
         
@@ -181,10 +184,53 @@ class Analyzer:
             
             logger.info(f"Running Vulnerability Analyzer agent for task: {agent_cfg.task}")
             agent_context["task"] = agent_cfg.task
-            v_resp = analyzer_agent.run(agent_context)
+            v_resp = analyzer_agent.run(agent_context, max_iterations=self.config.analysis.max_tool_iterations)
             
             if v_resp.success:
-                issues.extend(v_resp.data.get("issues", []))
+                new_issues = v_resp.data.get("issues", [])
+                logger.info(f"Vulnerability Analyzer found {len(new_issues)} issues for task: {agent_cfg.task}")
+                
+                # 3. Run Validator Agent for each found issue
+                validator_agent = ValidatorAgent(self.llm_client, self._get_tools())
+                validated_issues = []
+                for raw_issue in new_issues:
+                    issue_func = raw_issue.get("function", agent_context["func_name"])
+                    logger.info(f"Validating issue: {raw_issue.get('id', 'unknown')} in {issue_func}")
+                    
+                    # Try to get the specific code for the function where the issue was found
+                    issue_code = agent_context["code"]
+                    if issue_func != agent_context["func_name"]:
+                         impl = self.code_index.get_function_impl(issue_func)
+                         if impl:
+                             issue_code = impl["code"]
+
+                    val_input = {
+                        "finding": json.dumps(raw_issue, indent=2, ensure_ascii=False),
+                        "context_code": issue_code
+                    }
+                    val_resp = validator_agent.run(val_input)
+                    
+                    if val_resp.success:
+                        val_data = val_resp.data
+                        if val_data.get("is_valid"):
+                            # Enrich issue with validation reasoning
+                            raw_issue["validation_status"] = "validated"
+                            raw_issue["validation_reasoning"] = val_data.get("reasoning")
+                            raw_issue["confidence"] = val_data.get("confidence_score", raw_issue.get("confidence", 0.5))
+                            logger.info(f"Issue {raw_issue.get('id')} VALIDATED with confidence {raw_issue['confidence']}")
+                        else:
+                            raw_issue["validation_status"] = "rejected"
+                            raw_issue["validation_reasoning"] = val_data.get("reasoning")
+                            logger.info(f"Issue {raw_issue.get('id')} REJECTED by Validator: {val_data.get('reasoning')}")
+                        
+                        validated_issues.append(raw_issue)
+                    else:
+                        # Fallback if validation fails
+                        logger.warning(f"Validation failed for {raw_issue.get('id')}: {val_resp.error}")
+                        raw_issue["validation_status"] = "pending"
+                        validated_issues.append(raw_issue)
+
+                issues.extend(validated_issues)
                 notes.append(f"Analyzed task: {agent_cfg.task}")
             else:
                 logger.error(f"Vulnerability analysis failed: {v_resp.error}")
@@ -197,7 +243,7 @@ class Analyzer:
         final_report = FinalReport(
             entry_function=entry_func,
             overall_verdict="issues_found" if issues else "no_issue_found",
-            issues=[Issue(**i) for i in issues if isinstance(i, dict)] or [i for i in issues if isinstance(i, Issue)],
+            issues=[Issue.from_dict(i, context_function=entry_func, issue_index=idx+1) for idx, i in enumerate(issues) if isinstance(i, dict)] or [i for i in issues if isinstance(i, Issue)],
             notes=notes
         )
 
@@ -401,7 +447,7 @@ Output a JSON of type 'snapshot_refresh_decision'.
             return None
             
         try:
-            issues = [Issue(**i) for i in data.get("issues", [])]
+            issues = [Issue.from_dict(i, context_function=data.get("entry_function", "unknown"), issue_index=idx+1) for idx, i in enumerate(data.get("issues", []))]
             return FinalReport(
                 entry_function=data.get("entry_function", ""),
                 overall_verdict=data.get("overall_verdict", "insufficient_info"),
@@ -414,46 +460,24 @@ Output a JSON of type 'snapshot_refresh_decision'.
 
     def _extract_json_block(self, text: str, type_hint: str = None) -> Optional[Dict[str, Any]]:
         """
-        Extract JSON block from text. 
-        Handles markdown code blocks and raw JSON.
+        Extract JSON block from text using robust utility.
         """
-        # Try finding markdown code blocks first
-        import re
-        matches = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        from ..common.utils import extract_json_blocks
         
-        candidates = matches + [text]
+        candidates = extract_json_blocks(text)
         
-        for candidate in candidates:
-            try:
-                # Naive cleanup for non-strict JSON logic if needed, but lets try parse
-                data = json.loads(candidate)
-                if isinstance(data, dict):
-                    if type_hint and data.get("type") != type_hint:
-                        continue
-                        
-                    # Also, if we find a snapshot, save it!
-                    if data.get("type") == "function_snapshot":
-                        self._save_snapshot_from_llm(data)
-                        
+        for data in candidates:
+            if type_hint:
+                if data.get("type") == type_hint:
                     return data
-            except json.JSONDecodeError:
-                continue
+                # Handle nested wrap
+                if type_hint in data and isinstance(data[type_hint], dict) and data[type_hint].get("type") == type_hint:
+                    return data[type_hint]
+            else:
+                # If no hint, return the first dictionary found
+                return data
                 
-        # Fallback: try finding just the { ... } object if mixed with text and no backticks
-        try:
-            start = text.find("{")
-            end = text.rfind("}")
-            if start != -1 and end != -1:
-                json_str = text[start : end + 1]
-                data = json.loads(json_str)
-                if type_hint and data.get("type") == type_hint:
-                    return data
-                if data.get("type") == "function_snapshot":
-                    self._save_snapshot_from_llm(data)
-                    if type_hint == "function_snapshot": 
-                         return data
-        except:
-            pass
+        return None
             
         return None
 
