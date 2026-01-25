@@ -82,3 +82,97 @@ def truncate_string(s: str, max_length: int = 1000, ellipsis: str = "...") -> st
 def validate_json_schema(data: dict, required_fields: list[str]) -> bool:
     """Validate that a dictionary contains all required fields."""
     return all(field in data for field in required_fields)
+
+
+def is_valid_snapshot(d: dict) -> bool:
+    """Check if dictionary looks like a function snapshot."""
+    snapshot_keys = {"type", "func_name", "summary", "key_semantics", "inputs"}
+    return isinstance(d, dict) and (
+        d.get("type") == "function_snapshot" or 
+        any(k in d for k in snapshot_keys)
+    )
+
+
+def is_valid_report(d: dict) -> bool:
+    """Check if dictionary looks like a final report."""
+    return isinstance(d, dict) and (
+        d.get("type") == "final_report" or 
+        "issues" in d or 
+        "overall_verdict" in d
+    )
+
+
+def extract_json_blocks(text: str) -> list[dict]:
+    """
+    Extract all valid JSON objects from text.
+    Handles nested structures, markdown blocks, and partial truncation.
+    """
+    import json
+    results = []
+    
+    # Strategy 1: Find all markdown code blocks (greedy)
+    md_blocks = re.findall(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text)
+    # Also try even more greedy version if that misses
+    md_blocks += re.findall(r"```(?:json)?\n?(\{[\s\S]*\})\n?```", text)
+    
+    for block in md_blocks:
+        try:
+            data = json.loads(block)
+            if isinstance(data, dict) and data not in results:
+                results.append(data)
+        except:
+            # Try to fix partial truncation at the end of a block
+            for k in range(len(block)-1, 0, -1):
+                if block[k] == '}':
+                    try:
+                        data = json.loads(block[:k+1])
+                        if isinstance(data, dict) and data not in results:
+                            results.append(data)
+                        break
+                    except:
+                        continue
+
+    # Strategy 2: Find the largest balanced { ... } blocks
+    # This is more robust for raw text with JSON
+    for i in range(len(text)):
+        if text[i] == '{':
+            # Try from end of string to find the matching }
+            for j in range(len(text) - 1, i, -1):
+                if text[j] == '}':
+                    candidate = text[i : j + 1]
+                    try:
+                        data = json.loads(candidate)
+                        if isinstance(data, dict) and data not in results:
+                            results.append(data)
+                        break # Found the largest possible object starting at i
+                    except:
+                        continue
+                        
+    # Strategy 3: Aggressive recovery for truncated JSON
+    # If no results yet, or we want to be safe, try fixing text that starts with { but never ends
+    if not results:
+        for i in range(len(text)):
+            if text[i] == '{':
+                candidate = text[i:]
+                # Try adding 1 to 5 closing braces at the very end of the string
+                for k in range(1, 6):
+                    try:
+                        data = json.loads(candidate + "}" * k)
+                        if isinstance(data, dict):
+                            results.append(data)
+                            return results # Found one, good enough
+                    except:
+                        continue
+                # Also try adding } after the last meaningful character if there is trailing noise
+                # But the above loop usually covers it if we trim the candidate first
+                trimmed = candidate.strip()
+                for k in range(1, 6):
+                    try:
+                        data = json.loads(trimmed + "}" * k)
+                        if isinstance(data, dict):
+                            results.append(data)
+                            return results
+                    except:
+                        continue
+    
+    return results

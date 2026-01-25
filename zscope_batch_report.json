@@ -1,0 +1,98 @@
+```json
+{
+  "summary": {
+    "functions_analyzed": 20,
+    "total_issues": 6,
+    "critical_issues": 2,
+    "high_issues": 3,
+    "medium_issues": 1,
+    "low_issues": 0
+  },
+  "findings": [
+    {
+      "id": "Z-CACHE-001",
+      "function": "storage_save_cache",
+      "location": "src/cache_storage.c:88",
+      "impact_level": "High",
+      "category": "Reliability",
+      "subcategory": "Resource Leak (File Descriptor)",
+      "description": "在处理文件写入错误时，函数直接返回 -1 而没有关闭已打开的文件描述符 fd。",
+      "root_cause": "函数在第 73 行通过 open() 打开了文件，但在第 88 行、94 行均有 return 分支未调用 close(fd)。",
+      "suggested_fix": "在所有返回路径中添加 close(fd)。",
+      "confidence": 0.98,
+      "code_snippet": "    if (write_all(fd, &header, sizeof(header)) < 0) {\n        return -1;\n    }",
+      "reasoning_process": "追踪 fd 的生命周期，发现 open 后存在未经过 close 的 return 路径。"
+    },
+    {
+      "id": "Z-CACHE-002",
+      "function": "cache_get",
+      "location": "src/cache_core.c:150",
+      "impact_level": "Critical",
+      "category": "Memory Safety",
+      "subcategory": "Buffer Overflow",
+      "description": "memcpy 将数据拷贝到 value_out 时忽略了 buffer_size，可能导致缓冲区溢出。",
+      "root_cause": "直接使用 node->value_size 作为拷贝长度，未与传入的 buffer_size 取最小值。",
+      "suggested_fix": "使用 min(buffer_size, node->value_size)。",
+      "confidence": 0.99,
+      "code_snippet": "    memcpy(value_out, node->value, node->value_size);",
+      "reasoning_process": "虽然函数有 buffer_size 参数，但在 memcpy 时完全被忽略，是典型的缓冲区溢出。"
+    },
+    {
+      "id": "Z-CACHE-003",
+      "function": "avl_insert",
+      "location": "src/cache_index.c:79",
+      "impact_level": "High",
+      "category": "Memory Safety",
+      "subcategory": "Memory Leak",
+      "description": "更新 AVL 节点值时直接覆盖指针，导致旧内存泄漏。",
+      "root_cause": "第 79 行 root->value = new_value 前未调用 free(root->value)。",
+      "suggested_fix": "在赋值前执行 free(root->value)。",
+      "confidence": 0.95,
+      "code_snippet": "            root->value = new_value;",
+      "reasoning_process": "检测到指针覆盖操作，且未发现对应的释放逻辑。"
+    },
+    {
+      "id": "Z-CACHE-004",
+      "function": "lru_remove_node_buggy",
+      "location": "src/cache_queue.c:97",
+      "impact_level": "High",
+      "category": "Memory Safety",
+      "subcategory": "Memory Leak (Orphaned Node)",
+      "description": "从鏈表中移除节点时未释放内存。",
+      "root_cause": "函数更新了 prev/next 指针，但整个函数结束都未调用 free(node)。",
+      "suggested_fix": "在返回前 free(node)。",
+      "confidence": 0.98,
+      "code_snippet": "    return 0;",
+      "reasoning_process": "节点从数据结构中脱离但未被释放，导致内存累积。"
+    },
+    {
+      "id": "Z-CACHE-005",
+      "function": "avl_create_node",
+      "location": "src/cache_index.c:52",
+      "impact_level": "Medium",
+      "category": "Reliability",
+      "subcategory": "Partial Allocation Leak",
+      "description": "如果第二次 malloc 失败，第一次分配的 node 会泄漏。",
+      "root_cause": "第 52 行 malloc(value_size) 如果返回 NULL，函数会直接返回，但此时 node 已经分配。",
+      "suggested_fix": "在 malloc(value_size) 失败时先 free(node)。",
+      "confidence": 0.90,
+      "code_snippet": "    node->value = malloc(value_size);",
+      "reasoning_process": "异常路径检查发现，部分分配成功后若后续分配失败，未回滚已分配资源。"
+    },
+    {
+      "id": "Z-CACHE-006",
+      "function": "lru_remove_lru",
+      "location": "src/cache_queue.c:71",
+      "impact_level": "Low",
+      "category": "Reliability",
+      "subcategory": "Static Buffer Return",
+      "description": "返回指向静态局部变量的指针，线程不安全。",
+      "root_cause": "使用 static char removed_key[64] 并返回其指针。",
+      "suggested_fix": "改为由调用者提供缓冲区或返回堆内存。",
+      "confidence": 0.80,
+      "code_snippet": "    return removed_key;",
+      "reasoning_process": "识别到静态变量指针返回模式。"
+    }
+  ]
+}
+```

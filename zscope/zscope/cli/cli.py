@@ -5,14 +5,13 @@ Command Line Interface for Z-SCOPE.
 import click
 import logging
 import sys
-from pathlib import Path
-
+from pathlib import Path # Keep this import as it's used for 'config: Path'
+from ..retrieval.code_index import CodeIndex
+from ..common.utils import setup_logging
 from ..config.config import ZScopeConfig, LLMConfig, AnalysisConfig, ProjectConfig, IndexingConfig, ConfigLoader
 from ..config.function_entry import FunctionListLoader
 from ..core.analyzer import Analyzer
 from ..core.parallel_analyzer import ParallelAnalyzer
-from ..retrieval.code_index import CodeIndex
-from ..common.utils import setup_logging
 
 @click.command()
 @click.option(
@@ -22,15 +21,23 @@ from ..common.utils import setup_logging
     help="Path to config file (zscope.yaml).",
 )
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging.")
+@click.option("--dashboard", "-d", is_flag=True, help="Launch the web dashboard to view results.")
 def main(
     config: Path,
     verbose: bool,
+    dashboard: bool,
 ):
     """
     Z-SCOPE: AI-powered defect detection for C projects.
     """
     setup_logging(verbose)
     logger = logging.getLogger("zscope.cli")
+
+    if dashboard:
+        logger.info("Launching dashboard...")
+        from ..web.server import run_server
+        run_server()
+        sys.exit(0)
 
     if not config:
         config = Path("zscope.yaml")

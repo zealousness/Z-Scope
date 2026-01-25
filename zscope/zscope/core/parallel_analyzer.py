@@ -371,11 +371,12 @@ class ParallelAnalyzer:
         unique = []
         
         for issue in issues:
-            key = (
-                issue.get("location", ""),
-                issue.get("subcategory", ""),
-                issue.get("description", "")[:100]
-            )
+            # Safer key construction: ensure all parts are strings
+            loc = str(issue.get("location", ""))
+            sub = str(issue.get("subcategory", ""))
+            desc = str(issue.get("description", ""))[:100]
+            
+            key = (loc, sub, desc)
             if key not in seen:
                 seen.add(key)
                 unique.append(issue)
