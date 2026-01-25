@@ -350,12 +350,27 @@ class ParallelAnalyzer:
                     if snippet:
                         md.append(f"- **Relevant Code**:\n```c\n{snippet}\n```")
                     
-                    md.extend([
-                        f"- **Description**: {issue.get('description', 'N/A')}",
-                        f"- **Root Cause**: {issue.get('root_cause', 'N/A')}",
-                        f"- **Suggested Fix**: {issue.get('suggested_fix', 'N/A')}",
-                        ""
-                    ])
+                    md.append(f"- **Description**: {issue.get('description', 'N/A')}")
+                    
+                    # Add reasoning if present
+                    reasoning = issue.get('reasoning')
+                    if reasoning:
+                        md.append(f"- **Analysis Reasoning**: {reasoning}")
+                    
+                    md.append(f"- **Root Cause**: {issue.get('root_cause', 'N/A')}")
+                    md.append(f"- **Suggested Fix**: {issue.get('suggested_fix', 'N/A')}")
+                    
+                    # Add validation status and reasoning
+                    val_status = issue.get('validation_status')
+                    if val_status:
+                        status_emoji = {"validated": "✅", "rejected": "❌", "pending": "⏳", "unvalidated": "⚠️"}.get(val_status, "")
+                        md.append(f"- **Validation Status**: {status_emoji} {val_status}")
+                        
+                        val_reasoning = issue.get('validation_reasoning')
+                        if val_reasoning:
+                            md.append(f"- **Validation Reasoning**: {val_reasoning}")
+                    
+                    md.append("")
                 
         content = "\n".join(md)
         with open(output_path, "w", encoding="utf-8") as f:
