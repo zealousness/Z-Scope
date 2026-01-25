@@ -190,47 +190,62 @@ class Analyzer:
                 new_issues = v_resp.data.get("issues", [])
                 logger.info(f"Vulnerability Analyzer found {len(new_issues)} issues for task: {agent_cfg.task}")
                 
-                # 3. Run Validator Agent for each found issue
-                validator_agent = ValidatorAgent(self.llm_client, self._get_tools())
-                validated_issues = []
-                for raw_issue in new_issues:
-                    issue_func = raw_issue.get("function", agent_context["func_name"])
-                    logger.info(f"Validating issue: {raw_issue.get('id', 'unknown')} in {issue_func}")
-                    
-                    # Try to get the specific code for the function where the issue was found
-                    issue_code = agent_context["code"]
-                    if issue_func != agent_context["func_name"]:
-                         impl = self.code_index.get_function_impl(issue_func)
-                         if impl:
-                             issue_code = impl["code"]
-
-                    val_input = {
-                        "finding": json.dumps(raw_issue, indent=2, ensure_ascii=False),
-                        "context_code": issue_code
-                    }
-                    val_resp = validator_agent.run(val_input)
-                    
-                    if val_resp.success:
-                        val_data = val_resp.data
-                        if val_data.get("is_valid"):
-                            # Enrich issue with validation reasoning
-                            raw_issue["validation_status"] = "validated"
-                            raw_issue["validation_reasoning"] = val_data.get("reasoning")
-                            raw_issue["confidence"] = val_data.get("confidence_score", raw_issue.get("confidence", 0.5))
-                            logger.info(f"Issue {raw_issue.get('id')} VALIDATED with confidence {raw_issue['confidence']}")
-                        else:
-                            raw_issue["validation_status"] = "rejected"
-                            raw_issue["validation_reasoning"] = val_data.get("reasoning")
-                            logger.info(f"Issue {raw_issue.get('id')} REJECTED by Validator: {val_data.get('reasoning')}")
+                # Check if validator agent is enabled
+                validator_enabled = any(
+                    a.name == "validator_agent" and a.enabled 
+                    for a in self.config.project.agents
+                )
+                
+                if validator_enabled and new_issues:
+                    # 3. Run Validator Agent for each found issue
+                    validator_agent = ValidatorAgent(self.llm_client, self._get_tools())
+                    validated_issues = []
+                    for raw_issue in new_issues:
+                        issue_func = raw_issue.get("function", agent_context["func_name"])
+                        logger.info(f"Validating issue: {raw_issue.get('id', 'unknown')} in {issue_func}")
                         
-                        validated_issues.append(raw_issue)
-                    else:
-                        # Fallback if validation fails
-                        logger.warning(f"Validation failed for {raw_issue.get('id')}: {val_resp.error}")
-                        raw_issue["validation_status"] = "pending"
-                        validated_issues.append(raw_issue)
+                        # Try to get the specific code for the function where the issue was found
+                        issue_code = agent_context["code"]
+                        if issue_func != agent_context["func_name"]:
+                             impl = self.code_index.get_function_impl(issue_func)
+                             if impl:
+                                 issue_code = impl["code"]
 
-                issues.extend(validated_issues)
+                        val_input = {
+                            "finding": json.dumps(raw_issue, indent=2, ensure_ascii=False),
+                            "context_code": issue_code
+                        }
+                        val_resp = validator_agent.run(val_input)
+                        
+                        if val_resp.success:
+                            val_data = val_resp.data
+                            if val_data.get("is_valid"):
+                                # Enrich issue with validation reasoning
+                                raw_issue["validation_status"] = "validated"
+                                raw_issue["validation_reasoning"] = val_data.get("reasoning")
+                                raw_issue["confidence"] = val_data.get("confidence_score", raw_issue.get("confidence", 0.5))
+                                logger.info(f"Issue {raw_issue.get('id')} VALIDATED with confidence {raw_issue['confidence']}")
+                            else:
+                                raw_issue["validation_status"] = "rejected"
+                                raw_issue["validation_reasoning"] = val_data.get("reasoning")
+                                logger.info(f"Issue {raw_issue.get('id')} REJECTED by Validator: {val_data.get('reasoning')}")
+                            
+                            validated_issues.append(raw_issue)
+                        else:
+                            # Fallback if validation fails
+                            logger.warning(f"Validation failed for {raw_issue.get('id')}: {val_resp.error}")
+                            raw_issue["validation_status"] = "pending"
+                            validated_issues.append(raw_issue)
+
+                    issues.extend(validated_issues)
+                else:
+                    # Validator not enabled - pass through issues without validation
+                    if not validator_enabled:
+                        logger.info("Validator agent disabled, skipping validation step")
+                    for raw_issue in new_issues:
+                        raw_issue["validation_status"] = "unvalidated"
+                        issues.append(raw_issue)
+                
                 notes.append(f"Analyzed task: {agent_cfg.task}")
             else:
                 logger.error(f"Vulnerability analysis failed: {v_resp.error}")
