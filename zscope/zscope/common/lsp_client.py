@@ -27,6 +27,7 @@ class LSPClient:
         self._reader_thread: Optional[threading.Thread] = None
         self._running = False
         self._initialized = False
+        self._last_progress_time = time.time()
 
     def start(self) -> bool:
         """Start the clangd process."""
@@ -53,7 +54,10 @@ class LSPClient:
             self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
             self._reader_thread.start()
             
-            # Send 'initialize' request
+            # Send 'initialize' request with a longer timeout for large projects
+            # but we use send_request which handles its own timeout.
+            # For 1M+ lines, even 'initialize' might take some time if clangd does heavy lifting upfront.
+            logger.info(f"Initializing LSP for project: {self.project_root}")
             resp = self.send_request("initialize", {
                 "processId": os.getpid(),
                 "rootPath": str(self.project_root),
@@ -72,15 +76,19 @@ class LSPClient:
                 "initializationOptions": {
                     "clangdFileStatus": True
                 }
-            })
+            }, timeout=60) # Increased base timeout for initialize
             
             if resp:
                 self.send_notification("initialized", {})
                 self._initialized = True
                 logger.info("LSP Client initialized successfully")
+                
+                # Wait for initial indexing to finish (or at least provide feedback)
+                # We don't block forever here, but we allow the background thread to show progress
+                print(f"  [LSP] Project indexing started for {self.project_root.name}...")
                 return True
             else:
-                logger.error("Failed to initialize LSP Client")
+                logger.error("Failed to initialize LSP Client (timeout or error)")
                 return False
         except Exception as e:
             logger.error(f"Failed to start clangd: {e}")
@@ -122,11 +130,42 @@ class LSPClient:
                             self._responses[msg_id] = message
                     else:
                         # Notification or logging
-                        if message.get("method") == "window/logMessage":
-                            logger.debug(f"LSP Log: {message.get('params', {}).get('message')}")
-                        elif message.get("method") == "$/progress":
-                            # Could track indexing progress here
-                            pass
+                        method = message.get("method", "")
+                        params = message.get("params", {})
+                        
+                        if method == "window/logMessage":
+                            msg_text = params.get("message", "")
+                            logger.debug(f"[clangd] {msg_text}")
+                            # Display indexing progress for user
+                            if "Indexing" in msg_text or "Building" in msg_text or "%" in msg_text:
+                                print(f"\r  [LSP] {msg_text[:80]:<80}", end="", flush=True)
+                                self._last_progress_time = time.time()
+                        elif method == "$/progress":
+                            # Handle work done progress
+                            value = params.get("value", {})
+                            kind = value.get("kind", "")
+                            if kind == "begin":
+                                title = value.get("title", "Processing")
+                                print(f"\n  [LSP] {title}...", flush=True)
+                            elif kind == "report":
+                                message_text = value.get("message", "")
+                                percentage = value.get("percentage")
+                                if percentage is not None:
+                                    print(f"\r  [LSP] {message_text} ({percentage}%)", end="", flush=True)
+                                else:
+                                    print(f"\r  [LSP] {message_text:<60}", end="", flush=True)
+                                self._last_progress_time = time.time()
+                            elif kind == "end":
+                                message_text = value.get("message", "Done")
+                                print(f"\r  [LSP] {message_text:<60}", flush=True)
+                        elif method == "textDocument/clangd.fileStatus":
+                            # clangd-specific file status
+                            state = params.get("state", "")
+                            uri = params.get("uri", "")
+                            if state and uri:
+                                filename = uri.split("/")[-1]
+                                print(f"\r  [LSP] {state}: {filename:<50}", end="", flush=True)
+                                self._last_progress_time = time.time()
             except Exception as e:
                 if self._running:
                     logger.error(f"Error in LSP read loop: {e}")
@@ -161,7 +200,9 @@ class LSPClient:
             
         # Wait for response
         start_time = time.time()
-        while time.time() - start_time < timeout:
+        deadline = start_time + timeout
+        
+        while time.time() < deadline:
             with self._lock:
                 if msg_id in self._responses:
                     resp = self._responses.pop(msg_id)
@@ -169,9 +210,15 @@ class LSPClient:
                         logger.error(f"LSP error for {method}: {resp['error']}")
                         return None
                     return resp.get("result")
+            
+            # If progress is being made, extend the deadline
+            if time.time() - self._last_progress_time < 2.0:
+                # Progress was detected recently, extend deadline
+                deadline = time.time() + timeout
+                
             time.sleep(0.1)
             
-        logger.error(f"LSP request {method} timed out after {timeout}s")
+        logger.error(f"LSP request {method} timed out after {timeout}s (even with progress resets)")
         return None
 
     def send_notification(self, method: str, params: Any):
