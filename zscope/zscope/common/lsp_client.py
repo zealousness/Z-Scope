@@ -25,9 +25,11 @@ class LSPClient:
         self._responses: Dict[int, Any] = {}
         self._lock = threading.Lock()
         self._reader_thread: Optional[threading.Thread] = None
+        self._stderr_thread: Optional[threading.Thread] = None
         self._running = False
         self._initialized = False
         self._last_progress_time = time.time()
+        self._last_msg = ""
 
     def start(self) -> bool:
         """Start the clangd process."""
@@ -53,6 +55,9 @@ class LSPClient:
             self._running = True
             self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
             self._reader_thread.start()
+            
+            self._stderr_thread = threading.Thread(target=self._stderr_loop, daemon=True)
+            self._stderr_thread.start()
             
             # Send 'initialize' request without hard timeout for large projects
             logger.info(f"Initializing LSP for project: {self.project_root} (this may take a long time for 1M+ lines)")
@@ -107,6 +112,8 @@ class LSPClient:
                 self.process.kill()
         if self._reader_thread:
             self._reader_thread.join(timeout=1)
+        if self._stderr_thread:
+            self._stderr_thread.join(timeout=1)
 
     def _read_loop(self):
         """Background thread to read JSON-RPC messages from stdout."""
@@ -138,8 +145,11 @@ class LSPClient:
                             msg_text = params.get("message", "")
                             logger.debug(f"[clangd] {msg_text}")
                             # Display indexing progress for user
-                            if "Indexing" in msg_text or "Building" in msg_text or "%" in msg_text:
-                                print(f"\r  [LSP] {msg_text[:80]:<80}", end="", flush=True)
+                            # More inclusive check for progress
+                            if any(k in msg_text for k in ["Indexing", "Building", "Parsing", "Checking", "Loading", "Scanning", "%"]):
+                                if msg_text != self._last_msg:
+                                    print(f"\r  [LSP] {msg_text[:80]:<80}", end="", flush=True)
+                                    self._last_msg = msg_text
                                 self._last_progress_time = time.time()
                         elif method == "$/progress":
                             # Handle work done progress
@@ -167,11 +177,41 @@ class LSPClient:
                                 filename = uri.split("/")[-1]
                                 # Map states to more descriptive TU analysis messages
                                 msg = f"{state}: {filename}"
-                                print(f"\r  [LSP] {msg:<80}", end="", flush=True)
+                                if msg != self._last_msg:
+                                    print(f"\r  [LSP] {msg:<80}", end="", flush=True)
+                                    self._last_msg = msg
                                 self._last_progress_time = time.time()
             except Exception as e:
                 if self._running:
                     logger.error(f"Error in LSP read loop: {e}")
+                break
+
+    def _stderr_loop(self):
+        """Background thread to read lines from stderr (raw clangd logs)."""
+        while self._running and self.process and self.process.stderr:
+            try:
+                line = self.process.stderr.readline()
+                if not line:
+                    break
+                
+                msg = line.decode("utf-8", errors="replace").strip()
+                if msg:
+                    # Generic clangd log lines often contain useful progress
+                    # We look for common patterns like [123/456] or percentages
+                    if any(k in msg for k in ["Indexing", "Building", "Parsing", "Scanning", "[", "%"]):
+                        # Extract the meaningful part after the timestamp/level if possible
+                        # e.g. I[22:42:16.123] Indexing... -> Indexing...
+                        clean_msg = msg
+                        if "]" in msg:
+                            parts = msg.split("]", 1)
+                            if len(parts) > 1:
+                                clean_msg = parts[1].strip()
+                        
+                        if clean_msg and clean_msg != self._last_msg:
+                            print(f"\r  [LSP] {clean_msg[:80]:<80}", end="", flush=True)
+                            self._last_msg = clean_msg
+                            self._last_progress_time = time.time()
+            except Exception:
                 break
 
     def send_request(self, method: str, params: Any, timeout: Optional[int] = 30) -> Optional[Any]:
