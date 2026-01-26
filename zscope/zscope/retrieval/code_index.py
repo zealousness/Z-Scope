@@ -67,23 +67,23 @@ class CodeIndex:
                     if location:
                         uri = location.get("uri")
                         # Convert URI to path
-                            # Robust URI to path conversion
-                            from urllib.parse import urlparse, unquote
-                            parsed_uri = urlparse(uri)
-                            path_str = unquote(parsed_uri.path)
-                            
-                            # On Windows, urlparse might leave a leading slash on the path (e.g., /C:/...)
-                            if os.name == 'nt' and path_str.startswith('/') and path_str[2:3] == ':':
-                                path_str = path_str[1:].replace('/', '\\')
-                            
-                            file_path = Path(path_str)
-                            range_data = location.get("range")
-                            self._function_index[name] = {
-                                "file": str(file_path),
-                                "start_line": range_data["start"]["line"] + 1,
-                                "end_line": range_data["end"]["line"] + 1,
-                                "signature": name + "(...)",
-                            }
+                        # Robust URI to path conversion
+                        from urllib.parse import urlparse, unquote
+                        parsed_uri = urlparse(uri)
+                        path_str = unquote(parsed_uri.path)
+                        
+                        # On Windows, urlparse might leave a leading slash on the path (e.g., /C:/...)
+                        if os.name == 'nt' and path_str.startswith('/') and path_str[2:3] == ':':
+                            path_str = path_str[1:].replace('/', '\\')
+                        
+                        file_path = Path(path_str)
+                        range_data = location.get("range")
+                        self._function_index[name] = {
+                            "file": str(file_path),
+                            "start_line": range_data["start"]["line"] + 1,
+                            "end_line": range_data["end"]["line"] + 1,
+                            "signature": name + "(...)",
+                        }
         except Exception as e:
             logger.warning(f"LSP indexing failed: {e}, falling back to regex")
             self._backend = "regex"
