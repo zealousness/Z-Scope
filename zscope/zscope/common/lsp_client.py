@@ -5,13 +5,18 @@ LSP Client for communicating with clangd via JSON-RPC.
 import json
 import logging
 import os
+import sys
 import subprocess
 import threading
 import time
+import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Union
 
 logger = logging.getLogger(__name__)
+
+# ANSI escape sequence regex for stripping colors/formatting
+ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
 class LSPClient:
     """
@@ -163,7 +168,8 @@ class LSPClient:
                                 # More inclusive check for progress
                                 if any(k in msg_text for k in ["Indexing", "Building", "Parsing", "Checking", "Loading", "Scanning", "%"]):
                                     if msg_text != self._last_msg:
-                                        print(f"\r  [LSP] {msg_text[:80]:<80}", end="", flush=True)
+                                        sys.stdout.write(f"\r  [LSP] {msg_text[:80]:<80}")
+                                        sys.stdout.flush()
                                         self._last_msg = msg_text
                                     self._last_progress_time = time.time()
                             elif method == "$/progress":
@@ -193,7 +199,8 @@ class LSPClient:
                                     # Map states to more descriptive TU analysis messages
                                     msg = f"{state}: {filename}"
                                     if msg != self._last_msg:
-                                        print(f"\r  [LSP] {msg:<80}", end="", flush=True)
+                                        sys.stdout.write(f"\r  [LSP] {msg:<80}")
+                                        sys.stdout.flush()
                                         self._last_msg = msg
                                     self._last_progress_time = time.time()
             except Exception as e:
@@ -202,30 +209,47 @@ class LSPClient:
                 break
 
     def _stderr_loop(self):
-        """Background thread to read lines from stderr (raw clangd logs)."""
+        """Background thread to read from stderr (raw clangd logs)."""
+        buffer = []
         while self._running and self.process and self.process.stderr:
             try:
-                line = self.process.stderr.readline()
-                if not line:
+                # Use os.read to bypass Python's io buffering and get bytes immediately
+                fd = self.process.stderr.fileno()
+                try:
+                    chunk = os.read(fd, 1)
+                except (OSError, ValueError):
+                    break
+                    
+                if not chunk:
                     break
                 
-                msg = line.decode("utf-8", errors="replace").strip()
-                if msg:
-                    # Generic clangd log lines often contain useful progress
-                    # We look for common patterns like [123/456] or percentages
-                    if any(k in msg for k in ["Indexing", "Building", "Parsing", "Scanning", "[", "%"]):
-                        # Extract the meaningful part after the timestamp/level if possible
-                        # e.g. I[22:42:16.123] Indexing... -> Indexing...
-                        clean_msg = msg
-                        if "]" in msg:
-                            parts = msg.split("]", 1)
-                            if len(parts) > 1:
-                                clean_msg = parts[1].strip()
+                char = chunk.decode("utf-8", errors="replace")
+                if char == '\r' or char == '\n':
+                    msg = "".join(buffer).strip()
+                    buffer = []
+                    
+                    if msg:
+                        # Strip ANSI escape codes (colors)
+                        msg = ANSI_ESCAPE.sub('', msg)
                         
-                        if clean_msg and clean_msg != self._last_msg:
-                            print(f"\r  [LSP] {clean_msg[:80]:<80}", end="", flush=True)
-                            self._last_msg = clean_msg
-                            self._last_progress_time = time.time()
+                        # Generic clangd log lines often contain useful progress
+                        if any(k in msg for k in ["Indexing", "Building", "Parsing", "Scanning", "Checking", "Loading", "[", "%"]):
+                            clean_msg = msg
+                            if "]" in msg:
+                                parts = msg.split("]", 1)
+                                if len(parts) > 1:
+                                    clean_msg = parts[1].strip()
+                            
+                            if clean_msg and clean_msg != self._last_msg:
+                                # Standard carriage return for progress
+                                sys.stdout.write(f"\r  [LSP] {clean_msg[:80]:<80}")
+                                sys.stdout.flush()
+                                self._last_msg = clean_msg
+                                self._last_progress_time = time.time()
+                else:
+                    buffer.append(char)
+                    if len(buffer) > 1024:
+                        buffer = buffer[-1024:]
             except Exception:
                 break
 
