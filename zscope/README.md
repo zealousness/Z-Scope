@@ -91,9 +91,81 @@ analysis:
   max_tool_iterations: 50  # 单次对话最大工具调用次数
   snapshot_dir: .zscope_snapshots
   enable_snapshot_cache: true
+
+indexing:
+  backend: libclang        # 可选: libclang (精确) 或 regex (回退)
 ```
 
-### 2. 批量扫描配置 (可选)
+### 2. 配置代码索引 (LSP/Clangd)
+
+Z-SCOPE 支持两种代码索引后端：
+- **libclang/clangd** (推荐)：基于 LLVM 的精确 AST 解析，支持跨文件符号解析
+- **regex**：正则表达式回退方案，无需额外依赖
+
+#### 安装 clangd
+
+**Windows:**
+```bash
+# 使用 winget
+winget install LLVM.clangd
+
+# 或下载预编译包
+# https://github.com/clangd/clangd/releases
+# 解压后将 bin 目录添加到 PATH
+```
+
+**macOS:**
+```bash
+brew install llvm
+# clangd 在 /opt/homebrew/opt/llvm/bin/clangd
+```
+
+**Ubuntu/Debian:**
+```bash
+sudo apt install clangd
+```
+
+#### 生成 compile_commands.json
+
+clangd 需要 `compile_commands.json` 来理解项目结构：
+
+**使用 CMake:**
+```bash
+cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -B build
+cp build/compile_commands.json .
+```
+
+**使用 Bear (任意 Makefile 项目):**
+```bash
+# 安装 Bear
+pip install bear  # 或 apt install bear
+
+# 生成编译数据库
+bear -- make
+```
+
+**手动创建 (简单项目):**
+```json
+[
+  {
+    "directory": "/path/to/project",
+    "command": "gcc -c -I./include src/main.c -o main.o",
+    "file": "src/main.c"
+  }
+]
+```
+
+#### 配置索引后端
+
+```yaml
+indexing:
+  backend: libclang  # 使用 clangd (需要 compile_commands.json)
+  # backend: regex   # 回退方案，无需额外配置
+```
+
+> **注意**: 如果 clangd 启动失败，Z-SCOPE 会自动回退到 regex 模式并输出警告日志。
+
+### 3. 批量扫描配置 (可选)
 创建 `entry_funcs.json` 定义多个扫描目标，可为每个函数附加特定的提示词：
 
 ```json
@@ -112,13 +184,13 @@ analysis:
 }
 ```
 
-### 3. 执行分析
+### 4. 执行分析
 
 ```bash
 zscope --config zscope.yaml
 ```
 
-### 4. 使用本地模型 (Ollama)
+### 5. 使用本地模型 (Ollama)
 
 ```yaml
 llm:
