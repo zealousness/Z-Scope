@@ -54,10 +54,11 @@ class LSPClient:
             self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
             self._reader_thread.start()
             
-            # Send 'initialize' request with a longer timeout for large projects
-            # but we use send_request which handles its own timeout.
-            # For 1M+ lines, even 'initialize' might take some time if clangd does heavy lifting upfront.
-            logger.info(f"Initializing LSP for project: {self.project_root}")
+            # Send 'initialize' request without hard timeout for large projects
+            logger.info(f"Initializing LSP for project: {self.project_root} (this may take a long time for 1M+ lines)")
+            print(f"  [LSP] Initializing clangd for {self.project_root.name}...")
+            
+            # Using timeout=0 or None to indicate infinite wait during initialization
             resp = self.send_request("initialize", {
                 "processId": os.getpid(),
                 "rootPath": str(self.project_root),
@@ -76,7 +77,7 @@ class LSPClient:
                 "initializationOptions": {
                     "clangdFileStatus": True
                 }
-            }, timeout=60) # Increased base timeout for initialize
+            }, timeout=None) 
             
             if resp:
                 self.send_notification("initialized", {})
@@ -159,19 +160,21 @@ class LSPClient:
                                 message_text = value.get("message", "Done")
                                 print(f"\r  [LSP] {message_text:<60}", flush=True)
                         elif method == "textDocument/clangd.fileStatus":
-                            # clangd-specific file status
+                            # clangd-specific file status (shows TU analysis progress)
                             state = params.get("state", "")
                             uri = params.get("uri", "")
                             if state and uri:
                                 filename = uri.split("/")[-1]
-                                print(f"\r  [LSP] {state}: {filename:<50}", end="", flush=True)
+                                # Map states to more descriptive TU analysis messages
+                                msg = f"{state}: {filename}"
+                                print(f"\r  [LSP] {msg:<80}", end="", flush=True)
                                 self._last_progress_time = time.time()
             except Exception as e:
                 if self._running:
                     logger.error(f"Error in LSP read loop: {e}")
                 break
 
-    def send_request(self, method: str, params: Any, timeout: int = 30) -> Optional[Any]:
+    def send_request(self, method: str, params: Any, timeout: Optional[int] = 30) -> Optional[Any]:
         """Send a JSON-RPC request and wait for the response."""
         if not self.process or not self.process.stdin:
             return None
@@ -200,7 +203,7 @@ class LSPClient:
             
         # Wait for response
         start_time = time.time()
-        deadline = start_time + timeout
+        deadline = start_time + timeout if timeout is not None else float('inf')
         
         while time.time() < deadline:
             with self._lock:
@@ -211,8 +214,8 @@ class LSPClient:
                         return None
                     return resp.get("result")
             
-            # If progress is being made, extend the deadline
-            if time.time() - self._last_progress_time < 2.0:
+            # If progress is being made, extend the deadline (if not infinite already)
+            if timeout is not None and time.time() - self._last_progress_time < 2.0:
                 # Progress was detected recently, extend deadline
                 deadline = time.time() + timeout
                 
