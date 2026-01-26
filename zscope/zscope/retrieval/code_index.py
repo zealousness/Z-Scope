@@ -67,13 +67,14 @@ class CodeIndex:
                     if location:
                         uri = location.get("uri")
                         # Convert URI to path
-                        if uri.startswith("file:///"):
-                            # Simple URI to path conversion
-                            from urllib.parse import unquote
-                            import platform
-                            path_str = unquote(uri[8:])
-                            if platform.system() == "Windows":
-                                path_str = path_str.replace("/", "\\")
+                            # Robust URI to path conversion
+                            from urllib.parse import urlparse, unquote
+                            parsed_uri = urlparse(uri)
+                            path_str = unquote(parsed_uri.path)
+                            
+                            # On Windows, urlparse might leave a leading slash on the path (e.g., /C:/...)
+                            if os.name == 'nt' and path_str.startswith('/') and path_str[2:3] == ':':
+                                path_str = path_str[1:].replace('/', '\\')
                             
                             file_path = Path(path_str)
                             range_data = location.get("range")
