@@ -60,7 +60,10 @@ def main(
             logger.info("Building shared code index...")
             code_index = CodeIndex(
                 zscope_config.project.project_root,
-                zscope_config.project.compile_commands_path
+                zscope_config.project.compile_commands_path,
+                source_root=zscope_config.project.source_root,
+                indexing_config=zscope_config.indexing,
+                priority_functions=entry_functions
             )
             
             # Create parallel analyzer with shared code index

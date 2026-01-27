@@ -44,6 +44,9 @@ class IndexingConfig:
     """Configuration for code indexing."""
 
     backend: str = "clangd"  # clangd or regex
+    auto_prime: bool = True
+    max_prime_files: int = 100
+    only_prime_priority: bool = False
 
 
 @dataclass
@@ -63,6 +66,7 @@ class ProjectConfig:
     """Configuration for the C project being analyzed."""
 
     project_root: Path
+    source_root: Path
     entry_function: Optional[str] = None
     agents: List[AgentConfig] = field(default_factory=list)
     compile_commands_path: Optional[Path] = None
@@ -70,6 +74,17 @@ class ProjectConfig:
 
     def __post_init__(self):
         self.project_root = Path(self.project_root).resolve()
+        
+        # Resolve source_root: relative to project_root if not absolute
+        if not self.source_root:
+            self.source_root = self.project_root
+        else:
+            self.source_root = Path(self.source_root)
+            if not self.source_root.is_absolute():
+                self.source_root = (self.project_root / self.source_root).resolve()
+            else:
+                self.source_root = self.source_root.resolve()
+
         if self.compile_commands_path:
             self.compile_commands_path = Path(self.compile_commands_path).resolve()
         elif (self.project_root / "compile_commands.json").exists():
@@ -176,6 +191,9 @@ class ConfigLoader:
             indexing_data = raw_config.get("indexing", {})
             indexing_config = IndexingConfig(
                 backend=indexing_data.get("backend", "clangd"),
+                auto_prime=indexing_data.get("auto_prime", True),
+                max_prime_files=indexing_data.get("max_prime_files", 100),
+                only_prime_priority=indexing_data.get("only_prime_priority", False),
             )
 
             # Analysis config
@@ -227,6 +245,7 @@ class ConfigLoader:
 
             project_config = ProjectConfig(
                 project_root=Path(project_root),
+                source_root=Path(project_data.get("source_root", project_root)),
                 entry_function=entry_function,
                 agents=agents,
                 compile_commands_path=compile_commands_path,
