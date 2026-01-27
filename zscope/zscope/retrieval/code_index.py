@@ -21,21 +21,35 @@ class CodeIndex:
     Supports clangd via LSP or fallback regex parsing.
     """
 
-    def __init__(self, project_root: Path, compile_commands_path: Optional[Path] = None, backend: str = "clangd"):
+    def __init__(
+        self, 
+        project_root: Path, 
+        compile_commands_path: Optional[Path] = None, 
+        backend: str = "clangd",
+        source_root: Optional[Path] = None,
+        indexing_config: Optional[Any] = None,
+        priority_functions: Optional[List[str]] = None
+    ):
         """Initialize code index."""
         self.project_root = Path(project_root).resolve()
+        self.source_root = Path(source_root).resolve() if source_root else self.project_root
         self.compile_commands_path = compile_commands_path
-        self._function_index: Dict[str, Dict[str, Any]] = {}
         self._backend = backend
+        self._indexing_config = indexing_config
+        self._priority_functions = priority_functions or []
+        self._function_index: Dict[str, Dict[str, Any]] = {}
         self._lsp_client: Optional[LSPClient] = None
 
         if self._backend == "clangd" and compile_commands_path and compile_commands_path.exists():
-            self._lsp_client = LSPClient(self.project_root)
+            # Pointer to the directory containing compile_commands.json
+            cdb_dir = compile_commands_path.parent
+            self._lsp_client = LSPClient(self.project_root, compile_commands_path=cdb_dir)
             if self._lsp_client.start():
                 logger.info("Using clangd LSP for code indexing")
                 
-                # Prime the LSP: open all .c files to force indexing
-                self._prime_lsp()
+                # Prime the LSP: open subset of files to force indexing without OOM
+                if not self._indexing_config or self._indexing_config.auto_prime:
+                    self._prime_lsp(self._priority_functions)
                 
                 # Wait for initial indexing before building index
                 self._lsp_client.wait_for_indexing(timeout=30)
@@ -47,15 +61,56 @@ class CodeIndex:
 
         self._build_index()
 
-    def _prime_lsp(self) -> None:
-        """Send didOpen for all project files to trigger indexing."""
+    def _prime_lsp(self, priority_funcs: Optional[List[str]] = None) -> None:
+        """Send didOpen for a subset of project files to trigger indexing safely."""
         if not self._lsp_client:
             return
         
-        c_files = list(self.project_root.rglob("*.c"))
-        h_files = list(self.project_root.rglob("*.h"))
+        limit = 100
+        only_priority = False
+        if self._indexing_config:
+            limit = self._indexing_config.max_prime_files
+            only_priority = getattr(self._indexing_config, 'only_prime_priority', False)
+
+        c_files = list(self.source_root.rglob("*.c"))
+        h_files = list(self.source_root.rglob("*.h"))
         all_files = c_files + h_files
         
+        # Prioritize files containing entry functions
+        if priority_funcs:
+            priority_files = []
+            other_files = []
+            
+            # Optimization: Use one big regex for all functions
+            # Escaping function names just in case
+            safe_funcs = [re.escape(f) for f in priority_funcs]
+            combined_pattern = re.compile(rf"\b({"|".join(safe_funcs)})\b\s*\(")
+            
+            logger.info(f"Scanning for {len(priority_funcs)} priority functions in {len(all_files)} files...")
+            for f_path in all_files:
+                found = False
+                try:
+                    with open(f_path, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                        if combined_pattern.search(content):
+                            priority_files.append(f_path)
+                            found = True
+                except:
+                    pass
+                if not found:
+                    other_files.append(f_path)
+            
+            logger.info(f"Found {len(priority_files)} priority files.")
+            
+            if only_priority:
+                all_files = priority_files
+            else:
+                all_files = priority_files + other_files
+
+        if len(all_files) > limit:
+            logger.info(f"Project too large ({len(all_files)} files), limiting LSP priming to {limit} files to prevent OOM.")
+            all_files = all_files[:limit]
+            
         logger.info(f"Priming LSP with {len(all_files)} files...")
         for file_path in all_files:
             try:
@@ -133,10 +188,10 @@ class CodeIndex:
 
     def _build_index_regex(self) -> None:
         """Build index using regex pattern matching (fallback)."""
-        # Find all .c and .h files
-        c_files = list(self.project_root.rglob("*.c"))
-        h_files = list(self.project_root.rglob("*.h"))
-        all_files = c_files + h_files
+        # Regex fallback scanning using source_root
+        all_files = []
+        for ext in ["*.c", "*.cpp", "*.h", "*.hpp", "*.cc"]:
+            all_files.extend(list(self.source_root.rglob(ext)))
 
         logger.info(f"Scanning {len(all_files)} C/H files with regex")
 
@@ -188,20 +243,55 @@ class CodeIndex:
         """Get function implementation."""
         # If not in index, try LSP workspace search if available
         if func_name not in self._function_index and self._backend == "clangd" and self._lsp_client:
+            symbols = []
+            # First attempt: standard workspace/symbol
             symbols = self._lsp_client.get_workspace_symbols(func_name)
+            
+            # If not found, try to find the file via regex and prime it on-demand
+            if not symbols:
+                logger.debug(f"Symbol '{func_name}' not found in LSP, trying regex fallback...")
+                found_files = []
+                func_pattern = re.compile(rf"\b{func_name}\b\s*\(")
+                for f_path in self.source_root.rglob("*.c"):
+                    try:
+                        with open(f_path, "r", encoding="utf-8", errors="ignore") as f:
+                            if func_pattern.search(f.read()):
+                                found_files.append(f_path)
+                    except: continue
+                
+                if found_files:
+                    logger.info(f"Found '{func_name}' in {len(found_files)} files via regex, priming on-demand...")
+                    for f_path in found_files:
+                        self._lsp_client.send_notification("textDocument/didOpen", {
+                            "textDocument": {
+                                "uri": f_path.as_uri(),
+                                "languageId": "c",
+                                "version": 1,
+                                "text": f_path.read_text(errors="ignore")
+                            }
+                        })
+                    # Give it a tiny bit of time to parse and retry
+                    time.sleep(1)
+                    symbols = self._lsp_client.get_workspace_symbols(func_name)
+
             for sym in symbols:
                 if sym.get("name") == func_name and sym.get("kind") == 12:
                     location = sym.get("location")
                     if location:
                         from urllib.parse import unquote
                         import platform
-                        path_str = unquote(location["uri"][8:])
+                        # Stripping 'file:///'
+                        uri = location["uri"]
+                        if uri.startswith("file:///"):
+                            path_str = unquote(uri[8:])
+                        else:
+                            path_str = unquote(uri[7:]) # file://
+                            
                         if platform.system() == "Windows":
                             path_str = path_str.replace("/", "\\")
+                            if path_str.startswith("\\"): path_str = path_str[1:] # Fix for windows absolute path
                         
                         file_path = Path(path_str)
-                        # Now use Go to Definition for more precise location
-                        # or just use the symbol range
                         range_data = location.get("range")
                         self._function_index[func_name] = {
                             "file": str(file_path),
@@ -258,7 +348,7 @@ class CodeIndex:
 
             return {
                 "func_name": func_name,
-                "file": normalize_path(file_path, self.project_root),
+                "file": normalize_path(file_path, self.source_root),
                 "start_line": func_info["start_line"],
                 "end_line": min(func_info["end_line"], start + max_lines + 1),
                 "code": code,

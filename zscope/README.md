@@ -68,15 +68,16 @@ llm:
   provider: openai
   base_url: https://api.siliconflow.cn/v1  # 或 http://localhost:11434/v1 for Ollama
   models:
-    - Qwen/Qwen3-Coder-480B-A35B-Instruct # 优先级 1
-    - Qwen/Qwen3-Coder-30B-A3B-Instruct  # 优先级 2
+    - deepseek-ai/DeepSeek-V3 # 优先级 1
+    - Qwen/Qwen2.5-Coder-32B-Instruct  # 优先级 2
   api_key: sk-xxx  # 本地模型可省略
   temperature: 0.1
   max_tokens: 16384
 
 project:
-  root: .
-  entry_function: main                      # 单函数模式入口 (可选，如果启用了批量模式)
+  root: .                                   # 执行根目录 (存放报告/快照)
+  source_root: ../my_src                    # 源码根目录 (可选，默认为 root)
+  entry_function: main                      # 单函数模式入口
   # entry_functions_list: entry_funcs.json  # 开启批量扫描模式
   agents:
     - name: semantic_modeler
@@ -88,19 +89,26 @@ project:
 analysis:
   parallel_workers: 5      # 批量扫描并发数
   max_recursion_depth: 3   # 函数分析深度
-  max_tool_iterations: 50  # 单次对话最大工具调用次数
   snapshot_dir: .zscope_snapshots
   enable_snapshot_cache: true
 
 indexing:
-  backend: libclang        # 可选: libclang (精确) 或 regex (回退)
+  backend: clangd          # 推荐使用 clangd
+  auto_prime: true         # 是否自动启动预热
+  only_prime_priority: true # 严格模式：仅预热入口函数相关文件 (推荐大项目开启)
+  max_prime_files: 100     # 预热文件上限，防止 OOM
 ```
 
 ### 2. 配置代码索引 (LSP/Clangd)
 
 Z-SCOPE 支持两种代码索引后端：
-- **libclang/clangd** (推荐)：基于 LLVM 的精确 AST 解析，支持跨文件符号解析
-- **regex**：正则表达式回退方案，无需额外依赖
+- **clangd** (推荐)：基于 LLVM 的精确 AST 解析，支持跨文件符号解析。
+- **regex**：正则表达式回退方案，无需额外依赖。
+
+#### 高性能索引特性
+- **Smart Priming (智能预热)**：根据入口函数自动定位并优先解析相关文件。
+- **Double-Layer Search (双层搜索)**：当 LSP 索引尚未就绪时，自动回退至正则搜索并触发“按需预热”，确保分析永不中断。
+- **Strict Mode (严格模式)**：通过 `only_prime_priority: true`，在大规模项目（百万行+）中仅加载必要文件，极大地降低内存占用。
 
 #### 安装 clangd
 

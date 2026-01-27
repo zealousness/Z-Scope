@@ -127,7 +127,11 @@ class Analyzer:
     def __init__(self, config: ZScopeConfig):
         self.config = config
         self.code_index = CodeIndex(
-            config.project.project_root, config.project.compile_commands_path
+            config.project.project_root, 
+            config.project.compile_commands_path,
+            source_root=config.project.source_root,
+            indexing_config=config.indexing,
+            priority_functions=[config.project.entry_function] if config.project.entry_function else None
         )
         self.snapshot_store = SnapshotStore(Path(config.analysis.snapshot_dir))
         self.llm_client = LLMClient(

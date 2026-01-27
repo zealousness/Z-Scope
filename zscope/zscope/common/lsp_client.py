@@ -22,9 +22,10 @@ class LSPClient:
     """
     Minimal LSP Client to interact with clangd.
     """
-    def __init__(self, project_root: Path, clangd_path: str = "clangd"):
+    def __init__(self, project_root: Path, clangd_path: str = "clangd", compile_commands_path: Optional[Path] = None):
         self.project_root = Path(project_root).resolve()
         self.clangd_path = clangd_path
+        self.compile_commands_path = compile_commands_path
         self.process: Optional[subprocess.Popen] = None
         self._id_counter = 0
         self._responses: Dict[int, Any] = {}
