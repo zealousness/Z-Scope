@@ -1,0 +1,7 @@
+[
+    {
+        "directory": "/app/test/linux_verification/sample_project",
+        "command": "gcc -c -o main.o main.c",
+        "file": "main.c"
+    }
+]

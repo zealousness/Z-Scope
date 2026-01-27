@@ -118,6 +118,37 @@ class LSPClient:
             logger.error(f"Failed to start clangd: {e}")
             return False
 
+    def wait_for_indexing(self, timeout: int = 60, idle_threshold: float = 3.0) -> bool:
+        """Wait until indexing is finished (no progress for a threshold)."""
+        if not self._initialized:
+            return False
+        
+        print(f"  [LSP] Waiting for indexing to start/settle (threshold: {idle_threshold}s)...")
+        start_time = time.time()
+        
+        # 1. Wait for at least some initial progress to appear (or a short timeout)
+        activity_detected = False
+        initial_wait = 5.0
+        while time.time() - start_time < initial_wait:
+            if time.time() - self._last_progress_time < 0.5:
+                activity_detected = True
+                break
+            time.sleep(0.1)
+            
+        # 2. Now wait for it to settle
+        while time.time() - start_time < timeout:
+            if time.time() - self._last_progress_time > idle_threshold:
+                # No progress for a while, assume done
+                if activity_detected:
+                    print("\n  [LSP] Indexing settled.")
+                else:
+                    print("\n  [LSP] Indexing settled (no activity detected).")
+                return True
+            time.sleep(0.5)
+        
+        print("\n  [LSP] Indexing wait timed out.")
+        return False
+
     def stop(self):
         """Stop the clangd process."""
         self._running = False

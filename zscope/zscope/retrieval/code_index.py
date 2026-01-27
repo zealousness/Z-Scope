@@ -5,6 +5,7 @@ Code indexing and function locator for C projects.
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -32,6 +33,12 @@ class CodeIndex:
             self._lsp_client = LSPClient(self.project_root)
             if self._lsp_client.start():
                 logger.info("Using clangd LSP for code indexing")
+                
+                # Prime the LSP: open all .c files to force indexing
+                self._prime_lsp()
+                
+                # Wait for initial indexing before building index
+                self._lsp_client.wait_for_indexing(timeout=30)
             else:
                 logger.warning("Failed to start clangd, falling back to regex")
                 self._backend = "regex"
@@ -39,6 +46,32 @@ class CodeIndex:
             self._backend = "regex"
 
         self._build_index()
+
+    def _prime_lsp(self) -> None:
+        """Send didOpen for all project files to trigger indexing."""
+        if not self._lsp_client:
+            return
+        
+        c_files = list(self.project_root.rglob("*.c"))
+        h_files = list(self.project_root.rglob("*.h"))
+        all_files = c_files + h_files
+        
+        logger.info(f"Priming LSP with {len(all_files)} files...")
+        for file_path in all_files:
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                
+                self._lsp_client.send_notification("textDocument/didOpen", {
+                    "textDocument": {
+                        "uri": file_path.as_uri(),
+                        "languageId": "c" if file_path.suffix == ".c" else "cpp",
+                        "version": 1,
+                        "text": content
+                    }
+                })
+            except Exception as e:
+                logger.debug(f"Failed to prime {file_path}: {e}")
 
     def _build_index(self) -> None:
         """Build function index from project."""
@@ -59,7 +92,16 @@ class CodeIndex:
             # Query for all functions (empty query or generic one)
             # Many LSP servers return a limited set for empty query.
             # We'll use this to populate common functions.
-            symbols = self._lsp_client.get_workspace_symbols("")
+            
+            # Retry loop: clangd might take a few seconds to load the CDB even after 'settling'
+            symbols = []
+            for attempt in range(3):
+                symbols = self._lsp_client.get_workspace_symbols("")
+                if symbols:
+                    break
+                logger.debug(f"LSP workspace/symbol returned 0 results, retry {attempt+1}/3...")
+                time.sleep(2)
+            
             for sym in symbols:
                 if sym.get("kind") == 12:  # Function
                     name = sym.get("name")
@@ -168,13 +210,32 @@ class CodeIndex:
                             "signature": func_name + "(...)",
                         }
                         break
-
+        
         if func_name not in self._function_index:
             logger.warning(f"Function '{func_name}' not found in index")
             return None
 
         func_info = self._function_index[func_name]
         file_path = Path(func_info["file"])
+
+        # Refine range using documentSymbol if it's too short (common with workspace/symbol)
+        if self._backend == "clangd" and self._lsp_client and func_info["start_line"] == func_info["end_line"]:
+            try:
+                doc_symbols = self._lsp_client.get_document_symbols(file_path)
+                # Flat search and recursive search in children
+                queue = list(doc_symbols)
+                while queue:
+                    sym = queue.pop(0)
+                    if sym.get("name") == func_name and sym.get("kind") == 12:
+                        range_data = sym.get("range")
+                        if range_data:
+                            func_info["start_line"] = range_data["start"]["line"] + 1
+                            func_info["end_line"] = range_data["end"]["line"] + 1
+                            break
+                    if "children" in sym:
+                        queue.extend(sym["children"])
+            except Exception as e:
+                logger.debug(f"Failed to refine range for {func_name}: {e}")
 
         try:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
