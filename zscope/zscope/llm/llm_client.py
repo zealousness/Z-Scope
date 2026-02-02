@@ -4,6 +4,7 @@ LLM client with OpenAI-compatible API support and tool calling.
 
 import json
 import logging
+import re
 import time
 from typing import List, Dict, Any, Optional
 
@@ -163,7 +164,7 @@ class LLMClient:
 
                 try:
                     # Parse arguments
-                    func_args = json.loads(func_args_str)
+                    func_args = self._parse_tool_args(func_args_str)
 
                     # Execute tool
                     result = tool_executor(func_name, func_args)
@@ -208,3 +209,59 @@ class LLMClient:
             "iterations": iterations,
             "truncated": True,
         }
+
+    def _parse_tool_args(self, func_args_str: Any) -> Dict[str, Any]:
+        """Parse tool arguments with a minimal malformed JSON fallback."""
+        if isinstance(func_args_str, dict):
+            return func_args_str
+        if func_args_str is None:
+            return {}
+        try:
+            return json.loads(func_args_str)
+        except json.JSONDecodeError:
+            text = str(func_args_str)
+            fallback = self._extract_tool_args_fallback(text)
+            if fallback is not None:
+                logger.warning("Recovered tool arguments via heuristic fallback.")
+                return fallback
+            raise
+
+    @staticmethod
+    def _extract_tool_args_fallback(text: str) -> Optional[Dict[str, Any]]:
+        """Extract common tool args from malformed JSON-like strings."""
+        if not isinstance(text, str) or "file_path" not in text:
+            return None
+
+        file_match = re.search(r'"file_path"\s*:\s*"([^"]+)"', text)
+        if not file_match:
+            file_match = re.search(r"'file_path'\s*:\s*'([^']+)'", text)
+        if not file_match:
+            return None
+        file_path = file_match.group(1)
+
+        def extract_int(key: str) -> Optional[int]:
+            direct = re.search(rf'"{key}"\s*:\s*([0-9]+)', text)
+            if not direct:
+                direct = re.search(rf"'{key}'\s*:\s*([0-9]+)", text)
+            if direct:
+                return int(direct.group(1))
+            token = re.search(rf'"{key}"\s*:\s*([^,\n}}]+)', text)
+            if not token:
+                token = re.search(rf"'{key}'\s*:\s*([^,\n}}]+)", text)
+            if token:
+                digits = re.search(r"\d+", token.group(1))
+                if digits:
+                    return int(digits.group(0))
+            return None
+
+        start_line = extract_int("start_line")
+        end_line = extract_int("end_line")
+
+        if start_line is None and end_line is None:
+            return None
+        if start_line is None:
+            start_line = end_line
+        if end_line is None:
+            end_line = start_line
+
+        return {"file_path": file_path, "start_line": start_line, "end_line": end_line}
