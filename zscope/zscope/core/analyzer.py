@@ -459,10 +459,6 @@ Output a JSON of type 'snapshot_refresh_decision'.
             if not isinstance(issue, dict):
                 continue
                 
-            snippet = issue.get("code_snippet")
-            if not snippet:
-                continue
-                
             func_name = issue.get("function")
             if not func_name:
                 continue
@@ -476,6 +472,14 @@ Output a JSON of type 'snapshot_refresh_decision'.
             abs_file = self.config.project.project_root / relative_file
             
             if not abs_file.exists():
+                continue
+
+            location = issue.get("location", "")
+            if self._should_resolve_location_from_function(func_name, location, abs_file):
+                self._apply_function_offset_location(issue, func_info, relative_file, location)
+
+            snippet = issue.get("code_snippet")
+            if not snippet:
                 continue
                 
             try:
@@ -508,3 +512,36 @@ Output a JSON of type 'snapshot_refresh_decision'.
                     
             except Exception as e:
                 logger.error(f"Error resolving location for {issue.get('id')}: {e}")
+
+    def _should_resolve_location_from_function(self, func_name: str, location: str, abs_file: Path) -> bool:
+        if not location or location.startswith("unknown"):
+            return True
+
+        file_part = location.split(":")[0]
+        if file_part in {f"{func_name}.c", f"{func_name}.cpp", f"{func_name}.cc"}:
+            return True
+
+        if file_part and not (self.config.project.project_root / file_part).exists():
+            return True
+
+        return False
+
+    def _apply_function_offset_location(
+        self, issue: Dict[str, Any], func_info: Dict[str, Any], relative_file: str, location: str
+    ) -> None:
+        start_line = func_info.get("start_line")
+        end_line = func_info.get("end_line")
+        offset_line = None
+
+        if location and ":" in location:
+            _, line_part = location.split(":", 1)
+            line_part = line_part.strip().split("-", 1)[0]
+            try:
+                offset_line = int(line_part)
+            except ValueError:
+                offset_line = None
+
+        if start_line and offset_line and end_line and offset_line <= max(1, end_line - start_line + 1):
+            issue["location"] = f"{relative_file}:{start_line + offset_line - 1}"
+        elif start_line:
+            issue["location"] = f"{relative_file}:{start_line}"
