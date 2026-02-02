@@ -92,8 +92,11 @@ class LLMClient:
                     error_msg = f"HTTP {response.status_code}: {response.text}"
                     logger.warning(f"Model {model} failed (attempt {attempt + 1}): {error_msg}")
                     
-                    if response.status_code >= 500:
-                        time.sleep(2**attempt)
+                    if response.status_code >= 500 or response.status_code == 429:
+                        # Exponential backoff
+                        wait_time = (2**attempt) + 1 # Add 1s buffer
+                        logger.warning(f"Rate limited or server error, waiting {wait_time}s...")
+                        time.sleep(wait_time)
                         continue
                     else:
                         last_error = error_msg

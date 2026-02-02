@@ -63,7 +63,7 @@ def main(
                 zscope_config.project.compile_commands_path,
                 source_root=zscope_config.project.source_root,
                 indexing_config=zscope_config.indexing,
-                priority_functions=entry_functions
+                priority_functions=[e.function_name for e in entries]
             )
             
             # Create parallel analyzer with shared code index
