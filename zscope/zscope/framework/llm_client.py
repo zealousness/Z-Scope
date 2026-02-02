@@ -2,12 +2,15 @@
 Enhanced LLM client with model fallback support.
 """
 
+import ast
 import json
 import logging
 import time
 from typing import List, Dict, Any, Optional
 
 import requests
+
+from ..common.utils import extract_json_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +164,7 @@ class LLMClient:
                 logger.info(f"Tool call: {func_name}")
 
                 try:
-                    func_args = json.loads(func_args_str)
+                    func_args = self._parse_tool_args(func_args_str)
                     result = tool_executor(func_name, func_args)
 
                     conversation.append({
@@ -197,3 +200,27 @@ class LLMClient:
             "iterations": iterations,
             "truncated": iterations >= max_iterations,
         }
+
+    def _parse_tool_args(self, func_args_str: str) -> Dict[str, Any]:
+        """Parse tool arguments, with fallbacks for slightly malformed JSON."""
+        try:
+            return json.loads(func_args_str)
+        except json.JSONDecodeError as exc:
+            stripped = func_args_str.strip()
+            if not stripped:
+                return {}
+
+            try:
+                parsed = ast.literal_eval(stripped)
+                if isinstance(parsed, dict):
+                    logger.warning("Recovered tool arguments via literal_eval.")
+                    return parsed
+            except (ValueError, SyntaxError):
+                pass
+
+            for candidate in extract_json_blocks(func_args_str):
+                if isinstance(candidate, dict):
+                    logger.warning("Recovered tool arguments from JSON block.")
+                    return candidate
+
+            raise ValueError(f"Invalid tool arguments JSON: {exc}") from exc
