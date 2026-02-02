@@ -347,24 +347,6 @@ class CodeIndex:
             except Exception as e:
                 logger.debug(f"Failed to refine range for {func_name}: {e}")
 
-    def _find_function_definition_files(self, func_name: str) -> List[Path]:
-        """Find files containing a likely function implementation (not just a call)."""
-        found_files = []
-        func_pattern = re.compile(
-            rf"^\s*(?:static\s+|inline\s+|extern\s+)?"
-            rf"(?:[\w\s\*]+\s+)?{re.escape(func_name)}\s*\([^;{{}}]*\)\s*\{{",
-            re.MULTILINE,
-        )
-        for ext in ["*.c", "*.cpp", "*.cc", "*.h", "*.hpp"]:
-            for f_path in self.source_root.rglob(ext):
-                try:
-                    with open(f_path, "r", encoding="utf-8", errors="ignore") as f:
-                        if func_pattern.search(f.read()):
-                            found_files.append(f_path)
-                except Exception:
-                    continue
-        return found_files
-
         try:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 lines = f.readlines()
@@ -397,6 +379,24 @@ class CodeIndex:
         except Exception as e:
             logger.error(f"Failed to read function '{func_name}': {e}")
             return None
+
+    def _find_function_definition_files(self, func_name: str) -> List[Path]:
+        """Find files containing a likely function implementation (not just a call)."""
+        found_files = []
+        func_pattern = re.compile(
+            rf"^\s*(?:static\s+|inline\s+|extern\s+)?"
+            rf"(?:[\w\s\*]+\s+)?{re.escape(func_name)}\s*\([^;{{}}]*\)\s*\{{",
+            re.MULTILINE,
+        )
+        for ext in ["*.c", "*.cpp", "*.cc", "*.h", "*.hpp"]:
+            for f_path in self.source_root.rglob(ext):
+                try:
+                    with open(f_path, "r", encoding="utf-8", errors="ignore") as f:
+                        if func_pattern.search(f.read()):
+                            found_files.append(f_path)
+                except Exception:
+                    continue
+        return found_files
 
     def _find_macro_definition(self, macro_name: str, max_lines: int = 500) -> Optional[Dict[str, Any]]:
         """Find a macro definition using regex scanning."""
