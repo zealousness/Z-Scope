@@ -53,9 +53,15 @@ class FunctionListLoader:
             raise FileNotFoundError(f"Function list file not found: {json_path}")
         
         try:
-            with open(json_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            raw_json = json_path.read_text(encoding='utf-8')
+            data = json.loads(raw_json)
         except json.JSONDecodeError as e:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Invalid JSON in %s. Raw content:\n%s",
+                    json_path,
+                    raw_json,
+                )
             raise ValueError(f"Invalid JSON in {json_path}: {e}")
         
         if not isinstance(data, dict):
