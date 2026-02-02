@@ -237,6 +237,7 @@ class CodeIndex:
         self, func_name: str, max_lines: int = 500
     ) -> Optional[Dict[str, Any]]:
         """Get function implementation."""
+        macro_result: Optional[Dict[str, Any]] = None
         # If not in index, try LSP workspace search if available
         if func_name not in self._function_index and self._backend == "clangd" and self._lsp_client:
             symbols = []
@@ -246,6 +247,10 @@ class CodeIndex:
             # If not found, try to find the file via regex and prime it on-demand
             if not symbols:
                 logger.debug(f"Symbol '{func_name}' not found in LSP, trying regex fallback...")
+                macro_result = self._find_macro_definition(func_name)
+                if macro_result:
+                    logger.info(f"Macro '{func_name}' found via regex, skipping LSP priming.")
+                    return macro_result
                 found_files = []
                 func_pattern = re.compile(rf"\b{func_name}\b\s*\(")
                 for f_path in self.source_root.rglob("*.c"):
@@ -285,6 +290,10 @@ class CodeIndex:
                         break
         
         if func_name not in self._function_index:
+            if not macro_result:
+                macro_result = self._find_macro_definition(func_name)
+            if macro_result:
+                return macro_result
             logger.warning(f"Function '{func_name}' not found in index")
             return None
 
@@ -342,6 +351,56 @@ class CodeIndex:
         except Exception as e:
             logger.error(f"Failed to read function '{func_name}': {e}")
             return None
+
+    def _find_macro_definition(self, macro_name: str, max_lines: int = 500) -> Optional[Dict[str, Any]]:
+        """Find a macro definition using regex scanning."""
+        macro_pattern = re.compile(rf"^\s*#\s*define\s+{re.escape(macro_name)}\b")
+        signature_pattern = re.compile(
+            rf"^\s*#\s*define\s+{re.escape(macro_name)}(?P<params>\s*\([^)]*\))?"
+        )
+        for ext in ["*.h", "*.hpp", "*.c", "*.cpp", "*.cc"]:
+            for file_path in self.source_root.rglob(ext):
+                try:
+                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        lines = f.readlines()
+                except Exception:
+                    continue
+
+                for idx, line in enumerate(lines):
+                    if not macro_pattern.match(line):
+                        continue
+                    start_idx = idx
+                    end_idx = idx
+                    while lines[end_idx].rstrip().endswith("\\") and end_idx + 1 < len(lines):
+                        end_idx += 1
+
+                    code_lines = lines[start_idx : end_idx + 1]
+                    total_lines = len(code_lines)
+                    if total_lines > max_lines:
+                        logger.warning(
+                            f"Macro '{macro_name}' has {total_lines} lines, truncating to {max_lines}"
+                        )
+                        code_lines = code_lines[:max_lines]
+                        end_idx = start_idx + max_lines - 1
+
+                    signature_match = signature_pattern.match(lines[start_idx])
+                    params = signature_match.group("params") if signature_match else None
+                    signature = f"#define {macro_name}{params or ''}"
+                    code = "".join(code_lines)
+                    callees = list(set(extract_function_calls(code)))
+
+                    return {
+                        "func_name": macro_name,
+                        "file": normalize_path(file_path, self.source_root),
+                        "start_line": start_idx + 1,
+                        "end_line": end_idx + 1,
+                        "code": code,
+                        "callees": callees,
+                        "signature": signature,
+                        "truncated": total_lines > max_lines,
+                        "is_macro": True,
+                    }
+        return None
 
     def get_definition(self, file_path: str, line: int, character: int) -> List[Dict[str, Any]]:
         """Find definition using LSP."""
