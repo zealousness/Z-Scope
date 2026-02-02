@@ -43,7 +43,12 @@ class CodeIndex:
         if self._backend == "clangd" and compile_commands_path and compile_commands_path.exists():
             # Pointer to the directory containing compile_commands.json
             cdb_dir = compile_commands_path.parent
-            self._lsp_client = LSPClient(self.project_root, compile_commands_path=cdb_dir)
+            clangd_path = self._indexing_config.clangd_path if self._indexing_config else "clangd"
+            self._lsp_client = LSPClient(
+                self.project_root, 
+                clangd_path=clangd_path, 
+                compile_commands_path=cdb_dir
+            )
             if self._lsp_client.start():
                 logger.info("Using clangd LSP for code indexing")
                 
@@ -84,7 +89,7 @@ class CodeIndex:
             # Optimization: Use one big regex for all functions
             # Escaping function names just in case
             safe_funcs = [re.escape(f) for f in priority_funcs]
-            combined_pattern = re.compile(rf"\b({"|".join(safe_funcs)})\b\s*\(")
+            combined_pattern = re.compile(rf"\b({'|'.join(safe_funcs)})\b\s*\(")
             
             logger.info(f"Scanning for {len(priority_funcs)} priority functions in {len(all_files)} files...")
             for f_path in all_files:

@@ -124,16 +124,16 @@ class Analyzer:
     Main analyzer class.
     """
 
-    def __init__(self, config: ZScopeConfig):
+    def __init__(self, config: ZScopeConfig, code_index: Optional[CodeIndex] = None, snapshot_store: Optional[SnapshotStore] = None):
         self.config = config
-        self.code_index = CodeIndex(
+        self.code_index = code_index or CodeIndex(
             config.project.project_root, 
             config.project.compile_commands_path,
             source_root=config.project.source_root,
             indexing_config=config.indexing,
             priority_functions=[config.project.entry_function] if config.project.entry_function else None
         )
-        self.snapshot_store = SnapshotStore(Path(config.analysis.snapshot_dir))
+        self.snapshot_store = snapshot_store or SnapshotStore(Path(config.analysis.snapshot_dir))
         self.llm_client = LLMClient(
             api_key=config.llm.api_key,
             base_url=config.llm.base_url,
@@ -143,6 +143,7 @@ class Analyzer:
             max_tokens=config.llm.max_tokens
         )
         self.report_generator = ReportGenerator(config.project.project_root)
+        self.tools_runtime = ToolsRuntime(self.code_index, self.snapshot_store)
         
         self.analyzed_functions: Set[str] = set()
         self.issues: List[Issue] = []
@@ -182,6 +183,9 @@ class Analyzer:
 
         # 2. Run Vulnerability Analyzer for each configured task
         analyzer_agent = VulnerabilityAnalyzer(self.llm_client, self._get_tools())
+        any_failure = False
+        failure_msg = ""
+
         for agent_cfg in self.config.project.agents:
             if not agent_cfg.enabled or agent_cfg.name != "vulnerability_analyzer":
                 continue
@@ -254,14 +258,22 @@ class Analyzer:
             else:
                 logger.error(f"Vulnerability analysis failed: {v_resp.error}")
                 notes.append(f"Vulnerability analysis failed: {v_resp.error}")
+                any_failure = True
+                failure_msg = v_resp.error
 
         # 3. Resolve locations using snippets
         self._resolve_issue_locations(issues)
 
         # Construct Final Report
+        if any_failure and not issues:
+             verdict = "error"
+             notes.append(f"Analysis incomplete due to agent failure: {failure_msg}")
+        else:
+             verdict = "issues_found" if issues else "no_issue_found"
+
         final_report = FinalReport(
             entry_function=entry_func,
-            overall_verdict="issues_found" if issues else "no_issue_found",
+            overall_verdict=verdict,
             issues=[Issue.from_dict(i, context_function=entry_func, issue_index=idx+1) for idx, i in enumerate(issues) if isinstance(i, dict)] or [i for i in issues if isinstance(i, Issue)],
             notes=notes
         )
@@ -290,83 +302,7 @@ class Analyzer:
             GetFileSnippetTool(self.code_index)
         ]
 
-        # CRITICAL FIX: Explicitly demand JSON final_report if not provided
-        final_content = result["content"]
-        
-        # Check if LLM already provided final_report
-        if '"type": "final_report"' not in final_content and '"type":"final_report"' not in final_content:
-            logger.info("LLM did not provide final_report, requesting explicitly...")
-            
-            # Add explicit request for final report
-            conversation = result["conversation"]
-            final_report_prompt = """
-You have completed your analysis. Now you MUST output the final_report JSON.
 
-Based on your analysis, create a JSON object with this EXACT structure:
-```json
-{
-  "type": "final_report",
-  "entry_function": "cache_get",
-  "overall_verdict": "issues_found",
-  "issues": [
-    {
-      "id": "ISSUE_1",
-      "function": "function_name",
-      "location": "filename:line (optional guess)",
-      "code_snippet": "Exact code snippet from the source (used to resolve accurate location)",
-      "category": "reliability",
-      "subcategory": "buffer_overflow|memory_leak|resource_leak|etc",
-      "description": "Clear description of the defect",
-      "root_cause": "Why this happens",
-      "suggested_fix": "How to fix it",
-      "confidence": 0.9,
-      "impact_level": "critical|high|medium|low"
-    }
-  ],
-  "notes": ["Any additional observations"]
-}
-```
-
-Output ONLY the JSON, no other text. If you found defects, list them all. If you found no defects, use "overall_verdict": "no_issue_found" with empty issues array.
-"""
-            conversation.append({"role": "user", "content": final_report_prompt})
-            
-            # Get final response
-            try:
-                final_response = self.llm_client.chat_completion(conversation, max_tokens=4096)
-                final_content = final_response["choices"][0]["message"]["content"]
-                logger.info("Received explicit final_report response")
-            except Exception as e:
-                logger.error(f"Failed to get final report: {e}")
-                # Keep original content
-
-        # Process final result
-        final_report = self._extract_final_report(final_content)
-        
-        if not final_report:
-            # If LLM didn't output a JSON report, try to parse what it said or force a report
-            logger.warning("No structured final report found in LLM output. Attempting fallback.")
-            # In a real system, we might ask LLM to format it again. 
-            # For now, we wrap the text content.
-            final_report = FinalReport(
-                entry_function=entry_func,
-                overall_verdict="insufficient_info",
-                notes=[f"LLM did not provide structured output. Raw output: {final_content[:500]}..."]
-            )
-
-        # Update metadata
-        final_report.metadata = {
-            "timestamp": datetime.datetime.now().isoformat(),
-            "version": "0.1.0",
-            "iterations": result.get("iterations", 0),
-        }
-
-        # Save reports
-        json_path = self.report_generator.save_json_report(final_report)
-        md_path = self.report_generator.save_markdown_report(final_report)
-
-        logger.info(f"Analysis complete. Report saved to {json_path} and {md_path}")
-        return final_report.to_dict()
 
     def _tool_executor_wrapper(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Wrapper to intercept tool execution for snapshot logic."""

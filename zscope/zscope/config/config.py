@@ -47,6 +47,7 @@ class IndexingConfig:
     auto_prime: bool = True
     max_prime_files: int = 100
     only_prime_priority: bool = False
+    clangd_path: str = "clangd"
 
 
 @dataclass
@@ -194,6 +195,7 @@ class ConfigLoader:
                 auto_prime=indexing_data.get("auto_prime", True),
                 max_prime_files=indexing_data.get("max_prime_files", 100),
                 only_prime_priority=indexing_data.get("only_prime_priority", False),
+                clangd_path=indexing_data.get("clangd_path", "clangd"),
             )
 
             # Analysis config
