@@ -348,7 +348,7 @@ class CodeIndex:
         if self._backend != "clangd" or not self._lsp_client:
             return []
         
-        full_path = self.project_root / file_path
+        full_path = self._resolve_file_path(file_path)
         defs = self._lsp_client.get_definition(full_path, line, character)
         results = []
         for d in defs:
@@ -371,7 +371,7 @@ class CodeIndex:
         if self._backend != "clangd" or not self._lsp_client:
             return []
         
-        full_path = self.project_root / file_path
+        full_path = self._resolve_file_path(file_path)
         refs = self._lsp_client.get_references(full_path, line, character)
         results = []
         for r in refs:
@@ -406,10 +406,7 @@ class CodeIndex:
         self, file_path: str, start_line: int, end_line: int
     ) -> Optional[Dict[str, Any]]:
         """Get a snippet from a file."""
-        if Path(file_path).is_absolute():
-            full_path = Path(file_path)
-        else:
-            full_path = self.project_root / file_path
+        full_path = self._resolve_file_path(file_path)
 
         if not full_path.exists():
             logger.warning(f"File not found: {file_path}")
@@ -429,7 +426,7 @@ class CodeIndex:
             code = "".join(code_lines)
 
             return {
-                "file": normalize_path(full_path, self.project_root),
+                "file": self._normalize_path(full_path),
                 "start_line": start_line,
                 "end_line": end_line,
                 "code": code,
@@ -452,6 +449,25 @@ class CodeIndex:
             path_str = path_str.replace("/", "\\")
 
         return Path(path_str)
+
+    def _resolve_file_path(self, file_path: str) -> Path:
+        """Resolve file path against source_root first, then project_root."""
+        path = Path(file_path)
+        if path.is_absolute():
+            return path
+
+        source_candidate = self.source_root / file_path
+        if source_candidate.exists():
+            return source_candidate
+
+        return self.project_root / file_path
+
+    def _normalize_path(self, file_path: Path) -> str:
+        """Normalize a path relative to source_root when possible."""
+        try:
+            return str(file_path.resolve().relative_to(self.source_root))
+        except ValueError:
+            return normalize_path(file_path, self.project_root)
 
     def list_functions(self, prefix: Optional[str] = None, limit: int = 50) -> List[str]:
         """List known functions."""
