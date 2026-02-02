@@ -286,14 +286,7 @@ class CodeIndex:
                 if macro_result:
                     logger.info(f"Macro '{func_name}' found via regex, skipping LSP priming.")
                     return macro_result
-                found_files = []
-                func_pattern = re.compile(rf"\b{func_name}\b\s*\(")
-                for f_path in self.source_root.rglob("*.c"):
-                    try:
-                        with open(f_path, "r", encoding="utf-8", errors="ignore") as f:
-                            if func_pattern.search(f.read()):
-                                found_files.append(f_path)
-                    except: continue
+                found_files = self._find_function_definition_files(func_name)
                 
                 if found_files:
                     logger.info(f"Found '{func_name}' in {len(found_files)} files via regex, priming on-demand...")
@@ -353,6 +346,24 @@ class CodeIndex:
                         queue.extend(sym["children"])
             except Exception as e:
                 logger.debug(f"Failed to refine range for {func_name}: {e}")
+
+    def _find_function_definition_files(self, func_name: str) -> List[Path]:
+        """Find files containing a likely function implementation (not just a call)."""
+        found_files = []
+        func_pattern = re.compile(
+            rf"^\s*(?:static\s+|inline\s+|extern\s+)?"
+            rf"(?:[\w\s\*]+\s+)?{re.escape(func_name)}\s*\([^;{{}}]*\)\s*\{{",
+            re.MULTILINE,
+        )
+        for ext in ["*.c", "*.cpp", "*.cc", "*.h", "*.hpp"]:
+            for f_path in self.source_root.rglob(ext):
+                try:
+                    with open(f_path, "r", encoding="utf-8", errors="ignore") as f:
+                        if func_pattern.search(f.read()):
+                            found_files.append(f_path)
+                except Exception:
+                    continue
+        return found_files
 
         try:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
