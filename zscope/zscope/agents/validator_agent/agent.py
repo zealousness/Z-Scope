@@ -27,6 +27,11 @@ Schema:
 }
 
 IMPORTANT: Erring on the side of caution means reporting potential issues for human review, rather than silently discarding them. If the Auditor's reasoning seems plausible and you can't find clear proof of a mitigation, you MUST validate it.
+
+Tooling requirements:
+- If the finding depends on the behavior of a callee or downstream function (e.g., "might overflow in VOS_VFS_CreateDir"), you MUST use tools to retrieve that callee's implementation or snapshot (get_function_impl/get_function_snapshot). Do not assume the callee is unsafe without checking.
+- If the callee cannot be found or code is unavailable, explicitly record that in 'missing_context' and explain the uncertainty in 'reasoning'.
+- Use list_known_functions to locate likely callee names when uncertain.
 """
 
 class ValidatorAgent(BaseAgent):
