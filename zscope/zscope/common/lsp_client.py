@@ -168,129 +168,141 @@ class LSPClient:
     def _read_loop(self):
         """Background thread to read JSON-RPC messages from stdout."""
         import os
+        buffer = b""
+        fd = None
+        pending_length: Optional[int] = None
         while self._running and self.process and self.process.stdout:
             try:
-                # Robust unbuffered LSP header parsing
-                fd = self.process.stdout.fileno()
-                header_data = b""
-                while True:
-                    try:
-                        chunk = os.read(fd, 1)
-                    except (OSError, ValueError):
-                        return
-                    if not chunk:
-                        return
-                    header_data += chunk
-                    if header_data.endswith(b"\r\n\r\n"):
-                        break
-                
-                header_str = header_data.decode("utf-8", errors="replace")
-                content_length = 0
-                for line in header_str.split("\r\n"):
-                    if line.startswith("Content-Length:"):
-                        try:
-                            content_length = int(line.split(":")[1].strip())
-                        except ValueError:
-                            content_length = 0
-                
-                if content_length <= 0:
-                    logger.warning("Missing Content-Length header, or zero-length message.")
-                    continue
+                if fd is None:
+                    fd = self.process.stdout.fileno()
 
-                # Read the exact content length
-                content_bytes = b""
-                while len(content_bytes) < content_length:
-                    try:
-                        chunk = os.read(fd, content_length - len(content_bytes))
-                    except (OSError, ValueError):
-                        return
-                    if not chunk:
-                        break
-                    content_bytes += chunk
-                
-                content = content_bytes.decode("utf-8", errors="replace")
                 try:
-                    stripped = content.lstrip()
-                    if not stripped:
-                        continue
-                    if stripped[0] not in "{[":
-                        logger.debug("Non-JSON LSP payload ignored: %r", content[:200])
-                        continue
-                    message = json.loads(stripped)
-                except json.JSONDecodeError as exc:
-                    logger.warning(f"JSON parse error: {exc}")
-                    continue
-                
-                if "id" in message:
-                    msg_id = message["id"]
-                    with self._lock:
-                        self._responses[msg_id] = message
-                else:
-                    # Notification or logging
-                    method = message.get("method", "")
-                    params = message.get("params", {})
+                    chunk = os.read(fd, 4096)
+                except (OSError, ValueError):
+                    return
+                if not chunk:
+                    return
 
-                    if method == "window/logMessage":
-                        msg_text = params.get("message", "")
-                        logger.debug(f"[clangd] {msg_text}")
-                        # Display indexing progress for user
-                        # More inclusive check for progress
-                        if any(
-                            k in msg_text
-                            for k in [
-                                "Indexing",
-                                "Building",
-                                "Parsing",
-                                "Checking",
-                                "Loading",
-                                "Scanning",
-                                "%",
-                            ]
-                        ):
-                            if msg_text != self._last_msg:
-                                sys.stdout.write(f"\r  [LSP] {msg_text[:80]:<80}")
-                                sys.stdout.flush()
-                                self._last_msg = msg_text
-                            self._last_progress_time = time.time()
-                    elif method == "$/progress":
-                        # Handle work done progress
-                        value = params.get("value", {})
-                        kind = value.get("kind", "")
-                        if kind == "begin":
-                            title = value.get("title", "Processing")
-                            print(f"\n  [LSP] {title}...", flush=True)
-                        elif kind == "report":
-                            message_text = value.get("message", "")
-                            percentage = value.get("percentage")
-                            if percentage is not None:
-                                print(
-                                    f"\r  [LSP] {message_text} ({percentage}%)",
-                                    end="",
-                                    flush=True,
-                                )
-                            else:
-                                print(
-                                    f"\r  [LSP] {message_text:<60}",
-                                    end="",
-                                    flush=True,
-                                )
-                            self._last_progress_time = time.time()
-                        elif kind == "end":
-                            message_text = value.get("message", "Done")
-                            print(f"\r  [LSP] {message_text:<60}", flush=True)
-                    elif method == "textDocument/clangd.fileStatus":
-                        # clangd-specific file status (shows TU analysis progress)
-                        state = params.get("state", "")
-                        uri = params.get("uri", "")
-                        if state and uri:
-                            filename = uri.split("/")[-1]
-                            # Map states to more descriptive TU analysis messages
-                            msg = f"{state}: {filename}"
-                            if msg != self._last_msg:
-                                sys.stdout.write(f"\r  [LSP] {msg:<80}")
-                                sys.stdout.flush()
-                                self._last_msg = msg
-                            self._last_progress_time = time.time()
+                buffer += chunk
+
+                while True:
+                    if pending_length is None:
+                        header_end = buffer.find(b"\r\n\r\n")
+                        if header_end == -1:
+                            if len(buffer) > 1024 * 1024:
+                                idx = buffer.rfind(b"Content-Length:")
+                                buffer = buffer[idx:] if idx != -1 else b""
+                            break
+
+                        header_bytes = buffer[:header_end]
+                        buffer = buffer[header_end + 4 :]
+
+                        content_length = 0
+                        for line in header_bytes.decode("utf-8", errors="replace").split("\r\n"):
+                            if line.startswith("Content-Length:"):
+                                try:
+                                    content_length = int(line.split(":", 1)[1].strip())
+                                except ValueError:
+                                    content_length = 0
+                                    break
+
+                        if content_length <= 0:
+                            logger.warning("Missing Content-Length header, or zero-length message.")
+                            continue
+
+                        pending_length = content_length
+
+                    if pending_length is None or len(buffer) < pending_length:
+                        break
+
+                    content_bytes = buffer[:pending_length]
+                    buffer = buffer[pending_length:]
+                    pending_length = None
+
+                    content = content_bytes.decode("utf-8", errors="replace")
+                    try:
+                        stripped = content.lstrip()
+                        if not stripped:
+                            continue
+                        if stripped[0] not in "{[":
+                            logger.debug("Non-JSON LSP payload ignored: %r", content[:200])
+                            continue
+                        message = json.loads(stripped)
+                    except json.JSONDecodeError as exc:
+                        logger.warning(f"JSON parse error: {exc}")
+                        continue
+
+                    if "id" in message:
+                        msg_id = message["id"]
+                        with self._lock:
+                            self._responses[msg_id] = message
+                    else:
+                        # Notification or logging
+                        method = message.get("method", "")
+                        params = message.get("params", {})
+
+                        if method == "window/logMessage":
+                            msg_text = params.get("message", "")
+                            logger.debug(f"[clangd] {msg_text}")
+                            # Display indexing progress for user
+                            # More inclusive check for progress
+                            if any(
+                                k in msg_text
+                                for k in [
+                                    "Indexing",
+                                    "Building",
+                                    "Parsing",
+                                    "Checking",
+                                    "Loading",
+                                    "Scanning",
+                                    "%",
+                                ]
+                            ):
+                                if msg_text != self._last_msg:
+                                    sys.stdout.write(f"\r  [LSP] {msg_text[:80]:<80}")
+                                    sys.stdout.flush()
+                                    self._last_msg = msg_text
+                                self._last_progress_time = time.time()
+                        elif method == "$/progress":
+                            # Handle work done progress
+                            value = params.get("value", {})
+                            kind = value.get("kind", "")
+                            if kind == "begin":
+                                title = value.get("title", "Processing")
+                                print(f"\n  [LSP] {title}...", flush=True)
+                            elif kind == "report":
+                                message_text = value.get("message", "")
+                                percentage = value.get("percentage")
+                                if percentage is not None:
+                                    print(
+                                        f"\r  [LSP] {message_text} ({percentage}%)",
+                                        end="",
+                                        flush=True,
+                                    )
+                                else:
+                                    print(
+                                        f"\r  [LSP] {message_text:<60}",
+                                        end="",
+                                        flush=True,
+                                    )
+                                self._last_progress_time = time.time()
+                            elif kind == "end":
+                                message_text = value.get("message", "Done")
+                                print(f"\r  [LSP] {message_text:<60}", flush=True)
+                        elif method == "textDocument/clangd.fileStatus":
+                            # clangd-specific file status (shows TU analysis progress)
+                            state = params.get("state", "")
+                            uri = params.get("uri", "")
+                            if state and uri:
+                                filename = uri.split("/")[-1]
+                                # Map states to more descriptive TU analysis messages
+                                msg = f"{state}: {filename}"
+                                if msg != self._last_msg:
+                                    sys.stdout.write(f"\r  [LSP] {msg:<80}")
+                                    sys.stdout.flush()
+                                    self._last_msg = msg
+                                self._last_progress_time = time.time()
+
             except Exception as e:
                 if self._running:
                     logger.error(f"Error in LSP read loop: {e}")
