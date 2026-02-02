@@ -305,6 +305,8 @@ class LLMClient:
         if not file_match:
             return None
         file_path = file_match.group(1)
+        has_start_line = re.search(r'["\']start_line["\']\s*:', text) is not None
+        has_end_line = re.search(r'["\']end_line["\']\s*:', text) is not None
 
         def extract_int(key: str) -> Optional[int]:
             direct = re.search(rf'"{key}"\s*:\s*([0-9]+)', text)
@@ -325,6 +327,8 @@ class LLMClient:
         end_line = extract_int("end_line")
 
         if start_line is None and end_line is None:
+            if has_start_line or has_end_line:
+                return {"file_path": file_path, "start_line": None, "end_line": None}
             return None
         if start_line is None:
             start_line = end_line
