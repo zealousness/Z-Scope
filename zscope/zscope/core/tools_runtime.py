@@ -179,7 +179,7 @@ class ToolsRuntime:
         }
 
     def _get_file_snippet(
-        self, file_path: str, start_line: int, end_line: int
+        self, file_path: str, start_line: Optional[int], end_line: Optional[int]
     ) -> Dict[str, Any]:
         """Get file snippet."""
         result = self.code_index.get_file_snippet(file_path, start_line, end_line)

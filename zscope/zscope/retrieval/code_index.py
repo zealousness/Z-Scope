@@ -508,7 +508,7 @@ class CodeIndex:
         return None
 
     def get_file_snippet(
-        self, file_path: str, start_line: int, end_line: int
+        self, file_path: str, start_line: Optional[int], end_line: Optional[int]
     ) -> Optional[Dict[str, Any]]:
         """Get a snippet from a file."""
         full_path = self._resolve_file_path(file_path)
@@ -525,8 +525,24 @@ class CodeIndex:
             with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
                 lines = f.readlines()
 
+            total_lines = len(lines)
+            if total_lines == 0:
+                return {
+                    "file": self._normalize_path(full_path),
+                    "start_line": 1,
+                    "end_line": 0,
+                    "code": "",
+                }
+
+            if start_line is None or start_line < 1:
+                start_line = 1
+            if end_line is None or end_line < 1:
+                end_line = min(total_lines, start_line + 199)
+            if end_line < start_line:
+                end_line = min(total_lines, start_line + 199)
+
             start = max(0, start_line - 1)
-            end = min(len(lines), end_line)
+            end = min(total_lines, end_line)
             code_lines = lines[start:end]
             code = "".join(code_lines)
 
