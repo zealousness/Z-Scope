@@ -3,6 +3,7 @@ Enhanced LLM client with model fallback support.
 """
 
 import ast
+import re
 import json
 import logging
 import time
@@ -203,6 +204,10 @@ class LLMClient:
 
     def _parse_tool_args(self, func_args_str: str) -> Dict[str, Any]:
         """Parse tool arguments, with fallbacks for slightly malformed JSON."""
+        if isinstance(func_args_str, dict):
+            return func_args_str
+        if func_args_str is None:
+            return {}
         try:
             return json.loads(func_args_str)
         except json.JSONDecodeError as exc:
@@ -218,9 +223,52 @@ class LLMClient:
             except (ValueError, SyntaxError):
                 pass
 
+            sanitized = self._sanitize_tool_args(stripped)
+            if sanitized != stripped:
+                for candidate in (sanitized, self._pythonize_json_literals(sanitized)):
+                    try:
+                        parsed = json.loads(candidate)
+                        if isinstance(parsed, dict):
+                            logger.warning("Recovered tool arguments via sanitized JSON.")
+                            return parsed
+                    except json.JSONDecodeError:
+                        try:
+                            parsed = ast.literal_eval(candidate)
+                            if isinstance(parsed, dict):
+                                logger.warning("Recovered tool arguments via sanitized literal_eval.")
+                                return parsed
+                        except (ValueError, SyntaxError):
+                            continue
+
+            pythonized = self._pythonize_json_literals(stripped)
+            if pythonized != stripped:
+                try:
+                    parsed = ast.literal_eval(pythonized)
+                    if isinstance(parsed, dict):
+                        logger.warning("Recovered tool arguments via pythonized literal_eval.")
+                        return parsed
+                except (ValueError, SyntaxError):
+                    pass
+
             for candidate in extract_json_blocks(func_args_str):
                 if isinstance(candidate, dict):
                     logger.warning("Recovered tool arguments from JSON block.")
                     return candidate
 
             raise ValueError(f"Invalid tool arguments JSON: {exc}") from exc
+
+    @staticmethod
+    def _sanitize_tool_args(text: str) -> str:
+        """Attempt to normalize JSON-like tool argument strings."""
+        sanitized = text.strip()
+        sanitized = re.sub(r",\s*([}\]])", r"\1", sanitized)
+        sanitized = re.sub(r"([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*):", r'\1"\2"\3:', sanitized)
+        return sanitized
+
+    @staticmethod
+    def _pythonize_json_literals(text: str) -> str:
+        """Swap JSON literals for Python equivalents for literal_eval."""
+        pythonized = re.sub(r"\bnull\b", "None", text, flags=re.IGNORECASE)
+        pythonized = re.sub(r"\btrue\b", "True", pythonized, flags=re.IGNORECASE)
+        pythonized = re.sub(r"\bfalse\b", "False", pythonized, flags=re.IGNORECASE)
+        return pythonized
