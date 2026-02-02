@@ -255,7 +255,22 @@ class LLMClient:
                     logger.warning("Recovered tool arguments from JSON block.")
                     return candidate
 
+            logger.error(
+                "Invalid tool arguments JSON. Raw payload: %s",
+                self._truncate_tool_args_for_log(func_args_str),
+            )
             raise ValueError(f"Invalid tool arguments JSON: {exc}") from exc
+
+    @staticmethod
+    def _truncate_tool_args_for_log(value: Any, limit: int = 500) -> str:
+        """Return a safely truncated string for logging invalid tool args."""
+        if value is None:
+            return "<empty>"
+        if not isinstance(value, str):
+            value = repr(value)
+        if len(value) <= limit:
+            return value
+        return f"{value[:limit]}…(truncated)"
 
     @staticmethod
     def _sanitize_tool_args(text: str) -> str:

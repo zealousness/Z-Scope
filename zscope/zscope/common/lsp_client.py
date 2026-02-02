@@ -210,7 +210,13 @@ class LSPClient:
                 
                 content = content_bytes.decode("utf-8", errors="replace")
                 try:
-                    message = json.loads(content)
+                    stripped = content.lstrip()
+                    if not stripped:
+                        continue
+                    if stripped[0] not in "{[":
+                        logger.debug("Non-JSON LSP payload ignored: %r", content[:200])
+                        continue
+                    message = json.loads(stripped)
                 except json.JSONDecodeError as exc:
                     logger.warning(f"JSON parse error: {exc}")
                     continue
@@ -448,7 +454,19 @@ class LSPClient:
             "textDocument": {"uri": file_path.as_uri()}
         }
         result = self.send_request("textDocument/documentSymbol", params)
-        return result if result else []
+        if result:
+            return result
+        for attempt in range(2):
+            logger.info(
+                "Retrying documentSymbol for %s (attempt %d/2)",
+                file_path,
+                attempt + 1,
+            )
+            time.sleep(2 ** attempt)
+            result = self.send_request("textDocument/documentSymbol", params)
+            if result:
+                return result
+        return []
 
     def get_workspace_symbols(self, query: str) -> List[Dict[str, Any]]:
         """workspace/symbol"""
