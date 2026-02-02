@@ -4,17 +4,17 @@
 
 ## 核心特性
 
-- **多智能体分治**：采用 `语义建模 Agent` 与 `漏洞扫描 Agent` 独立协作，保证分析深度与准确性。
-- **批量函数扫描**：支持通过 JSON 定义多个入口函数，共享 AST 索引，大幅提升大工程（100万行+）的分析效率。
-- **高可用模型降级**：支持多模型优先级配置，当高参数模型响应异常时，自动平滑切换至后续模型。
-- **语义快照缓存**：升级为路径感知的复合主键（函数名+文件路径），精准区分同名函数，加速分析并支持大规模并发。
-- **纯 YAML 驱动**：废弃繁琐的命令行参数，所有分析任务、并发数及模型参数均通过 `zscope.yaml` 灵活定制。
-- **多模型兼容**：同时支持云端模型（SiliconFlow）和本地模型（Ollama），灵活切换无需修改代码。
-- **健壮的 JSON 解析**：自动处理 LLM 输出的各种格式，包括 markdown 代码块、嵌套结构和部分截断的输出。
+- **多智能体分治**：采用 `语义建模 Agent`、`漏洞扫描 Agent` 与 `验证 Agent` 独立协作，深度挖掘逻辑缺陷。
+- **高性能 LSP 引擎**：原生支持 `clangd`，具备自适应索引预热、毫秒级符号解析及大规模工程（百万行+）的句柄复用能力。
+- **健壮的错误隔离**：改进失败追踪逻辑，确保 Agent 异常或限流时任务状态准确，不遗漏任何潜在风险。
+- **批量函数并行扫描**：支持多 worker 并发，共享代码索引与快照数据库，极大提升扫描吞吐量。
+- **语义快照缓存**：升级为路径感知的复合主键（函数名+文件路径），精准区分同名函数，加速重复审计。
+- **纯 YAML 驱动**：所有分析参数、LSP 路径及模型优先级均通过 `zscope.yaml` 统一定义。
+- **全平台兼容**：完美支持 Windows (winget)、Linux (Bear) 及 macOS。
 
 ## 系统架构
 
-Z-SCOPE 将公共框架能力（LLM 访问、模型降级、工具调用）与具体的分析逻辑解耦。
+Z-SCOPE 将公共框架能力（LLM 访问、模型回退、工具调用）与具体的分析逻辑解耦。
 
 ```mermaid
 graph TD
@@ -38,8 +38,8 @@ graph TD
     
     subgraph Infrastructure [基础设施]
         LLM --> Fallback["模型自动回退 (Priority List)"]
-        ToolBus --> CodeIndex["代码索引 (Regex/LibClang)"]
-        ToolBus --> SnapStore["快照数据库 (SQLite)"]
+        ToolBus --> CodeIndex["代码索引 (Clangd/Regex)"]
+        ToolBus --> SnapStore["快照数据库 (SQLite/JSON)"]
     end
     
     Analyzer --> Reports["分析报告 (Markdown/JSON)"]
@@ -66,191 +66,91 @@ python -m pip install -e zscope
 ```yaml
 llm:
   provider: openai
-  base_url: https://api.siliconflow.cn/v1  # 或 http://localhost:11434/v1 for Ollama
+  base_url: http://localhost:11434/v1  # Ollama 示例
   models:
-    - deepseek-ai/DeepSeek-V3 # 优先级 1
-    - Qwen/Qwen2.5-Coder-32B-Instruct  # 优先级 2
-  api_key: sk-xxx  # 本地模型可省略
+    - alibayram/Qwen3-30B-A3B-Instruct-2507:latest  # 本地高性能模型
+  api_key: ollama
   temperature: 0.1
   max_tokens: 16384
 
 project:
-  root: .                                   # 执行根目录 (存放报告/快照)
-  source_root: ../my_src                    # 源码根目录 (可选，默认为 root)
-  entry_function: main                      # 单函数模式入口
-  # entry_functions_list: entry_funcs.json  # 开启批量扫描模式
+  root: .                                   # 分析根目录
+  source_root: .                            # 源码根目录
+  entry_functions_list: batch_scan.json     # 批量扫描模式 (包含多个函数)
   agents:
     - name: semantic_modeler
       enabled: true
     - name: vulnerability_analyzer
-      task: "查找逻辑漏洞、内存安全问题和并发风险。"
+      task: "分析 C 语言代码中的内存安全、逻辑漏洞及并发风险。"
       enabled: true
+    - name: validator_agent
+      enabled: true                         # 开启结果二次验证
 
 analysis:
-  parallel_workers: 5      # 批量扫描并发数
-  max_recursion_depth: 3   # 函数分析深度
+  parallel_workers: 1      # 本地模型推荐设为 1，云端可设为 3+
+  max_recursion_depth: 3
   snapshot_dir: .zscope_snapshots
   enable_snapshot_cache: true
 
 indexing:
-  backend: clangd          # 推荐使用 clangd
-  auto_prime: true         # 是否自动启动预热
-  only_prime_priority: true # 严格模式：仅预热入口函数相关文件 (推荐大项目开启)
-  max_prime_files: 100     # 预热文件上限，防止 OOM
+  backend: clangd          # 推荐后端
+  clangd_path: "C:\\Program Files\\LLVM\\bin\\clangd.exe" # 可选：指定路径
+  auto_prime: true         # 自动预热
+  only_prime_priority: true # 仅预热入口相关文件 (防 OOM)
 ```
 
-### 2. 配置代码索引 (LSP/Clangd)
+### 2. 配置代码索引 (Clangd)
 
-Z-SCOPE 支持两种代码索引后端：
-- **clangd** (推荐)：基于 LLVM 的精确 AST 解析，支持跨文件符号解析。
-- **regex**：正则表达式回退方案，无需额外依赖。
+Z-SCOPE 深度集成 `clangd` 实现高精度审计：
 
 #### 高性能索引特性
-- **Smart Priming (智能预热)**：根据入口函数自动定位并优先解析相关文件。
-- **Double-Layer Search (双层搜索)**：当 LSP 索引尚未就绪时，自动回退至正则搜索并触发“按需预热”，确保分析永不中断。
-- **Strict Mode (严格模式)**：通过 `only_prime_priority: true`，在大规模项目（百万行+）中仅加载必要文件，极大地降低内存占用。
+- **Zero-Timeout Initialization**: 支持大规模项目初始化不超时，并提供实时进度反馈。
+- **Smart Priming (智能预热)**：仅解析与审计目标相关的编译单元。
+- **Double-Layer Search (双层搜索)**：LSP 与 Regex 协同工作，即使索引未完成也能立即开始分析。
 
-#### 安装 clangd
+#### 安装方式
+- **Windows**: `winget install LLVM.LLVM` (推荐)
+- **Linux**: `sudo apt install clangd`
+- **macOS**: `brew install llvm`
 
-**Windows:**
-```bash
-# 使用 winget
-winget install LLVM.clangd
+#### 生成编译数据库 (`compile_commands.json`)
+- **CMake**: `cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON .`
+- **Makefile**: 使用 `bear -- make`
 
-# 或下载预编译包
-# https://github.com/clangd/clangd/releases
-# 解压后将 bin 目录添加到 PATH
-```
-
-**macOS:**
-```bash
-brew install llvm
-# clangd 在 /opt/homebrew/opt/llvm/bin/clangd
-```
-
-**Ubuntu/Debian:**
-```bash
-sudo apt install clangd
-```
-
-#### 生成 compile_commands.json
-
-clangd 需要 `compile_commands.json` 来理解项目结构：
-
-**使用 CMake:**
-```bash
-cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -B build
-cp build/compile_commands.json .
-```
-
-**使用 Bear (任意 Makefile 项目):**
-```bash
-# 安装 Bear
-pip install bear  # 或 apt install bear
-
-# 生成编译数据库
-bear -- make
-```
-
-**手动创建 (简单项目):**
-```json
-[
-  {
-    "directory": "/path/to/project",
-    "command": "gcc -c -I./include src/main.c -o main.o",
-    "file": "src/main.c"
-  }
-]
-```
-
-#### 配置索引后端
-
-```yaml
-indexing:
-  backend: libclang  # 使用 clangd (需要 compile_commands.json)
-  # backend: regex   # 回退方案，无需额外配置
-```
-
-> **注意**: 如果 clangd 启动失败，Z-SCOPE 会自动回退到 regex 模式并输出警告日志。
-
-### 3. 批量扫描配置 (可选)
-创建 `entry_funcs.json` 定义多个扫描目标，可为每个函数附加特定的提示词：
-
-```json
-{
-  "functions": [
-    {
-      "function_name": "process_data",
-      "file_path": "src/core.c",
-      "custom_prompt": "关注处理逻辑中的整数溢出"
-    },
-    {
-      "function_name": "main",
-      "custom_prompt": "扫描程序初始化过程中的资源泄露"
-    }
-  ]
-}
-```
-
-### 4. 执行分析
+### 3. 执行分析
 
 ```bash
-zscope --config zscope.yaml
+# 自动加载当前目录 zscope.yaml
+zscope --verbose
 ```
 
-### 5. 使用本地模型 (Ollama)
+## 输出报告
 
-```yaml
-llm:
-  provider: openai
-  base_url: http://localhost:11434/v1
-  models:
-    - alibayram/Qwen3-30B-A3B-Instruct-2507:latest
-  temperature: 0.1
-  max_tokens: 16384
-```
+分析完成后生成：
+- `zscope_batch_report.md`: **审计汇总报告**，包含缺陷等级、根本原因分析及验证结论。
+- `zscope_batch_report.json`: 结构化缺陷数据。
+- `.zscope_snapshots/`: 持久化的代码语义指纹。
 
-## 输出结果
+---
 
-分析完成后，Z-SCOPE 将在项目目录下生成：
-- `report.json`：**详细分析报告** (JSON 格式)，包含完整的缺陷信息和验证结果。
-- `report.md`：**中文分析报告**，包含缺陷等级、根本原因分析及修复建议。
-- `zscope_batch_report.json`：批量扫描汇总报告 (JSON 格式)。
-- `zscope_batch_report.md`：**批量扫描汇总报告 (Markdown 格式)**，方便快速查阅。
-- `.zscope_snapshots/`：存储函数的语义建模快照（SQLite + JSON）。
+## 示例发现 (Cache Module)
 
-## 示例输出
-
-```markdown
-# Z-SCOPE 分析报告
-
-**入口函数**: `cache_get`
-**整体结论**: 🔴 发现缺陷
-
-## 缺陷列表
-
-### 🟠 [ISSUE_1] memory_safety: buffer_overflow
-- **所在函数**: `cache_get`
-- **代码位置**: `src/cache_core.c:149`
-- **置信度**: 90%
-
-**问题描述**:
-在缓存获取操作中，未验证输出缓冲区大小，可能导致缓冲区溢出。
-
-**修复建议**:
-> 在 memcpy 前添加检查：if (buffer_size < node->value_size) return -1;
-```
+对自研高速缓存模块扫描发现：
+1. **[Critical] Use-After-Free**: AVL 树旋转与 LRU 淘汰逻辑未同步导致的悬空指针。
+2. **[High] Buffer Overflow**: `cache_get` 忽略 `buffer_size` 的 `memcpy` 操作。
+3. **[High] String Safe**: `strncpy` 导致的非 NULL 终止路径风险。
 
 ## 更新日志
 
-### v0.1.1 (2026-01-26)
-- 修复 JSON 解析逻辑，增强对本地 LLM 输出格式的兼容性
-- 添加健壮的 JSON 提取策略（支持嵌套结构、markdown 代码块、部分截断恢复）
-- 修复 Agent 模块中缺失的 logger 导入
-- 优化配置模板，增加 `max_tokens` 和 `max_tool_iterations` 参数
+### v0.1.2 (2026-02-02)
+- **重大改进**：支持并行扫描模式下的组件共享（CodeIndex/SnapshotStore 复用）。
+- **增强稳定性**：集成指数退避 (Exponential Backoff) 处理 HTTP 429 API 限流。
+- **配置扩展**：支持 YAML 指定 `clangd_path`，解决 Windows 环境路径识别问题。
+- **UI 优化**：批量扫描进度显示及 Agent 级联失败逻辑重构。
+
+### v0.1.1
+- 优化 JSON 提取策略，支持嵌套结构及截断恢复。
+- 修复 Agent 模块中的 logger 导入异常。
 
 ### v0.1.0
-- 初始版本发布
-- 多智能体协作分析架构
-- 批量函数扫描支持
-- 模型自动降级机制
+- 初始版本：多智能体协作、语义建模缓存、模型自动降级。
