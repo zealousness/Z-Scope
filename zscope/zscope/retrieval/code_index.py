@@ -415,6 +415,10 @@ class CodeIndex:
             logger.warning(f"File not found: {file_path}")
             return None
 
+        if full_path.is_dir():
+            logger.warning(f"File path is a directory, not a file: {full_path}")
+            return None
+
         try:
             with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
                 lines = f.readlines()
