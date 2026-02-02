@@ -513,13 +513,49 @@ class CodeIndex:
         """Resolve file path against source_root first, then project_root."""
         path = Path(file_path)
         if path.is_absolute():
-            return path
+            if path.exists():
+                return path
+            resolved = self._find_alternative_file(path)
+            return resolved or path
 
         source_candidate = self.source_root / file_path
         if source_candidate.exists():
             return source_candidate
 
-        return self.project_root / file_path
+        project_candidate = self.project_root / file_path
+        if project_candidate.exists():
+            return project_candidate
+
+        resolved = self._find_alternative_file(path)
+        return resolved or project_candidate
+
+    def _find_alternative_file(self, path: Path) -> Optional[Path]:
+        """Attempt to resolve a missing file by searching the source tree."""
+        roots = [self.source_root]
+        if self.project_root not in roots:
+            roots.append(self.project_root)
+
+        matches: List[Path] = []
+        for root in roots:
+            matches.extend(root.rglob(path.name))
+        if len(matches) == 1:
+            logger.info(f"Resolved missing file '{path}' to '{matches[0]}'")
+            return matches[0]
+        if len(matches) > 1:
+            logger.warning(f"Multiple matches for missing file '{path}': {len(matches)}")
+            return None
+
+        alt_matches: List[Path] = []
+        stem = path.stem
+        for ext in [".c", ".h", ".cpp", ".hpp", ".cc"]:
+            for root in roots:
+                alt_matches.extend(root.rglob(f"{stem}{ext}"))
+        if len(alt_matches) == 1:
+            logger.info(f"Resolved missing file '{path}' to '{alt_matches[0]}'")
+            return alt_matches[0]
+        if len(alt_matches) > 1:
+            logger.warning(f"Multiple matches for missing file '{path}': {len(alt_matches)}")
+        return None
 
     def _normalize_path(self, file_path: Path) -> str:
         """Normalize a path relative to source_root when possible."""
