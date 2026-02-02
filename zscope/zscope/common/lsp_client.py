@@ -188,31 +188,41 @@ class LSPClient:
                 content_length = 0
                 for line in header_str.split("\r\n"):
                     if line.startswith("Content-Length:"):
-                        content_length = int(line.split(":")[1].strip())
-                
-                if content_length > 0:
-                    # Read the exact content length
-                    content_bytes = b""
-                    while len(content_bytes) < content_length:
                         try:
-                            chunk = os.read(fd, content_length - len(content_bytes))
-                        except (OSError, ValueError):
-                            return
-                        if not chunk:
-                            break
-                        content_bytes += chunk
-                    
-                    content = content_bytes.decode("utf-8", errors="replace")
+                            content_length = int(line.split(":")[1].strip())
+                        except ValueError:
+                            content_length = 0
+                
+                if content_length <= 0:
+                    logger.warning("Missing Content-Length header, or zero-length message.")
+                    continue
+
+                # Read the exact content length
+                content_bytes = b""
+                while len(content_bytes) < content_length:
+                    try:
+                        chunk = os.read(fd, content_length - len(content_bytes))
+                    except (OSError, ValueError):
+                        return
+                    if not chunk:
+                        break
+                    content_bytes += chunk
+                
+                content = content_bytes.decode("utf-8", errors="replace")
+                try:
                     message = json.loads(content)
-                    
-                    if "id" in message:
-                        msg_id = message["id"]
-                        with self._lock:
-                            self._responses[msg_id] = message
-                    else:
-                        # Notification or logging
-                        method = message.get("method", "")
-                        params = message.get("params", {})
+                except json.JSONDecodeError as exc:
+                    logger.warning(f"JSON parse error: {exc}")
+                    continue
+                
+                if "id" in message:
+                    msg_id = message["id"]
+                    with self._lock:
+                        self._responses[msg_id] = message
+                else:
+                    # Notification or logging
+                    method = message.get("method", "")
+                    params = message.get("params", {})
                         
                         if method == "window/logMessage":
                             msg_text = params.get("message", "")
