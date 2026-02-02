@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from ..config.config import ZScopeConfig
 from ..config.function_entry import FunctionEntry
 from .analyzer import Analyzer
+from .snapshot_store import SnapshotStore
 from ..retrieval.code_index import CodeIndex
 
 logger = logging.getLogger(__name__)
@@ -56,7 +57,7 @@ class ParallelAnalyzer:
                 config.project.project_root, 
                 config.project.compile_commands_path
             )
-        
+        self.snapshot_store = SnapshotStore(Path(config.analysis.snapshot_dir))
         
     def analyze_function_entries(
         self,
@@ -136,10 +137,12 @@ class ParallelAnalyzer:
             # Create a config copy with this function as entry point and custom prompt
             config_copy = self._create_config_for_entry(entry)
             
-            # Create analyzer and run
-            analyzer = Analyzer(config_copy)
-            # Pass the shared code index to avoid rebuilding
-            analyzer.code_index = self.code_index
+            # Create analyzer and run with shared components
+            analyzer = Analyzer(
+                 config_copy, 
+                 code_index=self.code_index, 
+                 snapshot_store=self.snapshot_store
+            )
             report_dict = analyzer.run()
             
             duration = time.time() - start_time
