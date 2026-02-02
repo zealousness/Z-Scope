@@ -8,6 +8,7 @@ import re
 import time
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+from urllib.parse import urlparse, unquote
 
 from ..common.utils import extract_function_calls, normalize_path
 from ..common.lsp_client import LSPClient
@@ -168,17 +169,7 @@ class CodeIndex:
                     location = sym.get("location")
                     if location:
                         uri = location.get("uri")
-                        # Convert URI to path
-                        # Robust URI to path conversion
-                        from urllib.parse import urlparse, unquote
-                        parsed_uri = urlparse(uri)
-                        path_str = unquote(parsed_uri.path)
-                        
-                        # On Windows, urlparse might leave a leading slash on the path (e.g., /C:/...)
-                        if os.name == 'nt' and path_str.startswith('/') and path_str[2:3] == ':':
-                            path_str = path_str[1:].replace('/', '\\')
-                        
-                        file_path = Path(path_str)
+                        file_path = self._uri_to_path(uri)
                         range_data = location.get("range")
                         self._function_index[name] = {
                             "file": str(file_path),
@@ -283,20 +274,7 @@ class CodeIndex:
                 if sym.get("name") == func_name and sym.get("kind") == 12:
                     location = sym.get("location")
                     if location:
-                        from urllib.parse import unquote
-                        import platform
-                        # Stripping 'file:///'
-                        uri = location["uri"]
-                        if uri.startswith("file:///"):
-                            path_str = unquote(uri[8:])
-                        else:
-                            path_str = unquote(uri[7:]) # file://
-                            
-                        if platform.system() == "Windows":
-                            path_str = path_str.replace("/", "\\")
-                            if path_str.startswith("\\"): path_str = path_str[1:] # Fix for windows absolute path
-                        
-                        file_path = Path(path_str)
+                        file_path = self._uri_to_path(location["uri"])
                         range_data = location.get("range")
                         self._function_index[func_name] = {
                             "file": str(file_path),
@@ -378,14 +356,9 @@ class CodeIndex:
             target_uri = d.get("uri") or d.get("targetUri")
             target_range = d.get("range") or d.get("targetRange")
             if target_uri and target_range:
-                from urllib.parse import unquote
-                import platform
-                path_str = unquote(target_uri[8:])
-                if platform.system() == "Windows":
-                    path_str = path_str.replace("/", "\\")
-                
+                target_path = self._uri_to_path(target_uri)
                 results.append({
-                    "file": normalize_path(Path(path_str), self.project_root),
+                    "file": normalize_path(target_path, self.project_root),
                     "start_line": target_range["start"]["line"] + 1,
                     "start_char": target_range["start"]["character"],
                     "end_line": target_range["end"]["line"] + 1,
@@ -405,14 +378,9 @@ class CodeIndex:
             uri = r.get("uri")
             range_data = r.get("range")
             if uri and range_data:
-                from urllib.parse import unquote
-                import platform
-                path_str = unquote(uri[8:])
-                if platform.system() == "Windows":
-                    path_str = path_str.replace("/", "\\")
-                
+                ref_path = self._uri_to_path(uri)
                 results.append({
-                    "file": normalize_path(Path(path_str), self.project_root),
+                    "file": normalize_path(ref_path, self.project_root),
                     "line": range_data["start"]["line"] + 1,
                     "character": range_data["start"]["character"],
                 })
@@ -465,6 +433,21 @@ class CodeIndex:
         except Exception as e:
             logger.error(f"Failed to read file snippet: {e}")
             return None
+
+    def _uri_to_path(self, uri: str) -> Path:
+        """Convert file URI (or path-like string) to Path safely."""
+        parsed_uri = urlparse(uri)
+        if parsed_uri.scheme == "file":
+            path_str = unquote(parsed_uri.path)
+        else:
+            path_str = unquote(uri)
+
+        if os.name == "nt":
+            if path_str.startswith("/") and len(path_str) > 2 and path_str[2] == ":":
+                path_str = path_str[1:]
+            path_str = path_str.replace("/", "\\")
+
+        return Path(path_str)
 
     def list_functions(self, prefix: Optional[str] = None, limit: int = 50) -> List[str]:
         """List known functions."""
