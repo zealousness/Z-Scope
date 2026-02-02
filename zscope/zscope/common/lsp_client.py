@@ -223,49 +223,68 @@ class LSPClient:
                     # Notification or logging
                     method = message.get("method", "")
                     params = message.get("params", {})
-                        
-                        if method == "window/logMessage":
-                            msg_text = params.get("message", "")
-                            logger.debug(f"[clangd] {msg_text}")
-                            # Display indexing progress for user
-                            # More inclusive check for progress
-                            if any(k in msg_text for k in ["Indexing", "Building", "Parsing", "Checking", "Loading", "Scanning", "%"]):
-                                if msg_text != self._last_msg:
-                                    sys.stdout.write(f"\r  [LSP] {msg_text[:80]:<80}")
-                                    sys.stdout.flush()
-                                    self._last_msg = msg_text
-                                self._last_progress_time = time.time()
-                        elif method == "$/progress":
-                            # Handle work done progress
-                            value = params.get("value", {})
-                            kind = value.get("kind", "")
-                            if kind == "begin":
-                                title = value.get("title", "Processing")
-                                print(f"\n  [LSP] {title}...", flush=True)
-                            elif kind == "report":
-                                message_text = value.get("message", "")
-                                percentage = value.get("percentage")
-                                if percentage is not None:
-                                    print(f"\r  [LSP] {message_text} ({percentage}%)", end="", flush=True)
-                                else:
-                                    print(f"\r  [LSP] {message_text:<60}", end="", flush=True)
-                                self._last_progress_time = time.time()
-                            elif kind == "end":
-                                message_text = value.get("message", "Done")
-                                print(f"\r  [LSP] {message_text:<60}", flush=True)
-                        elif method == "textDocument/clangd.fileStatus":
-                            # clangd-specific file status (shows TU analysis progress)
-                            state = params.get("state", "")
-                            uri = params.get("uri", "")
-                            if state and uri:
-                                filename = uri.split("/")[-1]
-                                # Map states to more descriptive TU analysis messages
-                                msg = f"{state}: {filename}"
-                                if msg != self._last_msg:
-                                    sys.stdout.write(f"\r  [LSP] {msg:<80}")
-                                    sys.stdout.flush()
-                                    self._last_msg = msg
-                                self._last_progress_time = time.time()
+
+                    if method == "window/logMessage":
+                        msg_text = params.get("message", "")
+                        logger.debug(f"[clangd] {msg_text}")
+                        # Display indexing progress for user
+                        # More inclusive check for progress
+                        if any(
+                            k in msg_text
+                            for k in [
+                                "Indexing",
+                                "Building",
+                                "Parsing",
+                                "Checking",
+                                "Loading",
+                                "Scanning",
+                                "%",
+                            ]
+                        ):
+                            if msg_text != self._last_msg:
+                                sys.stdout.write(f"\r  [LSP] {msg_text[:80]:<80}")
+                                sys.stdout.flush()
+                                self._last_msg = msg_text
+                            self._last_progress_time = time.time()
+                    elif method == "$/progress":
+                        # Handle work done progress
+                        value = params.get("value", {})
+                        kind = value.get("kind", "")
+                        if kind == "begin":
+                            title = value.get("title", "Processing")
+                            print(f"\n  [LSP] {title}...", flush=True)
+                        elif kind == "report":
+                            message_text = value.get("message", "")
+                            percentage = value.get("percentage")
+                            if percentage is not None:
+                                print(
+                                    f"\r  [LSP] {message_text} ({percentage}%)",
+                                    end="",
+                                    flush=True,
+                                )
+                            else:
+                                print(
+                                    f"\r  [LSP] {message_text:<60}",
+                                    end="",
+                                    flush=True,
+                                )
+                            self._last_progress_time = time.time()
+                        elif kind == "end":
+                            message_text = value.get("message", "Done")
+                            print(f"\r  [LSP] {message_text:<60}", flush=True)
+                    elif method == "textDocument/clangd.fileStatus":
+                        # clangd-specific file status (shows TU analysis progress)
+                        state = params.get("state", "")
+                        uri = params.get("uri", "")
+                        if state and uri:
+                            filename = uri.split("/")[-1]
+                            # Map states to more descriptive TU analysis messages
+                            msg = f"{state}: {filename}"
+                            if msg != self._last_msg:
+                                sys.stdout.write(f"\r  [LSP] {msg:<80}")
+                                sys.stdout.flush()
+                                self._last_msg = msg
+                            self._last_progress_time = time.time()
             except Exception as e:
                 if self._running:
                     logger.error(f"Error in LSP read loop: {e}")
