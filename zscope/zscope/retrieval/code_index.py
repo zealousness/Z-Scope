@@ -2,6 +2,7 @@
 Code indexing and function locator for C projects.
 """
 
+import json
 import logging
 import os
 import re
@@ -40,6 +41,7 @@ class CodeIndex:
         self._priority_functions = priority_functions or []
         self._function_index: Dict[str, Dict[str, Any]] = {}
         self._lsp_client: Optional[LSPClient] = None
+        self._compile_commands_files: Optional[set[Path]] = self._load_compile_commands_files()
 
         if self._backend == "clangd" and compile_commands_path and compile_commands_path.exists():
             # Pointer to the directory containing compile_commands.json
@@ -66,6 +68,39 @@ class CodeIndex:
             self._backend = "regex"
 
         self._build_index()
+
+    def _load_compile_commands_files(self) -> Optional[set[Path]]:
+        """Load compile_commands.json file paths for disambiguation."""
+        if not self.compile_commands_path or not self.compile_commands_path.exists():
+            return None
+        try:
+            raw_json = self.compile_commands_path.read_text(encoding="utf-8")
+            data = json.loads(raw_json)
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Failed to read compile commands file %s: %s", self.compile_commands_path, exc)
+            return None
+
+        if not isinstance(data, list):
+            logger.warning("Unexpected compile commands format in %s", self.compile_commands_path)
+            return None
+
+        files: set[Path] = set()
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            file_value = entry.get("file")
+            if not file_value:
+                continue
+            entry_path = Path(file_value)
+            if not entry_path.is_absolute():
+                directory = entry.get("directory")
+                if directory:
+                    entry_path = Path(directory) / entry_path
+            try:
+                files.add(entry_path.resolve())
+            except OSError:
+                continue
+        return files or None
 
     def _prime_lsp(self, priority_funcs: Optional[List[str]] = None) -> None:
         """Send didOpen for a subset of project files to trigger indexing safely."""
@@ -538,6 +573,7 @@ class CodeIndex:
         matches: List[Path] = []
         for root in roots:
             matches.extend(root.rglob(path.name))
+        matches = self._filter_matches_by_compile_commands(matches, path)
         if len(matches) == 1:
             logger.info(f"Resolved missing file '{path}' to '{matches[0]}'")
             return matches[0]
@@ -550,12 +586,34 @@ class CodeIndex:
         for ext in [".c", ".h", ".cpp", ".hpp", ".cc"]:
             for root in roots:
                 alt_matches.extend(root.rglob(f"{stem}{ext}"))
+        alt_matches = self._filter_matches_by_compile_commands(alt_matches, path)
         if len(alt_matches) == 1:
             logger.info(f"Resolved missing file '{path}' to '{alt_matches[0]}'")
             return alt_matches[0]
         if len(alt_matches) > 1:
             logger.warning(f"Multiple matches for missing file '{path}': {len(alt_matches)}")
         return None
+
+    def _filter_matches_by_compile_commands(self, matches: List[Path], path: Path) -> List[Path]:
+        """Filter candidate matches using compile_commands.json when available."""
+        if not matches or not self._compile_commands_files:
+            return matches
+        filtered = []
+        for candidate in matches:
+            try:
+                if candidate.resolve() in self._compile_commands_files:
+                    filtered.append(candidate)
+            except OSError:
+                continue
+        if filtered and len(filtered) != len(matches):
+            logger.info(
+                "Disambiguated '%s' via compile_commands.json: %d -> %d matches",
+                path,
+                len(matches),
+                len(filtered),
+            )
+            return filtered
+        return matches
 
     def _normalize_path(self, file_path: Path) -> str:
         """Normalize a path relative to source_root when possible."""
