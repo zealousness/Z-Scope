@@ -29,14 +29,84 @@ def compute_semantic_fingerprint(code: str) -> str:
     Compute a semantic fingerprint by removing comments and normalizing whitespace.
     This helps detect semantic changes vs cosmetic changes.
     """
-    # Remove single-line comments
-    code = re.sub(r"//.*$", "", code, flags=re.MULTILINE)
-    # Remove multi-line comments
-    code = re.sub(r"/\*.*?\*/", "", code, flags=re.DOTALL)
-    # Normalize whitespace
-    code = re.sub(r"\s+", " ", code)
-    code = code.strip()
+    code = _strip_c_comments_preserve_strings(code)
+    code = re.sub(r"\s+", " ", code).strip()
     return hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+
+def _strip_c_comments_preserve_strings(code: str) -> str:
+    """Remove C-style comments while preserving strings and char literals."""
+    result = []
+    i = 0
+    in_string = False
+    in_char = False
+    in_line_comment = False
+    in_block_comment = False
+
+    while i < len(code):
+        ch = code[i]
+        nxt = code[i + 1] if i + 1 < len(code) else ""
+
+        if in_line_comment:
+            if ch == "\n":
+                in_line_comment = False
+                result.append(ch)
+            i += 1
+            continue
+
+        if in_block_comment:
+            if ch == "*" and nxt == "/":
+                in_block_comment = False
+                i += 2
+            else:
+                i += 1
+            continue
+
+        if in_string:
+            result.append(ch)
+            if ch == "\\" and nxt:
+                result.append(nxt)
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+            i += 1
+            continue
+
+        if in_char:
+            result.append(ch)
+            if ch == "\\" and nxt:
+                result.append(nxt)
+                i += 2
+                continue
+            if ch == "'":
+                in_char = False
+            i += 1
+            continue
+
+        if ch == "/" and nxt == "/":
+            in_line_comment = True
+            i += 2
+            continue
+        if ch == "/" and nxt == "*":
+            in_block_comment = True
+            i += 2
+            continue
+        if ch == '"':
+            in_string = True
+            result.append(ch)
+            i += 1
+            continue
+        if ch == "'":
+            in_char = True
+            result.append(ch)
+            i += 1
+            continue
+
+        result.append(ch)
+        i += 1
+
+    return "".join(result)
 
 
 def normalize_path(path: str, project_root: Optional[Path] = None) -> str:

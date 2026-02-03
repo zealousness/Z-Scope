@@ -30,6 +30,7 @@ class LSPClient:
         self._id_counter = 0
         self._responses: Dict[int, Any] = {}
         self._lock = threading.Lock()
+        self._io_lock = threading.Lock()
         self._reader_thread: Optional[threading.Thread] = None
         self._stderr_thread: Optional[threading.Thread] = None
         self._running = False
@@ -52,6 +53,8 @@ class LSPClient:
                 "--background-index",
                 "--pch-storage=memory"
             ]
+            if self.compile_commands_path:
+                cmd.append(f"--compile-commands-dir={self.compile_commands_path}")
             self.process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
@@ -373,9 +376,10 @@ class LSPClient:
         header = f"Content-Length: {len(content)}\r\n\r\n"
         
         try:
-            self.process.stdin.write(header.encode("utf-8"))
-            self.process.stdin.write(content.encode("utf-8"))
-            self.process.stdin.flush()
+            with self._io_lock:
+                self.process.stdin.write(header.encode("utf-8"))
+                self.process.stdin.write(content.encode("utf-8"))
+                self.process.stdin.flush()
         except Exception as e:
             logger.error(f"Failed to send LSP request: {e}")
             return None
@@ -418,9 +422,10 @@ class LSPClient:
         header = f"Content-Length: {len(content)}\r\n\r\n"
         
         try:
-            self.process.stdin.write(header.encode("utf-8"))
-            self.process.stdin.write(content.encode("utf-8"))
-            self.process.stdin.flush()
+            with self._io_lock:
+                self.process.stdin.write(header.encode("utf-8"))
+                self.process.stdin.write(content.encode("utf-8"))
+                self.process.stdin.flush()
         except Exception as e:
             logger.error(f"Failed to send LSP notification: {e}")
 
