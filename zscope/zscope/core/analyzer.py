@@ -455,6 +455,7 @@ Output a JSON of type 'snapshot_refresh_decision'.
 
     def _resolve_issue_locations(self, issues: List[Dict[str, Any]]) -> None:
         """Resolve exact line numbers for issues using code snippets."""
+        file_cache: Dict[Path, str] = {}
         for issue in issues:
             if not isinstance(issue, dict):
                 continue
@@ -483,8 +484,12 @@ Output a JSON of type 'snapshot_refresh_decision'.
                 continue
                 
             try:
-                with open(abs_file, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
+                if abs_file in file_cache:
+                    content = file_cache[abs_file]
+                else:
+                    with open(abs_file, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                    file_cache[abs_file] = content
                 
                 # Clean snippet for better matching: strip and ignore common prefix/suffix artifacts
                 clean_snippet = snippet.strip().strip('`').strip()

@@ -26,9 +26,16 @@ class SnapshotStore:
         self.db_path = self.snapshot_dir / "snapshots.db"
         self._init_db()
 
+    def _connect(self) -> sqlite3.Connection:
+        """Create a configured SQLite connection."""
+        conn = sqlite3.connect(str(self.db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        return conn
+
     def _init_db(self) -> None:
         """Initialize SQLite database for snapshot metadata."""
-        conn = sqlite3.connect(str(self.db_path))
+        conn = self._connect()
         try:
             # Check if we need to migrate from old schema
             cursor = conn.execute(
@@ -140,7 +147,7 @@ class SnapshotStore:
             json.dump(snapshot, f, indent=2, ensure_ascii=False)
 
         # Update metadata
-        conn = sqlite3.connect(str(self.db_path))
+        conn = self._connect()
         try:
             conn.execute(
                 """
@@ -167,7 +174,7 @@ class SnapshotStore:
         Returns:
             Snapshot data or None if not found
         """
-        conn = sqlite3.connect(str(self.db_path))
+        conn = self._connect()
         try:
             if file_path:
                 # Exact match query
@@ -217,7 +224,7 @@ class SnapshotStore:
         Returns:
             Dict with 'code_hash' and 'semantic_hash', or None if not found
         """
-        conn = sqlite3.connect(str(self.db_path))
+        conn = self._connect()
         try:
             if file_path:
                 cursor = conn.execute(
@@ -272,7 +279,7 @@ class SnapshotStore:
 
     def list_snapshots(self) -> list[str]:
         """List all function names with snapshots."""
-        conn = sqlite3.connect(str(self.db_path))
+        conn = self._connect()
         try:
             cursor = conn.execute("SELECT func_name, file_path FROM snapshots ORDER BY func_name")
             return [f"{row[0]} ({row[1]})" for row in cursor.fetchall()]
@@ -281,7 +288,7 @@ class SnapshotStore:
 
     def delete_snapshot(self, func_name: str, file_path: Optional[str] = None) -> None:
         """Delete a snapshot."""
-        conn = sqlite3.connect(str(self.db_path))
+        conn = self._connect()
         try:
             if file_path:
                 cursor = conn.execute(
