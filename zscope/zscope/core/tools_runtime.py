@@ -62,7 +62,11 @@ class ToolsRuntime:
                             "func_name": {
                                 "type": "string",
                                 "description": "The name of the function whose snapshot to retrieve",
-                            }
+                            },
+                            "file_path": {
+                                "type": "string",
+                                "description": "Optional file path to disambiguate snapshots for same-named functions",
+                            },
                         },
                         "required": ["func_name"],
                     },
@@ -157,9 +161,9 @@ class ToolsRuntime:
             }
         return {"success": True, "data": result}
 
-    def _get_function_snapshot(self, func_name: str) -> Dict[str, Any]:
+    def _get_function_snapshot(self, func_name: str, file_path: Optional[str] = None) -> Dict[str, Any]:
         """Get function snapshot from cache."""
-        snapshot = self.snapshot_store.load_snapshot(func_name)
+        snapshot = self.snapshot_store.load_snapshot(func_name, file_path=file_path)
         if snapshot is None:
             return {
                 "success": True,
