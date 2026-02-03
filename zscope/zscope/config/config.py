@@ -176,6 +176,8 @@ class ConfigLoader:
             models = llm_data.get("models", [])
             if not models and llm_data.get("model"):
                 models = [llm_data.get("model")]
+            if not models:
+                raise ValueError("Missing 'llm.models' or 'llm.model' configuration.")
 
             llm_config = LLMConfig(
                 provider=llm_data.get("provider", "openai"),
