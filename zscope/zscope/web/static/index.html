@@ -22,58 +22,91 @@
     </style>
 </head>
 <body class="bg-neutral-950 text-neutral-200 min-h-screen" x-data="zscopeApp()">
-    
-    <!-- Navigation -->
-    <nav class="glass sticky top-0 z-50 px-6 py-4 flex justify-between items-center">
+
+    <nav class="glass sticky top-0 z-50 px-6 py-4 flex flex-wrap gap-4 justify-between items-center">
         <div class="flex items-center gap-3">
             <div class="w-8 h-8 bg-primary rounded-lg flex items-center justify-center font-bold text-white">Z</div>
-            <h1 class="text-xl font-bold tracking-tight">Z-SCOPE <span class="text-xs font-normal opacity-50">v0.1.0</span></h1>
+            <h1 class="text-xl font-bold tracking-tight">Z-SCOPE <span class="text-xs font-normal opacity-50">v0.2.0</span></h1>
         </div>
-        <div class="flex gap-4 items-center">
+        <div class="flex flex-wrap gap-2 items-center">
             <div class="badge badge-outline gap-2" :class="statusClass">
                 <span class="w-2 h-2 rounded-full" :class="statusDotClass"></span>
                 <span x-text="statusText">正在加载...</span>
             </div>
-            <button @click="refreshData()" class="btn btn-ghost btn-sm">刷新</button>
+            <button @click="refreshData()" class="btn btn-ghost btn-sm">刷新结果</button>
+            <button @click="saveFindings()" class="btn btn-primary btn-sm">回写验证结果</button>
         </div>
     </nav>
 
-    <main class="p-6 grid grid-cols-12 gap-6 h-[calc(100vh-80px)]">
-        
-        <!-- Sidebar: Findings List -->
-        <div class="col-span-3 flex flex-col gap-4 overflow-hidden">
-            <div class="flex justify-between items-center px-2">
-                <h2 class="font-semibold text-sm uppercase tracking-wider opacity-60">审计发现 (<span x-text="findings.length">0</span>)</h2>
+    <main class="p-6 grid grid-cols-12 gap-6 h-[calc(100vh-96px)]">
+        <div class="col-span-4 xl:col-span-3 flex flex-col gap-4 overflow-hidden">
+            <div class="glass rounded-2xl p-4 space-y-3">
+                <div class="flex items-center justify-between">
+                    <h2 class="text-sm font-semibold uppercase tracking-wider opacity-60">配置 zscope.yaml</h2>
+                    <button @click="loadConfig()" class="btn btn-ghost btn-xs">重新载入</button>
+                </div>
+                <textarea
+                    class="textarea textarea-bordered w-full min-h-[140px] text-xs code-font"
+                    placeholder="在此编辑 zscope.yaml 内容"
+                    x-model="configContent"></textarea>
+                <div class="flex items-center justify-between">
+                    <span class="text-xs opacity-60" x-text="configStatus"></span>
+                    <button @click="saveConfig()" class="btn btn-secondary btn-xs">保存配置</button>
+                </div>
             </div>
-            <div class="flex-1 overflow-y-auto pr-2 space-y-2">
-                <template x-for="finding in findings" :key="finding.id">
-                    <div @click="selectFinding(finding)" 
-                         class="p-4 rounded-xl cursor-pointer transition-all border border-transparent hover:glass"
-                         :class="selectedFinding?.id === finding.id ? 'glass border-primary/50' : 'bg-neutral-900'">
-                        <div class="flex justify-between items-start mb-2">
-                            <span class="badge badge-xs" :class="getSeverityClass(finding.impact_level)" x-text="finding.impact_level"></span>
-                            <span class="text-[10px] opacity-40" x-text="finding.subcategory"></span>
+
+            <div class="glass rounded-2xl p-4 space-y-3">
+                <div class="flex items-center justify-between">
+                    <h2 class="text-sm font-semibold uppercase tracking-wider opacity-60">审计发现</h2>
+                    <span class="text-xs opacity-60"><span x-text="filteredFindings().length"></span> / <span x-text="findings.length"></span></span>
+                </div>
+                <div class="flex flex-col gap-2">
+                    <input
+                        type="text"
+                        class="input input-bordered input-sm"
+                        placeholder="模糊匹配筛选"
+                        x-model="filterQuery">
+                    <select class="select select-bordered select-sm" x-model="filterField">
+                        <option value="all">全部字段</option>
+                        <option value="function">函数名</option>
+                        <option value="location">位置</option>
+                        <option value="category">类别</option>
+                        <option value="subcategory">子类</option>
+                        <option value="description">描述</option>
+                        <option value="impact_level">影响等级</option>
+                        <option value="validation_status">验证状态</option>
+                    </select>
+                </div>
+                <div class="flex-1 overflow-y-auto pr-2 space-y-2 max-h-[45vh]">
+                    <template x-for="finding in filteredFindings()" :key="finding.uid">
+                        <div
+                            @click="selectFinding(finding)"
+                            class="p-4 rounded-xl cursor-pointer transition-all border border-transparent hover:glass"
+                            :class="selectedFinding?.uid === finding.uid ? 'glass border-primary/50' : 'bg-neutral-900'">
+                            <div class="flex justify-between items-start mb-2">
+                                <span class="badge badge-xs" :class="getSeverityClass(finding.impact_level)" x-text="finding.impact_level"></span>
+                                <span class="badge badge-xs" :class="getValidationClass(finding.validation_status)" x-text="finding.validation_status || 'pending'"></span>
+                            </div>
+                            <h3 class="font-semibold text-sm truncate" x-text="finding.function"></h3>
+                            <p class="text-xs opacity-60 line-clamp-2 mt-1" x-text="finding.description"></p>
                         </div>
-                        <h3 class="font-semibold text-sm truncate" x-text="finding.function"></h3>
-                        <p class="text-xs opacity-60 line-clamp-2 mt-1" x-text="finding.description"></p>
-                    </div>
-                </template>
+                    </template>
+                </div>
             </div>
         </div>
 
-        <!-- Main Content: Code & Reasoning -->
-        <div class="col-span-9 flex flex-col gap-6 overflow-hidden">
+        <div class="col-span-8 xl:col-span-9 flex flex-col gap-6 overflow-hidden">
             <template x-if="selectedFinding">
                 <div class="contents">
-                    <!-- Top Section: Code View -->
                     <div class="flex-1 glass rounded-2xl overflow-hidden flex flex-col">
-                        <div class="p-4 border-b border-white/10 flex justify-between items-center bg-white/5">
+                        <div class="p-4 border-b border-white/10 flex flex-wrap gap-3 justify-between items-center bg-white/5">
                             <div class="flex items-center gap-2">
                                 <span class="text-sm code-font opacity-80" x-text="selectedFinding.location || selectedFinding.function"></span>
                             </div>
-                            <div class="flex gap-2">
-                                <button @click="triage('confirmed')" class="btn btn-success btn-xs">确认逻辑</button>
-                                <button @click="triage('false_positive')" class="btn btn-error btn-xs">误报标记</button>
+                            <div class="flex flex-wrap gap-2">
+                                <div class="badge badge-outline" x-text="selectedFinding.category"></div>
+                                <div class="badge badge-outline" x-text="selectedFinding.subcategory"></div>
+                                <div class="badge" :class="getSeverityClass(selectedFinding.impact_level)" x-text="selectedFinding.impact_level"></div>
                             </div>
                         </div>
                         <div class="flex-1 overflow-auto bg-[#1e1e1e] relative">
@@ -81,14 +114,13 @@
                         </div>
                     </div>
 
-                    <!-- Bottom Section: Analysis -->
-                    <div class="h-1/3 grid grid-cols-2 gap-6">
+                    <div class="grid grid-cols-2 gap-6 h-1/3">
                         <div class="glass rounded-2xl p-6 overflow-y-auto">
                             <h3 class="text-sm font-bold mb-3 flex items-center gap-2 text-primary">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                                AI 推理链 (Chain of Thought)
+                                AI 推理链 (Reasoning)
                             </h3>
-                            <div class="text-sm leading-relaxed opacity-80 whitespace-pre-wrap" x-text="selectedFinding.reasoning_process || '暂无推理过程'"></div>
+                            <div class="text-sm leading-relaxed opacity-80 whitespace-pre-wrap" x-text="selectedFinding.reasoning || selectedFinding.reasoning_process || '暂无推理过程'"></div>
                         </div>
                         <div class="glass rounded-2xl p-6 overflow-y-auto border-l-4" :class="getBorderClass(selectedFinding.impact_level)">
                             <h3 class="text-sm font-bold mb-3 text-white">漏洞详情</h3>
@@ -103,6 +135,22 @@
                                 </div>
                             </div>
                         </div>
+                    </div>
+
+                    <div class="glass rounded-2xl p-6 space-y-4">
+                        <div class="flex flex-wrap items-center gap-4">
+                            <h3 class="text-sm font-bold">验证结果</h3>
+                            <select class="select select-bordered select-sm" x-model="selectedFinding.validation_status">
+                                <option value="validated">validated</option>
+                                <option value="pending">pending</option>
+                                <option value="rejected">rejected</option>
+                            </select>
+                            <span class="text-xs opacity-60">仅允许 validated / pending / rejected</span>
+                        </div>
+                        <textarea
+                            class="textarea textarea-bordered w-full min-h-[140px]"
+                            placeholder="填写 validation_reasoning（支持多行文本）"
+                            x-model="selectedFinding.validation_reasoning"></textarea>
                     </div>
                 </div>
             </template>
@@ -120,12 +168,18 @@
             return {
                 findings: [],
                 selectedFinding: null,
+                reportSummary: null,
                 statusText: '就绪',
                 statusClass: 'badge-ghost',
                 statusDotClass: 'bg-ghost',
+                filterQuery: '',
+                filterField: 'all',
+                configContent: '',
+                configStatus: '',
 
                 init() {
                     this.refreshData();
+                    this.loadConfig();
                 },
 
                 refreshData() {
@@ -133,21 +187,96 @@
                     fetch('/api/findings')
                         .then(res => res.json())
                         .then(data => {
-                            if (data.findings) {
-                                this.findings = data.findings;
-                                if (this.findings.length > 0 && !this.selectedFinding) {
-                                    this.selectFinding(this.findings[0]);
-                                }
+                            this.reportSummary = data.report?.summary || null;
+                            const issues = data.findings || [];
+                            this.findings = issues.map((issue, index) => ({
+                                ...issue,
+                                validation_status: issue.validation_status || 'pending',
+                                validation_reasoning: issue.validation_reasoning || '',
+                                uid: `${issue.id || 'issue'}-${issue.function || 'fn'}-${issue.location || 'loc'}-${index}`
+                            }));
+                            if (this.findings.length > 0) {
+                                const current = this.selectedFinding
+                                    ? this.findings.find(item => item.uid === this.selectedFinding.uid)
+                                    : null;
+                                this.selectFinding(current || this.findings[0]);
+                            } else {
+                                this.selectedFinding = null;
                             }
                             this.statusText = '在线';
                             this.statusClass = 'badge-success/20 text-success';
                             this.statusDotClass = 'bg-success';
                         })
-                        .catch(err => {
+                        .catch(() => {
                             this.statusText = '离线';
                             this.statusClass = 'badge-error/20 text-error';
                             this.statusDotClass = 'bg-error';
                         });
+                },
+
+                loadConfig() {
+                    this.configStatus = '加载中...';
+                    fetch('/api/config')
+                        .then(res => res.json())
+                        .then(data => {
+                            this.configContent = data.content || '';
+                            this.configStatus = data.content ? '配置已载入' : '未找到配置文件';
+                        })
+                        .catch(() => {
+                            this.configStatus = '配置加载失败';
+                        });
+                },
+
+                saveConfig() {
+                    this.configStatus = '保存中...';
+                    fetch('/api/config', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ content: this.configContent })
+                    })
+                        .then(res => res.json())
+                        .then(data => {
+                            this.configStatus = data.success ? '配置已保存' : (data.error || '保存失败');
+                        })
+                        .catch(() => {
+                            this.configStatus = '保存失败';
+                        });
+                },
+
+                saveFindings() {
+                    fetch('/api/save_findings', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ issues: this.findings })
+                    })
+                        .then(res => res.json())
+                        .then(data => {
+                            alert(data.success ? '已回写验证结果' : (data.error || '回写失败'));
+                        })
+                        .catch(() => {
+                            alert('回写失败');
+                        });
+                },
+
+                filteredFindings() {
+                    const query = this.filterQuery.trim().toLowerCase();
+                    if (!query) {
+                        return this.findings;
+                    }
+                    const fields = {
+                        all: ['function', 'location', 'category', 'subcategory', 'description', 'impact_level', 'validation_status'],
+                        function: ['function'],
+                        location: ['location'],
+                        category: ['category'],
+                        subcategory: ['subcategory'],
+                        description: ['description'],
+                        impact_level: ['impact_level'],
+                        validation_status: ['validation_status']
+                    };
+                    const keys = fields[this.filterField] || fields.all;
+                    return this.findings.filter(finding =>
+                        keys.some(key => (finding[key] || '').toString().toLowerCase().includes(query))
+                    );
                 },
 
                 selectFinding(finding) {
@@ -159,35 +288,31 @@
 
                 getSeverityClass(level) {
                     const classes = {
-                        'critical': 'badge-error',
-                        'high': 'badge-warning',
-                        'medium': 'badge-info',
-                        'low': 'badge-ghost'
+                        critical: 'badge-error',
+                        high: 'badge-warning',
+                        medium: 'badge-info',
+                        low: 'badge-ghost'
                     };
                     return classes[level?.toLowerCase()] || 'badge-ghost';
                 },
 
-                getBorderClass(level) {
+                getValidationClass(status) {
                     const classes = {
-                        'critical': 'border-error',
-                        'high': 'border-warning',
-                        'medium': 'border-info',
-                        'low': 'border-neutral'
+                        validated: 'badge-success',
+                        pending: 'badge-warning',
+                        rejected: 'badge-error'
                     };
-                    return classes[level?.toLowerCase()] || 'border-neutral';
+                    return classes[status?.toLowerCase()] || 'badge-ghost';
                 },
 
-                triage(status) {
-                    fetch('/api/triage', {
-                        method: 'POST',
-                        body: JSON.stringify({
-                            id: this.selectedFinding.id,
-                            status: status,
-                            timestamp: new Date().toISOString()
-                        })
-                    }).then(() => {
-                        alert(`已成功标记为: ${status === 'confirmed' ? '确认漏洞' : '误报'}`);
-                    });
+                getBorderClass(level) {
+                    const classes = {
+                        critical: 'border-error',
+                        high: 'border-warning',
+                        medium: 'border-info',
+                        low: 'border-neutral'
+                    };
+                    return classes[level?.toLowerCase()] || 'border-neutral';
                 }
             }
         }
