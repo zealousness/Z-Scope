@@ -158,14 +158,11 @@ class CodeIndex:
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read()
                 
-                self._lsp_client.send_notification("textDocument/didOpen", {
-                    "textDocument": {
-                        "uri": file_path.as_uri(),
-                        "languageId": "c" if file_path.suffix == ".c" else "cpp",
-                        "version": 1,
-                        "text": content
-                    }
-                })
+                self._lsp_client.open_document(
+                    file_path,
+                    language_id="c" if file_path.suffix == ".c" else "cpp",
+                    text=content,
+                )
             except Exception as e:
                 logger.debug(f"Failed to prime {file_path}: {e}")
 
