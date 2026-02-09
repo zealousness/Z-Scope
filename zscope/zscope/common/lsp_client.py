@@ -37,6 +37,40 @@ class LSPClient:
         self._initialized = False
         self._last_progress_time = time.time()
         self._last_msg = ""
+        self._opened_documents: Dict[str, int] = {}
+
+    def open_document(
+        self,
+        file_path: Path,
+        language_id: Optional[str] = None,
+        text: Optional[str] = None,
+    ) -> bool:
+        """Ensure a document is opened in the LSP server."""
+        uri = file_path.as_uri()
+        if uri in self._opened_documents:
+            return True
+        try:
+            if text is None:
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    text = f.read()
+        except Exception as exc:
+            logger.debug("Failed to read %s for LSP open: %s", file_path, exc)
+            return False
+        if not language_id:
+            language_id = "c" if file_path.suffix == ".c" else "cpp"
+        self.send_notification(
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": language_id,
+                    "version": 1,
+                    "text": text,
+                }
+            },
+        )
+        self._opened_documents[uri] = 1
+        return True
 
     def start(self) -> bool:
         """Initialize the LSP server and wait for the response."""
@@ -122,7 +156,7 @@ class LSPClient:
             logger.error(f"Failed to start clangd: {e}")
             return False
 
-    def wait_for_indexing(self, timeout: int = 60, idle_threshold: float = 3.0) -> bool:
+    def wait_for_indexing(self, timeout: int = 900, idle_threshold: float = 3.0) -> bool:
         """Wait until indexing is finished (no progress for a threshold)."""
         if not self._initialized:
             return False
@@ -356,7 +390,7 @@ class LSPClient:
             except Exception:
                 break
 
-    def send_request(self, method: str, params: Any, timeout: Optional[int] = 30) -> Optional[Any]:
+    def send_request(self, method: str, params: Any, timeout: Optional[int] = 900) -> Optional[Any]:
         """Send a JSON-RPC request and wait for the response."""
         if not self.process or not self.process.stdin:
             return None
@@ -467,6 +501,7 @@ class LSPClient:
 
     def get_document_symbols(self, file_path: Path) -> List[Dict[str, Any]]:
         """textDocument/documentSymbol"""
+        self.open_document(file_path)
         params = {
             "textDocument": {"uri": file_path.as_uri()}
         }
