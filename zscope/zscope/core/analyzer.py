@@ -293,13 +293,22 @@ class Analyzer:
         """Initialize and return the set of tools."""
         from ..tools.code_retrieval import GetFunctionImplTool
         from ..tools.snapshot_tool import GetFunctionSnapshotTool
-        from ..tools.utils import ListFunctionsTool, GetFileSnippetTool
+        from ..tools.utils import (
+            ListFunctionsTool,
+            GetFileSnippetTool,
+            GetSymbolDefinitionTool,
+            GetTypeDefinitionTool,
+            GetHoverInfoTool,
+        )
         
         return [
             GetFunctionImplTool(self.code_index),
             GetFunctionSnapshotTool(self.snapshot_store),
             ListFunctionsTool(self.code_index),
-            GetFileSnippetTool(self.code_index)
+            GetFileSnippetTool(self.code_index),
+            GetSymbolDefinitionTool(self.code_index),
+            GetTypeDefinitionTool(self.code_index),
+            GetHoverInfoTool(self.code_index),
         ]
 
 
