@@ -471,6 +471,28 @@ class CodeIndex:
                 })
         return results
 
+    def get_type_definition(self, file_path: str, line: int, character: int) -> List[Dict[str, Any]]:
+        """Find type definition using LSP."""
+        if self._backend != "clangd" or not self._lsp_client:
+            return []
+
+        full_path = self._resolve_file_path(file_path)
+        defs = self._lsp_client.get_type_definition(full_path, line, character)
+        results = []
+        for d in defs:
+            target_uri = d.get("uri") or d.get("targetUri")
+            target_range = d.get("range") or d.get("targetRange")
+            if target_uri and target_range:
+                target_path = self._uri_to_path(target_uri)
+                results.append({
+                    "file": normalize_path(target_path, self.project_root),
+                    "start_line": target_range["start"]["line"] + 1,
+                    "start_char": target_range["start"]["character"],
+                    "end_line": target_range["end"]["line"] + 1,
+                    "end_char": target_range["end"]["character"],
+                })
+        return results
+
     def get_references(self, file_path: str, line: int, character: int) -> List[Dict[str, Any]]:
         """Find references using LSP."""
         if self._backend != "clangd" or not self._lsp_client:
