@@ -70,3 +70,108 @@ class GetFileSnippetTool(BaseTool):
                 },
             },
         }
+
+class GetSymbolDefinitionTool(BaseTool):
+    """Tool to retrieve symbol definitions via LSP."""
+
+    def __init__(self, code_index: CodeIndex):
+        super().__init__(
+            name="get_symbol_definition",
+            description="Retrieve symbol definition locations using LSP."
+        )
+        self.code_index = code_index
+
+    def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        file_path = arguments.get("file_path")
+        line = arguments.get("line")
+        character = arguments.get("character")
+        results = self.code_index.get_definition(file_path, line, character)
+        return {"success": True, "data": {"definitions": results, "count": len(results)}}
+
+    def get_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {"type": "string"},
+                        "line": {"type": "integer"},
+                        "character": {"type": "integer"}
+                    },
+                    "required": ["file_path", "line", "character"],
+                },
+            },
+        }
+
+class GetTypeDefinitionTool(BaseTool):
+    """Tool to retrieve type definitions via LSP."""
+
+    def __init__(self, code_index: CodeIndex):
+        super().__init__(
+            name="get_type_definition",
+            description="Retrieve type definition locations using LSP."
+        )
+        self.code_index = code_index
+
+    def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        file_path = arguments.get("file_path")
+        line = arguments.get("line")
+        character = arguments.get("character")
+        results = self.code_index.get_type_definition(file_path, line, character)
+        return {"success": True, "data": {"definitions": results, "count": len(results)}}
+
+    def get_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {"type": "string"},
+                        "line": {"type": "integer"},
+                        "character": {"type": "integer"}
+                    },
+                    "required": ["file_path", "line", "character"],
+                },
+            },
+        }
+
+class GetHoverInfoTool(BaseTool):
+    """Tool to retrieve hover/type info via LSP."""
+
+    def __init__(self, code_index: CodeIndex):
+        super().__init__(
+            name="get_hover_info",
+            description="Retrieve hover/type info for a symbol using LSP."
+        )
+        self.code_index = code_index
+
+    def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        file_path = arguments.get("file_path")
+        line = arguments.get("line")
+        character = arguments.get("character")
+        hover = self.code_index.get_hover_info(file_path, line, character)
+        return {"success": True, "data": {"hover": hover}}
+
+    def get_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {"type": "string"},
+                        "line": {"type": "integer"},
+                        "character": {"type": "integer"}
+                    },
+                    "required": ["file_path", "line", "character"],
+                },
+            },
+        }
