@@ -119,6 +119,81 @@ class ToolsRuntime:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_symbol_definition",
+                    "description": "Retrieve symbol definition locations using LSP.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "Path to the file (relative to project root or absolute)",
+                            },
+                            "line": {
+                                "type": "integer",
+                                "description": "Line number (1-indexed)",
+                            },
+                            "character": {
+                                "type": "integer",
+                                "description": "Character offset (0-indexed)",
+                            },
+                        },
+                        "required": ["file_path", "line", "character"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_type_definition",
+                    "description": "Retrieve type definition locations using LSP.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "Path to the file (relative to project root or absolute)",
+                            },
+                            "line": {
+                                "type": "integer",
+                                "description": "Line number (1-indexed)",
+                            },
+                            "character": {
+                                "type": "integer",
+                                "description": "Character offset (0-indexed)",
+                            },
+                        },
+                        "required": ["file_path", "line", "character"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_hover_info",
+                    "description": "Retrieve hover/type info for a symbol using LSP.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "Path to the file (relative to project root or absolute)",
+                            },
+                            "line": {
+                                "type": "integer",
+                                "description": "Line number (1-indexed)",
+                            },
+                            "character": {
+                                "type": "integer",
+                                "description": "Character offset (0-indexed)",
+                            },
+                        },
+                        "required": ["file_path", "line", "character"],
+                    },
+                },
+            },
         ]
 
     def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -143,6 +218,12 @@ class ToolsRuntime:
                 return self._list_known_functions(**arguments)
             elif tool_name == "get_file_snippet":
                 return self._get_file_snippet(**arguments)
+            elif tool_name == "get_symbol_definition":
+                return self._get_symbol_definition(**arguments)
+            elif tool_name == "get_type_definition":
+                return self._get_type_definition(**arguments)
+            elif tool_name == "get_hover_info":
+                return self._get_hover_info(**arguments)
             else:
                 return {"error": f"Unknown tool: {tool_name}"}
         except Exception as e:
@@ -190,3 +271,24 @@ class ToolsRuntime:
         if result is None:
             return {"success": False, "error": f"Failed to read file snippet"}
         return {"success": True, "data": result}
+
+    def _get_symbol_definition(
+        self, file_path: str, line: int, character: int
+    ) -> Dict[str, Any]:
+        """Get symbol definitions via LSP."""
+        results = self.code_index.get_definition(file_path, line, character)
+        return {"success": True, "data": {"definitions": results, "count": len(results)}}
+
+    def _get_type_definition(
+        self, file_path: str, line: int, character: int
+    ) -> Dict[str, Any]:
+        """Get type definitions via LSP."""
+        results = self.code_index.get_type_definition(file_path, line, character)
+        return {"success": True, "data": {"definitions": results, "count": len(results)}}
+
+    def _get_hover_info(
+        self, file_path: str, line: int, character: int
+    ) -> Dict[str, Any]:
+        """Get hover/type info via LSP."""
+        hover = self.code_index.get_hover_info(file_path, line, character)
+        return {"success": True, "data": {"hover": hover}}
