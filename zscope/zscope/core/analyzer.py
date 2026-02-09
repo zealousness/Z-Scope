@@ -93,7 +93,7 @@ You must strictly output JSON blocks for specific phases.
     {
       "id": "unique_id",
       "function": "...",
-      "location": "Optional guess of location",
+      "location": "function_name:start-end (function-relative line offsets, e.g., VOS_FaclDelById:1-20)",
       "code_snippet": "Exact problematic code snippet from the source (IMPORTANT: This will be used to find the exact line number)",
       "category": "functionality|reliability|performance",
       "subcategory": "e.g. memory_leak",
@@ -536,17 +536,39 @@ Output a JSON of type 'snapshot_refresh_decision'.
     ) -> None:
         start_line = func_info.get("start_line")
         end_line = func_info.get("end_line")
-        offset_line = None
+        if not start_line or not end_line:
+            return
+
+        offset_start = None
+        offset_end = None
 
         if location and ":" in location:
             _, line_part = location.split(":", 1)
-            line_part = line_part.strip().split("-", 1)[0]
-            try:
-                offset_line = int(line_part)
-            except ValueError:
-                offset_line = None
+            line_part = line_part.strip()
+            if "-" in line_part:
+                start_part, end_part = line_part.split("-", 1)
+                try:
+                    offset_start = int(start_part)
+                    offset_end = int(end_part)
+                except ValueError:
+                    offset_start = None
+                    offset_end = None
+            else:
+                try:
+                    offset_start = int(line_part)
+                except ValueError:
+                    offset_start = None
 
-        if start_line and offset_line and end_line and offset_line <= max(1, end_line - start_line + 1):
-            issue["location"] = f"{relative_file}:{start_line + offset_line - 1}"
-        elif start_line:
-            issue["location"] = f"{relative_file}:{start_line}"
+        max_offset = max(1, end_line - start_line + 1)
+        if offset_start and offset_start >= 1:
+            if offset_end is None:
+                if offset_start <= max_offset:
+                    issue["location"] = f"{relative_file}:{start_line + offset_start - 1}"
+                    return
+            elif offset_end >= offset_start and offset_end <= max_offset:
+                mapped_start = start_line + offset_start - 1
+                mapped_end = start_line + offset_end - 1
+                issue["location"] = f"{relative_file}:{mapped_start}-{mapped_end}"
+                return
+
+        issue["location"] = f"unresolved:{location}" if location else "unresolved"

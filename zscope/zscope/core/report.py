@@ -113,6 +113,12 @@ class ReportGenerator:
     def __init__(self, project_root: Path):
         self.project_root = Path(project_root)
 
+    @staticmethod
+    def _normalize_md_text(value: Optional[str]) -> str:
+        if value is None:
+            return ""
+        return str(value).replace("\\n", "\n")
+
     def save_json_report(self, report: FinalReport, filename: str = "report.json") -> Path:
         """Save report as JSON."""
         output_path = self.project_root / filename
@@ -164,16 +170,16 @@ class ReportGenerator:
                 md_content += f"- **代码位置**: `{issue.location}`\n"
                 md_content += f"- **置信度**: {issue.confidence:.0%}\n"
                 if issue.code_snippet:
-                    md_content += f"\n**相关代码**:\n```c\n{issue.code_snippet}\n```\n"
-                md_content += f"\n**问题描述**:\n{issue.description}\n"
+                    md_content += f"\n**相关代码**:\n```c\n{self._normalize_md_text(issue.code_snippet)}\n```\n"
+                md_content += f"\n**问题描述**:\n{self._normalize_md_text(issue.description)}\n"
                 if issue.reasoning:
-                    md_content += f"\n**分析推理**:\n{issue.reasoning}\n"
-                md_content += f"\n**根本原因**:\n{issue.root_cause}\n"
-                md_content += f"\n**修复建议**:\n> {issue.suggested_fix}\n"
+                    md_content += f"\n**分析推理**:\n{self._normalize_md_text(issue.reasoning)}\n"
+                md_content += f"\n**根本原因**:\n{self._normalize_md_text(issue.root_cause)}\n"
+                md_content += f"\n**修复建议**:\n> {self._normalize_md_text(issue.suggested_fix)}\n"
                 
                 if issue.validation_reasoning:
                     status_label = "✅ Validator 确认" if issue.validation_status == "validated" else "❌ Validator 否决"
-                    md_content += f"\n**{status_label}**:\n{issue.validation_reasoning}\n"
+                    md_content += f"\n**{status_label}**:\n{self._normalize_md_text(issue.validation_reasoning)}\n"
                     
                 md_content += "\n---\n"
 

@@ -58,6 +58,13 @@ class ParallelAnalyzer:
                 config.project.compile_commands_path
             )
         self.snapshot_store = SnapshotStore(Path(config.analysis.snapshot_dir))
+
+    @staticmethod
+    def _normalize_md_text(value: Any) -> str:
+        if value is None:
+            return ""
+        text = str(value)
+        return text.replace("\\n", "\n")
         
     def analyze_function_entries(
         self,
@@ -351,17 +358,17 @@ class ParallelAnalyzer:
                         f"- **Category**: {issue.get('category', 'N/A')} ({issue.get('subcategory', 'N/A')})",
                     ])
                     if snippet:
-                        md.append(f"- **Relevant Code**:\n```c\n{snippet}\n```")
+                        md.append(f"- **Relevant Code**:\n```c\n{self._normalize_md_text(snippet)}\n```")
                     
-                    md.append(f"- **Description**: {issue.get('description', 'N/A')}")
+                    md.append(f"- **Description**: {self._normalize_md_text(issue.get('description', 'N/A'))}")
                     
                     # Add reasoning if present
                     reasoning = issue.get('reasoning')
                     if reasoning:
-                        md.append(f"- **Analysis Reasoning**: {reasoning}")
+                        md.append(f"- **Analysis Reasoning**: {self._normalize_md_text(reasoning)}")
                     
-                    md.append(f"- **Root Cause**: {issue.get('root_cause', 'N/A')}")
-                    md.append(f"- **Suggested Fix**: {issue.get('suggested_fix', 'N/A')}")
+                    md.append(f"- **Root Cause**: {self._normalize_md_text(issue.get('root_cause', 'N/A'))}")
+                    md.append(f"- **Suggested Fix**: {self._normalize_md_text(issue.get('suggested_fix', 'N/A'))}")
                     
                     # Add validation status and reasoning
                     val_status = issue.get('validation_status')
@@ -371,7 +378,7 @@ class ParallelAnalyzer:
                         
                         val_reasoning = issue.get('validation_reasoning')
                         if val_reasoning:
-                            md.append(f"- **Validation Reasoning**: {val_reasoning}")
+                            md.append(f"- **Validation Reasoning**: {self._normalize_md_text(val_reasoning)}")
                     
                     md.append("")
                 
