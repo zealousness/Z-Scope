@@ -156,7 +156,7 @@ class LSPClient:
             logger.error(f"Failed to start clangd: {e}")
             return False
 
-    def wait_for_indexing(self, timeout: int = 60, idle_threshold: float = 3.0) -> bool:
+    def wait_for_indexing(self, timeout: int = 900, idle_threshold: float = 3.0) -> bool:
         """Wait until indexing is finished (no progress for a threshold)."""
         if not self._initialized:
             return False
@@ -390,7 +390,7 @@ class LSPClient:
             except Exception:
                 break
 
-    def send_request(self, method: str, params: Any, timeout: Optional[int] = 30) -> Optional[Any]:
+    def send_request(self, method: str, params: Any, timeout: Optional[int] = 900) -> Optional[Any]:
         """Send a JSON-RPC request and wait for the response."""
         if not self.process or not self.process.stdin:
             return None
