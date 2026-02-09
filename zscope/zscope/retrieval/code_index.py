@@ -57,10 +57,15 @@ class CodeIndex:
                 
                 # Prime the LSP: open subset of files to force indexing without OOM
                 if not self._indexing_config or self._indexing_config.auto_prime:
+                    prime_start = time.monotonic()
                     self._prime_lsp(self._priority_functions)
-                
-                # Wait for initial indexing before building index
-                self._lsp_client.wait_for_indexing(timeout=30)
+                    # Wait for initial indexing before building index
+                    self._lsp_client.wait_for_indexing(timeout=900)
+                    prime_duration = time.monotonic() - prime_start
+                    logger.info("LSP priming completed in %.2f seconds.", prime_duration)
+                else:
+                    # Still wait for indexing to settle before building index
+                    self._lsp_client.wait_for_indexing(timeout=900)
             else:
                 logger.warning("Failed to start clangd, falling back to regex")
                 self._backend = "regex"
@@ -158,14 +163,11 @@ class CodeIndex:
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read()
                 
-                self._lsp_client.send_notification("textDocument/didOpen", {
-                    "textDocument": {
-                        "uri": file_path.as_uri(),
-                        "languageId": "c" if file_path.suffix == ".c" else "cpp",
-                        "version": 1,
-                        "text": content
-                    }
-                })
+                self._lsp_client.open_document(
+                    file_path,
+                    language_id="c" if file_path.suffix == ".c" else "cpp",
+                    text=content,
+                )
             except Exception as e:
                 logger.debug(f"Failed to prime {file_path}: {e}")
 
