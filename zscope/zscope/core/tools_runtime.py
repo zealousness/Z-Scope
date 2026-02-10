@@ -21,8 +21,84 @@ class ToolsRuntime:
         """Initialize tools runtime."""
         self.code_index = code_index
         self.snapshot_store = snapshot_store
+        self._location_context: Dict[str, Any] = {
+            "file_path": None,
+            "line": None,
+            "start_line": None,
+            "end_line": None,
+        }
 
-    def _validate_tool_args(self, tool_name: str, arguments: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _update_location_context(
+        self,
+        file_path: Optional[str] = None,
+        line: Optional[int] = None,
+        start_line: Optional[int] = None,
+        end_line: Optional[int] = None,
+    ) -> None:
+        """Persist the latest successful location context for later tool auto-fill."""
+        if file_path:
+            self._location_context["file_path"] = file_path
+        if line is not None:
+            self._location_context["line"] = line
+        if start_line is not None:
+            self._location_context["start_line"] = start_line
+            self._location_context["line"] = start_line
+        if end_line is not None:
+            self._location_context["end_line"] = end_line
+
+    def _autofill_tool_args(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Fill missing file/line arguments from recent tool context when possible."""
+        filled = dict(arguments)
+
+        if tool_name in {"get_symbol_definition", "get_type_definition", "get_hover_info"}:
+            if not filled.get("file_path") and self._location_context.get("file_path"):
+                filled["file_path"] = self._location_context["file_path"]
+                logger.info(
+                    "Auto-filled '%s.file_path' with context value '%s'",
+                    tool_name,
+                    filled["file_path"],
+                )
+            if filled.get("line") is None:
+                context_line = self._location_context.get("line")
+                if context_line is not None:
+                    filled["line"] = context_line
+                    logger.info(
+                        "Auto-filled '%s.line' with context value %s", tool_name, context_line
+                    )
+            if filled.get("character") is None:
+                filled["character"] = 0
+                logger.info("Auto-filled '%s.character' with default value 0", tool_name)
+
+        if tool_name == "get_file_snippet":
+            if not filled.get("file_path") and self._location_context.get("file_path"):
+                filled["file_path"] = self._location_context["file_path"]
+                logger.info(
+                    "Auto-filled '%s.file_path' with context value '%s'",
+                    tool_name,
+                    filled["file_path"],
+                )
+            if filled.get("start_line") is None:
+                context_start = self._location_context.get("start_line")
+                if context_start is not None:
+                    filled["start_line"] = context_start
+                    logger.info(
+                        "Auto-filled '%s.start_line' with context value %s",
+                        tool_name,
+                        context_start,
+                    )
+            if filled.get("end_line") is None and filled.get("start_line") is not None:
+                filled["end_line"] = filled["start_line"] + 40
+                logger.info(
+                    "Auto-filled '%s.end_line' with default window end %s",
+                    tool_name,
+                    filled["end_line"],
+                )
+
+        return filled
+
+    def _validate_tool_args(
+        self, tool_name: str, arguments: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
         if not isinstance(arguments, dict):
             return {
                 "success": False,
@@ -52,7 +128,9 @@ class ToolsRuntime:
                 ),
             }
 
-        def validate_position(file_path: str, line: int, character: int) -> Optional[Dict[str, Any]]:
+        def validate_position(
+            file_path: str, line: int, character: int
+        ) -> Optional[Dict[str, Any]]:
             resolved = validate_existing_file(file_path)
             if not resolved:
                 return {
@@ -88,10 +166,14 @@ class ToolsRuntime:
 
         if tool_name == "get_function_impl":
             func_name = arguments.get("func_name")
-            error = ensure_type(func_name, str, "func_name") if func_name is not None else {
-                "success": False,
-                "error": "'func_name' is required; please correct and retry.",
-            }
+            error = (
+                ensure_type(func_name, str, "func_name")
+                if func_name is not None
+                else {
+                    "success": False,
+                    "error": "'func_name' is required; please correct and retry.",
+                }
+            )
             if error:
                 return error
             max_lines = arguments.get("max_lines")
@@ -99,10 +181,14 @@ class ToolsRuntime:
                 return ensure_type(max_lines, int, "max_lines")
         elif tool_name == "get_function_snapshot":
             func_name = arguments.get("func_name")
-            error = ensure_type(func_name, str, "func_name") if func_name is not None else {
-                "success": False,
-                "error": "'func_name' is required; please correct and retry.",
-            }
+            error = (
+                ensure_type(func_name, str, "func_name")
+                if func_name is not None
+                else {
+                    "success": False,
+                    "error": "'func_name' is required; please correct and retry.",
+                }
+            )
             if error:
                 return error
             file_path = arguments.get("file_path")
@@ -120,7 +206,10 @@ class ToolsRuntime:
         elif tool_name == "get_file_snippet":
             file_path = arguments.get("file_path")
             if file_path is None:
-                return {"success": False, "error": "'file_path' is required; please correct and retry."}
+                return {
+                    "success": False,
+                    "error": "'file_path' is required; please correct and retry.",
+                }
             error = ensure_type(file_path, str, "file_path")
             if error:
                 return error
@@ -164,7 +253,10 @@ class ToolsRuntime:
         elif tool_name in {"get_symbol_definition", "get_type_definition", "get_hover_info"}:
             file_path = arguments.get("file_path")
             if file_path is None:
-                return {"success": False, "error": "'file_path' is required; please correct and retry."}
+                return {
+                    "success": False,
+                    "error": "'file_path' is required; please correct and retry.",
+                }
             error = ensure_type(file_path, str, "file_path")
             if error:
                 return error
@@ -267,18 +359,18 @@ class ToolsRuntime:
                         "properties": {
                             "file_path": {
                                 "type": "string",
-                                "description": "Path to the file (relative to project root or absolute)",
+                                "description": "Path to the file (relative to project root or absolute). Optional if recently inferred from prior tool outputs.",
                             },
                             "start_line": {
                                 "type": "integer",
-                                "description": "Starting line number (1-indexed, inclusive)",
+                                "description": "Starting line number (1-indexed, inclusive). Optional if recent context is available.",
                             },
                             "end_line": {
                                 "type": "integer",
-                                "description": "Ending line number (1-indexed, inclusive)",
+                                "description": "Ending line number (1-indexed, inclusive). Optional when omitted together with start_line.",
                             },
                         },
-                        "required": ["file_path", "start_line", "end_line"],
+                        "required": [],
                     },
                 },
             },
@@ -292,18 +384,18 @@ class ToolsRuntime:
                         "properties": {
                             "file_path": {
                                 "type": "string",
-                                "description": "Path to the file (relative to project root or absolute)",
+                                "description": "Path to the file (relative to project root or absolute). Optional if recent context is available.",
                             },
                             "line": {
                                 "type": "integer",
-                                "description": "Line number (1-indexed)",
+                                "description": "Line number (1-indexed). Optional if recent context is available.",
                             },
                             "character": {
                                 "type": "integer",
-                                "description": "Character offset (0-indexed)",
+                                "description": "Character offset (0-indexed). Optional; defaults to 0 when omitted.",
                             },
                         },
-                        "required": ["file_path", "line", "character"],
+                        "required": [],
                     },
                 },
             },
@@ -317,18 +409,18 @@ class ToolsRuntime:
                         "properties": {
                             "file_path": {
                                 "type": "string",
-                                "description": "Path to the file (relative to project root or absolute)",
+                                "description": "Path to the file (relative to project root or absolute). Optional if recent context is available.",
                             },
                             "line": {
                                 "type": "integer",
-                                "description": "Line number (1-indexed)",
+                                "description": "Line number (1-indexed). Optional if recent context is available.",
                             },
                             "character": {
                                 "type": "integer",
-                                "description": "Character offset (0-indexed)",
+                                "description": "Character offset (0-indexed). Optional; defaults to 0 when omitted.",
                             },
                         },
-                        "required": ["file_path", "line", "character"],
+                        "required": [],
                     },
                 },
             },
@@ -342,18 +434,18 @@ class ToolsRuntime:
                         "properties": {
                             "file_path": {
                                 "type": "string",
-                                "description": "Path to the file (relative to project root or absolute)",
+                                "description": "Path to the file (relative to project root or absolute). Optional if recent context is available.",
                             },
                             "line": {
                                 "type": "integer",
-                                "description": "Line number (1-indexed)",
+                                "description": "Line number (1-indexed). Optional if recent context is available.",
                             },
                             "character": {
                                 "type": "integer",
-                                "description": "Character offset (0-indexed)",
+                                "description": "Character offset (0-indexed). Optional; defaults to 0 when omitted.",
                             },
                         },
-                        "required": ["file_path", "line", "character"],
+                        "required": [],
                     },
                 },
             },
@@ -373,32 +465,31 @@ class ToolsRuntime:
         logger.debug(f"Executing tool '{tool_name}' with args: {arguments}")
 
         try:
-            validation_error = self._validate_tool_args(tool_name, arguments)
+            effective_args = self._autofill_tool_args(tool_name, arguments)
+            validation_error = self._validate_tool_args(tool_name, effective_args)
             if validation_error:
                 return validation_error
             if tool_name == "get_function_impl":
-                return self._get_function_impl(**arguments)
+                return self._get_function_impl(**effective_args)
             elif tool_name == "get_function_snapshot":
-                return self._get_function_snapshot(**arguments)
+                return self._get_function_snapshot(**effective_args)
             elif tool_name == "list_known_functions":
-                return self._list_known_functions(**arguments)
+                return self._list_known_functions(**effective_args)
             elif tool_name == "get_file_snippet":
-                return self._get_file_snippet(**arguments)
+                return self._get_file_snippet(**effective_args)
             elif tool_name == "get_symbol_definition":
-                return self._get_symbol_definition(**arguments)
+                return self._get_symbol_definition(**effective_args)
             elif tool_name == "get_type_definition":
-                return self._get_type_definition(**arguments)
+                return self._get_type_definition(**effective_args)
             elif tool_name == "get_hover_info":
-                return self._get_hover_info(**arguments)
+                return self._get_hover_info(**effective_args)
             else:
                 return {"error": f"Unknown tool: {tool_name}"}
         except Exception as e:
             logger.error(f"Tool execution error: {e}", exc_info=True)
             return {"error": str(e)}
 
-    def _get_function_impl(
-        self, func_name: str, max_lines: int = 200
-    ) -> Dict[str, Any]:
+    def _get_function_impl(self, func_name: str, max_lines: int = 200) -> Dict[str, Any]:
         """Get function implementation."""
         result = self.code_index.get_function_impl(func_name, max_lines=max_lines)
         if result is None:
@@ -406,9 +497,16 @@ class ToolsRuntime:
                 "success": False,
                 "error": f"Function '{func_name}' not found in project index",
             }
+        self._update_location_context(
+            file_path=result.get("file"),
+            start_line=result.get("start_line"),
+            end_line=result.get("end_line"),
+        )
         return {"success": True, "data": result}
 
-    def _get_function_snapshot(self, func_name: str, file_path: Optional[str] = None) -> Dict[str, Any]:
+    def _get_function_snapshot(
+        self, func_name: str, file_path: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Get function snapshot from cache."""
         snapshot = self.snapshot_store.load_snapshot(func_name, file_path=file_path)
         if snapshot is None:
@@ -436,25 +534,27 @@ class ToolsRuntime:
         result = self.code_index.get_file_snippet(file_path, start_line, end_line)
         if result is None:
             return {"success": False, "error": f"Failed to read file snippet"}
+        self._update_location_context(
+            file_path=result.get("file"),
+            start_line=result.get("start_line"),
+            end_line=result.get("end_line"),
+        )
         return {"success": True, "data": result}
 
-    def _get_symbol_definition(
-        self, file_path: str, line: int, character: int
-    ) -> Dict[str, Any]:
+    def _get_symbol_definition(self, file_path: str, line: int, character: int) -> Dict[str, Any]:
         """Get symbol definitions via LSP."""
         results = self.code_index.get_definition(file_path, line, character)
+        self._update_location_context(file_path=file_path, line=line)
         return {"success": True, "data": {"definitions": results, "count": len(results)}}
 
-    def _get_type_definition(
-        self, file_path: str, line: int, character: int
-    ) -> Dict[str, Any]:
+    def _get_type_definition(self, file_path: str, line: int, character: int) -> Dict[str, Any]:
         """Get type definitions via LSP."""
         results = self.code_index.get_type_definition(file_path, line, character)
+        self._update_location_context(file_path=file_path, line=line)
         return {"success": True, "data": {"definitions": results, "count": len(results)}}
 
-    def _get_hover_info(
-        self, file_path: str, line: int, character: int
-    ) -> Dict[str, Any]:
+    def _get_hover_info(self, file_path: str, line: int, character: int) -> Dict[str, Any]:
         """Get hover/type info via LSP."""
         hover = self.code_index.get_hover_info(file_path, line, character)
+        self._update_location_context(file_path=file_path, line=line)
         return {"success": True, "data": {"hover": hover}}

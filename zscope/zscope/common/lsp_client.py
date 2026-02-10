@@ -16,13 +16,20 @@ from typing import Dict, Any, List, Optional, Union
 logger = logging.getLogger(__name__)
 
 # ANSI escape sequence regex for stripping colors/formatting
-ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
 
 class LSPClient:
     """
     Minimal LSP Client to interact with clangd.
     """
-    def __init__(self, project_root: Path, clangd_path: str = "clangd", compile_commands_path: Optional[Path] = None):
+
+    def __init__(
+        self,
+        project_root: Path,
+        clangd_path: str = "clangd",
+        compile_commands_path: Optional[Path] = None,
+    ):
         self.project_root = Path(project_root).resolve()
         self.clangd_path = clangd_path
         self.compile_commands_path = compile_commands_path
@@ -85,7 +92,7 @@ class LSPClient:
                 "-log=verbose",
                 "--header-insertion=never",
                 "--background-index",
-                "--pch-storage=memory"
+                "--pch-storage=memory",
             ]
             if self.compile_commands_path:
                 cmd.append(f"--compile-commands-dir={self.compile_commands_path}")
@@ -95,56 +102,59 @@ class LSPClient:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=str(self.project_root),
-                bufsize=0
+                bufsize=0,
             )
             self._running = True
             # 2. Start reader and stderr threads
-            self._reader_thread = threading.Thread(target=self._read_loop, name="LSPReader", daemon=True)
+            self._reader_thread = threading.Thread(
+                target=self._read_loop, name="LSPReader", daemon=True
+            )
             self._reader_thread.start()
-            
-            self._stderr_thread = threading.Thread(target=self._stderr_loop, name="LSPStderr", daemon=True)
+
+            self._stderr_thread = threading.Thread(
+                target=self._stderr_loop, name="LSPStderr", daemon=True
+            )
             self._stderr_thread.start()
-            
+
             # Give it a tiny bit of time to see if it crashes immediately or succeeds starting
             time.sleep(0.5)
             if self.process.poll() is not None:
                 ret = self.process.poll()
                 return False
-                
+
             # Send 'initialize' request without hard timeout for large projects
-            logger.info(f"Initializing LSP for project: {self.project_root} (this may take a long time for 1M+ lines)")
+            logger.info(
+                f"Initializing LSP for project: {self.project_root} (this may take a long time for 1M+ lines)"
+            )
             print(f"  [LSP] Initializing clangd for {self.project_root.name}...", flush=True)
-            
+
             # Use a reasonable timeout for initialization
-            resp = self.send_request("initialize", {
-                "processId": os.getpid(),
-                "rootPath": str(self.project_root),
-                "rootUri": self.project_root.as_uri(),
-                "capabilities": {
-                    "window": {
-                        "workDoneProgress": True
+            resp = self.send_request(
+                "initialize",
+                {
+                    "processId": os.getpid(),
+                    "rootPath": str(self.project_root),
+                    "rootUri": self.project_root.as_uri(),
+                    "capabilities": {
+                        "window": {"workDoneProgress": True},
+                        "textDocument": {
+                            "definition": {"dynamicRegistration": True},
+                            "references": {"dynamicRegistration": True},
+                            "documentSymbol": {"hierarchicalDocumentSymbolSupport": True},
+                            "hover": {"contentFormat": ["markdown", "plaintext"]},
+                        },
+                        "workspace": {"symbol": {"dynamicRegistration": True}},
                     },
-                    "textDocument": {
-                        "definition": {"dynamicRegistration": True},
-                        "references": {"dynamicRegistration": True},
-                        "documentSymbol": {"hierarchicalDocumentSymbolSupport": True},
-                        "hover": {"contentFormat": ["markdown", "plaintext"]}
-                    },
-                    "workspace": {
-                        "symbol": {"dynamicRegistration": True}
-                    }
+                    "initializationOptions": {"clangdFileStatus": True, "backgroundIndex": True},
                 },
-                "initializationOptions": {
-                    "clangdFileStatus": True,
-                    "backgroundIndex": True
-                }
-            }, timeout=60) 
-            
+                timeout=60,
+            )
+
             if resp:
                 self.send_notification("initialized", {})
                 self._initialized = True
                 logger.info("LSP Client initialized successfully")
-                
+
                 # Wait for initial indexing to finish (or at least provide feedback)
                 # We don't block forever here, but we allow the background thread to show progress
                 print(f"  [LSP] Project indexing started for {self.project_root.name}...")
@@ -160,10 +170,10 @@ class LSPClient:
         """Wait until indexing is finished (no progress for a threshold)."""
         if not self._initialized:
             return False
-        
+
         print(f"  [LSP] Waiting for indexing to start/settle (threshold: {idle_threshold}s)...")
         start_time = time.time()
-        
+
         # 1. Wait for at least some initial progress to appear (or a short timeout)
         activity_detected = False
         initial_wait = 5.0
@@ -172,7 +182,7 @@ class LSPClient:
                 activity_detected = True
                 break
             time.sleep(0.1)
-            
+
         # 2. Now wait for it to settle
         while time.time() - start_time < timeout:
             if time.time() - self._last_progress_time > idle_threshold:
@@ -183,7 +193,7 @@ class LSPClient:
                     print("\n  [LSP] Indexing settled (no activity detected).")
                 return True
             time.sleep(0.5)
-        
+
         print("\n  [LSP] Indexing wait timed out.")
         return False
 
@@ -237,6 +247,7 @@ class LSPClient:
     def _read_loop(self):
         """Background thread to read JSON-RPC messages from stdout."""
         import os
+
         buffer = b""
         fd = None
         pending_length: Optional[int] = None
@@ -388,27 +399,39 @@ class LSPClient:
                     chunk = os.read(fd, 1)
                 except (OSError, ValueError):
                     break
-                    
+
                 if not chunk:
                     break
-                
+
                 char = chunk.decode("utf-8", errors="replace")
-                if char == '\r' or char == '\n':
+                if char == "\r" or char == "\n":
                     msg = "".join(buffer).strip()
                     buffer = []
-                    
+
                     if msg:
                         # Strip ANSI escape codes (colors)
-                        msg = ANSI_ESCAPE.sub('', msg)
-                        
+                        msg = ANSI_ESCAPE.sub("", msg)
+
                         # Generic clangd log lines often contain useful progress
-                        if any(k in msg for k in ["Indexing", "Building", "Parsing", "Scanning", "Checking", "Loading", "[", "%"]):
+                        if any(
+                            k in msg
+                            for k in [
+                                "Indexing",
+                                "Building",
+                                "Parsing",
+                                "Scanning",
+                                "Checking",
+                                "Loading",
+                                "[",
+                                "%",
+                            ]
+                        ):
                             clean_msg = msg
                             if "]" in msg:
                                 parts = msg.split("]", 1)
                                 if len(parts) > 1:
                                     clean_msg = parts[1].strip()
-                            
+
                             if clean_msg and clean_msg != self._last_msg:
                                 # Standard carriage return for progress
                                 sys.stdout.write(f"\r  [LSP] {clean_msg[:80]:<80}")
@@ -422,25 +445,26 @@ class LSPClient:
             except Exception:
                 break
 
-    def send_request(self, method: str, params: Any, timeout: Optional[int] = 900) -> Optional[Any]:
+    def send_request(
+        self,
+        method: str,
+        params: Any,
+        timeout: Optional[int] = 900,
+        request_context: Optional[str] = None,
+    ) -> Optional[Any]:
         """Send a JSON-RPC request and wait for the response."""
         if not self.process or not self.process.stdin:
             return None
-        
+
         with self._lock:
             msg_id = self._id_counter
             self._id_counter += 1
-            
-        message = {
-            "jsonrpc": "2.0",
-            "id": msg_id,
-            "method": method,
-            "params": params
-        }
-        
+
+        message = {"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params}
+
         content = json.dumps(message)
         header = f"Content-Length: {len(content)}\r\n\r\n"
-        
+
         try:
             with self._io_lock:
                 self.process.stdin.write(header.encode("utf-8"))
@@ -449,27 +473,28 @@ class LSPClient:
         except Exception as e:
             logger.error(f"Failed to send LSP request: {e}")
             return None
-            
+
         # Wait for response
         start_time = time.time()
-        deadline = start_time + timeout if timeout is not None else float('inf')
-        
+        deadline = start_time + timeout if timeout is not None else float("inf")
+
         while time.time() < deadline:
             with self._lock:
                 if msg_id in self._responses:
                     resp = self._responses.pop(msg_id)
                     if "error" in resp:
-                        logger.error(f"LSP error for {method}: {resp['error']}")
+                        context_suffix = f" [context: {request_context}]" if request_context else ""
+                        logger.error(f"LSP error for {method}{context_suffix}: {resp['error']}")
                         return None
                     return resp.get("result")
-            
+
             # If progress is being made, extend the deadline (if not infinite already)
             if timeout is not None and time.time() - self._last_progress_time < 2.0:
                 # Progress was detected recently, extend deadline
                 deadline = time.time() + timeout
-                
+
             time.sleep(0.1)
-            
+
         logger.error(f"LSP request {method} timed out after {timeout}s (even with progress resets)")
         return None
 
@@ -477,16 +502,12 @@ class LSPClient:
         """Send a JSON-RPC notification."""
         if not self.process or not self.process.stdin:
             return
-            
-        message = {
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params
-        }
-        
+
+        message = {"jsonrpc": "2.0", "method": method, "params": params}
+
         content = json.dumps(message)
         header = f"Content-Length: {len(content)}\r\n\r\n"
-        
+
         try:
             with self._io_lock:
                 self.process.stdin.write(header.encode("utf-8"))
@@ -498,13 +519,18 @@ class LSPClient:
     def get_definition(self, file_path: Path, line: int, character: int) -> List[Dict[str, Any]]:
         """textDocument/definition"""
         uri = file_path.as_uri()
-        if uri not in self._opened_documents:
-            logger.warning("LSP definition requested for unopened document: %s", file_path)
+        if not self.open_document(file_path):
+            logger.info(
+                "Skipping definition request because document could not be opened: %s", file_path
+            )
+            return []
         params = {
             "textDocument": {"uri": uri},
-            "position": {"line": line - 1, "character": character}
+            "position": {"line": line - 1, "character": character},
         }
-        result = self.send_request("textDocument/definition", params)
+        result = self.send_request(
+            "textDocument/definition", params, request_context=str(file_path)
+        )
         if not result:
             return []
         if isinstance(result, dict):
@@ -519,21 +545,29 @@ class LSPClient:
         params = {
             "textDocument": {"uri": uri},
             "position": {"line": line - 1, "character": character},
-            "context": {"includeDeclaration": True}
+            "context": {"includeDeclaration": True},
         }
         result = self.send_request("textDocument/references", params)
         return result if result else []
 
-    def get_type_definition(self, file_path: Path, line: int, character: int) -> List[Dict[str, Any]]:
+    def get_type_definition(
+        self, file_path: Path, line: int, character: int
+    ) -> List[Dict[str, Any]]:
         """textDocument/typeDefinition"""
         uri = file_path.as_uri()
-        if uri not in self._opened_documents:
-            logger.warning("LSP typeDefinition requested for unopened document: %s", file_path)
+        if not self.open_document(file_path):
+            logger.info(
+                "Skipping typeDefinition request because document could not be opened: %s",
+                file_path,
+            )
+            return []
         params = {
             "textDocument": {"uri": uri},
-            "position": {"line": line - 1, "character": character}
+            "position": {"line": line - 1, "character": character},
         }
-        result = self.send_request("textDocument/typeDefinition", params)
+        result = self.send_request(
+            "textDocument/typeDefinition", params, request_context=str(file_path)
+        )
         if not result:
             return []
         if isinstance(result, dict):
@@ -543,9 +577,7 @@ class LSPClient:
     def get_document_symbols(self, file_path: Path) -> List[Dict[str, Any]]:
         """textDocument/documentSymbol"""
         self.open_document(file_path)
-        params = {
-            "textDocument": {"uri": file_path.as_uri()}
-        }
+        params = {"textDocument": {"uri": file_path.as_uri()}}
         result = self.send_request("textDocument/documentSymbol", params)
         if result:
             return result
@@ -555,7 +587,7 @@ class LSPClient:
                 file_path,
                 attempt + 1,
             )
-            time.sleep(2 ** attempt)
+            time.sleep(2**attempt)
             result = self.send_request("textDocument/documentSymbol", params)
             if result:
                 return result
@@ -569,8 +601,13 @@ class LSPClient:
 
     def get_hover(self, file_path: Path, line: int, character: int) -> Optional[Dict[str, Any]]:
         """textDocument/hover"""
+        if not self.open_document(file_path):
+            logger.info(
+                "Skipping hover request because document could not be opened: %s", file_path
+            )
+            return None
         params = {
             "textDocument": {"uri": file_path.as_uri()},
-            "position": {"line": line - 1, "character": character}
+            "position": {"line": line - 1, "character": character},
         }
-        return self.send_request("textDocument/hover", params)
+        return self.send_request("textDocument/hover", params, request_context=str(file_path))
