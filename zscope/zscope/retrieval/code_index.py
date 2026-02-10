@@ -58,11 +58,18 @@ class CodeIndex:
                 # Prime the LSP: open subset of files to force indexing without OOM
                 if not self._indexing_config or self._indexing_config.auto_prime:
                     prime_start = time.monotonic()
-                    self._prime_lsp(self._priority_functions)
-                    # Wait for initial indexing before building index
-                    self._lsp_client.wait_for_indexing(timeout=900)
-                    prime_duration = time.monotonic() - prime_start
-                    logger.info("LSP priming completed in %.2f seconds.", prime_duration)
+                    primed_files = self._prime_lsp(self._priority_functions)
+                    documents_ready = self._lsp_client.wait_for_documents_ready(primed_files)
+                    if not documents_ready:
+                        logger.warning("LSP priming did not finish for all documents, falling back to regex")
+                        self._backend = "regex"
+                        self._lsp_client.stop()
+                        self._lsp_client = None
+                    else:
+                        # Wait for initial indexing before building index
+                        self._lsp_client.wait_for_indexing(timeout=900)
+                        prime_duration = time.monotonic() - prime_start
+                        logger.info("LSP priming completed in %.2f seconds.", prime_duration)
                 else:
                     # Still wait for indexing to settle before building index
                     self._lsp_client.wait_for_indexing(timeout=900)
@@ -107,10 +114,10 @@ class CodeIndex:
                 continue
         return files or None
 
-    def _prime_lsp(self, priority_funcs: Optional[List[str]] = None) -> None:
+    def _prime_lsp(self, priority_funcs: Optional[List[str]] = None) -> List[Path]:
         """Send didOpen for a subset of project files to trigger indexing safely."""
         if not self._lsp_client:
-            return
+            return []
         
         limit = 100
         only_priority = False
@@ -158,18 +165,23 @@ class CodeIndex:
             all_files = all_files[:limit]
             
         logger.info(f"Priming LSP with {len(all_files)} files...")
+        primed_files: List[Path] = []
         for file_path in all_files:
             try:
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read()
-                
-                self._lsp_client.open_document(
+
+                opened = self._lsp_client.open_document(
                     file_path,
                     language_id="c" if file_path.suffix == ".c" else "cpp",
                     text=content,
                 )
+                if opened:
+                    primed_files.append(file_path)
             except Exception as e:
                 logger.debug(f"Failed to prime {file_path}: {e}")
+        logger.info("Primed %d/%d files for LSP.", len(primed_files), len(all_files))
+        return primed_files
 
     def _build_index(self) -> None:
         """Build function index from project."""
@@ -406,7 +418,7 @@ class CodeIndex:
         signature_pattern = re.compile(
             rf"^\s*#\s*define\s+{re.escape(macro_name)}(?P<params>\s*\([^)]*\))?"
         )
-        for ext in ["*.h", "*.hpp", "*.c", "*.cpp", "*.cc"]:
+        for ext in ["*.h", "*.hpp", "*.ph", "*.inc", "*.c", "*.cpp", "*.cc"]:
             for file_path in self.source_root.rglob(ext):
                 try:
                     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -614,6 +626,13 @@ class CodeIndex:
 
         resolved = self._find_alternative_file(path)
         return resolved or project_candidate
+
+    def resolve_existing_file(self, file_path: str) -> Optional[Path]:
+        """Resolve a file path and ensure it exists as a file."""
+        resolved = self._resolve_file_path(file_path)
+        if resolved.exists() and resolved.is_file():
+            return resolved
+        return None
 
     def _find_alternative_file(self, path: Path) -> Optional[Path]:
         """Attempt to resolve a missing file by searching the source tree."""
