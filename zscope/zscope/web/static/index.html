@@ -34,7 +34,10 @@
                 <span x-text="statusText">正在加载...</span>
             </div>
             <button @click="refreshData()" class="btn btn-ghost btn-sm">刷新结果</button>
+            <button @click="exportOfflinePage()" class="btn btn-ghost btn-sm">另存离线页面</button>
+            <button @click="triggerOfflineImport()" class="btn btn-ghost btn-sm">导入离线页面</button>
             <button @click="saveFindings()" class="btn btn-primary btn-sm">回写验证结果</button>
+            <input type="file" x-ref="offlineImportInput" @change="importOfflinePage($event)" class="hidden" accept=".html,text/html">
         </div>
     </nav>
 
@@ -227,6 +230,72 @@
                         });
                 },
 
+
+                triggerOfflineImport() {
+                    this.$refs.offlineImportInput.value = '';
+                    this.$refs.offlineImportInput.click();
+                },
+
+                importOfflinePage(event) {
+                    const file = event.target.files && event.target.files[0];
+                    if (!file) {
+                        return;
+                    }
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                        try {
+                            const html = String(reader.result || '');
+                            const match = html.match(/<script id="zscope-offline-state" type="application\/json">([\s\S]*?)<\/script>/i);
+                            if (!match) {
+                                throw new Error('未检测到离线状态数据');
+                            }
+                            const offlineState = JSON.parse(match[1]);
+                            const importedFindings = Array.isArray(offlineState.findings) ? offlineState.findings : [];
+                            if (!importedFindings.length) {
+                                throw new Error('离线页面中没有可导入的问题数据');
+                            }
+                            this.findings = importedFindings.map((issue, index) => ({
+                                ...issue,
+                                validation_status: issue.validation_status || 'pending',
+                                validation_reasoning: issue.validation_reasoning || '',
+                                uid: `${issue.id || 'issue'}-${issue.function || 'fn'}-${issue.location || 'loc'}-${index}`
+                            }));
+                            this.selectFinding(this.findings[0]);
+                            this.saveFindings();
+                        } catch (error) {
+                            alert(`导入失败：${error.message || error}`);
+                        }
+                    };
+                    reader.readAsText(file, 'utf-8');
+                },
+
+                async createOfflineHtml(payload) {
+                    const safeJson = JSON.stringify(payload).replace(/<\/script>/gi, '<\\/script>');
+                    const response = await fetch('/offline_template.html', { cache: 'no-store' });
+                    if (!response.ok) {
+                        throw new Error('离线模板加载失败');
+                    }
+                    const template = await response.text();
+                    return template.replace('__ZCOPE_OFFLINE_STATE__', safeJson);
+                },
+
+                async exportOfflinePage() {
+                    const payload = {
+                        findings: this.findings.map(({ uid, ...rest }) => ({ ...rest })),
+                        exportedAt: new Date().toISOString()
+                    };
+                    try {
+                        const offlineHtml = await this.createOfflineHtml(payload);
+                        const blob = new Blob([offlineHtml], { type: 'text/html;charset=utf-8' });
+                        const link = document.createElement('a');
+                        link.href = URL.createObjectURL(blob);
+                        link.download = 'zscope-offline-dashboard.html';
+                        link.click();
+                        URL.revokeObjectURL(link.href);
+                    } catch (error) {
+                        alert(`离线页面生成失败：${error.message || error}`);
+                    }
+                },
                 saveConfig() {
                     this.configStatus = '保存中...';
                     fetch('/api/config', {
