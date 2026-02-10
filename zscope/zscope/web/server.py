@@ -119,7 +119,7 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
         if self.path == "/api/findings":
             report = load_report()
             findings = report.get("issues")
-            if findings is None:
+            if findings is None or (isinstance(findings, list) and not findings and isinstance(report.get("findings"), list) and report.get("findings")):
                 findings = report.get("findings", [])
             self._send_json({"report": report, "findings": findings})
         elif self.path == "/api/config":
