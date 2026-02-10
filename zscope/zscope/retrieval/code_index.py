@@ -24,13 +24,13 @@ class CodeIndex:
     """
 
     def __init__(
-        self, 
-        project_root: Path, 
-        compile_commands_path: Optional[Path] = None, 
+        self,
+        project_root: Path,
+        compile_commands_path: Optional[Path] = None,
         backend: str = "clangd",
         source_root: Optional[Path] = None,
         indexing_config: Optional[Any] = None,
-        priority_functions: Optional[List[str]] = None
+        priority_functions: Optional[List[str]] = None,
     ):
         """Initialize code index."""
         self.project_root = Path(project_root).resolve()
@@ -48,20 +48,20 @@ class CodeIndex:
             cdb_dir = compile_commands_path.parent
             clangd_path = self._indexing_config.clangd_path if self._indexing_config else "clangd"
             self._lsp_client = LSPClient(
-                self.project_root, 
-                clangd_path=clangd_path, 
-                compile_commands_path=cdb_dir
+                self.project_root, clangd_path=clangd_path, compile_commands_path=cdb_dir
             )
             if self._lsp_client.start():
                 logger.info("Using clangd LSP for code indexing")
-                
+
                 # Prime the LSP: open subset of files to force indexing without OOM
                 if not self._indexing_config or self._indexing_config.auto_prime:
                     prime_start = time.monotonic()
                     primed_files = self._prime_lsp(self._priority_functions)
                     documents_ready = self._lsp_client.wait_for_documents_ready(primed_files)
                     if not documents_ready:
-                        logger.warning("LSP priming did not finish for all documents, falling back to regex")
+                        logger.warning(
+                            "LSP priming did not finish for all documents, falling back to regex"
+                        )
                         self._backend = "regex"
                         self._lsp_client.stop()
                         self._lsp_client = None
@@ -89,7 +89,9 @@ class CodeIndex:
             raw_json = self.compile_commands_path.read_text(encoding="utf-8")
             data = json.loads(raw_json)
         except (OSError, json.JSONDecodeError) as exc:
-            logger.warning("Failed to read compile commands file %s: %s", self.compile_commands_path, exc)
+            logger.warning(
+                "Failed to read compile commands file %s: %s", self.compile_commands_path, exc
+            )
             return None
 
         if not isinstance(data, list):
@@ -118,28 +120,30 @@ class CodeIndex:
         """Send didOpen for a subset of project files to trigger indexing safely."""
         if not self._lsp_client:
             return []
-        
+
         limit = 100
         only_priority = False
         if self._indexing_config:
             limit = self._indexing_config.max_prime_files
-            only_priority = getattr(self._indexing_config, 'only_prime_priority', False)
+            only_priority = getattr(self._indexing_config, "only_prime_priority", False)
 
         c_files = list(self.source_root.rglob("*.c"))
         h_files = list(self.source_root.rglob("*.h"))
         all_files = c_files + h_files
-        
+
         # Prioritize files containing entry functions
         if priority_funcs:
             priority_files = []
             other_files = []
-            
+
             # Optimization: Use one big regex for all functions
             # Escaping function names just in case
             safe_funcs = [re.escape(f) for f in priority_funcs]
             combined_pattern = re.compile(rf"\b({'|'.join(safe_funcs)})\b\s*\(")
-            
-            logger.info(f"Scanning for {len(priority_funcs)} priority functions in {len(all_files)} files...")
+
+            logger.info(
+                f"Scanning for {len(priority_funcs)} priority functions in {len(all_files)} files..."
+            )
             for f_path in all_files:
                 found = False
                 try:
@@ -152,18 +156,20 @@ class CodeIndex:
                     pass
                 if not found:
                     other_files.append(f_path)
-            
+
             logger.info(f"Found {len(priority_files)} priority files.")
-            
+
             if only_priority:
                 all_files = priority_files
             else:
                 all_files = priority_files + other_files
 
         if len(all_files) > limit:
-            logger.info(f"Project too large ({len(all_files)} files), limiting LSP priming to {limit} files to prevent OOM.")
+            logger.info(
+                f"Project too large ({len(all_files)} files), limiting LSP priming to {limit} files to prevent OOM."
+            )
             all_files = all_files[:limit]
-            
+
         logger.info(f"Priming LSP with {len(all_files)} files...")
         primed_files: List[Path] = []
         for file_path in all_files:
@@ -202,7 +208,7 @@ class CodeIndex:
             # Query for all functions (empty query or generic one)
             # Many LSP servers return a limited set for empty query.
             # We'll use this to populate common functions.
-            
+
             # Retry loop: clangd might take a few seconds to load the CDB even after 'settling'
             symbols = []
             for attempt in range(3):
@@ -211,7 +217,7 @@ class CodeIndex:
                     break
                 logger.debug(f"LSP workspace/symbol returned 0 results, retry {attempt+1}/3...")
                 time.sleep(2)
-            
+
             for sym in symbols:
                 if sym.get("kind") == 12:  # Function
                     name = sym.get("name")
@@ -282,9 +288,7 @@ class CodeIndex:
                     }
                     in_function = False
 
-    def get_function_impl(
-        self, func_name: str, max_lines: int = 500
-    ) -> Optional[Dict[str, Any]]:
+    def get_function_impl(self, func_name: str, max_lines: int = 500) -> Optional[Dict[str, Any]]:
         """Get function implementation."""
         macro_result: Optional[Dict[str, Any]] = None
         # If not in index, try LSP workspace search if available
@@ -292,7 +296,7 @@ class CodeIndex:
             symbols = []
             # First attempt: standard workspace/symbol
             symbols = self._lsp_client.get_workspace_symbols(func_name)
-            
+
             # If not found, try to find the file via regex and prime it on-demand
             if not symbols:
                 logger.debug(f"Symbol '{func_name}' not found in LSP, trying regex fallback...")
@@ -301,18 +305,23 @@ class CodeIndex:
                     logger.info(f"Macro '{func_name}' found via regex, skipping LSP priming.")
                     return macro_result
                 found_files = self._find_function_definition_files(func_name)
-                
+
                 if found_files:
-                    logger.info(f"Found '{func_name}' in {len(found_files)} files via regex, priming on-demand...")
+                    logger.info(
+                        f"Found '{func_name}' in {len(found_files)} files via regex, priming on-demand..."
+                    )
                     for f_path in found_files:
-                        self._lsp_client.send_notification("textDocument/didOpen", {
-                            "textDocument": {
-                                "uri": f_path.as_uri(),
-                                "languageId": "c",
-                                "version": 1,
-                                "text": f_path.read_text(errors="ignore")
-                            }
-                        })
+                        self._lsp_client.send_notification(
+                            "textDocument/didOpen",
+                            {
+                                "textDocument": {
+                                    "uri": f_path.as_uri(),
+                                    "languageId": "c",
+                                    "version": 1,
+                                    "text": f_path.read_text(errors="ignore"),
+                                }
+                            },
+                        )
                     # Give it a tiny bit of time to parse and retry
                     time.sleep(1)
                     symbols = self._lsp_client.get_workspace_symbols(func_name)
@@ -330,7 +339,7 @@ class CodeIndex:
                             "signature": func_name + "(...)",
                         }
                         break
-        
+
         if func_name not in self._function_index:
             if not macro_result:
                 macro_result = self._find_macro_definition(func_name)
@@ -343,7 +352,11 @@ class CodeIndex:
         file_path = Path(func_info["file"])
 
         # Refine range using documentSymbol if it's too short (common with workspace/symbol)
-        if self._backend == "clangd" and self._lsp_client and func_info["start_line"] == func_info["end_line"]:
+        if (
+            self._backend == "clangd"
+            and self._lsp_client
+            and func_info["start_line"] == func_info["end_line"]
+        ):
             try:
                 doc_symbols = self._lsp_client.get_document_symbols(file_path)
                 # Flat search and recursive search in children
@@ -412,7 +425,9 @@ class CodeIndex:
                     continue
         return found_files
 
-    def _find_macro_definition(self, macro_name: str, max_lines: int = 500) -> Optional[Dict[str, Any]]:
+    def _find_macro_definition(
+        self, macro_name: str, max_lines: int = 500
+    ) -> Optional[Dict[str, Any]]:
         """Find a macro definition using regex scanning."""
         macro_pattern = re.compile(rf"^\s*#\s*define\s+{re.escape(macro_name)}\b")
         signature_pattern = re.compile(
@@ -466,7 +481,7 @@ class CodeIndex:
         """Find definition using LSP."""
         if self._backend != "clangd" or not self._lsp_client:
             return []
-        
+
         full_path = self._resolve_file_path(file_path)
         defs = self._lsp_client.get_definition(full_path, line, character)
         results = []
@@ -476,16 +491,20 @@ class CodeIndex:
             target_range = d.get("range") or d.get("targetRange")
             if target_uri and target_range:
                 target_path = self._uri_to_path(target_uri)
-                results.append({
-                    "file": normalize_path(target_path, self.project_root),
-                    "start_line": target_range["start"]["line"] + 1,
-                    "start_char": target_range["start"]["character"],
-                    "end_line": target_range["end"]["line"] + 1,
-                    "end_char": target_range["end"]["character"],
-                })
+                results.append(
+                    {
+                        "file": normalize_path(target_path, self.project_root),
+                        "start_line": target_range["start"]["line"] + 1,
+                        "start_char": target_range["start"]["character"],
+                        "end_line": target_range["end"]["line"] + 1,
+                        "end_char": target_range["end"]["character"],
+                    }
+                )
         return results
 
-    def get_type_definition(self, file_path: str, line: int, character: int) -> List[Dict[str, Any]]:
+    def get_type_definition(
+        self, file_path: str, line: int, character: int
+    ) -> List[Dict[str, Any]]:
         """Find type definition using LSP."""
         if self._backend != "clangd" or not self._lsp_client:
             return []
@@ -498,20 +517,22 @@ class CodeIndex:
             target_range = d.get("range") or d.get("targetRange")
             if target_uri and target_range:
                 target_path = self._uri_to_path(target_uri)
-                results.append({
-                    "file": normalize_path(target_path, self.project_root),
-                    "start_line": target_range["start"]["line"] + 1,
-                    "start_char": target_range["start"]["character"],
-                    "end_line": target_range["end"]["line"] + 1,
-                    "end_char": target_range["end"]["character"],
-                })
+                results.append(
+                    {
+                        "file": normalize_path(target_path, self.project_root),
+                        "start_line": target_range["start"]["line"] + 1,
+                        "start_char": target_range["start"]["character"],
+                        "end_line": target_range["end"]["line"] + 1,
+                        "end_char": target_range["end"]["character"],
+                    }
+                )
         return results
 
     def get_references(self, file_path: str, line: int, character: int) -> List[Dict[str, Any]]:
         """Find references using LSP."""
         if self._backend != "clangd" or not self._lsp_client:
             return []
-        
+
         full_path = self._resolve_file_path(file_path)
         refs = self._lsp_client.get_references(full_path, line, character)
         results = []
@@ -520,26 +541,30 @@ class CodeIndex:
             range_data = r.get("range")
             if uri and range_data:
                 ref_path = self._uri_to_path(uri)
-                results.append({
-                    "file": normalize_path(ref_path, self.project_root),
-                    "line": range_data["start"]["line"] + 1,
-                    "character": range_data["start"]["character"],
-                })
+                results.append(
+                    {
+                        "file": normalize_path(ref_path, self.project_root),
+                        "line": range_data["start"]["line"] + 1,
+                        "character": range_data["start"]["character"],
+                    }
+                )
         return results
 
     def get_hover_info(self, file_path: str, line: int, character: int) -> Optional[str]:
         """Get type info or documentation using LSP hover."""
         if self._backend != "clangd" or not self._lsp_client:
             return None
-        
-        full_path = self.project_root / file_path
+
+        full_path = self._resolve_file_path(file_path)
         hover = self._lsp_client.get_hover(full_path, line, character)
         if hover and "contents" in hover:
             contents = hover["contents"]
             if isinstance(contents, dict) and "value" in contents:
                 return contents["value"]
             if isinstance(contents, list):
-                return "\n".join([c.get("value", str(c)) if isinstance(c, dict) else str(c) for c in contents])
+                return "\n".join(
+                    [c.get("value", str(c)) if isinstance(c, dict) else str(c) for c in contents]
+                )
             return str(contents)
         return None
 
