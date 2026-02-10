@@ -465,8 +465,11 @@ class LSPClient:
 
     def get_definition(self, file_path: Path, line: int, character: int) -> List[Dict[str, Any]]:
         """textDocument/definition"""
+        uri = file_path.as_uri()
+        if uri not in self._opened_documents:
+            logger.warning("LSP definition requested for unopened document: %s", file_path)
         params = {
-            "textDocument": {"uri": file_path.as_uri()},
+            "textDocument": {"uri": uri},
             "position": {"line": line - 1, "character": character}
         }
         result = self.send_request("textDocument/definition", params)
@@ -478,8 +481,11 @@ class LSPClient:
 
     def get_references(self, file_path: Path, line: int, character: int) -> List[Dict[str, Any]]:
         """textDocument/references"""
+        uri = file_path.as_uri()
+        if uri not in self._opened_documents:
+            logger.warning("LSP references requested for unopened document: %s", file_path)
         params = {
-            "textDocument": {"uri": file_path.as_uri()},
+            "textDocument": {"uri": uri},
             "position": {"line": line - 1, "character": character},
             "context": {"includeDeclaration": True}
         }
@@ -488,8 +494,11 @@ class LSPClient:
 
     def get_type_definition(self, file_path: Path, line: int, character: int) -> List[Dict[str, Any]]:
         """textDocument/typeDefinition"""
+        uri = file_path.as_uri()
+        if uri not in self._opened_documents:
+            logger.warning("LSP typeDefinition requested for unopened document: %s", file_path)
         params = {
-            "textDocument": {"uri": file_path.as_uri()},
+            "textDocument": {"uri": uri},
             "position": {"line": line - 1, "character": character}
         }
         result = self.send_request("textDocument/typeDefinition", params)

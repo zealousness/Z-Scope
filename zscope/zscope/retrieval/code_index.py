@@ -406,7 +406,7 @@ class CodeIndex:
         signature_pattern = re.compile(
             rf"^\s*#\s*define\s+{re.escape(macro_name)}(?P<params>\s*\([^)]*\))?"
         )
-        for ext in ["*.h", "*.hpp", "*.c", "*.cpp", "*.cc"]:
+        for ext in ["*.h", "*.hpp", "*.ph", "*.inc", "*.c", "*.cpp", "*.cc"]:
             for file_path in self.source_root.rglob(ext):
                 try:
                     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -614,6 +614,13 @@ class CodeIndex:
 
         resolved = self._find_alternative_file(path)
         return resolved or project_candidate
+
+    def resolve_existing_file(self, file_path: str) -> Optional[Path]:
+        """Resolve a file path and ensure it exists as a file."""
+        resolved = self._resolve_file_path(file_path)
+        if resolved.exists() and resolved.is_file():
+            return resolved
+        return None
 
     def _find_alternative_file(self, path: Path) -> Optional[Path]:
         """Attempt to resolve a missing file by searching the source tree."""
