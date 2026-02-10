@@ -187,6 +187,38 @@ class LSPClient:
         print("\n  [LSP] Indexing wait timed out.")
         return False
 
+    def wait_for_documents_ready(
+        self,
+        file_paths: List[Path],
+        timeout_per_file: float = 20.0,
+    ) -> bool:
+        """Ensure each document accepts documentSymbol requests before proceeding."""
+        if not self._initialized:
+            return False
+        if not file_paths:
+            return True
+
+        all_ready = True
+        for file_path in file_paths:
+            self.open_document(file_path)
+            params = {"textDocument": {"uri": file_path.as_uri()}}
+
+            deadline = time.time() + timeout_per_file
+            ready = False
+            while time.time() < deadline:
+                result = self.send_request("textDocument/documentSymbol", params, timeout=10)
+                # result can be [] for files with no symbols; None means request failed.
+                if result is not None:
+                    ready = True
+                    break
+                time.sleep(0.2)
+
+            if not ready:
+                all_ready = False
+                logger.warning("Timed out waiting for LSP document readiness: %s", file_path)
+
+        return all_ready
+
     def stop(self):
         """Stop the clangd process."""
         self._running = False
@@ -465,8 +497,11 @@ class LSPClient:
 
     def get_definition(self, file_path: Path, line: int, character: int) -> List[Dict[str, Any]]:
         """textDocument/definition"""
+        uri = file_path.as_uri()
+        if uri not in self._opened_documents:
+            logger.warning("LSP definition requested for unopened document: %s", file_path)
         params = {
-            "textDocument": {"uri": file_path.as_uri()},
+            "textDocument": {"uri": uri},
             "position": {"line": line - 1, "character": character}
         }
         result = self.send_request("textDocument/definition", params)
@@ -478,8 +513,11 @@ class LSPClient:
 
     def get_references(self, file_path: Path, line: int, character: int) -> List[Dict[str, Any]]:
         """textDocument/references"""
+        uri = file_path.as_uri()
+        if uri not in self._opened_documents:
+            logger.warning("LSP references requested for unopened document: %s", file_path)
         params = {
-            "textDocument": {"uri": file_path.as_uri()},
+            "textDocument": {"uri": uri},
             "position": {"line": line - 1, "character": character},
             "context": {"includeDeclaration": True}
         }
@@ -488,8 +526,11 @@ class LSPClient:
 
     def get_type_definition(self, file_path: Path, line: int, character: int) -> List[Dict[str, Any]]:
         """textDocument/typeDefinition"""
+        uri = file_path.as_uri()
+        if uri not in self._opened_documents:
+            logger.warning("LSP typeDefinition requested for unopened document: %s", file_path)
         params = {
-            "textDocument": {"uri": file_path.as_uri()},
+            "textDocument": {"uri": uri},
             "position": {"line": line - 1, "character": character}
         }
         result = self.send_request("textDocument/typeDefinition", params)
