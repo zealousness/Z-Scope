@@ -6,19 +6,8 @@ from typing import Any, Dict
 
 PORT = 8000
 WEB_DIR = Path(__file__).parent / "static"
-
-
-def _detect_repo_root() -> Path:
-    current = Path(__file__).resolve()
-    for parent in current.parents:
-        if (parent / "zscope" / "README.md").exists() or (parent / ".git").exists():
-            return parent
-    return Path.cwd()
-
-
-REPO_ROOT = _detect_repo_root()
-REPORT_FILENAME = "zscope_batch_report.json"
-CONFIG_FILENAME = "zscope.yaml"
+REPORT_PATH = Path("zscope_batch_report.json")
+CONFIG_PATH = Path("zscope.yaml")
 ALLOWED_VALIDATION_STATUSES = {"validated", "pending", "rejected"}
 
 
@@ -63,8 +52,7 @@ def load_report():
 
 
 def save_report(report):
-    report_path = _resolve_runtime_file(REPORT_FILENAME)
-    with report_path.open("w", encoding="utf-8") as f:
+    with REPORT_PATH.open("w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
 
@@ -129,17 +117,12 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
         if self.path == "/api/findings":
             report = load_report()
             findings = report.get("issues")
-            if findings is None:
+            if findings is None or (isinstance(findings, list) and not findings and isinstance(report.get("findings"), list) and report.get("findings")):
                 findings = report.get("findings", [])
             self._send_json({"report": report, "findings": findings})
         elif self.path == "/api/config":
-            config_path = _resolve_runtime_file(CONFIG_FILENAME)
-            if config_path.exists():
-                try:
-                    content = config_path.read_text(encoding="utf-8")
-                except OSError as exc:
-                    self._send_json({"content": "", "error": str(exc)}, status=500)
-                    return
+            if CONFIG_PATH.exists():
+                content = CONFIG_PATH.read_text(encoding="utf-8")
                 self._send_json({"content": content})
             else:
                 self._send_json({"content": ""})
@@ -158,9 +141,8 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
 
             if self.path == "/api/config":
                 content = payload.get("content", "")
-                config_path = _resolve_runtime_file(CONFIG_FILENAME)
-                config_path.write_text(content, encoding="utf-8")
-                self._send_json({"success": True, "path": str(config_path)})
+                CONFIG_PATH.write_text(content, encoding="utf-8")
+                self._send_json({"success": True})
             else:
                 report = load_report()
                 updates = payload.get("issues", [])
