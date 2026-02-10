@@ -2,6 +2,7 @@ import http.server
 import socketserver
 import json
 from pathlib import Path
+from typing import Any, Dict
 
 PORT = 8000
 WEB_DIR = Path(__file__).parent / "static"
@@ -10,11 +11,44 @@ CONFIG_PATH = Path("zscope.yaml")
 ALLOWED_VALIDATION_STATUSES = {"validated", "pending", "rejected"}
 
 
+def _empty_report() -> Dict[str, Any]:
+    return {
+        "issues": [],
+        "issues_by_severity": {"critical": [], "high": [], "medium": [], "low": []},
+    }
+
+
+def _strip_json_code_fence(content: str) -> str:
+    """Allow loading reports accidentally wrapped by markdown code fences."""
+    stripped = content.strip()
+    if not stripped.startswith("```"):
+        return stripped
+
+    lines = stripped.splitlines()
+    if not lines:
+        return stripped
+
+    if lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
 def load_report():
-    if REPORT_PATH.exists():
-        with REPORT_PATH.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    return {"issues": [], "issues_by_severity": {"critical": [], "high": [], "medium": [], "low": []}}
+    if not REPORT_PATH.exists():
+        return _empty_report()
+
+    raw_content = REPORT_PATH.read_text(encoding="utf-8", errors="ignore")
+    sanitized = _strip_json_code_fence(raw_content)
+    if not sanitized:
+        return _empty_report()
+
+    try:
+        return json.loads(sanitized)
+    except json.JSONDecodeError as exc:
+        print(f"Warning: failed to parse report JSON: {exc}")
+        return _empty_report()
 
 
 def save_report(report):
@@ -49,12 +83,17 @@ def apply_validation_updates(report, updates):
             issue["validation_status"] = status
             issue["validation_reasoning"] = reasoning
 
+    # Legacy report shape
     for issue in report.get("issues", []):
         update_issue(issue)
 
     for issues in report.get("issues_by_severity", {}).values():
         for issue in issues:
             update_issue(issue)
+
+    # Current report shape
+    for issue in report.get("findings", []):
+        update_issue(issue)
 
 
 class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
@@ -70,7 +109,10 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/findings":
             report = load_report()
-            self._send_json({"report": report, "findings": report.get("issues", [])})
+            findings = report.get("issues")
+            if findings is None:
+                findings = report.get("findings", [])
+            self._send_json({"report": report, "findings": findings})
         elif self.path == "/api/config":
             if CONFIG_PATH.exists():
                 content = CONFIG_PATH.read_text(encoding="utf-8")
