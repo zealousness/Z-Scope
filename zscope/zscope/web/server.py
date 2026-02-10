@@ -6,17 +6,6 @@ from typing import Any, Dict
 
 PORT = 8000
 WEB_DIR = Path(__file__).parent / "static"
-
-
-def _detect_repo_root() -> Path:
-    current = Path(__file__).resolve()
-    for parent in current.parents:
-        if (parent / "zscope" / "README.md").exists() or (parent / ".git").exists():
-            return parent
-    return Path.cwd()
-
-
-REPO_ROOT = _detect_repo_root()
 REPORT_FILENAME = "zscope_batch_report.json"
 CONFIG_FILENAME = "zscope.yaml"
 ALLOWED_VALIDATION_STATUSES = {"validated", "pending", "rejected"}
@@ -47,10 +36,11 @@ def _strip_json_code_fence(content: str) -> str:
 
 
 def load_report():
-    if not REPORT_PATH.exists():
+    report_path = Path(REPORT_FILENAME)
+    if not report_path.exists():
         return _empty_report()
 
-    raw_content = REPORT_PATH.read_text(encoding="utf-8", errors="ignore")
+    raw_content = report_path.read_text(encoding="utf-8", errors="ignore")
     sanitized = _strip_json_code_fence(raw_content)
     if not sanitized:
         return _empty_report()
@@ -63,7 +53,7 @@ def load_report():
 
 
 def save_report(report):
-    report_path = _resolve_runtime_file(REPORT_FILENAME)
+    report_path = Path(REPORT_FILENAME)
     with report_path.open("w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
@@ -133,7 +123,7 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
                 findings = report.get("findings", [])
             self._send_json({"report": report, "findings": findings})
         elif self.path == "/api/config":
-            config_path = _resolve_runtime_file(CONFIG_FILENAME)
+            config_path = Path(CONFIG_FILENAME)
             if config_path.exists():
                 try:
                     content = config_path.read_text(encoding="utf-8")
@@ -158,7 +148,7 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
 
             if self.path == "/api/config":
                 content = payload.get("content", "")
-                config_path = _resolve_runtime_file(CONFIG_FILENAME)
+                config_path = Path(CONFIG_FILENAME)
                 config_path.write_text(content, encoding="utf-8")
                 self._send_json({"success": True, "path": str(config_path)})
             else:
