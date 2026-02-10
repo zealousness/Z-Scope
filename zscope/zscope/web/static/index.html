@@ -294,7 +294,7 @@ pre { white-space: pre-wrap; background: #111827; border: 1px solid #374151; bor
 </style>
 </head>
 <body>
-<script id="zscope-offline-state" type="application/json">${safeJson}</script>
+<script id="zscope-offline-state" type="application/json">${safeJson}<\/script>
 <header>
   <button id="savePageBtn">保存当前离线页面</button>
   <small>该页面可离线编辑 validation_status / validation_reasoning，保存后可导入在线 WebUI。</small>
@@ -364,7 +364,7 @@ pre { white-space: pre-wrap; background: #111827; border: 1px solid #374151; bor
 
   document.getElementById('savePageBtn').addEventListener('click', () => {
     const json = JSON.stringify(state).replace(/<\/script>/gi, '<\\/script>');
-    const html = document.documentElement.outerHTML.replace(/<script id="zscope-offline-state" type="application\/json">[\s\S]*?<\/script>/i, '<script id="zscope-offline-state" type="application/json">' + json + '</script>');
+    const html = document.documentElement.outerHTML.replace(/<script id="zscope-offline-state" type="application\/json">[\s\S]*?<\/script>/i, '<script id="zscope-offline-state" type="application/json">' + json + '<\\/script>');
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -376,7 +376,7 @@ pre { white-space: pre-wrap; background: #111827; border: 1px solid #374151; bor
   renderList();
   if (state.findings.length > 0) select(0);
 })();
-</script>
+<\/script>
 </body>
 </html>`;
                 },
