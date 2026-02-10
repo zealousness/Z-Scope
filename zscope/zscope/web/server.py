@@ -22,17 +22,6 @@ CONFIG_FILENAME = "zscope.yaml"
 ALLOWED_VALIDATION_STATUSES = {"validated", "pending", "rejected"}
 
 
-def _resolve_runtime_file(filename: str) -> Path:
-    """Resolve runtime file from working directory first, then repository root."""
-    cwd_candidate = Path.cwd() / filename
-    if cwd_candidate.exists():
-        return cwd_candidate
-    repo_candidate = REPO_ROOT / filename
-    if repo_candidate.exists():
-        return repo_candidate
-    return cwd_candidate
-
-
 def _empty_report() -> Dict[str, Any]:
     return {
         "issues": [],
@@ -58,19 +47,18 @@ def _strip_json_code_fence(content: str) -> str:
 
 
 def load_report():
-    report_path = _resolve_runtime_file(REPORT_FILENAME)
-    if not report_path.exists():
+    if not REPORT_PATH.exists():
         return _empty_report()
 
-    raw_content = report_path.read_text(encoding="utf-8", errors="ignore")
-    sanitized = _strip_json_code_fence(raw_content).lstrip("﻿")
+    raw_content = REPORT_PATH.read_text(encoding="utf-8", errors="ignore")
+    sanitized = _strip_json_code_fence(raw_content)
     if not sanitized:
         return _empty_report()
 
     try:
         return json.loads(sanitized)
     except json.JSONDecodeError as exc:
-        print(f"Warning: failed to parse report JSON at {report_path}: {exc}")
+        print(f"Warning: failed to parse report JSON: {exc}")
         return _empty_report()
 
 
