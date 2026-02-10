@@ -2,23 +2,81 @@ import http.server
 import socketserver
 import json
 from pathlib import Path
+from typing import Any, Dict
 
 PORT = 8000
 WEB_DIR = Path(__file__).parent / "static"
-REPORT_PATH = Path("zscope_batch_report.json")
-CONFIG_PATH = Path("zscope.yaml")
+
+
+def _detect_repo_root() -> Path:
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / "zscope" / "README.md").exists() or (parent / ".git").exists():
+            return parent
+    return Path.cwd()
+
+
+REPO_ROOT = _detect_repo_root()
+REPORT_FILENAME = "zscope_batch_report.json"
+CONFIG_FILENAME = "zscope.yaml"
 ALLOWED_VALIDATION_STATUSES = {"validated", "pending", "rejected"}
 
 
+def _resolve_runtime_file(filename: str) -> Path:
+    """Resolve runtime file from working directory first, then repository root."""
+    cwd_candidate = Path.cwd() / filename
+    if cwd_candidate.exists():
+        return cwd_candidate
+    repo_candidate = REPO_ROOT / filename
+    if repo_candidate.exists():
+        return repo_candidate
+    return cwd_candidate
+
+
+def _empty_report() -> Dict[str, Any]:
+    return {
+        "issues": [],
+        "issues_by_severity": {"critical": [], "high": [], "medium": [], "low": []},
+    }
+
+
+def _strip_json_code_fence(content: str) -> str:
+    """Allow loading reports accidentally wrapped by markdown code fences."""
+    stripped = content.strip()
+    if not stripped.startswith("```"):
+        return stripped
+
+    lines = stripped.splitlines()
+    if not lines:
+        return stripped
+
+    if lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
 def load_report():
-    if REPORT_PATH.exists():
-        with REPORT_PATH.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    return {"issues": [], "issues_by_severity": {"critical": [], "high": [], "medium": [], "low": []}}
+    report_path = _resolve_runtime_file(REPORT_FILENAME)
+    if not report_path.exists():
+        return _empty_report()
+
+    raw_content = report_path.read_text(encoding="utf-8", errors="ignore")
+    sanitized = _strip_json_code_fence(raw_content).lstrip("﻿")
+    if not sanitized:
+        return _empty_report()
+
+    try:
+        return json.loads(sanitized)
+    except json.JSONDecodeError as exc:
+        print(f"Warning: failed to parse report JSON at {report_path}: {exc}")
+        return _empty_report()
 
 
 def save_report(report):
-    with REPORT_PATH.open("w", encoding="utf-8") as f:
+    report_path = _resolve_runtime_file(REPORT_FILENAME)
+    with report_path.open("w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
 
@@ -49,12 +107,17 @@ def apply_validation_updates(report, updates):
             issue["validation_status"] = status
             issue["validation_reasoning"] = reasoning
 
+    # Legacy report shape
     for issue in report.get("issues", []):
         update_issue(issue)
 
     for issues in report.get("issues_by_severity", {}).values():
         for issue in issues:
             update_issue(issue)
+
+    # Current report shape
+    for issue in report.get("findings", []):
+        update_issue(issue)
 
 
 class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
@@ -67,13 +130,28 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(payload).encode("utf-8"))
 
+    def end_headers(self):
+        # Avoid stale dashboard cache causing old broken JS to persist in browser.
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        super().end_headers()
+
     def do_GET(self):
         if self.path == "/api/findings":
             report = load_report()
-            self._send_json({"report": report, "findings": report.get("issues", [])})
+            findings = report.get("issues")
+            if findings is None:
+                findings = report.get("findings", [])
+            self._send_json({"report": report, "findings": findings})
         elif self.path == "/api/config":
-            if CONFIG_PATH.exists():
-                content = CONFIG_PATH.read_text(encoding="utf-8")
+            config_path = _resolve_runtime_file(CONFIG_FILENAME)
+            if config_path.exists():
+                try:
+                    content = config_path.read_text(encoding="utf-8")
+                except OSError as exc:
+                    self._send_json({"content": "", "error": str(exc)}, status=500)
+                    return
                 self._send_json({"content": content})
             else:
                 self._send_json({"content": ""})
@@ -92,8 +170,9 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
 
             if self.path == "/api/config":
                 content = payload.get("content", "")
-                CONFIG_PATH.write_text(content, encoding="utf-8")
-                self._send_json({"success": True})
+                config_path = _resolve_runtime_file(CONFIG_FILENAME)
+                config_path.write_text(content, encoding="utf-8")
+                self._send_json({"success": True, "path": str(config_path)})
             else:
                 report = load_report()
                 updates = payload.get("issues", [])
