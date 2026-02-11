@@ -316,10 +316,9 @@
                 },
 
                 async createOfflineHtml(payload) {
-                    const serialized = JSON.stringify(payload);
-                    const encodedState = 'base64:' + this.encodeBase64Utf8(serialized);
+                    const safeJson = JSON.stringify(payload).replace(/<\/script>/gi, '<\\/script>');
                     const template = await this.loadOfflineTemplate();
-                    return template.replace('__ZCOPE_OFFLINE_STATE__', encodedState);
+                    return template.replace('__ZCOPE_OFFLINE_STATE__', safeJson);
                 },
 
                 async exportOfflinePage() {
