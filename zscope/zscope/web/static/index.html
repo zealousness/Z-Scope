@@ -232,6 +232,34 @@
                 },
 
 
+                decodeBase64Utf8(base64Text) {
+                    const binary = atob(base64Text);
+                    const bytes = Uint8Array.from(binary, ch => ch.charCodeAt(0));
+                    return new TextDecoder('utf-8').decode(bytes);
+                },
+
+                encodeBase64Utf8(plainText) {
+                    const bytes = new TextEncoder().encode(plainText);
+                    let binary = '';
+                    bytes.forEach(b => {
+                        binary += String.fromCharCode(b);
+                    });
+                    return btoa(binary);
+                },
+
+                parseOfflineState(rawText) {
+                    const trimmed = String(rawText || '').trim();
+                    if (!trimmed) {
+                        return {};
+                    }
+                    if (trimmed.startsWith('base64:')) {
+                        const decoded = this.decodeBase64Utf8(trimmed.slice('base64:'.length));
+                        return JSON.parse(decoded);
+                    }
+                    return JSON.parse(trimmed);
+                },
+
+
                 triggerOfflineImport() {
                     this.$refs.offlineImportInput.value = '';
                     this.$refs.offlineImportInput.click();
@@ -250,7 +278,7 @@
                             if (!match) {
                                 throw new Error('未检测到离线状态数据');
                             }
-                            const offlineState = JSON.parse(match[1]);
+                            const offlineState = this.parseOfflineState(match[1]);
                             const importedFindings = Array.isArray(offlineState.findings) ? offlineState.findings : [];
                             if (!importedFindings.length) {
                                 throw new Error('离线页面中没有可导入的问题数据');
