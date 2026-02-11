@@ -87,27 +87,14 @@ pre { white-space: pre-wrap; word-break: break-word; background: var(--panel-sof
 
   function parseOfflineState(rawText) {
     const trimmed = String(rawText || '').trim();
-    if (!trimmed) return {};
+    if (!trimmed) {
+      return {};
+    }
     if (trimmed.startsWith('base64:')) {
-      return JSON.parse(decodeBase64Utf8(trimmed.slice('base64:'.length)));
+      const decoded = decodeBase64Utf8(trimmed.slice('base64:'.length));
+      return JSON.parse(decoded);
     }
     return JSON.parse(trimmed);
-  }
-
-  function fuzzyScore(text, query) {
-    if (!query) return 1;
-    const t = String(text || '').toLowerCase();
-    const q = String(query || '').toLowerCase();
-    if (t.includes(q)) return q.length + 10;
-    let qi = 0;
-    let score = 0;
-    for (let i = 0; i < t.length && qi < q.length; i++) {
-      if (t[i] === q[qi]) {
-        qi += 1;
-        score += 1;
-      }
-    }
-    return qi === q.length ? score : 0;
   }
 
   const stateScript = document.getElementById('zscope-offline-state');
@@ -209,11 +196,11 @@ pre { white-space: pre-wrap; word-break: break-word; background: var(--panel-sof
   });
 
   document.getElementById('savePageBtn').addEventListener('click', () => {
-    const encodedState = 'base64:' + encodeBase64Utf8(JSON.stringify(state));
+    const json = JSON.stringify(state).replace(/<\/script>/gi, '<\\/script>');
     const root = document.documentElement.cloneNode(true);
-    const stateScriptEl = root.querySelector('#zscope-offline-state');
-    if (stateScriptEl) {
-      stateScriptEl.textContent = encodedState;
+    const stateScript = root.querySelector('#zscope-offline-state');
+    if (stateScript) {
+      stateScript.textContent = json;
     }
     const html = '<!DOCTYPE html>\n' + root.outerHTML;
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
