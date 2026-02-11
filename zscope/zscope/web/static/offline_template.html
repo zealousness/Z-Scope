@@ -90,7 +90,12 @@ pre { white-space: pre-wrap; background: #111827; border: 1px solid #374151; bor
 
   document.getElementById('savePageBtn').addEventListener('click', () => {
     const json = JSON.stringify(state).replace(/<\/script>/gi, '<\\/script>');
-    const html = document.documentElement.outerHTML.replace(/<script id="zscope-offline-state" type="application\/json">[\s\S]*?<\/script>/i, '<script id="zscope-offline-state" type="application/json">' + json + '<\/script>');
+    const root = document.documentElement.cloneNode(true);
+    const stateScript = root.querySelector('#zscope-offline-state');
+    if (stateScript) {
+      stateScript.textContent = json;
+    }
+    const html = '<!DOCTYPE html>\n' + root.outerHTML;
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
