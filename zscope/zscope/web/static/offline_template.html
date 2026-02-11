@@ -42,7 +42,35 @@ pre { white-space: pre-wrap; background: #111827; border: 1px solid #374151; bor
 </main>
 <script>
 (() => {
-  const state = JSON.parse(document.getElementById('zscope-offline-state').textContent || '{}');
+  function decodeBase64Utf8(base64Text) {
+    const binary = atob(base64Text);
+    const bytes = Uint8Array.from(binary, ch => ch.charCodeAt(0));
+    return new TextDecoder('utf-8').decode(bytes);
+  }
+
+  function encodeBase64Utf8(plainText) {
+    const bytes = new TextEncoder().encode(plainText);
+    let binary = '';
+    bytes.forEach(b => {
+      binary += String.fromCharCode(b);
+    });
+    return btoa(binary);
+  }
+
+  function parseOfflineState(rawText) {
+    const trimmed = String(rawText || '').trim();
+    if (!trimmed) {
+      return {};
+    }
+    if (trimmed.startsWith('base64:')) {
+      const decoded = decodeBase64Utf8(trimmed.slice('base64:'.length));
+      return JSON.parse(decoded);
+    }
+    return JSON.parse(trimmed);
+  }
+
+  const stateScript = document.getElementById('zscope-offline-state');
+  const state = parseOfflineState(stateScript ? stateScript.textContent : '{}');
   state.findings = Array.isArray(state.findings) ? state.findings : [];
   let current = -1;
   const listEl = document.getElementById('issueList');
@@ -89,8 +117,13 @@ pre { white-space: pre-wrap; background: #111827; border: 1px solid #374151; bor
   });
 
   document.getElementById('savePageBtn').addEventListener('click', () => {
-    const json = JSON.stringify(state).replace(/<\/script>/gi, '<\\/script>');
-    const html = document.documentElement.outerHTML.replace(/<script id="zscope-offline-state" type="application\/json">[\s\S]*?<\/script>/i, '<script id="zscope-offline-state" type="application/json">' + json + '<\/script>');
+    const encodedState = 'base64:' + encodeBase64Utf8(JSON.stringify(state));
+    const root = document.documentElement.cloneNode(true);
+    const stateScript = root.querySelector('#zscope-offline-state');
+    if (stateScript) {
+      stateScript.textContent = encodedState;
+    }
+    const html = '<!DOCTYPE html>\n' + root.outerHTML;
     const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
