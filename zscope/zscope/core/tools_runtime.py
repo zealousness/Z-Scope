@@ -8,6 +8,7 @@ from typing import Dict, Any, Optional, List
 
 from ..retrieval.code_index import CodeIndex
 from .snapshot_store import SnapshotStore
+from ..config.user_config_store import UserConfigStore
 
 logger = logging.getLogger(__name__)
 
@@ -17,10 +18,12 @@ class ToolsRuntime:
     Provides tools that LLM can call during analysis.
     """
 
-    def __init__(self, code_index: CodeIndex, snapshot_store: SnapshotStore):
+    def __init__(self, code_index: CodeIndex, snapshot_store: SnapshotStore,
+                 user_config: Optional['UserConfigStore'] = None):
         """Initialize tools runtime."""
         self.code_index = code_index
         self.snapshot_store = snapshot_store
+        self.user_config = user_config
         self._location_context: Dict[str, Any] = {
             "file_path": None,
             "line": None,
@@ -50,49 +53,15 @@ class ToolsRuntime:
         """Fill missing file/line arguments from recent tool context when possible."""
         filled = dict(arguments)
 
-        if tool_name in {"get_symbol_definition", "get_type_definition", "get_hover_info"}:
-            if not filled.get("file_path") and self._location_context.get("file_path"):
-                filled["file_path"] = self._location_context["file_path"]
-                logger.info(
-                    "Auto-filled '%s.file_path' with context value '%s'",
-                    tool_name,
-                    filled["file_path"],
-                )
-            if filled.get("line") is None:
-                context_line = self._location_context.get("line")
-                if context_line is not None:
-                    filled["line"] = context_line
-                    logger.info(
-                        "Auto-filled '%s.line' with context value %s", tool_name, context_line
-                    )
-            if filled.get("character") is None:
-                filled["character"] = 0
-                logger.info("Auto-filled '%s.character' with default value 0", tool_name)
-
         if tool_name == "get_file_snippet":
             if not filled.get("file_path") and self._location_context.get("file_path"):
                 filled["file_path"] = self._location_context["file_path"]
-                logger.info(
-                    "Auto-filled '%s.file_path' with context value '%s'",
-                    tool_name,
-                    filled["file_path"],
-                )
             if filled.get("start_line") is None:
                 context_start = self._location_context.get("start_line")
                 if context_start is not None:
                     filled["start_line"] = context_start
-                    logger.info(
-                        "Auto-filled '%s.start_line' with context value %s",
-                        tool_name,
-                        context_start,
-                    )
             if filled.get("end_line") is None and filled.get("start_line") is not None:
                 filled["end_line"] = filled["start_line"] + 40
-                logger.info(
-                    "Auto-filled '%s.end_line' with default window end %s",
-                    tool_name,
-                    filled["end_line"],
-                )
 
         return filled
 
@@ -128,42 +97,6 @@ class ToolsRuntime:
                 ),
             }
 
-        def validate_position(
-            file_path: str, line: int, character: int
-        ) -> Optional[Dict[str, Any]]:
-            resolved = validate_existing_file(file_path)
-            if not resolved:
-                return {
-                    "success": False,
-                    "error": (
-                        f"{tool_name} requires an existing file path. "
-                        f"'{file_path}' was not found; please correct the path and retry."
-                    ),
-                }
-            try:
-                with open(resolved, "r", encoding="utf-8", errors="ignore") as handle:
-                    lines = handle.readlines()
-            except OSError as exc:
-                return {"success": False, "error": f"Failed to read '{file_path}': {exc}"}
-            if line < 1 or line > len(lines):
-                return {
-                    "success": False,
-                    "error": (
-                        f"'{tool_name}' line {line} is out of range for '{file_path}'. "
-                        "Please correct the line number and retry."
-                    ),
-                }
-            line_text = lines[line - 1].rstrip("\n")
-            if character < 0 or character > len(line_text):
-                return {
-                    "success": False,
-                    "error": (
-                        f"'{tool_name}' character {character} is out of range for line {line} in '{file_path}'. "
-                        "Please correct the character offset and retry."
-                    ),
-                }
-            return None
-
         if tool_name == "get_function_impl":
             func_name = arguments.get("func_name")
             error = (
@@ -195,9 +128,9 @@ class ToolsRuntime:
             if file_path is not None:
                 return ensure_type(file_path, str, "file_path")
         elif tool_name == "list_known_functions":
-            prefix = arguments.get("prefix")
-            if prefix is not None:
-                error = ensure_type(prefix, str, "prefix")
+            pattern = arguments.get("pattern")
+            if pattern is not None:
+                error = ensure_type(pattern, str, "pattern")
                 if error:
                     return error
             limit = arguments.get("limit")
@@ -250,57 +183,39 @@ class ToolsRuntime:
                         "Please correct the line range and retry."
                     ),
                 }
-        elif tool_name in {"get_symbol_definition", "get_type_definition", "get_hover_info"}:
-            file_path = arguments.get("file_path")
-            if file_path is None:
-                return {
-                    "success": False,
-                    "error": "'file_path' is required; please correct and retry.",
-                }
-            error = ensure_type(file_path, str, "file_path")
-            if error:
-                return error
-            line = arguments.get("line")
-            character = arguments.get("character")
-            if line is None or character is None:
-                return {
-                    "success": False,
-                    "error": "'line' and 'character' are required; please correct and retry.",
-                }
-            error = ensure_type(line, int, "line")
-            if error:
-                return error
-            error = ensure_type(character, int, "character")
-            if error:
-                return error
-            return validate_position(file_path, line, character)
+        elif tool_name in {"get_callers", "get_call_graph", "find_function_pointers"}:
+            func_name = arguments.get("func_name")
+            if func_name is None:
+                return {"success": False, "error": "'func_name' is required; please correct and retry."}
+            return ensure_type(func_name, str, "func_name")
+        elif tool_name == "get_type_info":
+            type_name = arguments.get("type_name")
+            if type_name is None:
+                return {"success": False, "error": "'type_name' is required; please correct and retry."}
+            return ensure_type(type_name, str, "type_name")
+        elif tool_name == "get_data_flow":
+            for param in ("source_func", "source_param", "sink_pattern"):
+                val = arguments.get(param)
+                if val is None:
+                    return {"success": False, "error": f"'{param}' is required; please correct and retry."}
+                error = ensure_type(val, str, param)
+                if error:
+                    return error
         return None
 
     def get_tools_schema(self) -> List[Dict[str, Any]]:
-        """
-        Get OpenAI function calling schema for available tools.
-
-        Returns:
-            List of tool definitions compatible with OpenAI API
-        """
+        """Get OpenAI function calling schema for available tools."""
         return [
             {
                 "type": "function",
                 "function": {
                     "name": "get_function_impl",
-                    "description": "Retrieve the source code implementation of a specific C function by name. Returns the function's code, location, signature, and list of functions it calls.",
+                    "description": "Retrieve the source code of a C function by name.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "func_name": {
-                                "type": "string",
-                                "description": "The name of the C function to retrieve",
-                            },
-                            "max_lines": {
-                                "type": "integer",
-                                "description": "Maximum number of lines to return (default: 200, max: 500)",
-                                "default": 200,
-                            },
+                            "func_name": {"type": "string", "description": "Function name"},
+                            "max_lines": {"type": "integer", "default": 200},
                         },
                         "required": ["func_name"],
                     },
@@ -310,18 +225,12 @@ class ToolsRuntime:
                 "type": "function",
                 "function": {
                     "name": "get_function_snapshot",
-                    "description": "Retrieve a previously saved semantic snapshot of a function. Snapshots contain pre-analyzed information about the function's behavior, resources, error handling, etc. Returns null if no snapshot exists.",
+                    "description": "Retrieve a previously saved semantic snapshot of a function.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "func_name": {
-                                "type": "string",
-                                "description": "The name of the function whose snapshot to retrieve",
-                            },
-                            "file_path": {
-                                "type": "string",
-                                "description": "Optional file path to disambiguate snapshots for same-named functions",
-                            },
+                            "func_name": {"type": "string"},
+                            "file_path": {"type": "string"},
                         },
                         "required": ["func_name"],
                     },
@@ -331,21 +240,13 @@ class ToolsRuntime:
                 "type": "function",
                 "function": {
                     "name": "list_known_functions",
-                    "description": "List all functions known in the project index. Useful for discovering available functions or searching by prefix.",
+                    "description": "List functions in the project index, filtered by regex pattern.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "prefix": {
-                                "type": "string",
-                                "description": "Optional prefix to filter function names",
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "description": "Maximum number of results to return (default: 50)",
-                                "default": 50,
-                            },
+                            "pattern": {"type": "string", "description": "Regex pattern to filter"},
+                            "limit": {"type": "integer", "default": 50},
                         },
-                        "required": [],
                     },
                 },
             },
@@ -353,99 +254,89 @@ class ToolsRuntime:
                 "type": "function",
                 "function": {
                     "name": "get_file_snippet",
-                    "description": "Retrieve a specific line range from a source file. Useful for examining context around a specific location.",
+                    "description": "Retrieve a specific line range from a source file.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "file_path": {
-                                "type": "string",
-                                "description": "Path to the file (relative to project root or absolute). Optional if recently inferred from prior tool outputs.",
-                            },
-                            "start_line": {
-                                "type": "integer",
-                                "description": "Starting line number (1-indexed, inclusive). Optional if recent context is available.",
-                            },
-                            "end_line": {
-                                "type": "integer",
-                                "description": "Ending line number (1-indexed, inclusive). Optional when omitted together with start_line.",
-                            },
+                            "file_path": {"type": "string"},
+                            "start_line": {"type": "integer"},
+                            "end_line": {"type": "integer"},
                         },
-                        "required": [],
                     },
                 },
             },
             {
                 "type": "function",
                 "function": {
-                    "name": "get_symbol_definition",
-                    "description": "Retrieve symbol definition locations using LSP.",
+                    "name": "get_callers",
+                    "description": "Find functions that call the given function (vulnerability reachability).",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "file_path": {
-                                "type": "string",
-                                "description": "Path to the file (relative to project root or absolute). Optional if recent context is available.",
-                            },
-                            "line": {
-                                "type": "integer",
-                                "description": "Line number (1-indexed). Optional if recent context is available.",
-                            },
-                            "character": {
-                                "type": "integer",
-                                "description": "Character offset (0-indexed). Optional; defaults to 0 when omitted.",
-                            },
+                            "func_name": {"type": "string"},
+                            "limit": {"type": "integer", "default": 20},
                         },
-                        "required": [],
+                        "required": ["func_name"],
                     },
                 },
             },
             {
                 "type": "function",
                 "function": {
-                    "name": "get_type_definition",
-                    "description": "Retrieve type definition locations using LSP.",
+                    "name": "get_type_info",
+                    "description": "Retrieve struct/union/enum definition and members by type name.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "file_path": {
-                                "type": "string",
-                                "description": "Path to the file (relative to project root or absolute). Optional if recent context is available.",
-                            },
-                            "line": {
-                                "type": "integer",
-                                "description": "Line number (1-indexed). Optional if recent context is available.",
-                            },
-                            "character": {
-                                "type": "integer",
-                                "description": "Character offset (0-indexed). Optional; defaults to 0 when omitted.",
-                            },
+                            "type_name": {"type": "string"},
                         },
-                        "required": [],
+                        "required": ["type_name"],
                     },
                 },
             },
             {
                 "type": "function",
                 "function": {
-                    "name": "get_hover_info",
-                    "description": "Retrieve hover/type info for a symbol using LSP.",
+                    "name": "get_call_graph",
+                    "description": "Get call graph (callers and callees) around a function.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "file_path": {
-                                "type": "string",
-                                "description": "Path to the file (relative to project root or absolute). Optional if recent context is available.",
-                            },
-                            "line": {
-                                "type": "integer",
-                                "description": "Line number (1-indexed). Optional if recent context is available.",
-                            },
-                            "character": {
-                                "type": "integer",
-                                "description": "Character offset (0-indexed). Optional; defaults to 0 when omitted.",
-                            },
+                            "func_name": {"type": "string"},
+                            "depth": {"type": "integer", "default": 1},
+                            "limit": {"type": "integer", "default": 30},
                         },
-                        "required": [],
+                        "required": ["func_name"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_data_flow",
+                    "description": "Trace data flow from source parameter to sink (taint analysis).",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "source_func": {"type": "string"},
+                            "source_param": {"type": "string"},
+                            "sink_pattern": {"type": "string"},
+                        },
+                        "required": ["source_func", "source_param", "sink_pattern"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "find_function_pointers",
+                    "description": "Find function pointer assignments and callback registrations.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "func_name": {"type": "string"},
+                        },
+                        "required": ["func_name"],
                     },
                 },
             },
@@ -477,12 +368,16 @@ class ToolsRuntime:
                 return self._list_known_functions(**effective_args)
             elif tool_name == "get_file_snippet":
                 return self._get_file_snippet(**effective_args)
-            elif tool_name == "get_symbol_definition":
-                return self._get_symbol_definition(**effective_args)
-            elif tool_name == "get_type_definition":
-                return self._get_type_definition(**effective_args)
-            elif tool_name == "get_hover_info":
-                return self._get_hover_info(**effective_args)
+            elif tool_name == "get_callers":
+                return self._get_callers(**effective_args)
+            elif tool_name == "get_type_info":
+                return self._get_type_info(**effective_args)
+            elif tool_name == "get_call_graph":
+                return self._get_call_graph(**effective_args)
+            elif tool_name == "get_data_flow":
+                return self._get_data_flow(**effective_args)
+            elif tool_name == "find_function_pointers":
+                return self._find_function_pointers(**effective_args)
             else:
                 return {"error": f"Unknown tool: {tool_name}"}
         except Exception as e:
@@ -490,9 +385,32 @@ class ToolsRuntime:
             return {"error": str(e)}
 
     def _get_function_impl(self, func_name: str, max_lines: int = 200) -> Dict[str, Any]:
-        """Get function implementation."""
+        """Get function implementation. Falls back to user-provided external function description."""
         result = self.code_index.get_function_impl(func_name, max_lines=max_lines)
         if result is None:
+            # Check user config for external function description
+            if self.user_config:
+                ext = self.user_config.get_external_function(func_name)
+                if ext:
+                    return {
+                        "success": True,
+                        "data": {
+                            "code": f"/* 外部函数 (来自 {ext.get('library', '未知库')})\n"
+                                    f" * 描述: {ext['description']}\n"
+                                    f" * 内存行为: {ext.get('memory_behavior', '{}')}\n"
+                                    f" * 并发行为: {ext.get('concurrency_behavior', '{}')}\n"
+                                    f" * 返回语义: {ext.get('return_semantics', '')}\n */",
+                            "file": "[external]",
+                            "start_line": 0,
+                            "end_line": 0,
+                            "is_external": True,
+                        },
+                    }
+                # No user description — record a config warning
+                self.user_config.add_config_warning(
+                    "missing_external_func", func_name,
+                    f"函数 '{func_name}' 的实现未找到，且无用户提供的外部函数描述。"
+                )
             return {
                 "success": False,
                 "error": f"Function '{func_name}' not found in project index",
@@ -518,13 +436,13 @@ class ToolsRuntime:
         return {"success": True, "data": snapshot}
 
     def _list_known_functions(
-        self, prefix: Optional[str] = None, limit: int = 50
+        self, pattern: Optional[str] = None, limit: int = 50
     ) -> Dict[str, Any]:
         """List known functions."""
-        functions = self.code_index.list_functions(prefix=prefix, limit=limit)
+        functions = self.code_index.list_functions(pattern=pattern, limit=limit)
         return {
             "success": True,
-            "data": {"functions": functions, "count": len(functions), "prefix": prefix},
+            "data": {"functions": functions, "count": len(functions), "pattern": pattern},
         }
 
     def _get_file_snippet(
@@ -541,20 +459,35 @@ class ToolsRuntime:
         )
         return {"success": True, "data": result}
 
-    def _get_symbol_definition(self, file_path: str, line: int, character: int) -> Dict[str, Any]:
-        """Get symbol definitions via LSP."""
-        results = self.code_index.get_definition(file_path, line, character)
-        self._update_location_context(file_path=file_path, line=line)
-        return {"success": True, "data": {"definitions": results, "count": len(results)}}
+    def _get_callers(self, func_name: str, limit: int = 20) -> Dict[str, Any]:
+        """Get callers of a function."""
+        callers = self.code_index.get_callers(func_name, limit=limit)
+        return {"success": True, "data": {"callers": callers, "count": len(callers)}}
 
-    def _get_type_definition(self, file_path: str, line: int, character: int) -> Dict[str, Any]:
-        """Get type definitions via LSP."""
-        results = self.code_index.get_type_definition(file_path, line, character)
-        self._update_location_context(file_path=file_path, line=line)
-        return {"success": True, "data": {"definitions": results, "count": len(results)}}
+    def _get_type_info(self, type_name: str) -> Dict[str, Any]:
+        """Get type definition and members."""
+        info = self.code_index.get_type_info(type_name)
+        if info is None:
+            return {"success": False, "error": f"Type '{type_name}' not found"}
+        return {"success": True, "data": info}
 
-    def _get_hover_info(self, file_path: str, line: int, character: int) -> Dict[str, Any]:
-        """Get hover/type info via LSP."""
-        hover = self.code_index.get_hover_info(file_path, line, character)
-        self._update_location_context(file_path=file_path, line=line)
-        return {"success": True, "data": {"hover": hover}}
+    def _get_call_graph(self, func_name: str, depth: int = 1, limit: int = 30) -> Dict[str, Any]:
+        """Get call graph around a function."""
+        callers = self.code_index.get_callers(func_name, limit=limit)
+        callees = self.code_index.get_callees(func_name, limit=limit)
+        return {
+            "success": True,
+            "data": {"function": func_name, "callers": callers, "callees": callees},
+        }
+
+    def _get_data_flow(
+        self, source_func: str, source_param: str, sink_pattern: str
+    ) -> Dict[str, Any]:
+        """Trace data flow from source to sink."""
+        flows = self.code_index.get_data_flow(source_func, source_param, sink_pattern)
+        return {"success": True, "data": {"flows": flows, "count": len(flows)}}
+
+    def _find_function_pointers(self, func_name: str) -> Dict[str, Any]:
+        """Find function pointer assignments."""
+        refs = self.code_index.find_function_pointers(func_name)
+        return {"success": True, "data": {"references": refs, "count": len(refs)}}

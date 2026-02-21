@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Set
 
 from ..config.config import ZScopeConfig
+from ..config.user_config_store import UserConfigStore
 from ..retrieval.code_index import CodeIndex
 from .snapshot_store import SnapshotStore
 from .tools_runtime import ToolsRuntime
@@ -124,16 +125,20 @@ class Analyzer:
     Main analyzer class.
     """
 
-    def __init__(self, config: ZScopeConfig, code_index: Optional[CodeIndex] = None, snapshot_store: Optional[SnapshotStore] = None):
+    def __init__(self, config: ZScopeConfig, code_index: Optional[CodeIndex] = None,
+                 snapshot_store: Optional[SnapshotStore] = None,
+                 user_config: Optional[UserConfigStore] = None):
         self.config = config
         self.code_index = code_index or CodeIndex(
-            config.project.project_root, 
+            config.project.project_root,
             config.project.compile_commands_path,
             source_root=config.project.source_root,
             indexing_config=config.indexing,
             priority_functions=[config.project.entry_function] if config.project.entry_function else None
         )
         self.snapshot_store = snapshot_store or SnapshotStore(Path(config.analysis.snapshot_dir))
+        db_dir = Path(config.analysis.user_config_db) if config.analysis.user_config_db else Path(config.analysis.snapshot_dir)
+        self.user_config = user_config or UserConfigStore(db_dir)
         self.llm_client = LLMClient(
             api_key=config.llm.api_key,
             base_url=config.llm.base_url,
@@ -143,7 +148,7 @@ class Analyzer:
             max_tokens=config.llm.max_tokens
         )
         self.report_generator = ReportGenerator(config.project.project_root)
-        self.tools_runtime = ToolsRuntime(self.code_index, self.snapshot_store)
+        self.tools_runtime = ToolsRuntime(self.code_index, self.snapshot_store, self.user_config)
         
         self.analyzed_functions: Set[str] = set()
         self.issues: List[Issue] = []
@@ -152,6 +157,9 @@ class Analyzer:
         """Run the multi-agent analysis."""
         entry_func = self.config.project.entry_function
         logger.info(f"Starting multi-agent analysis on entry function: {entry_func}")
+
+        # Clear config warnings from previous run
+        self.user_config.clear_config_warnings()
 
         impl_result = self.code_index.get_function_impl(entry_func)
         if not impl_result:
@@ -163,6 +171,17 @@ class Analyzer:
             "code": impl_result["code"],
             "location": f"{impl_result['file']}:{impl_result['start_line']}"
         }
+
+        # Inject user config context
+        user_context_parts = []
+        paired_ctx = self.user_config.get_paired_functions_context()
+        if paired_ctx:
+            user_context_parts.append(paired_ctx)
+        intent_ctx = self.user_config.get_function_intent_context(entry_func)
+        if intent_ctx:
+            user_context_parts.append(intent_ctx)
+        if user_context_parts:
+            agent_context["user_config_context"] = "\n".join(user_context_parts)
 
         issues = []
         notes = []
@@ -264,6 +283,9 @@ class Analyzer:
         # 3. Resolve locations using snippets
         self._resolve_issue_locations(issues)
 
+        # 4. Filter false positives
+        issues = self._filter_false_positives(issues)
+
         # Construct Final Report
         if any_failure and not issues:
              verdict = "error"
@@ -296,19 +318,23 @@ class Analyzer:
         from ..tools.utils import (
             ListFunctionsTool,
             GetFileSnippetTool,
-            GetSymbolDefinitionTool,
-            GetTypeDefinitionTool,
-            GetHoverInfoTool,
+            GetCallersTool,
+            GetTypeInfoTool,
+            GetCallGraphTool,
+            GetDataFlowTool,
+            FindFunctionPointersTool,
         )
-        
+
         return [
             GetFunctionImplTool(self.code_index),
             GetFunctionSnapshotTool(self.snapshot_store),
             ListFunctionsTool(self.code_index),
             GetFileSnippetTool(self.code_index),
-            GetSymbolDefinitionTool(self.code_index),
-            GetTypeDefinitionTool(self.code_index),
-            GetHoverInfoTool(self.code_index),
+            GetCallersTool(self.code_index),
+            GetTypeInfoTool(self.code_index),
+            GetCallGraphTool(self.code_index),
+            GetDataFlowTool(self.code_index),
+            FindFunctionPointersTool(self.code_index),
         ]
 
 
@@ -581,3 +607,19 @@ Output a JSON of type 'snapshot_refresh_decision'.
                 return
 
         issue["location"] = f"unresolved:{location}" if location else "unresolved"
+
+    def _filter_false_positives(self, issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Filter out issues that have been marked as false positives."""
+        filtered = []
+        for issue in issues:
+            if not isinstance(issue, dict):
+                filtered.append(issue)
+                continue
+            func = issue.get("function", "")
+            loc = issue.get("location", "")
+            subcat = issue.get("subcategory", "")
+            if self.user_config.is_false_positive(func, loc, subcat):
+                logger.info(f"Filtering false positive: {issue.get('id')} in {func}")
+                continue
+            filtered.append(issue)
+        return filtered

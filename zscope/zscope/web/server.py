@@ -10,6 +10,11 @@ REPORT_FILENAME = "zscope_batch_report.json"
 CONFIG_FILENAME = "zscope.yaml"
 ALLOWED_VALIDATION_STATUSES = {"validated", "pending", "rejected"}
 
+# Shared state set by run_server()
+_joern_client = None
+_user_config_store = None
+_code_index = None
+
 
 def _empty_report() -> Dict[str, Any]:
     return {
@@ -133,38 +138,207 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json({"content": content})
             else:
                 self._send_json({"content": ""})
+        elif self.path == "/api/cpg_status":
+            self._handle_cpg_status()
+        elif self.path == "/api/user_config/warnings":
+            self._handle_get_warnings()
+        elif self.path == "/api/false_positives":
+            self._handle_get_false_positives()
+        elif self.path.startswith("/api/user_config/"):
+            self._handle_user_config_get()
         else:
             super().do_GET()
 
     def do_POST(self):
-        if self.path in {"/api/config", "/api/save_findings"}:
-            content_length = int(self.headers.get("Content-Length", 0))
-            post_data = self.rfile.read(content_length)
-            try:
-                payload = json.loads(post_data or b"{}")
-            except json.JSONDecodeError:
-                self._send_json({"success": False, "error": "Invalid JSON"}, status=400)
-                return
+        content_length = int(self.headers.get("Content-Length", 0))
+        post_data = self.rfile.read(content_length)
+        try:
+            payload = json.loads(post_data or b"{}")
+        except json.JSONDecodeError:
+            self._send_json({"success": False, "error": "Invalid JSON"}, status=400)
+            return
 
-            if self.path == "/api/config":
-                content = payload.get("content", "")
-                config_path = Path(CONFIG_FILENAME)
-                config_path.write_text(content, encoding="utf-8")
-                self._send_json({"success": True, "path": str(config_path)})
-            else:
-                report = load_report()
-                updates = payload.get("issues", [])
-                if not isinstance(updates, list):
-                    self._send_json({"success": False, "error": "Issues must be a list"}, status=400)
-                    return
-                apply_validation_updates(report, updates)
-                save_report(report)
-                self._send_json({"success": True})
+        if self.path == "/api/config":
+            content = payload.get("content", "")
+            config_path = Path(CONFIG_FILENAME)
+            config_path.write_text(content, encoding="utf-8")
+            self._send_json({"success": True, "path": str(config_path)})
+        elif self.path == "/api/save_findings":
+            report = load_report()
+            updates = payload.get("issues", [])
+            if not isinstance(updates, list):
+                self._send_json({"success": False, "error": "Issues must be a list"}, status=400)
+                return
+            apply_validation_updates(report, updates)
+            save_report(report)
+            self._send_json({"success": True})
+        elif self.path == "/api/build_cpg":
+            self._handle_build_cpg(payload)
+        elif self.path == "/api/mark_false_positive":
+            self._handle_mark_false_positive(payload)
+        elif self.path.startswith("/api/user_config/"):
+            self._handle_user_config_post(payload)
         else:
             self.send_error(404)
 
+    def do_DELETE(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        post_data = self.rfile.read(content_length) if content_length else b"{}"
+        try:
+            payload = json.loads(post_data or b"{}")
+        except json.JSONDecodeError:
+            payload = {}
+        if self.path.startswith("/api/user_config/"):
+            self._handle_user_config_delete(payload)
+        else:
+            self.send_error(404)
 
-def run_server():
+    # ── CPG handlers ──
+
+    def _handle_cpg_status(self):
+        global _joern_client
+        if not _joern_client:
+            self._send_json({"status": "unavailable", "error": None})
+            return
+        self._send_json({"status": _joern_client.cpg_status, "error": _joern_client.cpg_error})
+
+    def _handle_build_cpg(self, payload):
+        global _joern_client
+        if not _joern_client:
+            self._send_json({"success": False, "error": "Joern client not available"}, status=400)
+            return
+        source_path = payload.get("source_path", "")
+        if not source_path:
+            self._send_json({"success": False, "error": "source_path required"}, status=400)
+            return
+        _joern_client.import_cpg_async(source_path)
+        self._send_json({"success": True, "status": "building"})
+
+    # ── False positive handlers ──
+
+    def _handle_mark_false_positive(self, payload):
+        global _user_config_store
+        if not _user_config_store:
+            self._send_json({"success": False, "error": "Config store not available"}, status=400)
+            return
+        _user_config_store.add_false_positive(
+            function=payload.get("function", ""),
+            location=payload.get("location", ""),
+            subcategory=payload.get("subcategory", ""),
+            reason=payload.get("reason", ""),
+            issue_id=payload.get("issue_id", ""),
+        )
+        self._send_json({"success": True})
+
+    def _handle_get_false_positives(self):
+        global _user_config_store
+        if not _user_config_store:
+            self._send_json({"items": []})
+            return
+        self._send_json({"items": _user_config_store.list_false_positives()})
+
+    def _handle_get_warnings(self):
+        global _user_config_store
+        if not _user_config_store:
+            self._send_json({"items": []})
+            return
+        self._send_json({"items": _user_config_store.list_config_warnings()})
+
+    # ── User config CRUD handlers ──
+
+    def _get_config_resource(self):
+        """Extract resource name from /api/user_config/<resource>."""
+        parts = self.path.strip("/").split("/")
+        return parts[2] if len(parts) >= 3 else ""
+
+    def _handle_user_config_get(self):
+        global _user_config_store
+        if not _user_config_store:
+            self._send_json({"items": []})
+            return
+        resource = self._get_config_resource()
+        dispatch = {
+            "external_functions": _user_config_store.list_external_functions,
+            "paired_functions": _user_config_store.list_paired_functions,
+            "pointer_targets": _user_config_store.get_pointer_targets,
+            "function_intents": _user_config_store.list_function_intents,
+        }
+        fn = dispatch.get(resource)
+        if fn:
+            self._send_json({"items": fn()})
+        else:
+            self.send_error(404)
+
+    def _handle_user_config_post(self, payload):
+        global _user_config_store
+        if not _user_config_store:
+            self._send_json({"success": False, "error": "Config store not available"}, status=400)
+            return
+        resource = self._get_config_resource()
+        try:
+            if resource == "external_functions":
+                _user_config_store.upsert_external_function(
+                    payload["func_name"], payload.get("description", ""),
+                    library=payload.get("library", ""),
+                    memory_behavior=payload.get("memory_behavior"),
+                    concurrency_behavior=payload.get("concurrency_behavior"),
+                    return_semantics=payload.get("return_semantics", ""),
+                )
+            elif resource == "paired_functions":
+                _user_config_store.upsert_paired_function(
+                    payload["category"], payload["acquire_func"],
+                    payload["release_func"], payload.get("description", ""),
+                )
+            elif resource == "pointer_targets":
+                _user_config_store.upsert_pointer_target(
+                    payload["pointer_location"], payload.get("scope", "local"),
+                    payload.get("target_functions", []), payload.get("context", ""),
+                )
+            elif resource == "function_intents":
+                _user_config_store.upsert_function_intent(
+                    payload["func_name"], payload.get("file_path", ""),
+                    caller_constraints=payload.get("caller_constraints"),
+                    concurrency_group=payload.get("concurrency_group", ""),
+                    concurrent_with=payload.get("concurrent_with"),
+                    notes=payload.get("notes", ""),
+                )
+            else:
+                self.send_error(404)
+                return
+            self._send_json({"success": True})
+        except KeyError as e:
+            self._send_json({"success": False, "error": f"Missing field: {e}"}, status=400)
+
+    def _handle_user_config_delete(self, payload):
+        global _user_config_store
+        if not _user_config_store:
+            self._send_json({"success": False, "error": "Config store not available"}, status=400)
+            return
+        resource = self._get_config_resource()
+        try:
+            if resource == "external_functions":
+                _user_config_store.delete_external_function(payload["func_name"])
+            elif resource == "paired_functions":
+                _user_config_store.delete_paired_function(payload["id"])
+            elif resource == "pointer_targets":
+                _user_config_store.delete_pointer_target(payload["id"])
+            elif resource == "function_intents":
+                _user_config_store.delete_function_intent(
+                    payload["func_name"], payload.get("file_path", ""),
+                )
+            else:
+                self.send_error(404)
+                return
+            self._send_json({"success": True})
+        except KeyError as e:
+            self._send_json({"success": False, "error": f"Missing field: {e}"}, status=400)
+
+
+def run_server(joern_client=None, user_config_store=None, code_index=None):
+    global _joern_client, _user_config_store, _code_index
+    _joern_client = joern_client
+    _user_config_store = user_config_store
+    _code_index = code_index
     WEB_DIR.mkdir(parents=True, exist_ok=True)
 
     with socketserver.TCPServer(("", PORT), ZScopeHandler) as httpd:
