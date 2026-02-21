@@ -43,11 +43,12 @@ class AgentConfig:
 class IndexingConfig:
     """Configuration for code indexing."""
 
-    backend: str = "clangd"  # clangd or regex
-    auto_prime: bool = True
-    max_prime_files: int = 100
-    only_prime_priority: bool = False
-    clangd_path: str = "clangd"
+    backend: str = "joern"
+    joern_path: str = "joern"
+    joern_server_host: str = "localhost"
+    joern_server_port: int = 8080
+    joern_heap_size: str = "8g"
+    import_timeout: int = 1800
 
 
 @dataclass
@@ -60,6 +61,7 @@ class AnalysisConfig:
     snapshot_dir: str = ".zscope_snapshots"
     enable_snapshot_cache: bool = True
     parallel_workers: int = 3  # Number of concurrent workers for batch analysis
+    user_config_db: str = ""  # Path to user config DB, defaults to {snapshot_dir}/
 
 
 @dataclass
@@ -193,11 +195,12 @@ class ConfigLoader:
             # Indexing config
             indexing_data = raw_config.get("indexing", {})
             indexing_config = IndexingConfig(
-                backend=indexing_data.get("backend", "clangd"),
-                auto_prime=indexing_data.get("auto_prime", True),
-                max_prime_files=indexing_data.get("max_prime_files", 100),
-                only_prime_priority=indexing_data.get("only_prime_priority", False),
-                clangd_path=indexing_data.get("clangd_path", "clangd"),
+                backend=indexing_data.get("backend", "joern"),
+                joern_path=indexing_data.get("joern_path", "joern"),
+                joern_server_host=indexing_data.get("joern_server_host", "localhost"),
+                joern_server_port=indexing_data.get("joern_server_port", 8080),
+                joern_heap_size=indexing_data.get("joern_heap_size", "8g"),
+                import_timeout=indexing_data.get("import_timeout", 1800),
             )
 
             # Analysis config
@@ -209,6 +212,7 @@ class ConfigLoader:
                 snapshot_dir=analysis_data.get("snapshot_dir", ".zscope_snapshots"),
                 enable_snapshot_cache=analysis_data.get("enable_snapshot_cache", True),
                 parallel_workers=analysis_data.get("parallel_workers", 3),
+                user_config_db=analysis_data.get("user_config_db", ""),
             )
 
             # Project config

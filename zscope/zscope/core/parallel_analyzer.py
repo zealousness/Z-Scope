@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 
 from ..config.config import ZScopeConfig
 from ..config.function_entry import FunctionEntry
+from ..config.user_config_store import UserConfigStore
 from .analyzer import Analyzer
 from .snapshot_store import SnapshotStore
 from ..retrieval.code_index import CodeIndex
@@ -38,26 +39,21 @@ class ParallelAnalyzer:
     simultaneously, significantly reducing total analysis time.
     """
     
-    def __init__(self, config: ZScopeConfig, code_index: Optional[CodeIndex] = None):
-        """
-        Initialize parallel analyzer.
-        
-        Args:
-            config: Base ZScope configuration
-            code_index: Optional shared CodeIndex to avoid rebuilding
-        """
+    def __init__(self, config: ZScopeConfig, code_index: Optional[CodeIndex] = None,
+                 user_config: Optional[UserConfigStore] = None):
         self.base_config = config
         self.max_workers = config.analysis.parallel_workers
-        
-        # Use provided code_index or create new one
+
         if code_index:
             self.code_index = code_index
         else:
             self.code_index = CodeIndex(
-                config.project.project_root, 
+                config.project.project_root,
                 config.project.compile_commands_path
             )
         self.snapshot_store = SnapshotStore(Path(config.analysis.snapshot_dir))
+        db_dir = Path(config.analysis.user_config_db) if config.analysis.user_config_db else Path(config.analysis.snapshot_dir)
+        self.user_config = user_config or UserConfigStore(db_dir)
 
     @staticmethod
     def _normalize_md_text(value: Any) -> str:
@@ -146,9 +142,10 @@ class ParallelAnalyzer:
             
             # Create analyzer and run with shared components
             analyzer = Analyzer(
-                 config_copy, 
-                 code_index=self.code_index, 
-                 snapshot_store=self.snapshot_store
+                 config_copy,
+                 code_index=self.code_index,
+                 snapshot_store=self.snapshot_store,
+                 user_config=self.user_config
             )
             report_dict = analyzer.run()
             
@@ -188,33 +185,19 @@ class ParallelAnalyzer:
         return config
     
     def get_public_api_functions(self, header_files: Optional[List[str]] = None) -> List[str]:
-        """
-        Get list of public API functions from header files.
-        
-        Args:
-            header_files: List of header file paths to scan, or None for auto-detect
-            
-        Returns:
-            List of function names declared in headers
-        """
-        all_functions = self.code_index.get_all_functions()
-        
-        if header_files:
-            # Filter to functions from specified headers
-            public_funcs = []
-            for func_info in all_functions:
-                if any(h in func_info.get("file", "") for h in header_files):
-                    public_funcs.append(func_info["name"])
-            return public_funcs
-        
-        # Default: return all functions from .h files
-        public_funcs = []
-        for name, info in all_functions.items() if isinstance(all_functions, dict) else [(f["name"], f) for f in all_functions]:
-            file_path = info.get("file", "") if isinstance(info, dict) else ""
-            if ".h" in file_path or "_public" in name or not name.startswith("_"):
-                public_funcs.append(name if isinstance(name, str) else info["name"])
-        
-        return public_funcs
+        """Get list of public API functions from header files."""
+        funcs = self.code_index.get_header_declared_functions(header_files)
+        return [f["name"] for f in funcs if f.get("name")]
+
+    def run_topdown_mode(self, header_files: Optional[List[str]] = None) -> Dict[str, ParallelAnalysisResult]:
+        """Run top-down analysis starting from public API functions in headers."""
+        func_names = self.get_public_api_functions(header_files)
+        if not func_names:
+            logger.warning("No public API functions found in headers")
+            return {}
+        logger.info(f"Top-down mode: found {len(func_names)} public API functions")
+        entries = [FunctionEntry(function_name=name) for name in func_names]
+        return self.analyze_function_entries(entries)
     
     def generate_combined_report(
         self, 
