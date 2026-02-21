@@ -29,19 +29,31 @@
             <h1 class="text-xl font-bold tracking-tight">Z-SCOPE <span class="text-xs font-normal opacity-50">v0.2.0</span></h1>
         </div>
         <div class="flex flex-wrap gap-2 items-center">
+            <div class="tabs tabs-boxed bg-neutral-900">
+                <a class="tab tab-sm" :class="activeTab==='findings' && 'tab-active'" @click="activeTab='findings'">审计发现</a>
+                <a class="tab tab-sm" :class="activeTab==='config' && 'tab-active'" @click="activeTab='config';loadAllConfigs()">用户配置</a>
+                <a class="tab tab-sm" :class="activeTab==='warnings' && 'tab-active'" @click="activeTab='warnings';loadWarnings()">告警</a>
+            </div>
+            <div class="badge badge-outline gap-2" :class="cpgStatusClass">
+                <span class="w-2 h-2 rounded-full" :class="cpgDotClass"></span>
+                CPG: <span x-text="cpgStatus">unknown</span>
+            </div>
             <div class="badge badge-outline gap-2" :class="statusClass">
                 <span class="w-2 h-2 rounded-full" :class="statusDotClass"></span>
                 <span x-text="statusText">正在加载...</span>
             </div>
-            <button @click="refreshData()" class="btn btn-ghost btn-sm">刷新结果</button>
-            <button @click="exportOfflinePage()" class="btn btn-ghost btn-sm">另存离线页面</button>
-            <button @click="triggerOfflineImport()" class="btn btn-ghost btn-sm">导入离线页面</button>
+            <button @click="refreshData()" class="btn btn-ghost btn-sm">刷新</button>
+            <button @click="exportOfflinePage()" class="btn btn-ghost btn-sm">离线导出</button>
+            <button @click="triggerOfflineImport()" class="btn btn-ghost btn-sm">导入</button>
             <button @click="saveFindings()" class="btn btn-primary btn-sm">回写验证结果</button>
             <input type="file" x-ref="offlineImportInput" @change="importOfflinePage($event)" class="hidden" accept=".html,text/html">
         </div>
     </nav>
 
-    <main class="p-6 grid grid-cols-12 gap-6 h-[calc(100vh-96px)]">
+    <main class="p-6 h-[calc(100vh-96px)]">
+
+    <!-- ── Findings Tab ── -->
+    <div x-show="activeTab==='findings'" class="grid grid-cols-12 gap-6 h-full">
         <div class="col-span-4 xl:col-span-3 flex flex-col gap-4 overflow-hidden">
             <div class="glass rounded-2xl p-4 space-y-3">
                 <div class="flex items-center justify-between">
@@ -154,6 +166,10 @@
                             class="textarea textarea-bordered w-full min-h-[140px]"
                             placeholder="填写 validation_reasoning（支持多行文本）"
                             x-model="selectedFinding.validation_reasoning"></textarea>
+                        <div class="flex items-center gap-2 mt-2">
+                            <input class="input input-bordered input-sm flex-1" placeholder="误报原因" x-model="fpReason">
+                            <button class="btn btn-warning btn-sm" @click="markFalsePositive(selectedFinding)">标记为误报</button>
+                        </div>
                     </div>
                 </div>
             </template>
@@ -164,6 +180,155 @@
                 </div>
             </template>
         </div>
+    </div><!-- end findings tab -->
+
+    <!-- ── Config Tab ── -->
+    <div x-show="activeTab==='config'" class="h-full overflow-auto">
+        <div class="glass rounded-2xl p-6 space-y-4">
+            <div class="tabs tabs-bordered">
+                <a class="tab" :class="configSubTab==='external' && 'tab-active'" @click="configSubTab='external'">外部函数</a>
+                <a class="tab" :class="configSubTab==='paired' && 'tab-active'" @click="configSubTab='paired'">配对函数</a>
+                <a class="tab" :class="configSubTab==='pointers' && 'tab-active'" @click="configSubTab='pointers'">函数指针</a>
+                <a class="tab" :class="configSubTab==='intents' && 'tab-active'" @click="configSubTab='intents'">函数意图</a>
+                <a class="tab" :class="configSubTab==='cpg' && 'tab-active'" @click="configSubTab='cpg'">CPG 管理</a>
+            </div>
+
+            <!-- External Functions -->
+            <div x-show="configSubTab==='external'" class="space-y-3">
+                <div class="flex gap-2 flex-wrap">
+                    <input class="input input-bordered input-sm" placeholder="函数名" x-model="extForm.func_name">
+                    <input class="input input-bordered input-sm" placeholder="库名" x-model="extForm.library">
+                    <input class="input input-bordered input-sm flex-1" placeholder="描述" x-model="extForm.description">
+                    <input class="input input-bordered input-sm" placeholder="返回语义" x-model="extForm.return_semantics">
+                    <button class="btn btn-primary btn-sm" @click="saveExtFunc()">保存</button>
+                </div>
+                <table class="table table-sm">
+                    <thead><tr><th>函数名</th><th>库</th><th>描述</th><th>操作</th></tr></thead>
+                    <tbody>
+                        <template x-for="item in configData.external_functions" :key="item.func_name">
+                            <tr>
+                                <td x-text="item.func_name"></td>
+                                <td x-text="item.library"></td>
+                                <td class="max-w-xs truncate" x-text="item.description"></td>
+                                <td><button class="btn btn-error btn-xs" @click="deleteConfig('external_functions',{func_name:item.func_name})">删除</button></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Paired Functions -->
+            <div x-show="configSubTab==='paired'" class="space-y-3">
+                <div class="flex gap-2 flex-wrap">
+                    <select class="select select-bordered select-sm" x-model="pairedForm.category">
+                        <option value="memory">memory</option><option value="lock">lock</option>
+                        <option value="refcount">refcount</option><option value="fd">fd</option>
+                    </select>
+                    <input class="input input-bordered input-sm" placeholder="获取函数" x-model="pairedForm.acquire_func">
+                    <input class="input input-bordered input-sm" placeholder="释放函数" x-model="pairedForm.release_func">
+                    <input class="input input-bordered input-sm flex-1" placeholder="描述" x-model="pairedForm.description">
+                    <button class="btn btn-primary btn-sm" @click="savePairedFunc()">保存</button>
+                </div>
+                <table class="table table-sm">
+                    <thead><tr><th>类别</th><th>获取</th><th>释放</th><th>描述</th><th>操作</th></tr></thead>
+                    <tbody>
+                        <template x-for="item in configData.paired_functions" :key="item.id">
+                            <tr>
+                                <td x-text="item.category"></td>
+                                <td x-text="item.acquire_func"></td>
+                                <td x-text="item.release_func"></td>
+                                <td x-text="item.description"></td>
+                                <td><button class="btn btn-error btn-xs" @click="deleteConfig('paired_functions',{id:item.id})">删除</button></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Pointer Targets -->
+            <div x-show="configSubTab==='pointers'" class="space-y-3">
+                <div class="flex gap-2 flex-wrap">
+                    <input class="input input-bordered input-sm" placeholder="指针位置" x-model="ptrForm.pointer_location">
+                    <select class="select select-bordered select-sm" x-model="ptrForm.scope">
+                        <option value="local">local</option><option value="global">global</option><option value="ignore">ignore</option>
+                    </select>
+                    <input class="input input-bordered input-sm flex-1" placeholder="目标函数(逗号分隔)" x-model="ptrForm.targets_str">
+                    <button class="btn btn-primary btn-sm" @click="savePtrTarget()">保存</button>
+                </div>
+                <table class="table table-sm">
+                    <thead><tr><th>位置</th><th>范围</th><th>目标</th><th>操作</th></tr></thead>
+                    <tbody>
+                        <template x-for="item in configData.pointer_targets" :key="item.id">
+                            <tr>
+                                <td x-text="item.pointer_location"></td>
+                                <td x-text="item.scope"></td>
+                                <td x-text="item.target_functions"></td>
+                                <td><button class="btn btn-error btn-xs" @click="deleteConfig('pointer_targets',{id:item.id})">删除</button></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Function Intents -->
+            <div x-show="configSubTab==='intents'" class="space-y-3">
+                <div class="flex gap-2 flex-wrap">
+                    <input class="input input-bordered input-sm" placeholder="函数名" x-model="intentForm.func_name">
+                    <input class="input input-bordered input-sm" placeholder="并发组" x-model="intentForm.concurrency_group">
+                    <input class="input input-bordered input-sm" placeholder="并发对象(逗号分隔)" x-model="intentForm.concurrent_str">
+                    <input class="input input-bordered input-sm flex-1" placeholder="备注" x-model="intentForm.notes">
+                    <button class="btn btn-primary btn-sm" @click="saveIntent()">保存</button>
+                </div>
+                <table class="table table-sm">
+                    <thead><tr><th>函数</th><th>并发组</th><th>备注</th><th>操作</th></tr></thead>
+                    <tbody>
+                        <template x-for="item in configData.function_intents" :key="item.func_name">
+                            <tr>
+                                <td x-text="item.func_name"></td>
+                                <td x-text="item.concurrency_group"></td>
+                                <td class="max-w-xs truncate" x-text="item.notes"></td>
+                                <td><button class="btn btn-error btn-xs" @click="deleteConfig('function_intents',{func_name:item.func_name,file_path:item.file_path||''})">删除</button></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- CPG Management -->
+            <div x-show="configSubTab==='cpg'" class="space-y-3">
+                <div class="flex items-center gap-4">
+                    <span class="badge badge-lg" :class="cpgStatusClass" x-text="'CPG: '+cpgStatus"></span>
+                    <span class="text-sm text-error" x-show="cpgError" x-text="cpgError"></span>
+                    <input class="input input-bordered input-sm flex-1" placeholder="源码路径" x-model="cpgSourcePath">
+                    <button class="btn btn-primary btn-sm" @click="buildCpg()" :disabled="cpgStatus==='building'">构建 CPG</button>
+                    <button class="btn btn-ghost btn-sm" @click="pollCpgStatus()">刷新状态</button>
+                </div>
+            </div>
+        </div>
+    </div><!-- end config tab -->
+
+    <!-- ── Warnings Tab ── -->
+    <div x-show="activeTab==='warnings'" class="h-full overflow-auto">
+        <div class="glass rounded-2xl p-6 space-y-3">
+            <h2 class="text-sm font-semibold uppercase tracking-wider opacity-60">缺失配置告警</h2>
+            <template x-if="warnings.length===0">
+                <p class="opacity-40">暂无告警</p>
+            </template>
+            <table class="table table-sm" x-show="warnings.length>0">
+                <thead><tr><th>类型</th><th>上下文</th><th>消息</th></tr></thead>
+                <tbody>
+                    <template x-for="w in warnings" :key="w.id">
+                        <tr>
+                            <td><span class="badge badge-warning badge-sm" x-text="w.warning_type"></span></td>
+                            <td x-text="w.context"></td>
+                            <td x-text="w.message"></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+    </div><!-- end warnings tab -->
+
     </main>
 
     <script>
@@ -180,10 +345,25 @@
                 configContent: '',
                 configStatus: '',
                 offlineTemplateCache: null,
+                activeTab: 'findings',
+                configSubTab: 'external',
+                cpgStatus: 'unknown',
+                cpgError: '',
+                cpgStatusClass: 'badge-ghost',
+                cpgDotClass: 'bg-ghost',
+                cpgSourcePath: '',
+                warnings: [],
+                fpReason: '',
+                configData: { external_functions:[], paired_functions:[], pointer_targets:[], function_intents:[] },
+                extForm: { func_name:'', library:'', description:'', return_semantics:'' },
+                pairedForm: { category:'memory', acquire_func:'', release_func:'', description:'' },
+                ptrForm: { pointer_location:'', scope:'local', targets_str:'' },
+                intentForm: { func_name:'', concurrency_group:'', concurrent_str:'', notes:'' },
 
                 init() {
                     this.refreshData();
                     this.loadConfig();
+                    this.pollCpgStatus();
                 },
 
                 refreshData() {
@@ -425,6 +605,84 @@
                         low: 'border-neutral'
                     };
                     return classes[level?.toLowerCase()] || 'border-neutral';
+                },
+
+                // ── CPG ──
+                pollCpgStatus() {
+                    fetch('/api/cpg_status').then(r=>r.json()).then(d=>{
+                        this.cpgStatus = d.status || 'unknown';
+                        this.cpgError = d.error || '';
+                        const m = {ready:'badge-success',building:'badge-warning',error:'badge-error'};
+                        this.cpgStatusClass = m[this.cpgStatus] || 'badge-ghost';
+                        this.cpgDotClass = m[this.cpgStatus] ? m[this.cpgStatus].replace('badge','bg') : 'bg-ghost';
+                    }).catch(()=>{});
+                },
+                buildCpg() {
+                    if(!this.cpgSourcePath) { alert('请输入源码路径'); return; }
+                    fetch('/api/build_cpg',{method:'POST',headers:{'Content-Type':'application/json'},
+                        body:JSON.stringify({source_path:this.cpgSourcePath})
+                    }).then(r=>r.json()).then(()=>{
+                        this.cpgStatus='building';
+                        const iv=setInterval(()=>{
+                            this.pollCpgStatus();
+                            if(this.cpgStatus!=='building') clearInterval(iv);
+                        },3000);
+                    });
+                },
+
+                // ── Warnings ──
+                loadWarnings() {
+                    fetch('/api/user_config/warnings').then(r=>r.json()).then(d=>{
+                        this.warnings = d.items || [];
+                    }).catch(()=>{});
+                },
+
+                // ── False Positive ──
+                markFalsePositive(finding) {
+                    fetch('/api/mark_false_positive',{method:'POST',headers:{'Content-Type':'application/json'},
+                        body:JSON.stringify({function:finding.function,location:finding.location,
+                            subcategory:finding.subcategory,reason:this.fpReason,issue_id:finding.id||''})
+                    }).then(r=>r.json()).then(d=>{
+                        if(d.success) { alert('已标记为误报'); this.fpReason=''; }
+                    });
+                },
+
+                // ── Config CRUD ──
+                loadAllConfigs() {
+                    ['external_functions','paired_functions','pointer_targets','function_intents'].forEach(r=>{
+                        fetch('/api/user_config/'+r).then(res=>res.json()).then(d=>{
+                            this.configData[r] = d.items || [];
+                        }).catch(()=>{});
+                    });
+                },
+                deleteConfig(resource, payload) {
+                    fetch('/api/user_config/'+resource,{method:'DELETE',headers:{'Content-Type':'application/json'},
+                        body:JSON.stringify(payload)
+                    }).then(r=>r.json()).then(()=>this.loadAllConfigs());
+                },
+                saveExtFunc() {
+                    fetch('/api/user_config/external_functions',{method:'POST',headers:{'Content-Type':'application/json'},
+                        body:JSON.stringify(this.extForm)
+                    }).then(r=>r.json()).then(()=>{this.extForm={func_name:'',library:'',description:'',return_semantics:''};this.loadAllConfigs();});
+                },
+                savePairedFunc() {
+                    fetch('/api/user_config/paired_functions',{method:'POST',headers:{'Content-Type':'application/json'},
+                        body:JSON.stringify(this.pairedForm)
+                    }).then(r=>r.json()).then(()=>{this.pairedForm={category:'memory',acquire_func:'',release_func:'',description:''};this.loadAllConfigs();});
+                },
+                savePtrTarget() {
+                    const p = {...this.ptrForm, target_functions: this.ptrForm.targets_str.split(',').map(s=>s.trim()).filter(Boolean)};
+                    delete p.targets_str;
+                    fetch('/api/user_config/pointer_targets',{method:'POST',headers:{'Content-Type':'application/json'},
+                        body:JSON.stringify(p)
+                    }).then(r=>r.json()).then(()=>{this.ptrForm={pointer_location:'',scope:'local',targets_str:''};this.loadAllConfigs();});
+                },
+                saveIntent() {
+                    const p = {...this.intentForm, concurrent_with: this.intentForm.concurrent_str.split(',').map(s=>s.trim()).filter(Boolean)};
+                    delete p.concurrent_str;
+                    fetch('/api/user_config/function_intents',{method:'POST',headers:{'Content-Type':'application/json'},
+                        body:JSON.stringify(p)
+                    }).then(r=>r.json()).then(()=>{this.intentForm={func_name:'',concurrency_group:'',concurrent_str:'',notes:''};this.loadAllConfigs();});
                 }
             }
         }

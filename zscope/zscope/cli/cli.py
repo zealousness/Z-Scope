@@ -22,10 +22,14 @@ from ..core.parallel_analyzer import ParallelAnalyzer
 )
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging.")
 @click.option("--dashboard", "-d", is_flag=True, help="Launch the web dashboard to view results.")
+@click.option("--build-cpg", is_flag=True, help="Only build CPG and index, then exit.")
+@click.option("--mode", type=click.Choice(["default", "topdown", "ruledriven"]), default="default", help="Analysis mode.")
 def main(
     config: Path,
     verbose: bool,
     dashboard: bool,
+    build_cpg: bool,
+    mode: str,
 ):
     """
     Z-SCOPE: AI-powered defect detection for C projects.
@@ -48,7 +52,55 @@ def main(
     try:
         zscope_config = ConfigLoader.load(str(config))
         logger.info(f"Loaded configuration from: {config}")
-        
+
+        if build_cpg:
+            click.echo("Building CPG and index...")
+            code_index = CodeIndex(
+                zscope_config.project.project_root,
+                zscope_config.project.compile_commands_path,
+                source_root=zscope_config.project.source_root,
+                indexing_config=zscope_config.indexing,
+                wait_for_cpg=True,
+            )
+            func_count = len(code_index.list_functions())
+            click.echo(f"CPG build complete. Indexed {func_count} functions.")
+            code_index.close()
+            sys.exit(0)
+
+        # ── Mode-specific analysis ──
+        if mode == "topdown":
+            logger.info("Top-down mode: analyzing public API functions from headers")
+            code_index = CodeIndex(
+                zscope_config.project.project_root,
+                zscope_config.project.compile_commands_path,
+                source_root=zscope_config.project.source_root,
+                indexing_config=zscope_config.indexing,
+            )
+            pa = ParallelAnalyzer(zscope_config, code_index=code_index)
+            results = pa.run_topdown_mode()
+            json_path = zscope_config.project.project_root / "zscope_batch_report.json"
+            md_path = zscope_config.project.project_root / "zscope_batch_report.md"
+            combined = pa.generate_combined_report(results, json_path)
+            pa.generate_combined_markdown_report(results, md_path)
+            total = combined["summary"]["total_issues"]
+            click.echo(f"\nTop-down analysis complete. Functions: {len(results)}, Issues: {total}")
+            sys.exit(1 if total > 0 else 0)
+
+        if mode == "ruledriven":
+            logger.info("Rule-driven mode: running Joern rules + validation")
+            from ..core.rule_driven_analyzer import RuleDrivenAnalyzer
+            code_index = CodeIndex(
+                zscope_config.project.project_root,
+                zscope_config.project.compile_commands_path,
+                source_root=zscope_config.project.source_root,
+                indexing_config=zscope_config.indexing,
+            )
+            rda = RuleDrivenAnalyzer(zscope_config, code_index=code_index)
+            result = rda.run()
+            issues_count = len(result.get("issues", []))
+            click.echo(f"\nRule-driven analysis complete. Issues: {issues_count}")
+            sys.exit(1 if issues_count > 0 else 0)
+
         # Detect batch mode vs single mode
         if zscope_config.project.entry_functions_list:
             # Batch mode

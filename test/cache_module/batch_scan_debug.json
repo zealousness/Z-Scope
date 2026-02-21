@@ -1,8 +1,0 @@
-{
-    "functions": [
-        {
-            "file": "src/cache_core.c",
-            "function_name": "cache_get"
-        }
-    ]
-}
