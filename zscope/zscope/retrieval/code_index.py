@@ -51,12 +51,12 @@ class CodeIndex:
                 )
                 if self._joern.start_server():
                     if wait_for_cpg:
-                        if not self._joern.import_cpg(str(self.source_root)):
+                        if not self._joern.import_cpg(str(self.source_root), str(self.project_root)):
                             logger.warning("Joern CPG import failed, falling back to regex")
                             self._joern.stop_server()
                             self._joern = None
                     else:
-                        self._joern.import_cpg_async(str(self.source_root))
+                        self._joern.import_cpg_async(str(self.source_root), str(self.project_root))
                 else:
                     logger.warning("Joern server failed to start, falling back to regex")
                     self._joern = None

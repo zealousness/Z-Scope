@@ -89,12 +89,17 @@ class JoernClient:
             self._server_process = None
         self._cpg_loaded = False
 
-    def import_cpg(self, source_path: str) -> bool:
+    def import_cpg(self, source_path: str, project_root: Optional[str] = None) -> bool:
         """Build CPG from source directory or load existing cpg.bin."""
         import os
-        logger.info("Importing CPG for: %s", source_path)
+        logger.info("Importing CPG for source: %s", source_path)
         
         cpg_bin = os.path.join(source_path, "cpg.bin")
+        if project_root and not os.path.exists(cpg_bin):
+            alt_cpg_bin = os.path.join(project_root, "cpg.bin")
+            if os.path.exists(alt_cpg_bin):
+                cpg_bin = alt_cpg_bin
+
         if os.path.exists(cpg_bin):
             cpg_bin_escaped = cpg_bin.replace("\\", "\\\\")
             print(f"  [Joern] Found existing CPG, importing {cpg_bin}...", flush=True)
@@ -116,7 +121,7 @@ class JoernClient:
             self._cpg_build_error = "CPG import returned None"
         return False
 
-    def import_cpg_async(self, source_path: str) -> None:
+    def import_cpg_async(self, source_path: str, project_root: Optional[str] = None) -> None:
         """Start CPG build in background thread."""
         with self._cpg_lock:
             if self._cpg_build_status == "building":
@@ -127,7 +132,19 @@ class JoernClient:
 
         def _build():
             try:
-                result = self.query(f'importCode("{source_path}")')
+                import os
+                cpg_bin = os.path.join(source_path, "cpg.bin")
+                if project_root and not os.path.exists(cpg_bin):
+                    alt_cpg_bin = os.path.join(project_root, "cpg.bin")
+                    if os.path.exists(alt_cpg_bin):
+                        cpg_bin = alt_cpg_bin
+
+                if os.path.exists(cpg_bin):
+                    cpg_bin_escaped = cpg_bin.replace("\\", "\\\\")
+                    result = self.query(f'importCpg("{cpg_bin_escaped}")')
+                else:
+                    source_path_escaped = source_path.replace("\\", "\\\\")
+                    result = self.query(f'importCode("{source_path_escaped}")')
                 with self._cpg_lock:
                     if result is not None:
                         self._cpg_loaded = True
