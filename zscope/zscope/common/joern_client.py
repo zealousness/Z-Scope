@@ -19,7 +19,7 @@ class JoernClient:
     def __init__(
         self,
         joern_path: str = "joern",
-        host: str = "localhost",
+        host: str = "127.0.0.1",
         port: int = 8080,
         heap_size: str = "8g",
         import_timeout: int = 1800,
