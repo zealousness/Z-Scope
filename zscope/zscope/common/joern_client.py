@@ -241,10 +241,35 @@ class JoernClient:
                         
                     if isinstance(result, dict) and "stdout" in result:
                         stdout = result["stdout"]
-                        try:
-                            return json.loads(stdout)
-                        except (json.JSONDecodeError, TypeError):
-                            return stdout
+                        import re
+                        import ast
+                        # Strip ANSI color codes Joern might output
+                        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+                        clean_stdout = ansi_escape.sub('', stdout).strip()
+
+                        # Check if it's a Scala string assignment (e.g. val res1: String = "[...]")
+                        match = re.search(r'val\s+res\d+\s*:\s*String\s*=\s*(.*)', clean_stdout, re.DOTALL)
+                        if match:
+                            scala_literal = match.group(1).strip()
+                            try:
+                                # ast.literal_eval handles both quotes "" and triple quotes """""" escaping
+                                if scala_literal.startswith('"""') and scala_literal.endswith('"""'):
+                                    json_str = scala_literal[3:-3]
+                                else:
+                                    json_str = ast.literal_eval(scala_literal)
+                                return json.loads(json_str)
+                            except (SyntaxError, ValueError, json.JSONDecodeError):
+                                pass
+                                
+                        # Fallback for plain unquoted JSON array/object inside stdout
+                        match_json = re.search(r'([\[\{].*[\]\}])', clean_stdout, re.DOTALL)
+                        if match_json:
+                            try:
+                                return json.loads(match_json.group(1))
+                            except json.JSONDecodeError:
+                                pass
+                                
+                        return clean_stdout
                     return result
                 except Exception as e:
                     if "handshake" in str(e) or "timeout" in str(e).lower() or isinstance(e, ConnectionError):
