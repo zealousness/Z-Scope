@@ -60,6 +60,9 @@ venv.bak/
 *.swo
 *~
 
+# Dependencies (local installs)
+dependency/
+
 # ZScope specific
 .zscope_snapshots*/
 *.log
