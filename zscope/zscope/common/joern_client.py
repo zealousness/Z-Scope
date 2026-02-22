@@ -181,6 +181,37 @@ class JoernClient:
         try:
             from cpgqls_client import CPGQLSClient
             
+            # Workaround for cpgqls-client concurrent UUID broadcast bug
+            if not hasattr(CPGQLSClient, '_zscope_patched'):
+                import asyncio
+                original_send_query = getattr(CPGQLSClient, '_send_query', None)
+                if original_send_query:
+                    async def patched_send_query(self, query_str):
+                        endpoint = self.connect_endpoint()
+                        async with self._transport.connect(endpoint) as ws_conn:
+                            connected_msg = await ws_conn.recv()
+                            if connected_msg != self.CPGQLS_MSG_CONNECTED:
+                                raise Exception("Received unexpected first message")
+                            endpoint = self.post_query_endpoint()
+                            post_res = self._transport.post(endpoint, json={"query": query_str}, auth=self._auth_creds)
+                            if post_res.status_code != 200:
+                                raise Exception(f"HTTP Post failed: {post_res.status_code}")
+                                
+                            target_uuid = post_res.json()["uuid"]
+                            while True:
+                                msg = await asyncio.wait_for(ws_conn.recv(), timeout=3600)
+                                if msg == target_uuid:
+                                    break
+                                    
+                            endpoint = self.get_result_endpoint(target_uuid)
+                            get_res = self._transport.get(endpoint, auth=self._auth_creds)
+                            if get_res.status_code != 200:
+                                raise Exception(f"HTTP Get failed: {get_res.status_code}")
+                            return get_res.json()
+                            
+                    CPGQLSClient._send_query = patched_send_query
+                    CPGQLSClient._zscope_patched = True
+            
             import os
             
             for attempt in range(30):
@@ -192,8 +223,15 @@ class JoernClient:
                     os.environ["NO_PROXY"] = "127.0.0.1,localhost,::1"
                     
                     try:
+                        import asyncio
+                        try:
+                            loop = asyncio.get_event_loop()
+                        except RuntimeError:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            
                         # cpgqls_client adds "ws://" internally. Do not pass it here or it creates ws://ws://...
-                        client = CPGQLSClient(f"{self.host}:{self.port}")
+                        client = CPGQLSClient(f"{self.host}:{self.port}", event_loop=loop)
                         result = client.execute(cpgql)
                     finally:
                         if old_http is not None: os.environ["HTTP_PROXY"] = old_http
