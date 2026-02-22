@@ -181,10 +181,26 @@ class JoernClient:
         try:
             from cpgqls_client import CPGQLSClient
             
+            import os
+            
             for attempt in range(30):
                 try:
-                    client = CPGQLSClient(f"ws://{self.host}:{self.port}")
-                    result = client.execute(cpgql)
+                    # Temporarily bypass any global proxies that might hijack local WS connections
+                    old_http = os.environ.get("HTTP_PROXY")
+                    old_https = os.environ.get("HTTPS_PROXY")
+                    old_no = os.environ.get("NO_PROXY")
+                    os.environ["NO_PROXY"] = "127.0.0.1,localhost,::1"
+                    
+                    try:
+                        # cpgqls_client adds "ws://" internally. Do not pass it here or it creates ws://ws://...
+                        client = CPGQLSClient(f"{self.host}:{self.port}")
+                        result = client.execute(cpgql)
+                    finally:
+                        if old_http is not None: os.environ["HTTP_PROXY"] = old_http
+                        if old_https is not None: os.environ["HTTPS_PROXY"] = old_https
+                        if old_no is not None: os.environ["NO_PROXY"] = old_no
+                        elif "NO_PROXY" in os.environ: del os.environ["NO_PROXY"]
+                        
                     if isinstance(result, dict) and "stdout" in result:
                         stdout = result["stdout"]
                         try:
