@@ -94,7 +94,7 @@ python -m pip install -e zscope
 ```yaml
 llm:
   provider: openai
-  base_url: http://localhost:11434/v1
+  base_url: http://127.0.0.1:11434/v1
   models:
     - qwen3:latest
   api_key: ollama
@@ -117,7 +117,7 @@ project:
 indexing:
   backend: joern
   joern_path: joern          # Joern CLI 路径
-  joern_server_host: localhost
+  joern_server_host: 127.0.0.1
   joern_server_port: 8080
   joern_heap_size: 8g        # JVM 堆大小
   import_timeout: 1800       # CPG 构建超时（秒）

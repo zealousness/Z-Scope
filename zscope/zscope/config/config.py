@@ -45,7 +45,7 @@ class IndexingConfig:
 
     backend: str = "joern"
     joern_path: str = "joern"
-    joern_server_host: str = "localhost"
+    joern_server_host: str = "127.0.0.1"
     joern_server_port: int = 8080
     joern_heap_size: str = "8g"
     import_timeout: int = 1800
@@ -60,7 +60,7 @@ class AnalysisConfig:
     max_tool_iterations: int = 50
     snapshot_dir: str = ".zscope_snapshots"
     enable_snapshot_cache: bool = True
-    parallel_workers: int = 3  # Number of concurrent workers for batch analysis
+    parallel_workers: int = 5  # Number of concurrent workers for batch analysis
     user_config_db: str = ""  # Path to user config DB, defaults to {snapshot_dir}/
 
 
@@ -197,7 +197,7 @@ class ConfigLoader:
             indexing_config = IndexingConfig(
                 backend=indexing_data.get("backend", "joern"),
                 joern_path=indexing_data.get("joern_path", "joern"),
-                joern_server_host=indexing_data.get("joern_server_host", "localhost"),
+                joern_server_host=indexing_data.get("joern_server_host", "127.0.0.1"),
                 joern_server_port=indexing_data.get("joern_server_port", 8080),
                 joern_heap_size=indexing_data.get("joern_heap_size", "8g"),
                 import_timeout=indexing_data.get("import_timeout", 1800),
@@ -211,7 +211,7 @@ class ConfigLoader:
                 max_tool_iterations=analysis_data.get("max_tool_iterations", 50),
                 snapshot_dir=analysis_data.get("snapshot_dir", ".zscope_snapshots"),
                 enable_snapshot_cache=analysis_data.get("enable_snapshot_cache", True),
-                parallel_workers=analysis_data.get("parallel_workers", 3),
+                parallel_workers=analysis_data.get("parallel_workers", 5),
                 user_config_db=analysis_data.get("user_config_db", ""),
             )
 
