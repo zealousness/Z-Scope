@@ -53,7 +53,10 @@ class JoernClient:
             )
             # Wait for server to be ready
             if not self._wait_for_server():
-                logger.error("Joern server failed to start")
+                stderr_out = b""
+                if self._server_process and self._server_process.poll() is not None:
+                    stderr_out = self._server_process.stderr.read()
+                logger.error(f"Joern server failed to start. stderr: {stderr_out.decode('utf-8', errors='ignore')}")
                 return False
             logger.info("Joern server started on %s:%d", self.host, self.port)
             return True
@@ -61,7 +64,7 @@ class JoernClient:
             logger.error("Failed to start Joern server: %s", e)
             return False
 
-    def _wait_for_server(self, timeout: int = 60) -> bool:
+    def _wait_for_server(self, timeout: int = 120) -> bool:
         """Wait for Joern server to accept connections."""
         import socket
         deadline = time.time() + timeout
@@ -87,10 +90,19 @@ class JoernClient:
         self._cpg_loaded = False
 
     def import_cpg(self, source_path: str) -> bool:
-        """Build CPG from source directory."""
+        """Build CPG from source directory or load existing cpg.bin."""
+        import os
         logger.info("Importing CPG for: %s", source_path)
-        print(f"  [Joern] Building CPG for {source_path}...", flush=True)
-        result = self.query(f'importCode("{source_path}")')
+        
+        cpg_bin = os.path.join(source_path, "cpg.bin")
+        if os.path.exists(cpg_bin):
+            cpg_bin_escaped = cpg_bin.replace("\\", "\\\\")
+            print(f"  [Joern] Found existing CPG, importing {cpg_bin}...", flush=True)
+            result = self.query(f'importCpg("{cpg_bin_escaped}")')
+        else:
+            source_path_escaped = source_path.replace("\\", "\\\\")
+            print(f"  [Joern] Building CPG for {source_path}...", flush=True)
+            result = self.query(f'importCode("{source_path_escaped}")')
         if result is not None:
             self._cpg_loaded = True
             with self._cpg_lock:
@@ -151,16 +163,26 @@ class JoernClient:
         """Execute a CPGQL query via cpgqls-client."""
         try:
             from cpgqls_client import CPGQLSClient
-
-            client = CPGQLSClient(f"ws://{self.host}:{self.port}")
-            result = client.execute(cpgql)
-            if isinstance(result, dict) and "stdout" in result:
-                stdout = result["stdout"]
+            
+            for attempt in range(30):
                 try:
-                    return json.loads(stdout)
-                except (json.JSONDecodeError, TypeError):
-                    return stdout
-            return result
+                    client = CPGQLSClient(f"ws://{self.host}:{self.port}")
+                    result = client.execute(cpgql)
+                    if isinstance(result, dict) and "stdout" in result:
+                        stdout = result["stdout"]
+                        try:
+                            return json.loads(stdout)
+                        except (json.JSONDecodeError, TypeError):
+                            return stdout
+                    return result
+                except Exception as e:
+                    if "handshake" in str(e) or "timeout" in str(e).lower() or isinstance(e, ConnectionError):
+                        if attempt < 29:
+                            logger.warning(f"Joern query attempt {attempt+1} failed: {e}. Retrying...")
+                            time.sleep(5)
+                            continue
+                    raise e
+                    
         except ImportError:
             return self._query_via_cli(cpgql)
         except Exception as e:
