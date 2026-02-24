@@ -33,7 +33,6 @@ class CodeIndex:
         self.project_root = Path(project_root).resolve()
         self.source_root = Path(source_root).resolve() if source_root else self.project_root
         self.compile_commands_path = compile_commands_path
-        self._indexing_config = indexing_config
         self._function_index: Dict[str, Dict[str, Any]] = {}
         self._joern: Optional[JoernClient] = joern_client
         self._index_ready = False
@@ -49,13 +48,14 @@ class CodeIndex:
                     heap_size=cfg.joern_heap_size if cfg else "8g",
                 )
                 if self._joern.start_server():
+                    cc_path = str(self.compile_commands_path) if self.compile_commands_path else None
                     if wait_for_cpg:
-                        if not self._joern.import_cpg(str(self.source_root), str(self.project_root)):
+                        if not self._joern.import_cpg(str(self.source_root), str(self.project_root), cc_path):
                             logger.warning("Joern CPG import failed, falling back to regex")
                             self._joern.stop_server()
                             self._joern = None
                     else:
-                        self._joern.import_cpg_async(str(self.source_root), str(self.project_root))
+                        self._joern.import_cpg_async(str(self.source_root), str(self.project_root), cc_path)
                 else:
                     logger.warning("Joern server failed to start, falling back to regex")
                     self._joern = None
@@ -104,7 +104,8 @@ class CodeIndex:
             return
         for m in result:
             name = m.get("name", "")
-            if not name or name.startswith("<") or not m.get("filename"):
+            fname = m.get("filename", "")
+            if not name or name.startswith("<") or not fname or fname.startswith("<"):
                 continue
             self._function_index[name] = {
                 "file": m.get("filename", ""),
@@ -172,7 +173,8 @@ class CodeIndex:
                     "signature": m.get("signature", f"{func_name}(...)"),
                 }
 
-        if func_name not in self._function_index or not self._function_index[func_name].get("file"):
+        indexed_file = self._function_index.get(func_name, {}).get("file", "")
+        if not indexed_file or indexed_file.startswith("<"):
             macro_result = self._find_macro_definition(func_name)
             if macro_result:
                 return macro_result
