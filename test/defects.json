@@ -1,0 +1,179 @@
+{
+    "project_name": "Z-Scope Tiered Test Demo",
+    "version": "2.1.0",
+    "description": "Comprehensive tiered benchmark with 25+ diverse C language defects.",
+    "tiers": [
+        {
+            "level": "Junior",
+            "base_project": "cache_module",
+            "defects": [
+                {
+                    "id": "J-MEM-001",
+                    "type": "Stack Memory Return",
+                    "file": "src/cache_queue.c",
+                    "function": "lru_remove_lru()"
+                },
+                {
+                    "id": "J-BUF-001",
+                    "type": "Buffer Overflow",
+                    "file": "src/cache_core.c",
+                    "line": 165,
+                    "function": "cache_get()"
+                },
+                {
+                    "id": "J-MEM-002",
+                    "type": "Memory Leak",
+                    "file": "src/cache_index.c",
+                    "function": "avl_create_node()"
+                },
+                {
+                    "id": "J-MEM-003",
+                    "type": "Memory Leak",
+                    "file": "src/cache_index.c",
+                    "function": "avl_insert()"
+                },
+                {
+                    "id": "J-RES-001",
+                    "type": "File Descriptor Leak",
+                    "file": "src/cache_storage.c",
+                    "function": "storage_save_cache()"
+                },
+                {
+                    "id": "J-RES-002",
+                    "type": "File Descriptor Leak",
+                    "file": "src/cache_storage.c",
+                    "function": "storage_load_cache()"
+                },
+                {
+                    "id": "J-OOB-001",
+                    "type": "Untrusted Index",
+                    "file": "src/cache_core.c",
+                    "line": 293
+                },
+                {
+                    "id": "J-MEM-004",
+                    "type": "Memory Accumulation",
+                    "file": "src/cache_queue.c",
+                    "function": "lru_remove_node_buggy()"
+                },
+                {
+                    "id": "J-MAL-001",
+                    "type": "Unchecked Malloc",
+                    "file": "src/cache_core.c",
+                    "line": 28,
+                    "function": "cache_create()"
+                },
+                {
+                    "id": "J-FMT-001",
+                    "type": "Format String",
+                    "file": "src/cache_core.c",
+                    "line": 66,
+                    "function": "cache_put()"
+                },
+                {
+                    "id": "J-NULL-001",
+                    "type": "NULL Pointer Dereference",
+                    "file": "src/cache_core.c",
+                    "line": 133,
+                    "function": "cache_get()"
+                }
+            ]
+        },
+        {
+            "level": "Middle",
+            "base_project": "MbedTLS (Subset)",
+            "defects": [
+                {
+                    "id": "M-INT-001",
+                    "type": "Integer Overflow",
+                    "file": "library/mps_reader.c",
+                    "line": 185
+                },
+                {
+                    "id": "M-CON-001",
+                    "type": "Concurrency - Mutex Leak",
+                    "file": "library/ssl_cache.c",
+                    "line": 104
+                },
+                {
+                    "id": "M-UAF-001",
+                    "type": "Use After Free",
+                    "file": "library/ssl_cache.c",
+                    "line": 355
+                },
+                {
+                    "id": "M-DBL-001",
+                    "type": "Double Free",
+                    "file": "library/ssl_cache.c",
+                    "line": 186
+                },
+                {
+                    "id": "M-DIV-001",
+                    "type": "Division by Zero",
+                    "file": "library/ssl_cache.c",
+                    "line": 42
+                },
+                {
+                    "id": "M-UNI-001",
+                    "type": "Uninitialized Variable",
+                    "file": "library/ssl_cache.c",
+                    "line": 42
+                }
+            ]
+        },
+        {
+            "level": "Senior",
+            "base_project": "MbedTLS (Full)",
+            "defects": [
+                {
+                    "id": "S-BUF-001",
+                    "type": "Buffer Overflow",
+                    "file": "library/ssl_msg.c",
+                    "line": 481
+                },
+                {
+                    "id": "S-MEM-001",
+                    "type": "Memory Leak",
+                    "file": "library/x509_crt.c",
+                    "line": 1225
+                },
+                {
+                    "id": "S-MIS-001",
+                    "type": "C Library Misuse",
+                    "file": "library/ssl_tls.c",
+                    "line": 7972
+                },
+                {
+                    "id": "S-OOB-001",
+                    "type": "Out-of-bounds Access",
+                    "file": "library/ssl_tls.c",
+                    "line": 2483
+                },
+                {
+                    "id": "S-FMT-001",
+                    "type": "Format String",
+                    "file": "library/ssl_tls.c",
+                    "line": 2782
+                },
+                {
+                    "id": "S-LOOP-001",
+                    "type": "Infinite Loop",
+                    "file": "library/ssl_tls.c",
+                    "line": 2530
+                },
+                {
+                    "id": "S-DBL-001",
+                    "type": "Double Free",
+                    "file": "library/x509_crt.c",
+                    "line": 2577
+                },
+                {
+                    "id": "S-BYP-001",
+                    "type": "Authentication Bypass",
+                    "file": "library/x509_crt.c",
+                    "line": 2963
+                }
+            ]
+        }
+    ]
+}

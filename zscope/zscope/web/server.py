@@ -175,6 +175,8 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"success": True})
         elif self.path == "/api/build_cpg":
             self._handle_build_cpg(payload)
+        elif self.path == "/api/clear_warnings":
+            self._handle_clear_warnings()
         elif self.path == "/api/mark_false_positive":
             self._handle_mark_false_positive(payload)
         elif self.path.startswith("/api/user_config/"):
@@ -189,7 +191,9 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
             payload = json.loads(post_data or b"{}")
         except json.JSONDecodeError:
             payload = {}
-        if self.path.startswith("/api/user_config/"):
+        if self.path == "/api/false_positives":
+            self._handle_delete_false_positive(payload)
+        elif self.path.startswith("/api/user_config/"):
             self._handle_user_config_delete(payload)
         else:
             self.send_error(404)
@@ -233,12 +237,32 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
         )
         self._send_json({"success": True})
 
+    def _handle_delete_false_positive(self, payload):
+        global _user_config_store
+        if not _user_config_store:
+            self._send_json({"success": False, "error": "Config store not available"}, status=400)
+            return
+        fp_id = payload.get("id")
+        if fp_id is None:
+            self._send_json({"success": False, "error": "Missing field: id"}, status=400)
+            return
+        _user_config_store.delete_false_positive(fp_id)
+        self._send_json({"success": True})
+
     def _handle_get_false_positives(self):
         global _user_config_store
         if not _user_config_store:
             self._send_json({"items": []})
             return
         self._send_json({"items": _user_config_store.list_false_positives()})
+
+    def _handle_clear_warnings(self):
+        global _user_config_store
+        if not _user_config_store:
+            self._send_json({"success": False, "error": "Config store not available"}, status=400)
+            return
+        _user_config_store.clear_config_warnings()
+        self._send_json({"success": True})
 
     def _handle_get_warnings(self):
         global _user_config_store
