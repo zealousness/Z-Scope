@@ -260,8 +260,12 @@ class Analyzer:
                             validated_issues.append(raw_issue)
                         else:
                             # Fallback if validation fails
-                            logger.warning(f"Validation failed for {raw_issue.get('id')}: {val_resp.error}")
+                            logger.warning(
+                                "Validation failed for issue %s in function %s: %s",
+                                raw_issue.get("id"), issue_func, val_resp.error,
+                            )
                             raw_issue["validation_status"] = "pending"
+                            raw_issue["validation_error"] = val_resp.error
                             validated_issues.append(raw_issue)
 
                     issues.extend(validated_issues)
@@ -579,32 +583,26 @@ Output a JSON of type 'snapshot_refresh_decision'.
 
         if location and ":" in location:
             _, line_part = location.split(":", 1)
-            line_part = line_part.strip()
-            if "-" in line_part:
-                start_part, end_part = line_part.split("-", 1)
-                try:
-                    offset_start = int(start_part)
-                    offset_end = int(end_part)
-                except ValueError:
-                    offset_start = None
-                    offset_end = None
-            else:
-                try:
-                    offset_start = int(line_part)
-                except ValueError:
-                    offset_start = None
+            # 用正则提取数字，容忍弱模型在偏移后附加的乱码字符
+            nums = re.findall(r"\d+", line_part)
+            if len(nums) >= 2:
+                offset_start = int(nums[0])
+                offset_end = int(nums[1])
+            elif len(nums) == 1:
+                offset_start = int(nums[0])
 
         max_offset = max(1, end_line - start_line + 1)
         if offset_start and offset_start >= 1:
-            if offset_end is None:
-                if offset_start <= max_offset:
-                    issue["location"] = f"{relative_file}:{start_line + offset_start - 1}"
-                    return
-            elif offset_end >= offset_start and offset_end <= max_offset:
-                mapped_start = start_line + offset_start - 1
-                mapped_end = start_line + offset_end - 1
+            # 截断到有效范围，容忍弱模型数行数不准
+            clamped_start = min(offset_start, max_offset)
+            mapped_start = start_line + clamped_start - 1
+            if offset_end is not None and offset_end >= clamped_start:
+                clamped_end = min(offset_end, max_offset)
+                mapped_end = start_line + clamped_end - 1
                 issue["location"] = f"{relative_file}:{mapped_start}-{mapped_end}"
-                return
+            else:
+                issue["location"] = f"{relative_file}:{mapped_start}"
+            return
 
         issue["location"] = f"unresolved:{location}" if location else "unresolved"
 

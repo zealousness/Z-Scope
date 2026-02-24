@@ -104,7 +104,7 @@ class CodeIndex:
             return
         for m in result:
             name = m.get("name", "")
-            if not name or name.startswith("<"):
+            if not name or name.startswith("<") or not m.get("filename"):
                 continue
             self._function_index[name] = {
                 "file": m.get("filename", ""),
@@ -172,7 +172,7 @@ class CodeIndex:
                     "signature": m.get("signature", f"{func_name}(...)"),
                 }
 
-        if func_name not in self._function_index:
+        if func_name not in self._function_index or not self._function_index[func_name].get("file"):
             macro_result = self._find_macro_definition(func_name)
             if macro_result:
                 return macro_result
@@ -331,7 +331,7 @@ class CodeIndex:
                         })
         return results
 
-    # ── Macro and path helpers (preserved) ──
+    # ── Macro and path helpers ──
 
     def _find_macro_definition(
         self, macro_name: str, max_lines: int = 500
