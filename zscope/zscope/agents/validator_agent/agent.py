@@ -34,7 +34,7 @@ If the provided context is insufficient to prove the issue is a False Positive, 
 字段说明：
 - "type": 必须为 "validation_result"
 - "is_valid": bool，true 表示缺陷合理存在，false 表示已被缓解
-- "confidence_score": 0.0-1.0 浮点数
+- "confidence_score": 0到1之间的小数，如 0.85
 - "reasoning": 中文详细理由
 - "missing_context": 字符串数组，无缺失则为空数组 []
 - "exploit_scenario": 若 is_valid=true 则描述触发场景，否则为空字符串

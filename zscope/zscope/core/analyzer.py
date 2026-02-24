@@ -27,96 +27,115 @@ logger = logging.getLogger(__name__)
 
 
 # System Prompt Definitions
-SYSTEM_PROMPT = """
-You are Z-SCOPE, an advanced static analysis engine for C/C++ projects.
-Your goal is to detect REAL defects (functionality bugs, reliability issues, performance bottlenecks, race conditions, resource leaks).
-DO NOT report stylistic issues, naming conventions, or readability suggestions.
+SYSTEM_PROMPT = """You are Z-SCOPE, an advanced static analysis engine for C/C++ projects.
+Detect REAL defects: functionality bugs, reliability issues, performance bottlenecks, race conditions, resource leaks.
+Do NOT report stylistic issues, naming conventions, or readability suggestions.
 
 PROCESS:
-1. You will be given an entry function to analyze.
-2. You must analyze it thoroughly, understanding its logic, resource management, and error handling.
-3. If the function calls other functions in the project, use the 'get_function_impl' or 'get_function_snapshot' tools to understand them.
-   - Do not guess what a callee does if it's critical to the correctness of the caller.
-   - You don't need to analyze generic C standard library functions (like malloc, printf) unless misused.
-4. Maintain a depth-limited analysis (default max depth 3).
-5. For every function you analyze, you MUST produce a 'function_snapshot' JSON summary. This serves as a cache for future analysis.
-6. Finally, produce a 'final_report' JSON with all found issues.
+1. Analyze the given entry function thoroughly: logic, resource management, error handling.
+2. Use 'get_function_impl' or 'get_function_snapshot' tools to understand callees. Do not guess callee behavior.
+3. Standard library functions (malloc, printf, etc.) need not be analyzed unless misused.
+4. Depth-limited analysis: max depth 3.
+5. For every function analyzed, output a 'function_snapshot' JSON (serves as cache).
+6. Finally, output a 'final_report' JSON with all found issues.
 
 OUTPUT FORMATS:
-You must strictly output JSON blocks for specific phases.
+Output JSON blocks wrapped in ```json ... ``` for each phase.
 
-[Schema: Function Snapshot] - Output this when you have finished analyzing a specific function.
+[Function Snapshot] - Output after analyzing each function:
+
+```json
 {
   "type": "function_snapshot",
-  "func_name": "...",
-  "location": "path:line-line",
-  "summary": "Brief semantic summary...",
-  "inputs": [{"name":"...","type":"...","role":"..."}],
-  "outputs": [{"kind":"return","type":"...","meaning":"..."}],
+  "func_name": "cache_get",
+  "location": "src/cache_core.c:140-165",
+  "summary": "从缓存中查找key对应的值，复制到输出缓冲区",
+  "inputs": [{"name": "handle", "type": "cache_t*", "role": "缓存句柄"}, {"name": "key", "type": "const char*", "role": "查找键"}],
+  "outputs": [{"kind": "return", "type": "int", "meaning": "0成功，-1失败"}],
   "resources": {
-    "allocates_memory": true/false,
-    "frees_memory": true/false,
-    "locks": [{"lock":"...","mode":"...","balanced":true/false}],
-    "file_io": true/false,
-    "network_io": true/false
+    "allocates_memory": false,
+    "frees_memory": false,
+    "locks": [{"lock": "handle->mutex", "mode": "exclusive", "balanced": true}],
+    "file_io": false,
+    "network_io": false
   },
   "error_handling": {
-    "checks_parameters": true/false,
-    "checks_alloc_failure": true/false,
-    "rollback_on_error": "none|partial|full"
+    "checks_parameters": true,
+    "checks_alloc_failure": false,
+    "rollback_on_error": "full"
   },
   "concurrency": {
-    "thread_safe": "unknown|likely_yes|likely_no",
-    "uses_global_state": true/false
+    "thread_safe": "likely_yes",
+    "uses_global_state": false
   },
   "semantic_fingerprint": {
-    "normalized_hash_hint": "string summary of logic for change detection",
-    "key_semantics": ["invariant1", "invariant2"]
+    "normalized_hash_hint": "lookup key in hash table, copy value to output buffer",
+    "key_semantics": ["mutex protected", "memcpy without size check"]
   },
   "suspicious_points": [
     {
-      "location": "path:line",
-      "type": "bug_type",
-      "description": "...",
-      "confidence": 0.0-1.0,
-      "impact_category": "functionality|reliability|performance"
+      "location": "src/cache_core.c:155",
+      "type": "buffer_overflow",
+      "description": "memcpy未检查目标缓冲区大小",
+      "confidence": 0.85,
+      "impact_category": "reliability"
     }
   ],
-  "callees": ["func1", "func2"]
+  "callees": ["hash_lookup", "memcpy"]
 }
+```
 
-[Schema: Final Report] - Output this when you are done with the entire task.
+[Final Report] - Output after completing the entire analysis:
+
+```json
 {
   "type": "final_report",
-  "entry_function": "...",
-  "overall_verdict": "no_issue_found|issues_found|insufficient_info",
+  "entry_function": "cache_get",
+  "overall_verdict": "issues_found",
   "issues": [
     {
-      "id": "unique_id",
-      "function": "...",
-      "location": "function_name:start-end (function-relative line offsets, e.g., VOS_FaclDelById:1-20)",
-      "code_snippet": "Exact problematic code snippet from the source (IMPORTANT: This will be used to find the exact line number)",
-      "category": "functionality|reliability|performance",
-      "subcategory": "e.g. memory_leak",
-      "description": "...",
-      "root_cause": "...",
-      "suggested_fix": "...",
-      "confidence": 0.8,
-      "impact_level": "low|medium|high|critical"
+      "id": "ISSUE_1",
+      "function": "cache_get",
+      "location": "cache_get:28",
+      "code_snippet": "memcpy(value_out, node->value, node->value_size);",
+      "category": "reliability",
+      "subcategory": "buffer_overflow",
+      "description": "memcpy未检查目标缓冲区大小，可能导致堆溢出",
+      "root_cause": "开发者未将buffer_size纳入memcpy的大小限制",
+      "suggested_fix": "在memcpy前添加大小检查",
+      "confidence": 0.85,
+      "impact_level": "high"
     }
   ],
-  "notes": ["..."]
+  "notes": ["已分析3个被调用函数"]
 }
+```
 
-[Schema: Refresh Decision] - Output this when asked to compare old snapshot with new code.
+Field rules for final_report:
+- overall_verdict: one of no_issue_found, issues_found, insufficient_info
+- location: "function_name:LINE_NUMBER" where LINE_NUMBER is a relative line offset within the function (starting from 1). Output ONLY digits, no text.
+- code_snippet: copy the exact problematic code lines from the source, do not modify
+- category: one of functionality, reliability, performance
+- confidence: a decimal number between 0 and 1
+- impact_level: one of low, medium, high, critical
+- description, root_cause, suggested_fix: 用中文描述
+
+[Refresh Decision] - Output when comparing old snapshot with new code:
+
+```json
 {
   "type": "snapshot_refresh_decision",
-  "func_name": "...",
-  "refresh_needed": true/false,
-  "reason": "...",
-  "what_changed": ["..."],
-  "risk_if_not_refreshed": "low|medium|high"
+  "func_name": "cache_get",
+  "refresh_needed": true,
+  "reason": "memcpy调用新增了size参数检查",
+  "what_changed": ["添加了buffer_size边界检查", "修改了错误返回路径"],
+  "risk_if_not_refreshed": "high"
 }
+```
+
+- refresh_needed: true or false
+- risk_if_not_refreshed: one of low, medium, high
+- reason, what_changed: 用中文描述
 """
 
 
@@ -498,20 +517,23 @@ Output a JSON of type 'snapshot_refresh_decision'.
         for issue in issues:
             if not isinstance(issue, dict):
                 continue
-                
+
             func_name = issue.get("function")
             if not func_name:
                 continue
-                
+
             # Try to find the file from the function name
             func_info = self.code_index.get_function_impl(func_name)
             if not func_info:
+                # 兜底：即使找不到函数，也清洗 location 中的垃圾字符
+                self._sanitize_location(issue)
                 continue
-                
+
             relative_file = func_info["file"]
             abs_file = self.config.project.project_root / relative_file
-            
+
             if not abs_file.exists():
+                self._sanitize_location(issue)
                 continue
 
             location = issue.get("location", "")
@@ -562,13 +584,25 @@ Output a JSON of type 'snapshot_refresh_decision'.
             return True
 
         file_part = location.split(":")[0]
-        if file_part in {f"{func_name}.c", f"{func_name}.cpp", f"{func_name}.cc"}:
-            return True
-
-        if file_part and not (self.config.project.project_root / file_part).exists():
+        # 判断 file_part 是否像源文件路径（有扩展名），而非函数名
+        source_extensions = {".c", ".h", ".cpp", ".cc", ".cxx", ".hpp"}
+        has_source_ext = any(file_part.endswith(ext) for ext in source_extensions)
+        if not has_source_ext:
             return True
 
         return False
+
+    def _sanitize_location(self, issue: Dict[str, Any]) -> None:
+        """清洗 location 中弱模型产生的垃圾 token（如"会社""bubble"等）。"""
+        location = issue.get("location", "")
+        if not location or ":" not in location:
+            return
+        func_part, line_part = location.split(":", 1)
+        nums = re.findall(r"\d+", line_part)
+        if len(nums) >= 2:
+            issue["location"] = f"{func_part}:{nums[0]}-{nums[1]}"
+        elif len(nums) == 1:
+            issue["location"] = f"{func_part}:{nums[0]}"
 
     def _apply_function_offset_location(
         self, issue: Dict[str, Any], func_info: Dict[str, Any], relative_file: str, location: str
