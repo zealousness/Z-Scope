@@ -180,7 +180,7 @@ class CodeIndex:
             return None
 
         func_info = self._function_index[func_name]
-        file_path = Path(func_info["file"])
+        file_path = self._resolve_file_path(func_info["file"])
         try:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 lines = f.readlines()
