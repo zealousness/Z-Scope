@@ -111,11 +111,26 @@ class JoernClient:
             self._server_process = None
         self._cpg_loaded = False
 
-    def import_cpg(self, source_path: str, project_root: Optional[str] = None) -> bool:
+    def _build_import_code_query(self, source_path_escaped: str, compile_commands_path: Optional[str] = None) -> str:
+        """Build importCode CPGQL query, optionally with compile_commands.json."""
+        if compile_commands_path:
+            cc_escaped = compile_commands_path.replace("\\", "\\\\")
+            return (
+                f'importCode("{source_path_escaped}", args=List('
+                f'"--compilation-database", "{cc_escaped}"))'
+            )
+        return f'importCode("{source_path_escaped}")'
+
+    def import_cpg(
+        self,
+        source_path: str,
+        project_root: Optional[str] = None,
+        compile_commands_path: Optional[str] = None,
+    ) -> bool:
         """Build CPG from source directory or load existing cpg.bin."""
         import os
         logger.info("Importing CPG for source: %s", source_path)
-        
+
         cpg_bin = os.path.join(source_path, "cpg.bin")
         if project_root and not os.path.exists(cpg_bin):
             alt_cpg_bin = os.path.join(project_root, "cpg.bin")
@@ -129,7 +144,7 @@ class JoernClient:
         else:
             source_path_escaped = source_path.replace("\\", "\\\\")
             print(f"  [Joern] Building CPG for {source_path}...", flush=True)
-            result = self.query(f'importCode("{source_path_escaped}")')
+            result = self.query(self._build_import_code_query(source_path_escaped, compile_commands_path))
         if result is not None:
             self._cpg_loaded = True
             with self._cpg_lock:
@@ -143,7 +158,12 @@ class JoernClient:
             self._cpg_build_error = "CPG import returned None"
         return False
 
-    def import_cpg_async(self, source_path: str, project_root: Optional[str] = None) -> None:
+    def import_cpg_async(
+        self,
+        source_path: str,
+        project_root: Optional[str] = None,
+        compile_commands_path: Optional[str] = None,
+    ) -> None:
         """Start CPG build in background thread."""
         with self._cpg_lock:
             if self._cpg_build_status == "building":
@@ -166,7 +186,7 @@ class JoernClient:
                     result = self.query(f'importCpg("{cpg_bin_escaped}")')
                 else:
                     source_path_escaped = source_path.replace("\\", "\\\\")
-                    result = self.query(f'importCode("{source_path_escaped}")')
+                    result = self.query(self._build_import_code_query(source_path_escaped, compile_commands_path))
                 with self._cpg_lock:
                     if result is not None:
                         self._cpg_loaded = True

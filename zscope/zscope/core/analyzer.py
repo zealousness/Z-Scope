@@ -48,7 +48,7 @@ Output JSON blocks wrapped in ```json ... ``` for each phase.
 {
   "type": "function_snapshot",
   "func_name": "cache_get",
-  "location": "src/cache_core.c:140-165",
+  "location": "src/cache_core.c:140",
   "summary": "从缓存中查找key对应的值，复制到输出缓冲区",
   "inputs": [{"name": "handle", "type": "cache_t*", "role": "缓存句柄"}, {"name": "key", "type": "const char*", "role": "查找键"}],
   "outputs": [{"kind": "return", "type": "int", "meaning": "0成功，-1失败"}],
@@ -609,36 +609,28 @@ Output a JSON of type 'snapshot_refresh_decision'.
     ) -> None:
         start_line = func_info.get("start_line")
         end_line = func_info.get("end_line")
-        if not start_line or not end_line:
-            return
 
-        offset_start = None
-        offset_end = None
-
+        # 提取第一个数字作为偏移行号
+        offset = None
         if location and ":" in location:
             _, line_part = location.split(":", 1)
-            # 用正则提取数字，容忍弱模型在偏移后附加的乱码字符
             nums = re.findall(r"\d+", line_part)
-            if len(nums) >= 2:
-                offset_start = int(nums[0])
-                offset_end = int(nums[1])
-            elif len(nums) == 1:
-                offset_start = int(nums[0])
+            if nums:
+                offset = int(nums[0])
 
-        max_offset = max(1, end_line - start_line + 1)
-        if offset_start and offset_start >= 1:
-            # 截断到有效范围，容忍弱模型数行数不准
-            clamped_start = min(offset_start, max_offset)
-            mapped_start = start_line + clamped_start - 1
-            if offset_end is not None and offset_end >= clamped_start:
-                clamped_end = min(offset_end, max_offset)
-                mapped_end = start_line + clamped_end - 1
-                issue["location"] = f"{relative_file}:{mapped_start}-{mapped_end}"
-            else:
-                issue["location"] = f"{relative_file}:{mapped_start}"
+        # 无有效函数行号信息时，至少用文件路径替换函数名前缀
+        if not start_line or not end_line:
+            issue["location"] = f"{relative_file}:{offset or start_line or 1}"
             return
 
-        issue["location"] = f"unresolved:{location}" if location else "unresolved"
+        if offset and offset >= 1:
+            max_offset = max(1, end_line - start_line + 1)
+            clamped = min(offset, max_offset)
+            issue["location"] = f"{relative_file}:{start_line + clamped - 1}"
+            return
+
+        # 兜底：用函数起始行
+        issue["location"] = f"{relative_file}:{start_line}"
 
     def _filter_false_positives(self, issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Filter out issues that have been marked as false positives."""
