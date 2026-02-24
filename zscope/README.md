@@ -76,7 +76,7 @@ curl -L https://github.com/joernio/joern/releases/latest/download/joern-install.
 export PATH=$PATH:$HOME/bin/joern/joern-cli
 
 # 验证安装
-joern --version
+joern
 ```
 
 ### 2. 安装 Z-SCOPE
@@ -133,7 +133,7 @@ analysis:
 
 ```bash
 # 默认模式：从指定入口函数开始分析
-zscope --verbose
+zscope
 
 # 自上而下模式：从 .h 文件公开接口出发
 zscope --mode topdown -c zscope.yaml

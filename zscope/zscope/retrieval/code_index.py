@@ -408,7 +408,8 @@ class CodeIndex:
         if func_name not in self._function_index:
             return None
         info = self._function_index[func_name]
-        file_path = normalize_path(Path(info["file"]), self.project_root)
+        resolved = self._resolve_file_path(info["file"])
+        file_path = normalize_path(resolved, self.project_root)
         return f"{file_path}:{info['start_line']}-{info['end_line']}"
 
     def close(self):
