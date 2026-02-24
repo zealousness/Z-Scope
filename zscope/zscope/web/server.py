@@ -14,6 +14,7 @@ ALLOWED_VALIDATION_STATUSES = {"validated", "pending", "rejected"}
 _joern_client = None
 _user_config_store = None
 _code_index = None
+_project_config = None
 
 
 def _empty_report() -> Dict[str, Any]:
@@ -203,15 +204,17 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
         self._send_json({"status": _joern_client.cpg_status, "error": _joern_client.cpg_error})
 
     def _handle_build_cpg(self, payload):
-        global _joern_client
+        global _joern_client, _project_config
         if not _joern_client:
             self._send_json({"success": False, "error": "Joern client not available"}, status=400)
             return
-        source_path = payload.get("source_path", "")
-        if not source_path:
-            self._send_json({"success": False, "error": "source_path required"}, status=400)
+        if not _project_config:
+            self._send_json({"success": False, "error": "Project config not available"}, status=400)
             return
-        _joern_client.import_cpg_async(source_path)
+        source_path = str(_project_config.source_root)
+        project_root = str(_project_config.project_root)
+        cc_path = str(_project_config.compile_commands_path) if _project_config.compile_commands_path else None
+        _joern_client.import_cpg_async(source_path, project_root, cc_path)
         self._send_json({"success": True, "status": "building"})
 
     # ── False positive handlers ──
@@ -334,11 +337,12 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"success": False, "error": f"Missing field: {e}"}, status=400)
 
 
-def run_server(joern_client=None, user_config_store=None, code_index=None):
-    global _joern_client, _user_config_store, _code_index
+def run_server(joern_client=None, user_config_store=None, code_index=None, project_config=None):
+    global _joern_client, _user_config_store, _code_index, _project_config
     _joern_client = joern_client
     _user_config_store = user_config_store
     _code_index = code_index
+    _project_config = project_config
     WEB_DIR.mkdir(parents=True, exist_ok=True)
 
     with socketserver.TCPServer(("", PORT), ZScopeHandler) as httpd:
