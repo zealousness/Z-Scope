@@ -48,7 +48,7 @@ class IndexingConfig:
     joern_server_host: str = "127.0.0.1"
     joern_server_port: int = 8080
     joern_heap_size: str = "8g"
-    import_timeout: int = 1800
+
 
 
 @dataclass
@@ -200,7 +200,7 @@ class ConfigLoader:
                 joern_server_host=indexing_data.get("joern_server_host", "127.0.0.1"),
                 joern_server_port=indexing_data.get("joern_server_port", 8080),
                 joern_heap_size=indexing_data.get("joern_heap_size", "8g"),
-                import_timeout=indexing_data.get("import_timeout", 1800),
+
             )
 
             # Analysis config

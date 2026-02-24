@@ -2,8 +2,10 @@
 Joern CPG server client - manages joern-server subprocess and executes CPGQL queries.
 """
 
+import atexit
 import json
 import logging
+import signal
 import subprocess
 import threading
 import time
@@ -22,19 +24,20 @@ class JoernClient:
         host: str = "127.0.0.1",
         port: int = 8080,
         heap_size: str = "8g",
-        import_timeout: int = 1800,
+
     ):
         self.joern_path = joern_path
         self.host = host
         self.port = port
         self.heap_size = heap_size
-        self.import_timeout = import_timeout
+
         self._server_process: Optional[subprocess.Popen] = None
         self._cpg_loaded = False
         self._cpg_build_status = "idle"  # idle | building | ready | error
         self._cpg_build_error: Optional[str] = None
         self._cpg_lock = threading.Lock()
         self._cpg_build_thread: Optional[threading.Thread] = None
+        self._cleanup_registered = False
 
     def start_server(self) -> bool:
         """Start joern-server subprocess."""
@@ -59,10 +62,29 @@ class JoernClient:
                 logger.error(f"Joern server failed to start. stderr: {stderr_out.decode('utf-8', errors='ignore')}")
                 return False
             logger.info("Joern server started on %s:%d", self.host, self.port)
+            self._register_cleanup()
             return True
         except Exception as e:
             logger.error("Failed to start Joern server: %s", e)
             return False
+
+    def _register_cleanup(self):
+        """注册退出清理，确保进程退出时关闭 Joern server。"""
+        if self._cleanup_registered:
+            return
+        self._cleanup_registered = True
+        atexit.register(self.stop_server)
+
+        # signal.signal() 只能在主线程调用，非主线程跳过（atexit 仍生效）
+        if threading.current_thread() is not threading.main_thread():
+            return
+
+        def _sigterm_handler(signum, frame):
+            self.stop_server()
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            signal.raise_signal(signal.SIGTERM)
+
+        signal.signal(signal.SIGTERM, _sigterm_handler)
 
     def _wait_for_server(self, timeout: int = 120) -> bool:
         """Wait for Joern server to accept connections."""
