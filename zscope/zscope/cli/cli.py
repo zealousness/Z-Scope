@@ -40,7 +40,31 @@ def main(
     if dashboard:
         logger.info("Launching dashboard...")
         from ..web.server import run_server
-        run_server()
+        from ..common.joern_client import JoernClient
+        from ..config.user_config_store import UserConfigStore
+
+        if not config:
+            config = Path("zscope.yaml")
+        if config.exists():
+            zscope_config = ConfigLoader.load(str(config))
+            cfg = zscope_config.indexing
+            joern = JoernClient(
+                joern_path=cfg.joern_path,
+                host=cfg.joern_server_host,
+                port=cfg.joern_server_port,
+                heap_size=cfg.joern_heap_size,
+            )
+            joern.start_server()
+            db_dir = Path(zscope_config.analysis.user_config_db) if zscope_config.analysis.user_config_db else Path(zscope_config.analysis.snapshot_dir)
+            ucs = UserConfigStore(db_dir)
+            run_server(
+                joern_client=joern,
+                user_config_store=ucs,
+                project_config=zscope_config.project,
+            )
+        else:
+            click.echo("Warning: No config file found, dashboard running without Joern/config support")
+            run_server()
         sys.exit(0)
 
     if not config:

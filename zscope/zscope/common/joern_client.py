@@ -111,6 +111,25 @@ class JoernClient:
             self._server_process = None
         self._cpg_loaded = False
 
+    def _wait_for_cpg_ready(self, timeout: int = 7200, poll_interval: int = 10) -> bool:
+        """轮询验证 CPG 是否真正加载完成。importCode 可能异步返回，需要确认 CPG 可查询。"""
+        import time
+        deadline = time.time() + timeout
+        print("  [Joern] Waiting for CPG build to complete...", flush=True)
+        while time.time() < deadline:
+            try:
+                result = self.query("cpg.method.size")
+                if isinstance(result, (int, str)):
+                    count = int(result) if isinstance(result, str) and result.strip().isdigit() else result
+                    if isinstance(count, int) and count > 0:
+                        print(f"  [Joern] CPG ready, {count} methods indexed.", flush=True)
+                        return True
+            except Exception:
+                pass
+            time.sleep(poll_interval)
+        logger.error("CPG build verification timed out after %ds", timeout)
+        return False
+
     def _build_import_code_query(self, source_path_escaped: str, compile_commands_path: Optional[str] = None) -> str:
         """Build importCode CPGQL query, optionally with compile_commands.json."""
         if compile_commands_path:
@@ -145,6 +164,14 @@ class JoernClient:
             source_path_escaped = source_path.replace("\\", "\\\\")
             print(f"  [Joern] Building CPG for {source_path}...", flush=True)
             result = self.query(self._build_import_code_query(source_path_escaped, compile_commands_path))
+            if result is not None:
+                # importCode 可能异步返回项目引用，需要轮询确认 CPG 真正加载完成
+                if not self._wait_for_cpg_ready():
+                    logger.error("CPG build timed out or failed verification")
+                    with self._cpg_lock:
+                        self._cpg_build_status = "error"
+                        self._cpg_build_error = "CPG build verification failed"
+                    return False
         if result is not None:
             self._cpg_loaded = True
             with self._cpg_lock:
@@ -187,6 +214,8 @@ class JoernClient:
                 else:
                     source_path_escaped = source_path.replace("\\", "\\\\")
                     result = self.query(self._build_import_code_query(source_path_escaped, compile_commands_path))
+                    if result is not None and not self._wait_for_cpg_ready():
+                        result = None
                 with self._cpg_lock:
                     if result is not None:
                         self._cpg_loaded = True
