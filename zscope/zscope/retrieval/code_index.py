@@ -46,7 +46,7 @@ class CodeIndex:
                     joern_path=cfg.joern_path if cfg else "joern",
                     host=cfg.joern_server_host if cfg else "127.0.0.1",
                     heap_size=cfg.joern_heap_size if cfg else "8g",
-                    import_timeout=cfg.import_timeout if cfg else 1800,
+
                 )
                 if self._joern.start_server():
                     if wait_for_cpg:

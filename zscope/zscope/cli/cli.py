@@ -49,6 +49,7 @@ def main(
             click.echo("Error: Please provide a config file using --config or create zscope.yaml")
             sys.exit(1)
 
+    code_index = None
     try:
         zscope_config = ConfigLoader.load(str(config))
         logger.info(f"Loaded configuration from: {config}")
@@ -64,7 +65,6 @@ def main(
             )
             func_count = len(code_index.list_functions())
             click.echo(f"CPG build complete. Indexed {func_count} functions.")
-            code_index.close()
             sys.exit(0)
 
         # ── Mode-specific analysis ──
@@ -107,7 +107,7 @@ def main(
             logger.info(f"Batch mode activated: {zscope_config.project.entry_functions_list}")
             entries = FunctionListLoader.load(zscope_config.project.entry_functions_list)
             logger.info(f"Loaded {len(entries)} function entries")
-            
+
             # Build code index once (shared across all analyses)
             logger.info("Building shared code index...")
             code_index = CodeIndex(
@@ -117,28 +117,28 @@ def main(
                 indexing_config=zscope_config.indexing,
                 priority_functions=[e.function_name for e in entries]
             )
-            
+
             # Create parallel analyzer with shared code index
             parallel_analyzer = ParallelAnalyzer(zscope_config, code_index=code_index)
-            
+
             # Run batch analysis
             results = parallel_analyzer.analyze_function_entries(entries)
-            
+
             # Generate reports
             json_report_path = zscope_config.project.project_root / "zscope_batch_report.json"
             md_report_path = zscope_config.project.project_root / "zscope_batch_report.md"
-            
+
             combined_report = parallel_analyzer.generate_combined_report(results, json_report_path)
             parallel_analyzer.generate_combined_markdown_report(results, md_report_path)
-            
+
             total_issues = combined_report["summary"]["total_issues"]
             functions_analyzed = combined_report["summary"]["functions_analyzed"]
-            
+
             click.echo(f"\nBatch Analysis Complete.")
             click.echo(f"Functions analyzed: {functions_analyzed}")
             click.echo(f"Total issues found: {total_issues}")
             click.echo(f"Reports saved: {json_report_path}, {md_report_path}")
-            
+
             if total_issues > 0:
                 sys.exit(1)
             else:
@@ -149,18 +149,18 @@ def main(
             if not entry_function:
                  click.echo("Error: No entry function or entry functions list provided.")
                  sys.exit(1)
-                 
+
             logger.info(f"Single mode: entry function = {entry_function}")
 
             analyzer = Analyzer(zscope_config)
             result = analyzer.run()
-            
+
             overall_verdict = result.get("overall_verdict", "unknown")
             issues_count = len(result.get("issues", []))
-            
+
             click.echo(f"\nAnalysis Complete. Verdict: {overall_verdict}. Issues found: {issues_count}")
             click.echo(f"Reports saved in: {zscope_config.project.project_root}")
-            
+
             if issues_count > 0:
                 sys.exit(1)
             else:
@@ -169,6 +169,9 @@ def main(
     except Exception as e:
         logger.error(f"Analysis failed: {e}", exc_info=True)
         sys.exit(1)
+    finally:
+        if code_index:
+            code_index.close()
 
 
 if __name__ == "__main__":

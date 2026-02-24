@@ -27,7 +27,7 @@ indexing:
   joern_server_host: 127.0.0.1
   joern_server_port: 8080
   joern_heap_size: 8g
-  import_timeout: 1800
+
 
 analysis:
   max_recursion_depth: 3
