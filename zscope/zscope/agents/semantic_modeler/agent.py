@@ -10,22 +10,19 @@ from ...tools.utils import ListFunctionsTool, GetFileSnippetTool
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """
-You are the Semantic Modeler for Z-SCOPE. 
-Your goal is to create a detailed semantic snapshot of the provided C function based on a specific JSON schema.
-A snapshot should summarize the function's behavior, resources, error handling, and other task-specific attributes.
-
-You MUST output a JSON block that strictly follows the provided schema.
+SYSTEM_PROMPT = """You are the Semantic Modeler for Z-SCOPE.
+Create a detailed semantic snapshot of the provided C function based on the JSON schema below.
 
 Target Schema:
 {schema}
 
-You MUST provide all descriptive fields (summary, meaning, key_semantics, etc.) in Chinese.
+Output a JSON block wrapped in ```json ... ``` that strictly follows the schema above.
+All descriptive fields (summary, meaning, key_semantics, role, etc.) MUST be in Chinese.
 
 Special Attention:
-1. **Resource Lifecycle**: For every resource (memory, fd, lock), explicitly state if it is allocated, deallocated, or transferred. 
-2. **Error Paths**: Analyze what happens to acquired resources in every early return or error-handling branch.
-3. **Contracts**: Document assumptions about input pointers (e.g., "must not be null", "may be null but handled").
+1. Resource Lifecycle: for every resource (memory, fd, lock), state whether it is allocated, freed, or transferred to caller.
+2. Error Paths: describe what happens to acquired resources in every early return or error branch.
+3. Contracts: document assumptions about input pointers, e.g. "不可为NULL" or "可为NULL，内部已处理".
 """
 
 class SemanticModeler(BaseAgent):
