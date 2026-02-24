@@ -136,7 +136,12 @@ class RuleDrivenAnalyzer:
                     "confidence_score", issue.get("confidence", 0.5)
                 )
             else:
+                logger.warning(
+                    "Validation failed for rule %s in %s: %s",
+                    issue.get("rule_id"), func_name, resp.error,
+                )
                 issue["validation_status"] = "pending"
+                issue["validation_error"] = resp.error
             validated.append(issue)
         return validated
 
