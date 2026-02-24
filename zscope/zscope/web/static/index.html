@@ -190,6 +190,7 @@
                 <a class="tab" :class="configSubTab==='paired' && 'tab-active'" @click="configSubTab='paired'">配对函数</a>
                 <a class="tab" :class="configSubTab==='pointers' && 'tab-active'" @click="configSubTab='pointers'">函数指针</a>
                 <a class="tab" :class="configSubTab==='intents' && 'tab-active'" @click="configSubTab='intents'">函数意图</a>
+                <a class="tab" :class="configSubTab==='falsepositives' && 'tab-active'" @click="configSubTab='falsepositives';loadFalsePositives()">误报管理</a>
                 <a class="tab" :class="configSubTab==='cpg' && 'tab-active'" @click="configSubTab='cpg'">CPG 管理</a>
             </div>
 
@@ -214,7 +215,11 @@
                     <input class="input input-bordered input-sm" placeholder="库名" x-model="extForm.library">
                     <input class="input input-bordered input-sm flex-1" placeholder="描述" x-model="extForm.description">
                     <input class="input input-bordered input-sm" placeholder="返回语义" x-model="extForm.return_semantics">
-                    <button class="btn btn-primary btn-sm" @click="saveExtFunc()">保存</button>
+                </div>
+                <div class="flex gap-2 flex-wrap">
+                    <textarea class="textarea textarea-bordered textarea-sm flex-1" rows="2" placeholder="内存行为 (JSON)，如 {&quot;allocates&quot;:true,&quot;returns_allocated&quot;:true}" x-model="extForm.memory_behavior"></textarea>
+                    <textarea class="textarea textarea-bordered textarea-sm flex-1" rows="2" placeholder="并发行为 (JSON)，如 {&quot;thread_safe&quot;:false,&quot;acquires_lock&quot;:false}" x-model="extForm.concurrency_behavior"></textarea>
+                    <button class="btn btn-primary btn-sm self-end" @click="saveExtFunc()">保存</button>
                 </div>
                 <table class="table table-sm">
                     <thead><tr><th>函数名</th><th>库</th><th>描述</th><th>操作</th></tr></thead>
@@ -302,7 +307,7 @@
                             <tr>
                                 <td x-text="item.pointer_location"></td>
                                 <td x-text="item.scope"></td>
-                                <td x-text="item.target_functions"></td>
+                                <td x-text="formatJsonList(item.target_functions)"></td>
                                 <td><button class="btn btn-error btn-xs" @click="deleteConfig('pointer_targets',{id:item.id})">删除</button></td>
                             </tr>
                         </template>
@@ -328,10 +333,14 @@
                 </div>
                 <div class="flex gap-2 flex-wrap">
                     <input class="input input-bordered input-sm" placeholder="函数名" x-model="intentForm.func_name">
+                    <input class="input input-bordered input-sm" placeholder="文件路径(可选，区分同名函数)" x-model="intentForm.file_path">
                     <input class="input input-bordered input-sm" placeholder="并发组" x-model="intentForm.concurrency_group">
                     <input class="input input-bordered input-sm" placeholder="并发对象(逗号分隔)" x-model="intentForm.concurrent_str">
+                </div>
+                <div class="flex gap-2 flex-wrap">
+                    <textarea class="textarea textarea-bordered textarea-sm flex-1" rows="2" placeholder="调用者约束 (JSON)，如 {&quot;pointer_valid&quot;:true,&quot;no_concurrent_call&quot;:true}" x-model="intentForm.caller_constraints"></textarea>
                     <input class="input input-bordered input-sm flex-1" placeholder="备注" x-model="intentForm.notes">
-                    <button class="btn btn-primary btn-sm" @click="saveIntent()">保存</button>
+                    <button class="btn btn-primary btn-sm self-end" @click="saveIntent()">保存</button>
                 </div>
                 <table class="table table-sm">
                     <thead><tr><th>函数</th><th>并发组</th><th>备注</th><th>操作</th></tr></thead>
@@ -342,6 +351,28 @@
                                 <td x-text="item.concurrency_group"></td>
                                 <td class="max-w-xs truncate" x-text="item.notes"></td>
                                 <td><button class="btn btn-error btn-xs" @click="deleteConfig('function_intents',{func_name:item.func_name,file_path:item.file_path||''})">删除</button></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- False Positives Management -->
+            <div x-show="configSubTab==='falsepositives'" class="space-y-3">
+                <p class="text-xs opacity-60">已标记的误报会在下次扫描时自动过滤。</p>
+                <template x-if="falsePositives.length===0">
+                    <p class="opacity-40">暂无已标记的误报</p>
+                </template>
+                <table class="table table-sm" x-show="falsePositives.length>0">
+                    <thead><tr><th>函数</th><th>位置</th><th>子类</th><th>原因</th><th>操作</th></tr></thead>
+                    <tbody>
+                        <template x-for="item in falsePositives" :key="item.id">
+                            <tr>
+                                <td x-text="item.function"></td>
+                                <td x-text="item.location"></td>
+                                <td x-text="item.subcategory"></td>
+                                <td class="max-w-xs truncate" x-text="item.reason"></td>
+                                <td><button class="btn btn-error btn-xs" @click="deleteFalsePositive(item.id)">删除</button></td>
                             </tr>
                         </template>
                     </tbody>
@@ -364,7 +395,7 @@
                 <div class="flex items-center gap-4">
                     <span class="badge badge-lg" :class="cpgStatusClass" x-text="'CPG: '+cpgStatus"></span>
                     <span class="text-sm text-error" x-show="cpgError" x-text="cpgError"></span>
-                    <input class="input input-bordered input-sm flex-1" placeholder="源码路径" x-model="cpgSourcePath">
+                    <span class="text-xs opacity-60">源码路径由 zscope.yaml 配置决定</span>
                     <button class="btn btn-primary btn-sm" @click="buildCpg()" :disabled="cpgStatus==='building'">构建 CPG</button>
                     <button class="btn btn-ghost btn-sm" @click="pollCpgStatus()">刷新状态</button>
                 </div>
@@ -375,7 +406,10 @@
     <!-- ── Warnings Tab ── -->
     <div x-show="activeTab==='warnings'" class="h-full overflow-auto">
         <div class="glass rounded-2xl p-6 space-y-3">
-            <h2 class="text-sm font-semibold uppercase tracking-wider opacity-60">缺失配置告警</h2>
+            <div class="flex items-center justify-between">
+                <h2 class="text-sm font-semibold uppercase tracking-wider opacity-60">缺失配置告警</h2>
+                <button class="btn btn-warning btn-xs" x-show="warnings.length>0" @click="clearWarnings()">清除全部告警</button>
+            </div>
             <template x-if="warnings.length===0">
                 <p class="opacity-40">暂无告警</p>
             </template>
@@ -416,14 +450,14 @@
                 cpgError: '',
                 cpgStatusClass: 'badge-ghost',
                 cpgDotClass: 'bg-ghost',
-                cpgSourcePath: '',
                 warnings: [],
                 fpReason: '',
+                falsePositives: [],
                 configData: { external_functions:[], paired_functions:[], pointer_targets:[], function_intents:[] },
-                extForm: { func_name:'', library:'', description:'', return_semantics:'' },
+                extForm: { func_name:'', library:'', description:'', return_semantics:'', memory_behavior:'', concurrency_behavior:'' },
                 pairedForm: { category:'memory', acquire_func:'', release_func:'', description:'' },
                 ptrForm: { pointer_location:'', scope:'local', targets_str:'' },
-                intentForm: { func_name:'', concurrency_group:'', concurrent_str:'', notes:'' },
+                intentForm: { func_name:'', file_path:'', concurrency_group:'', concurrent_str:'', caller_constraints:'', notes:'' },
 
                 init() {
                     this.refreshData();
@@ -683,15 +717,18 @@
                     }).catch(()=>{});
                 },
                 buildCpg() {
-                    if(!this.cpgSourcePath) { alert('请输入源码路径'); return; }
                     fetch('/api/build_cpg',{method:'POST',headers:{'Content-Type':'application/json'},
-                        body:JSON.stringify({source_path:this.cpgSourcePath})
-                    }).then(r=>r.json()).then(()=>{
-                        this.cpgStatus='building';
-                        const iv=setInterval(()=>{
-                            this.pollCpgStatus();
-                            if(this.cpgStatus!=='building') clearInterval(iv);
-                        },3000);
+                        body:JSON.stringify({})
+                    }).then(r=>r.json()).then(d=>{
+                        if(d.success) {
+                            this.cpgStatus='building';
+                            const iv=setInterval(()=>{
+                                this.pollCpgStatus();
+                                if(this.cpgStatus!=='building') clearInterval(iv);
+                            },3000);
+                        } else {
+                            alert(d.error || '构建失败');
+                        }
                     });
                 },
 
@@ -701,8 +738,26 @@
                         this.warnings = d.items || [];
                     }).catch(()=>{});
                 },
+                clearWarnings() {
+                    if(!confirm('确定清除全部告警？')) return;
+                    fetch('/api/clear_warnings',{method:'POST',headers:{'Content-Type':'application/json'},
+                        body:'{}'
+                    }).then(r=>r.json()).then(d=>{
+                        if(d.success) this.warnings=[];
+                    });
+                },
 
                 // ── False Positive ──
+                loadFalsePositives() {
+                    fetch('/api/false_positives').then(r=>r.json()).then(d=>{
+                        this.falsePositives = d.items || [];
+                    }).catch(()=>{});
+                },
+                deleteFalsePositive(id) {
+                    fetch('/api/false_positives',{method:'DELETE',headers:{'Content-Type':'application/json'},
+                        body:JSON.stringify({id})
+                    }).then(r=>r.json()).then(()=>this.loadFalsePositives());
+                },
                 markFalsePositive(finding) {
                     fetch('/api/mark_false_positive',{method:'POST',headers:{'Content-Type':'application/json'},
                         body:JSON.stringify({function:finding.function,location:finding.location,
@@ -726,9 +781,12 @@
                     }).then(r=>r.json()).then(()=>this.loadAllConfigs());
                 },
                 saveExtFunc() {
+                    const payload = {...this.extForm};
+                    try { payload.memory_behavior = payload.memory_behavior ? JSON.parse(payload.memory_behavior) : null; } catch(e) { alert('内存行为 JSON 格式错误'); return; }
+                    try { payload.concurrency_behavior = payload.concurrency_behavior ? JSON.parse(payload.concurrency_behavior) : null; } catch(e) { alert('并发行为 JSON 格式错误'); return; }
                     fetch('/api/user_config/external_functions',{method:'POST',headers:{'Content-Type':'application/json'},
-                        body:JSON.stringify(this.extForm)
-                    }).then(r=>r.json()).then(()=>{this.extForm={func_name:'',library:'',description:'',return_semantics:''};this.loadAllConfigs();});
+                        body:JSON.stringify(payload)
+                    }).then(r=>r.json()).then(()=>{this.extForm={func_name:'',library:'',description:'',return_semantics:'',memory_behavior:'',concurrency_behavior:''};this.loadAllConfigs();});
                 },
                 savePairedFunc() {
                     fetch('/api/user_config/paired_functions',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -742,12 +800,20 @@
                         body:JSON.stringify(p)
                     }).then(r=>r.json()).then(()=>{this.ptrForm={pointer_location:'',scope:'local',targets_str:''};this.loadAllConfigs();});
                 },
+                formatJsonList(val) {
+                    if (Array.isArray(val)) return val.join(', ');
+                    if (typeof val === 'string') {
+                        try { const a = JSON.parse(val); if (Array.isArray(a)) return a.join(', '); } catch(e) {}
+                    }
+                    return String(val || '');
+                },
                 saveIntent() {
                     const p = {...this.intentForm, concurrent_with: this.intentForm.concurrent_str.split(',').map(s=>s.trim()).filter(Boolean)};
                     delete p.concurrent_str;
+                    try { p.caller_constraints = p.caller_constraints ? JSON.parse(p.caller_constraints) : null; } catch(e) { alert('调用者约束 JSON 格式错误'); return; }
                     fetch('/api/user_config/function_intents',{method:'POST',headers:{'Content-Type':'application/json'},
                         body:JSON.stringify(p)
-                    }).then(r=>r.json()).then(()=>{this.intentForm={func_name:'',concurrency_group:'',concurrent_str:'',notes:''};this.loadAllConfigs();});
+                    }).then(r=>r.json()).then(()=>{this.intentForm={func_name:'',file_path:'',concurrency_group:'',concurrent_str:'',caller_constraints:'',notes:''};this.loadAllConfigs();});
                 }
             }
         }

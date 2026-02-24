@@ -135,10 +135,11 @@ class JoernClient:
         if compile_commands_path:
             cc_escaped = compile_commands_path.replace("\\", "\\\\")
             return (
-                f'importCode("{source_path_escaped}", args=List('
+                f'importCode.c(inputPath="{source_path_escaped}", args=List('
                 f'"--compilation-database", "{cc_escaped}"))'
             )
-        return f'importCode("{source_path_escaped}")'
+        # We can also force it to use C to prevent falling back to python
+        return f'importCode.c(inputPath="{source_path_escaped}")'
 
     def import_cpg(
         self,

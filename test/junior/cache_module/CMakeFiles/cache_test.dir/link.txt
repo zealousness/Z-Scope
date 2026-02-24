@@ -1,0 +1,1 @@
+/usr/bin/cc CMakeFiles/cache_test.dir/src/cache_core.c.o -o cache_test  -Wl,-rpath,/mnt/c/Users/10273/home/work/Z-Scope/test/junior/cache_module libcache_module.so -lpthread 
