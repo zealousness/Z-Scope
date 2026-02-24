@@ -195,6 +195,20 @@
 
             <!-- External Functions -->
             <div x-show="configSubTab==='external'" class="space-y-3">
+                <div class="collapse collapse-arrow bg-neutral-900 rounded-xl">
+                    <input type="checkbox" />
+                    <div class="collapse-title text-sm font-medium opacity-70">填写说明（点击展开）</div>
+                    <div class="collapse-content text-xs opacity-60 space-y-2">
+                        <p>当项目依赖的外部库函数无法获取源码实现时，需要在此手动描述其内存和并发行为，帮助 AI 理解函数语义。</p>
+                        <ul class="list-disc list-inside space-y-1">
+                            <li><b>函数名</b> — 外部函数的完整名称，如 <code class="code-font text-primary">malloc</code>、<code class="code-font text-primary">pthread_mutex_lock</code></li>
+                            <li><b>库名</b> — 所属库，如 <code class="code-font text-primary">libc</code>、<code class="code-font text-primary">pthread</code>、<code class="code-font text-primary">openssl</code></li>
+                            <li><b>描述</b> — 函数功能及其内存/并发行为，重点说明：是否分配/释放内存、是否返回指针、是否线程安全、对参数的约束等</li>
+                            <li><b>返回语义</b> — 返回值含义，如 <code class="code-font text-primary">成功返回 0，失败返回 -1</code> 或 <code class="code-font text-primary">返回分配的内存指针，失败返回 NULL</code></li>
+                        </ul>
+                        <p class="text-warning">提示：告警页面会显示分析过程中遇到的未知外部函数，可据此补充配置。</p>
+                    </div>
+                </div>
                 <div class="flex gap-2 flex-wrap">
                     <input class="input input-bordered input-sm" placeholder="函数名" x-model="extForm.func_name">
                     <input class="input input-bordered input-sm" placeholder="库名" x-model="extForm.library">
@@ -219,6 +233,19 @@
 
             <!-- Paired Functions -->
             <div x-show="configSubTab==='paired'" class="space-y-3">
+                <div class="collapse collapse-arrow bg-neutral-900 rounded-xl">
+                    <input type="checkbox" />
+                    <div class="collapse-title text-sm font-medium opacity-70">填写说明（点击展开）</div>
+                    <div class="collapse-content text-xs opacity-60 space-y-2">
+                        <p>定义成对的资源获取/释放函数，用于检测资源泄漏、重复释放等问题。标准库函数（如 malloc/free）已内置，此处用于补充项目自定义的配对函数。</p>
+                        <ul class="list-disc list-inside space-y-1">
+                            <li><b>类别</b> — 配对类型：<code class="code-font text-primary">memory</code>（内存分配/释放）、<code class="code-font text-primary">lock</code>（加锁/解锁）、<code class="code-font text-primary">refcount</code>（引用计数增/减）、<code class="code-font text-primary">fd</code>（文件描述符打开/关闭）</li>
+                            <li><b>获取函数</b> — 资源获取方，如 <code class="code-font text-primary">my_malloc</code>、<code class="code-font text-primary">spin_lock</code>、<code class="code-font text-primary">open_device</code></li>
+                            <li><b>释放函数</b> — 资源释放方，如 <code class="code-font text-primary">my_free</code>、<code class="code-font text-primary">spin_unlock</code>、<code class="code-font text-primary">close_device</code></li>
+                            <li><b>描述</b> — 简要说明配对关系，如 <code class="code-font text-primary">自定义内存池分配与释放</code></li>
+                        </ul>
+                    </div>
+                </div>
                 <div class="flex gap-2 flex-wrap">
                     <select class="select select-bordered select-sm" x-model="pairedForm.category">
                         <option value="memory">memory</option><option value="lock">lock</option>
@@ -247,6 +274,19 @@
 
             <!-- Pointer Targets -->
             <div x-show="configSubTab==='pointers'" class="space-y-3">
+                <div class="collapse collapse-arrow bg-neutral-900 rounded-xl">
+                    <input type="checkbox" />
+                    <div class="collapse-title text-sm font-medium opacity-70">填写说明（点击展开）</div>
+                    <div class="collapse-content text-xs opacity-60 space-y-2">
+                        <p>当 Joern 无法静态推断函数指针的指向时，需要用户手动指定。分析过程中遇到的未解析指针会在告警页面提示。</p>
+                        <ul class="list-disc list-inside space-y-1">
+                            <li><b>指针位置</b> — 函数指针的声明位置，如 <code class="code-font text-primary">device_ops.read</code>（结构体成员）、<code class="code-font text-primary">g_callback</code>（全局变量）、<code class="code-font text-primary">handler_fn</code>（局部变量）</li>
+                            <li><b>范围</b> — <code class="code-font text-primary">local</code>（函数内局部指向）、<code class="code-font text-primary">global</code>（全局变量指向）、<code class="code-font text-primary">ignore</code>（标记为可忽略，不影响分析结果）</li>
+                            <li><b>目标函数</b> — 该指针可能指向的具体函数名，多个用英文逗号分隔，如 <code class="code-font text-primary">read_impl_v1, read_impl_v2</code></li>
+                        </ul>
+                        <p class="text-warning">提示：选择 ignore 表示该指针指向不影响缺陷检测，分析时将跳过相关路径。</p>
+                    </div>
+                </div>
                 <div class="flex gap-2 flex-wrap">
                     <input class="input input-bordered input-sm" placeholder="指针位置" x-model="ptrForm.pointer_location">
                     <select class="select select-bordered select-sm" x-model="ptrForm.scope">
@@ -272,6 +312,20 @@
 
             <!-- Function Intents -->
             <div x-show="configSubTab==='intents'" class="space-y-3">
+                <div class="collapse collapse-arrow bg-neutral-900 rounded-xl">
+                    <input type="checkbox" />
+                    <div class="collapse-title text-sm font-medium opacity-70">填写说明（点击展开）</div>
+                    <div class="collapse-content text-xs opacity-60 space-y-2">
+                        <p>描述函数的设计意图和并发关系，帮助 AI 判断是否存在数据竞争等并发问题。</p>
+                        <ul class="list-disc list-inside space-y-1">
+                            <li><b>函数名</b> — 需要标注意图的函数名，如 <code class="code-font text-primary">process_request</code></li>
+                            <li><b>并发组</b> — 该函数所属的并发分组标识，同组函数不会并发执行。如 <code class="code-font text-primary">io_thread</code>、<code class="code-font text-primary">timer_task</code>、<code class="code-font text-primary">main_loop</code></li>
+                            <li><b>并发对象</b> — 与本函数存在并发执行关系的其他并发组名，多个用英文逗号分隔，如 <code class="code-font text-primary">network_layer, cache_layer</code></li>
+                            <li><b>备注</b> — 补充说明函数对调用者的约束，如 <code class="code-font text-primary">调用前必须持有 g_mutex 锁</code>、<code class="code-font text-primary">传入指针保证非 NULL</code></li>
+                        </ul>
+                        <p class="text-warning">提示：并发组用于建模任务/线程间的并发关系。同一并发组内的函数被视为串行执行，不同组之间根据"并发对象"字段判断是否存在并发。</p>
+                    </div>
+                </div>
                 <div class="flex gap-2 flex-wrap">
                     <input class="input input-bordered input-sm" placeholder="函数名" x-model="intentForm.func_name">
                     <input class="input input-bordered input-sm" placeholder="并发组" x-model="intentForm.concurrency_group">
@@ -296,6 +350,17 @@
 
             <!-- CPG Management -->
             <div x-show="configSubTab==='cpg'" class="space-y-3">
+                <div class="collapse collapse-arrow bg-neutral-900 rounded-xl">
+                    <input type="checkbox" />
+                    <div class="collapse-title text-sm font-medium opacity-70">填写说明（点击展开）</div>
+                    <div class="collapse-content text-xs opacity-60 space-y-2">
+                        <p>CPG（Code Property Graph）是 Joern 生成的代码属性图，是所有代码分析的基础。构建 CPG 后才能执行函数查询、调用图分析、数据流追踪等操作。</p>
+                        <ul class="list-disc list-inside space-y-1">
+                            <li><b>源码路径</b> — 待分析项目的源码根目录绝对路径，如 <code class="code-font text-primary">/home/user/project/src</code></li>
+                        </ul>
+                        <p class="text-warning">提示：CPG 构建为异步操作，大型项目可能耗时较长。构建期间可正常使用其他功能，状态栏会实时显示构建进度。</p>
+                    </div>
+                </div>
                 <div class="flex items-center gap-4">
                     <span class="badge badge-lg" :class="cpgStatusClass" x-text="'CPG: '+cpgStatus"></span>
                     <span class="text-sm text-error" x-show="cpgError" x-text="cpgError"></span>

@@ -45,8 +45,8 @@ class CodeIndex:
                 self._joern = JoernClient(
                     joern_path=cfg.joern_path if cfg else "joern",
                     host=cfg.joern_server_host if cfg else "127.0.0.1",
+                    port=cfg.joern_server_port if cfg else 8080,
                     heap_size=cfg.joern_heap_size if cfg else "8g",
-
                 )
                 if self._joern.start_server():
                     if wait_for_cpg:
