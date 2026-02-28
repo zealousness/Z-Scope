@@ -42,20 +42,24 @@ Z-SCOPE 是一款基于多智能体协作的 C 语言深度静态分析工具。
              │            │             │
      ┌───────▼────────────▼─────────────▼────────┐
      │          工具总线 (tools_runtime.py)        │
-     │  9 个分析工具 + 用户配置自动注入            │
+     │  11 个分析工具 + 1 个高聚合查询 + 用户配置自动注入  │
      └───────┬────────────┬─────────────┬────────┘
              │            │             │
      ┌───────▼───┐ ┌──────▼───┐ ┌──────▼────────┐
      │ CodeIndex │ │ Snapshot │ │ UserConfig    │
-     │ Joern/    │ │ Store    │ │ Store         │
-     │ Regex     │ │ SQLite   │ │ SQLite WAL    │
+     │ 可插拔   │ │ Store    │ │ Store         │
+     │ 后端     │ │ SQLite   │ │ SQLite WAL    │
      └───────┬───┘ └──────────┘ └───────────────┘
              │
-     ┌───────▼───────────┐
-     │   Joern Server    │
-     │  CPG + CPGQL      │
-     │  (WebSocket)      │
-     └───────────────────┘
+     ┌───────▼──────────────────────────────────┐
+     │     CodeBackend ABC (backend_base.py)    │
+     │  ┌────────┐ ┌───────┐ ┌─────────┐ ┌───────┐ │
+     │  │ Joern  │ │ Clang │ │ Unified │ │ Regex │ │
+     │  └────┬───┘ └───┬───┘ └────┬────┘ └───────┘ │
+     └───────┼─────────┼──────────┼────────────────┘
+             │         │          │
+        CPGQL WS   KnowledgeDB(SQLite)
+                   libclang  ClangBackend+SvfAnalyzer
 ```
 
 ## 3. 三种分析模式
@@ -159,18 +163,47 @@ start_server() → import_cpg() 或 import_cpg_async() → query() × N → stop
 - `wait_for_cpg(timeout)` 阻塞等待构建完成
 - `cpg_status` 属性实时查询当前状态
 
-### 6.2 CodeIndex 双后端
+### 6.2 CodeIndex 可插拔后端
 
-`retrieval/code_index.py` 提供统一的代码查询接口，内部根据 Joern 可用性自动切换：
+`retrieval/code_index.py` 提供统一的代码查询接口，通过 `indexing.backend` 配置选择后端：
 
-| 能力 | Joern 后端 | Regex 回退 |
-|------|-----------|-----------|
-| 函数实现获取 | CPGQL 精确查询 | 正则扫描源文件 |
-| 调用图 | `cpg.method.callee` | 正则匹配函数调用 |
-| 数据流追踪 | `reachableByFlows` | 不支持 |
-| 头文件函数提取 | `cpg.method.isExternal(false)` | 正则匹配函数声明 |
+| 后端 | 实现 | 适用场景 |
+|------|------|---------|
+| `joern` | JoernBackend — CPGQL WebSocket | 完整 CPG 查询，规则驱动模式 |
+| `clang` | ClangBackend — libclang → KnowledgeDB | 精确 AST 解析，无需 JVM |
+| `unified` | UnifiedBackend — ClangBackend + SvfAnalyzer (共享 KnowledgeDB) | Clang AST + SVF 间接调用/污点分析 |
+| `regex` | RegexBackend — 正则扫描源文件 | 轻量回退，无外部依赖 |
 
-`wait_for_cpg=False` 模式下，CodeIndex 创建时不阻塞，通过 `ensure_index_ready()` 延迟等待。
+所有后端实现 `CodeBackend` ABC（`retrieval/backend_base.py`），提供统一的 `get_callers`、`get_callees`、`get_type_info`、`get_data_flow` 等方法。
+
+### 6.3 SVF 深度分析管线（unified 模式）
+
+```
+UnifiedBackend.initialize()
+    │
+    ├─ 阶段1: ClangBackend → KnowledgeDB (functions, call_edges, types)
+    │
+    └─ 阶段2: SvfAnalyzer (共享同一个 KnowledgeDB)
+         │
+         compile_commands.json
+             │  BitcodeBuilder (build_llvm.py)
+             ▼
+         gclang -g -O0 编译 → get-bc 提取 → llvm-link 合并
+             │
+             ▼  merged.bc
+         SvfRunner (svf_runner.py)
+             ├─ wpa -ander → callgraph_final.dot
+             └─ saber -leak -uaf -dfree
+             │
+             ▼  SvfOutputMapper (svf_parser.py) — 坐标缝合
+         KnowledgeDB
+             ├─ indirect_calls 表 (caller, callee, call_file, call_line)
+             └─ taint_signatures 表 (bug_type, file, line)
+```
+
+坐标缝合原理：Clang AST 与 LLVM IR DWARF 在 `-g -O0` 下共享 `(file_path, line)` 坐标系。`SvfOutputMapper` 通过 `db.get_function(caller)` 查询 Clang 已入库的函数位置，将 SVF 结果关联回源码。
+
+设计原则：**全局稀疏建图，按需局部查询**。
 
 ## 7. Web 仪表盘
 
@@ -224,7 +257,17 @@ zscope/zscope/
 │   ├── snapshot_store.py       # 语义快照缓存
 │   └── report.py               # 报告生成
 ├── retrieval/
-│   └── code_index.py           # 代码索引（Joern/Regex 双后端）
+│   ├── backend_base.py         # CodeBackend ABC + 数据类
+│   ├── code_index.py           # 统一查询接口（工厂方法选后端）
+│   ├── joern_backend.py        # Joern CPGQL 后端
+│   ├── clang_backend.py        # Clang libclang → KnowledgeDB
+│   ├── svf_backend.py          # SVF 后端（已废弃，使用 unified 替代）
+│   ├── unified_backend.py      # Unified Facade（Clang + SVF 共享 DB）
+│   ├── svf_analyzer.py         # SVF 分析器（非 CodeBackend，接受外部 DB）
+│   ├── knowledge_db.py         # SQLite schema v3（含 indirect_calls/taint_signatures + 坐标缝合）
+│   ├── build_llvm.py           # gllvm BitcodeBuilder
+│   ├── svf_runner.py           # SVF 执行引擎
+│   └── svf_parser.py           # DOT 解析 + 结果导入
 ├── common/
 │   └── joern_client.py         # Joern 服务管理 + CPGQL 查询
 ├── config/
@@ -232,7 +275,7 @@ zscope/zscope/
 │   └── user_config_store.py    # 用户配置 SQLite 存储
 ├── framework/
 │   └── llm_client.py           # LLM 客户端（OpenAI 兼容）
-├── tools/                      # 9 个分析工具定义
+├── tools/                      # 12 个分析工具定义
 └── web/
     ├── server.py               # HTTP REST API
     └── static/index.html       # 前端单页应用
@@ -272,7 +315,7 @@ zscope.yaml ─→ Config 加载
 | 组件 | 技术选型 |
 |------|---------|
 | 语言 | Python 3.9+ |
-| CPG 引擎 | Joern (CPGQL via WebSocket) |
+| CPG 引擎 | Joern (CPGQL via WebSocket) / Clang (libclang) / SVF (wpa + saber) |
 | LLM 接口 | OpenAI 兼容 API（tool calling） |
 | 数据存储 | SQLite (WAL mode) + JSON |
 | 前端 | Alpine.js + DaisyUI + Tailwind CSS |

@@ -1,6 +1,6 @@
 """
 Code indexing and function locator for C projects.
-Uses Joern CPG as the primary backend with regex fallback.
+Supports pluggable backends (Joern / Clang-SQLite / regex fallback).
 """
 
 import logging
@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from ..common.utils import extract_function_calls, normalize_path
-from ..common.joern_client import JoernClient
+from .backend_base import CodeBackend
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class CodeIndex:
     """
     Indexes C project to locate function implementations.
-    Uses Joern CPG as primary backend with regex fallback.
+    Delegates backend-specific queries to a pluggable CodeBackend.
     """
 
     def __init__(
@@ -28,91 +28,145 @@ class CodeIndex:
         indexing_config: Optional[Any] = None,
         priority_functions: Optional[List[str]] = None,
         wait_for_cpg: bool = True,
-        joern_client: Optional[JoernClient] = None,
+        backend: Optional[CodeBackend] = None,
+        # 向后兼容：仍接受 joern_client 参数
+        joern_client: Optional[Any] = None,
     ):
         self.project_root = Path(project_root).resolve()
         self.source_root = Path(source_root).resolve() if source_root else self.project_root
         self.compile_commands_path = compile_commands_path
         self._function_index: Dict[str, Dict[str, Any]] = {}
-        self._joern: Optional[JoernClient] = joern_client
+        self._backend: Optional[CodeBackend] = backend
         self._index_ready = False
 
-        if self._joern is None:
-            backend = indexing_config.backend if indexing_config else "joern"
-            if backend == "joern":
-                cfg = indexing_config
-                self._joern = JoernClient(
-                    joern_path=cfg.joern_path if cfg else "joern",
-                    host=cfg.joern_server_host if cfg else "127.0.0.1",
-                    port=cfg.joern_server_port if cfg else 8080,
-                    heap_size=cfg.joern_heap_size if cfg else "8g",
-                )
-                if self._joern.start_server():
-                    cc_path = str(self.compile_commands_path) if self.compile_commands_path else None
-                    if wait_for_cpg:
-                        if not self._joern.import_cpg(str(self.source_root), str(self.project_root), cc_path):
-                            logger.warning("Joern CPG import failed, falling back to regex")
-                            self._joern.stop_server()
-                            self._joern = None
-                    else:
-                        self._joern.import_cpg_async(str(self.source_root), str(self.project_root), cc_path)
-                else:
-                    logger.warning("Joern server failed to start, falling back to regex")
-                    self._joern = None
+        # 向后兼容：如果传入了 joern_client，包装为 JoernBackend
+        if self._backend is None and joern_client is not None:
+            from .joern_backend import JoernBackend
+            self._backend = JoernBackend(joern_client=joern_client)
+            self._backend._status = "ready"
+
+        # 根据配置自动创建后端
+        if self._backend is None:
+            self._backend = self._create_backend(indexing_config, wait_for_cpg)
 
         if wait_for_cpg:
             self._build_index()
             self._index_ready = True
 
+    def _create_backend(self, indexing_config, wait_for_cpg: bool) -> Optional[CodeBackend]:
+        """根据 indexing_config 创建对应的后端实例。"""
+        backend_name = indexing_config.backend if indexing_config else "joern"
+
+        if backend_name == "joern":
+            from .joern_backend import JoernBackend
+            cfg = indexing_config
+            jb = JoernBackend(
+                joern_path=cfg.joern_path if cfg else "joern",
+                host=cfg.joern_server_host if cfg else "127.0.0.1",
+                port=cfg.joern_server_port if cfg else 8080,
+                heap_size=cfg.joern_heap_size if cfg else "8g",
+            )
+            cc_path = str(self.compile_commands_path) if self.compile_commands_path else None
+            ok = jb.initialize(
+                str(self.source_root),
+                project_root=self.project_root,
+                compile_commands_path=cc_path,
+                wait=wait_for_cpg,
+            )
+            if not ok and wait_for_cpg:
+                logger.warning("Backend initialization failed, falling back to regex")
+                return None
+            return jb
+
+        if backend_name == "clang":
+            from .clang_backend import ClangBackend
+            cfg = indexing_config
+            cb = ClangBackend(
+                clangd_path=cfg.clangd_path if cfg else "clangd",
+                db_path=cfg.knowledge_db_path if cfg else ".zscope_knowledge/code_knowledge.db",
+                batch_size=cfg.batch_size if cfg else 50,
+                max_threads=cfg.max_clangd_threads if cfg else 8,
+            )
+            cc_path = str(self.compile_commands_path) if self.compile_commands_path else None
+            ok = cb.initialize(
+                str(self.source_root),
+                project_root=self.project_root,
+                compile_commands_path=cc_path,
+                wait=wait_for_cpg,
+            )
+            if not ok and wait_for_cpg:
+                logger.warning("Clang backend initialization failed, falling back to regex")
+                return None
+            return cb
+
+        if backend_name == "unified":
+            from .unified_backend import UnifiedBackend
+            cfg = indexing_config
+            ub = UnifiedBackend(
+                clangd_path=cfg.clangd_path if cfg else "clangd",
+                db_path=cfg.knowledge_db_path if cfg else ".zscope_knowledge/code_knowledge.db",
+                batch_size=cfg.batch_size if cfg else 50,
+                max_threads=cfg.max_clangd_threads if cfg else 8,
+                svf_bin_dir=cfg.svf_bin_dir if cfg else "",
+                gclang_path=cfg.gclang_path if cfg else "gclang",
+                get_bc_path=cfg.get_bc_path if cfg else "get-bc",
+                llvm_link_path=cfg.llvm_link_path if cfg else "llvm-link",
+                svf_heap_limit_mb=cfg.svf_heap_limit_mb if cfg else 32768,
+                svf_timeout=cfg.svf_timeout if cfg else 1800,
+            )
+            cc_path = str(self.compile_commands_path) if self.compile_commands_path else None
+            ok = ub.initialize(
+                str(self.source_root),
+                project_root=self.project_root,
+                compile_commands_path=cc_path,
+                wait=wait_for_cpg,
+            )
+            if not ok and wait_for_cpg:
+                logger.warning("Unified backend init failed, falling back to regex")
+                return None
+            return ub
+
+        # regex 模式不需要后端
+        return None
+
     def ensure_index_ready(self, timeout: Optional[int] = None) -> bool:
-        """Wait for CPG and build index. For non-blocking mode."""
+        """Wait for backend and build index. For non-blocking mode."""
         if self._index_ready:
             return True
-        if self._joern and not self._joern.wait_for_cpg(timeout=timeout):
-            logger.warning("CPG build failed or timed out, falling back to regex")
-            self._joern.stop_server()
-            self._joern = None
+        if self._backend and hasattr(self._backend, "wait_for_ready"):
+            if not self._backend.wait_for_ready(timeout=timeout):
+                logger.warning("Backend build failed or timed out, falling back to regex")
+                self._backend.close()
+                self._backend = None
         self._build_index()
         self._index_ready = True
         return True
 
     @property
-    def joern_client(self) -> Optional[JoernClient]:
-        return self._joern
+    def backend(self) -> Optional[CodeBackend]:
+        """当前活跃的后端实例。"""
+        return self._backend
+
+    @property
+    def joern_client(self) -> Optional[Any]:
+        """向后兼容：返回 JoernClient（仅 Joern 后端可用）。"""
+        from .joern_backend import JoernBackend
+        if isinstance(self._backend, JoernBackend):
+            return self._backend.joern_client
+        return None
 
     def _build_index(self) -> None:
         """Build function index from project."""
-        if self._joern:
-            self._build_index_joern()
+        if self._backend:
+            backend_index = self._backend.build_function_index()
+            if backend_index:
+                self._function_index.update(backend_index)
+            else:
+                logger.warning("Backend index returned empty, falling back to regex")
+                self._build_index_regex()
         else:
             self._build_index_regex()
         logger.info(f"Indexed {len(self._function_index)} functions")
-
-    def _build_index_joern(self) -> None:
-        """Build index using Joern CPG method nodes."""
-        result = self._joern.query(
-            'cpg.method.isExternal(false).map(m => Map('
-            '"name" -> m.name, "filename" -> m.filename, '
-            '"lineNumber" -> m.lineNumber.getOrElse(-1), '
-            '"lineNumberEnd" -> m.lineNumberEnd.getOrElse(-1), '
-            '"signature" -> m.signature'
-            ')).l.toJson'
-        )
-        if not isinstance(result, list):
-            logger.warning("Joern index query returned unexpected result, falling back to regex")
-            self._build_index_regex()
-            return
-        for m in result:
-            name = m.get("name", "")
-            fname = m.get("filename", "")
-            if not name or name.startswith("<") or not fname or fname.startswith("<"):
-                continue
-            self._function_index[name] = {
-                "file": m.get("filename", ""),
-                "start_line": m.get("lineNumber", -1),
-                "end_line": m.get("lineNumberEnd", -1),
-                "signature": m.get("signature", f"{name}(...)"),
-            }
 
     def _build_index_regex(self) -> None:
         """Build index using regex pattern matching (fallback)."""
@@ -162,9 +216,9 @@ class CodeIndex:
 
     def get_function_impl(self, func_name: str, max_lines: int = 500) -> Optional[Dict[str, Any]]:
         """Get function implementation."""
-        # Try Joern lookup if not in index
-        if func_name not in self._function_index and self._joern:
-            m = self._joern.get_method(func_name)
+        # Try backend lookup if not in index
+        if func_name not in self._function_index and self._backend:
+            m = self._backend.get_method(func_name)
             if m and m.get("filename"):
                 self._function_index[func_name] = {
                     "file": m["filename"],
@@ -193,9 +247,9 @@ class CodeIndex:
             code_lines = lines[start:end]
             code = "".join(code_lines)
 
-            # Get callees from Joern if available, else regex
-            if self._joern:
-                callee_data = self._joern.get_method_callees(func_name)
+            # Get callees from backend if available, else regex
+            if self._backend:
+                callee_data = self._backend.get_method_callees(func_name)
                 callees = [c["name"] for c in callee_data if c.get("name")]
             else:
                 callees = list(set(extract_function_calls(code)))
@@ -256,60 +310,41 @@ class CodeIndex:
 
     def get_callers(self, func_name: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Get functions that call the given function."""
-        if not self._joern:
+        if not self._backend:
             return []
-        return self._joern.get_method_callers(func_name, limit=limit)
+        return self._backend.get_callers(func_name, limit=limit)
 
     def get_callees(self, func_name: str, limit: int = 30) -> List[Dict[str, Any]]:
         """Get functions called by the given function."""
-        if not self._joern:
+        if not self._backend:
             return []
-        return self._joern.get_method_callees(func_name, limit=limit)
+        return self._backend.get_callees(func_name, limit=limit)
 
     def get_type_info(self, type_name: str) -> Optional[Dict[str, Any]]:
         """Get struct/union/enum definition and members."""
-        if not self._joern:
+        if not self._backend:
             return None
-        decl = self._joern.get_type_decl(type_name)
-        if not decl:
-            return None
-        members = self._joern.get_type_members(type_name)
-        decl["members"] = members
-        return decl
+        return self._backend.get_type_info(type_name)
 
     def get_data_flow(
         self, source_func: str, source_param: str, sink_pattern: str
     ) -> List[Dict[str, Any]]:
         """Trace data flow from source parameter to sink."""
-        if not self._joern:
+        if not self._backend:
             return []
-        return self._joern.get_data_flow_to_sink(source_func, source_param, sink_pattern)
+        return self._backend.get_data_flow(source_func, source_param, sink_pattern)
 
     def find_function_pointers(self, func_name: str) -> List[Dict[str, Any]]:
         """Find function pointer assignments/callback registrations."""
-        if not self._joern:
+        if not self._backend:
             return []
-        return self._joern.find_function_pointers(func_name)
+        return self._backend.find_function_pointers(func_name)
 
     def get_header_declared_functions(self, header_files: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """Get functions declared in header files (public API)."""
-        if self._joern:
-            return self._get_header_funcs_joern(header_files)
+        if self._backend:
+            return self._backend.get_header_declared_functions(header_files)
         return self._get_header_funcs_regex(header_files)
-
-    def _get_header_funcs_joern(self, header_files: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-        filter_clause = '.filter(_.filename.matches(".*\\\\.h$"))'
-        if header_files:
-            patterns = "|".join(re.escape(h) for h in header_files)
-            filter_clause = f'.filter(_.filename.matches(".*({patterns})"))'
-        result = self._joern.query(
-            f'cpg.method.isExternal(false){filter_clause}'
-            '.map(m => Map("name" -> m.name, "filename" -> m.filename, '
-            '"lineNumber" -> m.lineNumber.getOrElse(-1))).l.toJson'
-        )
-        if isinstance(result, list):
-            return [r for r in result if r.get("name") and not r["name"].startswith("<")]
-        return []
 
     def _get_header_funcs_regex(self, header_files: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         func_decl_re = re.compile(
@@ -415,6 +450,6 @@ class CodeIndex:
         return f"{file_path}:{info['start_line']}-{info['end_line']}"
 
     def close(self):
-        """Close Joern client."""
-        if self._joern:
-            self._joern.stop_server()
+        """Close backend resources."""
+        if self._backend:
+            self._backend.close()

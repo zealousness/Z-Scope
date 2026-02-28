@@ -46,9 +46,10 @@ class RuleDrivenAnalyzer:
         )
         self.report_generator = ReportGenerator(config.project.project_root)
 
-        if not code_index.joern_client:
+        from ..retrieval.joern_backend import JoernBackend
+        if not isinstance(code_index.backend, JoernBackend):
             raise ValueError("Rule-driven mode requires Joern CPG backend")
-        self.rule_engine = RuleEngine(code_index.joern_client, self.user_config)
+        self.rule_engine = RuleEngine(code_index.backend.joern_client, self.user_config)
 
     def run(self, custom_script_dir: Optional[str] = None) -> Dict[str, Any]:
         """Execute rule-driven analysis pipeline."""
