@@ -183,7 +183,7 @@ class ToolsRuntime:
                         "Please correct the line range and retry."
                     ),
                 }
-        elif tool_name in {"get_callers", "get_call_graph", "find_function_pointers"}:
+        elif tool_name in {"get_callers", "get_call_graph", "find_function_pointers", "query_pointer_alias"}:
             func_name = arguments.get("func_name")
             if func_name is None:
                 return {"success": False, "error": "'func_name' is required; please correct and retry."}
@@ -340,6 +340,49 @@ class ToolsRuntime:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "query_pointer_alias",
+                    "description": "查询 SVF Andersen 指针分析解析出的间接调用目标。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "func_name": {"type": "string"},
+                            "limit": {"type": "integer", "default": 30},
+                        },
+                        "required": ["func_name"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "verify_taint_reachability",
+                    "description": "查询 SVF Saber 检测到的内存缺陷（泄漏/UAF/双重释放）。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "bug_type": {"type": "string", "description": "缺陷类型过滤"},
+                            "limit": {"type": "integer", "default": 50},
+                        },
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_deep_call_context",
+                    "description": "获取函数的深度调用上下文：合并直接/间接调用关系 + 相关污点缺陷 + 函数签名。一次调用返回完整分析上下文。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "func_name": {"type": "string", "description": "函数名"},
+                        },
+                        "required": ["func_name"],
+                    },
+                },
+            },
         ]
 
     def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -378,6 +421,12 @@ class ToolsRuntime:
                 return self._get_data_flow(**effective_args)
             elif tool_name == "find_function_pointers":
                 return self._find_function_pointers(**effective_args)
+            elif tool_name == "query_pointer_alias":
+                return self._query_pointer_alias(**effective_args)
+            elif tool_name == "verify_taint_reachability":
+                return self._verify_taint_reachability(**effective_args)
+            elif tool_name == "get_deep_call_context":
+                return self._get_deep_call_context(**effective_args)
             else:
                 return {"error": f"Unknown tool: {tool_name}"}
         except Exception as e:
@@ -491,3 +540,45 @@ class ToolsRuntime:
         """Find function pointer assignments."""
         refs = self.code_index.find_function_pointers(func_name)
         return {"success": True, "data": {"references": refs, "count": len(refs)}}
+
+    def _query_pointer_alias(self, func_name: str, limit: int = 30) -> Dict[str, Any]:
+        """查询 SVF 解析出的间接调用目标。"""
+        backend = self.code_index.backend
+        if backend and hasattr(backend, "get_indirect_callees"):
+            targets = backend.get_indirect_callees(func_name, limit=limit)
+        else:
+            targets = []
+        return {"success": True, "data": {"function": func_name, "indirect_callees": targets, "count": len(targets)}}
+
+    def _verify_taint_reachability(self, bug_type: str = "", limit: int = 50) -> Dict[str, Any]:
+        """查询 SVF Saber 检测到的污点/内存缺陷。"""
+        backend = self.code_index.backend
+        if backend and hasattr(backend, "get_taint_bugs"):
+            bugs = backend.get_taint_bugs(bug_type, limit=limit)
+        else:
+            bugs = []
+        return {"success": True, "data": {"bugs": bugs, "count": len(bugs)}}
+
+    def _get_deep_call_context(self, func_name: str) -> Dict[str, Any]:
+        """高聚合查询：一次返回调用图 + 间接调用 + 污点缺陷 + 函数签名。"""
+        backend = self.code_index.backend
+        callers = self.code_index.get_callers(func_name, limit=20)
+        callees = self.code_index.get_callees(func_name, limit=30)
+        indirect = []
+        if backend and hasattr(backend, "get_indirect_callees"):
+            indirect = backend.get_indirect_callees(func_name, limit=20)
+        taint = []
+        if backend and hasattr(backend, "get_taint_bugs"):
+            taint = backend.get_taint_bugs(func_name, limit=20)
+        method = backend.get_method(func_name) if backend else None
+        return {
+            "success": True,
+            "data": {
+                "function": func_name,
+                "method_info": method,
+                "callers": callers,
+                "callees": callees,
+                "indirect_callees": indirect,
+                "taint_bugs": taint,
+            },
+        }

@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Z-SCOPE 是一个基于开源大模型的 C 语言 AI 代码检视工具。利用 Joern CPG（CPGQL）的图查询能力配合 LLM Agent 的语义理解能力，针对 C 语言最常见的缺陷类型进行深度检视，目标是高召回率的同时保持较低误报率。
 
 **关注的缺陷类型**：
-- 内存类：内存管理、指针访问、读写越界
-- 并发类：数据竞争、时序问题
+- 内存类：内存泄漏、Use-After-Free、双重释放、空指针解引用、缓冲区越界
+- 并发类：数据竞争、死锁、时序问题
 
 **项目语言**：文档、注释、Agent prompt 均使用中文。
 
@@ -52,66 +52,118 @@ black zscope/zscope/ --line-length 100
 mypy zscope/zscope/
 ```
 
+**输出文件**：分析完成后在 `project_root` 下生成 `zscope_batch_report.json` 和 `zscope_batch_report.md`，快照缓存在 `.zscope_snapshots/` 目录。
+
 ## Architecture
 
-The main Python package lives in `zscope/zscope/`. Entry point: `zscope/zscope/cli/cli.py` → `main()`.
+主包位于 `zscope/zscope/`，入口：`cli/cli.py` → `main()`（Click CLI）。
 
-### Two Analysis Modes
+### 整体架构
 
-1. **自上而下模式**：以对外接口（.h 文件暴露的函数）为起点，自上而下进行代码检视，发现疑似问题后提交审查 Agent 二次确认。
-2. **规则驱动模式**：利用 Joern 已有规则发现疑似问题，再由审查 Agent 确认是否为真实缺陷。
+```
+CLI 入口层 (cli.py --mode default|topdown|ruledriven)
+    │
+    ├─→ 默认模式 (analyzer.py)
+    ├─→ 自上而下模式 (parallel_analyzer.py)
+    └─→ 规则驱动模式 (rule_driven_analyzer.py + rule_engine.py)
+          │
+          ▼
+    多智能体管线 (agents/)
+    语义建模 Agent → 漏洞扫描 Agent → 验证 Agent
+          │
+          ▼
+    工具总线 (tools_runtime.py) — 12 个分析工具 + 用户配置自动注入
+          │
+          ▼
+    CodeIndex (可插拔后端) + SnapshotStore + UserConfigStore
+          │
+          ▼
+    CodeBackend ABC (backend_base.py)
+    ├─ JoernBackend    — CPGQL via WebSocket
+    ├─ ClangBackend    — libclang 批量解析 → KnowledgeDB
+    ├─ UnifiedBackend  — ClangBackend + SvfAnalyzer (共享 KnowledgeDB)
+    └─ RegexBackend    — 正则回退
+```
 
-### User-Provided Configuration（用户辅助信息）
+### 三种分析模式
 
-Joern 存在能力边界，以下信息需要用户通过 WebUI 配置并存入数据库：
+1. **默认模式**（`--mode default`）：从 `zscope.yaml` 指定的 `entry_function` 出发，按函数级别逐一分析。由 `core/analyzer.py` 编排，支持多线程并发。
+2. **自上而下模式**（`--mode topdown`）：从 `.h` 头文件暴露的公开接口出发，自动发现所有对外 API 并批量分析。由 `core/parallel_analyzer.py` 的 `run_topdown_mode()` 编排。
+3. **规则驱动模式**（`--mode ruledriven`）：利用 Joern 内置规则先发现疑似问题，再由验证 Agent 确认。由 `core/rule_driven_analyzer.py` 编排，`core/rule_engine.py` 执行三类规则（`run.scan.toJson`、配对函数检查、自定义 `.sc` 脚本）。
 
-1. **外部库函数描述** — 无法获取实现的外部函数，用户按模板补充其内存/并发相关行为。
-2. **compile_commands.json** — 提供准确的宏定义和预处理分支。
-3. **函数指针指向** — 找不到具体指向时打印告警并提供模板，支持：函数内局部指向、全局变量指向、用户标记为可忽略。
-4. **自定义配对函数** — 用户实现的 malloc/free、lock/unlock 等关键函数，按类别配对输入。
-5. **函数设计意图与并发关系** — 函数对调用者的约束（如指针一定合法、不会并发调用），以及接口/任务间的并发关系。
+### 多智能体管线
 
-### Key Modules
+| Agent | 目录 | 职责 |
+|-------|------|------|
+| 语义建模 Agent | `agents/semantic_modeler/` | 理解函数语义、识别关键路径，输出语义模型 |
+| 漏洞扫描 Agent | `agents/vulnerability_analyzer/` | 基于语义模型发现潜在缺陷 |
+| 验证 Agent | `agents/validator_agent/` | 二次确认疑似缺陷的真实性（confirmed/rejected） |
 
-- **`agents/`** — Three agents: `semantic_modeler/`, `vulnerability_analyzer/`, `validator_agent/`. Each has its own system prompt and output schema.
-- **`core/analyzer.py`** — Main orchestrator. Runs the agent pipeline, resolves issue locations, manages snapshot caching. Injects user config context (paired functions, function intents) into agent prompts; filters false positives before report generation.
-- **`core/parallel_analyzer.py`** — Batch mode with thread pool. Shares `CodeIndex` and `SnapshotStore` across workers. Provides `run_topdown_mode()` for header-driven analysis.
-- **`core/rule_engine.py`** — Executes Joern built-in scan (`run.scan.toJson`), custom `.sc` scripts, and paired function checks via CPGQL. Returns `RuleMatch` list.
-- **`core/rule_driven_analyzer.py`** — Rule-driven pipeline: Joern rules → group by function → ValidatorAgent confirmation → false positive filtering → report.
-- **`core/snapshot_store.py`** — Semantic cache using SQLite + JSON files. Composite key: `(func_name, file_path)`. Detects code changes for smart refresh.
-- **`core/tools_runtime.py`** — Tool implementations for LLM agents. Auto-injects external function descriptions from `UserConfigStore` when implementation not found; records `config_warning` for unknown externals.
-- **`retrieval/code_index.py`** — Dual backend: Joern CPG (primary) with regex fallback. Provides function lookup, call graph, data flow, type queries. Supports `wait_for_cpg=False` non-blocking mode and `get_header_declared_functions()`.
-- **`common/joern_client.py`** — Manages Joern server subprocess, executes CPGQL queries via WebSocket. Supports async CPG build (`import_cpg_async`) with thread-safe status tracking.
-- **`config/user_config_store.py`** — SQLite (WAL mode) store for user-provided config: 6 tables (external_functions, function_pointer_targets, paired_functions, function_intent, false_positives, config_warnings).
-- **`framework/llm_client.py`** — OpenAI-compatible client with tool-calling loop, model fallback (priority list), and exponential backoff for rate limiting.
-- **`tools/`** — 9 analysis tools exposed to LLM agents (get_function_impl, get_call_graph, get_data_flow, etc.).
-- **`config/config.py`** — Dataclass-based config loaded from `zscope.yaml`. Supports `${ENV_VAR}` expansion. `AnalysisConfig.user_config_db` specifies user config DB path.
-- **`web/server.py`** — HTTP server with REST API for findings, config CRUD, CPG management, false positive marking, and config warnings.
-- **`web/static/index.html`** — Alpine.js + DaisyUI dashboard with tabs: findings (with validation/false-positive marking), user config management (5 sub-tabs), and warnings.
+每个 Agent 有独立的 system prompt 和输出 schema。`agents/analyst_agent/` 为遗留/备用 Agent。
 
-### Key Design Decisions
+### 用户辅助配置（UserConfigStore）
 
-- LLM client uses OpenAI-compatible API format — works with Ollama, SiliconFlow, and other providers.
-- Joern CPG replaced the previous clangd LSP backend in v0.2.0.
-- Snapshot store uses composite keys `(func_name, file_path)` to handle same-named functions across files.
-- All configuration is centralized in `zscope.yaml` at the project root.
-- **上下文注入而非 Agent 查询** — 用户配置不暴露为工具，而是在工具返回结果时和构建 Agent prompt 时自动注入（如外部函数无实现时自动附加用户描述）。
-- **Joern 规则兼容性** — 规则驱动模式通过 `run.scan.toJson` 执行 Joern 内置/社区规则，不自造规则格式。
-- **异步 CPG 构建** — `import_cpg_async()` 在后台线程执行，通过 `threading.Lock` 保护状态（idle → building → ready/error）。
-- **误报过滤** — `false_positives` 表按 `(function, location, subcategory)` 匹配，报告生成前自动过滤。
+Joern 存在能力边界，以下信息需用户通过 WebUI 配置，存入 SQLite（WAL mode）的 6 张表：
 
-## Performance Constraints
+| 表名 | 用途 |
+|------|------|
+| `external_functions` | 外部库函数的内存/并发行为描述 |
+| `paired_functions` | 自定义 malloc/free、lock/unlock 等配对函数 |
+| `function_pointer_targets` | 函数指针的具体指向 |
+| `function_intent` | 函数设计意图与并发关系 |
+| `false_positives` | 已确认误报，按 `(function, location, subcategory)` 匹配过滤 |
+| `config_warnings` | 工具发现的缺失配置告警 |
 
-- 运行环境内存有限（16GB），被扫描项目约 100 万行代码、2000 个 TU。
-- 项目分为 500+ 模块，扫描一个上层模块通常只涉及十几到几十个依赖模块，不同模块分开扫描。
-- 这是重量级工具，不要求快速完成，但需注意内存占用控制。
+### 关键模块概览
 
-## Usability Requirements
+- **`core/`** — 分析编排层。`analyzer.py`（单函数编排 + 用户配置注入 + 误报过滤）、`parallel_analyzer.py`（线程池批量 + topdown 模式）、`rule_driven_analyzer.py` + `rule_engine.py`（规则驱动管线）、`tools_runtime.py`（12 个工具实现 + 外部函数描述自动注入，含 `get_deep_call_context` 高聚合查询）、`snapshot_store.py`（SQLite+JSON 语义缓存，复合键 `(func_name, file_path)`）。
+- **`retrieval/`** — 可插拔后端层。`backend_base.py`（CodeBackend ABC）、`code_index.py`（统一查询接口，工厂方法按 `indexing.backend` 创建后端）、`joern_backend.py`（Joern CPGQL）、`clang_backend.py`（libclang 批量解析 → KnowledgeDB）、`unified_backend.py`（Facade：ClangBackend + SvfAnalyzer 共享 KnowledgeDB）、`svf_analyzer.py`（SVF 分析器，非 CodeBackend，接受外部 DB）、`svf_backend.py`（已废弃，指引使用 unified）、`knowledge_db.py`（SQLite schema v3，含 `indirect_calls` + `taint_signatures` 表，坐标缝合查询）、`build_llvm.py`（BitcodeBuilder）、`svf_runner.py`（SvfRunner）、`svf_parser.py`（DOT 解析 + 坐标缝合导入）。
+- **`common/joern_client.py`** — Joern 服务进程管理 + CPGQL WebSocket 查询。`import_cpg_async()` 后台线程构建，状态机：`idle → building → ready | error`。
+- **`framework/llm_client.py`** — OpenAI 兼容客户端，支持 tool calling 循环、模型优先级回退、指数退避。
+- **`config/`** — `config.py`（dataclass 配置，YAML 加载，支持 `${ENV_VAR}`）、`user_config_store.py`（用户配置 SQLite 存储）。
+- **`web/`** — `server.py`（REST API）+ `static/index.html`（Alpine.js + DaisyUI 单页应用）。
+- **`llm/`** — 遗留目录，`framework/llm_client.py` 为当前使用的 LLM 客户端。
 
-- **Joern 异步构建**：CPG 构建可能缓慢，需做成异步。Joern 只启动 1 次，扫描任务可能有几十次，构建不应在工具启动时才做。
-- **WebUI 界面**：用户通过 WebUI 配置辅助信息（外部函数、函数指针、配对函数等）和查看扫描结果。工具怀疑缺少的配置信息也需展示给用户。
-- **结果可读性**：扫描结果需站在用户角度设计，能被快速看懂。
-- **误报反馈**：提供误报标记机制，下次扫描时自动过滤已标记的误报。
+### 关键设计决策
+
+- **OpenAI 兼容 API** — LLM 客户端使用 OpenAI 格式，兼容 Ollama、SiliconFlow 等提供商。
+- **上下文注入而非 Agent 查询** — 用户配置不暴露为 LLM 工具，而是在 `tools_runtime.py` 返回结果时和 `analyzer.py` 构建 prompt 时自动注入。
+- **异步 CPG 构建** — `import_cpg_async()` 后台线程执行，`threading.Lock` 保护状态机。Joern 只启动 1 次，多次扫描复用。
+- **误报过滤闭环** — 用户在 WebUI 标记误报 → `false_positives` 表写入 → 下次扫描自动过滤。
+- **Joern 规则兼容** — 规则驱动模式通过 `run.scan.toJson` 执行 Joern 内置/社区规则，不自造规则格式。
+- **可插拔后端架构** — `CodeBackend` ABC 定义统一接口，`code_index.py` 工厂方法按 `indexing.backend` 配置创建对应后端（joern / clang / unified / regex）。
+- **UnifiedBackend Facade** — `unified` 模式组合 ClangBackend（AST 提取）+ SvfAnalyzer（深度分析），共享同一个 KnowledgeDB，通过 `(file_path, line)` 坐标缝合 Clang AST 与 SVF LLVM IR 结果。设计原则：全局稀疏建图，按需局部查询。
+- Joern CPG 在 v0.2.0 替代了之前的 clangd LSP 后端；v0.3.0 引入 Clang/SVF 可插拔后端；v0.4.0 引入 UnifiedBackend Facade。
+- 所有配置集中在项目根目录的 `zscope.yaml`。
+
+## 项目目录结构
+
+- `zscope/` — 主 Python 包（`pyproject.toml` + `zscope/` 源码 + `tests/`）
+- `dependency/` — 外部依赖（Joern CLI、JDK21），已 gitignore
+- `test/` — 测试用 C 项目（`junior/` 简单、`middle/` 中等如 mbedtls 子集、`senior/` 完整 mbedtls、`svf_test/` SVF 函数指针测试）
+- `docs/architecture.md` — 详细架构文档（含数据流图、API 端点表）
+- `workspace/` — 运行时工作目录
+- `zscope.yaml` — 全局配置文件
+
+### zscope.yaml 配置结构
+
+```yaml
+llm:          # LLM 提供商配置（base_url, api_key, models, temperature, max_tokens）
+project:      # 项目配置（project_root, source_root, compile_commands_path, entry_function/entry_functions_list）
+indexing:     # 后端配置（backend: joern|clang|unified|regex）
+              #   Joern: joern_path, host, port, heap_size
+              #   Clang: clang_db_path, compile_commands_path
+              #   SVF (unified 模式): svf_bin_dir, gclang_path, get_bc_path, llvm_link_path, svf_heap_limit_mb, svf_timeout
+analysis:     # 分析参数（max_depth, max_function_lines, snapshot_dir, parallel_workers, user_config_db）
+```
+
+支持 `${ENV_VAR}` 环境变量展开。
+
+## 运行约束
+
+- 运行环境内存 16GB，被扫描项目约 100 万行 C 代码、2000 个 TU、500+ 模块。
+- 按模块独立扫描，单次扫描通常涉及十几到几十个依赖模块。
+- 重量级工具，不要求快速完成，但需注意内存占用控制。
 
 ## Code Style
 

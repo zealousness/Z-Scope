@@ -22,12 +22,25 @@ project:
       enabled: true
 
 indexing:
-  backend: joern
+  backend: joern  # joern | clang | unified | regex
+
+  # ── Joern 后端 ──
   joern_path: dependency/joern/joern
   joern_server_host: 127.0.0.1
   joern_server_port: 8080
   joern_heap_size: 8g
 
+  # ── Clang 后端（需要 compile_commands.json）──
+  # clang_db_path: .zscope_clang/knowledge.db
+  # compile_commands_path: build/compile_commands.json
+
+  # ── SVF 配置（unified 模式使用）──
+  # svf_bin_dir: dependency/svf/bin
+  # gclang_path: gclang
+  # get_bc_path: get-bc
+  # llvm_link_path: llvm-link
+  # svf_heap_limit_mb: 32768
+  # svf_timeout: 1800
 
 analysis:
   max_recursion_depth: 3
