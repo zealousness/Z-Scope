@@ -23,13 +23,15 @@ from ..core.parallel_analyzer import ParallelAnalyzer
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging.")
 @click.option("--dashboard", "-d", is_flag=True, help="Launch the web dashboard to view results.")
 @click.option("--build-cpg", is_flag=True, help="Only build CPG and index, then exit.")
-@click.option("--mode", type=click.Choice(["default", "topdown", "ruledriven"]), default="default", help="Analysis mode.")
+@click.option("--mode", type=click.Choice(["default", "topdown", "ruledriven", "alert-verify"]), default="default", help="Analysis mode.")
+@click.option("--sarif", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None, help="SARIF file for alert-verify mode.")
 def main(
     config: Path,
     verbose: bool,
     dashboard: bool,
     build_cpg: bool,
     mode: str,
+    sarif: Path,
 ):
     """
     Z-SCOPE: AI-powered defect detection for C projects.
@@ -40,7 +42,6 @@ def main(
     if dashboard:
         logger.info("Launching dashboard...")
         from ..web.server import run_server
-        from ..common.joern_client import JoernClient
         from ..config.user_config_store import UserConfigStore
 
         if not config:
@@ -48,22 +49,23 @@ def main(
         if config.exists():
             zscope_config = ConfigLoader.load(str(config))
             cfg = zscope_config.indexing
-            joern = JoernClient(
-                joern_path=cfg.joern_path,
-                host=cfg.joern_server_host,
-                port=cfg.joern_server_port,
-                heap_size=cfg.joern_heap_size,
+            # 通过 CodeIndex 创建后端，保持统一入口
+            code_index = CodeIndex(
+                zscope_config.project.project_root,
+                zscope_config.project.compile_commands_path,
+                source_root=zscope_config.project.source_root,
+                indexing_config=cfg,
+                wait_for_cpg=False,
             )
-            joern.start_server()
             db_dir = Path(zscope_config.analysis.user_config_db) if zscope_config.analysis.user_config_db else Path(zscope_config.analysis.snapshot_dir)
             ucs = UserConfigStore(db_dir)
             run_server(
-                joern_client=joern,
+                code_index=code_index,
                 user_config_store=ucs,
                 project_config=zscope_config.project,
             )
         else:
-            click.echo("Warning: No config file found, dashboard running without Joern/config support")
+            click.echo("Warning: No config file found, dashboard running without backend/config support")
             run_server()
         sys.exit(0)
 
@@ -124,6 +126,60 @@ def main(
             issues_count = len(result.get("issues", []))
             click.echo(f"\nRule-driven analysis complete. Issues: {issues_count}")
             sys.exit(1 if issues_count > 0 else 0)
+
+        if mode == "alert-verify":
+            if not sarif:
+                click.echo("Error: --sarif is required for alert-verify mode")
+                sys.exit(1)
+            logger.info("Alert verification mode: validating SARIF alerts")
+            from ..core.sarif_adapter import SarifAdapter
+            from ..core.alert_verifier import AlertVerifier
+            from ..framework.llm_client import LLMClient
+            from ..config.user_config_store import UserConfigStore
+
+            code_index = CodeIndex(
+                zscope_config.project.project_root,
+                zscope_config.project.compile_commands_path,
+                source_root=zscope_config.project.source_root,
+                indexing_config=zscope_config.indexing,
+            )
+            adapter = SarifAdapter(
+                source_root=str(zscope_config.project.source_root),
+            )
+            alerts = adapter.parse(str(sarif))
+            click.echo(f"Parsed {len(alerts)} alerts from SARIF")
+
+            if not alerts:
+                click.echo("No alerts to verify.")
+                sys.exit(0)
+
+            llm_client = LLMClient(zscope_config.llm)
+            db_dir = (
+                Path(zscope_config.analysis.user_config_db)
+                if zscope_config.analysis.user_config_db
+                else Path(zscope_config.analysis.snapshot_dir)
+            )
+            ucs = UserConfigStore(db_dir)
+
+            verifier = AlertVerifier(
+                config=zscope_config,
+                code_index=code_index,
+                llm_client=llm_client,
+                user_config=ucs,
+            )
+            results = verifier.verify_alerts(alerts)
+
+            # 输出报告
+            import json
+            report_path = zscope_config.project.project_root / "zscope_alert_verify_report.json"
+            with open(report_path, "w", encoding="utf-8") as f:
+                json.dump({"results": results}, f, ensure_ascii=False, indent=2)
+
+            confirmed = sum(1 for r in results if r.get("verdict") == "confirmed")
+            rejected = sum(1 for r in results if r.get("verdict") == "rejected")
+            click.echo(f"\nVerification complete: {confirmed} confirmed, {rejected} rejected")
+            click.echo(f"Report: {report_path}")
+            sys.exit(1 if confirmed > 0 else 0)
 
         # Detect batch mode vs single mode
         if zscope_config.project.entry_functions_list:

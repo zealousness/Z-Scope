@@ -43,11 +43,24 @@ class AgentConfig:
 class IndexingConfig:
     """Configuration for code indexing."""
 
-    backend: str = "joern"
+    backend: str = "joern"  # joern | clang | unified | regex
+    # Joern 配置
     joern_path: str = "joern"
     joern_server_host: str = "127.0.0.1"
     joern_server_port: int = 8080
     joern_heap_size: str = "8g"
+    # Clang 配置（Phase 1+）
+    clangd_path: str = "clangd"
+    knowledge_db_path: str = ".zscope_knowledge/code_knowledge.db"
+    batch_size: int = 50
+    max_clangd_threads: int = 8
+    # SVF 配置（Phase 4+）
+    svf_bin_dir: str = ""  # SVF 工具目录（含 wpa, saber 等）
+    gclang_path: str = "gclang"  # gllvm 前端路径
+    get_bc_path: str = "get-bc"  # gllvm 提取 bc 路径
+    llvm_link_path: str = "llvm-link"
+    svf_heap_limit_mb: int = 32768  # SVF 内存上限（默认 32GB）
+    svf_timeout: int = 1800  # SVF 单次执行超时（秒）
 
 
 
@@ -200,7 +213,16 @@ class ConfigLoader:
                 joern_server_host=indexing_data.get("joern_server_host", "127.0.0.1"),
                 joern_server_port=indexing_data.get("joern_server_port", 8080),
                 joern_heap_size=indexing_data.get("joern_heap_size", "8g"),
-
+                clangd_path=indexing_data.get("clangd_path", "clangd"),
+                knowledge_db_path=indexing_data.get("knowledge_db_path", ".zscope_knowledge/code_knowledge.db"),
+                batch_size=indexing_data.get("batch_size", 50),
+                max_clangd_threads=indexing_data.get("max_clangd_threads", 8),
+                svf_bin_dir=indexing_data.get("svf_bin_dir", ""),
+                gclang_path=indexing_data.get("gclang_path", "gclang"),
+                get_bc_path=indexing_data.get("get_bc_path", "get-bc"),
+                llvm_link_path=indexing_data.get("llvm_link_path", "llvm-link"),
+                svf_heap_limit_mb=indexing_data.get("svf_heap_limit_mb", 32768),
+                svf_timeout=indexing_data.get("svf_timeout", 1800),
             )
 
             # Analysis config
