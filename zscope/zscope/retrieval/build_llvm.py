@@ -34,12 +34,43 @@ class BitcodeBuilder:
     ):
         self.source_root = Path(source_root).resolve()
         self.compile_commands_path = Path(compile_commands_path).resolve()
-        self.output_dir = Path(output_dir or self.source_root / ".zscope_bc").resolve()
+        # 在 WSL 中，/mnt/ 路径上的 NTFS 文件系统与 gclang 的 objcopy 不兼容
+        # 自动重定向到 Linux 原生临时目录
+        default_out = self.source_root / ".zscope_bc"
+        if output_dir is None and str(self.source_root).startswith("/mnt/"):
+            import tempfile
+            default_out = Path(tempfile.mkdtemp(prefix="zscope_bc_"))
+            logger.info("WSL detected: using native temp dir for bitcode: %s", default_out)
+        self.output_dir = Path(output_dir or default_out).resolve()
         self.gclang = gclang_path
         self.get_bc = get_bc_path
         self.llvm_link = llvm_link_path
         self.timeout = timeout
         self._bc_files: List[Path] = []
+        self._env = self._make_gllvm_env()
+
+    @staticmethod
+    def _make_gllvm_env() -> dict:
+        """构建 gllvm 所需的环境变量（LLVM_COMPILER, LLVM_CC_NAME）。"""
+        env = os.environ.copy()
+        # 确保关键系统路径在 PATH 中（WSL 最小 shell 可能缺失）
+        path = env.get("PATH", "")
+        for d in ["/usr/bin", "/usr/local/bin", "/usr/sbin"]:
+            if d not in path:
+                path = d + ":" + path
+        env["PATH"] = path
+        # gllvm 需要 LLVM_COMPILER 指明编译器家族
+        if "LLVM_COMPILER" not in env:
+            env["LLVM_COMPILER"] = "clang"
+        # 自动检测带版本号的 clang（如 clang-18）
+        if "LLVM_CC_NAME" not in env:
+            for v in range(20, 14, -1):
+                if shutil.which(f"clang-{v}"):
+                    env["LLVM_CC_NAME"] = f"clang-{v}"
+                    env["LLVM_CXX_NAME"] = f"clang++-{v}"
+                    logger.info("Auto-detected clang: clang-%d", v)
+                    break
+        return env
 
     def build(self) -> Optional[Path]:
         """执行完整构建流程，返回合并后的 .bc 路径。"""
@@ -107,31 +138,48 @@ class BitcodeBuilder:
         args = self._replace_output(args, str(obj_path))
 
         try:
-            subprocess.run(
+            logger.info("gclang cmd: %s (cwd=%s)", " ".join(args), directory)
+            proc = subprocess.run(
                 args,
                 cwd=directory,
+                env=self._env,
                 timeout=self.timeout // max(1, len(self._bc_files) + 1),
                 capture_output=True,
+                text=True,
                 check=True,
             )
+            if proc.stderr:
+                logger.debug("gclang stderr: %s", proc.stderr[:300])
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            logger.debug("Compile failed for %s: %s", src_file, e)
+            stderr = getattr(e, 'stderr', '') or ''
+            logger.warning("Compile failed for %s: %s stderr=%s", src_file, e, stderr[:300])
             return
 
-        # get-bc 提取 .bc
-        bc_path = obj_path.with_suffix(".o.bc")
+        if not obj_path.exists():
+            logger.warning("gclang succeeded but %s not found", obj_path)
+            return
+        logger.info("Compiled %s -> %s (%d bytes)", src_file, obj_path, obj_path.stat().st_size)
+
+        # get-bc 提取 .bc（get-bc 在原文件名后追加 .bc）
+        bc_path = Path(str(obj_path) + ".bc")
         try:
-            subprocess.run(
+            proc2 = subprocess.run(
                 [self.get_bc, str(obj_path)],
                 cwd=str(self.output_dir),
+                env=self._env,
                 timeout=60,
                 capture_output=True,
+                text=True,
                 check=True,
             )
             if bc_path.exists():
                 self._bc_files.append(bc_path)
+                logger.info("Extracted %s (%d bytes)", bc_path, bc_path.stat().st_size)
+            else:
+                logger.warning("get-bc succeeded but %s not found", bc_path)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            logger.debug("get-bc failed for %s: %s", obj_path, e)
+            stderr = getattr(e, 'stderr', '') or ''
+            logger.warning("get-bc failed for %s: %s stderr=%s", obj_path, e, stderr[:300])
 
     def _link_all(self) -> Optional[Path]:
         """llvm-link 合并所有 .bc 为单一文件。"""
