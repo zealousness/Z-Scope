@@ -378,39 +378,49 @@ class CodeIndex:
         signature_pattern = re.compile(
             rf"^\s*#\s*define\s+{re.escape(macro_name)}(?P<params>\s*\([^)]*\))?"
         )
+        # 搜索 source_root 和 project_root（去重，覆盖 include 目录）
+        search_roots = [self.source_root]
+        if self.project_root.resolve() != self.source_root.resolve():
+            search_roots.append(self.project_root)
+        seen_files: set = set()
         for ext in ["*.h", "*.hpp", "*.ph", "*.inc", "*.c", "*.cpp", "*.cc"]:
-            for file_path in self.source_root.rglob(ext):
-                try:
-                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                        lines = f.readlines()
-                except Exception:
-                    continue
-                for idx, line in enumerate(lines):
-                    if not macro_pattern.match(line):
+            for root in search_roots:
+                for file_path in root.rglob(ext):
+                    real = file_path.resolve()
+                    if real in seen_files:
                         continue
-                    start_idx = idx
-                    end_idx = idx
-                    while lines[end_idx].rstrip().endswith("\\") and end_idx + 1 < len(lines):
-                        end_idx += 1
-                    code_lines = lines[start_idx : end_idx + 1]
-                    if len(code_lines) > max_lines:
-                        code_lines = code_lines[:max_lines]
-                        end_idx = start_idx + max_lines - 1
-                    signature_match = signature_pattern.match(lines[start_idx])
-                    params = signature_match.group("params") if signature_match else None
-                    code = "".join(code_lines)
-                    callees = list(set(extract_function_calls(code)))
-                    return {
-                        "func_name": macro_name,
-                        "file": normalize_path(file_path, self.source_root),
-                        "start_line": start_idx + 1,
-                        "end_line": end_idx + 1,
-                        "code": code,
-                        "callees": callees,
-                        "signature": f"#define {macro_name}{params or ''}",
-                        "truncated": len(lines[start_idx : end_idx + 1]) > max_lines,
-                        "is_macro": True,
-                    }
+                    seen_files.add(real)
+                    try:
+                        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                            lines = f.readlines()
+                    except Exception:
+                        continue
+                    for idx, line in enumerate(lines):
+                        if not macro_pattern.match(line):
+                            continue
+                        start_idx = idx
+                        end_idx = idx
+                        while lines[end_idx].rstrip().endswith("\\") and end_idx + 1 < len(lines):
+                            end_idx += 1
+                        code_lines = lines[start_idx : end_idx + 1]
+                        if len(code_lines) > max_lines:
+                            code_lines = code_lines[:max_lines]
+                            end_idx = start_idx + max_lines - 1
+                        signature_match = signature_pattern.match(lines[start_idx])
+                        params = signature_match.group("params") if signature_match else None
+                        code = "".join(code_lines)
+                        callees = list(set(extract_function_calls(code)))
+                        return {
+                            "func_name": macro_name,
+                            "file": normalize_path(file_path, self.project_root),
+                            "start_line": start_idx + 1,
+                            "end_line": end_idx + 1,
+                            "code": code,
+                            "callees": callees,
+                            "signature": f"#define {macro_name}{params or ''}",
+                            "truncated": len(lines[start_idx : end_idx + 1]) > max_lines,
+                            "is_macro": True,
+                        }
         return None
 
     def _resolve_file_path(self, file_path: str) -> Path:

@@ -10,10 +10,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# DOT 边: "Node0x..." -> "Node0x..." 或带 label
-_DOT_EDGE_RE = re.compile(r'"?Node(0x[\da-fA-F]+)"?\s*->\s*"?Node(0x[\da-fA-F]+)"?')
-# DOT 节点 label: Node0x... [label="{ funcName }"]
-_DOT_NODE_RE = re.compile(
+# DOT 边: "Node0x..." -> "Node0x..." 或带 port (:s0) 和 label
+_DOT_EDGE_RE = re.compile(
+    r'"?Node(0x[\da-fA-F]+)"?(?::\w+)?\s*->\s*"?Node(0x[\da-fA-F]+)"?'
+)
+# DOT 节点 label —— 兼容 SVF 2.x 和 3.x 格式
+# SVF 2.x: Node0x... [label="{ funcName }"]
+# SVF 3.x: Node0x... [...label="{CallGraphNode ID: N \{fun: funcName\}|...}"]
+_DOT_NODE_RE_V3 = re.compile(
+    r'"?Node(0x[\da-fA-F]+)"?\s*\[.*?\\\{fun:\s*([^\\}]+?)\\\}',
+)
+_DOT_NODE_RE_V2 = re.compile(
     r'"?Node(0x[\da-fA-F]+)"?\s*\[.*?label\s*=\s*"\{?\s*([^}"]+?)\s*\}?"',
 )
 
@@ -25,17 +32,20 @@ class CallGraphParser:
         """返回 {caller: [callee, ...]} 映射。"""
         text = dot_path.read_text(encoding="utf-8", errors="ignore")
 
-        # 1. 建立 node_id → func_name 映射
+        # 1. 建立 node_id → func_name 映射（先尝试 SVF 3.x 格式，再回退 2.x）
         node_map: Dict[str, str] = {}
-        for m in _DOT_NODE_RE.finditer(text):
+        for m in _DOT_NODE_RE_V3.finditer(text):
             node_map[m.group(1)] = m.group(2).strip()
+        if not node_map:
+            for m in _DOT_NODE_RE_V2.finditer(text):
+                node_map[m.group(1)] = m.group(2).strip()
 
-        # 2. 解析边
+        # 2. 解析边（去重）
         cg: Dict[str, List[str]] = {}
         for m in _DOT_EDGE_RE.finditer(text):
             caller = node_map.get(m.group(1), "")
             callee = node_map.get(m.group(2), "")
-            if caller and callee:
+            if caller and callee and callee not in cg.get(caller, []):
                 cg.setdefault(caller, []).append(callee)
 
         logger.info("Parsed callgraph: %d callers, %d edges",

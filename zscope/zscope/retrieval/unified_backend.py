@@ -49,6 +49,7 @@ class UnifiedBackend(CodeBackend):
 
     def initialize(self, source_path: str, **kwargs) -> bool:
         self._status = "building"
+        self._svf_available = False
         wait = kwargs.get("wait", True)
 
         # 阶段1: Clang AST 提取
@@ -63,16 +64,72 @@ class UnifiedBackend(CodeBackend):
 
         # 阶段2: SVF 分析（共享 Clang 的 KnowledgeDB）
         if self._clang._db:
-            self._svf = SvfAnalyzer(db=self._clang._db, **self._svf_cfg)
-            cc = kwargs.get("compile_commands_path")
-            project_root = kwargs.get("project_root", Path(source_path))
-            self._svf.run(
-                Path(source_path), Path(project_root),
-                Path(cc) if cc else None,
-            )
+            # 预检查 SVF 工具可用性
+            missing = self._check_svf_tools()
+            if missing:
+                logger.warning(
+                    "╔══════════════════════════════════════════════════════╗"
+                )
+                logger.warning(
+                    "║  SVF 分析工具不可用，以下增强功能已禁用：            ║"
+                )
+                logger.warning(
+                    "║  · 函数指针/间接调用解析 (wpa -ander)               ║"
+                )
+                logger.warning(
+                    "║  · 内存泄漏/UAF/双重释放检测 (saber)                ║"
+                )
+                logger.warning(
+                    "╚══════════════════════════════════════════════════════╝"
+                )
+                logger.warning("  缺失工具: %s", ", ".join(missing))
+                logger.warning(
+                    "  如需启用，请安装 gllvm 和 SVF 并在 zscope.yaml 中配置 svf_bin_dir"
+                )
+            else:
+                self._svf = SvfAnalyzer(db=self._clang._db, **self._svf_cfg)
+                cc = kwargs.get("compile_commands_path")
+                project_root = kwargs.get("project_root", Path(source_path))
+                svf_ok = self._svf.run(
+                    Path(source_path), Path(project_root),
+                    Path(cc) if cc else None,
+                )
+                if svf_ok:
+                    self._svf_available = True
+                    logger.info("SVF 分析完成，间接调用和污点分析数据已写入 KnowledgeDB")
+                else:
+                    logger.warning("SVF 分析执行失败，间接调用和污点分析数据不可用")
 
         self._status = "ready"
         return True
+
+    def _check_svf_tools(self) -> list:
+        """检查 SVF 所需工具是否可用，返回缺失工具列表。"""
+        import shutil
+        missing = []
+        # gclang (gllvm)
+        gclang = self._svf_cfg.get("gclang_path", "gclang")
+        if not shutil.which(gclang):
+            missing.append(f"gclang ({gclang})")
+        # llvm-link
+        llvm_link = self._svf_cfg.get("llvm_link_path", "llvm-link")
+        if not shutil.which(llvm_link):
+            missing.append(f"llvm-link ({llvm_link})")
+        # wpa (SVF)
+        svf_bin = self._svf_cfg.get("svf_bin_dir", "")
+        if svf_bin:
+            wpa = Path(svf_bin) / "wpa"
+            saber = Path(svf_bin) / "saber"
+            if not wpa.exists():
+                missing.append(f"wpa ({wpa})")
+            if not saber.exists():
+                missing.append(f"saber ({saber})")
+        else:
+            if not shutil.which("wpa"):
+                missing.append("wpa")
+            if not shutil.which("saber"):
+                missing.append("saber")
+        return missing
 
     def close(self) -> None:
         self._clang.close()

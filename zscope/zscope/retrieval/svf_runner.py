@@ -49,10 +49,34 @@ class SvfRunner:
         return name  # 依赖 PATH
 
     def _make_env(self) -> Dict[str, str]:
-        """构建带内存限制的环境变量。"""
+        """构建带内存限制和库搜索路径的环境变量。"""
         env = os.environ.copy()
         # ulimit 风格的软限制（Linux）；SVF 自身也会检查
         env["SVF_MEMORY_LIMIT"] = str(self.heap_limit_mb)
+        # 确保关键系统路径在 PATH 中
+        path = env.get("PATH", "")
+        for d in ["/usr/bin", "/usr/local/bin"]:
+            if d not in path:
+                path = d + ":" + path
+        env["PATH"] = path
+        # 自动发现 SVF 共享库路径（libLLVM.so, libSvf*.so）
+        if self.svf_bin_dir:
+            extra_lib_dirs = set()
+            # SVF bin 目录的兄弟 lib 目录
+            lib_dir = self.svf_bin_dir / ".." / "lib"
+            if lib_dir.exists():
+                extra_lib_dirs.add(str(lib_dir.resolve()))
+            # SVF LLVM 构建目录（通常在同级目录）
+            svf_parent = self.svf_bin_dir / ".." / ".."
+            import glob
+            for pattern in ["llvm-*/lib", "llvm-*.obj/lib"]:
+                for d in glob.glob(str(svf_parent / pattern)):
+                    if Path(d).exists():
+                        extra_lib_dirs.add(str(Path(d).resolve()))
+            if extra_lib_dirs:
+                existing = env.get("LD_LIBRARY_PATH", "")
+                env["LD_LIBRARY_PATH"] = ":".join(extra_lib_dirs) + (":" + existing if existing else "")
+                logger.info("SVF LD_LIBRARY_PATH: %s", env["LD_LIBRARY_PATH"])
         return env
 
     def _run_cmd(self, cmd: List[str], work_dir: Path) -> subprocess.CompletedProcess:
@@ -107,9 +131,9 @@ class SvfRunner:
         return result
 
     def run_saber(self, bc_path: Path, output_dir: Path) -> SvfResult:
-        """运行 Saber 检测内存泄漏 / UAF / 双重释放。
+        """运行 Saber 检测内存泄漏 / 双重释放。
 
-        saber -leak -uaf -dfree
+        saber -leak -dfree (SVF 3.x 不支持 -uaf 标志)
         输出解析自 stderr 的 bug 报告。
         """
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -117,9 +141,8 @@ class SvfRunner:
 
         cmd = [
             self._tool_path("saber"),
-            "-leak",   # 内存泄漏
-            "-uaf",    # use-after-free
-            "-dfree",  # double-free
+            "-leak",   # 内存泄漏（NeverFree, PartialLeak）
+            "-dfree",  # 双重释放
             str(bc_path),
         ]
 
@@ -153,21 +176,55 @@ class SvfRunner:
     def _parse_saber_output(text: str) -> List[Dict[str, Any]]:
         """从 saber 输出中提取 bug 报告。
 
-        Saber 输出格式示例：
-          BUG: Memory Leak at   File: foo.c  Line: 42
+        兼容两种输出格式：
+        - SVF 2.x: BUG: Memory Leak at   File: foo.c  Line: 42
+        - SVF 3.x: NeverFree : memory allocation at : (CallICFGNode: { "ln": 19, "fl": "main.c" })
         """
         import re
         bugs = []
-        pattern = re.compile(
+
+        # SVF 3.x 格式: <BugType> : ... (CallICFGNode: { "ln": N, ... "fl": "file.c" })
+        #   类型: NeverFree, PartialLeak, UseAfterFree, DoubleFree
+        pattern_v3 = re.compile(
+            r'(?P<type>NeverFree|PartialLeak|UseAfterFree|DoubleFree|FreeNotMalloc)'
+            r'\s*:\s*[^\n]*?\(CallICFGNode:\s*\{\s*"ln":\s*(?P<line>\d+)'
+            r'[^}]*?"fl":\s*"(?P<file>[^"]+)"',
+            re.IGNORECASE,
+        )
+
+        # SVF 2.x 格式: BUG: <type> at File: <file> Line: <line>
+        pattern_v2 = re.compile(
             r"BUG:\s*(?P<type>[^\n]+?)\s+at\s+"
             r"(?:File:\s*(?P<file>[^\s]+))?\s*"
             r"(?:Line:\s*(?P<line>\d+))?",
             re.IGNORECASE,
         )
-        for m in pattern.finditer(text):
+
+        # SVF 3.x 类型名映射
+        type_map = {
+            "NeverFree": "Memory Leak",
+            "PartialLeak": "Partial Memory Leak",
+            "UseAfterFree": "Use After Free",
+            "DoubleFree": "Double Free",
+            "FreeNotMalloc": "Free Not Malloc",
+        }
+
+        # 先尝试 v3 格式
+        for m in pattern_v3.finditer(text):
+            raw_type = m.group("type").strip()
             bugs.append({
-                "type": m.group("type").strip(),
+                "type": type_map.get(raw_type, raw_type),
                 "file": m.group("file") or "",
                 "line": int(m.group("line")) if m.group("line") else 0,
             })
+
+        # 如果 v3 没匹配到，回退 v2
+        if not bugs:
+            for m in pattern_v2.finditer(text):
+                bugs.append({
+                    "type": m.group("type").strip(),
+                    "file": m.group("file") or "",
+                    "line": int(m.group("line")) if m.group("line") else 0,
+                })
+
         return bugs
