@@ -197,10 +197,11 @@ llm:
 
 project:
   root: .                    # 被扫描项目根目录
-  source_root: .             # 源码搜索根目录
+  source_root: .             # 源码搜索根目录（clangd/SVF 基于此查找源码）
   entry_function: main       # 默认模式入口函数
   # entry_functions_list: functions.json  # 批量模式：函数列表文件
-  # compile_commands_path: build/compile_commands.json  # Clang/Unified 后端需要
+  # compile_commands_path: build/compile_commands.json  # Clang/Unified 需要
+  # ↑ 相对路径基于 source_root 解析；不配则自动在 source_root 和 root 下查找
   agents:
     - name: semantic_modeler
       enabled: true
@@ -218,8 +219,7 @@ indexing:
   joern_heap_size: 8g
 
   # ── Clang 后端 ──
-  # clang_db_path: .zscope_clang/knowledge.db
-  # compile_commands_path: build/compile_commands.json
+  # knowledge_db_path: .zscope_knowledge/code_knowledge.db
 
   # ── SVF 配置（unified 模式）──
   # svf_bin_dir: dependency/svf/bin

@@ -101,10 +101,22 @@ class ProjectConfig:
             else:
                 self.source_root = self.source_root.resolve()
 
+        # Resolve compile_commands_path:
+        #   1. 显式配置 → 相对路径基于 project_root 解析
+        #   2. 自动发现 → 依次查找 project_root、source_root
         if self.compile_commands_path:
-            self.compile_commands_path = Path(self.compile_commands_path).resolve()
-        elif (self.project_root / "compile_commands.json").exists():
-            self.compile_commands_path = self.project_root / "compile_commands.json"
+            self.compile_commands_path = Path(self.compile_commands_path)
+            if not self.compile_commands_path.is_absolute():
+                self.compile_commands_path = (self.project_root / self.compile_commands_path).resolve()
+            else:
+                self.compile_commands_path = self.compile_commands_path.resolve()
+        else:
+            # 自动发现：project_root 优先（compile_commands.json 通常在构建/任务目录）
+            for root in [self.project_root, self.source_root]:
+                candidate = root / "compile_commands.json"
+                if candidate.exists():
+                    self.compile_commands_path = candidate
+                    break
         
         # Resolve entry_functions_list path relative to project root
         if self.entry_functions_list:
@@ -266,7 +278,7 @@ class ConfigLoader:
             if not agents and project_data.get("task"):
                  agents.append(AgentConfig(name="vulnerability_analyzer", task=project_data.get("task")))
 
-            compile_commands = project_data.get("compile_commands")
+            compile_commands = project_data.get("compile_commands_path") or project_data.get("compile_commands")
             compile_commands_path = Path(compile_commands) if compile_commands else None
             
             # Parse entry_functions_list for batch mode
