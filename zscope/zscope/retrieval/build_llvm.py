@@ -22,6 +22,11 @@ logger = logging.getLogger(__name__)
 class BitcodeBuilder:
     """从 compile_commands.json 构建全程序 LLVM bitcode。"""
 
+    # compile_commands.json 中需要跳过的 -D 宏前缀（通常含未展开的 Make 函数）
+    _SKIP_DEFINE_PREFIXES = [
+        "-D__VOSFILENAME__",
+    ]
+
     def __init__(
         self,
         source_root: Path,
@@ -131,6 +136,7 @@ class BitcodeBuilder:
         if args:
             args[0] = self.gclang
         args = self._inject_flags(args)
+        args = self._sanitize_args(args, src_file)
 
         # 输出 .o 到 output_dir
         obj_name = f"tu_{idx}_{Path(src_file).stem}.o"
@@ -232,3 +238,35 @@ class BitcodeBuilder:
         if "-c" not in result:
             result.insert(1, "-c")
         return result
+
+    @classmethod
+    def _sanitize_args(cls, args: List[str], src_file: str = "") -> List[str]:
+        """过滤 compile_commands.json 中无法被 clang 处理的参数。
+
+        处理两类问题：
+        1. 黑名单 -D 宏（_SKIP_DEFINE_PREFIXES 中定义）
+        2. 含未展开 Make 函数的参数（检测 '$(' 语法）
+        """
+        cleaned = []
+        dropped = []
+        for arg in args:
+            # 检查黑名单 -D 宏前缀
+            if any(arg.startswith(prefix) for prefix in cls._SKIP_DEFINE_PREFIXES):
+                dropped.append(arg)
+                continue
+            # 检测未展开的 Make 函数 $(...) 或 ${...}
+            if "$(" in arg or "${" in arg:
+                dropped.append(arg)
+                continue
+            # 跳过 Make 展开残留碎片（不以 - 开头、不是源文件、含 % 或 )" 等特征）
+            if (not arg.startswith("-") and arg != args[0]
+                    and ("%" in arg or arg.endswith(")\"'") or arg.endswith("))'"))):
+                dropped.append(arg)
+                continue
+            cleaned.append(arg)
+        if dropped:
+            logger.debug(
+                "Sanitized %d broken args for %s: %s",
+                len(dropped), Path(src_file).name, dropped,
+            )
+        return cleaned
