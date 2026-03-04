@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 import re
+import hashlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable
 
@@ -472,8 +473,8 @@ class ClangExtractor:
         batch_size: int = 50,
         progress_cb: Optional[Callable] = None,
     ) -> Dict[str, int]:
-        """滑动窗口批量提取。返回统计信息。"""
-        stats = {"total": len(file_list), "success": 0, "failed": 0}
+        """滑动窗口批量提取（增量模式：哈希未变的文件自动跳过）。"""
+        stats = {"total": len(file_list), "success": 0, "failed": 0, "skipped": 0}
 
         for i in range(0, len(file_list), batch_size):
             batch = file_list[i:i + batch_size]
@@ -486,8 +487,13 @@ class ClangExtractor:
 
             for fp in batch:
                 fp = Path(fp).resolve()
-                mtime = fp.stat().st_mtime if fp.exists() else 0.0
-                tu_id = db.register_tu(str(fp), mtime)
+                file_hash = self._compute_file_hash(fp)
+                tu_id, changed = db.register_tu_hash(str(fp), file_hash)
+                if not changed:
+                    stats["skipped"] += 1
+                    continue
+                # 文件变化 → 清除旧数据后重新提取
+                db.purge_tu_data(tu_id)
                 try:
                     ok = self.extract_tu(fp, db, tu_id, progress_cb)
                     if ok:
@@ -501,8 +507,20 @@ class ClangExtractor:
             # 每批次提交一次
             db.commit()
             logger.info(
-                "Batch committed. Progress: %d/%d success, %d failed",
-                stats["success"], stats["total"], stats["failed"],
+                "Batch committed. Progress: %d extracted, %d skipped, %d failed",
+                stats["success"], stats["skipped"], stats["failed"],
             )
 
         return stats
+
+    @staticmethod
+    def _compute_file_hash(file_path: Path) -> str:
+        """计算文件的 SHA-256 哈希（hex，前32字符）。"""
+        h = hashlib.sha256()
+        try:
+            with open(file_path, "rb") as f:
+                for chunk in iter(lambda: f.read(8192), b""):
+                    h.update(chunk)
+        except OSError:
+            return ""
+        return h.hexdigest()[:32]
