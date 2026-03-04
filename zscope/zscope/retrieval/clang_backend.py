@@ -47,14 +47,14 @@ class ClangBackend(CodeBackend):
         self._source_path = Path(source_path).resolve()
         project_root = Path(project_root).resolve() if project_root else self._source_path
 
-        # 初始化 SQLite 知识库
+        # 初始化 SQLite 知识库（存储在 project_root）
         db_full_path = project_root / self._db_path
         self._db = KnowledgeDB(str(db_full_path))
 
-        # 初始化 clangd 提取器
+        # 初始化 clangd 提取器（基于 source_root 工作）
         cc_dir = Path(compile_commands_path).parent if compile_commands_path else None
         self._extractor = ClangExtractor(
-            project_root=project_root,
+            project_root=self._source_path,   # clangd cwd/rootUri = source_root
             clangd_path=self._clangd_path,
             compile_commands_dir=cc_dir,
             max_threads=self._max_threads,
