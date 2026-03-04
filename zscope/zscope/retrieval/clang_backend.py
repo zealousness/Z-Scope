@@ -41,7 +41,7 @@ class ClangBackend(CodeBackend):
     def initialize(self, source_path: str, **kwargs) -> bool:
         """初始化 clangd + SQLite 后端。"""
         project_root = kwargs.get("project_root", source_path)
-        compile_commands_path = kwargs.get("compile_commands_path")
+        self._compile_commands_path = kwargs.get("compile_commands_path")
         wait = kwargs.get("wait", True)
 
         self._source_path = Path(source_path).resolve()
@@ -50,20 +50,6 @@ class ClangBackend(CodeBackend):
         # 初始化 SQLite 知识库（存储在 project_root）
         db_full_path = project_root / self._db_path
         self._db = KnowledgeDB(str(db_full_path))
-
-        # 初始化 clangd 提取器（基于 source_root 工作）
-        cc_dir = Path(compile_commands_path).parent if compile_commands_path else None
-        self._extractor = ClangExtractor(
-            project_root=self._source_path,   # clangd cwd/rootUri = source_root
-            clangd_path=self._clangd_path,
-            compile_commands_dir=cc_dir,
-            max_threads=self._max_threads,
-        )
-
-        if not self._extractor.start():
-            self._status = "error"
-            logger.error("Failed to start clangd extractor")
-            return False
 
         self._status = "building"
 
@@ -75,8 +61,24 @@ class ClangBackend(CodeBackend):
             t.start()
             return True
 
+    def _ensure_extractor(self) -> bool:
+        """按需启动 clangd 提取器（仅在有文件需要提取时调用）。"""
+        if self._extractor is not None:
+            return True
+        cc_dir = Path(self._compile_commands_path).parent if self._compile_commands_path else None
+        self._extractor = ClangExtractor(
+            project_root=self._source_path,   # clangd cwd/rootUri = source_root
+            clangd_path=self._clangd_path,
+            compile_commands_dir=cc_dir,
+            max_threads=self._max_threads,
+        )
+        if not self._extractor.start():
+            logger.error("Failed to start clangd extractor")
+            return False
+        return True
+
     def _run_full_extraction(self) -> bool:
-        """执行完整的代码提取流程。"""
+        """执行完整的代码提取流程（增量：仅提取哈希变化的文件）。"""
         try:
             # 收集所有 C/C++ 源文件
             file_list = self._collect_source_files()
@@ -85,18 +87,44 @@ class ClangBackend(CodeBackend):
                 self._status = "ready"
                 return True
 
-            logger.info("Found %d source files to extract", len(file_list))
+            # 预扫描：检查有多少文件真正需要提取
+            from .clang_extractor import ClangExtractor
+            changed_count = 0
+            for fp in file_list:
+                fp = fp.resolve()
+                file_hash = ClangExtractor._compute_file_hash(fp)
+                _, changed = self._db.register_tu_hash(str(fp), file_hash)
+                if changed:
+                    changed_count += 1
+
+            if changed_count == 0:
+                logger.info(
+                    "Incremental: all %d files unchanged, reusing cached KnowledgeDB",
+                    len(file_list),
+                )
+                self._status = "ready"
+                return True
+
+            logger.info(
+                "Incremental: %d/%d files changed, starting clangd extraction",
+                changed_count, len(file_list),
+            )
+
+            # 按需启动 clangd
+            if not self._ensure_extractor():
+                self._status = "error"
+                return False
 
             # 等待 clangd 后台索引稳定
             self._extractor.wait_for_indexing(timeout=120, idle_threshold=3.0)
 
-            # 批量提取
+            # 批量提取（内部会再次检查哈希，仅提取 changed 的）
             stats = self._extractor.run_batch_extraction(
                 file_list, self._db, batch_size=self._batch_size,
             )
             logger.info(
-                "Extraction complete: %d/%d success, %d failed",
-                stats["success"], stats["total"], stats["failed"],
+                "Extraction complete: %d extracted, %d skipped, %d failed",
+                stats["success"], stats["skipped"], stats["failed"],
             )
             self._status = "ready"
             return True
