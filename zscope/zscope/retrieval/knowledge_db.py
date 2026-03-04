@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class KnowledgeDB:
     """SQLite-backed code knowledge store."""
 
-    SCHEMA_VERSION = "3"
+    SCHEMA_VERSION = "4"
 
     def __init__(self, db_path: str):
         self._db_path = Path(db_path)
@@ -34,7 +34,8 @@ class KnowledgeDB:
                 file_path   TEXT NOT NULL UNIQUE,
                 last_modified REAL,
                 index_time  REAL,
-                status      TEXT DEFAULT 'pending'
+                status      TEXT DEFAULT 'pending',
+                file_hash   TEXT DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS functions (
@@ -154,6 +155,13 @@ class KnowledgeDB:
         )
         c.commit()
 
+        # 兼容旧 DB：补加 file_hash 列
+        try:
+            c.execute("ALTER TABLE translation_units ADD COLUMN file_hash TEXT DEFAULT ''")
+            c.commit()
+        except sqlite3.OperationalError:
+            pass  # 列已存在
+
     # ── Translation Units ──
 
     def register_tu(self, file_path: str, mtime: float) -> int:
@@ -167,6 +175,56 @@ class KnowledgeDB:
             "SELECT id FROM translation_units WHERE file_path = ?", (file_path,)
         ).fetchone()
         return row["id"]
+
+    def register_tu_hash(self, file_path: str, file_hash: str) -> tuple:
+        """注册 TU 并检查哈希。返回 (tu_id, changed: bool)。"""
+        row = self._conn.execute(
+            "SELECT id, file_hash, status FROM translation_units WHERE file_path = ?",
+            (file_path,),
+        ).fetchone()
+        if row:
+            tu_id = row["id"]
+            old_hash = row["file_hash"] or ""
+            if old_hash == file_hash and row["status"] == "indexed":
+                return (tu_id, False)  # 未变化
+            # 哈希变了或状态非 indexed → 标记需要更新
+            self._conn.execute(
+                "UPDATE translation_units SET file_hash = ?, last_modified = ?, status = 'pending' WHERE id = ?",
+                (file_hash, time.time(), tu_id),
+            )
+            self._conn.commit()
+            return (tu_id, True)
+        else:
+            self._conn.execute(
+                "INSERT INTO translation_units (file_path, file_hash, last_modified, status) "
+                "VALUES (?, ?, ?, 'pending')",
+                (file_path, file_hash, time.time()),
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT id FROM translation_units WHERE file_path = ?", (file_path,),
+            ).fetchone()
+            return (row["id"], True)
+
+    def purge_tu_data(self, tu_id: int):
+        """清除某 TU 关联的所有提取数据。"""
+        self._conn.execute("DELETE FROM functions WHERE tu_id = ?", (tu_id,))
+        # call_edges 没有 tu_id，通过 caller_file 联动清除
+        row = self._conn.execute(
+            "SELECT file_path FROM translation_units WHERE id = ?", (tu_id,),
+        ).fetchone()
+        if row:
+            fp = row["file_path"]
+            self._conn.execute("DELETE FROM call_edges WHERE caller_file = ?", (fp,))
+            self._conn.execute("DELETE FROM include_edges WHERE source_file = ?", (fp,))
+            self._conn.execute("DELETE FROM global_variables WHERE file_path = ?", (fp,))
+            self._conn.execute("DELETE FROM macro_definitions WHERE file_path = ?", (fp,))
+        self._conn.execute(
+            "DELETE FROM type_members WHERE type_id IN "
+            "(SELECT id FROM type_definitions WHERE tu_id = ?)", (tu_id,),
+        )
+        self._conn.execute("DELETE FROM type_definitions WHERE tu_id = ?", (tu_id,))
+        self._conn.commit()
 
     def mark_tu_indexed(self, tu_id: int):
         self._conn.execute(
@@ -184,6 +242,29 @@ class KnowledgeDB:
     def get_all_tus(self) -> List[Dict[str, Any]]:
         rows = self._conn.execute("SELECT * FROM translation_units").fetchall()
         return [dict(r) for r in rows]
+
+    # ── SVF Hash Cache ──
+
+    def get_svf_hash(self) -> str:
+        """获取上次 SVF 分析时的源码聚合哈希。"""
+        row = self._conn.execute(
+            "SELECT value FROM metadata WHERE key = 'svf_source_hash'",
+        ).fetchone()
+        return row["value"] if row else ""
+
+    def set_svf_hash(self, hash_value: str):
+        """记录 SVF 源码聚合哈希。"""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES ('svf_source_hash', ?)",
+            (hash_value,),
+        )
+        self._conn.commit()
+
+    def purge_svf_data(self):
+        """清除 SVF 产生的间接调用和污点数据。"""
+        self._conn.execute("DELETE FROM indirect_calls")
+        self._conn.execute("DELETE FROM taint_signatures")
+        self._conn.commit()
 
     # ── Functions ──
 
