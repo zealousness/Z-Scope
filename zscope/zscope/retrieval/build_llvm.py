@@ -188,18 +188,61 @@ class BitcodeBuilder:
             logger.warning("get-bc failed for %s: %s stderr=%s", obj_path, e, stderr[:300])
 
     def _link_all(self) -> Optional[Path]:
-        """llvm-link 合并所有 .bc 为单一文件。"""
+        """llvm-link 合并所有 .bc 为单一文件（支持分批以避免参数过长）。"""
         merged_path = self.output_dir / "merged.bc"
-        cmd = [self.llvm_link, "-o", str(merged_path)] + [str(p) for p in self._bc_files]
+        if not self._bc_files:
+            return None
 
+        # 尝试一次性链接
         try:
-            subprocess.run(
-                cmd, timeout=self.timeout, capture_output=True, check=True,
+            cmd = [self.llvm_link, "-o", str(merged_path)] + [str(p) for p in self._bc_files]
+            proc = subprocess.run(
+                cmd, timeout=self.timeout, capture_output=True, text=True, check=True,
             )
             logger.info("Merged %d .bc files → %s", len(self._bc_files), merged_path)
             return merged_path
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            logger.error("llvm-link failed: %s", e)
+        except subprocess.CalledProcessError as e:
+            # 命令太长或链接冲突
+            stderr = e.stderr or ""
+            if "Argument list too long" in str(e) or "Argument list too long" in stderr or e.returncode == 7: # 7 on windows
+                logger.warning("llvm-link args too long, falling back to chunked linking...")
+                return self._link_in_chunks(merged_path)
+            
+            # 其他链接错误（可能存在多重定义或 IR 版本不兼容）
+            logger.error("llvm-link failed (exit code %d).", e.returncode)
+            logger.error("llvm-link stderr (first 1000 chars):\n%s", stderr[:1000])
+            return None
+        except Exception as e:
+            logger.error("llvm-link unexpected error: %s", e)
+            return None
+
+    def _link_in_chunks(self, final_output: Path) -> Optional[Path]:
+        """分批合并 bitcode 文件。"""
+        chunk_size = 500
+        intermediate_bcs = []
+        for i in range(0, len(self._bc_files), chunk_size):
+            chunk = self._bc_files[i:i + chunk_size]
+            chunk_output = self.output_dir / f"chunk_{i//chunk_size}.bc"
+            cmd = [self.llvm_link, "-o", str(chunk_output)] + [str(p) for p in chunk]
+            try:
+                subprocess.run(
+                    cmd, timeout=self.timeout, capture_output=True, text=True, check=True
+                )
+                intermediate_bcs.append(chunk_output)
+            except subprocess.CalledProcessError as e:
+                logger.error("Chunk linking failed: %s\n%s", e, (e.stderr or "")[:1000])
+                return None
+        
+        # 链接所有 chunk
+        try:
+            cmd = [self.llvm_link, "-o", str(final_output)] + [str(p) for p in intermediate_bcs]
+            subprocess.run(
+                cmd, timeout=self.timeout, capture_output=True, text=True, check=True
+            )
+            logger.info("Successfully merged via chunks → %s", final_output)
+            return final_output
+        except subprocess.CalledProcessError as e:
+            logger.error("Final chunk linking failed: %s\n%s", e, (e.stderr or "")[:1000])
             return None
 
     @staticmethod
