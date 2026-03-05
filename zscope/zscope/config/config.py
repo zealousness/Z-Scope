@@ -61,6 +61,7 @@ class IndexingConfig:
     llvm_link_path: str = "llvm-link"
     svf_heap_limit_mb: int = 32768  # SVF 内存上限（默认 32GB）
     svf_timeout: int = 1800  # SVF 单次执行超时（秒）
+    svf_groups_config: str = ""  # JSON file for multi-group bitcode linking
 
 
 
