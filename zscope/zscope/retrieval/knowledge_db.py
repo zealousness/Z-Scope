@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class KnowledgeDB:
     """SQLite-backed code knowledge store."""
 
-    SCHEMA_VERSION = "5"
+    SCHEMA_VERSION = "6"
 
     def __init__(self, db_path: str):
         self._db_path = Path(db_path)
@@ -80,9 +80,10 @@ class KnowledgeDB:
                 caller_name TEXT NOT NULL,
                 caller_file TEXT NOT NULL,
                 callee_name TEXT NOT NULL,
+                callee_file TEXT DEFAULT '',
                 call_line   INTEGER,
                 call_type   TEXT DEFAULT 'direct',
-                UNIQUE(caller_name, caller_file, callee_name, call_line)
+                UNIQUE(caller_name, caller_file, callee_name, callee_file, call_line)
             );
             CREATE INDEX IF NOT EXISTS idx_call_caller ON call_edges(caller_name);
             CREATE INDEX IF NOT EXISTS idx_call_callee ON call_edges(callee_name);
@@ -168,6 +169,13 @@ class KnowledgeDB:
         try:
             c.execute("ALTER TABLE indirect_calls ADD COLUMN svf_group TEXT DEFAULT 'default'")
             c.execute("ALTER TABLE taint_signatures ADD COLUMN svf_group TEXT DEFAULT 'default'")
+            c.commit()
+        except sqlite3.OperationalError:
+            pass
+
+        # 兼容旧 DB：补加 callee_file 列
+        try:
+            c.execute("ALTER TABLE call_edges ADD COLUMN callee_file TEXT DEFAULT ''")
             c.commit()
         except sqlite3.OperationalError:
             pass
@@ -360,20 +368,20 @@ class KnowledgeDB:
     # ── Call Edges ──
 
     def insert_call_edge(self, caller_name: str, caller_file: str,
-                         callee_name: str, call_line: int = 0,
+                         callee_name: str, callee_file: str = "", call_line: int = 0,
                          call_type: str = "direct"):
         self._conn.execute(
             "INSERT OR IGNORE INTO call_edges "
-            "(caller_name, caller_file, callee_name, call_line, call_type) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (caller_name, caller_file, callee_name, call_line, call_type),
+            "(caller_name, caller_file, callee_name, callee_file, call_line, call_type) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (caller_name, caller_file, callee_name, callee_file, call_line, call_type),
         )
 
     def insert_call_edges_batch(self, rows: List[tuple]):
         self._conn.executemany(
             "INSERT OR IGNORE INTO call_edges "
-            "(caller_name, caller_file, callee_name, call_line, call_type) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "(caller_name, caller_file, callee_name, callee_file, call_line, call_type) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             rows,
         )
 
@@ -388,11 +396,11 @@ class KnowledgeDB:
 
     def get_callees(self, func_name: str, limit: int = 30) -> List[Dict[str, Any]]:
         rows = self._conn.execute(
-            "SELECT DISTINCT callee_name FROM call_edges "
+            "SELECT DISTINCT callee_name, callee_file FROM call_edges "
             "WHERE caller_name = ? LIMIT ?",
             (func_name, limit),
         ).fetchall()
-        return [{"name": r["callee_name"]} for r in rows]
+        return [{"name": r["callee_name"], "filename": r["callee_file"]} for r in rows]
 
     # ── Header functions ──
 
