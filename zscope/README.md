@@ -228,6 +228,7 @@ indexing:
   # llvm_link_path: llvm-link
   # svf_heap_limit_mb: 32768
   # svf_timeout: 1800
+  # svf_groups_config: svf_groups.json  # 解决 symbol multiply defined：用于多态链接隔离的 JSON 配置
 
 analysis:
   max_recursion_depth: 3

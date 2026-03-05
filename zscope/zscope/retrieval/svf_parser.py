@@ -56,9 +56,10 @@ class CallGraphParser:
 class SvfOutputMapper:
     """将 SVF 分析结果映射回源码并写入 KnowledgeDB。"""
 
-    def __init__(self, db):
+    def __init__(self, db, svf_group: str = "default"):
         """db: KnowledgeDB 实例。"""
         self.db = db
+        self.svf_group = svf_group
 
     def import_callgraph(self, dot_path: Path, existing_edges: Optional[Dict] = None):
         """将 SVF 调用图中的间接调用边导入 DB。
@@ -78,6 +79,7 @@ class SvfOutputMapper:
                 self.db.insert_indirect_call(
                     caller, callee, "svf-ander",
                     call_file=call_file, call_line=0,
+                    svf_group=self.svf_group,
                 )
                 count += 1
         self.db.commit()
@@ -93,6 +95,7 @@ class SvfOutputMapper:
                 file_path=bug.get("file", ""),
                 line=bug.get("line", 0),
                 tool="saber",
+                svf_group=self.svf_group,
             )
         self.db.commit()
-        logger.info("Imported %d saber bugs", len(bugs))
+        logger.info("Imported %d saber bugs (group: %s)", len(bugs), self.svf_group)
