@@ -530,9 +530,10 @@ Output a JSON of type 'snapshot_refresh_decision'.
                 continue
 
             relative_file = func_info["file"]
-            abs_file = self.config.project.project_root / relative_file
+            abs_file = self.config.project.source_root / relative_file
 
             if not abs_file.exists():
+                logger.warning(f"Failed to resolve location for {func_name}: source file does not exist at {abs_file.resolve()}")
                 self._sanitize_location(issue)
                 continue
 
