@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class KnowledgeDB:
     """SQLite-backed code knowledge store."""
 
-    SCHEMA_VERSION = "4"
+    SCHEMA_VERSION = "5"
 
     def __init__(self, db_path: str):
         self._db_path = Path(db_path)
@@ -130,7 +130,8 @@ class KnowledgeDB:
                 call_line   INTEGER DEFAULT 0,
                 source      TEXT DEFAULT 'svf-ander',
                 confidence  REAL DEFAULT 1.0,
-                UNIQUE(caller_name, callee_name, source)
+                svf_group   TEXT DEFAULT 'default',
+                UNIQUE(caller_name, callee_name, source, svf_group)
             );
             CREATE INDEX IF NOT EXISTS idx_ic_caller ON indirect_calls(caller_name);
             CREATE INDEX IF NOT EXISTS idx_ic_callee ON indirect_calls(callee_name);
@@ -144,7 +145,8 @@ class KnowledgeDB:
                 file_path   TEXT,
                 line        INTEGER DEFAULT 0,
                 tool        TEXT DEFAULT 'saber',
-                UNIQUE(bug_type, file_path, line)
+                svf_group   TEXT DEFAULT 'default',
+                UNIQUE(bug_type, file_path, line, svf_group)
             );
             CREATE INDEX IF NOT EXISTS idx_taint_type ON taint_signatures(bug_type);
         """)
@@ -161,6 +163,14 @@ class KnowledgeDB:
             c.commit()
         except sqlite3.OperationalError:
             pass  # 列已存在
+
+        # 兼容旧 DB：补加 svf_group 列
+        try:
+            c.execute("ALTER TABLE indirect_calls ADD COLUMN svf_group TEXT DEFAULT 'default'")
+            c.execute("ALTER TABLE taint_signatures ADD COLUMN svf_group TEXT DEFAULT 'default'")
+            c.commit()
+        except sqlite3.OperationalError:
+            pass
 
     # ── Translation Units ──
 
@@ -260,10 +270,10 @@ class KnowledgeDB:
         )
         self._conn.commit()
 
-    def purge_svf_data(self):
-        """清除 SVF 产生的间接调用和污点数据。"""
-        self._conn.execute("DELETE FROM indirect_calls")
-        self._conn.execute("DELETE FROM taint_signatures")
+    def purge_svf_data(self, group: str = "default"):
+        """清除 SVF 产生的间接调用和污点数据（按分组）。"""
+        self._conn.execute("DELETE FROM indirect_calls WHERE svf_group = ?", (group,))
+        self._conn.execute("DELETE FROM taint_signatures WHERE svf_group = ?", (group,))
         self._conn.commit()
 
     # ── Functions ──
@@ -406,22 +416,23 @@ class KnowledgeDB:
 
     def insert_indirect_call(self, caller: str, callee: str,
                              source: str = "svf-ander", confidence: float = 1.0,
-                             call_file: str = "", call_line: int = 0):
+                             call_file: str = "", call_line: int = 0,
+                             svf_group: str = "default"):
         self._conn.execute(
             "INSERT OR IGNORE INTO indirect_calls "
-            "(caller_name, callee_name, call_file, call_line, source, confidence) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (caller, callee, call_file, call_line, source, confidence),
+            "(caller_name, callee_name, call_file, call_line, source, confidence, svf_group) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (caller, callee, call_file, call_line, source, confidence, svf_group),
         )
 
     def get_indirect_callees(self, func_name: str, limit: int = 30) -> List[Dict[str, Any]]:
         rows = self._conn.execute(
-            "SELECT callee_name, source, confidence FROM indirect_calls "
+            "SELECT callee_name, source, confidence, svf_group FROM indirect_calls "
             "WHERE caller_name = ? ORDER BY confidence DESC LIMIT ?",
             (func_name, limit),
         ).fetchall()
         return [{"name": r["callee_name"], "source": r["source"],
-                 "confidence": r["confidence"]} for r in rows]
+                 "confidence": r["confidence"], "svf_group": r["svf_group"]} for r in rows]
 
     def get_indirect_callers(self, func_name: str, limit: int = 20) -> List[Dict[str, Any]]:
         rows = self._conn.execute(
@@ -433,17 +444,17 @@ class KnowledgeDB:
 
     # ── Taint Signatures (SVF/Saber) ──
 
-    def insert_taint_signature(self, source_func: str, sink_func: str,
-                               bug_type: str, file_path: str = "",
-                               line: int = 0, tool: str = "saber"):
+    def insert_taint_signature(self, source_func: str, sink_func: str, bug_type: str,
+                               file_path: str = "", line: int = 0, tool: str = "saber",
+                               svf_group: str = "default"):
         self._conn.execute(
             "INSERT OR IGNORE INTO taint_signatures "
-            "(source_func, sink_func, bug_type, file_path, line, tool) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (source_func, sink_func, bug_type, file_path, line, tool),
+            "(source_func, sink_func, bug_type, file_path, line, tool, svf_group) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (source_func, sink_func, bug_type, file_path, line, tool, svf_group),
         )
 
-    def get_taint_bugs(self, bug_type: str = "", limit: int = 50) -> List[Dict[str, Any]]:
+    def get_taint_bugs(self, bug_type: str = "", limit: int = 100) -> List[Dict[str, Any]]:
         if bug_type:
             rows = self._conn.execute(
                 "SELECT * FROM taint_signatures WHERE bug_type LIKE ? LIMIT ?",

@@ -51,7 +51,8 @@ class BitcodeBuilder:
         self.get_bc = get_bc_path
         self.llvm_link = llvm_link_path
         self.timeout = timeout
-        self._bc_files: List[Path] = []
+        # Map of generated .bc Path -> original c_src_path
+        self._bc_to_src: Dict[Path, Path] = {}
         self._env = self._make_gllvm_env()
 
     @staticmethod
@@ -77,14 +78,17 @@ class BitcodeBuilder:
                     break
         return env
 
-    def build(self) -> Optional[Path]:
-        """执行完整构建流程，返回合并后的 .bc 路径。"""
+    def build(self, groups: Optional[Dict[str, List[str]]] = None) -> Dict[str, Path]:
+        """执行完整构建流程，返回各分组合并后的 .bc 路径字典。
+        
+        groups: 可选的分组配置，格式 {"group_name": ["exclude_file1.c", ...]}
+        """
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         commands = self._load_compile_commands()
         if not commands:
             logger.error("No compile commands loaded")
-            return None
+            return {}
 
         logger.info("Building bitcode for %d translation units", len(commands))
 
@@ -92,13 +96,35 @@ class BitcodeBuilder:
         for idx, cmd in enumerate(commands):
             self._compile_tu(cmd, idx)
 
-        if not self._bc_files:
+        if not self._bc_to_src:
             logger.error("No .bc files produced")
-            return None
+            return {}
 
-        # 合并为单一 bc
-        merged = self._link_all()
-        return merged
+        # 准备分组及排除列表
+        if not groups:
+            groups = {"default": []}
+
+        results: Dict[str, Path] = {}
+        # 为每组过滤并合并 bc 文件
+        for group_name, exclude_list in groups.items():
+            logger.info("Linking group '%s' (excluding %d pattern(s))", group_name, len(exclude_list))
+            
+            group_bcs = []
+            for bc_path, src_path in self._bc_to_src.items():
+                src_name = src_path.name
+                if any(ex in src_name for ex in exclude_list):
+                    continue
+                group_bcs.append(bc_path)
+
+            if not group_bcs:
+                logger.warning("No .bc files left for group '%s' after exclusions", group_name)
+                continue
+
+            merged = self._link_all(group_bcs, group_name)
+            if merged:
+                results[group_name] = merged
+
+        return results
 
     def _load_compile_commands(self) -> List[dict]:
         """加载并过滤 compile_commands.json。"""
@@ -179,7 +205,7 @@ class BitcodeBuilder:
                 check=True,
             )
             if bc_path.exists():
-                self._bc_files.append(bc_path)
+                self._bc_to_src[bc_path] = Path(src_file)
                 logger.info("Extracted %s (%d bytes)", bc_path, bc_path.stat().st_size)
             else:
                 logger.warning("get-bc succeeded but %s not found", bc_path)
@@ -187,26 +213,26 @@ class BitcodeBuilder:
             stderr = getattr(e, 'stderr', '') or ''
             logger.warning("get-bc failed for %s: %s stderr=%s", obj_path, e, stderr[:300])
 
-    def _link_all(self) -> Optional[Path]:
-        """llvm-link 合并所有 .bc 为单一文件（支持分批以避免参数过长）。"""
-        merged_path = self.output_dir / "merged.bc"
-        if not self._bc_files:
+    def _link_all(self, bc_files: List[Path], group_name: str) -> Optional[Path]:
+        """llvm-link 合并所有给定的 .bc 为单一文件（支持分批以避免参数过长）。"""
+        merged_path = self.output_dir / f"merged_{group_name}.bc"
+        if not bc_files:
             return None
 
         # 尝试一次性链接
         try:
-            cmd = [self.llvm_link, "-o", str(merged_path)] + [str(p) for p in self._bc_files]
+            cmd = [self.llvm_link, "-o", str(merged_path)] + [str(p) for p in bc_files]
             proc = subprocess.run(
                 cmd, timeout=self.timeout, capture_output=True, text=True, check=True,
             )
-            logger.info("Merged %d .bc files → %s", len(self._bc_files), merged_path)
+            logger.info("Merged %d .bc files → %s", len(bc_files), merged_path)
             return merged_path
         except subprocess.CalledProcessError as e:
             # 命令太长或链接冲突
             stderr = e.stderr or ""
             if "Argument list too long" in str(e) or "Argument list too long" in stderr or e.returncode == 7: # 7 on windows
                 logger.warning("llvm-link args too long, falling back to chunked linking...")
-                return self._link_in_chunks(merged_path)
+                return self._link_in_chunks(bc_files, merged_path, group_name)
             
             # 其他链接错误（可能存在多重定义或 IR 版本不兼容）
             logger.error("llvm-link failed (exit code %d).", e.returncode)
@@ -216,13 +242,13 @@ class BitcodeBuilder:
             logger.error("llvm-link unexpected error: %s", e)
             return None
 
-    def _link_in_chunks(self, final_output: Path) -> Optional[Path]:
+    def _link_in_chunks(self, bc_files: List[Path], final_output: Path, group_name: str) -> Optional[Path]:
         """分批合并 bitcode 文件。"""
         chunk_size = 500
         intermediate_bcs = []
-        for i in range(0, len(self._bc_files), chunk_size):
-            chunk = self._bc_files[i:i + chunk_size]
-            chunk_output = self.output_dir / f"chunk_{i//chunk_size}.bc"
+        for i in range(0, len(bc_files), chunk_size):
+            chunk = bc_files[i:i + chunk_size]
+            chunk_output = self.output_dir / f"chunk_{group_name}_{i//chunk_size}.bc"
             cmd = [self.llvm_link, "-o", str(chunk_output)] + [str(p) for p in chunk]
             try:
                 subprocess.run(
