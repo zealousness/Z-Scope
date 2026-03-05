@@ -428,26 +428,60 @@ class ClangExtractor:
         self, file_path: Path, caller_name: str, caller_file: str,
         start_line: int, end_line: int, call_rows: list,
     ):
-        """通过正则从源码提取函数体内的调用边。"""
+        """通过正则提取调用标识符，并使用 LSP definition 定位具体的 callee_file。"""
         try:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 lines = f.readlines()
             body = "".join(lines[start_line - 1:end_line])
+            
             # 匹配函数调用: identifier(
             call_pattern = re.compile(r"\b([a-zA-Z_]\w*)\s*\(")
             c_keywords = {
                 "if", "else", "for", "while", "do", "switch", "case", "return",
                 "sizeof", "typeof", "alignof", "static_assert", "defined",
             }
+            
             for m in call_pattern.finditer(body):
                 callee = m.group(1)
                 if callee not in c_keywords and callee != caller_name:
-                    # 计算调用行号
-                    offset = body[:m.start()].count("\n")
-                    call_line = start_line + offset
-                    call_rows.append((caller_name, caller_file, callee, call_line, "direct"))
-        except Exception:
-            pass
+                    # 计算在当前多行 body 中的绝对偏移（为 LSP 查询做准确定位）
+                    match_start_idx = m.start(1)
+                    prefix = body[:match_start_idx]
+                    
+                    offset_lines = prefix.count("\n")
+                    call_line = start_line + offset_lines
+                    
+                    # 取最后一行前缀长度作为 character offset
+                    last_newline = prefix.rfind("\n")
+                    if last_newline == -1:
+                        char_offset = len(prefix)
+                    else:
+                        char_offset = len(prefix) - last_newline - 1
+                        
+                    # 尝试 LSP definition 获取真正的 callee_file
+                    callee_file = ""
+                    defs = self.get_definition(file_path, call_line - 1, char_offset)
+                    if defs and isinstance(defs, list) and len(defs) > 0:
+                        uri = defs[0].get("uri", "")
+                        if uri.startswith("file://"):
+                            # windows 是 file:///C:/... 转 Path 需小心
+                            # pathlib 的 as_uri 和从 uri 恢复会有细微差别，最稳妥是用 urllib.parse 或者直接截断
+                            from urllib.request import url2pathname
+                            from urllib.parse import urlparse
+                            
+                            p = urlparse(uri)
+                            # url2pathname 处理 file:/// => 本地绝对路径
+                            abs_path = Path(url2pathname(p.path)).resolve()
+                            
+                            # 转为相对 project / source root
+                            try:
+                                callee_file = str(abs_path.relative_to(self._project_root.resolve())).replace("\\", "/")
+                            except ValueError:
+                                callee_file = str(abs_path).replace("\\", "/")
+
+                    call_rows.append((caller_name, caller_file, callee, callee_file, call_line, "direct"))
+        except Exception as e:
+            logger.debug("Failed to extract calls in %s: %s", caller_name, e)
 
     def _extract_includes(self, file_path: Path, rel_path: str, db: "KnowledgeDB"):
         """提取 #include 边。"""
