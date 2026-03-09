@@ -93,25 +93,35 @@ class ParallelAnalyzer:
             }
             
             # Collect results as they complete
-            for future in concurrent.futures.as_completed(future_to_entry):
-                entry = future_to_entry[future]
-                completed += 1
+            try:
+                for future in concurrent.futures.as_completed(future_to_entry):
+                    entry = future_to_entry[future]
+                    completed += 1
+                    
+                    try:
+                        result = future.result()
+                        results[entry.function_name] = result
+                        logger.info(f"[{completed}/{total}] {entry.function_name}: {result.verdict} ({len(result.issues)} issues)")
+                    except Exception as e:
+                        logger.error(f"[{completed}/{total}] {entry.function_name}: ERROR - {e}")
+                        results[entry.function_name] = ParallelAnalysisResult(
+                            function_name=entry.function_name,
+                            verdict="error",
+                            error=str(e)
+                        )
+                    
+                    if progress_callback:
+                        progress_callback(completed, total, entry.function_name)
+            
+            except KeyboardInterrupt:
+                logger.warning("\n[!] Scan interrupted by user (Ctrl+C). Gathering partial results...")
+                # Cancel heavily pending futures
+                for future in future_to_entry:
+                    future.cancel()
                 
-                try:
-                    result = future.result()
-                    results[entry.function_name] = result
-                    logger.info(f"[{completed}/{total}] {entry.function_name}: {result.verdict} ({len(result.issues)} issues)")
-                except Exception as e:
-                    logger.error(f"[{completed}/{total}] {entry.function_name}: ERROR - {e}")
-                    results[entry.function_name] = ParallelAnalysisResult(
-                        function_name=entry.function_name,
-                        verdict="error",
-                        error=str(e)
-                    )
-                
-                if progress_callback:
-                    progress_callback(completed, total, entry.function_name)
-        
+                logger.info(f"Returning {len(results)} completed results out of {total} total.")
+                return results
+
         return results
     
     def analyze_functions(
