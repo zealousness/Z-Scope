@@ -158,14 +158,16 @@ class Analyzer:
         self.snapshot_store = snapshot_store or SnapshotStore(Path(config.analysis.snapshot_dir))
         db_dir = Path(config.analysis.user_config_db) if config.analysis.user_config_db else Path(config.analysis.snapshot_dir)
         self.user_config = user_config or UserConfigStore(db_dir)
-        self.llm_client = LLMClient(
-            api_key=config.llm.api_key,
-            base_url=config.llm.base_url,
-            models=config.llm.models,
-            timeout=config.llm.timeout,
-            max_retries=config.llm.max_retries,
-            max_tokens=config.llm.max_tokens
-        )
+        self.llm_clients: Dict[str, LLMClient] = {}
+        for name, llm_cfg in config.llms.items():
+            self.llm_clients[name] = LLMClient(
+                api_key=llm_cfg.api_key,
+                base_url=llm_cfg.base_url,
+                models=llm_cfg.models,
+                timeout=llm_cfg.timeout,
+                max_retries=llm_cfg.max_retries,
+                max_tokens=llm_cfg.max_tokens
+            )
         self.report_generator = ReportGenerator(config.project.project_root)
         self.tools_runtime = ToolsRuntime(self.code_index, self.snapshot_store, self.user_config)
         
@@ -206,8 +208,12 @@ class Analyzer:
         notes = []
 
         # 1. Run Semantic Modeler (modeling logic)
-        semantic_agent = SemanticModeler(self.llm_client, self._get_tools())
-        logger.info("Running Semantic Modeler agent...")
+        sm_agent_cfg = next((a for a in self.config.project.agents if a.name == "semantic_modeler"), None)
+        sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
+        sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients["default"])
+        
+        semantic_agent = SemanticModeler(sm_client, self._get_tools())
+        logger.info(f"Running Semantic Modeler agent with '{sm_llm_ref}' LLM...")
         s_resp = semantic_agent.run(agent_context)
         if s_resp.success:
             # Save snapshot to store
@@ -218,17 +224,20 @@ class Analyzer:
         else:
             logger.warning(f"Semantic modeling failed: {s_resp.error}")
             notes.append(f"Semantic modeling failed: {s_resp.error}")
-
+        
         # 2. Run Vulnerability Analyzer for each configured task
-        analyzer_agent = VulnerabilityAnalyzer(self.llm_client, self._get_tools())
         any_failure = False
         failure_msg = ""
-
+        
         for agent_cfg in self.config.project.agents:
             if not agent_cfg.enabled or agent_cfg.name != "vulnerability_analyzer":
                 continue
-            
+
             logger.info(f"Running Vulnerability Analyzer agent for task: {agent_cfg.task}")
+            va_llm_ref = agent_cfg.llm_ref if agent_cfg.llm_ref else "default"
+            va_client = self.llm_clients.get(va_llm_ref, self.llm_clients["default"])
+            analyzer_agent = VulnerabilityAnalyzer(va_client, self._get_tools())
+            
             agent_context["task"] = agent_cfg.task
             v_resp = analyzer_agent.run(agent_context, max_iterations=self.config.analysis.max_tool_iterations)
             
@@ -243,8 +252,11 @@ class Analyzer:
                 )
                 
                 if validator_enabled and new_issues:
-                    # 3. Run Validator Agent for each found issue
-                    validator_agent = ValidatorAgent(self.llm_client, self._get_tools())
+                    val_agent_cfg = next((a for a in self.config.project.agents if a.name == "validator_agent"), None)
+                    val_llm_ref = val_agent_cfg.llm_ref if val_agent_cfg and val_agent_cfg.llm_ref else "default"
+                    val_client = self.llm_clients.get(val_llm_ref, self.llm_clients["default"])
+                    validator_agent = ValidatorAgent(val_client, self._get_tools())
+                    
                     validated_issues = []
                     for raw_issue in new_issues:
                         issue_func = raw_issue.get("function", agent_context["func_name"])

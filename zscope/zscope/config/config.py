@@ -37,6 +37,7 @@ class AgentConfig:
     name: str
     task: Optional[str] = None
     enabled: bool = True
+    llm_ref: Optional[str] = None
 
 
 @dataclass
@@ -132,6 +133,7 @@ class ZScopeConfig:
     """Main configuration container."""
 
     llm: LLMConfig
+    llms: Dict[str, LLMConfig]
     indexing: IndexingConfig
     analysis: AnalysisConfig
     project: ProjectConfig
@@ -200,23 +202,59 @@ class ConfigLoader:
         # Parse sections
         try:
             # LLM config
+            llms_data = raw_config.get("llms", {})
             llm_data = raw_config.get("llm", {})
-            models = llm_data.get("models", [])
-            if not models and llm_data.get("model"):
-                models = [llm_data.get("model")]
-            if not models:
-                raise ValueError("Missing 'llm.models' or 'llm.model' configuration.")
+            
+            parsed_llms = {}
+            default_llm_config = None
+            
+            # 1. Parse legacy 'llm' block if present
+            if llm_data:
+                models = llm_data.get("models", [])
+                if not models and llm_data.get("model"):
+                    models = [llm_data.get("model")]
+                if models:
+                    default_llm_config = LLMConfig(
+                        provider=llm_data.get("provider", "openai"),
+                        api_key=llm_data.get("api_key", ""),
+                        base_url=llm_data.get("base_url", "https://api.openai.com/v1"),
+                        models=models,
+                        temperature=llm_data.get("temperature", 0.1),
+                        max_tokens=llm_data.get("max_tokens", 4096),
+                        timeout=llm_data.get("timeout", 120),
+                        max_retries=llm_data.get("max_retries", 2),
+                    )
+                    parsed_llms["default"] = default_llm_config
+            
+            # 2. Parse 'llms' block if present
+            for name, data in llms_data.items():
+                models = data.get("models", [])
+                if not models and data.get("model"):
+                    models = [data.get("model")]
+                if not models:
+                    logger.warning(f"Skipping LLM config '{name}' due to missing models")
+                    continue
+                cfg = LLMConfig(
+                    provider=data.get("provider", "openai"),
+                    api_key=data.get("api_key", ""),
+                    base_url=data.get("base_url", "https://api.openai.com/v1"),
+                    models=models,
+                    temperature=data.get("temperature", 0.1),
+                    max_tokens=data.get("max_tokens", 4096),
+                    timeout=data.get("timeout", 120),
+                    max_retries=data.get("max_retries", 2),
+                )
+                parsed_llms[name] = cfg
+                if default_llm_config is None and name == "default":
+                    default_llm_config = cfg
 
-            llm_config = LLMConfig(
-                provider=llm_data.get("provider", "openai"),
-                api_key=llm_data.get("api_key", ""),
-                base_url=llm_data.get("base_url", "https://api.openai.com/v1"),
-                models=models,
-                temperature=llm_data.get("temperature", 0.1),
-                max_tokens=llm_data.get("max_tokens", 4096),
-                timeout=llm_data.get("timeout", 120),
-                max_retries=llm_data.get("max_retries", 2),
-            )
+            if not parsed_llms:
+                raise ValueError("Missing 'llm' or 'llms' configuration.")
+
+            if default_llm_config is None:
+                default_llm_config = list(parsed_llms.values())[0]
+                parsed_llms["default"] = default_llm_config
+
 
             # Indexing config
             indexing_data = raw_config.get("indexing", {})
@@ -272,7 +310,8 @@ class ConfigLoader:
                 agents.append(AgentConfig(
                     name=a.get("name"),
                     task=a.get("task"),
-                    enabled=a.get("enabled", True)
+                    enabled=a.get("enabled", True),
+                    llm_ref=a.get("llm_ref")
                 ))
             
             # Fallback for old 'task' field
@@ -296,7 +335,8 @@ class ConfigLoader:
             )
 
             return ZScopeConfig(
-                llm=llm_config,
+                llm=default_llm_config,
+                llms=parsed_llms,
                 indexing=indexing_config,
                 analysis=analysis_config,
                 project=project_config,
