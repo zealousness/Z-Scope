@@ -70,7 +70,15 @@ class SemanticModeler(BaseAgent):
             from ...common.utils import extract_json_blocks, is_valid_snapshot
             
             # Search in result content and history
-            all_text_sources = [content] + [msg.get("content", "") for msg in reversed(conversation) if msg.get("role") == "assistant"]
+            all_text_sources = [content]
+            if "reasoning_content" in result:
+                all_text_sources.append(result["reasoning_content"])
+                
+            for msg in reversed(conversation):
+                if msg.get("role") == "assistant":
+                    all_text_sources.append(msg.get("content", ""))
+                    if "reasoning_content" in msg:
+                        all_text_sources.append(msg.get("reasoning_content", ""))
             
             for text in all_text_sources:
                 if not text: continue
@@ -81,7 +89,8 @@ class SemanticModeler(BaseAgent):
                     if "function_snapshot" in data and is_valid_snapshot(data["function_snapshot"]):
                         return AgentResponse(success=True, data=data["function_snapshot"])
             
-            logger.error(f"Failed to parse snapshot JSON for {func_name}. Content: {content}")
+            last_msg_debug = json.dumps(conversation[-1] if conversation else {}, ensure_ascii=False)
+            logger.error(f"Failed to parse snapshot JSON for {func_name}. Content: {content!r} | Last API Msg: {last_msg_debug}")
             return AgentResponse(success=False, data={}, error="Failed to parse snapshot JSON. See logs for full content.")
             
         except Exception as e:
