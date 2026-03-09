@@ -227,6 +227,11 @@ class LLMClient:
 
                 try:
                     func_args = self._parse_tool_args(func_args_str)
+                    
+                    # VERY IMPORTANT: Re-serialize the corrected dict back into the conversation history
+                    # so that strict upstreams like GLM-4/5 do not throw 400 Bad Request on "Expecting ','"
+                    function["arguments"] = json.dumps(func_args, ensure_ascii=False)
+                    
                     result = tool_executor(func_name, func_args)
 
                     conversation.append({
