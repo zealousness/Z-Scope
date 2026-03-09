@@ -512,8 +512,7 @@ Output a JSON of type 'snapshot_refresh_decision'.
             )
 
     def _resolve_issue_locations(self, issues: List[Dict[str, Any]]) -> None:
-        """Resolve exact line numbers for issues using code snippets."""
-        file_cache: Dict[Path, str] = {}
+        """Format absolute line numbers outputted by LLM into standard file:line format."""
         for issue in issues:
             if not isinstance(issue, dict):
                 continue
@@ -524,114 +523,22 @@ Output a JSON of type 'snapshot_refresh_decision'.
 
             # Try to find the file from the function name
             func_info = self.code_index.get_function_impl(func_name)
+            raw_location = str(issue.get("location", ""))
+            
+            # Extract line number/range from LLM output (e.g., "142" or "142-145" or "cache_get:142")
+            nums = re.findall(r"\d+", raw_location)
+            line_suffix = "unknown"
+            if len(nums) >= 2:
+                line_suffix = f"{nums[0]}-{nums[1]}"
+            elif len(nums) == 1:
+                line_suffix = f"{nums[0]}"
+
             if not func_info:
-                # 兜底：即使找不到函数，也清洗 location 中的垃圾字符
-                self._sanitize_location(issue)
+                issue["location"] = f"unknown_file:{line_suffix}"
                 continue
 
             relative_file = func_info["file"]
-            abs_file = self.config.project.source_root / relative_file
-
-            if not abs_file.exists():
-                logger.warning(f"Failed to resolve location for {func_name}: source file does not exist at {abs_file.resolve()}")
-                self._sanitize_location(issue)
-                continue
-
-            location = issue.get("location", "")
-            if self._should_resolve_location_from_function(func_name, location, abs_file):
-                self._apply_function_offset_location(issue, func_info, relative_file, location)
-
-            snippet = issue.get("code_snippet")
-            if not snippet:
-                continue
-                
-            try:
-                if abs_file in file_cache:
-                    content = file_cache[abs_file]
-                else:
-                    with open(abs_file, "r", encoding="utf-8", errors="ignore") as f:
-                        content = f.read()
-                    file_cache[abs_file] = content
-                
-                # Clean snippet for better matching: strip and ignore common prefix/suffix artifacts
-                clean_snippet = snippet.strip().strip('`').strip()
-                if not clean_snippet:
-                    continue
-                    
-                # Search for the snippet
-                # 1. Exact match
-                index = content.find(clean_snippet)
-                if index == -1:
-                    # 2. Try matching without leading/trailing whitespace lines
-                    lines = [line.strip() for line in clean_snippet.split('\n') if line.strip()]
-                    if lines:
-                        first_line = lines[0]
-                        if len(first_line) > 10:
-                            index = content.find(first_line)
-                
-                if index != -1:
-                    # Calculate line number
-                    line_no = content[:index].count("\n") + 1
-                    issue["location"] = f"{relative_file}:{line_no}"
-                    logger.info(f"Resolved location for {issue.get('id')} to {issue['location']}")
-                else:
-                    logger.debug(f"Could not resolve location for {issue.get('id')} using snippet")
-                    
-            except Exception as e:
-                logger.error(f"Error resolving location for {issue.get('id')}: {e}")
-
-    def _should_resolve_location_from_function(self, func_name: str, location: str, abs_file: Path) -> bool:
-        if not location or location.startswith("unknown"):
-            return True
-
-        file_part = location.split(":")[0]
-        # 判断 file_part 是否像源文件路径（有扩展名），而非函数名
-        source_extensions = {".c", ".h", ".cpp", ".cc", ".cxx", ".hpp"}
-        has_source_ext = any(file_part.endswith(ext) for ext in source_extensions)
-        if not has_source_ext:
-            return True
-
-        return False
-
-    def _sanitize_location(self, issue: Dict[str, Any]) -> None:
-        """清洗 location 中弱模型产生的垃圾 token（如"会社""bubble"等）。"""
-        location = issue.get("location", "")
-        if not location or ":" not in location:
-            return
-        func_part, line_part = location.split(":", 1)
-        nums = re.findall(r"\d+", line_part)
-        if len(nums) >= 2:
-            issue["location"] = f"{func_part}:{nums[0]}-{nums[1]}"
-        elif len(nums) == 1:
-            issue["location"] = f"{func_part}:{nums[0]}"
-
-    def _apply_function_offset_location(
-        self, issue: Dict[str, Any], func_info: Dict[str, Any], relative_file: str, location: str
-    ) -> None:
-        start_line = func_info.get("start_line")
-        end_line = func_info.get("end_line")
-
-        # 提取第一个数字作为偏移行号
-        offset = None
-        if location and ":" in location:
-            _, line_part = location.split(":", 1)
-            nums = re.findall(r"\d+", line_part)
-            if nums:
-                offset = int(nums[0])
-
-        # 无有效函数行号信息时，至少用文件路径替换函数名前缀
-        if not start_line or not end_line:
-            issue["location"] = f"{relative_file}:{offset or start_line or 1}"
-            return
-
-        if offset and offset >= 1:
-            max_offset = max(1, end_line - start_line + 1)
-            clamped = min(offset, max_offset)
-            issue["location"] = f"{relative_file}:{start_line + clamped - 1}"
-            return
-
-        # 兜底：用函数起始行
-        issue["location"] = f"{relative_file}:{start_line}"
+            issue["location"] = f"{relative_file}:{line_suffix}"
 
     def _filter_false_positives(self, issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Filter out issues that have been marked as false positives."""
