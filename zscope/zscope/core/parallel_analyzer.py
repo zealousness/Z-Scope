@@ -85,7 +85,8 @@ class ParallelAnalyzer:
         
         logger.info(f"Starting parallel analysis of {total} function entries with {self.max_workers} workers")
         
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
+        try:
             # Submit all analysis tasks
             future_to_entry = {
                 executor.submit(self._analyze_single_entry, entry): entry
@@ -102,6 +103,8 @@ class ParallelAnalyzer:
                         result = future.result()
                         results[entry.function_name] = result
                         logger.info(f"[{completed}/{total}] {entry.function_name}: {result.verdict} ({len(result.issues)} issues)")
+                    except concurrent.futures.CancelledError:
+                        logger.warning(f"[{completed}/{total}] {entry.function_name}: Cancelled due to interrupt")
                     except Exception as e:
                         logger.error(f"[{completed}/{total}] {entry.function_name}: ERROR - {e}")
                         results[entry.function_name] = ParallelAnalysisResult(
@@ -114,14 +117,22 @@ class ParallelAnalyzer:
                         progress_callback(completed, total, entry.function_name)
             
             except KeyboardInterrupt:
-                logger.warning("\n[!] Scan interrupted by user (Ctrl+C). Gathering partial results...")
-                # Cancel heavily pending futures
-                for future in future_to_entry:
-                    future.cancel()
+                logger.warning("\n[!] Scan interrupted by user (Ctrl+C). Instantly killing threads and gathering partial results...")
+                
+                # Instantly destroy the thread pool without waiting for running threads to finish
+                executor.shutdown(wait=False, cancel_futures=True)
                 
                 logger.info(f"Returning {len(results)} completed results out of {total} total.")
                 return results
 
+        finally:
+            # Under normal successful execution, properly wait and clean up resources
+            if executor:
+                try:
+                    executor.shutdown(wait=True)
+                except Exception:
+                    pass
+                    
         return results
     
     def analyze_functions(
