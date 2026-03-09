@@ -36,14 +36,16 @@ class RuleDrivenAnalyzer:
             else Path(config.analysis.snapshot_dir)
         )
         self.user_config = user_config or UserConfigStore(db_dir)
-        self.llm_client = LLMClient(
-            api_key=config.llm.api_key,
-            base_url=config.llm.base_url,
-            models=config.llm.models,
-            timeout=config.llm.timeout,
-            max_retries=config.llm.max_retries,
-            max_tokens=config.llm.max_tokens,
-        )
+        self.llm_clients: Dict[str, LLMClient] = {}
+        for name, llm_cfg in config.llms.items():
+            self.llm_clients[name] = LLMClient(
+                api_key=llm_cfg.api_key,
+                base_url=llm_cfg.base_url,
+                models=llm_cfg.models,
+                timeout=llm_cfg.timeout,
+                max_retries=llm_cfg.max_retries,
+                max_tokens=llm_cfg.max_tokens,
+            )
         self.report_generator = ReportGenerator(config.project.project_root)
 
         from ..retrieval.joern_backend import JoernBackend
@@ -115,7 +117,11 @@ class RuleDrivenAnalyzer:
                 SnapshotStore(Path(self.config.analysis.snapshot_dir))
             ),
         ]
-        validator = ValidatorAgent(self.llm_client, tools)
+        
+        val_agent_cfg = next((a for a in self.config.project.agents if a.name == "validator_agent"), None)
+        val_llm_ref = val_agent_cfg.llm_ref if val_agent_cfg and val_agent_cfg.llm_ref else "default"
+        val_client = self.llm_clients.get(val_llm_ref, self.llm_clients["default"])
+        validator = ValidatorAgent(val_client, tools)
 
         impl = self.code_index.get_function_impl(func_name)
         context_code = impl["code"] if impl else ""

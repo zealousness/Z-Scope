@@ -1,23 +1,37 @@
-llm:
-  provider: openai
-  base_url: http://127.0.0.1:8045/v1
-  models:
-    - gemini-2.5-flash
-  api_key: sk-1111111111111111111123dfe63280544039ad3428800af648f7
-  temperature: 0.1
-  max_tokens: 8192
+llms:
+  default:
+    provider: openai
+    base_url: http://127.0.0.1:8045/v1
+    models:
+      - gemini-2.5-flash
+    api_key: sk-1111111111111111111123dfe63280544039ad3428800af648f7
+    temperature: 0.1
+    max_tokens: 4096
+
+  smart_model:
+    provider: openai
+    base_url: http://127.0.0.1:8045/v1
+    models:
+      - gemini-2.5-pro
+    api_key: sk-1111111111111111111123dfe63280544039ad3428800af648f7
+    temperature: 0.1
+    max_tokens: 8192
+    timeout: 600
 
 project:
   root: .
-  entry_functions_list: defects.json
+  entry_functions_list: functions.json
   agents:
     - name: semantic_modeler
       enabled: true
+      llm_ref: default
     - name: vulnerability_analyzer
       task: "全面检查代码中是否存在以下漏洞：Stack Memory Return（返回栈内存）、Buffer Overflow（缓冲区溢出）、Memory Leak（内存泄漏）、File Descriptor Leak（文件描述符泄漏）、Untrusted Index/Out-of-bounds（不受信任的索引/越界访问）、Memory Accumulation（内存不断累积却未释放）、Unchecked Malloc（未检查的malloc返回值）、Format String（格式化字符串漏洞）以及 NULL Pointer Dereference（空指针解引用）。"
       enabled: true
+      llm_ref: smart_model
     - name: validator_agent
       enabled: true
+      llm_ref: smart_model
 
 indexing:
   backend: joern
