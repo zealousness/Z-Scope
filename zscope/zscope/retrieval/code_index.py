@@ -172,7 +172,12 @@ class CodeIndex:
         """Build index using regex pattern matching (fallback)."""
         all_files = []
         for ext in ["*.c", "*.cpp", "*.h", "*.hpp", "*.cc"]:
-            all_files.extend(list(self.source_root.rglob(ext)))
+            try:
+                # Use a generator and handle permission/symlink errors gracefully
+                for p in self.source_root.rglob(ext):
+                    all_files.append(p)
+            except OSError as e:
+                logger.debug(f"Error traversing directory during regex index build: {e}")
         logger.info(f"Scanning {len(all_files)} C/H files with regex")
         for file_path in all_files:
             try:
@@ -245,7 +250,7 @@ class CodeIndex:
             if end - start > max_lines:
                 end = start + max_lines
             code_lines = lines[start:end]
-            code = "".join(code_lines)
+            code = "".join(f"{start + i + 1} | {line}" for i, line in enumerate(code_lines))
 
             # Get callees from backend if available, else regex
             if self._backend:
@@ -289,7 +294,8 @@ class CodeIndex:
                 end_line = min(total_lines, start_line + 199)
             start = max(0, start_line - 1)
             end = min(total_lines, end_line)
-            code = "".join(lines[start:end])
+            code_lines = lines[start:end]
+            code = "".join(f"{start + i + 1} | {line}" for i, line in enumerate(code_lines))
             return {"file": self._normalize_path(full_path), "start_line": start_line, "end_line": end_line, "code": code}
         except Exception as e:
             logger.error(f"Failed to read file snippet: {e}")
@@ -385,7 +391,14 @@ class CodeIndex:
         seen_files: set = set()
         for ext in ["*.h", "*.hpp", "*.ph", "*.inc", "*.c", "*.cpp", "*.cc"]:
             for root in search_roots:
-                for file_path in root.rglob(ext):
+                file_paths = []
+                try:
+                    for p in root.rglob(ext):
+                        file_paths.append(p)
+                except OSError as e:
+                    logger.debug(f"Error traversing directory during macro lookup: {e}")
+                
+                for file_path in file_paths:
                     real = file_path.resolve()
                     if real in seen_files:
                         continue
@@ -408,7 +421,7 @@ class CodeIndex:
                             end_idx = start_idx + max_lines - 1
                         signature_match = signature_pattern.match(lines[start_idx])
                         params = signature_match.group("params") if signature_match else None
-                        code = "".join(code_lines)
+                        code = "".join(f"{start_idx + i + 1} | {line}" for i, line in enumerate(code_lines))
                         callees = list(set(extract_function_calls(code)))
                         return {
                             "func_name": macro_name,
