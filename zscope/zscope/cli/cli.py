@@ -25,6 +25,7 @@ from ..core.parallel_analyzer import ParallelAnalyzer
 @click.option("--build-cpg", is_flag=True, help="Only build CPG and index, then exit.")
 @click.option("--mode", type=click.Choice(["default", "topdown", "ruledriven", "alert-verify"]), default="default", help="Analysis mode.")
 @click.option("--sarif", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None, help="SARIF file for alert-verify mode.")
+@click.option("--resume-from", type=str, default=None, help="Resume batch or alert-verify scan from a specific function name or alert ID.")
 def main(
     config: Path,
     verbose: bool,
@@ -32,6 +33,7 @@ def main(
     build_cpg: bool,
     mode: str,
     sarif: Path,
+    resume_from: str,
 ):
     """
     Z-SCOPE: AI-powered defect detection for C projects.
@@ -148,12 +150,31 @@ def main(
             )
             alerts = adapter.parse(str(sarif))
             click.echo(f"Parsed {len(alerts)} alerts from SARIF")
+            
+            if resume_from:
+                idx = next((i for i, a in enumerate(alerts) if a.id == resume_from or a.function == resume_from), -1)
+                if idx >= 0:
+                    click.echo(f"Resuming scan from alert/function '{resume_from}' (skipping {idx} alerts)")
+                    alerts = alerts[idx:]
+                else:
+                    click.echo(f"Warning: '--resume-from {resume_from}' not found in SARIF. Starting from beginning.")
 
             if not alerts:
                 click.echo("No alerts to verify.")
                 sys.exit(0)
 
-            llm_client = LLMClient(zscope_config.llm)
+            val_agent_cfg = next((a for a in zscope_config.project.agents if a.name == "validator_agent"), None)
+            val_llm_ref = val_agent_cfg.llm_ref if val_agent_cfg and val_agent_cfg.llm_ref else "default"
+            llm_cfg = zscope_config.llms.get(val_llm_ref, zscope_config.llms["default"])
+            
+            llm_client = LLMClient(
+                api_key=llm_cfg.api_key,
+                base_url=llm_cfg.base_url,
+                models=llm_cfg.models,
+                timeout=llm_cfg.timeout,
+                max_retries=llm_cfg.max_retries,
+                max_tokens=llm_cfg.max_tokens,
+            )
             db_dir = (
                 Path(zscope_config.analysis.user_config_db)
                 if zscope_config.analysis.user_config_db
@@ -187,6 +208,14 @@ def main(
             logger.info(f"Batch mode activated: {zscope_config.project.entry_functions_list}")
             entries = FunctionListLoader.load(zscope_config.project.entry_functions_list)
             logger.info(f"Loaded {len(entries)} function entries")
+            
+            if resume_from:
+                idx = next((i for i, e in enumerate(entries) if e.function_name == resume_from), -1)
+                if idx >= 0:
+                    click.echo(f"Resuming scan from function '{resume_from}' (skipping {idx} functions)")
+                    entries = entries[idx:]
+                else:
+                    click.echo(f"Warning: '--resume-from {resume_from}' not found in entries. Starting from beginning.")
 
             # Build code index once (shared across all analyses)
             logger.info("Building shared code index...")
