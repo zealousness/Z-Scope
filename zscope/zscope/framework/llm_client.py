@@ -79,6 +79,9 @@ class LLMClient:
             if tools:
                 payload["tools"] = tools
                 payload["tool_choice"] = "auto"
+            
+            # Force streaming to bypass middle-proxy timeouts (e.g. 504 on 120s limit)
+            payload["stream"] = True
 
             for attempt in range(self.max_retries + 1):
                 try:
@@ -87,11 +90,69 @@ class LLMClient:
                         url = f"{self.base_url}/chat/completions"
                     
                     response = self.session.post(
-                        url, json=payload, timeout=self.timeout
+                        url, json=payload, timeout=self.timeout, stream=True
                     )
 
                     if response.status_code == 200:
-                        return response.json()
+                        content_pieces = []
+                        reasoning_pieces = []
+                        tool_calls_map = {}
+                        finish_reason = "stop"
+                        
+                        for line in response.iter_lines():
+                            if line:
+                                decoded_line = line.decode('utf-8')
+                                if decoded_line.startswith("data: "):
+                                    data_str = decoded_line[6:]
+                                    if data_str.strip() == "[DONE]":
+                                        break
+                                    try:
+                                        chunk = json.loads(data_str)
+                                        choices = chunk.get("choices", [])
+                                        if choices:
+                                            delta = choices[0].get("delta", {})
+                                            
+                                            if "content" in delta and delta["content"]:
+                                                content_pieces.append(delta["content"])
+                                                
+                                            if "reasoning_content" in delta and delta["reasoning_content"]:
+                                                reasoning_pieces.append(delta["reasoning_content"])
+                                                
+                                            if "tool_calls" in delta and delta["tool_calls"]:
+                                                for tc in delta["tool_calls"]:
+                                                    idx = tc.get("index")
+                                                    if idx not in tool_calls_map:
+                                                        tool_calls_map[idx] = tc
+                                                    else:
+                                                        if "function" in tc:
+                                                            if "name" in tc["function"] and tc["function"]["name"]:
+                                                                tool_calls_map[idx].setdefault("function", {})["name"] = tc["function"]["name"]
+                                                            if "arguments" in tc["function"] and tc["function"]["arguments"]:
+                                                                tool_calls_map[idx].setdefault("function", {}).setdefault("arguments", "")
+                                                                tool_calls_map[idx]["function"]["arguments"] += tc["function"]["arguments"]
+                                                                
+                                            if choices[0].get("finish_reason"):
+                                                finish_reason = choices[0]["finish_reason"]
+                                    except json.JSONDecodeError:
+                                        pass
+                                        
+                        assembled_message = {"role": "assistant"}
+                        if tool_calls_map:
+                            assembled_message["tool_calls"] = [tool_calls_map[i] for i in sorted(tool_calls_map.keys())]
+                            if content_pieces:
+                                assembled_message["content"] = "".join(content_pieces)
+                        else:
+                            assembled_message["content"] = "".join(content_pieces)
+                            
+                        if reasoning_pieces:
+                            assembled_message["reasoning_content"] = "".join(reasoning_pieces)
+                            
+                        return {
+                            "choices": [{
+                                "message": assembled_message,
+                                "finish_reason": finish_reason
+                            }]
+                        }
                     
                     error_msg = f"HTTP {response.status_code}: {response.text}"
                     logger.warning(f"Model {model} failed (attempt {attempt + 1}): {error_msg}")

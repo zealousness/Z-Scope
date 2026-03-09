@@ -29,6 +29,8 @@ def compute_semantic_fingerprint(code: str) -> str:
     Compute a semantic fingerprint by removing comments and normalizing whitespace.
     This helps detect semantic changes vs cosmetic changes.
     """
+    # Strip line number prefixes like "123 | " if they were injected
+    code = re.sub(r"(?m)^\s*\d+\s*\|\s*", "", code)
     code = _strip_c_comments_preserve_strings(code)
     code = re.sub(r"\s+", " ", code).strip()
     return hashlib.sha256(code.encode("utf-8")).hexdigest()
