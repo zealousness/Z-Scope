@@ -212,8 +212,37 @@ class LLMClient:
 
             # Handle tool calls
             tool_calls = message.get("tool_calls", [])
+            
+            # --- XML Fallback (For GLM/Minimax models that emit raw text invoke tags) ---
+            content = message.get("content", "")
+            if not tool_calls and "<invoke name=" in content:
+                import uuid
+                invokes = re.finditer(r'<invoke name="([^"]+)">([\s\S]*?)</invoke>', content)
+                for match in invokes:
+                    xml_func_name = match.group(1)
+                    xml_param_str = match.group(2)
+                    xml_args = {}
+                    for param_match in re.finditer(r'<parameter name="([^"]+)">([\s\S]*?)</parameter>', xml_param_str):
+                        # Attempt to cast numeric strings to int if applicable, else keep string
+                        val = param_match.group(2).strip()
+                        if val.isdigit():
+                            val = int(val)
+                        xml_args[param_match.group(1)] = val
+                        
+                    tool_calls.append({
+                        "id": f"call_xml_{uuid.uuid4().hex[:10]}",
+                        "type": "function",
+                        "function": {
+                            "name": xml_func_name,
+                            "arguments": json.dumps(xml_args, ensure_ascii=False)
+                        }
+                    })
+                # If we synthetically built tool calls, we should ensure the LLM knows it made them.
+                if tool_calls and "tool_calls" not in message:
+                    message["tool_calls"] = tool_calls
+            # --------------------------------------------------------------------------
+
             if not tool_calls:
-                content = message.get("content", "")
                 return {"content": content, "conversation": conversation, "iterations": iterations}
 
             # Execute each tool call
