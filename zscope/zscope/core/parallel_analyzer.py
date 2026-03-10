@@ -117,6 +117,7 @@ class ParallelAnalyzer:
                         progress_callback(completed, total, entry.function_name)
             
             except KeyboardInterrupt:
+                self._interrupted = True
                 logger.warning("\n[!] Scan interrupted by user (Ctrl+C). Instantly killing threads and gathering partial results...")
                 
                 # Instantly destroy the thread pool without waiting for running threads to finish
@@ -127,7 +128,7 @@ class ParallelAnalyzer:
 
         finally:
             # Under normal successful execution, properly wait and clean up resources
-            if executor:
+            if executor and not getattr(self, '_interrupted', False):
                 try:
                     executor.shutdown(wait=True)
                 except Exception:

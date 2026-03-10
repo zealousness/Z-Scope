@@ -5,6 +5,7 @@ Command Line Interface for Z-SCOPE.
 import click
 import logging
 import sys
+import os
 from pathlib import Path # Keep this import as it's used for 'config: Path'
 from ..retrieval.code_index import CodeIndex
 from ..common.utils import setup_logging
@@ -247,6 +248,11 @@ def main(
             click.echo(f"Functions analyzed: {functions_analyzed}")
             click.echo(f"Total issues found: {total_issues}")
             click.echo(f"Reports saved: {json_report_path}, {md_report_path}")
+
+            # Force exit if interrupted to avoid hanging on thread pool cleanup
+            if getattr(parallel_analyzer, '_interrupted', False):
+                click.echo("[!] Exiting immediately due to prior interrupt.")
+                os._exit(1)
 
             if total_issues > 0:
                 sys.exit(1)
