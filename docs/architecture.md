@@ -115,6 +115,8 @@ Joern run.scan ──┐
 | 验证 Agent | 二次确认疑似缺陷的真实性 | 疑似缺陷 + 源码 | 验证结论（confirmed/rejected） |
 
 > **定位机制说明（绝对行号注入法）**：为了根治大模型基于扁平 Token 难以精确计算相对偏移量（Offset）导致的“定位幻觉”，工具总线在构造“函数源码”和“代码上下文”供 Agent 消费时，会自动注入绝对行号前缀（例如 `142 |     int a = 0;`）。Agent 仅需直接读取前缀即可输出高精度的 `file:line` 物理坐标。
+> **XML Tool-Calls 兜底机制**：针对国内代理模型（如 Minimax、早期 GLM）无法返回 OpenAI 标准的 JSON 工具格式、转而在正文输出 `<invoke name="xxx">` XML 的特征，底层的网络客户端拦截并强行进行了正则替换重排，确保了闭源国产模型的向下兼容。
+> **无阻塞并发拦截与断点续传**：大并发扫描遇到超长深思模型导致挂起卡死时，使用 `Ctrl+C` 将会触发底层手动 `ThreadPoolExecutor.shutdown(wait=False)`，无条件瞬间炸毁线程池输出目前所有幸存的报告（`zscope_batch_report.json`）。下次扫描时通过 CLI 参数 `--resume-from` 可无缝衔接。
 
 每个 Agent 位于 `agents/<name>/` 目录，包含独立的 system prompt 和输出 schema。
 
