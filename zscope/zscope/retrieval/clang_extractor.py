@@ -475,7 +475,7 @@ class ClangExtractor:
                             
                             # 转为相对 project / source root
                             try:
-                                callee_file = str(abs_path.relative_to(self._project_root.resolve())).replace("\\", "/")
+                                callee_file = str(abs_path.relative_to(self.project_root)).replace("\\", "/")
                             except ValueError:
                                 callee_file = str(abs_path).replace("\\", "/")
 
