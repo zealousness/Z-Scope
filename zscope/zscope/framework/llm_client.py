@@ -176,6 +176,13 @@ class LLMClient:
             logger.info(f"Falling back from model {model}...")
             
         raise Exception(f"All models failed. Last error: {last_error}")
+    def _get_combined_content(self, conversation: List[Dict[str, Any]]) -> str:
+        """Helper to combine all assistant generated text in case an auto-continue loop happened"""
+        content_chunks = []
+        for msg in conversation:
+            if msg.get("role") == "assistant" and msg.get("content"):
+                content_chunks.append(msg.get("content", ""))
+        return "".join(content_chunks)
 
     def run_conversation_with_tools(
         self,
@@ -207,15 +214,13 @@ class LLMClient:
 
             # Check if done
             if finish_reason == "stop":
-                content = message.get("content", "")
+                content = self._get_combined_content(conversation)
                 return {"content": content, "conversation": conversation, "iterations": iterations}
                 
             if finish_reason == "length":
-                raise RuntimeError(
-                    f"Model output truncated! Exceeded max_tokens limit. "
-                    f"Content length: {len(message.get('content', ''))}, "
-                    f"Reasoning length: {len(message.get('reasoning_content', ''))}"
-                )
+                logger.warning(f"Model {self.model_name} output truncated! Prompting to continue...")
+                conversation.append({"role": "user", "content": "请继续"})
+                continue
 
             # Handle tool calls
             tool_calls = message.get("tool_calls", [])
@@ -251,6 +256,7 @@ class LLMClient:
             # --------------------------------------------------------------------------
 
             if not tool_calls:
+                content = self._get_combined_content(conversation)
                 return {"content": content, "conversation": conversation, "iterations": iterations}
 
             # Execute each tool call
