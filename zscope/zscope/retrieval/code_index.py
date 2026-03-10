@@ -35,6 +35,7 @@ class CodeIndex:
         self.project_root = Path(project_root).resolve()
         self.source_root = Path(source_root).resolve() if source_root else self.project_root
         self.compile_commands_path = compile_commands_path
+        self.backend_name = indexing_config.backend if indexing_config else "joern"
         self._function_index: Dict[str, Dict[str, Any]] = {}
         self._backend: Optional[CodeBackend] = backend
         self._index_ready = False
