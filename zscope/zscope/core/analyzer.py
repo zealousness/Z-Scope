@@ -360,17 +360,26 @@ class Analyzer:
             FindFunctionPointersTool,
         )
 
-        return [
+        # Base tools universally supported by all backends (including regex/clangd)
+        tools = [
             GetFunctionImplTool(self.code_index),
             GetFunctionSnapshotTool(self.snapshot_store),
             ListFunctionsTool(self.code_index),
             GetFileSnippetTool(self.code_index),
             GetCallersTool(self.code_index),
             GetTypeInfoTool(self.code_index),
-            GetCallGraphTool(self.code_index),
-            GetDataFlowTool(self.code_index),
-            FindFunctionPointersTool(self.code_index),
         ]
+        
+        # Heavy CPG tools only supported by advanced graph backends
+        advanced_backends = ["joern", "svf", "unified"]
+        if hasattr(self.code_index, "backend_name") and self.code_index.backend_name in advanced_backends:
+            tools.extend([
+                GetCallGraphTool(self.code_index),
+                GetDataFlowTool(self.code_index),
+                FindFunctionPointersTool(self.code_index),
+            ])
+            
+        return tools
 
 
 
