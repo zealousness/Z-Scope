@@ -209,6 +209,13 @@ class LLMClient:
             if finish_reason == "stop":
                 content = message.get("content", "")
                 return {"content": content, "conversation": conversation, "iterations": iterations}
+                
+            if finish_reason == "length":
+                raise RuntimeError(
+                    f"Model output truncated! Exceeded max_tokens limit. "
+                    f"Content length: {len(message.get('content', ''))}, "
+                    f"Reasoning length: {len(message.get('reasoning_content', ''))}"
+                )
 
             # Handle tool calls
             tool_calls = message.get("tool_calls", [])
@@ -217,14 +224,15 @@ class LLMClient:
             content = message.get("content", "")
             if not tool_calls and "<invoke name=" in content:
                 import uuid
-                invokes = re.finditer(r'<invoke name="([^"]+)">([\s\S]*?)</invoke>', content)
+                invokes = re.finditer(r'<invoke name="([^"]+)">([\s\S]*?)(?:</invoke>|$)', content)
                 for match in invokes:
                     xml_func_name = match.group(1)
                     xml_param_str = match.group(2)
                     xml_args = {}
-                    for param_match in re.finditer(r'<parameter name="([^"]+)">([\s\S]*?)</parameter>', xml_param_str):
+                    for param_match in re.finditer(r'<parameter name="([^"]+)">([\s\S]*?)(?=(?:</parameter>|<parameter|</invoke>|$))', xml_param_str):
                         # Attempt to cast numeric strings to int if applicable, else keep string
                         val = param_match.group(2).strip()
+                        val = re.sub(r'</.*$', '', val, flags=re.DOTALL).strip()
                         if val.isdigit():
                             val = int(val)
                         xml_args[param_match.group(1)] = val
