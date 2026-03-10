@@ -27,6 +27,9 @@ zscope --verbose
 # Top-down mode (from .h public APIs)
 zscope --mode topdown -c zscope.yaml
 
+# Resume an interrupted batch scan from a specific function
+zscope -c zscope.yaml --resume-from cache_get
+
 # Rule-driven mode (Joern rules + validator)
 zscope --mode ruledriven -c zscope.yaml
 
@@ -130,6 +133,8 @@ Joern 存在能力边界，以下信息需用户通过 WebUI 配置，存入 SQL
 - **上下文注入而非 Agent 查询** — 用户配置不暴露为 LLM 工具，而是在 `tools_runtime.py` 返回结果时和 `analyzer.py` 构建 prompt 时自动注入。
 - **异步 CPG 构建** — `import_cpg_async()` 后台线程执行，`threading.Lock` 保护状态机。Joern 只启动 1 次，多次扫描复用。
 - **绝对行号注入法** — 为从根本上解决 LLM Token 机制导致的“偏移量计算幻觉”，工具在将代码切片送入 Prompt 前会进行前缀注入（如 `142 | `），LLM 仅需“抄写”绝对行号即可实现 100% 精确的缺陷定位。
+- **XML Tools 底层兜底解析** — 针对国内特定代理模型（如 Minimax、早期 GLM）无法遵循 OpenAI 标准的 JSON `tool_calls` 结构、而是直接在正文中吐出 `<invoke name="xxx">` 的问题，`llm_client.py` 底层植入了强制正则截获与重组机制，使得国内模型也能无缝执行工具流。
+- **无阻塞并发快照中断与续扫** — 为了解决长上下文模型的卡死问题，并发模型丢弃了 `with ThreadPoolExecutor` 语法糖造成的挂起等待，允许用户随时 `Ctrl+C` 瞬间炸毁线程池并即时生成已完成的部分报告。后续可通过 `--resume-from` 断点续传。
 - **误报过滤闭环** — 用户在 WebUI 标记误报 → `false_positives` 表写入 → 下次扫描自动过滤。
 - **Joern 规则兼容** — 规则驱动模式通过 `run.scan.toJson` 执行 Joern 内置/社区规则，不自造规则格式。
 - **可插拔后端架构** — `CodeBackend` ABC 定义统一接口，`code_index.py` 工厂方法按 `indexing.backend` 配置创建对应后端（joern / clang / unified / regex）。
