@@ -238,6 +238,33 @@ def main(
             json_report_path = zscope_config.project.project_root / "zscope_batch_report.json"
             md_report_path = zscope_config.project.project_root / "zscope_batch_report.md"
 
+            # Merge previous results if resuming
+            if resume_from and json_report_path.exists():
+                try:
+                    import json
+                    from ..core.parallel_analyzer import ParallelAnalysisResult
+                    with open(json_report_path, 'r', encoding='utf-8') as f:
+                        old_report = json.load(f)
+                    
+                    if "function_results" in old_report:
+                        logger.info("Merging historical batch report from previous run...")
+                        old_issues = old_report.get("issues", [])
+                        
+                        for func_summary in old_report["function_results"]:
+                            fname = func_summary.get("function")
+                            if fname and fname not in results:
+                                # Reconstruct mock ParallelAnalysisResult
+                                mock_result = ParallelAnalysisResult(
+                                    function_name=fname,
+                                    verdict=func_summary.get("verdict", "unknown"),
+                                    issues=[i for i in old_issues if i.get("analyzed_from", i.get("function")) == fname],
+                                    error=func_summary.get("error"),
+                                    duration_seconds=func_summary.get("duration_seconds", 0.0)
+                                )
+                                results[fname] = mock_result
+                except Exception as e:
+                    logger.warning(f"Failed to merge old batch report: {e}")
+
             combined_report = parallel_analyzer.generate_combined_report(results, json_report_path)
             parallel_analyzer.generate_combined_markdown_report(results, md_report_path)
 
