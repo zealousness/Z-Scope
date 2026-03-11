@@ -254,6 +254,12 @@ analysis:
 # 默认模式：从 entry_function 开始分析
 zscope -c zscope.yaml --verbose
 
+# 批量扫描模式 (从 functions_list JSON 开始)：
+zscope -c zscope.yaml
+
+# 断点续传/累计追加模式：从指定的函数或告警ID处恢复，并将结果无缝合并至原报告
+zscope -c zscope.yaml --resume-from my_function_name
+
 # 自上而下模式：从 .h 头文件公开接口出发，自动发现所有 API
 zscope --mode topdown -c zscope.yaml
 
