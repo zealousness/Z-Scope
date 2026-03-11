@@ -42,22 +42,27 @@ def recover_report(config_path: str):
     for entry in entries:
         func = entry.function_name
         # Fetch the most recent snapshot file for this function
-        cursor.execute("SELECT snapshot_file FROM snapshots WHERE func_name=? ORDER BY timestamp DESC", (func,))
-        rows = cursor.fetchall()
+        try:
+            cursor.execute("SELECT final_report_file, snapshot_file FROM snapshots WHERE func_name=? ORDER BY timestamp DESC", (func,))
+            rows = cursor.fetchall()
+        except sqlite3.OperationalError:
+            cursor.execute("SELECT snapshot_file FROM snapshots WHERE func_name=? ORDER BY timestamp DESC", (func,))
+            rows = [(None, row[0]) for row in cursor.fetchall()]
         
-        # A function might have both semantic model and vulnerability model snapshots. 
-        # We look for the one that has the "issues" or "suspicious_points" structure 
-        # (Vulnerability report) and the highest timestamp.
         found_report = False
         duration = 1.0 # Mock duration
         
-        for row in rows:
-            snap_file = snapshot_dir / row[0]
-            if not snap_file.exists():
+        for final_file, snap_file in rows:
+            target = final_file if final_file else snap_file
+            if not target:
+                continue
+                
+            file_path = snapshot_dir / target
+            if not file_path.exists():
                 continue
                 
             try:
-                with open(snap_file, 'r', encoding='utf-8') as f:
+                with open(file_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     
                 # If it has issues, it's a vulnerability analysis result

@@ -52,9 +52,17 @@ class SnapshotStore:
                 if 'file_path' not in columns:
                     logger.info("Migrating snapshot database from v1 to v2 schema...")
                     self._migrate_v1_to_v2(conn)
+                    # continue checking for next migrations
+                    cursor = conn.execute("PRAGMA table_info(snapshots)")
+                    columns = {row[1]: row for row in cursor.fetchall()}
+                
+                if 'final_report_file' not in columns:
+                    logger.info("Migrating snapshot database to v3 schema (adding final_report_file)...")
+                    conn.execute("ALTER TABLE snapshots ADD COLUMN final_report_file TEXT")
+                    conn.commit()
                     return
-            
-            # Create v2 schema with composite primary key
+
+            # Create v3 schema with composite primary key and final_report_file
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS snapshots (
@@ -65,6 +73,7 @@ class SnapshotStore:
                     location TEXT NOT NULL,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                     snapshot_file TEXT NOT NULL,
+                    final_report_file TEXT,
                     PRIMARY KEY (func_name, file_path)
                 )
                 """
@@ -96,6 +105,7 @@ class SnapshotStore:
                 location TEXT NOT NULL,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 snapshot_file TEXT NOT NULL,
+                final_report_file TEXT,
                 PRIMARY KEY (func_name, file_path)
             )
             """
@@ -162,6 +172,36 @@ class SnapshotStore:
         finally:
             conn.close()
 
+    def save_final_report(
+        self, func_name: str, final_report: Dict[str, Any], location: str
+    ) -> None:
+        """
+        Save the final vulnerability report to disk and update metadata in DB.
+        """
+        file_path = location.split(':')[0] if ':' in location else 'unknown'
+        
+        safe_path = file_path.replace('/', '_').replace('\\', '_').replace(':', '')
+        final_file = f"{func_name}_{safe_path}_final.json"
+        final_path = self.snapshot_dir / final_file
+
+        with open(final_path, "w", encoding="utf-8") as f:
+            json.dump(final_report, f, indent=2, ensure_ascii=False)
+
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                UPDATE snapshots 
+                SET final_report_file = ?
+                WHERE func_name = ? AND file_path = ?
+                """,
+                (final_file, func_name, file_path),
+            )
+            conn.commit()
+            logger.info(f"Saved final report for function '{func_name}' at '{file_path}'")
+        finally:
+            conn.close()
+
     def load_snapshot(self, func_name: str, file_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Load a function snapshot if it exists.
@@ -209,6 +249,46 @@ class SnapshotStore:
                 return None
 
             with open(snapshot_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        finally:
+            conn.close()
+
+    def load_final_report(self, func_name: str, file_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Load a final vulnerability report if it exists.
+        """
+        conn = self._connect()
+        try:
+            if file_path:
+                cursor = conn.execute(
+                    "SELECT final_report_file FROM snapshots WHERE func_name = ? AND file_path = ?",
+                    (func_name, file_path)
+                )
+            else:
+                cursor = conn.execute(
+                    "SELECT final_report_file, file_path FROM snapshots WHERE func_name = ?",
+                    (func_name,)
+                )
+                
+            row = cursor.fetchone()
+            if not row or not row[0]:
+                return None
+            
+            if not file_path:
+                all_rows = [row] + cursor.fetchall()
+                if len(all_rows) > 1:
+                    paths = [r[1] for r in all_rows]
+                    logger.warning(
+                        f"Multiple final reports found for '{func_name}' in {paths}. "
+                        f"Using first match. Specify file_path for exact match."
+                    )
+                    
+            final_path = self.snapshot_dir / row[0]
+            if not final_path.exists():
+                logger.warning(f"Final report file missing for '{func_name}'")
+                return None
+
+            with open(final_path, "r", encoding="utf-8") as f:
                 return json.load(f)
         finally:
             conn.close()
@@ -292,30 +372,34 @@ class SnapshotStore:
         try:
             if file_path:
                 cursor = conn.execute(
-                    "SELECT snapshot_file FROM snapshots WHERE func_name = ? AND file_path = ?",
+                    "SELECT snapshot_file, final_report_file FROM snapshots WHERE func_name = ? AND file_path = ?",
                     (func_name, file_path)
                 )
                 row = cursor.fetchone()
                 if row:
                     snapshot_path = self.snapshot_dir / row[0]
-                    if snapshot_path.exists():
-                        snapshot_path.unlink()
-                    conn.execute(
+                    if snapshot_path.exists(): snapshot_path.unlink()
+                    if row[1]:
+                        final_path = self.snapshot_dir / row[1]
+                        if final_path.exists(): final_path.unlink()
+                conn.execute(
                         "DELETE FROM snapshots WHERE func_name = ? AND file_path = ?",
                         (func_name, file_path)
                     )
-                    conn.commit()
-                    logger.info(f"Deleted snapshot for '{func_name}' at '{file_path}'")
+                conn.commit()
+                logger.info(f"Deleted snapshot for '{func_name}' at '{file_path}'")
             else:
-                # Delete all snapshots for this function
+                # Delete all snapshots
                 cursor = conn.execute(
-                    "SELECT snapshot_file FROM snapshots WHERE func_name = ?",
+                    "SELECT snapshot_file, final_report_file FROM snapshots WHERE func_name = ?",
                     (func_name,)
                 )
                 for row in cursor.fetchall():
                     snapshot_path = self.snapshot_dir / row[0]
-                    if snapshot_path.exists():
-                        snapshot_path.unlink()
+                    if snapshot_path.exists(): snapshot_path.unlink()
+                    if row[1]:
+                        final_path = self.snapshot_dir / row[1]
+                        if final_path.exists(): final_path.unlink()
                 conn.execute("DELETE FROM snapshots WHERE func_name = ?", (func_name,))
                 conn.commit()
                 logger.info(f"Deleted all snapshots for '{func_name}'")
