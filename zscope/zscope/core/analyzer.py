@@ -340,11 +340,21 @@ class Analyzer:
             "version": "0.1.0"
         }
 
-        # Save results
+        # Save results to disk
         self.report_generator.save_json_report(final_report)
         self.report_generator.save_markdown_report(final_report)
 
-        return final_report.to_dict()
+        report_dict = final_report.to_dict()
+        
+        # Finally, persist the actual issues into the Snapshot DB to survive Ctrl+C
+        if self.snapshot_store:
+            self.snapshot_store.save_final_report(
+                entry_func, 
+                report_dict, 
+                agent_context["location"]
+            )
+
+        return report_dict
 
     def _get_tools(self) -> List[Any]:
         """Initialize and return the set of tools."""
