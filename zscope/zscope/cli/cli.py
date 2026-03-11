@@ -265,6 +265,20 @@ def main(
                 except Exception as e:
                     logger.warning(f"Failed to merge old batch report: {e}")
 
+            # Create a failsafe backup before overwriting existing report
+            if json_report_path.exists():
+                try:
+                    import shutil
+                    import time
+                    backup_dir = zscope_config.project.project_root / ".zscope_knowledge" / "backups"
+                    backup_dir.mkdir(parents=True, exist_ok=True)
+                    timestamp = time.strftime("%Y%m%d_%H%M%S")
+                    backup_path = backup_dir / f"zscope_batch_report_{timestamp}.json"
+                    shutil.copy2(json_report_path, backup_path)
+                    logger.info(f"Created failsafe backup of previous batch report at {backup_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to create backup of batch report: {e}")
+
             combined_report = parallel_analyzer.generate_combined_report(results, json_report_path)
             parallel_analyzer.generate_combined_markdown_report(results, md_report_path)
 
