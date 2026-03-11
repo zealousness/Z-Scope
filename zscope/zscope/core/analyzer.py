@@ -337,7 +337,7 @@ class Analyzer:
 
         final_report.metadata = {
             "timestamp": datetime.datetime.now().isoformat(),
-            "version": "0.1.0"
+            "version": "0.2.0"
         }
 
         # Save results to disk

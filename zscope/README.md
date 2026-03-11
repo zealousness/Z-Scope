@@ -1,4 +1,4 @@
-# Z-SCOPE
+# Z-SCOPE (v0.2.0)
 
 **Z-SCOPE** 是一款基于 **多智能体（Multi-Agent）** 协作的 C 项目深度静态分析工具。它通过模拟资深安全研究员的思考过程，利用大语言模型（LLM）对代码进行深度的语义建模与漏洞扫描，旨在精准发现内存安全、逻辑漏洞及跨文件资源管理问题。
 
@@ -12,7 +12,8 @@
 - **误报反馈闭环**：支持标记误报，下次扫描自动过滤已确认的误报。
 - **Web 仪表盘**：Alpine.js + DaisyUI 构建的交互式界面，集成扫描结果查看、用户配置管理和配置告警。
 - **批量函数并行扫描**：支持多 worker 并发，共享代码索引与快照数据库。
-- **语义快照缓存**：路径感知的复合主键（函数名+文件路径），加速重复审计。
+- **SQLite 原生级持久化**：分析产生的终极漏洞（Issues）将直接与语义模型一同被永久锁定存入本地 `.zscope_snapshots/snapshots.db`，确保灾难级恢复能力。
+- **自动报告备份护城河**：每次批量生成或覆盖 JSON 分析主报告前，自动创建带时间戳的增量备份至 `.zscope_knowledge/backups/` 目录。
 - **纯 YAML 驱动**：所有分析参数通过 `zscope.yaml` 统一定义，支持 `${ENV_VAR}` 环境变量展开。
 
 ## 系统架构
@@ -42,6 +43,15 @@ CLI 入口层 (cli.py --mode default|topdown|ruledriven|alert-verify)
     ├─ UnifiedBackend  — ClangBackend + SvfAnalyzer (共享 KnowledgeDB)
     └─ RegexBackend    — 正则回退
 ```
+
+## 数据安全与强制恢复机制 (New in v0.2.0)
+Z-Scope 内置了严密的数据防丢失功能：
+1. **快照级持久化**：所有的 `VulnerabilityAnalyzer` 输出（即真正发现的漏洞 JSON）都会在扫描结束的第一时间原封不动被硬编码打入 SQLite 数据库。哪怕程序异常终止，单函数的成果也绝对不会丢失。
+2. **热备份轮转**：在汇总合并最终的 `zscope_batch_report.json` 时，旧版本的文件会被自动加盖时间戳并归档至 `.zscope_knowledge/backups/` 目录下。
+3. **离线报告起死回生**：如果您不慎清空了所有的 JSON 与 SQLite 数据库，但手中恰好还有一份从网页前端导出的**离线 HTML 审计报告**（`offline_template.html`），可以使用根目录的救灾脚本瞬间将数据逆向复原进 SQLite 数据库中：
+   ```bash
+   python restore_from_html.py zscope_offline_report.html
+   ```
 
 ## 依赖说明
 
