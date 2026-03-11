@@ -31,6 +31,7 @@
         <div class="flex flex-wrap gap-2 items-center">
             <div class="tabs tabs-boxed bg-neutral-900">
                 <a class="tab tab-sm" :class="activeTab==='findings' && 'tab-active'" @click="activeTab='findings'">审计发现</a>
+                <a class="tab tab-sm" :class="activeTab==='project' && 'tab-active'" @click="activeTab='project'">项目配置</a>
                 <a class="tab tab-sm" :class="activeTab==='config' && 'tab-active'" @click="activeTab='config';loadAllConfigs()">用户配置</a>
                 <a class="tab tab-sm" :class="activeTab==='warnings' && 'tab-active'" @click="activeTab='warnings';loadWarnings()">告警</a>
             </div>
@@ -54,23 +55,8 @@
 
     <!-- ── Findings Tab ── -->
     <div x-show="activeTab==='findings'" class="grid grid-cols-12 gap-6 h-full">
-        <div class="col-span-4 xl:col-span-3 flex flex-col gap-4 overflow-hidden">
-            <div class="glass rounded-2xl p-4 space-y-3">
-                <div class="flex items-center justify-between">
-                    <h2 class="text-sm font-semibold uppercase tracking-wider opacity-60">配置 zscope.yaml</h2>
-                    <button @click="loadConfig()" class="btn btn-ghost btn-xs">重新载入</button>
-                </div>
-                <textarea
-                    class="textarea textarea-bordered w-full min-h-[140px] text-xs code-font"
-                    placeholder="在此编辑 zscope.yaml 内容"
-                    x-model="configContent"></textarea>
-                <div class="flex items-center justify-between">
-                    <span class="text-xs opacity-60" x-text="configStatus"></span>
-                    <button @click="saveConfig()" class="btn btn-secondary btn-xs">保存配置</button>
-                </div>
-            </div>
-
-            <div class="glass rounded-2xl p-4 space-y-3">
+        <div class="col-span-4 xl:col-span-3 flex flex-col gap-4 overflow-hidden h-full">
+            <div class="glass rounded-2xl p-4 space-y-3 flex flex-col h-full">
                 <div class="flex items-center justify-between">
                     <h2 class="text-sm font-semibold uppercase tracking-wider opacity-60">审计发现</h2>
                     <span class="text-xs opacity-60"><span x-text="filteredFindings().length"></span> / <span x-text="findings.length"></span></span>
@@ -92,7 +78,7 @@
                         <option value="validation_status">验证状态</option>
                     </select>
                 </div>
-                <div class="flex-1 overflow-y-auto pr-2 space-y-2 max-h-[45vh]">
+                <div class="flex-1 overflow-y-auto pr-2 space-y-2 min-h-0">
                     <template x-for="finding in filteredFindings()" :key="finding.uid">
                         <div
                             @click="selectFinding(finding)"
@@ -181,6 +167,24 @@
             </template>
         </div>
     </div><!-- end findings tab -->
+
+    <!-- ── Project Config Tab ── -->
+    <div x-show="activeTab==='project'" class="h-full overflow-auto">
+        <div class="glass rounded-2xl p-6 space-y-4 max-w-5xl mx-auto flex flex-col h-[calc(100vh-140px)]">
+            <div class="flex items-center justify-between">
+                <h2 class="text-lg font-semibold uppercase tracking-wider opacity-80">配置 zscope.yaml</h2>
+                <button @click="loadConfig()" class="btn btn-ghost btn-sm">重新载入</button>
+            </div>
+            <textarea
+                class="textarea textarea-bordered w-full flex-1 text-sm code-font"
+                placeholder="在此编辑 zscope.yaml 内容"
+                x-model="configContent"></textarea>
+            <div class="flex items-center justify-between">
+                <span class="text-sm opacity-60" x-text="configStatus"></span>
+                <button @click="saveConfig()" class="btn btn-secondary">保存配置</button>
+            </div>
+        </div>
+    </div><!-- end project config tab -->
 
     <!-- ── Config Tab ── -->
     <div x-show="activeTab==='config'" class="h-full overflow-auto">
