@@ -32,6 +32,9 @@ project:
     - name: validator_agent
       enabled: true
       llm_ref: smart_model
+    - name: issue_reconciler_agent
+      enabled: true
+      llm_ref: smart_model
 
 indexing:
   backend: joern

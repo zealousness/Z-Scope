@@ -218,7 +218,7 @@ class LLMClient:
                 return {"content": content, "conversation": conversation, "iterations": iterations}
                 
             if finish_reason == "length":
-                logger.warning(f"Model {self.model_name} output truncated! Prompting to continue...")
+                logger.warning(f"Model {self.models[0] if self.models else 'unknown'} output truncated! Prompting to continue...")
                 conversation.append({"role": "user", "content": "请继续"})
                 continue
 

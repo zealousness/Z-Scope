@@ -20,6 +20,10 @@ project:
     - name: vulnerability_analyzer
       task: "查找逻辑漏洞、内存安全问题和并发风险。"
       enabled: true
+    - name: issue_reconciler_agent
+      enabled: true
+      llm_ref: default
+      mode: both
 
 indexing:
   backend: joern  # joern | clang | unified | regex

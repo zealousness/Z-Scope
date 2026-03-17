@@ -207,6 +207,42 @@ class Analyzer:
         issues = []
         notes = []
 
+        historical_report = self.snapshot_store.load_final_report(entry_func, impl_result['file']) if self.snapshot_store else None
+        hist_issues = historical_report.get("issues", []) if historical_report else []
+        valid_hist_issues = [iss for iss in hist_issues if iss.get("validation_status") in ("validated", "pending")]
+        
+        needs_refresh = True
+        reason = "no_snapshot"
+        if self.snapshot_store:
+            needs_refresh, reason = self.snapshot_store.needs_refresh(entry_func, impl_result['code'], impl_result['file'])
+        
+        is_code_unchanged = (not needs_refresh and reason != "no_snapshot")
+        
+        verified_hist_issues = []
+        if not is_code_unchanged and valid_hist_issues:
+            logger.info(f"Code changed for {entry_func}. Verifying if {len(valid_hist_issues)} historical issues still exist...")
+            recon_agent_cfg = next((a for a in self.config.project.agents if a.name == "issue_reconciler_agent"), None)
+            recon_llm_ref = recon_agent_cfg.llm_ref if recon_agent_cfg and recon_agent_cfg.llm_ref else "default"
+            recon_client = self.llm_clients.get(recon_llm_ref, self.llm_clients.get("default"))
+            
+            from ..agents.issue_reconciler.agent import IssueReconcilerAgent
+            reconciler_agent = IssueReconcilerAgent(recon_client)
+            
+            for hist_issue in valid_hist_issues:
+                input_data = {
+                    "mode": "verify_fix",
+                    "historical_issue": hist_issue,
+                    "new_code": impl_result['code']
+                }
+                resp = reconciler_agent.run(input_data)
+                if resp.success and resp.data.get("still_exists"):
+                    hist_issue["location"] = resp.data.get("new_location", hist_issue.get("location"))
+                    verified_hist_issues.append(hist_issue)
+                else:
+                    logger.info(f"Historical issue {hist_issue.get('id')} fixed in new code. Dropping.")
+        else:
+            verified_hist_issues = valid_hist_issues
+
         # 1. Run Semantic Modeler (modeling logic)
         sm_agent_cfg = next((a for a in self.config.project.agents if a.name == "semantic_modeler"), None)
         sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
@@ -242,8 +278,33 @@ class Analyzer:
             v_resp = analyzer_agent.run(agent_context, max_iterations=self.config.analysis.max_tool_iterations)
             
             if v_resp.success:
-                new_issues = v_resp.data.get("issues", [])
-                logger.info(f"Vulnerability Analyzer found {len(new_issues)} issues for task: {agent_cfg.task}")
+                raw_new_issues = v_resp.data.get("issues", [])
+                logger.info(f"Vulnerability Analyzer found {len(raw_new_issues)} issues for task: {agent_cfg.task}")
+                
+                new_issues = []
+                if raw_new_issues and verified_hist_issues:
+                    logger.info(f"Deduplicating {len(raw_new_issues)} new issues against {len(verified_hist_issues)} historical issues...")
+                    recon_agent_cfg = next((a for a in self.config.project.agents if a.name == "issue_reconciler_agent"), None)
+                    recon_llm_ref = recon_agent_cfg.llm_ref if recon_agent_cfg and recon_agent_cfg.llm_ref else "default"
+                    recon_client = self.llm_clients.get(recon_llm_ref, self.llm_clients.get("default"))
+                    
+                    from ..agents.issue_reconciler.agent import IssueReconcilerAgent
+                    reconciler_agent = IssueReconcilerAgent(recon_client)
+                    
+                    for raw_issue in raw_new_issues:
+                        input_data = {
+                            "mode": "deduplicate",
+                            "historical_issues": verified_hist_issues,
+                            "new_issue": raw_issue
+                        }
+                        resp = reconciler_agent.run(input_data)
+                        if resp.success and resp.data.get("is_duplicate"):
+                            matched_id = resp.data.get("matched_historical_id")
+                            logger.info(f"New issue corresponds to historical issue {matched_id}. Skipping validation.")
+                        else:
+                            new_issues.append(raw_issue)
+                else:
+                    new_issues = raw_new_issues
                 
                 # Check if validator agent is enabled
                 validator_enabled = any(
@@ -315,11 +376,13 @@ class Analyzer:
                 any_failure = True
                 failure_msg = v_resp.error
 
-        # 3. Resolve locations using snippets
-        self._resolve_issue_locations(issues)
+        # 3. Combine newly found and validated issues with verified historical issues
+        all_issues = issues + verified_hist_issues
 
-        # 4. Filter false positives
-        issues = self._filter_false_positives(issues)
+        # 4. Resolve locations for issues without explicit locations
+        self._resolve_issue_locations(all_issues)
+        
+        issues = all_issues
 
         # Construct Final Report
         if any_failure and not issues:
@@ -571,18 +634,4 @@ Output a JSON of type 'snapshot_refresh_decision'.
             relative_file = func_info["file"]
             issue["location"] = f"{relative_file}:{line_suffix}"
 
-    def _filter_false_positives(self, issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Filter out issues that have been marked as false positives."""
-        filtered = []
-        for issue in issues:
-            if not isinstance(issue, dict):
-                filtered.append(issue)
-                continue
-            func = issue.get("function", "")
-            loc = issue.get("location", "")
-            subcat = issue.get("subcategory", "")
-            if self.user_config.is_false_positive(func, loc, subcat):
-                logger.info(f"Filtering false positive: {issue.get('id')} in {func}")
-                continue
-            filtered.append(issue)
-        return filtered
+
