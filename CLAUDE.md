@@ -101,8 +101,9 @@ CLI 入口层 (cli.py --mode default|topdown|ruledriven)
 | 语义建模 Agent | `agents/semantic_modeler/` | 理解函数语义、识别关键路径，输出语义模型 |
 | 漏洞扫描 Agent | `agents/vulnerability_analyzer/` | 基于语义模型发现潜在缺陷 |
 | 验证 Agent | `agents/validator_agent/` | 二次确认疑似缺陷的真实性（confirmed/rejected） |
+| Issue Reconciler Agent | `agents/issue_reconciler/` | 增量扫描缺陷去重与修复状态跟踪 |
 
-每个 Agent 有独立的 system prompt 和输出 schema。`agents/analyst_agent/` 为遗留/备用 Agent。
+每个 Agent 有独立的 system prompt 和输出 schema。
 
 ### 用户辅助配置（UserConfigStore）
 

@@ -1,15 +1,15 @@
-# Z-SCOPE (v0.2.0)
+# Z-SCOPE (v0.5.0)
 
 **Z-SCOPE** 是一款基于 **多智能体（Multi-Agent）** 协作的 C 项目深度静态分析工具。它通过模拟资深安全研究员的思考过程，利用大语言模型（LLM）对代码进行深度的语义建模与漏洞扫描，旨在精准发现内存安全、逻辑漏洞及跨文件资源管理问题。
 
 ## 核心特性
 
-- **多智能体分治**：采用 `语义建模 Agent`、`漏洞扫描 Agent` 与 `验证 Agent` 独立协作，深度挖掘逻辑缺陷。
+- **多智能体分治**：采用 `语义建模 Agent`、`漏洞扫描 Agent`、`Issue Reconciler Agent` 与 `验证 Agent` 独立协作，深度挖掘并去重逻辑缺陷。
 - **四种分析模式**：默认模式（指定入口函数）、自上而下模式（从 `.h` 公开接口出发）、规则驱动模式（Joern 规则 + LLM 验证）、告警验证模式（SARIF 导入 + LLM 二次确认）。
 - **可插拔后端架构**：支持 Joern CPG、Clang libclang、Unified（Clang + SVF）、Regex 四种后端，按需选择分析深度。
 - **12 个分析工具**：函数源码获取、调用图分析、结构体查询、污点追踪、指针别名查询、深度调用上下文聚合等。
 - **用户辅助配置系统**：通过 WebUI 管理外部函数描述、配对函数、函数指针指向等信息，自动注入分析上下文。
-- **误报反馈闭环**：支持标记误报，下次扫描自动过滤已确认的误报。
+- **智能增量分析与缺陷去重**：支持断点续传（`--resume-from`）和基于语义哈希的增量扫描。自动跟踪和验证缺陷随代码流转的修复状态。
 - **Web 仪表盘**：Alpine.js + DaisyUI 构建的交互式界面，集成扫描结果查看、用户配置管理和配置告警。
 - **批量函数并行扫描**：支持多 worker 并发，共享代码索引与快照数据库。
 - **SQLite 原生级持久化**：分析产生的终极漏洞（Issues）将直接与语义模型一同被永久锁定存入本地 `.zscope_snapshots/snapshots.db`，确保灾难级恢复能力。
@@ -44,7 +44,7 @@ CLI 入口层 (cli.py --mode default|topdown|ruledriven|alert-verify)
     └─ RegexBackend    — 正则回退
 ```
 
-## 数据安全与强制恢复机制 (New in v0.2.0)
+## 数据安全与强制恢复机制
 Z-Scope 内置了严密的数据防丢失功能：
 1. **快照级持久化**：所有的 `VulnerabilityAnalyzer` 输出（即真正发现的漏洞 JSON）都会在扫描结束的第一时间原封不动被硬编码打入 SQLite 数据库。哪怕程序异常终止，单函数的成果也绝对不会丢失。
 2. **热备份轮转**：在汇总合并最终的 `zscope_batch_report.json` 时，旧版本的文件会被自动加盖时间戳并归档至 `.zscope_knowledge/backups/` 目录下。
@@ -218,6 +218,9 @@ project:
     - name: vulnerability_analyzer
       task: "查找逻辑漏洞、内存安全问题和并发风险。"
       enabled: true
+    - name: issue_reconciler_agent
+      enabled: true
+      llm_ref: default
 
 indexing:
   backend: joern             # joern | clang | unified | regex
@@ -355,6 +358,10 @@ python tmp/test_integration.py
 ```
 
 ## 更新日志
+
+### v0.5.0
+- **引入 IssueReconcilerAgent 增量分析优化**。支持断点续传（`--resume-from`）特性的完善支持。利用大语言模型（LLM）精准跟踪源码变更情况下历史已验证缺陷的存在状态；对扫描阶段产生的新缺陷进行语义级别的去重判决。
+- **全新的缺陷生命周期管理**：废弃了传统的误报（False Positive）规则引擎，转而强化基于 `validation_status`（Pending/Validated/Rejected）的缺陷验证闭环流转，所有验证状态的修正现在通过全新的 SQLite 引擎强制原子级落盘。
 
 ### v0.4.2 (2026-03-05)
 - **绝对行号注入法**：摒弃了大模型容易产生幻觉的相对偏移（Offset）行号计算，采用在源码侧直接注入绝对行号前缀的方式，将报告的定位精度提升至 100% 物理行级。
