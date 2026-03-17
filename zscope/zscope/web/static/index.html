@@ -152,10 +152,6 @@
                             class="textarea textarea-bordered w-full min-h-[140px]"
                             placeholder="填写 validation_reasoning（支持多行文本）"
                             x-model="selectedFinding.validation_reasoning"></textarea>
-                        <div class="flex items-center gap-2 mt-2">
-                            <input class="input input-bordered input-sm flex-1" placeholder="误报原因" x-model="fpReason">
-                            <button class="btn btn-warning btn-sm" @click="markFalsePositive(selectedFinding)">标记为误报</button>
-                        </div>
                     </div>
                 </div>
             </template>
@@ -194,7 +190,6 @@
                 <a class="tab" :class="configSubTab==='paired' && 'tab-active'" @click="configSubTab='paired'">配对函数</a>
                 <a class="tab" :class="configSubTab==='pointers' && 'tab-active'" @click="configSubTab='pointers'">函数指针</a>
                 <a class="tab" :class="configSubTab==='intents' && 'tab-active'" @click="configSubTab='intents'">函数意图</a>
-                <a class="tab" :class="configSubTab==='falsepositives' && 'tab-active'" @click="configSubTab='falsepositives';loadFalsePositives()">误报管理</a>
                 <a class="tab" :class="configSubTab==='cpg' && 'tab-active'" @click="configSubTab='cpg'">CPG 管理</a>
             </div>
 
@@ -361,28 +356,6 @@
                 </table>
             </div>
 
-            <!-- False Positives Management -->
-            <div x-show="configSubTab==='falsepositives'" class="space-y-3">
-                <p class="text-xs opacity-60">已标记的误报会在下次扫描时自动过滤。</p>
-                <template x-if="falsePositives.length===0">
-                    <p class="opacity-40">暂无已标记的误报</p>
-                </template>
-                <table class="table table-sm" x-show="falsePositives.length>0">
-                    <thead><tr><th>函数</th><th>位置</th><th>子类</th><th>原因</th><th>操作</th></tr></thead>
-                    <tbody>
-                        <template x-for="item in falsePositives" :key="item.id">
-                            <tr>
-                                <td x-text="item.function"></td>
-                                <td x-text="item.location"></td>
-                                <td x-text="item.subcategory"></td>
-                                <td class="max-w-xs truncate" x-text="item.reason"></td>
-                                <td><button class="btn btn-error btn-xs" @click="deleteFalsePositive(item.id)">删除</button></td>
-                            </tr>
-                        </template>
-                    </tbody>
-                </table>
-            </div>
-
             <!-- CPG Management -->
             <div x-show="configSubTab==='cpg'" class="space-y-3">
                 <div class="collapse collapse-arrow bg-neutral-900 rounded-xl">
@@ -455,8 +428,6 @@
                 cpgStatusClass: 'badge-ghost',
                 cpgDotClass: 'bg-ghost',
                 warnings: [],
-                fpReason: '',
-                falsePositives: [],
                 configData: { external_functions:[], paired_functions:[], pointer_targets:[], function_intents:[] },
                 extForm: { func_name:'', library:'', description:'', return_semantics:'', memory_behavior:'', concurrency_behavior:'' },
                 pairedForm: { category:'memory', acquire_func:'', release_func:'', description:'' },
@@ -748,26 +719,6 @@
                         body:'{}'
                     }).then(r=>r.json()).then(d=>{
                         if(d.success) this.warnings=[];
-                    });
-                },
-
-                // ── False Positive ──
-                loadFalsePositives() {
-                    fetch('/api/false_positives').then(r=>r.json()).then(d=>{
-                        this.falsePositives = d.items || [];
-                    }).catch(()=>{});
-                },
-                deleteFalsePositive(id) {
-                    fetch('/api/false_positives',{method:'DELETE',headers:{'Content-Type':'application/json'},
-                        body:JSON.stringify({id})
-                    }).then(r=>r.json()).then(()=>this.loadFalsePositives());
-                },
-                markFalsePositive(finding) {
-                    fetch('/api/mark_false_positive',{method:'POST',headers:{'Content-Type':'application/json'},
-                        body:JSON.stringify({function:finding.function,location:finding.location,
-                            subcategory:finding.subcategory,reason:this.fpReason,issue_id:finding.id||''})
-                    }).then(r=>r.json()).then(d=>{
-                        if(d.success) { alert('已标记为误报'); this.fpReason=''; }
                     });
                 },
 

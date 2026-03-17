@@ -74,17 +74,6 @@ class UserConfigStore:
                     PRIMARY KEY (func_name, file_path)
                 );
 
-                CREATE TABLE IF NOT EXISTS false_positives (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    issue_id TEXT DEFAULT '',
-                    function TEXT NOT NULL,
-                    location TEXT NOT NULL,
-                    subcategory TEXT DEFAULT '',
-                    reason TEXT DEFAULT '',
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(function, location, subcategory)
-                );
-
                 CREATE TABLE IF NOT EXISTS config_warnings (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     warning_type TEXT NOT NULL,
@@ -275,51 +264,6 @@ class UserConfigStore:
             conn.execute(
                 "DELETE FROM function_intent WHERE func_name = ? AND file_path = ?",
                 (func_name, file_path))
-            conn.commit()
-        finally:
-            conn.close()
-
-    # ── False Positives ──
-
-    def add_false_positive(self, function: str, location: str,
-                           subcategory: str = "", reason: str = "",
-                           issue_id: str = "") -> None:
-        conn = self._connect()
-        try:
-            conn.execute(
-                """INSERT OR REPLACE INTO false_positives
-                   (issue_id, function, location, subcategory, reason, created_at)
-                   VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
-                (issue_id, function, location, subcategory, reason))
-            conn.commit()
-        finally:
-            conn.close()
-
-    def is_false_positive(self, function: str, location: str,
-                          subcategory: str = "") -> bool:
-        conn = self._connect()
-        try:
-            row = conn.execute(
-                """SELECT 1 FROM false_positives
-                   WHERE function = ? AND location = ? AND subcategory = ?""",
-                (function, location, subcategory)).fetchone()
-            return row is not None
-        finally:
-            conn.close()
-
-    def list_false_positives(self) -> List[Dict[str, Any]]:
-        conn = self._connect()
-        try:
-            rows = conn.execute(
-                "SELECT * FROM false_positives ORDER BY created_at DESC").fetchall()
-            return [self._row_to_dict(r) for r in rows]
-        finally:
-            conn.close()
-
-    def delete_false_positive(self, id: int) -> None:
-        conn = self._connect()
-        try:
-            conn.execute("DELETE FROM false_positives WHERE id = ?", (id,))
             conn.commit()
         finally:
             conn.close()

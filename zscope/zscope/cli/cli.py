@@ -46,6 +46,7 @@ def main(
         logger.info("Launching dashboard...")
         from ..web.server import run_server
         from ..config.user_config_store import UserConfigStore
+        from ..core.snapshot_store import SnapshotStore
 
         if not config:
             config = Path("zscope.yaml")
@@ -62,10 +63,13 @@ def main(
             )
             db_dir = Path(zscope_config.analysis.user_config_db) if zscope_config.analysis.user_config_db else Path(zscope_config.analysis.snapshot_dir)
             ucs = UserConfigStore(db_dir)
+            snapshot_store = SnapshotStore(Path(zscope_config.analysis.snapshot_dir))
+            
             run_server(
                 code_index=code_index,
                 user_config_store=ucs,
                 project_config=zscope_config.project,
+                snapshot_store=snapshot_store,
             )
         else:
             click.echo("Warning: No config file found, dashboard running without backend/config support")

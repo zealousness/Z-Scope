@@ -14,6 +14,7 @@ ALLOWED_VALIDATION_STATUSES = {"validated", "pending", "rejected"}
 _user_config_store = None
 _code_index = None
 _project_config = None
+_snapshot_store = None
 
 
 def _empty_report() -> Dict[str, Any]:
@@ -102,6 +103,41 @@ def apply_validation_updates(report, updates):
     for issue in report.get("findings", []):
         update_issue(issue)
 
+def apply_validation_to_snapshots(updates):
+    global _snapshot_store
+    if not _snapshot_store:
+        return
+        
+    func_updates = {}
+    for issue in updates:
+        func = issue.get("function")
+        if func:
+            func_updates.setdefault(func, []).append(issue)
+            
+    for func, issues_to_update in func_updates.items():
+        file_path = None
+        for issue in issues_to_update:
+            loc = issue.get("location", "")
+            if ":" in loc:
+                file_path = loc.split(":")[0]
+                break
+                
+        old_report = _snapshot_store.load_final_report(func, file_path)
+        if old_report:
+            update_map = {issue_key(iss): normalize_validation(iss) for iss in issues_to_update}
+            changed = False
+            for old_issue in old_report.get("issues", []):
+                key = (old_issue.get("id"), old_issue.get("function"), old_issue.get("location"), old_issue.get("subcategory"))
+                if key in update_map:
+                    status, reasoning = update_map[key]
+                    old_issue["validation_status"] = status
+                    old_issue["validation_reasoning"] = reasoning
+                    changed = True
+            
+            if changed:
+                fake_location = f"{file_path}:0" if file_path else "unknown:0"
+                _snapshot_store.save_final_report(func, old_report, fake_location)
+
 
 class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -142,8 +178,6 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
             self._handle_cpg_status()
         elif self.path == "/api/user_config/warnings":
             self._handle_get_warnings()
-        elif self.path == "/api/false_positives":
-            self._handle_get_false_positives()
         elif self.path.startswith("/api/user_config/"):
             self._handle_user_config_get()
         else:
@@ -170,14 +204,13 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json({"success": False, "error": "Issues must be a list"}, status=400)
                 return
             apply_validation_updates(report, updates)
+            apply_validation_to_snapshots(updates)
             save_report(report)
             self._send_json({"success": True})
         elif self.path == "/api/build_cpg":
             self._handle_build_cpg(payload)
         elif self.path == "/api/clear_warnings":
             self._handle_clear_warnings()
-        elif self.path == "/api/mark_false_positive":
-            self._handle_mark_false_positive(payload)
         elif self.path.startswith("/api/user_config/"):
             self._handle_user_config_post(payload)
         else:
@@ -190,9 +223,7 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
             payload = json.loads(post_data or b"{}")
         except json.JSONDecodeError:
             payload = {}
-        if self.path == "/api/false_positives":
-            self._handle_delete_false_positive(payload)
-        elif self.path.startswith("/api/user_config/"):
+        if self.path.startswith("/api/user_config/"):
             self._handle_user_config_delete(payload)
         else:
             self.send_error(404)
@@ -231,41 +262,6 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"success": True, "status": "building"})
         else:
             self._send_json({"success": False, "error": "Current backend does not support async CPG build"}, status=400)
-
-    # ── False positive handlers ──
-
-    def _handle_mark_false_positive(self, payload):
-        global _user_config_store
-        if not _user_config_store:
-            self._send_json({"success": False, "error": "Config store not available"}, status=400)
-            return
-        _user_config_store.add_false_positive(
-            function=payload.get("function", ""),
-            location=payload.get("location", ""),
-            subcategory=payload.get("subcategory", ""),
-            reason=payload.get("reason", ""),
-            issue_id=payload.get("issue_id", ""),
-        )
-        self._send_json({"success": True})
-
-    def _handle_delete_false_positive(self, payload):
-        global _user_config_store
-        if not _user_config_store:
-            self._send_json({"success": False, "error": "Config store not available"}, status=400)
-            return
-        fp_id = payload.get("id")
-        if fp_id is None:
-            self._send_json({"success": False, "error": "Missing field: id"}, status=400)
-            return
-        _user_config_store.delete_false_positive(fp_id)
-        self._send_json({"success": True})
-
-    def _handle_get_false_positives(self):
-        global _user_config_store
-        if not _user_config_store:
-            self._send_json({"items": []})
-            return
-        self._send_json({"items": _user_config_store.list_false_positives()})
 
     def _handle_clear_warnings(self):
         global _user_config_store
@@ -372,11 +368,12 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"success": False, "error": f"Missing field: {e}"}, status=400)
 
 
-def run_server(code_index=None, user_config_store=None, project_config=None):
-    global _user_config_store, _code_index, _project_config
+def run_server(code_index=None, user_config_store=None, project_config=None, snapshot_store=None):
+    global _user_config_store, _code_index, _project_config, _snapshot_store
     _user_config_store = user_config_store
     _code_index = code_index
     _project_config = project_config
+    _snapshot_store = snapshot_store
     WEB_DIR.mkdir(parents=True, exist_ok=True)
 
     with socketserver.TCPServer(("", PORT), ZScopeHandler) as httpd:
