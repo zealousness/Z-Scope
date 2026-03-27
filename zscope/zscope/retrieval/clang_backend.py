@@ -136,7 +136,7 @@ class ClangBackend(CodeBackend):
     def _collect_source_files(self) -> List[Path]:
         """收集源码目录下所有 C/C++ 文件。"""
         files = []
-        for ext in ("*.c", "*.cpp", "*.cc", "*.h", "*.hpp"):
+        for ext in ("*.c", "*.cpp", "*.cc", "*.cxx", "*.h", "*.hpp", "*.ph", "*.inc", "*.inl"):
             files.extend(self._source_path.rglob(ext))
         return sorted(files)
 

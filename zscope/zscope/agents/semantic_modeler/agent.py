@@ -67,31 +67,65 @@ class SemanticModeler(BaseAgent):
             content = result["content"]
             conversation = result.get("conversation", [])
 
-            from ...common.utils import extract_json_blocks, is_valid_snapshot
-            
-            # Search in result content and history
-            all_text_sources = [content]
-            if "reasoning_content" in result:
-                all_text_sources.append(result["reasoning_content"])
-                
-            for msg in reversed(conversation):
-                if msg.get("role") == "assistant":
-                    all_text_sources.append(msg.get("content", ""))
-                    if "reasoning_content" in msg:
-                        all_text_sources.append(msg.get("reasoning_content", ""))
-            
-            for text in all_text_sources:
-                if not text: continue
-                candidates = extract_json_blocks(text)
-                for data in candidates:
-                    if is_valid_snapshot(data):
-                        return AgentResponse(success=True, data=data)
-                    if "function_snapshot" in data and is_valid_snapshot(data["function_snapshot"]):
-                        return AgentResponse(success=True, data=data["function_snapshot"])
+            parsed = self._try_extract_snapshot(content, result, conversation)
+            if parsed:
+                return AgentResponse(success=True, data=parsed)
+
+            # ── JSON Parse Retry Loop ──
+            MAX_JSON_RETRIES = 2
+            for retry in range(1, MAX_JSON_RETRIES + 1):
+                logger.warning(
+                    f"[Retry {retry}/{MAX_JSON_RETRIES}] Failed to parse snapshot JSON for {func_name}. "
+                    f"Asking LLM to re-output valid JSON..."
+                )
+                conversation.append({
+                    "role": "user",
+                    "content": (
+                        "你上一轮的输出不包含合法的JSON语义快照。请严格按照之前给出的Schema格式，"
+                        "用 ```json ... ``` 包裹重新输出完整的函数语义快照，不要输出任何其他内容。"
+                    )
+                })
+
+                retry_response = self.llm_client.chat_completion(conversation, tools=None)
+                retry_choice = retry_response.get("choices", [{}])[0]
+                retry_message = retry_choice.get("message", {})
+                retry_content = retry_message.get("content", "")
+                conversation.append(retry_message)
+
+                parsed = self._try_extract_snapshot(retry_content, {}, conversation)
+                if parsed:
+                    logger.info(f"[Retry {retry}] Successfully parsed snapshot JSON for {func_name}")
+                    return AgentResponse(success=True, data=parsed)
             
             last_msg_debug = json.dumps(conversation[-1] if conversation else {}, ensure_ascii=False)
-            logger.error(f"Failed to parse snapshot JSON for {func_name}. Content: {content!r} | Last API Msg: {last_msg_debug}")
+            logger.error(f"Failed to parse snapshot JSON for {func_name} after {MAX_JSON_RETRIES} retries. Last API Msg: {last_msg_debug}")
             return AgentResponse(success=False, data={}, error="Failed to parse snapshot JSON. See logs for full content.")
             
         except Exception as e:
             return AgentResponse(success=False, data={}, error=str(e))
+
+    def _try_extract_snapshot(self, content: str, result: Dict[str, Any], conversation: list) -> Any:
+        """Try to extract a valid snapshot JSON from LLM output. Returns parsed data or None."""
+        from ...common.utils import extract_json_blocks, is_valid_snapshot
+
+        all_text_sources = [content]
+        if result.get("reasoning_content"):
+            all_text_sources.append(result["reasoning_content"])
+
+        for msg in reversed(conversation):
+            if msg.get("role") == "assistant":
+                all_text_sources.append(msg.get("content", ""))
+                if "reasoning_content" in msg:
+                    all_text_sources.append(msg.get("reasoning_content", ""))
+
+        for text in all_text_sources:
+            if not text:
+                continue
+            candidates = extract_json_blocks(text)
+            for data in candidates:
+                if is_valid_snapshot(data):
+                    return data
+                if "function_snapshot" in data and is_valid_snapshot(data["function_snapshot"]):
+                    return data["function_snapshot"]
+        return None
+

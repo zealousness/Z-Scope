@@ -13,7 +13,11 @@ class GetFunctionSnapshotTool(BaseTool):
         self.snapshot_store = snapshot_store
 
     def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        func_name = arguments.get("func_name")
+        from ..common.utils import sanitize_func_name
+        func_name = sanitize_func_name(arguments.get("func_name", ""))
+        if not func_name:
+            return {"success": False, "error": "Function name is empty"}
+            
         snapshot = self.snapshot_store.load_snapshot(func_name)
         if snapshot is None:
             return {"success": True, "data": None, "message": "No snapshot exists"}
