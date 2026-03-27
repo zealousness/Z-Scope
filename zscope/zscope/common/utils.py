@@ -23,6 +23,22 @@ def compute_code_hash(code: str) -> str:
     """Compute SHA256 hash of code content."""
     return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
+def sanitize_func_name(func_name: str) -> str:
+    """
+    Sanitize function name passed by LLM.
+    Removes keywords like 'static', 'inline', 'void', spaces, and parentheses.
+    Example: "static void my_func()" -> "my_func"
+    """
+    if not func_name:
+        return ""
+    # Remove everything from '(' onwards
+    name = str(func_name).split('(')[0].strip()
+    # If the LLM passed a full signature snippet, take the last word
+    # e.g. "static inline void* my_func"
+    name = name.split()[-1]
+    # Remove pointer asterisks
+    name = name.strip('*&')
+    return name
 
 def compute_semantic_fingerprint(code: str) -> str:
     """

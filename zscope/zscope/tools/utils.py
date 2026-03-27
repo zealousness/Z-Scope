@@ -85,7 +85,8 @@ class GetCallersTool(BaseTool):
         self.code_index = code_index
 
     def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        func_name = arguments.get("func_name")
+        from ..common.utils import sanitize_func_name
+        func_name = sanitize_func_name(arguments.get("func_name", ""))
         limit = arguments.get("limit", 20)
         callers = self.code_index.get_callers(func_name, limit=limit)
         return {"success": True, "data": {"callers": callers, "count": len(callers)}}
@@ -153,7 +154,8 @@ class GetCallGraphTool(BaseTool):
         self.code_index = code_index
 
     def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        func_name = arguments.get("func_name")
+        from ..common.utils import sanitize_func_name
+        func_name = sanitize_func_name(arguments.get("func_name", ""))
         depth = arguments.get("depth", 1)
         limit = arguments.get("limit", 30)
         result = {"function": func_name, "callers": [], "callees": []}
@@ -218,7 +220,8 @@ class GetDataFlowTool(BaseTool):
         self.code_index = code_index
 
     def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        source_func = arguments.get("source_func")
+        from ..common.utils import sanitize_func_name
+        source_func = sanitize_func_name(arguments.get("source_func", ""))
         source_param = arguments.get("source_param")
         sink_pattern = arguments.get("sink_pattern")
         flows = self.code_index.get_data_flow(source_func, source_param, sink_pattern)
@@ -254,7 +257,8 @@ class FindFunctionPointersTool(BaseTool):
         self.code_index = code_index
 
     def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        func_name = arguments.get("func_name")
+        from ..common.utils import sanitize_func_name
+        func_name = sanitize_func_name(arguments.get("func_name", ""))
         results = self.code_index.find_function_pointers(func_name)
         return {"success": True, "data": {"references": results, "count": len(results)}}
 

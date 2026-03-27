@@ -13,7 +13,11 @@ class GetFunctionImplTool(BaseTool):
         self.code_index = code_index
 
     def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        func_name = arguments.get("func_name")
+        from ..common.utils import sanitize_func_name
+        func_name = sanitize_func_name(arguments.get("func_name", ""))
+        if not func_name:
+            return {"success": False, "error": "Function name is empty"}
+            
         max_lines = arguments.get("max_lines", 200)
         
         result = self.code_index.get_function_impl(func_name, max_lines=max_lines)

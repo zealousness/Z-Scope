@@ -172,7 +172,7 @@ class CodeIndex:
     def _build_index_regex(self) -> None:
         """Build index using regex pattern matching (fallback)."""
         all_files = []
-        for ext in ["*.c", "*.cpp", "*.h", "*.hpp", "*.cc"]:
+        for ext in ["*.c", "*.cpp", "*.cc", "*.cxx", "*.h", "*.hpp", "*.ph", "*.inc", "*.inl"]:
             try:
                 # Use a generator and handle permission/symlink errors gracefully
                 for p in self.source_root.rglob(ext):
