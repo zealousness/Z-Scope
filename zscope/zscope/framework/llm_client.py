@@ -3,6 +3,7 @@ Enhanced LLM client with model fallback support.
 """
 
 import ast
+import random
 import re
 import json
 import logging
@@ -158,9 +159,9 @@ class LLMClient:
                     logger.warning(f"Model {model} failed (attempt {attempt + 1}): {error_msg}")
                     
                     if response.status_code >= 500 or response.status_code == 429:
-                        # Exponential backoff
-                        wait_time = (2**attempt) + 1 # Add 1s buffer
-                        logger.warning(f"Rate limited or server error, waiting {wait_time}s...")
+                        # Capped exponential backoff with jitter
+                        wait_time = min(2**attempt, 10) + random.uniform(0, 3)
+                        logger.warning(f"Rate limited or server error, waiting {wait_time:.1f}s...")
                         time.sleep(wait_time)
                         continue
                     else:
@@ -168,9 +169,14 @@ class LLMClient:
                         break # Try next model
                         
                 except Exception as e:
-                    logger.warning(f"Model {model} request error: {e}")
+                    wait_time = min(2**attempt, 10) + random.uniform(0, 3)
+                    is_last = attempt >= self.max_retries
+                    if is_last:
+                        logger.warning(f"Model {model} request error (attempt {attempt + 1}/{self.max_retries + 1}, final): {e}")
+                    else:
+                        logger.warning(f"Model {model} request error (attempt {attempt + 1}/{self.max_retries + 1}, retrying in {wait_time:.1f}s): {e}")
                     last_error = str(e)
-                    time.sleep(2**attempt)
+                    time.sleep(wait_time)
                     continue
             
             logger.info(f"Falling back from model {model}...")
