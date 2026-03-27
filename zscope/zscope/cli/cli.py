@@ -214,10 +214,15 @@ def main(
             entries = FunctionListLoader.load(zscope_config.project.entry_functions_list)
             logger.info(f"Loaded {len(entries)} function entries")
             
+            # Save the full entries list before slicing for resume
+            all_entries = list(entries)
+            skipped_entries = []
+            
             if resume_from:
                 idx = next((i for i, e in enumerate(entries) if e.function_name == resume_from), -1)
                 if idx >= 0:
                     click.echo(f"Resuming scan from function '{resume_from}' (skipping {idx} functions)")
+                    skipped_entries = entries[:idx]
                     entries = entries[idx:]
                 else:
                     click.echo(f"Warning: '--resume-from {resume_from}' not found in entries. Starting from beginning.")
@@ -242,32 +247,38 @@ def main(
             json_report_path = zscope_config.project.project_root / "zscope_batch_report.json"
             md_report_path = zscope_config.project.project_root / "zscope_batch_report.md"
 
-            # Merge previous results if resuming
-            if resume_from and json_report_path.exists():
-                try:
-                    import json
-                    from ..core.parallel_analyzer import ParallelAnalysisResult
-                    with open(json_report_path, 'r', encoding='utf-8') as f:
-                        old_report = json.load(f)
-                    
-                    if "function_results" in old_report:
-                        logger.info("Merging historical batch report from previous run...")
-                        old_issues = old_report.get("issues", [])
-                        
-                        for func_summary in old_report["function_results"]:
-                            fname = func_summary.get("function")
-                            if fname and fname not in results:
-                                # Reconstruct mock ParallelAnalysisResult
-                                mock_result = ParallelAnalysisResult(
-                                    function_name=fname,
-                                    verdict=func_summary.get("verdict", "unknown"),
-                                    issues=[i for i in old_issues if i.get("analyzed_from", i.get("function")) == fname],
-                                    error=func_summary.get("error"),
-                                    duration_seconds=func_summary.get("duration_seconds", 0.0)
-                                )
-                                results[fname] = mock_result
-                except Exception as e:
-                    logger.warning(f"Failed to merge old batch report: {e}")
+            # For --resume-from: load skipped functions' issues from SQLite snapshot store
+            # (each function's final report is persisted to SQLite immediately after analysis,
+            #  so this is the reliable source of truth even if the previous run was Ctrl+C'd)
+            if skipped_entries:
+                from ..core.parallel_analyzer import ParallelAnalysisResult
+                from ..core.snapshot_store import SnapshotStore
+
+                snapshot_store = SnapshotStore(Path(zscope_config.analysis.snapshot_dir))
+                merged_count = 0
+
+                for entry in skipped_entries:
+                    fname = entry.function_name
+                    if fname in results:
+                        continue  # Already analyzed in this run (shouldn't happen, but be safe)
+
+                    saved_report = snapshot_store.load_final_report(fname)
+                    if saved_report:
+                        saved_issues = saved_report.get("issues", [])
+                        saved_verdict = saved_report.get("overall_verdict", "unknown")
+                        mock_result = ParallelAnalysisResult(
+                            function_name=fname,
+                            verdict=saved_verdict,
+                            issues=saved_issues,
+                            duration_seconds=0.0
+                        )
+                        results[fname] = mock_result
+                        merged_count += 1
+                    else:
+                        logger.warning(f"No saved report found in SQLite for skipped function '{fname}'")
+
+                if merged_count > 0:
+                    logger.info(f"Loaded {merged_count} skipped function reports from snapshot database.")
 
             # Create a failsafe backup before overwriting existing report
             if json_report_path.exists():

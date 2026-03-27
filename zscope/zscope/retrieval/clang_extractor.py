@@ -394,7 +394,12 @@ class ClangExtractor:
             signature = f"{detail} {name}" if detail else f"{name}(...)"
             is_static = "static" in detail if detail else False
             is_inline = "inline" in detail if detail else False
-            is_decl = file_path.suffix in (".h", ".hpp") and end_line - start_line <= 1
+            is_decl = (
+                file_path.suffix in (".h", ".hpp", ".ph", ".inc")
+                and end_line - start_line <= 1
+                and not is_static
+                and not is_inline
+            )
             func_rows.append((
                 name, rel_path, start_line, end_line, signature,
                 int(is_static), int(is_inline), int(is_decl), tu_id,
