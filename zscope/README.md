@@ -196,22 +196,31 @@ indexing:
 在项目根目录创建 `zscope.yaml`：
 
 ```yaml
-llm:
-  provider: openai
-  base_url: http://127.0.0.1:11434/v1   # Ollama 本地
-  models:
-    - qwen3:latest
-  api_key: ollama
-  temperature: 0.1
-  max_tokens: 4096
+llms:
+  default:
+    provider: openai
+    base_url: http://127.0.0.1:11434/v1   # Ollama 本地
+    models:
+      - qwen3:latest
+    api_key: ollama
+    temperature: 0.1
+    max_tokens: 4096
+    timeout: 180           # API 读写超时设置（秒）
+    max_retries: 5         # 遇到并发拥堵时的最多重试次数
+    stream: true
 
 project:
   root: .                    # 被扫描项目根目录
   source_root: .             # 源码搜索根目录（clangd/SVF 基于此查找源码）
+  # include_paths:           # （可选）仅分析包含在这些相对于 source_root 的目录下的文件
+  #   - src
+  #   - platform
+  # exclude_paths:           # （可选）排除的无关目录，提升索引速度
+  #   - build
+  #   - test
   entry_function: main       # 默认模式入口函数
   # entry_functions_list: functions.json  # 批量模式：函数列表文件
   # compile_commands_path: build/compile_commands.json  # Clang/Unified 需要
-  # ↑ 相对路径基于 source_root 解析；不配则自动在 source_root 和 root 下查找
   agents:
     - name: semantic_modeler
       enabled: true
@@ -219,6 +228,9 @@ project:
       task: "查找逻辑漏洞、内存安全问题和并发风险。"
       enabled: true
     - name: issue_reconciler_agent
+      enabled: true
+      llm_ref: default
+    - name: validator_agent
       enabled: true
       llm_ref: default
 
@@ -231,24 +243,20 @@ indexing:
   joern_server_port: 8080
   joern_heap_size: 8g
 
-  # ── Clang 后端 ──
-  # knowledge_db_path: .zscope_knowledge/code_knowledge.db
-
-  # ── SVF 配置（unified 模式）──
+  # ── SVF / Unified 相关配置 ──
   # svf_bin_dir: dependency/svf/bin
   # gclang_path: gclang
   # get_bc_path: get-bc
   # llvm_link_path: llvm-link
   # svf_heap_limit_mb: 32768
   # svf_timeout: 1800
-  # svf_groups_config: svf_groups.json  # 解决 symbol multiply defined：用于多态链接隔离的 JSON 配置
 
 analysis:
   max_recursion_depth: 3
   max_function_lines: 500
   snapshot_dir: .zscope_snapshots
   enable_snapshot_cache: true
-  parallel_workers: 5
+  parallel_workers: 16       # 高并发配置，结合 LLM 重试策略使用
 ```
 
 ### Step 2：执行分析
