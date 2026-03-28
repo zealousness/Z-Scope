@@ -53,8 +53,8 @@ if __name__ == "__main__":
         if is_active_window():
             print(f"\n[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 🕒 到达优惠时段，启动 Z-Scope 扫描...")
             
-            # 使用刚才新增的 --resume-from auto
-            cmd = ["zscope", "-c", "zscope.yaml", "--resume-from", "auto"]
+            # 使用 --resume 标志自动续扫
+            cmd = ["zscope", "-c", "zscope.yaml", "--resume"]
             
             # 使用 CREATE_NEW_PROCESS_GROUP 以便随后能独立发送 Ctrl+C
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0

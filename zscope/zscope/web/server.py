@@ -132,6 +132,9 @@ def apply_validation_to_snapshots(updates):
                     status, reasoning = update_map[key]
                     old_issue["validation_status"] = status
                     old_issue["validation_reasoning"] = reasoning
+                    # Tag user-rejected issues so the reconciler can auto-suppress them in future scans
+                    if status == "rejected":
+                        old_issue["rejection_source"] = "user"
                     changed = True
             
             if changed:

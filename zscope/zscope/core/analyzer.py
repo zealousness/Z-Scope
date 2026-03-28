@@ -146,7 +146,9 @@ class Analyzer:
 
     def __init__(self, config: ZScopeConfig, code_index: Optional[CodeIndex] = None,
                  snapshot_store: Optional[SnapshotStore] = None,
-                 user_config: Optional[UserConfigStore] = None):
+                 user_config: Optional[UserConfigStore] = None,
+                 force_ignore_history: bool = False,
+                 maintain_mode: bool = False):
         self.config = config
         self.code_index = code_index or CodeIndex(
             config.project.project_root,
@@ -170,6 +172,8 @@ class Analyzer:
             )
         self.report_generator = ReportGenerator(config.project.project_root)
         self.tools_runtime = ToolsRuntime(self.code_index, self.snapshot_store, self.user_config)
+        self.force_ignore_history = force_ignore_history
+        self.maintain_mode = maintain_mode
         
         self.analyzed_functions: Set[str] = set()
         self.issues: List[Issue] = []
@@ -207,16 +211,27 @@ class Analyzer:
         issues = []
         notes = []
 
-        historical_report = self.snapshot_store.load_final_report(entry_func, impl_result['file']) if self.snapshot_store else None
+        if self.snapshot_store and not self.force_ignore_history:
+            historical_report = self.snapshot_store.load_final_report(entry_func, impl_result['file'])
+        else:
+            historical_report = None
+            
         hist_issues = historical_report.get("issues", []) if historical_report else []
         valid_hist_issues = [iss for iss in hist_issues if iss.get("validation_status") in ("validated", "pending")]
+        # Collect user-rejected issues for auto-suppression in dedup
+        user_rejected_hist_issues = [iss for iss in hist_issues if iss.get("validation_status") == "rejected" and iss.get("rejection_source") == "user"]
         
         needs_refresh = True
         reason = "no_snapshot"
-        if self.snapshot_store:
+        if self.snapshot_store and not self.force_ignore_history:
             needs_refresh, reason = self.snapshot_store.needs_refresh(entry_func, impl_result['code'], impl_result['file'])
         
         is_code_unchanged = (not needs_refresh and reason != "no_snapshot")
+        
+        # --maintain mode: if code is unchanged, reuse historical report entirely (zero LLM cost)
+        if self.maintain_mode and is_code_unchanged and historical_report:
+            logger.info(f"[maintain] '{entry_func}' unchanged, reusing historical report (0 LLM tokens).")
+            return historical_report
         
         verified_hist_issues = []
         if not is_code_unchanged and valid_hist_issues:
@@ -282,8 +297,11 @@ class Analyzer:
                 logger.info(f"Vulnerability Analyzer found {len(raw_new_issues)} issues for task: {agent_cfg.task}")
                 
                 new_issues = []
-                if raw_new_issues and verified_hist_issues:
-                    logger.info(f"Deduplicating {len(raw_new_issues)} new issues against {len(verified_hist_issues)} historical issues...")
+                # Combine verified historical issues + user-rejected issues for dedup reference
+                dedup_reference_issues = verified_hist_issues + user_rejected_hist_issues
+                
+                if raw_new_issues and dedup_reference_issues:
+                    logger.info(f"Deduplicating {len(raw_new_issues)} new issues against {len(dedup_reference_issues)} reference issues ({len(user_rejected_hist_issues)} user-rejected)...")
                     recon_agent_cfg = next((a for a in self.config.project.agents if a.name == "issue_reconciler_agent"), None)
                     recon_llm_ref = recon_agent_cfg.llm_ref if recon_agent_cfg and recon_agent_cfg.llm_ref else "default"
                     recon_client = self.llm_clients.get(recon_llm_ref, self.llm_clients.get("default"))
@@ -294,13 +312,21 @@ class Analyzer:
                     for raw_issue in raw_new_issues:
                         input_data = {
                             "mode": "deduplicate",
-                            "historical_issues": verified_hist_issues,
+                            "historical_issues": dedup_reference_issues,
                             "new_issue": raw_issue
                         }
                         resp = reconciler_agent.run(input_data)
                         if resp.success and resp.data.get("is_duplicate"):
                             matched_id = resp.data.get("matched_historical_id")
-                            logger.info(f"New issue corresponds to historical issue {matched_id}. Skipping validation.")
+                            # Check if matched against a user-rejected issue
+                            matched_user_rejected = any(
+                                iss.get("id") == matched_id and iss.get("rejection_source") == "user"
+                                for iss in user_rejected_hist_issues
+                            )
+                            if matched_user_rejected:
+                                logger.info(f"New issue matches user-rejected issue {matched_id}. Auto-suppressing.")
+                            else:
+                                logger.info(f"New issue corresponds to historical issue {matched_id}. Skipping validation.")
                         else:
                             new_issues.append(raw_issue)
                 else:
@@ -344,12 +370,14 @@ class Analyzer:
                                 raw_issue["validation_reasoning"] = val_data.get("reasoning")
                                 raw_issue["confidence"] = val_data.get("confidence_score", raw_issue.get("confidence", 0.5))
                                 logger.info(f"Issue {raw_issue.get('id')} VALIDATED with confidence {raw_issue['confidence']}")
+                                validated_issues.append(raw_issue)
                             else:
+                                # Validator rejected: discard this issue, do NOT persist
                                 raw_issue["validation_status"] = "rejected"
+                                raw_issue["rejection_source"] = "validator"
                                 raw_issue["validation_reasoning"] = val_data.get("reasoning")
-                                logger.info(f"Issue {raw_issue.get('id')} REJECTED by Validator: {val_data.get('reasoning')}")
-                            
-                            validated_issues.append(raw_issue)
+                                logger.info(f"Issue {raw_issue.get('id')} REJECTED by Validator, discarding.")
+                                # Do NOT append to validated_issues
                         else:
                             # Fallback if validation fails
                             logger.warning(

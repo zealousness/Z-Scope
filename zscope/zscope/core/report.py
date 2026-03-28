@@ -141,10 +141,13 @@ class ReportGenerator:
         if not report.issues:
             md_content += "未发现显著缺陷。\n"
         else:
-            critical = sum(1 for i in report.issues if i.impact_level.lower() == "critical")
-            high = sum(1 for i in report.issues if i.impact_level.lower() == "high")
-            medium = sum(1 for i in report.issues if i.impact_level.lower() == "medium")
-            low = sum(1 for i in report.issues if i.impact_level.lower() == "low")
+            # Filter out rejected issues for offline report
+            reportable_issues = [i for i in report.issues if i.validation_status != "rejected"]
+            
+            critical = sum(1 for i in reportable_issues if i.impact_level.lower() == "critical")
+            high = sum(1 for i in reportable_issues if i.impact_level.lower() == "high")
+            medium = sum(1 for i in reportable_issues if i.impact_level.lower() == "medium")
+            low = sum(1 for i in reportable_issues if i.impact_level.lower() == "low")
 
             md_content += f"| 严重等级 | 数量 |\n| :--- | :--- |\n"
             md_content += f"| 🔴 Critical | {critical} |\n"
@@ -152,12 +155,11 @@ class ReportGenerator:
             md_content += f"| 🟡 Medium | {medium} |\n"
             md_content += f"| 🔵 Low | {low} |\n\n"
             
-            validated = sum(1 for i in report.issues if i.validation_status == "validated")
-            rejected = sum(1 for i in report.issues if i.validation_status == "rejected")
-            md_content += f"**验证状态**: {validated} 已确认, {rejected} 已否决 (供参考)\n\n"
+            validated = sum(1 for i in reportable_issues if i.validation_status == "validated")
+            md_content += f"**验证状态**: {validated} 已确认\n\n"
 
             md_content += "## 缺陷列表\n\n"
-            for issue in report.issues:
+            for issue in reportable_issues:
                 icon = {
                     "critical": "🔴",
                     "high": "🟠",
