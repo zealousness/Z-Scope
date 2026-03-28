@@ -40,9 +40,13 @@ class ParallelAnalyzer:
     """
     
     def __init__(self, config: ZScopeConfig, code_index: Optional[CodeIndex] = None,
-                 user_config: Optional[UserConfigStore] = None):
+                 user_config: Optional[UserConfigStore] = None,
+                 force_ignore_history: bool = False,
+                 maintain_mode: bool = False):
         self.base_config = config
         self.max_workers = config.analysis.parallel_workers
+        self.force_ignore_history = force_ignore_history
+        self.maintain_mode = maintain_mode
 
         if code_index:
             self.code_index = code_index
@@ -169,7 +173,9 @@ class ParallelAnalyzer:
                  config_copy,
                  code_index=self.code_index,
                  snapshot_store=self.snapshot_store,
-                 user_config=self.user_config
+                 user_config=self.user_config,
+                 force_ignore_history=self.force_ignore_history,
+                 maintain_mode=self.maintain_mode
             )
             report_dict = analyzer.run()
             
@@ -208,21 +214,7 @@ class ParallelAnalyzer:
         
         return config
     
-    def get_public_api_functions(self, header_files: Optional[List[str]] = None) -> List[str]:
-        """Get list of public API functions from header files."""
-        funcs = self.code_index.get_header_declared_functions(header_files)
-        return [f["name"] for f in funcs if f.get("name")]
 
-    def run_topdown_mode(self, header_files: Optional[List[str]] = None) -> Dict[str, ParallelAnalysisResult]:
-        """Run top-down analysis starting from public API functions in headers."""
-        func_names = self.get_public_api_functions(header_files)
-        if not func_names:
-            logger.warning("No public API functions found in headers")
-            return {}
-        logger.info(f"Top-down mode: found {len(func_names)} public API functions")
-        entries = [FunctionEntry(function_name=name) for name in func_names]
-        return self.analyze_function_entries(entries)
-    
     def generate_combined_report(
         self, 
         results: Dict[str, ParallelAnalysisResult],
@@ -347,6 +339,10 @@ class ParallelAnalyzer:
                 seen_in_entry = set()
                 
                 for idx, issue in enumerate(issues, 1):
+                    # Skip rejected issues in offline markdown report
+                    if issue.get("validation_status") == "rejected":
+                        continue
+                    
                     issue_key = f"{issue.get('location', 'N/A')}:{issue.get('description', '')[:50]}"
                     if issue_key in seen_in_entry:
                         continue

@@ -5,11 +5,11 @@
 ## 核心特性
 
 - **多智能体分治**：采用 `语义建模 Agent`、`漏洞扫描 Agent`、`Issue Reconciler Agent` 与 `验证 Agent` 独立协作，深度挖掘并去重逻辑缺陷。
-- **四种分析模式**：默认模式（指定入口函数）、自上而下模式（从 `.h` 公开接口出发）、规则驱动模式（Joern 规则 + LLM 验证）、告警验证模式（SARIF 导入 + LLM 二次确认）。
+- **三种运行模式**：全新扫描（默认）、断点续扫（`--resume`）、增量维护（`--maintain`）。另支持规则驱动模式和告警验证模式。
 - **可插拔后端架构**：支持 Joern CPG、Clang libclang、Unified（Clang + SVF）、Regex 四种后端，按需选择分析深度。
 - **12 个分析工具**：函数源码获取、调用图分析、结构体查询、污点追踪、指针别名查询、深度调用上下文聚合等。
 - **用户辅助配置系统**：通过 WebUI 管理外部函数描述、配对函数、函数指针指向等信息，自动注入分析上下文。
-- **智能增量分析与缺陷去重**：支持断点续传（`--resume-from`）和基于语义哈希的增量扫描。自动跟踪和验证缺陷随代码流转的修复状态。
+- **智能增量分析与缺陷去重**：支持断点续扫（`--resume`）和基于语义哈希的增量维护扫描（`--maintain`）。自动跟踪和验证缺陷随代码流转的修复状态。验证 Agent 拒绝的误报自动丢弃；用户手动拒绝的误报留存并在后续扫描中自动抑制。
 - **Web 仪表盘**：Alpine.js + DaisyUI 构建的交互式界面，集成扫描结果查看、用户配置管理和配置告警。
 - **批量函数并行扫描**：支持多 worker 并发，共享代码索引与快照数据库。
 - **SQLite 原生级持久化**：分析产生的终极漏洞（Issues）将直接与语义模型一同被永久锁定存入本地 `.zscope_snapshots/snapshots.db`，确保灾难级恢复能力。
@@ -19,12 +19,13 @@
 ## 系统架构
 
 ```
-CLI 入口层 (cli.py --mode default|topdown|ruledriven|alert-verify)
+CLI 入口层 (cli.py)
     │
-    ├─→ 默认模式 (analyzer.py)         — 指定入口函数逐一分析
-    ├─→ 自上而下模式 (parallel_analyzer.py) — 从 .h 公开接口批量分析
-    ├─→ 规则驱动模式 (rule_driven_analyzer.py) — Joern 规则 + LLM 验证
-    └─→ 告警验证模式 (alert_verifier.py)    — SARIF 导入 + LLM 二次确认
+    ├─→ 默认模式 (analyzer.py)            — 全新扫描，忽略历史
+    ├─→ 续扫模式 --resume                 — 跳过已完成函数，继续中断的任务
+    ├─→ 维护模式 --maintain               — 增量检视，代码未变则跳过
+    ├─→ 规则驱动模式 --mode ruledriven     — Joern 规则 + LLM 验证
+    └─→ 告警验证模式 --mode alert-verify   — SARIF 导入 + LLM 二次确认
           │
           ▼
     多智能体管线 (agents/)
@@ -268,11 +269,11 @@ zscope -c zscope.yaml --verbose
 # 批量扫描模式 (从 functions_list JSON 开始)：
 zscope -c zscope.yaml
 
-# 断点续传/累计追加模式：从指定的函数或告警ID处恢复，并将结果无缝合并至原报告
-zscope -c zscope.yaml --resume-from my_function_name
+# 断点续扫：跳过已完成的函数，继续中断的批量扫描
+zscope -c zscope.yaml --resume
 
-# 自上而下模式：从 .h 头文件公开接口出发，自动发现所有 API
-zscope --mode topdown -c zscope.yaml
+# 增量维护：仅对代码有变化的函数重新检视，复用未变化函数的历史报告
+zscope -c zscope.yaml --maintain
 
 # 规则驱动模式：Joern 内置规则扫描 + LLM 验证
 zscope --mode ruledriven -c zscope.yaml
