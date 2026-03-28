@@ -46,8 +46,8 @@ class ClangBackend(CodeBackend):
         self._compile_commands_path = kwargs.get("compile_commands_path")
         wait = kwargs.get("wait", True)
 
-        self._source_path = Path(source_path).resolve()
-        project_root = Path(project_root).resolve() if project_root else self._source_path
+        self._source_path = Path(source_path).absolute()
+        project_root = Path(project_root).absolute() if project_root else self._source_path
         
         self._include_paths = kwargs.get("include_paths", []) or []
         self._exclude_paths = kwargs.get("exclude_paths", []) or []
@@ -140,16 +140,19 @@ class ClangBackend(CodeBackend):
 
     def _is_path_allowed(self, p: Path) -> bool:
         """Check if a path passes include/exclude filters."""
-        try:
-            p_res = p.resolve()
-        except OSError:
-            return False
-            
         import os
+        
         def is_subpath(child: Path, parent: Path) -> bool:
             try:
-                c_str = str(child.resolve()).lower()
-                p_str = str(parent.resolve()).lower()
+                # Use absolute() instead of resolve() to avoid symlink physical path jumping out of bounds
+                c_str = str(child.absolute())
+                p_str = str(parent.absolute())
+                
+                # Case-insensitive ONLY on Windows
+                if os.name == 'nt':
+                    c_str = c_str.lower()
+                    p_str = p_str.lower()
+                    
                 sep = os.sep
                 if not p_str.endswith(sep):
                     p_str += sep
@@ -159,13 +162,13 @@ class ClangBackend(CodeBackend):
 
         if self._exclude_paths:
             for ex in self._exclude_paths:
-                if is_subpath(p_res, ex):
+                if is_subpath(p, ex):
                     return False
                     
         if self._include_paths:
             in_include = False
             for inc in self._include_paths:
-                if is_subpath(p_res, inc):
+                if is_subpath(p, inc):
                     in_include = True
                     break
             if not in_include:

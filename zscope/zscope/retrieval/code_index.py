@@ -34,11 +34,11 @@ class CodeIndex:
         include_paths: Optional[List[Path]] = None,
         exclude_paths: Optional[List[Path]] = None,
     ):
-        self.project_root = Path(project_root).resolve()
-        self.source_root = Path(source_root).resolve() if source_root else self.project_root
+        self.project_root = Path(project_root).absolute()
+        self.source_root = Path(source_root).absolute() if source_root else self.project_root
         self.compile_commands_path = compile_commands_path
-        self.include_paths = [Path(p).resolve() for p in (include_paths or [])]
-        self.exclude_paths = [Path(p).resolve() for p in (exclude_paths or [])]
+        self.include_paths = [Path(p).absolute() for p in (include_paths or [])]
+        self.exclude_paths = [Path(p).absolute() for p in (exclude_paths or [])]
         self.backend_name = indexing_config.backend if indexing_config else "joern"
         self._function_index: Dict[str, Dict[str, Any]] = {}
         self._backend: Optional[CodeBackend] = backend
@@ -181,16 +181,19 @@ class CodeIndex:
 
     def _is_path_allowed(self, p: Path) -> bool:
         """Check if a path passes include/exclude filters."""
-        try:
-            p_res = p.resolve()
-        except OSError:
-            return False
-            
         import os
+        
         def is_subpath(child: Path, parent: Path) -> bool:
             try:
-                c_str = str(child.resolve()).lower()
-                p_str = str(parent.resolve()).lower()
+                # Use absolute() instead of resolve() to avoid symlink physical path jumping out of bounds
+                c_str = str(child.absolute())
+                p_str = str(parent.absolute())
+                
+                # Case-insensitive ONLY on Windows
+                if os.name == 'nt':
+                    c_str = c_str.lower()
+                    p_str = p_str.lower()
+                    
                 sep = os.sep
                 if not p_str.endswith(sep):
                     p_str += sep
@@ -200,13 +203,13 @@ class CodeIndex:
 
         if self.exclude_paths:
             for ex in self.exclude_paths:
-                if is_subpath(p_res, ex):
+                if is_subpath(p, ex):
                     return False
                     
         if self.include_paths:
             in_include = False
             for inc in self.include_paths:
-                if is_subpath(p_res, inc):
+                if is_subpath(p, inc):
                     in_include = True
                     break
             if not in_include:

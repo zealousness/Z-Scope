@@ -110,18 +110,18 @@ class ProjectConfig:
         for p in (self.include_paths or []):
             path_obj = Path(p)
             if not path_obj.is_absolute():
-                resolved_includes.append((self.source_root / path_obj).resolve())
+                resolved_includes.append((self.source_root / path_obj).absolute())
             else:
-                resolved_includes.append(path_obj.resolve())
+                resolved_includes.append(path_obj.absolute())
         self.include_paths = resolved_includes
 
         resolved_excludes = []
         for p in (self.exclude_paths or []):
             path_obj = Path(p)
             if not path_obj.is_absolute():
-                resolved_excludes.append((self.source_root / path_obj).resolve())
+                resolved_excludes.append((self.source_root / path_obj).absolute())
             else:
-                resolved_excludes.append(path_obj.resolve())
+                resolved_excludes.append(path_obj.absolute())
         self.exclude_paths = resolved_excludes
 
         # Resolve compile_commands_path:
