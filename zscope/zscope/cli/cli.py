@@ -24,9 +24,10 @@ from ..core.parallel_analyzer import ParallelAnalyzer
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging.")
 @click.option("--dashboard", "-d", is_flag=True, help="Launch the web dashboard to view results.")
 @click.option("--build-cpg", is_flag=True, help="Only build CPG and index, then exit.")
-@click.option("--mode", type=click.Choice(["default", "topdown", "ruledriven", "alert-verify"]), default="default", help="Analysis mode.")
+@click.option("--mode", type=click.Choice(["default", "ruledriven", "alert-verify"]), default="default", help="Analysis mode.")
 @click.option("--sarif", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None, help="SARIF file for alert-verify mode.")
-@click.option("--resume-from", type=str, default=None, help="Resume batch or alert-verify scan from a specific function name or alert ID.")
+@click.option("--resume", is_flag=True, default=False, help="Resume interrupted batch scan from last checkpoint.")
+@click.option("--maintain", is_flag=True, default=False, help="Incremental maintenance scan: skip unchanged functions, verify historical issues.")
 def main(
     config: Path,
     verbose: bool,
@@ -34,7 +35,8 @@ def main(
     build_cpg: bool,
     mode: str,
     sarif: Path,
-    resume_from: str,
+    resume: bool,
+    maintain: bool,
 ):
     """
     Z-SCOPE: AI-powered defect detection for C projects.
@@ -101,23 +103,6 @@ def main(
             sys.exit(0)
 
         # ── Mode-specific analysis ──
-        if mode == "topdown":
-            logger.info("Top-down mode: analyzing public API functions from headers")
-            code_index = CodeIndex(
-                zscope_config.project.project_root,
-                zscope_config.project.compile_commands_path,
-                source_root=zscope_config.project.source_root,
-                indexing_config=zscope_config.indexing,
-            )
-            pa = ParallelAnalyzer(zscope_config, code_index=code_index)
-            results = pa.run_topdown_mode()
-            json_path = zscope_config.project.project_root / "zscope_batch_report.json"
-            md_path = zscope_config.project.project_root / "zscope_batch_report.md"
-            combined = pa.generate_combined_report(results, json_path)
-            pa.generate_combined_markdown_report(results, md_path)
-            total = combined["summary"]["total_issues"]
-            click.echo(f"\nTop-down analysis complete. Functions: {len(results)}, Issues: {total}")
-            sys.exit(1 if total > 0 else 0)
 
         if mode == "ruledriven":
             logger.info("Rule-driven mode: running Joern rules + validation")
@@ -156,13 +141,9 @@ def main(
             alerts = adapter.parse(str(sarif))
             click.echo(f"Parsed {len(alerts)} alerts from SARIF")
             
-            if resume_from:
-                idx = next((i for i, a in enumerate(alerts) if a.id == resume_from or a.function == resume_from), -1)
-                if idx >= 0:
-                    click.echo(f"Resuming scan from alert/function '{resume_from}' (skipping {idx} alerts)")
-                    alerts = alerts[idx:]
-                else:
-                    click.echo(f"Warning: '--resume-from {resume_from}' not found in SARIF. Starting from beginning.")
+            if resume:
+                # For alert-verify mode, --resume is not supported yet
+                click.echo("Warning: --resume is not supported for alert-verify mode. Starting from beginning.")
 
             if not alerts:
                 click.echo("No alerts to verify.")
@@ -218,42 +199,34 @@ def main(
             all_entries = list(entries)
             skipped_entries = []
             
-            if resume_from:
-                if resume_from.lower() == "auto":
-                    click.echo("Auto-resuming scan: determining skip points from snapshot store...")
-                    idx = 0
-                else:
-                    idx = next((i for i, e in enumerate(entries) if e.function_name == resume_from), -1)
-                    
-                if idx >= 0:
-                    if resume_from.lower() != "auto":
-                        click.echo(f"Resuming scan from function '{resume_from}' (skipping {idx} prior functions)")
-                    skipped_entries = entries[:idx]
-                    remaining_to_check = entries[idx:]
-                    
-                    # Also auto-skip any subsequent functions that already have a successful report
-                    # This handles cases where concurrent workers finished functions out of order
-                    from ..core.snapshot_store import SnapshotStore
-                    snapshot_store = SnapshotStore(Path(zscope_config.analysis.snapshot_dir))
-                    
-                    entries = []
-                    for e in remaining_to_check:
-                        saved_report = snapshot_store.load_final_report(e.function_name)
-                        if saved_report and saved_report.get("overall_verdict") != "error":
-                            # Check if the validator agent failed (leaving issues in 'pending' status)
-                            issues = saved_report.get("issues", [])
-                            has_pending = any(i.get("validation_status") == "pending" for i in issues)
-                            
-                            if has_pending:
-                                logger.info(f"Not auto-skipping '{e.function_name}': has pending validations (validator previously failed).")
-                                entries.append(e)
-                            else:
-                                logger.info(f"Auto-skipping '{e.function_name}': already successfully analyzed.")
-                                skipped_entries.append(e)
+            # Determine mode flags
+            if resume and maintain:
+                click.echo("Error: --resume and --maintain cannot be used together.")
+                sys.exit(1)
+            
+            if resume:
+                # --resume: skip already-completed functions (auto mode)
+                click.echo("Resuming scan: determining skip points from snapshot store...")
+                from ..core.snapshot_store import SnapshotStore
+                snapshot_store = SnapshotStore(Path(zscope_config.analysis.snapshot_dir))
+                
+                remaining = []
+                for e in entries:
+                    saved_report = snapshot_store.load_final_report(e.function_name)
+                    if saved_report and saved_report.get("overall_verdict") != "error":
+                        issues = saved_report.get("issues", [])
+                        has_pending = any(i.get("validation_status") == "pending" for i in issues)
+                        
+                        if has_pending:
+                            logger.info(f"Not auto-skipping '{e.function_name}': has pending validations.")
+                            remaining.append(e)
                         else:
-                            entries.append(e)
-                else:
-                    click.echo(f"Warning: '--resume-from {resume_from}' not found in entries. Starting from beginning.")
+                            logger.info(f"Auto-skipping '{e.function_name}': already successfully analyzed.")
+                            skipped_entries.append(e)
+                    else:
+                        remaining.append(e)
+                entries = remaining
+                click.echo(f"Skipped {len(skipped_entries)} already-completed functions, {len(entries)} remaining.")
 
             # Build code index once (shared across all analyses)
             logger.info("Building shared code index...")
@@ -266,7 +239,15 @@ def main(
             )
 
             # Create parallel analyzer with shared code index
-            parallel_analyzer = ParallelAnalyzer(zscope_config, code_index=code_index)
+            #   default:   force_ignore_history=True,  maintain_mode=False
+            #   --resume:  force_ignore_history=False, maintain_mode=False
+            #   --maintain: force_ignore_history=False, maintain_mode=True
+            parallel_analyzer = ParallelAnalyzer(
+                zscope_config, 
+                code_index=code_index,
+                force_ignore_history=not (resume or maintain),
+                maintain_mode=maintain,
+            )
 
             # Run batch analysis
             results = parallel_analyzer.analyze_function_entries(entries)
