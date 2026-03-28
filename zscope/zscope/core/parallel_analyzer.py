@@ -56,6 +56,8 @@ class ParallelAnalyzer:
                 config.project.compile_commands_path,
                 source_root=config.project.source_root,
                 indexing_config=config.indexing,
+                include_paths=config.project.include_paths,
+                exclude_paths=config.project.exclude_paths,
             )
         self.snapshot_store = SnapshotStore(Path(config.analysis.snapshot_dir))
         db_dir = Path(config.analysis.user_config_db) if config.analysis.user_config_db else Path(config.analysis.snapshot_dir)

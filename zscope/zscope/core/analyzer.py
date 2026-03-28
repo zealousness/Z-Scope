@@ -155,7 +155,9 @@ class Analyzer:
             config.project.compile_commands_path,
             source_root=config.project.source_root,
             indexing_config=config.indexing,
-            priority_functions=[config.project.entry_function] if config.project.entry_function else None
+            priority_functions=[config.project.entry_function] if config.project.entry_function else None,
+            include_paths=config.project.include_paths,
+            exclude_paths=config.project.exclude_paths,
         )
         self.snapshot_store = snapshot_store or SnapshotStore(Path(config.analysis.snapshot_dir))
         db_dir = Path(config.analysis.user_config_db) if config.analysis.user_config_db else Path(config.analysis.snapshot_dir)

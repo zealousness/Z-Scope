@@ -61,6 +61,8 @@ def main(
                 zscope_config.project.compile_commands_path,
                 source_root=zscope_config.project.source_root,
                 indexing_config=cfg,
+                include_paths=zscope_config.project.include_paths,
+                exclude_paths=zscope_config.project.exclude_paths,
                 wait_for_cpg=False,
             )
             db_dir = Path(zscope_config.analysis.user_config_db) if zscope_config.analysis.user_config_db else Path(zscope_config.analysis.snapshot_dir)
@@ -96,6 +98,8 @@ def main(
                 zscope_config.project.compile_commands_path,
                 source_root=zscope_config.project.source_root,
                 indexing_config=zscope_config.indexing,
+                include_paths=zscope_config.project.include_paths,
+                exclude_paths=zscope_config.project.exclude_paths,
                 wait_for_cpg=True,
             )
             func_count = len(code_index.list_functions())
@@ -112,6 +116,8 @@ def main(
                 zscope_config.project.compile_commands_path,
                 source_root=zscope_config.project.source_root,
                 indexing_config=zscope_config.indexing,
+                include_paths=zscope_config.project.include_paths,
+                exclude_paths=zscope_config.project.exclude_paths,
             )
             rda = RuleDrivenAnalyzer(zscope_config, code_index=code_index)
             result = rda.run()
@@ -134,6 +140,8 @@ def main(
                 zscope_config.project.compile_commands_path,
                 source_root=zscope_config.project.source_root,
                 indexing_config=zscope_config.indexing,
+                include_paths=zscope_config.project.include_paths,
+                exclude_paths=zscope_config.project.exclude_paths,
             )
             adapter = SarifAdapter(
                 source_root=str(zscope_config.project.source_root),
@@ -235,7 +243,9 @@ def main(
                 zscope_config.project.compile_commands_path,
                 source_root=zscope_config.project.source_root,
                 indexing_config=zscope_config.indexing,
-                priority_functions=[e.function_name for e in entries]
+                priority_functions=[e.function_name for e in entries],
+                include_paths=zscope_config.project.include_paths,
+                exclude_paths=zscope_config.project.exclude_paths,
             )
 
             # Create parallel analyzer with shared code index
