@@ -219,9 +219,15 @@ def main(
             skipped_entries = []
             
             if resume_from:
-                idx = next((i for i, e in enumerate(entries) if e.function_name == resume_from), -1)
+                if resume_from.lower() == "auto":
+                    click.echo("Auto-resuming scan: determining skip points from snapshot store...")
+                    idx = 0
+                else:
+                    idx = next((i for i, e in enumerate(entries) if e.function_name == resume_from), -1)
+                    
                 if idx >= 0:
-                    click.echo(f"Resuming scan from function '{resume_from}' (skipping {idx} prior functions)")
+                    if resume_from.lower() != "auto":
+                        click.echo(f"Resuming scan from function '{resume_from}' (skipping {idx} prior functions)")
                     skipped_entries = entries[:idx]
                     remaining_to_check = entries[idx:]
                     
