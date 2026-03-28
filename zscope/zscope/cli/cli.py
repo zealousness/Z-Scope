@@ -221,9 +221,31 @@ def main(
             if resume_from:
                 idx = next((i for i, e in enumerate(entries) if e.function_name == resume_from), -1)
                 if idx >= 0:
-                    click.echo(f"Resuming scan from function '{resume_from}' (skipping {idx} functions)")
+                    click.echo(f"Resuming scan from function '{resume_from}' (skipping {idx} prior functions)")
                     skipped_entries = entries[:idx]
-                    entries = entries[idx:]
+                    remaining_to_check = entries[idx:]
+                    
+                    # Also auto-skip any subsequent functions that already have a successful report
+                    # This handles cases where concurrent workers finished functions out of order
+                    from ..core.snapshot_store import SnapshotStore
+                    snapshot_store = SnapshotStore(Path(zscope_config.analysis.snapshot_dir))
+                    
+                    entries = []
+                    for e in remaining_to_check:
+                        saved_report = snapshot_store.load_final_report(e.function_name)
+                        if saved_report and saved_report.get("overall_verdict") != "error":
+                            # Check if the validator agent failed (leaving issues in 'pending' status)
+                            issues = saved_report.get("issues", [])
+                            has_pending = any(i.get("validation_status") == "pending" for i in issues)
+                            
+                            if has_pending:
+                                logger.info(f"Not auto-skipping '{e.function_name}': has pending validations (validator previously failed).")
+                                entries.append(e)
+                            else:
+                                logger.info(f"Auto-skipping '{e.function_name}': already successfully analyzed.")
+                                skipped_entries.append(e)
+                        else:
+                            entries.append(e)
                 else:
                     click.echo(f"Warning: '--resume-from {resume_from}' not found in entries. Starting from beginning.")
 

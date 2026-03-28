@@ -89,6 +89,8 @@ class ProjectConfig:
     agents: List[AgentConfig] = field(default_factory=list)
     compile_commands_path: Optional[Path] = None
     entry_functions_list: Optional[Path] = None  # Path to JSON file for batch mode
+    include_paths: List[str] = field(default_factory=list)
+    exclude_paths: List[str] = field(default_factory=list)
 
     def __post_init__(self):
         self.project_root = Path(self.project_root).resolve()
@@ -102,6 +104,25 @@ class ProjectConfig:
                 self.source_root = (self.project_root / self.source_root).resolve()
             else:
                 self.source_root = self.source_root.resolve()
+
+        # Resolve include/exclude paths relative to source_root
+        resolved_includes = []
+        for p in (self.include_paths or []):
+            path_obj = Path(p)
+            if not path_obj.is_absolute():
+                resolved_includes.append((self.source_root / path_obj).resolve())
+            else:
+                resolved_includes.append(path_obj.resolve())
+        self.include_paths = resolved_includes
+
+        resolved_excludes = []
+        for p in (self.exclude_paths or []):
+            path_obj = Path(p)
+            if not path_obj.is_absolute():
+                resolved_excludes.append((self.source_root / path_obj).resolve())
+            else:
+                resolved_excludes.append(path_obj.resolve())
+        self.exclude_paths = resolved_excludes
 
         # Resolve compile_commands_path:
         #   1. 显式配置 → 相对路径基于 project_root 解析

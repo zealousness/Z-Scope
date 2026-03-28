@@ -35,6 +35,8 @@ class ClangBackend(CodeBackend):
         self._db: Optional[KnowledgeDB] = None
         self._status = "idle"
         self._source_path: Optional[Path] = None
+        self._include_paths: List[Path] = []
+        self._exclude_paths: List[Path] = []
 
     # ── 生命周期 ──
 
@@ -46,6 +48,9 @@ class ClangBackend(CodeBackend):
 
         self._source_path = Path(source_path).resolve()
         project_root = Path(project_root).resolve() if project_root else self._source_path
+        
+        self._include_paths = kwargs.get("include_paths", []) or []
+        self._exclude_paths = kwargs.get("exclude_paths", []) or []
 
         # 初始化 SQLite 知识库（存储在 project_root）
         db_full_path = project_root / self._db_path
@@ -133,12 +138,44 @@ class ClangBackend(CodeBackend):
             self._status = "error"
             return False
 
+    def _is_path_allowed(self, p: Path) -> bool:
+        """Check if a path passes include/exclude filters."""
+        try:
+            p_res = p.resolve()
+        except OSError:
+            return False
+            
+        if self._exclude_paths:
+            for ex in self._exclude_paths:
+                if str(p_res).startswith(str(ex)):
+                    return False
+                    
+        if self._include_paths:
+            in_include = False
+            for inc in self._include_paths:
+                if str(p_res).startswith(str(inc)):
+                    in_include = True
+                    break
+            if not in_include:
+                return False
+                
+        return True
+
     def _collect_source_files(self) -> List[Path]:
         """收集源码目录下所有 C/C++ 文件。"""
         files = []
-        for ext in ("*.c", "*.cpp", "*.cc", "*.cxx", "*.h", "*.hpp", "*.ph", "*.inc", "*.inl"):
-            files.extend(self._source_path.rglob(ext))
-        return sorted(files)
+        extensions = ("*.c", "*.cpp", "*.cc", "*.cxx", "*.h", "*.hpp", "*.ph", "*.inc", "*.inl")
+        
+        bases_to_search = self._include_paths if self._include_paths else [self._source_path]
+        
+        for base in bases_to_search:
+            for ext in extensions:
+                for file_path in base.rglob(ext):
+                    if self._is_path_allowed(file_path):
+                        files.append(file_path.resolve())
+                        
+        # Remove duplicates
+        return sorted(list(set(files)))
 
     def close(self) -> None:
         if self._extractor:
