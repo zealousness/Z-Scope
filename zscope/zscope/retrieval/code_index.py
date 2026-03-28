@@ -31,10 +31,14 @@ class CodeIndex:
         backend: Optional[CodeBackend] = None,
         # 向后兼容：仍接受 joern_client 参数
         joern_client: Optional[Any] = None,
+        include_paths: Optional[List[Path]] = None,
+        exclude_paths: Optional[List[Path]] = None,
     ):
         self.project_root = Path(project_root).resolve()
         self.source_root = Path(source_root).resolve() if source_root else self.project_root
         self.compile_commands_path = compile_commands_path
+        self.include_paths = [Path(p).resolve() for p in (include_paths or [])]
+        self.exclude_paths = [Path(p).resolve() for p in (exclude_paths or [])]
         self.backend_name = indexing_config.backend if indexing_config else "joern"
         self._function_index: Dict[str, Dict[str, Any]] = {}
         self._backend: Optional[CodeBackend] = backend
@@ -73,6 +77,8 @@ class CodeIndex:
                 project_root=self.project_root,
                 compile_commands_path=cc_path,
                 wait=wait_for_cpg,
+                include_paths=self.include_paths,
+                exclude_paths=self.exclude_paths,
             )
             if not ok and wait_for_cpg:
                 logger.warning("Backend initialization failed, falling back to regex")
@@ -94,6 +100,8 @@ class CodeIndex:
                 project_root=self.project_root,
                 compile_commands_path=cc_path,
                 wait=wait_for_cpg,
+                include_paths=self.include_paths,
+                exclude_paths=self.exclude_paths,
             )
             if not ok and wait_for_cpg:
                 logger.warning("Clang backend initialization failed, falling back to regex")
@@ -121,6 +129,8 @@ class CodeIndex:
                 project_root=self.project_root,
                 compile_commands_path=cc_path,
                 wait=wait_for_cpg,
+                include_paths=self.include_paths,
+                exclude_paths=self.exclude_paths,
             )
             if not ok and wait_for_cpg:
                 logger.warning("Unified backend init failed, falling back to regex")
@@ -169,16 +179,47 @@ class CodeIndex:
             self._build_index_regex()
         logger.info(f"Indexed {len(self._function_index)} functions")
 
+    def _is_path_allowed(self, p: Path) -> bool:
+        """Check if a path passes include/exclude filters."""
+        try:
+            p_res = p.resolve()
+        except OSError:
+            return False
+            
+        if self.exclude_paths:
+            for ex in self.exclude_paths:
+                if str(p_res).startswith(str(ex)):
+                    return False
+                    
+        if self.include_paths:
+            in_include = False
+            for inc in self.include_paths:
+                if str(p_res).startswith(str(inc)):
+                    in_include = True
+                    break
+            if not in_include:
+                return False
+                
+        return True
+
+    def _find_all_files(self) -> List[str]:
+        """Find all relevant source files using ripgrep or fallback to glob."""
+        files = []
+        extensions = (".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".ph", ".inc", ".inl")
+
+        bases_to_search = self.include_paths if self.include_paths else [self.source_root]
+
+        for base in bases_to_search:
+            for ext in extensions:
+                for file_path in base.rglob(f"*{ext}"):
+                    if self._is_path_allowed(file_path):
+                        files.append(str(file_path))
+
+        return list(set(files))
+
     def _build_index_regex(self) -> None:
         """Build index using regex pattern matching (fallback)."""
-        all_files = []
-        for ext in ["*.c", "*.cpp", "*.cc", "*.cxx", "*.h", "*.hpp", "*.ph", "*.inc", "*.inl"]:
-            try:
-                # Use a generator and handle permission/symlink errors gracefully
-                for p in self.source_root.rglob(ext):
-                    all_files.append(p)
-            except OSError as e:
-                logger.debug(f"Error traversing directory during regex index build: {e}")
+        all_files = self._find_all_files()
         logger.info(f"Scanning {len(all_files)} C/H files with regex")
         for file_path in all_files:
             try:
