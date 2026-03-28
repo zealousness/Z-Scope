@@ -353,6 +353,8 @@ class ConfigLoader:
                 agents=agents,
                 compile_commands_path=compile_commands_path,
                 entry_functions_list=Path(entry_functions_list) if entry_functions_list else None,
+                include_paths=project_data.get("include_paths", []),
+                exclude_paths=project_data.get("exclude_paths", []),
             )
 
             return ZScopeConfig(

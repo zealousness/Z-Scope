@@ -145,15 +145,27 @@ class ClangBackend(CodeBackend):
         except OSError:
             return False
             
+        import os
+        def is_subpath(child: Path, parent: Path) -> bool:
+            try:
+                c_str = str(child.resolve()).lower()
+                p_str = str(parent.resolve()).lower()
+                sep = os.sep
+                if not p_str.endswith(sep):
+                    p_str += sep
+                return c_str.startswith(p_str) or c_str == p_str.rstrip(sep)
+            except Exception:
+                return False
+
         if self._exclude_paths:
             for ex in self._exclude_paths:
-                if str(p_res).startswith(str(ex)):
+                if is_subpath(p_res, ex):
                     return False
                     
         if self._include_paths:
             in_include = False
             for inc in self._include_paths:
-                if str(p_res).startswith(str(inc)):
+                if is_subpath(p_res, inc):
                     in_include = True
                     break
             if not in_include:
