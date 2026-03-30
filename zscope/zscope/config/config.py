@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 class LLMConfig:
     """Configuration for LLM client."""
 
-    provider: str = "openai"  # openai or ollama
+    provider: str = "openai"  # 预留字段，当前未在运行时使用
     api_key: str = ""
     base_url: str = "https://api.openai.com/v1"
     models: List[str] = field(default_factory=list)

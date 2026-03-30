@@ -1,7 +1,15 @@
-# Z-SCOPE Global Configuration
+# ═══════════════════════════════════════════════════════════════════════
+# Z-SCOPE Configuration
+# ═══════════════════════════════════════════════════════════════════════
+# Docs: All fields map to dataclasses in zscope/config/config.py
+# Env-var expansion supported: ${VAR} or $VAR in any string value
+# ═══════════════════════════════════════════════════════════════════════
 
+# ── LLM (single-profile, legacy style) ──────────────────────────────
+# If only one LLM endpoint is needed, use this block.
+# It is registered as the "default" profile internally.
 llm:
-  provider: openai
+  provider: openai           # 预留字段，当前未在运行时使用
   base_url: https://api.siliconflow.cn/v1
   models:
     - Qwen/Qwen3-Coder-480B-A35B-Instruct
@@ -9,47 +17,105 @@ llm:
   api_key: sk-bsmfjfhzehkxvollbeazfgswoxytcvitdsqnivbyjnnipnbg
   temperature: 0.1
   max_tokens: 4096
+  max_retries: 2
+  timeout: 120
 
+# ── LLMs (multi-profile, advanced style) ────────────────────────────
+# Uncomment below to define named profiles (fast_model / smart_model).
+# Agents can reference them via 'llm_ref'.
+# When both 'llm' and 'llms' are present, 'llm' becomes the "default".
+#
+# llms:
+#   fast_model:
+#     provider: openai
+#     base_url: http://oneapi.rnd.huawei.com/v1
+#     models:
+#       - minimax-m2.5
+#       - Qwen3-32B-45
+#     api_key: sk-xxx
+#     temperature: 0.1
+#     max_tokens: 10240
+#     max_retries: 10
+#     timeout: 300
+#
+#   smart_model:
+#     provider: openai
+#     base_url: http://oneapi.rnd.huawei.com/v1
+#     models:
+#       - glm-5
+#       - minimax-m2.5
+#     api_key: sk-xxx
+#     temperature: 0.1
+#     max_tokens: 10240
+#     max_retries: 20
+#     timeout: 1500
+
+# ── Project ─────────────────────────────────────────────────────────
 project:
-  root: .
-  entry_function: main  # Used in single-function mode
-  # entry_functions_list: example_functions.json  # Uncomment to activate batch mode
+  root: .                               # Project root (relative → resolved from cwd)
+  # source_root: /path/to/source        # Source root (relative → resolved from root; default = root)
+
+  entry_function: main                  # Single-function mode
+  # entry_functions_list: batch.json    # Batch mode (JSON list of functions)
+
+  # compile_commands_path: build/compile_commands.json  # Auto-discovered if omitted
+
+  # include_paths:                      # Relative to source_root
+  #   - src
+  #   - platform
+  # exclude_paths:
+  #   - build
+  #   - ci
+
   agents:
     - name: semantic_modeler
       enabled: true
+      # llm_ref: fast_model             # Which LLM profile to use (default if omitted)
+
     - name: vulnerability_analyzer
-      task: "查找逻辑漏洞、内存安全问题和并发风险。"
       enabled: true
+      # llm_ref: smart_model
+      task: "查找逻辑漏洞、内存安全问题和并发风险。"
+
+    - name: validator_agent
+      enabled: true
+      # llm_ref: smart_model
+
     - name: issue_reconciler_agent
       enabled: true
-      llm_ref: default
-      mode: both
+      # llm_ref: fast_model
 
+# ── Indexing ────────────────────────────────────────────────────────
 indexing:
-  backend: joern  # joern | clang | unified | regex
+  backend: joern                        # joern | clang | unified | regex
 
-  # ── Joern 后端 ──
+  # Joern 后端
   joern_path: dependency/joern/joern
   joern_server_host: 127.0.0.1
   joern_server_port: 8080
   joern_heap_size: 8g
 
-  # ── Clang 后端（需要 compile_commands.json）──
-  # clang_db_path: .zscope_clang/knowledge.db
-  # compile_commands_path: build/compile_commands.json
+  # Clang 后端
+  # clangd_path: clangd
+  # knowledge_db_path: .zscope_knowledge/code_knowledge.db
+  # batch_size: 50
+  # max_clangd_threads: 8
 
-  # ── SVF 配置（unified 模式使用）──
-  # svf_bin_dir: dependency/svf/bin
+  # SVF 配置 (unified 模式)
+  # svf_bin_dir: /root/sdk/svf/bin     # 含 wpa, saber 等
   # gclang_path: gclang
   # get_bc_path: get-bc
   # llvm_link_path: llvm-link
-  # svf_heap_limit_mb: 32768
-  # svf_timeout: 1800
+  # svf_heap_limit_mb: 32768           # 内存上限 (MB)
+  # svf_timeout: 1800                  # 单次超时 (秒)
+  # svf_groups_config: svf_groups.json # 多组 bitcode 链接配置
 
+# ── Analysis ────────────────────────────────────────────────────────
 analysis:
-  max_recursion_depth: 3
-  max_function_lines: 500
-  max_tool_iterations: 50
-  snapshot_dir: .zscope_snapshots
-  enable_snapshot_cache: true
-  parallel_workers: 5  # Number of concurrent workers for batch analysis
+  max_recursion_depth: 3                # 最大递归深度
+  max_function_lines: 500               # 函数最大行数
+  max_tool_iterations: 50               # Agent 最大工具调用轮数
+  snapshot_dir: .zscope_snapshots       # 快照/缓存目录
+  enable_snapshot_cache: true           # 启用增量缓存
+  parallel_workers: 5                   # 批量分析并发数
+  # user_config_db: ""                  # 用户配置数据库路径 (默认 snapshot_dir 下)
