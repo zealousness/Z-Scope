@@ -77,6 +77,8 @@ class AnalysisConfig:
     enable_snapshot_cache: bool = True
     parallel_workers: int = 5  # Number of concurrent workers for batch analysis
     user_config_db: str = ""  # Path to user config DB, defaults to {snapshot_dir}/
+    max_premodel_depth: int = 3  # Callee recursive pre-modeling max depth
+    max_premodel_callees: int = 20  # Max callees to expand per level
 
 
 @dataclass
@@ -307,6 +309,8 @@ class ConfigLoader:
                 enable_snapshot_cache=analysis_data.get("enable_snapshot_cache", True),
                 parallel_workers=analysis_data.get("parallel_workers", 5),
                 user_config_db=analysis_data.get("user_config_db", ""),
+                max_premodel_depth=analysis_data.get("max_premodel_depth", 3),
+                max_premodel_callees=analysis_data.get("max_premodel_callees", 20),
             )
 
             # Project config

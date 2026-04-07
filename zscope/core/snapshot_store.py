@@ -5,12 +5,70 @@ Snapshot storage and cache management for function semantic snapshots.
 import json
 import logging
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Optional, Dict, Any
 
 from ..common.utils import compute_code_hash, compute_semantic_fingerprint
 
 logger = logging.getLogger(__name__)
+
+
+class SnapshotLockManager:
+    """
+    管理函数级别的建模互斥锁。
+    确保并行扫描时，同一个函数同时只有一个 Worker 在建模。
+    """
+
+    def __init__(self):
+        self._global_lock = threading.Lock()
+        self._func_locks: Dict[str, threading.Lock] = {}
+        self._modeling_status: Dict[str, str] = {}  # "idle" | "modeling" | "done" | "failed"
+
+    def acquire(self, func_name: str, timeout: float = 120.0) -> str:
+        """
+        尝试获取某函数的建模权。
+
+        Returns:
+            "acquired"  — 你拿到了锁，你负责建模
+            "done"      — 其他 Worker 已经建模完毕，直接用快照
+            "timeout"   — 等待超时，放弃
+        """
+        with self._global_lock:
+            if func_name not in self._func_locks:
+                self._func_locks[func_name] = threading.Lock()
+                self._modeling_status[func_name] = "idle"
+
+            # Fast path: 已经建模完成
+            if self._modeling_status[func_name] == "done":
+                return "done"
+
+        lock = self._func_locks[func_name]
+        acquired = lock.acquire(timeout=timeout)
+
+        if not acquired:
+            return "timeout"
+
+        # Double-check：拿到锁后再看一次状态
+        with self._global_lock:
+            if self._modeling_status[func_name] == "done":
+                lock.release()
+                return "done"
+            self._modeling_status[func_name] = "modeling"
+
+        return "acquired"
+
+    def release(self, func_name: str, success: bool = True):
+        """释放建模权并标记状态。"""
+        with self._global_lock:
+            self._modeling_status[func_name] = "done" if success else "failed"
+
+        lock = self._func_locks.get(func_name)
+        if lock:
+            try:
+                lock.release()
+            except RuntimeError:
+                pass  # already released
 
 
 class SnapshotStore:
@@ -24,6 +82,7 @@ class SnapshotStore:
         self.snapshot_dir = Path(snapshot_dir)
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.snapshot_dir / "snapshots.db"
+        self.lock_manager = SnapshotLockManager()
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
