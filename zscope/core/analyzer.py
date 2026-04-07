@@ -281,6 +281,7 @@ class Analyzer:
         # 2. Run Vulnerability Analyzer for each configured task
         any_failure = False
         failure_msg = ""
+        max_context_tokens = 0
         
         for agent_cfg in self.config.project.agents:
             if not agent_cfg.enabled or agent_cfg.name != "vulnerability_analyzer":
@@ -296,7 +297,9 @@ class Analyzer:
             
             if v_resp.success:
                 raw_new_issues = v_resp.data.get("issues", [])
-                logger.info(f"Vulnerability Analyzer found {len(raw_new_issues)} issues for task: {agent_cfg.task}")
+                va_ctx_tokens = v_resp.metadata.get("context_tokens", 0)
+                max_context_tokens = max(max_context_tokens, va_ctx_tokens)
+                logger.info(f"Vulnerability Analyzer found {len(raw_new_issues)} issues for task: {agent_cfg.task} (ctx ≈ {va_ctx_tokens:,} tokens)")
                 
                 new_issues = []
                 # Combine verified historical issues + user-rejected issues for dedup reference
@@ -430,7 +433,8 @@ class Analyzer:
 
         final_report.metadata = {
             "timestamp": datetime.datetime.now().isoformat(),
-            "version": "0.2.0"
+            "version": "0.2.0",
+            "context_tokens": max_context_tokens,
         }
 
         # Save results to disk

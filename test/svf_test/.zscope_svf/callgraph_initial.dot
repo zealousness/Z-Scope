@@ -1,0 +1,30 @@
+digraph "Call Graph" {
+	label="Call Graph";
+
+	Node0x568886beb100 [shape=record,shape=box,label="{CallGraphNode ID: 0 \{fun: main\}|{<s0>1|<s1>2|<s2>3|<s3>4|<s4>5|<s5>6}}"];
+	Node0x568886beb100:s0 -> Node0x568886b97cf0[color=black];
+	Node0x568886beb100:s1 -> Node0x568886b97cf0[color=black];
+	Node0x568886beb100:s2 -> Node0x568886beb1d0[color=black];
+	Node0x568886beb100:s3 -> Node0x568886beb1d0[color=black];
+	Node0x568886beb100:s4 -> Node0x568886b97e30[color=black];
+	Node0x568886beb100:s5 -> Node0x568886b97e30[color=black];
+	Node0x568886b97ad0 [shape=record,shape=box,label="{CallGraphNode ID: 1 \{fun: echo_handler\}|{<s0>7|<s1>8|<s2>9|<s3>10}}"];
+	Node0x568886b97ad0:s0 -> Node0x568886beb450[color=black];
+	Node0x568886b97ad0:s1 -> Node0x568886beb590[color=black];
+	Node0x568886b97ad0:s2 -> Node0x568886beb6d0[color=black];
+	Node0x568886b97ad0:s3 -> Node0x568886beb810[color=black];
+	Node0x568886b97be0 [shape=record,shape=box,label="{CallGraphNode ID: 2 \{fun: leak_handler\}|{<s0>11|<s1>12|<s2>13}}"];
+	Node0x568886b97be0:s0 -> Node0x568886beb450[color=black];
+	Node0x568886b97be0:s1 -> Node0x568886beb590[color=black];
+	Node0x568886b97be0:s2 -> Node0x568886beb6d0[color=black];
+	Node0x568886b97cf0 [shape=record,shape=box,label="{CallGraphNode ID: 3 \{fun: handler_create\}|{<s0>14}}"];
+	Node0x568886b97cf0:s0 -> Node0x568886beb450[color=black];
+	Node0x568886b97e30 [shape=record,shape=box,label="{CallGraphNode ID: 4 \{fun: handler_free\}|{<s0>15}}"];
+	Node0x568886b97e30:s0 -> Node0x568886beb810[color=black];
+	Node0x568886beb1d0 [shape=record,shape=box,label="{CallGraphNode ID: 5 \{fun: dispatch\}}"];
+	Node0x568886beb310 [shape=record,shape=Mrecord,label="{CallGraphNode ID: 6 \{fun: llvm.dbg.declare\}}"];
+	Node0x568886beb450 [shape=record,shape=Mrecord,label="{CallGraphNode ID: 7 \{fun: malloc\}}"];
+	Node0x568886beb590 [shape=record,shape=Mrecord,label="{CallGraphNode ID: 8 \{fun: llvm.memcpy.p0.p0.i64\}}"];
+	Node0x568886beb6d0 [shape=record,shape=Mrecord,label="{CallGraphNode ID: 9 \{fun: printf\}}"];
+	Node0x568886beb810 [shape=record,shape=Mrecord,label="{CallGraphNode ID: 10 \{fun: free\}}"];
+}

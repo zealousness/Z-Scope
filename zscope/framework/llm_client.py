@@ -190,6 +190,30 @@ class LLMClient:
                 content_chunks.append(msg.get("content", ""))
         return "".join(content_chunks)
 
+    @staticmethod
+    def estimate_tokens(conversation: List[Dict[str, Any]]) -> int:
+        """Estimate the total token count of a conversation.
+        
+        Uses a simple heuristic: ~3.5 chars per token for CJK-heavy text,
+        ~4 chars per token for ASCII. This avoids a tiktoken dependency.
+        """
+        total_chars = 0
+        for msg in conversation:
+            content = msg.get("content") or ""
+            if isinstance(content, str):
+                total_chars += len(content)
+            # Count tool call arguments as part of the context
+            for tc in msg.get("tool_calls", []):
+                args = tc.get("function", {}).get("arguments", "")
+                if isinstance(args, str):
+                    total_chars += len(args)
+            # Count reasoning_content if present (e.g. DeepSeek R1)
+            rc = msg.get("reasoning_content") or ""
+            if isinstance(rc, str):
+                total_chars += len(rc)
+        # Heuristic: average 3.8 chars per token for mixed CJK/ASCII codebases
+        return int(total_chars / 3.8)
+
     def run_conversation_with_tools(
         self,
         messages: List[Dict[str, Any]],
@@ -205,7 +229,8 @@ class LLMClient:
 
         while iterations < max_iterations:
             iterations += 1
-            logger.info(f"Conversation iteration {iterations}/{max_iterations}")
+            ctx_tokens = self.estimate_tokens(conversation)
+            logger.info(f"Conversation iteration {iterations}/{max_iterations} | context ≈ {ctx_tokens:,} tokens")
 
             # Call LLM
             response = self.chat_completion(conversation, tools=tools_schema)
@@ -221,7 +246,9 @@ class LLMClient:
             # Check if done
             if finish_reason == "stop":
                 content = self._get_combined_content(conversation)
-                return {"content": content, "conversation": conversation, "iterations": iterations}
+                final_tokens = self.estimate_tokens(conversation)
+                logger.info(f"Conversation complete: {iterations} iterations, final context ≈ {final_tokens:,} tokens")
+                return {"content": content, "conversation": conversation, "iterations": iterations, "context_tokens": final_tokens}
                 
             if finish_reason == "length":
                 logger.warning(f"Model {self.models[0] if self.models else 'unknown'} output truncated! Prompting to continue...")
@@ -263,7 +290,9 @@ class LLMClient:
 
             if not tool_calls:
                 content = self._get_combined_content(conversation)
-                return {"content": content, "conversation": conversation, "iterations": iterations}
+                final_tokens = self.estimate_tokens(conversation)
+                logger.info(f"Conversation complete (no more tool calls): {iterations} iterations, final context ≈ {final_tokens:,} tokens")
+                return {"content": content, "conversation": conversation, "iterations": iterations, "context_tokens": final_tokens}
 
             # Execute each tool call
             for tool_call in tool_calls:
@@ -310,11 +339,14 @@ class LLMClient:
                     history_summary.append(f"Tool Result: {msg.get('content')[:100]}...")
             logger.debug(f"Last steps: {history_summary}")
 
+        final_tokens = self.estimate_tokens(conversation)
+        logger.info(f"Conversation ended (truncated={iterations >= max_iterations}): {iterations} iterations, final context ≈ {final_tokens:,} tokens")
         return {
             "content": conversation[-1].get("content", "") if not message.get("tool_calls") else "",
             "conversation": conversation,
             "iterations": iterations,
             "truncated": iterations >= max_iterations,
+            "context_tokens": final_tokens,
         }
 
     def _parse_tool_args(self, func_args_str: str) -> Dict[str, Any]:
