@@ -568,10 +568,35 @@ class Analyzer:
                     self.snapshot_store.lock_manager.release(func, success=False)
                     continue
 
+                location = f"{impl['file']}:{impl['start_line']}"
+
+                # 高效拦截：平凡函数不需要让大模型看
+                if self._is_trivial_function(impl["code"], self.config.analysis.trivial_function_max_lines):
+                    logger.info(f"[premodel] Auto-skipping trivial function '{func}'")
+                    fake_snapshot = {
+                        "type": "function_snapshot",
+                        "func_name": func,
+                        "location": location,
+                        "summary": "[Auto-Skipped] Trivial Function (极简直通结构，未调用 LLM)",
+                        "inputs": [],
+                        "outputs": [],
+                        "resources": {},
+                        "error_handling": {},
+                        "concurrency": {},
+                        "semantic_fingerprint": {"key_semantics": ["trivial representation"]},
+                        "suspicious_points": [],
+                        "callees": impl.get("callees", []),
+                        "is_trivial": True
+                    }
+                    self.snapshot_store.save_snapshot(func, fake_snapshot, impl["code"], location)
+                    self.snapshot_store.lock_manager.release(func, success=True)
+                    modeled += 1
+                    continue
+
                 context = {
                     "func_name": func,
                     "code": impl["code"],
-                    "location": f"{impl['file']}:{impl['start_line']}",
+                    "location": location,
                     "schema": "{}",
                 }
 
@@ -580,8 +605,7 @@ class Analyzer:
 
                 if resp.success:
                     self.snapshot_store.save_snapshot(
-                        func, resp.data, impl["code"],
-                        f"{impl['file']}:{impl['start_line']}"
+                        func, resp.data, impl["code"], location
                     )
                     self.snapshot_store.lock_manager.release(func, success=True)
                     modeled += 1
@@ -593,6 +617,70 @@ class Analyzer:
                 logger.error(f"[premodel] Error modeling '{func}': {e}")
 
         logger.info(f"[premodel] Done: {modeled} modeled, {skipped} reused from cache.")
+
+    @staticmethod
+    def _is_trivial_function(code: str, max_lines_threshold: int) -> bool:
+        """
+        判断一个函数是否过于简单，不需要经过大模型做深度语义分析。
+        1. 去除注释和空行后，行数 <= max_lines_threshold
+        2. 代码体内不含有锁、内存分配、IO等高危关键字（无涉安全）
+        """
+        if max_lines_threshold <= 0:
+            return False
+
+        # 1. 粗略清洗注释和左侧行号前缀
+        import re
+        lines = code.split("\n")
+        clean_lines = []
+        in_block_comment = False
+        for line in lines:
+            line = line.strip()
+            # Remove line numbers inserted by `get_function_impl`: "123 | int foo() {" -> "int foo() {"
+            line = re.sub(r"^\d+\s*\|\s*", "", line)
+            if not line:
+                continue
+
+            if in_block_comment:
+                if "*/" in line:
+                    in_block_comment = False
+                    line = line[line.find("*/") + 2:].strip()
+                else:
+                    continue
+
+            if "/*" in line:
+                if "*/" in line:
+                    line = re.sub(r"/\*.*?\*/", "", line).strip()
+                else:
+                    in_block_comment = True
+                    line = line[:line.find("/*")].strip()
+
+            if "//" in line:
+                line = line[:line.find("//")].strip()
+
+            if line:
+                clean_lines.append(line)
+
+        # 除了大括号和函数签名之外的有效逻辑行
+        logic_lines = [l for l in clean_lines if l not in ("{", "}")]
+        # Let's say if signature is 1 line, body is N lines. We just check total clean logic lines.
+        # usually 1 line signature + 1 line return + maybe brackets.
+        if len(logic_lines) > max_lines_threshold + 1:  # +1 for signature roughly
+            return False
+
+        # 2. 验证风险关键字
+        # 不区分大小写匹配敏感操作
+        clean_code_body = " ".join(clean_lines).lower()
+        risky_keywords = [
+            r"malloc", r"calloc", r"realloc", r"free", r"alloc", r"new\s", r"delete\s",
+            r"lock", r"mutex", r"mtx", r"cond", r"thread", r"spin", r"pthread",
+            r"file", r"fopen", r"fclose", r"read", r"write", r"socket", r"send", r"recv", r"connect", r"open", r"close"
+        ]
+        
+        for kw in risky_keywords:
+            if re.search(kw, clean_code_body):
+                return False
+
+        return True
 
     @staticmethod
     def _topo_sort(graph: Dict[str, List[str]], root: str) -> list:

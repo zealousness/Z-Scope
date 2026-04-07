@@ -79,6 +79,7 @@ class AnalysisConfig:
     user_config_db: str = ""  # Path to user config DB, defaults to {snapshot_dir}/
     max_premodel_depth: int = 3  # Callee recursive pre-modeling max depth
     max_premodel_callees: int = 20  # Max callees to expand per level
+    trivial_function_max_lines: int = 5  # Skip modeling if function <= this many valid lines
 
 
 @dataclass
@@ -311,6 +312,7 @@ class ConfigLoader:
                 user_config_db=analysis_data.get("user_config_db", ""),
                 max_premodel_depth=analysis_data.get("max_premodel_depth", 3),
                 max_premodel_callees=analysis_data.get("max_premodel_callees", 20),
+                trivial_function_max_lines=analysis_data.get("trivial_function_max_lines", 5),
             )
 
             # Project config
