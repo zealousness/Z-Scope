@@ -265,6 +265,13 @@ class Analyzer:
         sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
         sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients["default"])
         
+        # 1a. Recursive pre-modeling: ensure all reachable callees have snapshots
+        self._premodel_callees(
+            entry_func, sm_client,
+            max_depth=self.config.analysis.max_premodel_depth,
+            max_callees=self.config.analysis.max_premodel_callees,
+        )
+        
         semantic_agent = SemanticModeler(sm_client, self._get_tools())
         logger.info(f"Running Semantic Modeler agent with '{sm_llm_ref}' LLM...")
         s_resp = semantic_agent.run(agent_context)
@@ -488,7 +495,121 @@ class Analyzer:
             
         return tools
 
+    def _premodel_callees(self, entry_func: str, sm_client: 'LLMClient',
+                          max_depth: int = 3, max_callees: int = 20):
+        """
+        递归预建模入口函数的所有可达 callee（逆拓扑序）。
+        在对入口函数做语义建模之前调用，确保所有子函数都已有快照。
+        使用 SnapshotLockManager 保证并行扫描时同一函数只被建模一次。
+        """
+        # 1. BFS 收集可达 callee 图
+        callee_graph: Dict[str, List[str]] = {}
+        visited: Set[str] = set()
+        queue: list = [(entry_func, 0)]
+        impl_cache: Dict[str, Any] = {}  # 缓存 get_function_impl 结果
 
+        while queue:
+            func, depth = queue.pop(0)
+            if func in visited or depth > max_depth:
+                continue
+            visited.add(func)
+
+            callees_raw = self.code_index.get_callees(func, limit=max_callees)
+            callee_names = [c["name"] for c in callees_raw if c.get("name")]
+
+            # 过滤掉无源码的函数（标准库等）
+            resolvable = []
+            for c in callee_names:
+                if c in visited:
+                    continue
+                impl = self.code_index.get_function_impl(c)
+                if impl is not None:
+                    impl_cache[c] = impl
+                    resolvable.append(c)
+                    queue.append((c, depth + 1))
+
+            callee_graph[func] = resolvable
+
+        # 2. 逆拓扑排序：叶子函数优先
+        order = self._topo_sort(callee_graph, entry_func)
+        # 过滤掉入口函数本身（由主流程建模）
+        order = [f for f in order if f != entry_func]
+
+        if not order:
+            return
+
+        logger.info(f"[premodel] {len(order)} reachable callees to pre-model for '{entry_func}'")
+
+        # 3. 逐个建模
+        semantic_agent = SemanticModeler(sm_client, self._get_tools())
+        modeled = 0
+        skipped = 0
+
+        for func in order:
+            # 快速检查：已有快照则跳过
+            existing = self.snapshot_store.load_snapshot(func)
+            if existing is not None:
+                skipped += 1
+                continue
+
+            # 跨线程锁保护
+            status = self.snapshot_store.lock_manager.acquire(func, timeout=120.0)
+            if status == "done":
+                skipped += 1
+                continue
+            if status == "timeout":
+                logger.warning(f"[premodel] Timeout waiting for '{func}', skipping.")
+                continue
+
+            # status == "acquired"：由当前 Worker 建模
+            try:
+                impl = impl_cache.get(func) or self.code_index.get_function_impl(func)
+                if not impl:
+                    self.snapshot_store.lock_manager.release(func, success=False)
+                    continue
+
+                context = {
+                    "func_name": func,
+                    "code": impl["code"],
+                    "location": f"{impl['file']}:{impl['start_line']}",
+                    "schema": "{}",
+                }
+
+                logger.info(f"[premodel] Modeling callee '{func}' ...")
+                resp = semantic_agent.run(context)
+
+                if resp.success:
+                    self.snapshot_store.save_snapshot(
+                        func, resp.data, impl["code"],
+                        f"{impl['file']}:{impl['start_line']}"
+                    )
+                    self.snapshot_store.lock_manager.release(func, success=True)
+                    modeled += 1
+                else:
+                    self.snapshot_store.lock_manager.release(func, success=False)
+                    logger.warning(f"[premodel] Failed to model '{func}': {resp.error}")
+            except Exception as e:
+                self.snapshot_store.lock_manager.release(func, success=False)
+                logger.error(f"[premodel] Error modeling '{func}': {e}")
+
+        logger.info(f"[premodel] Done: {modeled} modeled, {skipped} reused from cache.")
+
+    @staticmethod
+    def _topo_sort(graph: Dict[str, List[str]], root: str) -> list:
+        """逆拓扑排序：返回叶子优先的建模顺序。"""
+        visited: Set[str] = set()
+        order: list = []
+
+        def dfs(node: str):
+            if node in visited:
+                return
+            visited.add(node)
+            for child in graph.get(node, []):
+                dfs(child)
+            order.append(node)
+
+        dfs(root)
+        return order  # 天然是逆拓扑序（叶子在前）
 
     def _tool_executor_wrapper(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Wrapper to intercept tool execution for snapshot logic."""
