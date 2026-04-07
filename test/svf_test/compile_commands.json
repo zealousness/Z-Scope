@@ -1,0 +1,12 @@
+[
+    {
+        "directory": "/mnt/c/Users/10273/home/work/Z-Scope/test/svf_test",
+        "command": "cc -c -I. main.c -o main.o",
+        "file": "main.c"
+    },
+    {
+        "directory": "/mnt/c/Users/10273/home/work/Z-Scope/test/svf_test",
+        "command": "cc -c -I. handler.c -o handler.o",
+        "file": "handler.c"
+    }
+]

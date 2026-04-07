@@ -29,6 +29,7 @@ class ParallelAnalysisResult:
     issues: List[Dict[str, Any]] = field(default_factory=list)
     error: Optional[str] = None
     duration_seconds: float = 0.0
+    context_tokens: int = 0
 
 
 class ParallelAnalyzer:
@@ -108,7 +109,7 @@ class ParallelAnalyzer:
                     try:
                         result = future.result()
                         results[entry.function_name] = result
-                        logger.info(f"[{completed}/{total}] {entry.function_name}: {result.verdict} ({len(result.issues)} issues)")
+                        logger.info(f"[{completed}/{total}] {entry.function_name}: {result.verdict} ({len(result.issues)} issues, ctx ≈ {result.context_tokens:,} tokens)")
                     except concurrent.futures.CancelledError:
                         logger.warning(f"[{completed}/{total}] {entry.function_name}: Cancelled due to interrupt")
                     except Exception as e:
@@ -187,7 +188,8 @@ class ParallelAnalyzer:
                 function_name=entry.function_name,
                 verdict=report_dict.get("overall_verdict", "unknown"),
                 issues=report_dict.get("issues", []),
-                duration_seconds=duration
+                duration_seconds=duration,
+                context_tokens=report_dict.get("metadata", {}).get("context_tokens", 0),
             )
             
         except Exception as e:
@@ -244,6 +246,7 @@ class ParallelAnalyzer:
                 "verdict": result.verdict,
                 "issue_count": len(result.issues),
                 "duration_seconds": round(result.duration_seconds, 2),
+                "context_tokens": result.context_tokens,
                 "error": result.error
             })
             
@@ -263,6 +266,7 @@ class ParallelAnalyzer:
                 "total_issues": len(unique_issues),
                 "unique_issues": len(unique_issues),
                 "total_duration_seconds": round(total_duration, 2),
+                "total_context_tokens": sum(r.context_tokens for r in results.values()),
                 "parallel_speedup": f"{len(results)}x potential (using {self.max_workers} workers)"
             },
             "function_results": function_summaries,
