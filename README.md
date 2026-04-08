@@ -258,6 +258,9 @@ analysis:
   snapshot_dir: .zscope_snapshots
   enable_snapshot_cache: true
   parallel_workers: 16       # 高并发配置，结合 LLM 重试策略使用
+  max_premodel_depth: 3      # callee 递归预建模下探深度上限（默认 3层）
+  max_premodel_callees: 20   # 单层预建模最大扇出分支
+  trivial_function_max_lines: 5  # 拦截极简直通函数（≤5 行且不含高危关键字）并跳过大模型 API 调用
 ```
 
 ### Step 2：执行分析
@@ -369,7 +372,10 @@ python tmp/test_integration.py
 ## 更新日志
 
 ### v0.5.0
-- **引入 IssueReconcilerAgent 增量分析优化**。支持断点续传（`--resume-from`）特性的完善支持。利用大语言模型（LLM）精准跟踪源码变更情况下历史已验证缺陷的存在状态；对扫描阶段产生的新缺陷进行语义级别的去重判决。
+- **全架构重构与扁平化**：扁平化了冗余的 `zscope/zscope` 目录结构，统一通过 `pip install -e .` 安装，更贴合标准 Python 打包规范。大幅强化三库同源（`code_knowledge.db`, `snapshots.db`, `user_config.db`）的底层持久化隔离与可观测性。
+- **递归预建模与并发防护**：引入 `SnapshotLockManager`，在实际漏洞分析前通过 BFS 逆拓扑遍历，提前将所有可达子函数推给 `语义建模Agent` 并在多 Worker 间互斥上锁。彻底消除上下文膨胀问题以及多线程同时并发请求同一个下层函数的复述问题。
+- **平凡函数旁路拦截器**：结合极简代码行数（默认 `≤5`）和危险关键字黑名单正则（杜绝 `alloc`、`lock` 等操作漏网），直接在调度层利用 Python 硬拼装阻断 LLM API 请求，实现零成本微快照注入，整体节约 `20~40%` 并发扫描 Token 开销。
+- **引入 IssueReconcilerAgent 增量分析优化**。支持断点续扫（`--resume`）特性的完善支持。利用大语言模型（LLM）精准跟踪源码变更情况下历史已验证缺陷的存在状态；对扫描阶段产生的新缺陷进行语义级别的去重判决。
 - **全新的缺陷生命周期管理**：废弃了传统的误报（False Positive）规则引擎，转而强化基于 `validation_status`（Pending/Validated/Rejected）的缺陷验证闭环流转，所有验证状态的修正现在通过全新的 SQLite 引擎强制原子级落盘。
 
 ### v0.4.2 (2026-03-05)
