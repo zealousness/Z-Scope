@@ -83,12 +83,12 @@ Z-Scope 内置了严密的数据防丢失功能：
 ### 1. 安装 Z-SCOPE
 
 ```bash
-git clone https://github.com/user/Z-Scope.git
+git clone https://github.com/zealousness/Z-Scope.git
 cd Z-Scope
-python -m pip install -e zscope
+python -m pip install -e .
 
 # 含开发依赖
-python -m pip install -e "zscope[dev]"
+python -m pip install -e ".[dev]"
 ```
 
 ### 2. 安装后端依赖（按需选择）
@@ -354,13 +354,13 @@ zscope --dashboard -c zscope.yaml
 
 ```bash
 # 格式化
-black zscope/zscope/ --line-length 100
+black zscope/ --line-length 100
 
 # 类型检查
-mypy zscope/zscope/
+mypy zscope/
 
 # 运行测试
-pytest zscope/tests/
+pytest tests/
 
 # 运行集成测试
 python tmp/test_integration.py
