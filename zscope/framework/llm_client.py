@@ -148,6 +148,17 @@ class LLMClient:
                         if reasoning_pieces:
                             assembled_message["reasoning_content"] = "".join(reasoning_pieces)
                             
+                        # Estimate single API call cost and log prominently
+                        prompt_tokens = LLMClient.estimate_tokens(messages)
+                        completion_tokens = LLMClient.estimate_tokens([assembled_message])
+                        
+                        logger.info(
+                            f"[LLM API Trace] Model: {model} | "
+                            f"Prompt ≈ {prompt_tokens:,} tk | "
+                            f"Completion ≈ {completion_tokens:,} tk | "
+                            f"Total ≈ {prompt_tokens + completion_tokens:,} tk"
+                        )
+                            
                         return {
                             "choices": [{
                                 "message": assembled_message,
