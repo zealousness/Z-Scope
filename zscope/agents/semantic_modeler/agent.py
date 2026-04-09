@@ -66,10 +66,11 @@ class SemanticModeler(BaseAgent):
             
             content = result["content"]
             conversation = result.get("conversation", [])
+            ctx_tokens = result.get("context_tokens", 0)
 
             parsed = self._try_extract_snapshot(content, result, conversation)
             if parsed:
-                return AgentResponse(success=True, data=parsed)
+                return AgentResponse(success=True, data=parsed, metadata={"context_tokens": ctx_tokens})
 
             # ── JSON Parse Retry Loop ──
             MAX_JSON_RETRIES = 2
@@ -91,11 +92,15 @@ class SemanticModeler(BaseAgent):
                 retry_message = retry_choice.get("message", {})
                 retry_content = retry_message.get("content", "")
                 conversation.append(retry_message)
+                
+                # Estimate tokens for retry if we don't have it tracked
+                from ...framework.llm_client import LLMClient
+                retry_ctx_tokens = LLMClient.estimate_tokens(json.dumps(conversation))
 
                 parsed = self._try_extract_snapshot(retry_content, {}, conversation)
                 if parsed:
                     logger.info(f"[Retry {retry}] Successfully parsed snapshot JSON for {func_name}")
-                    return AgentResponse(success=True, data=parsed)
+                    return AgentResponse(success=True, data=parsed, metadata={"context_tokens": ctx_tokens + retry_ctx_tokens})
             
             last_msg_debug = json.dumps(conversation[-1] if conversation else {}, ensure_ascii=False)
             logger.error(f"Failed to parse snapshot JSON for {func_name} after {MAX_JSON_RETRIES} retries. Last API Msg: {last_msg_debug}")

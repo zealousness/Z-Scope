@@ -266,29 +266,33 @@ class Analyzer:
         sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients["default"])
         
         # 1a. Recursive pre-modeling: ensure all reachable callees have snapshots
-        self._premodel_callees(
+        pm_modeled, pm_skipped, pm_tokens = self._premodel_callees(
             entry_func, sm_client,
             max_depth=self.config.analysis.max_premodel_depth,
             max_callees=self.config.analysis.max_premodel_callees,
         )
+        total_context_tokens = pm_tokens
         
         semantic_agent = SemanticModeler(sm_client, self._get_tools())
         logger.info(f"Running Semantic Modeler agent with '{sm_llm_ref}' LLM...")
         s_resp = semantic_agent.run(agent_context)
+        sm_tokens = s_resp.metadata.get("context_tokens", 0) if s_resp.metadata else 0
+        total_context_tokens += sm_tokens
+        
         if s_resp.success:
             # Save snapshot to store
             self.snapshot_store.save_snapshot(
                 entry_func, s_resp.data, agent_context["code"], agent_context["location"]
             )
+            logger.info(f"Successfully modeled function: {entry_func} (ctx ≈ {sm_tokens:,} tokens)")
             notes.append(f"Successfully modeled function: {entry_func}")
         else:
-            logger.warning(f"Semantic modeling failed: {s_resp.error}")
+            logger.warning(f"Semantic modeling failed: {s_resp.error} (ctx ≈ {sm_tokens:,} tokens)")
             notes.append(f"Semantic modeling failed: {s_resp.error}")
         
         # 2. Run Vulnerability Analyzer for each configured task
         any_failure = False
         failure_msg = ""
-        max_context_tokens = 0
         
         for agent_cfg in self.config.project.agents:
             if not agent_cfg.enabled or agent_cfg.name != "vulnerability_analyzer":
@@ -304,8 +308,8 @@ class Analyzer:
             
             if v_resp.success:
                 raw_new_issues = v_resp.data.get("issues", [])
-                va_ctx_tokens = v_resp.metadata.get("context_tokens", 0)
-                max_context_tokens = max(max_context_tokens, va_ctx_tokens)
+                va_ctx_tokens = v_resp.metadata.get("context_tokens", 0) if v_resp.metadata else 0
+                total_context_tokens += va_ctx_tokens
                 logger.info(f"Vulnerability Analyzer found {len(raw_new_issues)} issues for task: {agent_cfg.task} (ctx ≈ {va_ctx_tokens:,} tokens)")
                 
                 new_issues = []
@@ -441,7 +445,7 @@ class Analyzer:
         final_report.metadata = {
             "timestamp": datetime.datetime.now().isoformat(),
             "version": "0.2.0",
-            "context_tokens": max_context_tokens,
+            "context_tokens": total_context_tokens,
         }
 
         # Save results to disk
@@ -496,11 +500,11 @@ class Analyzer:
         return tools
 
     def _premodel_callees(self, entry_func: str, sm_client: 'LLMClient',
-                          max_depth: int = 3, max_callees: int = 20):
+                          max_depth: int = 3, max_callees: int = 20) -> tuple[int, int, int]:
         """
         递归预建模入口函数的所有可达 callee（逆拓扑序）。
-        在对入口函数做语义建模之前调用，确保所有子函数都已有快照。
-        使用 SnapshotLockManager 保证并行扫描时同一函数只被建模一次。
+        Returns:
+            (modeled_count, skipped_count, total_context_tokens)
         """
         # 1. BFS 收集可达 callee 图
         callee_graph: Dict[str, List[str]] = {}
@@ -536,7 +540,7 @@ class Analyzer:
         order = [f for f in order if f != entry_func]
 
         if not order:
-            return
+            return 0, 0, 0
 
         logger.info(f"[premodel] {len(order)} reachable callees to pre-model for '{entry_func}'")
 
@@ -544,6 +548,7 @@ class Analyzer:
         semantic_agent = SemanticModeler(sm_client, self._get_tools())
         modeled = 0
         skipped = 0
+        total_tokens = 0
 
         for func in order:
             # 快速检查：已有快照则跳过
@@ -602,6 +607,8 @@ class Analyzer:
 
                 logger.info(f"[premodel] Modeling callee '{func}' ...")
                 resp = semantic_agent.run(context)
+                call_tokens = resp.metadata.get("context_tokens", 0) if resp.metadata else 0
+                total_tokens += call_tokens
 
                 if resp.success:
                     self.snapshot_store.save_snapshot(
@@ -616,7 +623,8 @@ class Analyzer:
                 self.snapshot_store.lock_manager.release(func, success=False)
                 logger.error(f"[premodel] Error modeling '{func}': {e}")
 
-        logger.info(f"[premodel] Done: {modeled} modeled, {skipped} reused from cache.")
+        logger.info(f"[premodel] Done: {modeled} modeled, {skipped} reused from cache (ctx ≈ {total_tokens:,} tokens)")
+        return modeled, skipped, total_tokens
 
     @staticmethod
     def _is_trivial_function(code: str, max_lines_threshold: int) -> bool:
