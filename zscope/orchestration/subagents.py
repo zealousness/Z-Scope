@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from ..agents.deep_worker.agent import DeepWorkerAgent
@@ -19,6 +19,8 @@ class SubAgentTicket:
     trigger: str
     line: int
     context_slice: str
+    priority_score: int = 0
+    priority_reasons: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -28,6 +30,8 @@ class SubAgentTicket:
             "trigger": self.trigger,
             "line": self.line,
             "context_slice": self.context_slice,
+            "priority_score": self.priority_score,
+            "priority_reasons": self.priority_reasons or [],
         }
 
 
@@ -80,6 +84,15 @@ class SubAgentOrchestrator:
         max_tickets: int = 4,
         allowed_skills: Optional[List[str]] = None,
     ) -> List[SubAgentTicket]:
+        candidates = self.plan_candidates(func_name, code, allowed_skills=allowed_skills)
+        return self.select_tickets(candidates, max_tickets)
+
+    def plan_candidates(
+        self,
+        func_name: str,
+        code: str,
+        allowed_skills: Optional[List[str]] = None,
+    ) -> List[SubAgentTicket]:
         lines = code.splitlines()
         tickets: List[SubAgentTicket] = []
         seen = set()
@@ -99,18 +112,34 @@ class SubAgentOrchestrator:
                 seen.add(key)
                 start = max(0, idx - 12)
                 end = min(len(lines), idx + 18)
+                context_slice = "\n".join(lines[start:end])
+                score, reasons = self._score_candidate(skill, clean, context_slice, match.group(0))
                 ticket = SubAgentTicket(
                     id=f"{func_name}:{skill}:{line_no}",
                     skill=skill,
                     task=task,
                     trigger=match.group(0),
                     line=line_no,
-                    context_slice="\n".join(lines[start:end]),
+                    context_slice=context_slice,
+                    priority_score=score,
+                    priority_reasons=reasons,
                 )
                 tickets.append(ticket)
-                if len(tickets) >= max_tickets:
-                    return tickets
         return tickets
+
+    @staticmethod
+    def select_tickets(candidates: List[SubAgentTicket], max_tickets: int) -> List[SubAgentTicket]:
+        if max_tickets <= 0:
+            return []
+        return sorted(candidates, key=lambda t: (-t.priority_score, t.line, t.skill))[:max_tickets]
+
+    @staticmethod
+    def unassigned_candidates(
+        candidates: List[SubAgentTicket],
+        selected: List[SubAgentTicket],
+    ) -> List[SubAgentTicket]:
+        selected_ids = {ticket.id for ticket in selected}
+        return [ticket for ticket in candidates if ticket.id not in selected_ids]
 
     def run_tickets(
         self,
@@ -129,16 +158,83 @@ class SubAgentOrchestrator:
                 "max_iterations": max_iterations,
             }
             response = worker.run(input_data)
+            status = self._report_status(response)
             reports.append(
                 {
                     "ticket": ticket.to_dict(),
-                    "success": response.success,
+                    "status": status,
+                    "success": status == "completed",
                     "data": response.data,
                     "error": response.error,
                     "metadata": response.metadata,
                 }
             )
         return reports
+
+    @staticmethod
+    def summarize_reports(reports: List[Dict[str, Any]]) -> Dict[str, Any]:
+        counts = {
+            "completed": 0,
+            "failed": 0,
+            "invalid": 0,
+            "partial": 0,
+            "killed": 0,
+        }
+        for report in reports:
+            status = str(report.get("status") or "failed")
+            if status not in counts:
+                status = "failed"
+            counts[status] += 1
+        return counts
+
+    @staticmethod
+    def _report_status(response: Any) -> str:
+        if response.success:
+            return "completed"
+        metadata = response.metadata or {}
+        failure_kind = metadata.get("failure_kind")
+        if failure_kind == "invalid_report":
+            return "invalid"
+        if failure_kind == "partial":
+            return "partial"
+        if failure_kind == "aborted":
+            return "killed"
+        return "failed"
+
+    @staticmethod
+    def _score_candidate(
+        skill: str,
+        line: str,
+        context_slice: str,
+        trigger: str,
+    ) -> tuple[int, List[str]]:
+        text = f"{line}\n{context_slice}".lower()
+        score = 10
+        reasons: List[str] = []
+
+        risk_patterns = [
+            (r"\bgoto\b|\berr(or)?\b|\bfail(ed|ure)?\b|cleanup", 8, "error_or_cleanup_path"),
+            (r"\breturn\b", 6, "near_early_return"),
+            (r"\bfor\s*\(|\bwhile\s*\(", 5, "loop_context"),
+            (r"->|\.", 4, "object_or_struct_state"),
+            (r"\bglobal\b|\bstatic\b", 4, "shared_or_static_state"),
+            (r"\brealloc\s*\(", 5, "realloc_semantics"),
+            (r"\bpthread|\bthread|\block|\bmutex", 5, "concurrency_context"),
+            (r"\bmemcpy|\bstrcpy|\bread|\brecv", 4, "copy_or_input_context"),
+        ]
+        for pattern, weight, reason in risk_patterns:
+            if re.search(pattern, text):
+                score += weight
+                reasons.append(reason)
+
+        if skill in {"resource_lifecycle", "temporal_memory"}:
+            score += 3
+            reasons.append("lifetime_sensitive_skill")
+        if trigger.startswith("realloc"):
+            score += 4
+            reasons.append("realloc_trigger")
+
+        return score, reasons or ["source_order_tiebreaker"]
 
     @staticmethod
     def _extract_line_number(line: str, fallback: int) -> int:

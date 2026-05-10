@@ -131,7 +131,6 @@ analysis:
   user_config_db: ""             # Empty means {snapshot_dir}/user_config.db
 
   parallel_workers: 5
-  workflow_name: default         # default | maintain | resume; CLI --maintain/--resume override this
 
   # Recursive pre-modeling of reachable callees before vulnerability mining.
   max_premodel_depth: 3
@@ -140,4 +139,6 @@ analysis:
 
   # Focused Deep Worker support.
   enable_subagent_workers: true
+  # Execution budget only. Z-SCOPE still keeps all discovered subagent
+  # candidates and passes unexecuted candidates back to vulnerability_analyzer.
   max_subagent_tickets: 4

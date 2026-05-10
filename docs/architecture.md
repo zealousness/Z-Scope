@@ -95,7 +95,7 @@ Z-SCOPE 是一款基于多智能体协作的 C 语言深度静态分析工具。
 
 > `--resume` 和 `--maintain` 互斥，不可同时使用。
 
-CLI 会在加载 `zscope.yaml` 后根据命令行参数设置当前工作流：默认使用 `analysis.workflow_name`（通常为 `default`）；传入 `--resume` 时强制切换为 `resume`；传入 `--maintain` 时强制切换为 `maintain`。这意味着 `--maintain` 本身就代表执行 `zscope/workflows/maintain.yaml`，不需要用户在配置文件里额外写 `analysis.workflow_name: maintain`。
+Workflow 选择由 CLI 运行模式决定，不允许通过 `zscope.yaml` 配置。普通运行固定使用 `default`；传入 `--resume` 时强制切换为 `resume`；传入 `--maintain` 时强制切换为 `maintain`。如果 YAML 中出现 `analysis.workflow_name`，`ConfigLoader` 会直接拒绝加载。
 
 ### 3.2 `--resume` 断点续扫逻辑
 
@@ -137,7 +137,7 @@ Analyzer: 加载 zscope/workflows/maintain.yaml
 
 ### 4.1 声明式工作流编排
 
-整体流程由 `zscope/workflows/` 下的 YAML 声明。系统不再把 workflow 作为大段提示词注入 Agent，而是由 Analyzer 将 YAML step 解释为可执行的编排步骤。工作流选择来自 `analysis.workflow_name`，但 CLI 参数拥有更高优先级：`--resume` 选择 `resume.yaml`，`--maintain` 选择 `maintain.yaml`。
+整体流程由 `zscope/workflows/` 下的 YAML 声明。系统不再把 workflow 作为大段提示词注入 Agent，而是由 Analyzer 将 YAML step 解释为可执行的编排步骤。工作流选择是运行时内部状态：默认值为 `default`，CLI 参数 `--resume` / `--maintain` 分别切换到 `resume.yaml` / `maintain.yaml`，但用户不能在 `zscope.yaml` 中设置该字段。
 
 - **default**: 入口发现 → 递归预建模 → 主入口建模 → 漏洞挖掘规划（分配 Deep Worker） → 漏洞挖掘 → 漏洞验证 → 保存报告。
 - **maintain**: 增量分析专用，仅重跑变更代码段并利用 `Issue Reconciler` 进行缺陷调和。
@@ -158,7 +158,7 @@ Analyzer 会在每个 step 开始和结束时更新 `workflow_progress`，并将
 1. `ConfigLoader` 将 `zscope.yaml` 中的 `project.agents[].task` 读入 `AgentConfig.task`。
 2. `Analyzer._select_vulnerability_skills_for_config()` 调用 `orchestration/skill_selection.py`，把自然语言关注点映射到 `resource_lifecycle`、`bounds_and_integer`、`null_and_failure`、`temporal_memory`、`concurrency_lock_order`、`shared_state_race` 等内置 Skill。
 3. `_attach_agent_contract()` 只注入 active skills 对应的 `SKILL.md` 契约，并在 `AGENT.md` 契约中展示本轮激活的 Skill 列表。
-4. `SubAgentOrchestrator.plan()` 使用同一组 active skills 过滤启发式 Deep Worker 工单，避免为不关心的漏洞类别创建子任务。
+4. `SubAgentOrchestrator.plan_candidates()` 使用同一组 active skills 过滤启发式 Deep Worker 候选点，避免为不关心的漏洞类别创建子任务。
 5. `VulnerabilityAnalyzer.run()` 在 prompt 中明确 active skills，并对最终 JSON 报告做二次 family 过滤，丢弃明显不属于用户关注方向的 finding。
 
 如果 `task` 为空或没有命中已知关键词，系统保持历史兼容行为：启用 `vulnerability_analyzer/AGENT.md` 中声明的全部默认 Skill，不会因为配置老旧而意外漏扫。`task` 支持正向关注与简单否定，例如：
@@ -174,8 +174,9 @@ Analyzer 会在每个 step 开始和结束时更新 `workflow_progress`，并将
 为了防止 `漏洞挖掘 Agent` 同时处理过多的漏洞类型导致上下文窗口爆炸和注意力涣散，引入了 `SubAgentOrchestrator`：
 1. 挖掘管理器只看核心结构和关键语义，当发现特征点（如 `malloc`, `pthread_create`, `memcpy`）时。
 2. 剥离无关代码，构建一份切片代码（通常仅 20~30 行），附带明确的排查假设（Hypothesis）。
-3. 生成一个针对性的子任务工单，派遣 `Deep Worker` 专门只调查该单一事件（如：调查 `malloc` 的释放路径）。
-4. `Deep Worker` 携带针对性的工具，进行深度调用图和数据流追踪，返回轻量级、无幻觉的确凿证据。
+3. 先全量生成候选工单，并给每个候选点打上 `priority_score` 与 `priority_reasons`。风险启发式包括错误路径、cleanup/goto、循环、结构体/共享状态、并发上下文、realloc 等。
+4. `max_subagent_tickets` 只作为执行预算。Analyzer 选择预算内高优先级 ticket 下发给 `Deep Worker`，同时把未执行候选点作为 `subagent_unassigned_candidates` 传给主 `vulnerability_analyzer`。
+5. `Deep Worker` 携带针对性的工具，进行深度调用图和数据流追踪，返回轻量级、无幻觉的确凿证据。Worker 回收状态显式区分 `completed`、`failed`、`invalid`、`partial`、`killed`；invalid/partial 的原始文本会保留给主 Agent，但不会当作可靠证据。
 
 ### 4.4 关键机制说明
 
@@ -196,7 +197,7 @@ Z-SCOPE 采用声明式的工作流与契约体系控制复杂分析过程：
 - **`AGENT.md` 与 `SKILL.md` 契约**：每个 Agent 和 Skill 由带 YAML Frontmatter 的 Markdown 描述，包含其职责、允许使用的工具（`allowed_tools`）和触发条件。
 - **工作流（Workflows）**：`zscope/workflows/default.yaml` 等配置文件定义系统从入口探测、预建模、漏洞扫描到验证重整的生命周期。运行时只把 Agent/Skill 契约注入对应 Agent，workflow 本身用于 Python 编排层决策，不再作为 `workflow_context` 注入模型提示词。
 - **Task-selected Skills**：`vulnerability_analyzer.task` 会在运行时选择本轮 active skills。只有这些 Skill 的契约会进入模型上下文，Deep Worker 工单也会按同一集合过滤。
-- **聚焦子智能体（Deep Worker）**：为防止管理器（Vulnerability Analyzer）在遍历庞大函数调用链路时发生“上下文窗口污染幻觉”，系统使用 `SubAgentOrchestrator` 通过正则启发式探测（如定位到 `malloc`/`pthread_mutex_lock` 调用处），动态创建隔离上下文的 `deep_worker` 分析工单，保证缺陷验证的高专注度和低 Token 消耗。
+- **聚焦子智能体（Deep Worker）**：为防止管理器（Vulnerability Analyzer）在遍历庞大函数调用链路时发生“上下文窗口污染幻觉”，系统使用 `SubAgentOrchestrator` 通过正则启发式探测（如定位到 `malloc`/`pthread_mutex_lock` 调用处），动态创建隔离上下文的 `deep_worker` 分析工单。候选点全量保留，执行预算只限制 Worker 数量；Worker 状态和未执行候选都会回流给主 Agent。
 
 ### 4.6 Model Context Protocol (MCP) 集成
 
