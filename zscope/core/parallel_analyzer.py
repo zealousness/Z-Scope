@@ -17,6 +17,7 @@ from ..config.user_config_store import UserConfigStore
 from .analyzer import Analyzer
 from .snapshot_store import SnapshotStore
 from ..retrieval.code_index import CodeIndex
+from ..orchestration.candidates import CandidateLedger
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,7 @@ class ParallelAnalyzer:
                 exclude_paths=config.project.exclude_paths,
             )
         self.snapshot_store = SnapshotStore(Path(config.analysis.snapshot_dir))
+        self.candidate_ledger = CandidateLedger()
         db_dir = Path(config.analysis.user_config_db) if config.analysis.user_config_db else Path(config.analysis.snapshot_dir)
         self.user_config = user_config or UserConfigStore(db_dir)
 
@@ -178,7 +180,8 @@ class ParallelAnalyzer:
                  snapshot_store=self.snapshot_store,
                  user_config=self.user_config,
                  force_ignore_history=self.force_ignore_history,
-                 maintain_mode=self.maintain_mode
+                 maintain_mode=self.maintain_mode,
+                 candidate_ledger=self.candidate_ledger,
             )
             report_dict = analyzer.run()
             

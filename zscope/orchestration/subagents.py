@@ -21,6 +21,14 @@ class SubAgentTicket:
     context_slice: str
     priority_score: int = 0
     priority_reasons: List[str] = field(default_factory=list)
+    origin: str = ""
+    sink: str = ""
+    resource_kind: str = ""
+    source: str = "source_rule"
+    sources: List[str] = field(default_factory=list)
+    call_paths: List[List[str]] = field(default_factory=list)
+    dedup_key: str = ""
+    evidence: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -32,6 +40,14 @@ class SubAgentTicket:
             "context_slice": self.context_slice,
             "priority_score": self.priority_score,
             "priority_reasons": self.priority_reasons or [],
+            "origin": self.origin,
+            "sink": self.sink,
+            "resource_kind": self.resource_kind,
+            "source": self.source,
+            "sources": self.sources or ([self.source] if self.source else []),
+            "call_paths": self.call_paths or [],
+            "dedup_key": self.dedup_key,
+            "evidence": self.evidence or {},
         }
 
 
@@ -150,8 +166,76 @@ class SubAgentOrchestrator:
                     context_slice=context_slice,
                     priority_score=score,
                     priority_reasons=reasons,
+                    origin=f"{func_name}:{line_no}:{match.group(0)}",
+                    sink=f"{func_name}:{line_no}:{match.group(0)}",
+                    resource_kind=self._resource_kind_for_trigger(skill, match.group(0)),
+                    source="source_rule",
+                    evidence={
+                        "function": func_name,
+                        "line": line_no,
+                        "matched_text": clean.strip(),
+                    },
                 )
                 tickets.append(ticket)
+        return tickets
+
+    def plan_snapshot_candidates(
+        self,
+        func_name: str,
+        snapshot: Dict[str, Any],
+        allowed_skills: Optional[List[str]] = None,
+    ) -> List[SubAgentTicket]:
+        """Create focused tickets from semantic snapshot suspicious points."""
+        if not isinstance(snapshot, dict):
+            return []
+
+        allowed = set(allowed_skills) if allowed_skills is not None else None
+        tickets: List[SubAgentTicket] = []
+        for idx, point in enumerate(snapshot.get("suspicious_points") or []):
+            if not isinstance(point, dict):
+                continue
+            skill = self._skill_from_suspicious_point(point)
+            if allowed is not None and skill not in allowed:
+                continue
+
+            line_no = self._extract_snapshot_line(point, fallback=idx + 1)
+            trigger = str(point.get("type") or point.get("trigger") or "snapshot_suspicious_point")
+            confidence = self._confidence_to_score(point.get("confidence"))
+            location = str(point.get("location") or f"{func_name}:{line_no}")
+            context_slice = (
+                "/* Semantic snapshot candidate. Use tools for concrete source lines if needed. */\n"
+                f"Function: {func_name}\n"
+                f"Snapshot summary: {snapshot.get('summary', '')}\n"
+                f"Suspicious point: {point}\n"
+                f"Key semantics: {snapshot.get('semantic_fingerprint') or snapshot.get('key_semantics') or ''}"
+            )
+            ticket = SubAgentTicket(
+                id=f"{func_name}:{skill}:snapshot:{line_no}:{idx}",
+                skill=skill,
+                task=(
+                    "Verify this suspicious point from the semantic snapshot. "
+                    "Confirm or reject it with concrete source evidence and path constraints."
+                ),
+                trigger=trigger,
+                line=line_no,
+                context_slice=context_slice,
+                priority_score=confidence,
+                priority_reasons=["semantic_snapshot_suspicious_point"],
+                origin=f"{func_name}:{line_no}:{trigger}",
+                sink=f"{func_name}:{line_no}:{trigger}",
+                resource_kind=self._resource_kind_for_trigger(
+                    skill,
+                    f"{trigger} {point.get('description', '')} {point.get('reason', '')}",
+                ),
+                source="semantic_snapshot",
+                evidence={
+                    "function": func_name,
+                    "location": location,
+                    "snapshot_summary": snapshot.get("summary", ""),
+                    "suspicious_point": point,
+                },
+            )
+            tickets.append(ticket)
         return tickets
 
     @staticmethod
@@ -271,6 +355,69 @@ class SubAgentOrchestrator:
             reasons.append("contract_semantics_skill")
 
         return score, reasons or ["source_order_tiebreaker"]
+
+    @staticmethod
+    def _skill_from_suspicious_point(point: Dict[str, Any]) -> str:
+        text = " ".join(
+            str(point.get(field, ""))
+            for field in ("type", "category", "subcategory", "description", "reason")
+        ).lower()
+        if any(word in text for word in ("overflow", "bounds", "oob", "integer", "copy", "buffer")):
+            return "bounds_and_integer"
+        if any(word in text for word in ("leak", "resource", "cleanup", "release", "file", "socket")):
+            return "resource_lifecycle"
+        if any(word in text for word in ("uaf", "use after free", "double free", "invalid free")):
+            return "temporal_memory"
+        if any(word in text for word in ("null", "failure", "unchecked", "error")):
+            return "null_and_failure"
+        if any(word in text for word in ("lock", "deadlock", "mutex")):
+            return "concurrency_lock_order"
+        if any(word in text for word in ("race", "shared", "thread")):
+            return "shared_state_race"
+        if any(word in text for word in ("stack", "escape", "async")):
+            return "stack_escape"
+        if any(word in text for word in ("string", "format", "strcmp", "strlen", "termination")):
+            return "string_and_format"
+        if any(word in text for word in ("ownership", "contract", "logic", "caller", "callee")):
+            return "ownership_contract"
+        return "ownership_contract"
+
+    @staticmethod
+    def _extract_snapshot_line(point: Dict[str, Any], fallback: int) -> int:
+        for key in ("line", "start_line", "location"):
+            value = point.get(key)
+            if value is None:
+                continue
+            nums = re.findall(r"\d+", str(value))
+            if nums:
+                try:
+                    return int(nums[-1])
+                except ValueError:
+                    continue
+        return fallback
+
+    @staticmethod
+    def _confidence_to_score(value: Any) -> int:
+        try:
+            confidence = float(value)
+            if 0 <= confidence <= 1:
+                return 10 + int(confidence * 20)
+            return int(confidence)
+        except (TypeError, ValueError):
+            return 18
+
+    @staticmethod
+    def _resource_kind_for_trigger(skill: str, trigger: str) -> str:
+        text = f"{skill} {trigger}".lower()
+        if any(word in text for word in ("malloc", "calloc", "realloc", "free", "memory")):
+            return "memory"
+        if any(word in text for word in ("open", "close", "fopen", "fclose", "socket", "file")):
+            return "handle"
+        if any(word in text for word in ("lock", "mutex", "rwlock", "spin")):
+            return "lock"
+        if any(word in text for word in ("string", "strcmp", "strncmp", "strlen", "format")):
+            return "string"
+        return "unknown"
 
     @staticmethod
     def _extract_line_number(line: str, fallback: int) -> int:
