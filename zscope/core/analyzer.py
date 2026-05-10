@@ -25,6 +25,7 @@ from ..common.utils import validate_json_schema
 from .._version import __version__
 from ..orchestration.specs import SpecRegistry, WorkflowStep
 from ..orchestration.subagents import SubAgentOrchestrator
+from ..orchestration.candidates import CandidateLedger
 from ..orchestration.skill_selection import SkillSelection, select_vulnerability_skills
 
 logger = logging.getLogger(__name__)
@@ -152,7 +153,8 @@ class Analyzer:
                  snapshot_store: Optional[SnapshotStore] = None,
                  user_config: Optional[UserConfigStore] = None,
                  force_ignore_history: bool = False,
-                 maintain_mode: bool = False):
+                 maintain_mode: bool = False,
+                 candidate_ledger: Optional[CandidateLedger] = None):
         self.config = config
         self.code_index = code_index or CodeIndex(
             config.project.project_root,
@@ -182,6 +184,7 @@ class Analyzer:
         self.workflow_spec = self.spec_registry.get_workflow(config.analysis.workflow_name)
         self.force_ignore_history = force_ignore_history
         self.maintain_mode = maintain_mode
+        self.candidate_ledger = candidate_ledger or CandidateLedger()
         self.workflow_progress: List[Dict[str, Any]] = []
         self.current_workflow_step: Optional[str] = None
         
@@ -263,6 +266,9 @@ class Analyzer:
             "subagent_unassigned_candidates": [],
             "subagent_reports": [],
             "subagent_report_summary": {},
+            "candidate_ledger": self.candidate_ledger,
+            "candidate_ledger_context": [],
+            "candidate_ledger_summary": {},
             "total_context_tokens": 0,
             "any_failure": False,
             "failure_msg": "",
@@ -538,25 +544,61 @@ class Analyzer:
         tools = self._get_tools()
         orchestrator = SubAgentOrchestrator(self.spec_registry, tools)
         selection = self._select_vulnerability_skills_for_config(va_agent_cfg)
-        candidates = orchestrator.plan_candidates(
+        ledger = state.get("candidate_ledger")
+        if not isinstance(ledger, CandidateLedger):
+            ledger = CandidateLedger()
+            state["candidate_ledger"] = ledger
+
+        local_records = []
+        source_candidates = orchestrator.plan_candidates(
             state["entry_func"],
             state["agent_context"]["code"],
             allowed_skills=selection.skills,
         )
+        for ticket in source_candidates:
+            record, _ = ledger.add(
+                ticket,
+                source=f"source_rule:{state['entry_func']}",
+                call_path=[state["entry_func"]],
+            )
+            local_records.append(record)
+        snapshot_candidate_count = self._add_snapshot_candidates_to_ledger(
+            ledger,
+            orchestrator,
+            state["entry_func"],
+            selection.skills,
+            local_records,
+        )
+
+        seen_local_keys = set()
+        candidates = []
+        for record in local_records:
+            if record.dedup_key in seen_local_keys or record.status != "pending":
+                continue
+            seen_local_keys.add(record.dedup_key)
+            candidates.append(record.to_ticket())
         tickets = orchestrator.select_tickets(
             candidates,
             self.config.analysis.max_subagent_tickets,
         )
         unassigned = orchestrator.unassigned_candidates(candidates, tickets)
+        ledger.mark_planned(tickets)
+        ledger.mark_unassigned(unassigned)
 
-        candidate_plan = [ticket.to_dict() for ticket in candidates]
+        candidate_plan = [record.to_dict(include_context=False) for record in ledger.records()]
         ticket_plan = [ticket.to_dict() for ticket in tickets]
         unassigned_plan = [ticket.to_dict() for ticket in unassigned]
+        ledger_context = ledger.to_context()
+        ledger_summary = ledger.summary()
 
         state["subagent_candidates"] = candidate_plan
         state["agent_context"]["subagent_candidates"] = candidate_plan
         state["subagent_unassigned_candidates"] = unassigned_plan
         state["agent_context"]["subagent_unassigned_candidates"] = unassigned_plan
+        state["candidate_ledger_context"] = ledger_context
+        state["agent_context"]["candidate_ledger"] = ledger_context
+        state["candidate_ledger_summary"] = ledger_summary
+        state["agent_context"]["candidate_ledger_summary"] = ledger_summary
         state["agent_context"]["active_skills"] = selection.skills
         state["agent_context"]["skill_selection_restricted"] = selection.restricted
 
@@ -581,7 +623,10 @@ class Analyzer:
         state["subagent_ticket_plan"] = ticket_plan
         state["agent_context"]["subagent_plan"] = ticket_plan
         state["notes"].append(
-            f"Planned {len(tickets)} focused subagent ticket(s) from {len(candidates)} candidate(s)."
+            f"Planned {len(tickets)} focused subagent ticket(s) from {len(candidates)} "
+            f"pending candidate(s); merged {ledger_summary.get('duplicates_merged', 0)} "
+            f"duplicate candidate source(s), including {snapshot_candidate_count} "
+            "semantic snapshot candidate(s)."
         )
         if unassigned:
             state["notes"].append(
@@ -602,11 +647,16 @@ class Analyzer:
             tickets,
             max_iterations=min(self.config.analysis.max_tool_iterations, 20),
         )
+        ledger.mark_reported(reports)
         report_summary = orchestrator.summarize_reports(reports)
         state["subagent_reports"] = reports
         state["agent_context"]["subagent_reports"] = reports
         state["subagent_report_summary"] = report_summary
         state["agent_context"]["subagent_report_summary"] = report_summary
+        state["candidate_ledger_context"] = ledger.to_context()
+        state["agent_context"]["candidate_ledger"] = state["candidate_ledger_context"]
+        state["candidate_ledger_summary"] = ledger.summary()
+        state["agent_context"]["candidate_ledger_summary"] = state["candidate_ledger_summary"]
         state["total_context_tokens"] += sum(
             int(report.get("metadata", {}).get("context_tokens", 0) or 0)
             for report in reports
@@ -615,6 +665,58 @@ class Analyzer:
             "Executed focused subagent ticket(s): "
             + ", ".join(f"{key}={value}" for key, value in report_summary.items())
         )
+
+    def _add_snapshot_candidates_to_ledger(
+        self,
+        ledger: CandidateLedger,
+        orchestrator: SubAgentOrchestrator,
+        entry_func: str,
+        active_skills: List[str],
+        local_records: List[Any],
+    ) -> int:
+        """Add semantic-snapshot suspicious points from reachable functions to the ledger."""
+        added = 0
+        visited: Set[str] = set()
+        queue: List[tuple[str, List[str], int]] = [(entry_func, [entry_func], 0)]
+        max_depth = self.config.analysis.max_premodel_depth
+        max_callees = self.config.analysis.max_premodel_callees
+
+        while queue:
+            func, path, depth = queue.pop(0)
+            if func in visited or depth > max_depth:
+                continue
+            visited.add(func)
+
+            snapshot = self.snapshot_store.load_snapshot(func)
+            if snapshot:
+                tickets = orchestrator.plan_snapshot_candidates(
+                    func,
+                    snapshot,
+                    allowed_skills=active_skills,
+                )
+                for ticket in tickets:
+                    record, _ = ledger.add(
+                        ticket,
+                        source=f"semantic_snapshot:{func}",
+                        call_path=path,
+                    )
+                    local_records.append(record)
+                added += len(tickets)
+
+            if depth >= max_depth:
+                continue
+            try:
+                callees = self.code_index.get_callees(func, limit=max_callees)
+            except Exception as exc:
+                logger.debug("Failed to collect snapshot callees for %s: %s", func, exc)
+                continue
+            for callee in callees:
+                callee_name = callee.get("name") if isinstance(callee, dict) else None
+                if not callee_name or callee_name in visited:
+                    continue
+                queue.append((callee_name, path + [callee_name], depth + 1))
+
+        return added
 
     def _step_vulnerability_mining(self, state: Dict[str, Any]) -> None:
         agent_context = state["agent_context"]
@@ -825,6 +927,7 @@ class Analyzer:
             "subagent_unassigned_count": len(state.get("subagent_unassigned_candidates", [])),
             "subagent_reports_count": len(state.get("subagent_reports", [])),
             "subagent_report_summary": dict(state.get("subagent_report_summary", {})),
+            "candidate_ledger_summary": dict(state.get("candidate_ledger_summary", {})),
         }
 
     def _persist_final_report(self, state: Dict[str, Any]) -> Dict[str, Any]:
