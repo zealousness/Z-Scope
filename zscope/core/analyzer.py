@@ -258,8 +258,11 @@ class Analyzer:
             "is_code_unchanged": False,
             "history_loaded": False,
             "history_reconciled": False,
+            "subagent_candidates": [],
             "subagent_ticket_plan": [],
+            "subagent_unassigned_candidates": [],
             "subagent_reports": [],
+            "subagent_report_summary": {},
             "total_context_tokens": 0,
             "any_failure": False,
             "failure_msg": "",
@@ -535,21 +538,44 @@ class Analyzer:
         tools = self._get_tools()
         orchestrator = SubAgentOrchestrator(self.spec_registry, tools)
         selection = self._select_vulnerability_skills_for_config(va_agent_cfg)
-        tickets = orchestrator.plan(
+        candidates = orchestrator.plan_candidates(
             state["entry_func"],
             state["agent_context"]["code"],
-            max_tickets=self.config.analysis.max_subagent_tickets,
             allowed_skills=selection.skills,
         )
-        if not tickets:
-            return
+        tickets = orchestrator.select_tickets(
+            candidates,
+            self.config.analysis.max_subagent_tickets,
+        )
+        unassigned = orchestrator.unassigned_candidates(candidates, tickets)
 
+        candidate_plan = [ticket.to_dict() for ticket in candidates]
         ticket_plan = [ticket.to_dict() for ticket in tickets]
-        state["subagent_ticket_plan"] = ticket_plan
-        state["agent_context"]["subagent_plan"] = ticket_plan
+        unassigned_plan = [ticket.to_dict() for ticket in unassigned]
+
+        state["subagent_candidates"] = candidate_plan
+        state["agent_context"]["subagent_candidates"] = candidate_plan
+        state["subagent_unassigned_candidates"] = unassigned_plan
+        state["agent_context"]["subagent_unassigned_candidates"] = unassigned_plan
         state["agent_context"]["active_skills"] = selection.skills
         state["agent_context"]["skill_selection_restricted"] = selection.restricted
-        state["notes"].append(f"Planned {len(tickets)} focused subagent ticket(s).")
+
+        if not tickets:
+            if candidates:
+                state["notes"].append(
+                    f"Found {len(candidates)} focused subagent candidate(s), but ticket budget is 0."
+                )
+            return
+
+        state["subagent_ticket_plan"] = ticket_plan
+        state["agent_context"]["subagent_plan"] = ticket_plan
+        state["notes"].append(
+            f"Planned {len(tickets)} focused subagent ticket(s) from {len(candidates)} candidate(s)."
+        )
+        if unassigned:
+            state["notes"].append(
+                f"Deferred {len(unassigned)} subagent candidate(s) due to ticket budget."
+            )
 
         if not self._should_spawn_subagents(va_agent_cfg):
             return
@@ -561,13 +587,19 @@ class Analyzer:
             tickets,
             max_iterations=min(self.config.analysis.max_tool_iterations, 20),
         )
+        report_summary = orchestrator.summarize_reports(reports)
         state["subagent_reports"] = reports
         state["agent_context"]["subagent_reports"] = reports
+        state["subagent_report_summary"] = report_summary
+        state["agent_context"]["subagent_report_summary"] = report_summary
         state["total_context_tokens"] += sum(
             int(report.get("metadata", {}).get("context_tokens", 0) or 0)
             for report in reports
         )
-        state["notes"].append(f"Executed {len(reports)} focused subagent ticket(s).")
+        state["notes"].append(
+            "Executed focused subagent ticket(s): "
+            + ", ".join(f"{key}={value}" for key, value in report_summary.items())
+        )
 
     def _step_vulnerability_mining(self, state: Dict[str, Any]) -> None:
         agent_context = state["agent_context"]
@@ -773,8 +805,11 @@ class Analyzer:
             "workflow_mode": self.workflow_spec.mode if self.workflow_spec else self.config.analysis.workflow_name,
             "workflow_progress": list(self.workflow_progress),
             "current_workflow_step": self.current_workflow_step,
+            "subagent_candidate_count": len(state.get("subagent_candidates", [])),
             "subagent_ticket_count": len(state.get("subagent_ticket_plan", [])),
+            "subagent_unassigned_count": len(state.get("subagent_unassigned_candidates", [])),
             "subagent_reports_count": len(state.get("subagent_reports", [])),
+            "subagent_report_summary": dict(state.get("subagent_report_summary", {})),
         }
 
     def _persist_final_report(self, state: Dict[str, Any]) -> Dict[str, Any]:

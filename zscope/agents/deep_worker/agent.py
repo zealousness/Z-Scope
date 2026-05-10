@@ -92,11 +92,40 @@ class DeepWorkerAgent(BaseAgent):
                             metadata={"context_tokens": result.get("context_tokens", 0)},
                         )
 
+            partial_result = self._extract_last_text(content, conversation)
+            failure_kind = "partial" if result.get("truncated") and partial_result else "invalid_report"
+            return AgentResponse(
+                success=False,
+                data={
+                    "raw_output": content,
+                    "partial_result": partial_result,
+                },
+                error=f"Deep worker {ticket_id} did not return a worker_report JSON.",
+                metadata={
+                    "context_tokens": result.get("context_tokens", 0),
+                    "failure_kind": failure_kind,
+                },
+            )
+        except KeyboardInterrupt:
             return AgentResponse(
                 success=False,
                 data={},
-                error=f"Deep worker {ticket_id} did not return a worker_report JSON.",
-                metadata={"context_tokens": result.get("context_tokens", 0)},
+                error=f"Deep worker {ticket_id} was interrupted.",
+                metadata={"failure_kind": "aborted"},
             )
         except Exception as e:
-            return AgentResponse(success=False, data={}, error=str(e))
+            return AgentResponse(
+                success=False,
+                data={},
+                error=str(e),
+                metadata={"failure_kind": "failed"},
+            )
+
+    @staticmethod
+    def _extract_last_text(content: str, conversation: List[Dict[str, Any]]) -> str:
+        if content:
+            return content
+        for msg in reversed(conversation):
+            if msg.get("role") == "assistant" and msg.get("content"):
+                return str(msg.get("content"))
+        return ""
