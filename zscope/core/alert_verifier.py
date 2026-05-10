@@ -136,7 +136,7 @@ class AlertVerifier:
 
     def _build_context(self, alert: ExternalAlert) -> Dict[str, Any]:
         """为告警收集代码上下文。"""
-        context = {"code_snippet": "", "callers": [], "callees": []}
+        context: Dict[str, Any] = {"code_snippet": "", "callers": [], "callees": []}
 
         # 获取告警所在位置的代码片段
         snippet = self.code_index.get_file_snippet(

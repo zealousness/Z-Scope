@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, List, Optional, Set
 from ..framework.base import BaseTool
 from ..retrieval.code_index import CodeIndex
 
@@ -47,7 +47,7 @@ class GetFileSnippetTool(BaseTool):
         self.code_index = code_index
 
     def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        file_path = arguments.get("file_path")
+        file_path = str(arguments.get("file_path") or "")
         start = arguments.get("start_line")
         end = arguments.get("end_line")
         result = self.code_index.get_file_snippet(file_path, start, end)
@@ -120,7 +120,7 @@ class GetTypeInfoTool(BaseTool):
         self.code_index = code_index
 
     def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        type_name = arguments.get("type_name")
+        type_name = str(arguments.get("type_name") or "")
         info = self.code_index.get_type_info(type_name)
         if info is None:
             return {"success": False, "error": f"Type '{type_name}' not found"}
@@ -160,8 +160,8 @@ class GetCallGraphTool(BaseTool):
         limit = arguments.get("limit", 30)
         result = {"function": func_name, "callers": [], "callees": []}
         # Build graph up to requested depth
-        visited_up = set()
-        visited_down = set()
+        visited_up: Set[str] = set()
+        visited_down: Set[str] = set()
         self._collect_callers(func_name, result["callers"], visited_up, depth, limit)
         self._collect_callees(func_name, result["callees"], visited_down, depth, limit)
         return {"success": True, "data": result}
@@ -222,8 +222,8 @@ class GetDataFlowTool(BaseTool):
     def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         from ..common.utils import sanitize_func_name
         source_func = sanitize_func_name(arguments.get("source_func", ""))
-        source_param = arguments.get("source_param")
-        sink_pattern = arguments.get("sink_pattern")
+        source_param = str(arguments.get("source_param") or "")
+        sink_pattern = str(arguments.get("sink_pattern") or "")
         flows = self.code_index.get_data_flow(source_func, source_param, sink_pattern)
         return {"success": True, "data": {"flows": flows, "count": len(flows)}}
 

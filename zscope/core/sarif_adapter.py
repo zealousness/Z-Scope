@@ -5,7 +5,7 @@ CodeQL SARIF adapter - parses SARIF v2.1.0 output into ExternalAlert format.
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from .alert_adapter import AlertAdapter, AlertSeverity, ExternalAlert
 
@@ -67,7 +67,7 @@ class SarifAdapter(AlertAdapter):
 
     def _extract_tool_name(self, run: Dict) -> str:
         tool = run.get("tool", {}).get("driver", {})
-        return tool.get("name", "unknown").lower()
+        return str(tool.get("name", "unknown")).lower()
 
     def _build_rules_map(self, run: Dict) -> Dict[str, Dict]:
         """构建 ruleId → rule metadata 映射。"""
@@ -126,7 +126,7 @@ class SarifAdapter(AlertAdapter):
 
     def _extract_message(self, result: Dict) -> str:
         msg = result.get("message", {})
-        return msg.get("text", msg.get("markdown", ""))
+        return str(msg.get("text", msg.get("markdown", "")))
 
     def _resolve_artifact(self, physical_loc: Dict) -> str:
         """从 physicalLocation 提取文件路径。"""
@@ -139,7 +139,7 @@ class SarifAdapter(AlertAdapter):
         # 相对路径解析
         if self._source_root and not Path(uri).is_absolute():
             return str(self._source_root / uri)
-        return uri
+        return cast(str, uri)
 
     def _extract_code_flows(self, result: Dict) -> List[Dict]:
         """提取 SARIF codeFlows 为简化格式。"""

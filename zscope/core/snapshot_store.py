@@ -7,7 +7,7 @@ import logging
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, cast
 
 from ..common.utils import compute_code_hash, compute_semantic_fingerprint
 
@@ -308,7 +308,7 @@ class SnapshotStore:
                 return None
 
             with open(snapshot_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                return cast(Dict[str, Any], json.load(f))
         finally:
             conn.close()
 
@@ -348,7 +348,7 @@ class SnapshotStore:
                 return None
 
             with open(final_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                return cast(Dict[str, Any], json.load(f))
         finally:
             conn.close()
 

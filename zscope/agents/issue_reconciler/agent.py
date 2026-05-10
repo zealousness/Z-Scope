@@ -95,7 +95,7 @@ class IssueReconcilerAgent(BaseAgent):
         elif mode == "verify_fix":
             return self._run_verify_fix(input_data)
         else:
-            return AgentResponse(success=False, error=f"Unknown mode: {mode}")
+            return AgentResponse(success=False, data={}, error=f"Unknown mode: {mode}")
 
     def _run_deduplicate(self, input_data: Dict[str, Any]) -> AgentResponse:
         hist_issues = input_data.get("historical_issues", [])
@@ -153,7 +153,7 @@ class IssueReconcilerAgent(BaseAgent):
             
             if not json_blocks:
                 logger.error(f"Failed to parse JSON from IssueReconciler: {content}")
-                return AgentResponse(success=False, error="No JSON block found")
+                return AgentResponse(success=False, data={}, error="No JSON block found")
 
             decision = json_blocks[0]
             logger.debug(f"IssueReconciler decision: {decision}")
@@ -161,4 +161,4 @@ class IssueReconcilerAgent(BaseAgent):
             
         except Exception as e:
             logger.exception(f"IssueReconciler agent failed")
-            return AgentResponse(success=False, error=str(e))
+            return AgentResponse(success=False, data={}, error=str(e))

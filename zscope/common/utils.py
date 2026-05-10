@@ -6,7 +6,7 @@ import hashlib
 import logging
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -127,7 +127,7 @@ def _strip_c_comments_preserve_strings(code: str) -> str:
     return "".join(result)
 
 
-def normalize_path(path: str, project_root: Optional[Path] = None) -> str:
+def normalize_path(path: Union[str, Path], project_root: Optional[Path] = None) -> str:
     """
     Normalize a file path.
     If project_root is provided, return relative path; otherwise absolute.

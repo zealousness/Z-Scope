@@ -9,7 +9,7 @@ import time
 import datetime
 import re
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, cast
 
 from ..config.config import ZScopeConfig
 from ..config.user_config_store import UserConfigStore
@@ -23,7 +23,7 @@ from ..agents.validator_agent.agent import ValidatorAgent
 from .report import FinalReport, Issue, ReportGenerator
 from ..common.utils import validate_json_schema
 from .._version import __version__
-from ..orchestration.specs import SpecRegistry
+from ..orchestration.specs import SpecRegistry, WorkflowStep
 from ..orchestration.subagents import SubAgentOrchestrator
 
 logger = logging.getLogger(__name__)
@@ -181,31 +181,53 @@ class Analyzer:
         self.workflow_spec = self.spec_registry.get_workflow(config.analysis.workflow_name)
         self.force_ignore_history = force_ignore_history
         self.maintain_mode = maintain_mode
+        self.workflow_progress: List[Dict[str, Any]] = []
+        self.current_workflow_step: Optional[str] = None
         
         self.analyzed_functions: Set[str] = set()
         self.issues: List[Issue] = []
 
     def run(self) -> Dict[str, Any]:
-        """Run the multi-agent analysis."""
-        entry_func = self.config.project.entry_function
-        logger.info(f"Starting multi-agent analysis on entry function: {entry_func}")
+        """Run the selected workflow as executable orchestration steps."""
+        state = self._create_workflow_state()
+        if state.get("error"):
+            return {"error": state["error"]}
 
-        # Clear config warnings from previous run
+        workflow_name = self.workflow_spec.name if self.workflow_spec else self.config.analysis.workflow_name
+        logger.info(
+            "Starting workflow '%s' on entry function: %s",
+            workflow_name,
+            state["entry_func"],
+        )
+
+        steps = self._selected_workflow_steps()
+        self._execute_workflow_steps(state, steps)
+
+        if state.get("final_report_dict"):
+            return self._finalize_returned_report(state)
+
+        if not state.get("final_report"):
+            self._build_final_report(state)
+
+        return self._persist_final_report(state)
+
+    def _create_workflow_state(self) -> Dict[str, Any]:
+        """Create mutable execution state shared by workflow steps."""
+        entry_func = self.config.project.entry_function
+        if not entry_func:
+            return {"error": "No entry function configured"}
         self.user_config.clear_config_warnings()
 
         impl_result = self.code_index.get_function_impl(entry_func)
         if not impl_result:
             return {"error": "Entry function not found"}
 
-        # Initialize common context
         agent_context = {
             "func_name": entry_func,
             "code": impl_result["code"],
-            "location": f"{impl_result['file']}:{impl_result['start_line']}"
+            "location": f"{impl_result['file']}:{impl_result['start_line']}",
         }
-        self._attach_agent_contract(agent_context, "semantic_modeler")
 
-        # Inject user config context
         user_context_parts = []
         paired_ctx = self.user_config.get_paired_functions_context()
         if paired_ctx:
@@ -219,291 +241,549 @@ class Analyzer:
         if user_context_parts:
             agent_context["user_config_context"] = "\n".join(user_context_parts)
 
-        issues = []
-        notes = []
-        subagent_ticket_plan: List[Dict[str, Any]] = []
-        subagent_reports: List[Dict[str, Any]] = []
+        return {
+            "entry_func": entry_func,
+            "impl_result": impl_result,
+            "agent_context": agent_context,
+            "notes": [],
+            "issues": [],
+            "pending_new_issues": [],
+            "verified_hist_issues": [],
+            "valid_hist_issues": [],
+            "user_rejected_hist_issues": [],
+            "historical_report": None,
+            "needs_refresh": True,
+            "refresh_reason": "no_snapshot",
+            "is_code_unchanged": False,
+            "history_loaded": False,
+            "history_reconciled": False,
+            "subagent_ticket_plan": [],
+            "subagent_reports": [],
+            "total_context_tokens": 0,
+            "any_failure": False,
+            "failure_msg": "",
+            "final_report": None,
+            "final_report_dict": None,
+        }
 
+    def _selected_workflow_steps(self) -> List[WorkflowStep]:
+        if self.workflow_spec and self.workflow_spec.steps:
+            return self.workflow_spec.steps
+        return [
+            WorkflowStep(id="premodel_reachable_callees"),
+            WorkflowStep(id="model_entry"),
+            WorkflowStep(id="focused_subagent_planning"),
+            WorkflowStep(id="vulnerability_mining"),
+            WorkflowStep(id="validate_findings"),
+            WorkflowStep(id="persist_report"),
+        ]
+
+    def _execute_workflow_steps(self, state: Dict[str, Any], steps: List[WorkflowStep]) -> None:
+        for step in steps:
+            self._begin_workflow_step(step)
+            try:
+                should_stop = self._execute_workflow_step(state, step)
+                self._finish_workflow_step(step, "completed")
+                if should_stop:
+                    return
+            except Exception as exc:
+                self._finish_workflow_step(step, "failed", str(exc))
+                raise
+
+    def _execute_workflow_step(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
+        step_id = step.id
+        if step_id in {"discover_entries", "merge_skipped_reports"}:
+            logger.info("[workflow] Step '%s' is handled by the CLI layer.", step_id)
+            return False
+        if step_id in {"load_snapshot_state", "compare_hashes"}:
+            self._load_history_state(state)
+            return False
+        if step_id == "reuse_unchanged":
+            return self._reuse_unchanged_report(state)
+        if step_id == "reconcile_changed":
+            self._reconcile_changed_issues(state)
+            return False
+        if step_id in {"analyze_remaining", "rescan_changed"}:
+            self._execute_default_scan_subworkflow(state)
+            return True
+        if step_id == "premodel_reachable_callees":
+            self._step_premodel_reachable_callees(state)
+            return False
+        if step_id == "model_entry":
+            self._step_model_entry(state)
+            return False
+        if step_id == "focused_subagent_planning":
+            self._step_focused_subagent_planning(state)
+            return False
+        if step_id == "vulnerability_mining":
+            self._step_vulnerability_mining(state)
+            return False
+        if step_id == "validate_findings":
+            self._step_validate_findings(state)
+            return False
+        if step_id == "persist_report":
+            self._build_final_report(state)
+            return False
+
+        logger.warning("[workflow] Unknown workflow step '%s'; skipping.", step_id)
+        return False
+
+    def _execute_default_scan_subworkflow(self, state: Dict[str, Any]) -> None:
+        if not state.get("history_loaded"):
+            self._load_history_state(state)
+        if not state.get("history_reconciled"):
+            self._reconcile_changed_issues(state)
+
+        substeps = [
+            WorkflowStep(id="premodel_reachable_callees"),
+            WorkflowStep(id="model_entry"),
+            WorkflowStep(id="focused_subagent_planning"),
+            WorkflowStep(id="vulnerability_mining"),
+            WorkflowStep(id="validate_findings"),
+            WorkflowStep(id="persist_report"),
+        ]
+        self._execute_workflow_steps(state, substeps)
+
+    def _begin_workflow_step(self, step: WorkflowStep) -> None:
+        self.current_workflow_step = step.id
+        record = {
+            "index": len(self.workflow_progress) + 1,
+            "id": step.id,
+            "agent": step.agent,
+            "action": step.action,
+            "status": "running",
+            "started_at": datetime.datetime.now().isoformat(),
+        }
+        self.workflow_progress.append(record)
+        workflow_name = self.workflow_spec.name if self.workflow_spec else self.config.analysis.workflow_name
+        logger.info(
+            "[workflow:%s] step %d start: %s%s",
+            workflow_name,
+            record["index"],
+            step.id,
+            f" ({step.action})" if step.action else "",
+        )
+
+    def _finish_workflow_step(self, step: WorkflowStep, status: str, error: str = "") -> None:
+        for record in reversed(self.workflow_progress):
+            if record["id"] == step.id and record["status"] == "running":
+                record["status"] = status
+                record["finished_at"] = datetime.datetime.now().isoformat()
+                if error:
+                    record["error"] = error
+                break
+        logger.info("[workflow] step %s %s", step.id, status)
+        self.current_workflow_step = None
+
+    def _load_history_state(self, state: Dict[str, Any]) -> None:
+        if state.get("history_loaded"):
+            return
+
+        entry_func = state["entry_func"]
+        impl_result = state["impl_result"]
+        historical_report = None
         if self.snapshot_store and not self.force_ignore_history:
-            historical_report = self.snapshot_store.load_final_report(entry_func, impl_result['file'])
-        else:
-            historical_report = None
-            
+            historical_report = self.snapshot_store.load_final_report(entry_func, impl_result["file"])
+
         hist_issues = historical_report.get("issues", []) if historical_report else []
-        valid_hist_issues = [iss for iss in hist_issues if iss.get("validation_status") in ("validated", "pending")]
-        # Collect user-rejected issues for auto-suppression in dedup
-        user_rejected_hist_issues = [iss for iss in hist_issues if iss.get("validation_status") == "rejected" and iss.get("rejection_source") == "user"]
-        
+        valid_hist_issues = [
+            iss for iss in hist_issues
+            if iss.get("validation_status") in ("validated", "pending")
+        ]
+        user_rejected_hist_issues = [
+            iss for iss in hist_issues
+            if iss.get("validation_status") == "rejected"
+            and iss.get("rejection_source") == "user"
+        ]
+
         needs_refresh = True
         reason = "no_snapshot"
         if self.snapshot_store and not self.force_ignore_history:
-            needs_refresh, reason = self.snapshot_store.needs_refresh(entry_func, impl_result['code'], impl_result['file'])
-        
-        is_code_unchanged = (not needs_refresh and reason != "no_snapshot")
-        
-        # --maintain mode: if code is unchanged, reuse historical report entirely (zero LLM cost)
-        if self.maintain_mode and is_code_unchanged and historical_report:
-            logger.info(f"[maintain] '{entry_func}' unchanged, reusing historical report (0 LLM tokens).")
-            return historical_report
-        
-        verified_hist_issues = []
-        if not is_code_unchanged and valid_hist_issues:
-            logger.info(f"Code changed for {entry_func}. Verifying if {len(valid_hist_issues)} historical issues still exist...")
-            recon_agent_cfg = next((a for a in self.config.project.agents if a.name == "issue_reconciler_agent"), None)
+            needs_refresh, reason_value = self.snapshot_store.needs_refresh(
+                entry_func,
+                impl_result["code"],
+                impl_result["file"],
+            )
+            reason = str(reason_value)
+
+        state.update(
+            {
+                "historical_report": historical_report,
+                "valid_hist_issues": valid_hist_issues,
+                "user_rejected_hist_issues": user_rejected_hist_issues,
+                "needs_refresh": needs_refresh,
+                "refresh_reason": reason,
+                "is_code_unchanged": (not needs_refresh and reason != "no_snapshot"),
+                "history_loaded": True,
+            }
+        )
+
+    def _reuse_unchanged_report(self, state: Dict[str, Any]) -> bool:
+        if not state.get("history_loaded"):
+            self._load_history_state(state)
+
+        historical_report = state.get("historical_report")
+        if self.maintain_mode and state.get("is_code_unchanged") and historical_report:
+            logger.info(
+                "[maintain] '%s' unchanged, reusing historical report (0 LLM tokens).",
+                state["entry_func"],
+            )
+            state["final_report_dict"] = dict(historical_report)
+            return True
+        return False
+
+    def _reconcile_changed_issues(self, state: Dict[str, Any]) -> None:
+        if state.get("history_reconciled"):
+            return
+        if not state.get("history_loaded"):
+            self._load_history_state(state)
+
+        valid_hist_issues = state.get("valid_hist_issues", [])
+        if not state.get("is_code_unchanged") and valid_hist_issues:
+            entry_func = state["entry_func"]
+            logger.info(
+                "Code changed for %s. Verifying whether %d historical issue(s) still exist.",
+                entry_func,
+                len(valid_hist_issues),
+            )
+            recon_agent_cfg = next(
+                (a for a in self.config.project.agents if a.name == "issue_reconciler_agent"),
+                None,
+            )
             recon_llm_ref = recon_agent_cfg.llm_ref if recon_agent_cfg and recon_agent_cfg.llm_ref else "default"
             recon_client = self.llm_clients.get(recon_llm_ref, self.llm_clients.get("default"))
-            
+            if recon_client is None:
+                raise RuntimeError("No LLM client configured for issue reconciliation")
+
             from ..agents.issue_reconciler.agent import IssueReconcilerAgent
+
             reconciler_agent = IssueReconcilerAgent(recon_client)
-            
+            verified_hist_issues = []
             for hist_issue in valid_hist_issues:
                 input_data = {
                     "mode": "verify_fix",
                     "historical_issue": hist_issue,
-                    "new_code": impl_result['code']
+                    "new_code": state["impl_result"]["code"],
                 }
                 resp = reconciler_agent.run(input_data)
                 if resp.success and resp.data.get("still_exists"):
                     hist_issue["location"] = resp.data.get("new_location", hist_issue.get("location"))
                     verified_hist_issues.append(hist_issue)
                 else:
-                    logger.info(f"Historical issue {hist_issue.get('id')} fixed in new code. Dropping.")
+                    logger.info("Historical issue %s fixed in new code. Dropping.", hist_issue.get("id"))
+            state["verified_hist_issues"] = verified_hist_issues
         else:
-            verified_hist_issues = valid_hist_issues
+            state["verified_hist_issues"] = list(valid_hist_issues)
 
-        # 1. Run Semantic Modeler (modeling logic)
+        state["history_reconciled"] = True
+
+    def _step_premodel_reachable_callees(self, state: Dict[str, Any]) -> None:
         sm_agent_cfg = next((a for a in self.config.project.agents if a.name == "semantic_modeler"), None)
         sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
         sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients["default"])
-        
-        # 1a. Recursive pre-modeling: ensure all reachable callees have snapshots
-        pm_modeled, pm_skipped, pm_tokens = self._premodel_callees(
-            entry_func, sm_client,
+
+        modeled, skipped, tokens = self._premodel_callees(
+            state["entry_func"],
+            sm_client,
             max_depth=self.config.analysis.max_premodel_depth,
             max_callees=self.config.analysis.max_premodel_callees,
         )
-        total_context_tokens = pm_tokens
-        
+        state["total_context_tokens"] += tokens
+        state["notes"].append(
+            f"Premodeled {modeled} reachable callee(s), reused {skipped} snapshot(s)."
+        )
+
+    def _step_model_entry(self, state: Dict[str, Any]) -> None:
+        sm_agent_cfg = next((a for a in self.config.project.agents if a.name == "semantic_modeler"), None)
+        sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
+        sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients["default"])
         semantic_agent = SemanticModeler(sm_client, self._get_tools())
-        logger.info(f"Running Semantic Modeler agent with '{sm_llm_ref}' LLM...")
+        agent_context = state["agent_context"]
+
+        logger.info("Running Semantic Modeler agent with '%s' LLM...", sm_llm_ref)
         self._attach_agent_contract(agent_context, "semantic_modeler")
-        s_resp = semantic_agent.run(agent_context)
-        sm_tokens = s_resp.metadata.get("context_tokens", 0) if s_resp.metadata else 0
-        total_context_tokens += sm_tokens
-        
-        if s_resp.success:
-            # Save snapshot to store
+        response = semantic_agent.run(agent_context)
+        sm_tokens = response.metadata.get("context_tokens", 0) if response.metadata else 0
+        state["total_context_tokens"] += sm_tokens
+
+        if response.success:
             self.snapshot_store.save_snapshot(
-                entry_func, s_resp.data, agent_context["code"], agent_context["location"]
+                state["entry_func"],
+                response.data,
+                agent_context["code"],
+                agent_context["location"],
             )
-            logger.info(f"Successfully modeled function: {entry_func} (ctx ≈ {sm_tokens:,} tokens)")
-            notes.append(f"Successfully modeled function: {entry_func}")
+            logger.info(
+                "Successfully modeled function: %s (ctx ≈ %s tokens)",
+                state["entry_func"],
+                f"{sm_tokens:,}",
+            )
+            state["notes"].append(f"Successfully modeled function: {state['entry_func']}")
         else:
-            logger.warning(f"Semantic modeling failed: {s_resp.error} (ctx ≈ {sm_tokens:,} tokens)")
-            notes.append(f"Semantic modeling failed: {s_resp.error}")
-        
-        # 2. Run Vulnerability Analyzer for each configured task
-        any_failure = False
-        failure_msg = ""
-        
+            logger.warning("Semantic modeling failed: %s (ctx ≈ %s tokens)", response.error, f"{sm_tokens:,}")
+            state["notes"].append(f"Semantic modeling failed: {response.error}")
+
+    def _step_focused_subagent_planning(self, state: Dict[str, Any]) -> None:
+        va_agent_cfg = next(
+            (a for a in self.config.project.agents if a.enabled and a.name == "vulnerability_analyzer"),
+            None,
+        )
+        if not va_agent_cfg:
+            return
+
+        tools = self._get_tools()
+        orchestrator = SubAgentOrchestrator(self.spec_registry, tools)
+        tickets = orchestrator.plan(
+            state["entry_func"],
+            state["agent_context"]["code"],
+            max_tickets=self.config.analysis.max_subagent_tickets,
+        )
+        if not tickets:
+            return
+
+        ticket_plan = [ticket.to_dict() for ticket in tickets]
+        state["subagent_ticket_plan"] = ticket_plan
+        state["agent_context"]["subagent_plan"] = ticket_plan
+        state["notes"].append(f"Planned {len(tickets)} focused subagent ticket(s).")
+
+        if not self._should_spawn_subagents(va_agent_cfg):
+            return
+
+        va_llm_ref = va_agent_cfg.llm_ref if va_agent_cfg.llm_ref else "default"
+        va_client = self.llm_clients.get(va_llm_ref, self.llm_clients["default"])
+        reports = orchestrator.run_tickets(
+            va_client,
+            tickets,
+            max_iterations=min(self.config.analysis.max_tool_iterations, 20),
+        )
+        state["subagent_reports"] = reports
+        state["agent_context"]["subagent_reports"] = reports
+        state["total_context_tokens"] += sum(
+            int(report.get("metadata", {}).get("context_tokens", 0) or 0)
+            for report in reports
+        )
+        state["notes"].append(f"Executed {len(reports)} focused subagent ticket(s).")
+
+    def _step_vulnerability_mining(self, state: Dict[str, Any]) -> None:
+        agent_context = state["agent_context"]
         for agent_cfg in self.config.project.agents:
             if not agent_cfg.enabled or agent_cfg.name != "vulnerability_analyzer":
                 continue
 
-            logger.info(f"Running Vulnerability Analyzer agent for task: {agent_cfg.task}")
+            logger.info("Running Vulnerability Analyzer agent for task: %s", agent_cfg.task)
             va_llm_ref = agent_cfg.llm_ref if agent_cfg.llm_ref else "default"
             va_client = self.llm_clients.get(va_llm_ref, self.llm_clients["default"])
-            tools = self._get_tools()
-            analyzer_agent = VulnerabilityAnalyzer(va_client, tools)
-            
+            analyzer_agent = VulnerabilityAnalyzer(va_client, self._get_tools())
+
             agent_context["task"] = agent_cfg.task
             self._attach_agent_contract(agent_context, "vulnerability_analyzer", agent_cfg.skills)
-            should_spawn_workers = self._should_spawn_subagents(agent_cfg)
-            orchestrator = SubAgentOrchestrator(self.spec_registry, tools)
-            tickets = orchestrator.plan(
-                entry_func,
-                agent_context["code"],
-                max_tickets=self.config.analysis.max_subagent_tickets,
+            response = analyzer_agent.run(
+                agent_context,
+                max_iterations=self.config.analysis.max_tool_iterations,
             )
-            if tickets:
-                subagent_ticket_plan = [ticket.to_dict() for ticket in tickets]
-                agent_context["subagent_plan"] = subagent_ticket_plan
-                notes.append(f"Planned {len(tickets)} focused subagent ticket(s).")
-            if should_spawn_workers and tickets:
-                reports = orchestrator.run_tickets(
-                    va_client,
-                    tickets,
-                    max_iterations=min(self.config.analysis.max_tool_iterations, 20),
-                )
-                subagent_reports = reports
-                agent_context["subagent_reports"] = reports
-                total_context_tokens += sum(
-                    int(report.get("metadata", {}).get("context_tokens", 0) or 0)
-                    for report in reports
-                )
-                notes.append(f"Executed {len(reports)} focused subagent ticket(s).")
-            v_resp = analyzer_agent.run(agent_context, max_iterations=self.config.analysis.max_tool_iterations)
-            
-            if v_resp.success:
-                raw_new_issues = v_resp.data.get("issues", [])
-                va_ctx_tokens = v_resp.metadata.get("context_tokens", 0) if v_resp.metadata else 0
-                total_context_tokens += va_ctx_tokens
-                logger.info(f"Vulnerability Analyzer found {len(raw_new_issues)} issues for task: {agent_cfg.task} (ctx ≈ {va_ctx_tokens:,} tokens)")
-                
-                new_issues = []
-                # Combine verified historical issues + user-rejected issues for dedup reference
-                dedup_reference_issues = verified_hist_issues + user_rejected_hist_issues
-                
-                if raw_new_issues and dedup_reference_issues:
-                    logger.info(f"Deduplicating {len(raw_new_issues)} new issues against {len(dedup_reference_issues)} reference issues ({len(user_rejected_hist_issues)} user-rejected)...")
-                    recon_agent_cfg = next((a for a in self.config.project.agents if a.name == "issue_reconciler_agent"), None)
-                    recon_llm_ref = recon_agent_cfg.llm_ref if recon_agent_cfg and recon_agent_cfg.llm_ref else "default"
-                    recon_client = self.llm_clients.get(recon_llm_ref, self.llm_clients.get("default"))
-                    
-                    from ..agents.issue_reconciler.agent import IssueReconcilerAgent
-                    reconciler_agent = IssueReconcilerAgent(recon_client)
-                    
-                    for raw_issue in raw_new_issues:
-                        input_data = {
-                            "mode": "deduplicate",
-                            "historical_issues": dedup_reference_issues,
-                            "new_issue": raw_issue
-                        }
-                        resp = reconciler_agent.run(input_data)
-                        if resp.success and resp.data.get("is_duplicate"):
-                            matched_id = resp.data.get("matched_historical_id")
-                            # Check if matched against a user-rejected issue
-                            matched_user_rejected = any(
-                                iss.get("id") == matched_id and iss.get("rejection_source") == "user"
-                                for iss in user_rejected_hist_issues
-                            )
-                            if matched_user_rejected:
-                                logger.info(f"New issue matches user-rejected issue {matched_id}. Auto-suppressing.")
-                            else:
-                                logger.info(f"New issue corresponds to historical issue {matched_id}. Skipping validation.")
-                        else:
-                            new_issues.append(raw_issue)
-                else:
-                    new_issues = raw_new_issues
-                
-                # Check if validator agent is enabled
-                validator_enabled = any(
-                    a.name == "validator_agent" and a.enabled 
-                    for a in self.config.project.agents
-                )
-                
-                if validator_enabled and new_issues:
-                    val_agent_cfg = next((a for a in self.config.project.agents if a.name == "validator_agent"), None)
-                    val_llm_ref = val_agent_cfg.llm_ref if val_agent_cfg and val_agent_cfg.llm_ref else "default"
-                    val_client = self.llm_clients.get(val_llm_ref, self.llm_clients["default"])
-                    validator_agent = ValidatorAgent(val_client, self._get_tools())
-                    
-                    validated_issues = []
-                    for raw_issue in new_issues:
-                        issue_func = raw_issue.get("function", agent_context["func_name"])
-                        logger.info(f"Validating issue: {raw_issue.get('id', 'unknown')} in {issue_func}")
-                        
-                        # Try to get the specific code for the function where the issue was found
-                        issue_code = agent_context["code"]
-                        if issue_func != agent_context["func_name"]:
-                             impl = self.code_index.get_function_impl(issue_func)
-                             if impl:
-                                 issue_code = impl["code"]
 
-                        val_input = {
-                            "finding": json.dumps(raw_issue, indent=2, ensure_ascii=False),
-                            "context_code": issue_code
-                        }
-                        self._attach_agent_contract(val_input, "validator_agent")
-                        val_resp = validator_agent.run(val_input)
-                        
-                        if val_resp.success:
-                            val_data = val_resp.data
-                            if val_data.get("is_valid"):
-                                # Enrich issue with validation reasoning
-                                raw_issue["validation_status"] = "validated"
-                                raw_issue["validation_reasoning"] = val_data.get("reasoning")
-                                raw_issue["confidence"] = val_data.get("confidence_score", raw_issue.get("confidence", 0.5))
-                                logger.info(f"Issue {raw_issue.get('id')} VALIDATED with confidence {raw_issue['confidence']}")
-                                validated_issues.append(raw_issue)
-                            else:
-                                # Validator rejected: discard this issue, do NOT persist
-                                raw_issue["validation_status"] = "rejected"
-                                raw_issue["rejection_source"] = "validator"
-                                raw_issue["validation_reasoning"] = val_data.get("reasoning")
-                                logger.info(f"Issue {raw_issue.get('id')} REJECTED by Validator, discarding.")
-                                # Do NOT append to validated_issues
-                        else:
-                            # Fallback if validation fails
-                            logger.warning(
-                                "Validation failed for issue %s in function %s: %s",
-                                raw_issue.get("id"), issue_func, val_resp.error,
-                            )
-                            raw_issue["validation_status"] = "pending"
-                            raw_issue["validation_error"] = val_resp.error
-                            validated_issues.append(raw_issue)
+            if response.success:
+                raw_new_issues = response.data.get("issues", [])
+                va_ctx_tokens = response.metadata.get("context_tokens", 0) if response.metadata else 0
+                state["total_context_tokens"] += va_ctx_tokens
+                logger.info(
+                    "Vulnerability Analyzer found %d issue(s) for task: %s (ctx ≈ %s tokens)",
+                    len(raw_new_issues),
+                    agent_cfg.task,
+                    f"{va_ctx_tokens:,}",
+                )
 
-                    issues.extend(validated_issues)
-                else:
-                    # Validator not enabled - pass through issues without validation
-                    if not validator_enabled:
-                        logger.info("Validator agent disabled, skipping validation step")
-                    for raw_issue in new_issues:
-                        raw_issue["validation_status"] = "unvalidated"
-                        issues.append(raw_issue)
-                
-                notes.append(f"Analyzed task: {agent_cfg.task}")
+                new_issues = self._deduplicate_against_history(raw_new_issues, state)
+                state["pending_new_issues"].extend(new_issues)
+                state["notes"].append(f"Analyzed task: {agent_cfg.task}")
             else:
-                logger.error(f"Vulnerability analysis failed: {v_resp.error}")
-                notes.append(f"Vulnerability analysis failed: {v_resp.error}")
-                any_failure = True
-                failure_msg = v_resp.error
+                logger.error("Vulnerability analysis failed: %s", response.error)
+                state["notes"].append(f"Vulnerability analysis failed: {response.error}")
+                state["any_failure"] = True
+                state["failure_msg"] = response.error
 
-        # 3. Combine newly found and validated issues with verified historical issues
-        all_issues = issues + verified_hist_issues
+    def _deduplicate_against_history(
+        self,
+        raw_new_issues: List[Dict[str, Any]],
+        state: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        dedup_reference_issues = (
+            state.get("verified_hist_issues", [])
+            + state.get("user_rejected_hist_issues", [])
+        )
+        if not raw_new_issues or not dedup_reference_issues:
+            return raw_new_issues
 
-        # 4. Resolve locations for issues without explicit locations
+        logger.info(
+            "Deduplicating %d new issue(s) against %d reference issue(s).",
+            len(raw_new_issues),
+            len(dedup_reference_issues),
+        )
+        recon_agent_cfg = next(
+            (a for a in self.config.project.agents if a.name == "issue_reconciler_agent"),
+            None,
+        )
+        recon_llm_ref = recon_agent_cfg.llm_ref if recon_agent_cfg and recon_agent_cfg.llm_ref else "default"
+        recon_client = self.llm_clients.get(recon_llm_ref, self.llm_clients.get("default"))
+        if recon_client is None:
+            raise RuntimeError("No LLM client configured for issue reconciliation")
+
+        from ..agents.issue_reconciler.agent import IssueReconcilerAgent
+
+        reconciler_agent = IssueReconcilerAgent(recon_client)
+        user_rejected_hist_issues = state.get("user_rejected_hist_issues", [])
+        new_issues = []
+        for raw_issue in raw_new_issues:
+            input_data = {
+                "mode": "deduplicate",
+                "historical_issues": dedup_reference_issues,
+                "new_issue": raw_issue,
+            }
+            resp = reconciler_agent.run(input_data)
+            if resp.success and resp.data.get("is_duplicate"):
+                matched_id = resp.data.get("matched_historical_id")
+                matched_user_rejected = any(
+                    iss.get("id") == matched_id and iss.get("rejection_source") == "user"
+                    for iss in user_rejected_hist_issues
+                )
+                if matched_user_rejected:
+                    logger.info("New issue matches user-rejected issue %s. Auto-suppressing.", matched_id)
+                else:
+                    logger.info("New issue corresponds to historical issue %s. Skipping validation.", matched_id)
+            else:
+                new_issues.append(raw_issue)
+        return new_issues
+
+    def _step_validate_findings(self, state: Dict[str, Any]) -> None:
+        new_issues = state.get("pending_new_issues", [])
+        if not new_issues:
+            return
+
+        validator_enabled = any(
+            a.name == "validator_agent" and a.enabled
+            for a in self.config.project.agents
+        )
+        if not validator_enabled:
+            logger.info("Validator agent disabled, marking %d issue(s) unvalidated.", len(new_issues))
+            for raw_issue in new_issues:
+                raw_issue["validation_status"] = "unvalidated"
+                state["issues"].append(raw_issue)
+            state["pending_new_issues"] = []
+            return
+
+        val_agent_cfg = next((a for a in self.config.project.agents if a.name == "validator_agent"), None)
+        val_llm_ref = val_agent_cfg.llm_ref if val_agent_cfg and val_agent_cfg.llm_ref else "default"
+        val_client = self.llm_clients.get(val_llm_ref, self.llm_clients["default"])
+        validator_agent = ValidatorAgent(val_client, self._get_tools())
+
+        for raw_issue in new_issues:
+            issue_func = raw_issue.get("function", state["agent_context"]["func_name"])
+            logger.info("Validating issue: %s in %s", raw_issue.get("id", "unknown"), issue_func)
+
+            issue_code = state["agent_context"]["code"]
+            if issue_func != state["agent_context"]["func_name"]:
+                impl = self.code_index.get_function_impl(issue_func)
+                if impl:
+                    issue_code = impl["code"]
+
+            val_input = {
+                "finding": json.dumps(raw_issue, indent=2, ensure_ascii=False),
+                "context_code": issue_code,
+            }
+            self._attach_agent_contract(val_input, "validator_agent")
+            val_resp = validator_agent.run(val_input)
+
+            if val_resp.success:
+                val_data = val_resp.data
+                if val_data.get("is_valid"):
+                    raw_issue["validation_status"] = "validated"
+                    raw_issue["validation_reasoning"] = val_data.get("reasoning")
+                    raw_issue["confidence"] = val_data.get(
+                        "confidence_score",
+                        raw_issue.get("confidence", 0.5),
+                    )
+                    logger.info(
+                        "Issue %s VALIDATED with confidence %s",
+                        raw_issue.get("id"),
+                        raw_issue["confidence"],
+                    )
+                    state["issues"].append(raw_issue)
+                else:
+                    raw_issue["validation_status"] = "rejected"
+                    raw_issue["rejection_source"] = "validator"
+                    raw_issue["validation_reasoning"] = val_data.get("reasoning")
+                    logger.info("Issue %s REJECTED by Validator, discarding.", raw_issue.get("id"))
+            else:
+                logger.warning(
+                    "Validation failed for issue %s in function %s: %s",
+                    raw_issue.get("id"),
+                    issue_func,
+                    val_resp.error,
+                )
+                raw_issue["validation_status"] = "pending"
+                raw_issue["validation_error"] = val_resp.error
+                state["issues"].append(raw_issue)
+
+        state["pending_new_issues"] = []
+
+    def _build_final_report(self, state: Dict[str, Any]) -> None:
+        all_issues = state.get("issues", []) + state.get("verified_hist_issues", [])
         self._resolve_issue_locations(all_issues)
-        
-        issues = all_issues
 
-        # Construct Final Report
-        if any_failure and not issues:
-             verdict = "error"
-             notes.append(f"Analysis incomplete due to agent failure: {failure_msg}")
+        if state.get("any_failure") and not all_issues:
+            verdict = "error"
+            state["notes"].append(
+                f"Analysis incomplete due to agent failure: {state.get('failure_msg', '')}"
+            )
         else:
-             verdict = "issues_found" if issues else "no_issue_found"
+            verdict = "issues_found" if all_issues else "no_issue_found"
 
         final_report = FinalReport(
-            entry_function=entry_func,
+            entry_function=state["entry_func"],
             overall_verdict=verdict,
-            issues=[Issue.from_dict(i, context_function=entry_func, issue_index=idx+1) for idx, i in enumerate(issues) if isinstance(i, dict)] or [i for i in issues if isinstance(i, Issue)],
-            notes=notes
+            issues=[
+                Issue.from_dict(i, context_function=state["entry_func"], issue_index=idx + 1)
+                for idx, i in enumerate(all_issues)
+                if isinstance(i, dict)
+            ] or [i for i in all_issues if isinstance(i, Issue)],
+            notes=state["notes"],
         )
+        final_report.metadata = self._build_workflow_metadata(state)
+        state["final_report"] = final_report
 
-        final_report.metadata = {
+    def _build_workflow_metadata(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        return {
             "timestamp": datetime.datetime.now().isoformat(),
             "version": __version__,
-            "context_tokens": total_context_tokens,
+            "context_tokens": state.get("total_context_tokens", 0),
             "workflow": self.workflow_spec.name if self.workflow_spec else self.config.analysis.workflow_name,
-            "subagent_ticket_count": len(subagent_ticket_plan),
-            "subagent_reports_count": len(subagent_reports),
+            "workflow_mode": self.workflow_spec.mode if self.workflow_spec else self.config.analysis.workflow_name,
+            "workflow_progress": list(self.workflow_progress),
+            "current_workflow_step": self.current_workflow_step,
+            "subagent_ticket_count": len(state.get("subagent_ticket_plan", [])),
+            "subagent_reports_count": len(state.get("subagent_reports", [])),
         }
 
-        # Save results to disk
+    def _persist_final_report(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        final_report = state["final_report"]
+        final_report.metadata = self._build_workflow_metadata(state)
         self.report_generator.save_json_report(final_report)
         self.report_generator.save_markdown_report(final_report)
 
-        report_dict = final_report.to_dict()
-        
-        # Finally, persist the actual issues into the Snapshot DB to survive Ctrl+C
+        report_dict = cast(Dict[str, Any], final_report.to_dict())
         if self.snapshot_store:
             self.snapshot_store.save_final_report(
-                entry_func, 
-                report_dict, 
-                agent_context["location"]
+                state["entry_func"],
+                report_dict,
+                state["agent_context"]["location"],
             )
+        return report_dict
 
+    def _finalize_returned_report(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        report_dict = dict(state["final_report_dict"])
+        metadata = dict(report_dict.get("metadata") or {})
+        metadata.update(self._build_workflow_metadata(state))
+        report_dict["metadata"] = metadata
         return report_dict
 
     def _attach_agent_contract(
@@ -512,10 +792,7 @@ class Analyzer:
         agent_name: str,
         extra_skills: Optional[List[str]] = None,
     ) -> None:
-        """Attach workflow/agent/skill contracts to a single agent invocation."""
-        if self.workflow_spec:
-            context["workflow_context"] = self.workflow_spec.to_prompt_block()
-
+        """Attach agent/skill contracts to a single agent invocation."""
         agent_spec = self.spec_registry.get_agent(agent_name)
         if agent_spec:
             context["agent_contract"] = agent_spec.to_prompt_block()
@@ -789,7 +1066,7 @@ class Analyzer:
         
         # Intercept get_function_impl to check for snapshot refresh
         if tool_name == "get_function_impl" and self.config.analysis.enable_snapshot_cache:
-            func_name = args.get("func_name")
+            func_name = str(args.get("func_name") or "")
             return self._smart_get_implementation(func_name, args)
 
         return self.tools_runtime.execute_tool(tool_name, args)
@@ -829,7 +1106,7 @@ class Analyzer:
             # This requires a mini-LLM call.
             logger.info(f"Code changed for '{func_name}' in '{file_path}', checking with LLM if refresh needed...")
             snapshot = self.snapshot_store.load_snapshot(func_name, file_path)
-            decision = self._ask_refresh_decision(func_name, snapshot, current_code)
+            decision = self._ask_refresh_decision(func_name, snapshot or {}, current_code)
             
             if not decision.get("refresh_needed"):
                 logger.info(f"LLM decided refresh NOT needed for '{func_name}'")
@@ -844,6 +1121,15 @@ class Analyzer:
 
         # If we are here, we return the code and expect the LLM to analyze it and produce a new snapshot
         return impl_result
+
+    def _default_llm_client(self) -> LLMClient:
+        client = self.llm_clients.get("default")
+        if client is None:
+            try:
+                client = next(iter(self.llm_clients.values()))
+            except StopIteration as exc:
+                raise RuntimeError("No LLM clients configured") from exc
+        return client
 
     def _ask_refresh_decision(self, func_name: str, old_snapshot: Dict[str, Any], new_code: str) -> Dict[str, Any]:
         """Ask LLM if snapshot needs refresh."""
@@ -867,7 +1153,7 @@ Output a JSON of type 'snapshot_refresh_decision'.
         
         # Use a separate simpler call (no tools)
         try:
-            response = self.llm_client.chat_completion(messages, max_tokens=500)
+            response = self._default_llm_client().chat_completion(messages, max_tokens=500)
             content = response["choices"][0]["message"]["content"]
             decision = self._extract_json_block(content, "snapshot_refresh_decision")
             return decision or {"refresh_needed": True, "reason": "Failed to parse decision"}
@@ -893,7 +1179,7 @@ Output a JSON of type 'snapshot_refresh_decision'.
             logger.error(f"Failed to parse FinalReport object: {e}")
             return None
 
-    def _extract_json_block(self, text: str, type_hint: str = None) -> Optional[Dict[str, Any]]:
+    def _extract_json_block(self, text: str, type_hint: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Extract JSON block from text using robust utility.
         """
@@ -907,7 +1193,7 @@ Output a JSON of type 'snapshot_refresh_decision'.
                     return data
                 # Handle nested wrap
                 if type_hint in data and isinstance(data[type_hint], dict) and data[type_hint].get("type") == type_hint:
-                    return data[type_hint]
+                    return cast(Dict[str, Any], data[type_hint])
             else:
                 # If no hint, return the first dictionary found
                 return data

@@ -1,4 +1,4 @@
-from typing import Dict, Any, List
+from typing import Any, Dict, List, cast
 import json
 import re
 import logging
@@ -40,7 +40,7 @@ class SemanticModeler(BaseAgent):
     def _tool_executor(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         for tool in self.tools:
             if tool.name == name:
-                return tool.execute(args)
+                return cast(Dict[str, Any], tool.execute(args))
         return {"error": f"Unknown tool: {name}"}
 
     def run(self, input_data: Dict[str, Any]) -> AgentResponse:
@@ -107,7 +107,7 @@ class SemanticModeler(BaseAgent):
                 
                 # Estimate tokens for retry if we don't have it tracked
                 from ...framework.llm_client import LLMClient
-                retry_ctx_tokens = LLMClient.estimate_tokens(json.dumps(conversation))
+                retry_ctx_tokens = LLMClient.estimate_tokens(conversation)
 
                 parsed = self._try_extract_snapshot(retry_content, {}, conversation)
                 if parsed:
