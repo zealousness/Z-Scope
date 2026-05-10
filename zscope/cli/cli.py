@@ -28,6 +28,8 @@ from ..core.parallel_analyzer import ParallelAnalyzer
 @click.option("--sarif", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None, help="SARIF file for alert-verify mode.")
 @click.option("--resume", is_flag=True, default=False, help="Resume interrupted batch scan from last checkpoint.")
 @click.option("--maintain", is_flag=True, default=False, help="Incremental maintenance scan: skip unchanged functions, verify historical issues.")
+@click.option("--discover-entries", is_flag=True, default=False, help="Discover public API, communication, thread, and other input entries before scanning.")
+@click.option("--mcp-stdio", is_flag=True, default=False, help="Run Z-SCOPE local MCP server over stdio.")
 def main(
     config: Path,
     verbose: bool,
@@ -37,6 +39,8 @@ def main(
     sarif: Path,
     resume: bool,
     maintain: bool,
+    discover_entries: bool,
+    mcp_stdio: bool,
 ):
     """
     Z-SCOPE: AI-powered defect detection for C projects.
@@ -90,6 +94,12 @@ def main(
     try:
         zscope_config = ConfigLoader.load(str(config))
         logger.info(f"Loaded configuration from: {config}")
+
+        if mcp_stdio:
+            from ..mcp.server import run_stdio_server
+
+            run_stdio_server(str(config))
+            sys.exit(0)
 
         if build_cpg:
             click.echo("Building CPG and index...")
@@ -196,12 +206,47 @@ def main(
             click.echo(f"Report: {report_path}")
             sys.exit(1 if confirmed > 0 else 0)
 
+        discovered_entries = []
+        should_discover_entries = discover_entries or zscope_config.project.entry_discovery.enabled
+
+        if should_discover_entries:
+            from ..orchestration.entry_discovery import EntryDiscovery
+
+            logger.info("Entry discovery activated.")
+            click.echo("Discovering scan entries from headers, communication APIs, thread creation, and input sources...")
+            code_index = CodeIndex(
+                zscope_config.project.project_root,
+                zscope_config.project.compile_commands_path,
+                source_root=zscope_config.project.source_root,
+                indexing_config=zscope_config.indexing,
+                include_paths=zscope_config.project.include_paths,
+                exclude_paths=zscope_config.project.exclude_paths,
+            )
+            discovery_cfg = zscope_config.project.entry_discovery
+            discovery = EntryDiscovery(
+                code_index,
+                max_functions=discovery_cfg.max_functions,
+                header_files=discovery_cfg.header_files or None,
+            )
+            discovery_result = discovery.discover(max_candidates=discovery_cfg.max_candidates)
+            discovered_entries = discovery_result.to_function_entries()
+            click.echo(
+                f"Entry discovery: {discovery_result.exposure_kind}, "
+                f"{len(discovered_entries)} candidate(s), summary={discovery_result.summary}"
+            )
+            if not discovered_entries and zscope_config.project.entry_function:
+                click.echo("No discovered entries found; falling back to configured entry_function.")
+
         # Detect batch mode vs single mode
-        if zscope_config.project.entry_functions_list:
+        if zscope_config.project.entry_functions_list or discovered_entries:
             # Batch mode
-            logger.info(f"Batch mode activated: {zscope_config.project.entry_functions_list}")
-            entries = FunctionListLoader.load(zscope_config.project.entry_functions_list)
-            logger.info(f"Loaded {len(entries)} function entries")
+            if zscope_config.project.entry_functions_list:
+                logger.info(f"Batch mode activated: {zscope_config.project.entry_functions_list}")
+                entries = FunctionListLoader.load(zscope_config.project.entry_functions_list)
+                logger.info(f"Loaded {len(entries)} function entries")
+            else:
+                logger.info(f"Discovered batch mode activated: {len(discovered_entries)} entries")
+                entries = discovered_entries
             
             # Save the full entries list before slicing for resume
             all_entries = list(entries)
@@ -238,15 +283,16 @@ def main(
 
             # Build code index once (shared across all analyses)
             logger.info("Building shared code index...")
-            code_index = CodeIndex(
-                zscope_config.project.project_root,
-                zscope_config.project.compile_commands_path,
-                source_root=zscope_config.project.source_root,
-                indexing_config=zscope_config.indexing,
-                priority_functions=[e.function_name for e in entries],
-                include_paths=zscope_config.project.include_paths,
-                exclude_paths=zscope_config.project.exclude_paths,
-            )
+            if code_index is None:
+                code_index = CodeIndex(
+                    zscope_config.project.project_root,
+                    zscope_config.project.compile_commands_path,
+                    source_root=zscope_config.project.source_root,
+                    indexing_config=zscope_config.indexing,
+                    priority_functions=[e.function_name for e in entries],
+                    include_paths=zscope_config.project.include_paths,
+                    exclude_paths=zscope_config.project.exclude_paths,
+                )
 
             # Create parallel analyzer with shared code index
             #   default:   force_ignore_history=True,  maintain_mode=False

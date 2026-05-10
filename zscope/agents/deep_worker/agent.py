@@ -10,6 +10,8 @@ WORKER_PROMPT = """You are a Deep Worker Agent inside Z-SCOPE.
 Your goal is to focus EXCLUSIVELY on resolving the assigned 'Ticket'.
 You have been provided with a specific code slice or specific hypothesis from the Manager Agent.
 Do not get distracted by other parts of the codebase.
+Use only the skill contract and the allowed tools to answer the ticket. If the
+provided slice is insufficient, call tools for the minimum missing context.
 
 Output your findings securely in the following format:
 ```json
@@ -47,14 +49,54 @@ class DeepWorkerAgent(BaseAgent):
         ticket = input_data.get("ticket", {})
         ticket_id = ticket.get("id", "UNKNOWN")
         context_slice = input_data.get("context_slice", "")
+        skill_contract = input_data.get("skill_contract", "")
+        max_iterations = int(input_data.get("max_iterations", 20))
         
-        prompt = f"Ticket ID: {ticket_id}\nTask: {ticket.get('task')}\nData Flow Context:\n```c\n{context_slice}\n```"
+        prompt = (
+            f"Ticket ID: {ticket_id}\n"
+            f"Skill: {ticket.get('skill')}\n"
+            f"Trigger: {ticket.get('trigger')} at line {ticket.get('line')}\n"
+            f"Task: {ticket.get('task')}\n\n"
+            f"Skill Contract:\n{skill_contract or '[no skill contract loaded]'}\n\n"
+            f"Focused Code Context:\n```c\n{context_slice}\n```"
+        )
         
         messages = [
             {"role": "system", "content": WORKER_PROMPT},
             {"role": "user", "content": prompt}
         ]
         
-        # Scaffold logic: returning a mocked format.
         logger.info(f"DeepWorkerAgent dispatching ticket {ticket_id}")
-        return AgentResponse(success=True, data={"status": "scaffolded", "ticket_id": ticket_id})
+        try:
+            result = self.llm_client.run_conversation_with_tools(
+                messages=messages,
+                tools_schema=self.tools_schema,
+                tool_executor=self._tool_executor,
+                max_iterations=max_iterations,
+            )
+            content = result.get("content", "")
+            conversation = result.get("conversation", [])
+
+            from ...common.utils import extract_json_blocks
+
+            for text in [content] + [
+                msg.get("content", "")
+                for msg in reversed(conversation)
+                if msg.get("role") == "assistant"
+            ]:
+                for data in extract_json_blocks(text):
+                    if isinstance(data, dict) and data.get("type") == "worker_report":
+                        return AgentResponse(
+                            success=True,
+                            data=data,
+                            metadata={"context_tokens": result.get("context_tokens", 0)},
+                        )
+
+            return AgentResponse(
+                success=False,
+                data={},
+                error=f"Deep worker {ticket_id} did not return a worker_report JSON.",
+                metadata={"context_tokens": result.get("context_tokens", 0)},
+            )
+        except Exception as e:
+            return AgentResponse(success=False, data={}, error=str(e))

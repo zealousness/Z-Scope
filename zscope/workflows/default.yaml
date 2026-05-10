@@ -1,0 +1,45 @@
+name: default
+mode: default
+description: Full fresh scan from configured or discovered entry functions.
+entry_strategy: configured_or_discovered
+steps:
+  - id: discover_entries
+    action: classify API, communication, thread, and other user-input entries when requested
+    skills:
+      - ownership_contract
+      - shared_state_race
+  - id: premodel_reachable_callees
+    agent: semantic_modeler
+    action: build compact snapshots for reachable callees before vulnerability mining
+    skills:
+      - code_semantic_modeling
+    context_policy: snapshot-first
+  - id: model_entry
+    agent: semantic_modeler
+    action: build semantic snapshot for the entry function
+    skills:
+      - code_semantic_modeling
+  - id: focused_subagent_planning
+    agent: vulnerability_analyzer
+    action: create narrow worker tickets for allocation, release, copy, lock, and thread events
+    spawn_policy: heuristic
+  - id: vulnerability_mining
+    agent: vulnerability_analyzer
+    action: run focused memory and concurrency analysis
+    skills:
+      - bounds_and_integer
+      - resource_lifecycle
+      - temporal_memory
+      - null_and_failure
+      - stack_escape
+      - concurrency_lock_order
+      - shared_state_race
+      - ownership_contract
+      - string_and_format
+  - id: validate_findings
+    agent: validator_agent
+    action: confirm suspected findings and reject only with evidence
+    skills:
+      - evidence_validation
+  - id: persist_report
+    action: write final JSON/Markdown report and snapshot final_report_file

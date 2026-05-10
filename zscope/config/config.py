@@ -38,6 +38,20 @@ class AgentConfig:
     task: Optional[str] = None
     enabled: bool = True
     llm_ref: Optional[str] = None
+    skills: List[str] = field(default_factory=list)
+    tools: List[str] = field(default_factory=list)
+    mcp_servers: List[str] = field(default_factory=list)
+    can_spawn_subagents: Optional[bool] = None
+
+
+@dataclass
+class EntryDiscoveryConfig:
+    """Configuration for automatic entry-point discovery."""
+
+    enabled: bool = False
+    max_candidates: int = 200
+    max_functions: int = 10000
+    header_files: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -80,6 +94,9 @@ class AnalysisConfig:
     max_premodel_depth: int = 3  # Callee recursive pre-modeling max depth
     max_premodel_callees: int = 20  # Max callees to expand per level
     trivial_function_max_lines: int = 5  # Skip modeling if function <= this many valid lines
+    workflow_name: str = "default"
+    enable_subagent_workers: bool = False
+    max_subagent_tickets: int = 4
 
 
 @dataclass
@@ -94,6 +111,7 @@ class ProjectConfig:
     entry_functions_list: Optional[Path] = None  # Path to JSON file for batch mode
     include_paths: List[str] = field(default_factory=list)
     exclude_paths: List[str] = field(default_factory=list)
+    entry_discovery: EntryDiscoveryConfig = field(default_factory=EntryDiscoveryConfig)
 
     def __post_init__(self):
         self.project_root = Path(self.project_root).resolve()
@@ -313,6 +331,9 @@ class ConfigLoader:
                 max_premodel_depth=analysis_data.get("max_premodel_depth", 3),
                 max_premodel_callees=analysis_data.get("max_premodel_callees", 20),
                 trivial_function_max_lines=analysis_data.get("trivial_function_max_lines", 5),
+                workflow_name=analysis_data.get("workflow_name", "default"),
+                enable_subagent_workers=analysis_data.get("enable_subagent_workers", False),
+                max_subagent_tickets=analysis_data.get("max_subagent_tickets", 4),
             )
 
             # Project config
@@ -327,8 +348,13 @@ class ConfigLoader:
             entry_function = project_data.get("entry_function")
             entry_functions_list = project_data.get("entry_functions_list")
             
-            if not entry_function and not entry_functions_list:
-                raise ValueError("Either 'project.entry_function' or 'project.entry_functions_list' must be provided.")
+            entry_discovery_data = project_data.get("entry_discovery") or {}
+            entry_discovery_config = EntryDiscoveryConfig(
+                enabled=entry_discovery_data.get("enabled", False),
+                max_candidates=entry_discovery_data.get("max_candidates", 200),
+                max_functions=entry_discovery_data.get("max_functions", 10000),
+                header_files=entry_discovery_data.get("header_files", []),
+            )
 
             # Parse Agents
             agents_data = project_data.get("agents", [])
@@ -338,7 +364,11 @@ class ConfigLoader:
                     name=a.get("name"),
                     task=a.get("task"),
                     enabled=a.get("enabled", True),
-                    llm_ref=a.get("llm_ref")
+                    llm_ref=a.get("llm_ref"),
+                    skills=a.get("skills", []) or [],
+                    tools=a.get("tools", []) or [],
+                    mcp_servers=a.get("mcp_servers", []) or a.get("mcpServers", []) or [],
+                    can_spawn_subagents=a.get("can_spawn_subagents"),
                 ))
             
             # Fallback for old 'task' field
@@ -361,6 +391,7 @@ class ConfigLoader:
                 entry_functions_list=Path(entry_functions_list) if entry_functions_list else None,
                 include_paths=project_data.get("include_paths", []),
                 exclude_paths=project_data.get("exclude_paths", []),
+                entry_discovery=entry_discovery_config,
             )
 
             return ZScopeConfig(
