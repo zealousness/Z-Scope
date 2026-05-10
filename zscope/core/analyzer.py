@@ -1228,7 +1228,13 @@ Output a JSON of type 'snapshot_refresh_decision'.
         
         # Use a separate simpler call (no tools)
         try:
-            response = self._default_llm_client().chat_completion(messages, max_tokens=500)
+            response = self._default_llm_client().chat_completion(
+                messages,
+                max_tokens=500,
+                trace_agent="snapshot_refresh_decision",
+                trace_label=f"function={func_name}",
+                trace_iteration=1,
+            )
             content = response["choices"][0]["message"]["content"]
             decision = self._extract_json_block(content, "snapshot_refresh_decision")
             return decision or {"refresh_needed": True, "reason": "Failed to parse decision"}
