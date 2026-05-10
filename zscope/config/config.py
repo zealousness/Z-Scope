@@ -323,6 +323,11 @@ class ConfigLoader:
 
             # Analysis config
             analysis_data = raw_config.get("analysis", {})
+            if "workflow_name" in analysis_data:
+                raise ValueError(
+                    "'analysis.workflow_name' is runtime-only and cannot be set in zscope.yaml. "
+                    "Use CLI flags such as --resume or --maintain to select a workflow."
+                )
             analysis_config = AnalysisConfig(
                 max_recursion_depth=analysis_data.get("max_recursion_depth", 3),
                 max_function_lines=analysis_data.get("max_function_lines", 500),
@@ -334,7 +339,7 @@ class ConfigLoader:
                 max_premodel_depth=analysis_data.get("max_premodel_depth", 3),
                 max_premodel_callees=analysis_data.get("max_premodel_callees", 20),
                 trivial_function_max_lines=analysis_data.get("trivial_function_max_lines", 5),
-                workflow_name=analysis_data.get("workflow_name", "default"),
+                workflow_name="default",
                 enable_subagent_workers=analysis_data.get("enable_subagent_workers", False),
                 max_subagent_tickets=analysis_data.get("max_subagent_tickets", 4),
             )
