@@ -25,6 +25,7 @@ from ..common.utils import validate_json_schema
 from .._version import __version__
 from ..orchestration.specs import SpecRegistry, WorkflowStep
 from ..orchestration.subagents import SubAgentOrchestrator
+from ..orchestration.skill_selection import SkillSelection, select_vulnerability_skills
 
 logger = logging.getLogger(__name__)
 
@@ -533,10 +534,12 @@ class Analyzer:
 
         tools = self._get_tools()
         orchestrator = SubAgentOrchestrator(self.spec_registry, tools)
+        selection = self._select_vulnerability_skills_for_config(va_agent_cfg)
         tickets = orchestrator.plan(
             state["entry_func"],
             state["agent_context"]["code"],
             max_tickets=self.config.analysis.max_subagent_tickets,
+            allowed_skills=selection.skills,
         )
         if not tickets:
             return
@@ -544,6 +547,8 @@ class Analyzer:
         ticket_plan = [ticket.to_dict() for ticket in tickets]
         state["subagent_ticket_plan"] = ticket_plan
         state["agent_context"]["subagent_plan"] = ticket_plan
+        state["agent_context"]["active_skills"] = selection.skills
+        state["agent_context"]["skill_selection_restricted"] = selection.restricted
         state["notes"].append(f"Planned {len(tickets)} focused subagent ticket(s).")
 
         if not self._should_spawn_subagents(va_agent_cfg):
@@ -574,9 +579,17 @@ class Analyzer:
             va_llm_ref = agent_cfg.llm_ref if agent_cfg.llm_ref else "default"
             va_client = self.llm_clients.get(va_llm_ref, self.llm_clients["default"])
             analyzer_agent = VulnerabilityAnalyzer(va_client, self._get_tools())
+            selection = self._select_vulnerability_skills_for_config(agent_cfg)
 
             agent_context["task"] = agent_cfg.task
-            self._attach_agent_contract(agent_context, "vulnerability_analyzer", agent_cfg.skills)
+            agent_context["active_skills"] = selection.skills
+            agent_context["skill_selection_restricted"] = selection.restricted
+            self._attach_agent_contract(
+                agent_context,
+                "vulnerability_analyzer",
+                agent_cfg.skills,
+                active_skill_names=selection.skills,
+            )
             response = analyzer_agent.run(
                 agent_context,
                 max_iterations=self.config.analysis.max_tool_iterations,
@@ -791,15 +804,42 @@ class Analyzer:
         context: Dict[str, Any],
         agent_name: str,
         extra_skills: Optional[List[str]] = None,
+        active_skill_names: Optional[List[str]] = None,
     ) -> None:
         """Attach agent/skill contracts to a single agent invocation."""
         agent_spec = self.spec_registry.get_agent(agent_name)
         if agent_spec:
-            context["agent_contract"] = agent_spec.to_prompt_block()
+            context["agent_contract"] = agent_spec.to_prompt_block(active_skills=active_skill_names)
+        else:
+            context.pop("agent_contract", None)
 
-        skills = self.spec_registry.skills_for_agent(agent_name, extra=extra_skills)
+        skills = self.spec_registry.skills_for_agent(
+            agent_name,
+            extra=extra_skills,
+            only=active_skill_names,
+        )
         if skills:
             context["skill_contracts"] = "\n\n".join(skill.to_prompt_block() for skill in skills)
+        else:
+            context.pop("skill_contracts", None)
+
+    def _select_vulnerability_skills_for_config(self, agent_cfg: Any) -> SkillSelection:
+        """Select active vulnerability skills from the configured analyzer task."""
+        available = [
+            skill.name
+            for skill in self.spec_registry.skills_for_agent(
+                "vulnerability_analyzer",
+                extra=getattr(agent_cfg, "skills", None),
+            )
+        ]
+        selection = select_vulnerability_skills(getattr(agent_cfg, "task", None), available)
+        if selection.restricted:
+            logger.info(
+                "Task-selected vulnerability skills for '%s': %s",
+                getattr(agent_cfg, "task", ""),
+                ", ".join(selection.skills) or "none",
+            )
+        return selection
 
     def _should_spawn_subagents(self, agent_cfg: Any) -> bool:
         """Decide whether focused deep-worker LLM calls are enabled for this run."""

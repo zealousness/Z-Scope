@@ -73,14 +73,23 @@ class SubAgentOrchestrator:
         self.spec_registry = spec_registry
         self.tools = tools
 
-    def plan(self, func_name: str, code: str, max_tickets: int = 4) -> List[SubAgentTicket]:
+    def plan(
+        self,
+        func_name: str,
+        code: str,
+        max_tickets: int = 4,
+        allowed_skills: Optional[List[str]] = None,
+    ) -> List[SubAgentTicket]:
         lines = code.splitlines()
         tickets: List[SubAgentTicket] = []
         seen = set()
+        allowed = set(allowed_skills) if allowed_skills is not None else None
         for idx, line in enumerate(lines):
             clean = re.sub(r"^\s*(\d+)\s*\|\s*", "", line)
             line_no = self._extract_line_number(line, idx + 1)
             for skill, pattern, task in self.RULES:
+                if allowed is not None and skill not in allowed:
+                    continue
                 match = pattern.search(clean)
                 if not match:
                     continue
