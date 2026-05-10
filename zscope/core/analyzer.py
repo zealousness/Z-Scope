@@ -565,6 +565,17 @@ class Analyzer:
                 state["notes"].append(
                     f"Found {len(candidates)} focused subagent candidate(s), but ticket budget is 0."
                 )
+            else:
+                state["notes"].append(
+                    "Focused subagent planning produced no candidates "
+                    f"for active skills: {', '.join(selection.skills) or 'none'}."
+                )
+                logger.info(
+                    "Focused subagent planning produced no candidates for %s "
+                    "(active skills: %s).",
+                    state["entry_func"],
+                    ", ".join(selection.skills) or "none",
+                )
             return
 
         state["subagent_ticket_plan"] = ticket_plan
@@ -578,6 +589,10 @@ class Analyzer:
             )
 
         if not self._should_spawn_subagents(va_agent_cfg):
+            state["notes"].append(
+                "Focused subagent tickets were planned but worker execution is disabled "
+                "by analysis.enable_subagent_workers or agent can_spawn_subagents."
+            )
             return
 
         va_llm_ref = va_agent_cfg.llm_ref if va_agent_cfg.llm_ref else "default"
@@ -878,12 +893,12 @@ class Analyzer:
 
     def _should_spawn_subagents(self, agent_cfg: Any) -> bool:
         """Decide whether focused deep-worker LLM calls are enabled for this run."""
+        if not self.config.analysis.enable_subagent_workers:
+            return False
         explicit = getattr(agent_cfg, "can_spawn_subagents", None)
         if explicit is not None:
             return bool(explicit)
         agent_spec = self.spec_registry.get_agent("vulnerability_analyzer")
-        if not self.config.analysis.enable_subagent_workers:
-            return False
         return bool(agent_spec and agent_spec.can_spawn_subagents)
 
     def _get_tools(self) -> List[Any]:

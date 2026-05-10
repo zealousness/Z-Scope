@@ -57,6 +57,33 @@ class SubAgentOrchestrator:
             "Audit buffer bounds and integer/size conversions feeding this copy or IO operation.",
         ),
         (
+            "string_and_format",
+            re.compile(
+                r"\b(strlen|strcmp|strncmp|strcasecmp|strncasecmp|strchr|strstr|sscanf|"
+                r"strcpy|strncpy|strcat|strncat|sprintf|snprintf|printf|fprintf|syslog)\s*\("
+            ),
+            "Audit string termination, bounded string comparison/copy semantics, parsing, "
+            "and format-string control for this string operation.",
+        ),
+        (
+            "null_and_failure",
+            re.compile(
+                r"\b(if\s*\([^;\n]*(?:NULL|nullptr|!\s*[A-Za-z_][A-Za-z0-9_]*|==\s*-?1|<\s*0)"
+                r"[^;\n]*\)|goto\s+(?:err|error|fail|failed|cleanup)\b|return\s+(?:NULL|nullptr|-?1|[A-Z_]*ERR[A-Z0-9_]*))"
+            ),
+            "Audit failure/null handling at this branch or return. Check whether all acquired "
+            "resources and caller-visible outputs stay consistent on the error path.",
+        ),
+        (
+            "ownership_contract",
+            re.compile(
+                r"\b(return\s+(?:0|-?1|true|false|TRUE|FALSE|[A-Z_][A-Z0-9_]*)\s*;|"
+                r"if\s*\([^;\n]*(?:==|!=|&&|\|\|)[^;\n]*\))"
+            ),
+            "Audit API/ownership contract consistency around this branch or return. Check whether "
+            "the callee/caller obligations and success/error semantics are preserved.",
+        ),
+        (
             "concurrency_lock_order",
             re.compile(r"\b(pthread_mutex_lock|pthread_rwlock_wrlock|pthread_rwlock_rdlock|mtx_lock|spin_lock)\s*\("),
             "Audit lock acquisition and release balance, lock order, and early returns while locked.",
@@ -221,6 +248,9 @@ class SubAgentOrchestrator:
             (r"\brealloc\s*\(", 5, "realloc_semantics"),
             (r"\bpthread|\bthread|\block|\bmutex", 5, "concurrency_context"),
             (r"\bmemcpy|\bstrcpy|\bread|\brecv", 4, "copy_or_input_context"),
+            (r"\bstrcmp|\bstrncmp|\bstrlen|\bstrstr|\bsscanf|\bprintf", 5, "string_api_context"),
+            (r"\bnull\b|!\s*[a-z_][a-z0-9_]*|\bgoto\s+(err|fail|cleanup)", 5, "failure_path_context"),
+            (r"\breturn\s+(0|-?1|true|false|[A-Z_][A-Z0-9_]*)\s*;", 3, "contract_return_context"),
         ]
         for pattern, weight, reason in risk_patterns:
             if re.search(pattern, text):
@@ -233,6 +263,12 @@ class SubAgentOrchestrator:
         if trigger.startswith("realloc"):
             score += 4
             reasons.append("realloc_trigger")
+        if skill == "string_and_format":
+            score += 4
+            reasons.append("string_semantics_skill")
+        if skill == "ownership_contract":
+            score += 2
+            reasons.append("contract_semantics_skill")
 
         return score, reasons or ["source_order_tiebreaker"]
 
