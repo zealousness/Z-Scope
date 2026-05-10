@@ -5,6 +5,7 @@
 ## 核心特性
 
 - **多智能体分治与声明式编排**：采用 `AGENT.md` 与 `SKILL.md` 契约定义各智能体与技能。支持 `语义建模 Agent`、`漏洞扫描 Agent`、`Issue Reconciler Agent`、`验证 Agent` 以及隔离上下文的聚焦型 `Deep Worker` 独立协作。分析流程由 `zscope/workflows/*.yaml` 驱动实际执行步骤，而不是仅作为提示词上下文注入。
+- **Task 驱动的漏洞 Skill 选择**：`vulnerability_analyzer.task` 不只是提示词描述。系统会从用户关注点中选择 `resource_lifecycle`、`bounds_and_integer`、`null_and_failure`、`concurrency_lock_order` 等漏洞挖掘 Skill，只注入匹配的 Skill 契约并过滤不关心类别的结果。
 - **三种运行模式**：全新扫描（默认）、断点续扫（`--resume`）、增量维护（`--maintain`）。CLI 会把 `--resume` / `--maintain` 映射为 `analysis.workflow_name=resume|maintain`，无需在 `zscope.yaml` 中重复显式配置。另支持规则驱动模式和告警验证模式。
 - **自动入口发现**：支持基于启发式的智能扫描入口发现（`--discover-entries`），自动识别头文件暴露的公共 API、网络收发、线程入口及用户输入点。
 - **本地 MCP Server**：原生内置 Model Context Protocol (MCP) 标准的 stdio Server，允许外部工具（如 Claude Desktop）直接调用 Z-SCOPE 的代码索引、快照资源及工具总线。
@@ -209,7 +210,7 @@ indexing:
 llms:
   default:
     provider: openai
-    base_url: http://127.0.0.1:11434/v1   # Ollama 本地
+    base_url: http://127.0.0.1:11434/v1   # Ollama 本地或其他 OpenAI 兼容服务
     models:
       - qwen3:latest
     api_key: ollama
@@ -226,23 +227,37 @@ llms:
 project:
   root: .                    # 被扫描项目根目录
   source_root: .             # 源码搜索根目录
-  # entry_function: main     # 单函数入口模式
+  entry_function: main       # 单函数入口模式
   # entry_functions_list: functions.json  # 批量模式配置
   
   entry_discovery:           # 自动入口发现机制
     enabled: true            # 为 true 时，如果未提供 entry_functions_list 则自动发现
     max_candidates: 200
+    max_functions: 10000
+
+  # compile_commands_path: build/compile_commands.json
+  include_paths: []
+  exclude_paths:
+    - build
+    - tmp
 
   agents:
     - name: semantic_modeler
       enabled: true
       llm_ref: default
+
     - name: vulnerability_analyzer
       enabled: true
       llm_ref: smart_model
       can_spawn_subagents: true  # 允许创建 Deep Worker 分析上下文
+      # task 会选择本次启用的漏洞挖掘 Skill；未识别/为空时保持全量 Skill。
+      # 例如："只查找资源泄漏和空指针问题。" -> resource_lifecycle, null_and_failure
+      # 例如："只关注并发风险，不关心内存安全。" -> concurrency_lock_order, shared_state_race, stack_escape
+      task: "查找逻辑漏洞、内存安全问题和并发风险。"
+
     - name: issue_reconciler_agent
       enabled: true
+
     - name: validator_agent
       enabled: true
       llm_ref: smart_model
@@ -250,17 +265,41 @@ project:
 indexing:
   backend: unified             # joern | clang | unified | regex
   clangd_path: clangd
-  # ... SVF 配置略 ...
+  knowledge_db_path: .zscope_knowledge/code_knowledge.db
+  # joern_path: dependency/joern/joern
+  # svf_bin_dir: /path/to/svf/bin
+  # gclang_path: gclang
+  # get_bc_path: get-bc
+  # llvm_link_path: llvm-link
 
 analysis:
   max_recursion_depth: 3
+  max_function_lines: 500
+  max_tool_iterations: 50
   snapshot_dir: .zscope_snapshots
   enable_snapshot_cache: true
   parallel_workers: 5
   workflow_name: default     # default | maintain | resume；CLI 的 --maintain/--resume 会自动覆盖
+  max_premodel_depth: 3
+  max_premodel_callees: 20
+  trivial_function_max_lines: 5
   enable_subagent_workers: true
   max_subagent_tickets: 4
 ```
+
+#### Vulnerability Analyzer 的 task 语义
+
+`project.agents[].task` 对 `vulnerability_analyzer` 有特殊含义：它会先被解析为用户关心的漏洞类别，再映射到内置 Skill。运行时只会注入匹配的 Skill 契约，`SubAgentOrchestrator` 也只会为这些 Skill 生成 Deep Worker 工单；最终报告还会过滤明显不属于激活 Skill 家族的 finding。
+
+常见写法：
+
+| task 内容 | 激活方向 |
+|-----------|----------|
+| `只查找资源泄漏和空指针问题。` | `resource_lifecycle`, `null_and_failure` |
+| `查找内存安全问题和并发风险。` | 内存安全相关 Skill + 并发相关 Skill |
+| `只关注并发风险，不关心内存安全。` | `concurrency_lock_order`, `shared_state_race`, `stack_escape` |
+
+如果 `task` 为空或没有命中已知关键词，系统会保持旧行为：启用 `vulnerability_analyzer` 的全部默认 Skill，避免老配置意外漏扫。
 
 #### Workflow 选择规则
 
@@ -380,7 +419,7 @@ python -m mypy zscope
 # 强制编译检查，覆盖 Python 解释执行前可能隐藏的分支语法/导入问题
 python -m compileall -f -q zscope scripts test
 
-# 运行测试（当前仓库如果没有测试用例，pytest 会显示 collected 0 items）
+# 运行测试
 python -m pytest
 ```
 
@@ -389,6 +428,7 @@ python -m pytest
 ### v0.5.0
 - **全架构重构与扁平化**：扁平化了冗余的 `zscope/zscope` 目录结构，统一通过 `pip install -e .` 安装，更贴合标准 Python 打包规范。大幅强化三库同源（`code_knowledge.db`, `snapshots.db`, `user_config.db`）的底层持久化隔离与可观测性。
 - **声明式工作流与智能体编排**：引入 `workflows/` 机制（如 default/maintain/resume 工作流）和基于 Markdown Frontmatter 的 `AGENT.md`/`SKILL.md` 契约。`zscope/workflows/*.yaml` 现在驱动实际执行步骤和 Agent 编排，报告 metadata 会记录 `workflow_progress` 与当前步骤。
+- **Task 驱动的 Skill 选择**：`vulnerability_analyzer.task` 现在会解析用户关注点并限制本轮启用的漏洞挖掘 Skill。Agent 契约注入、Deep Worker 工单规划和最终 finding 过滤都遵循同一组 active skills，从源头减少用户不关心类别的检出。
 - **CLI Workflow 自动映射**：`--maintain` 自动选择 `maintain.yaml`，`--resume` 自动选择 `resume.yaml`，无需在 `zscope.yaml` 中额外写 `analysis.workflow_name`。两者互斥，CLI 会提前拦截非法组合。
 - **Deep Worker 启发式任务规划**：引入 `SubAgentOrchestrator`，基于启发式自动探测函数内的分配、拷贝、加锁等关键操作，创建上下文极其干净的子任务并下发给聚焦型 `Deep Worker`，避免管理器的大上下文污染幻觉。
 - **智能入口点自动发现**：新增 `--discover-entries` 特性。如果未给定分析列表，通过 `EntryDiscovery` 启发式扫描公共头文件 API、通信 IPC 接口、线程创建函数和标准 IO 输入源，自动推测最优的安全审计切入点。
