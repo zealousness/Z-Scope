@@ -128,6 +128,8 @@ class AlertVerifier:
             tools_schema=self.tools_runtime.get_tools_schema(),
             tool_executor=self.tools_runtime.execute_tool,
             max_iterations=self.config.analysis.max_tool_iterations,
+            trace_agent="alert_verifier",
+            trace_label=f"alert={alert_id}; rule={alert.rule_id}; file={alert.file_path}:{alert.line}",
         )
 
         # 4. 解析验证结果

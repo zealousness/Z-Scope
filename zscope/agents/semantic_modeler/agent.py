@@ -73,7 +73,9 @@ class SemanticModeler(BaseAgent):
             result = self.llm_client.run_conversation_with_tools(
                 messages=messages,
                 tools_schema=self.tools_schema,
-                tool_executor=self._tool_executor
+                tool_executor=self._tool_executor,
+                trace_agent=self.name,
+                trace_label=f"function={func_name}",
             )
             
             content = result["content"]
@@ -99,7 +101,13 @@ class SemanticModeler(BaseAgent):
                     )
                 })
 
-                retry_response = self.llm_client.chat_completion(conversation, tools=None)
+                retry_response = self.llm_client.chat_completion(
+                    conversation,
+                    tools=None,
+                    trace_agent=self.name,
+                    trace_label=f"function={func_name}; json_retry={retry}",
+                    trace_iteration=retry,
+                )
                 retry_choice = retry_response.get("choices", [{}])[0]
                 retry_message = retry_choice.get("message", {})
                 retry_content = retry_message.get("content", "")

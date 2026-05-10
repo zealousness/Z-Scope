@@ -14,6 +14,7 @@ from ..config.config import ZScopeConfig, LLMConfig, AnalysisConfig, ProjectConf
 from ..config.function_entry import FunctionListLoader
 from ..core.analyzer import Analyzer
 from ..core.parallel_analyzer import ParallelAnalyzer
+from ..framework.conversation_recorder import enable_conversation_recording
 
 @click.command()
 @click.option(
@@ -95,6 +96,11 @@ def main(
     try:
         zscope_config = ConfigLoader.load(str(config))
         logger.info(f"Loaded configuration from: {config}")
+        if verbose:
+            recorder = enable_conversation_recording(
+                zscope_config.project.project_root / ".zscope_conversations"
+            )
+            logger.info("LLM conversation recording enabled: %s", recorder.run_dir)
 
         if resume and maintain:
             click.echo("Error: --resume and --maintain cannot be used together.")
