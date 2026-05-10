@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zscope"
-version = "0.4.0"
+dynamic = ["version"]
 description = "Z-SCOPE: AI-powered defect detection for C projects"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -34,6 +34,16 @@ zscope = "zscope.cli.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["zscope*"]
+
+[tool.setuptools.package-data]
+zscope = [
+    "agents/*/AGENT.md",
+    "skills/*/SKILL.md",
+    "workflows/*.yaml",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "zscope._version.__version__"}
 
 [tool.black]
 line-length = 100

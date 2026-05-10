@@ -22,6 +22,9 @@ from ..agents.vulnerability_analyzer.agent import VulnerabilityAnalyzer
 from ..agents.validator_agent.agent import ValidatorAgent
 from .report import FinalReport, Issue, ReportGenerator
 from ..common.utils import validate_json_schema
+from .._version import __version__
+from ..orchestration.specs import SpecRegistry
+from ..orchestration.subagents import SubAgentOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +177,8 @@ class Analyzer:
             )
         self.report_generator = ReportGenerator(config.project.project_root)
         self.tools_runtime = ToolsRuntime(self.code_index, self.snapshot_store, self.user_config)
+        self.spec_registry = SpecRegistry(project_root=config.project.project_root)
+        self.workflow_spec = self.spec_registry.get_workflow(config.analysis.workflow_name)
         self.force_ignore_history = force_ignore_history
         self.maintain_mode = maintain_mode
         
@@ -198,12 +203,16 @@ class Analyzer:
             "code": impl_result["code"],
             "location": f"{impl_result['file']}:{impl_result['start_line']}"
         }
+        self._attach_agent_contract(agent_context, "semantic_modeler")
 
         # Inject user config context
         user_context_parts = []
         paired_ctx = self.user_config.get_paired_functions_context()
         if paired_ctx:
             user_context_parts.append(paired_ctx)
+        pointer_ctx = self.user_config.get_pointer_targets_context()
+        if pointer_ctx:
+            user_context_parts.append(pointer_ctx)
         intent_ctx = self.user_config.get_function_intent_context(entry_func)
         if intent_ctx:
             user_context_parts.append(intent_ctx)
@@ -212,6 +221,8 @@ class Analyzer:
 
         issues = []
         notes = []
+        subagent_ticket_plan: List[Dict[str, Any]] = []
+        subagent_reports: List[Dict[str, Any]] = []
 
         if self.snapshot_store and not self.force_ignore_history:
             historical_report = self.snapshot_store.load_final_report(entry_func, impl_result['file'])
@@ -275,6 +286,7 @@ class Analyzer:
         
         semantic_agent = SemanticModeler(sm_client, self._get_tools())
         logger.info(f"Running Semantic Modeler agent with '{sm_llm_ref}' LLM...")
+        self._attach_agent_contract(agent_context, "semantic_modeler")
         s_resp = semantic_agent.run(agent_context)
         sm_tokens = s_resp.metadata.get("context_tokens", 0) if s_resp.metadata else 0
         total_context_tokens += sm_tokens
@@ -301,9 +313,35 @@ class Analyzer:
             logger.info(f"Running Vulnerability Analyzer agent for task: {agent_cfg.task}")
             va_llm_ref = agent_cfg.llm_ref if agent_cfg.llm_ref else "default"
             va_client = self.llm_clients.get(va_llm_ref, self.llm_clients["default"])
-            analyzer_agent = VulnerabilityAnalyzer(va_client, self._get_tools())
+            tools = self._get_tools()
+            analyzer_agent = VulnerabilityAnalyzer(va_client, tools)
             
             agent_context["task"] = agent_cfg.task
+            self._attach_agent_contract(agent_context, "vulnerability_analyzer", agent_cfg.skills)
+            should_spawn_workers = self._should_spawn_subagents(agent_cfg)
+            orchestrator = SubAgentOrchestrator(self.spec_registry, tools)
+            tickets = orchestrator.plan(
+                entry_func,
+                agent_context["code"],
+                max_tickets=self.config.analysis.max_subagent_tickets,
+            )
+            if tickets:
+                subagent_ticket_plan = [ticket.to_dict() for ticket in tickets]
+                agent_context["subagent_plan"] = subagent_ticket_plan
+                notes.append(f"Planned {len(tickets)} focused subagent ticket(s).")
+            if should_spawn_workers and tickets:
+                reports = orchestrator.run_tickets(
+                    va_client,
+                    tickets,
+                    max_iterations=min(self.config.analysis.max_tool_iterations, 20),
+                )
+                subagent_reports = reports
+                agent_context["subagent_reports"] = reports
+                total_context_tokens += sum(
+                    int(report.get("metadata", {}).get("context_tokens", 0) or 0)
+                    for report in reports
+                )
+                notes.append(f"Executed {len(reports)} focused subagent ticket(s).")
             v_resp = analyzer_agent.run(agent_context, max_iterations=self.config.analysis.max_tool_iterations)
             
             if v_resp.success:
@@ -376,6 +414,7 @@ class Analyzer:
                             "finding": json.dumps(raw_issue, indent=2, ensure_ascii=False),
                             "context_code": issue_code
                         }
+                        self._attach_agent_contract(val_input, "validator_agent")
                         val_resp = validator_agent.run(val_input)
                         
                         if val_resp.success:
@@ -444,8 +483,11 @@ class Analyzer:
 
         final_report.metadata = {
             "timestamp": datetime.datetime.now().isoformat(),
-            "version": "0.2.0",
+            "version": __version__,
             "context_tokens": total_context_tokens,
+            "workflow": self.workflow_spec.name if self.workflow_spec else self.config.analysis.workflow_name,
+            "subagent_ticket_count": len(subagent_ticket_plan),
+            "subagent_reports_count": len(subagent_reports),
         }
 
         # Save results to disk
@@ -464,6 +506,34 @@ class Analyzer:
 
         return report_dict
 
+    def _attach_agent_contract(
+        self,
+        context: Dict[str, Any],
+        agent_name: str,
+        extra_skills: Optional[List[str]] = None,
+    ) -> None:
+        """Attach workflow/agent/skill contracts to a single agent invocation."""
+        if self.workflow_spec:
+            context["workflow_context"] = self.workflow_spec.to_prompt_block()
+
+        agent_spec = self.spec_registry.get_agent(agent_name)
+        if agent_spec:
+            context["agent_contract"] = agent_spec.to_prompt_block()
+
+        skills = self.spec_registry.skills_for_agent(agent_name, extra=extra_skills)
+        if skills:
+            context["skill_contracts"] = "\n\n".join(skill.to_prompt_block() for skill in skills)
+
+    def _should_spawn_subagents(self, agent_cfg: Any) -> bool:
+        """Decide whether focused deep-worker LLM calls are enabled for this run."""
+        explicit = getattr(agent_cfg, "can_spawn_subagents", None)
+        if explicit is not None:
+            return bool(explicit)
+        agent_spec = self.spec_registry.get_agent("vulnerability_analyzer")
+        if not self.config.analysis.enable_subagent_workers:
+            return False
+        return bool(agent_spec and agent_spec.can_spawn_subagents)
+
     def _get_tools(self) -> List[Any]:
         """Initialize and return the set of tools."""
         from ..tools.code_retrieval import GetFunctionImplTool
@@ -476,11 +546,14 @@ class Analyzer:
             GetCallGraphTool,
             GetDataFlowTool,
             FindFunctionPointersTool,
+            QueryPointerAliasTool,
+            VerifyTaintReachabilityTool,
+            GetDeepCallContextTool,
         )
 
         # Base tools universally supported by all backends (including regex/clangd)
         tools = [
-            GetFunctionImplTool(self.code_index),
+            GetFunctionImplTool(self.code_index, self.user_config),
             GetFunctionSnapshotTool(self.snapshot_store),
             ListFunctionsTool(self.code_index),
             GetFileSnippetTool(self.code_index),
@@ -495,6 +568,9 @@ class Analyzer:
                 GetCallGraphTool(self.code_index),
                 GetDataFlowTool(self.code_index),
                 FindFunctionPointersTool(self.code_index),
+                QueryPointerAliasTool(self.code_index),
+                VerifyTaintReachabilityTool(self.code_index),
+                GetDeepCallContextTool(self.code_index),
             ])
             
         return tools
@@ -604,6 +680,7 @@ class Analyzer:
                     "location": location,
                     "schema": "{}",
                 }
+                self._attach_agent_contract(context, "semantic_modeler")
 
                 logger.info(f"[premodel] Modeling callee '{func}' ...")
                 resp = semantic_agent.run(context)

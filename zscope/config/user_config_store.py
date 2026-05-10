@@ -317,6 +317,26 @@ class UserConfigStore:
                              + (f"  ({it['description']})" if it.get("description") else ""))
         return "\n".join(lines)
 
+    def get_pointer_targets_context(self) -> str:
+        """Format user-provided function pointer targets as context string."""
+        targets = self.get_pointer_targets()
+        if not targets:
+            return ""
+        lines = ["[用户配置的函数指针指向]"]
+        for target in targets:
+            funcs = target.get("target_functions", "[]")
+            if isinstance(funcs, str):
+                try:
+                    funcs = json.loads(funcs)
+                except json.JSONDecodeError:
+                    funcs = [funcs]
+            lines.append(
+                f"  {target['pointer_location']} -> {', '.join(funcs)}"
+                + (f"  (scope: {target['scope']})" if target.get("scope") else "")
+                + (f"  ({target['context']})" if target.get("context") else "")
+            )
+        return "\n".join(lines)
+
     def get_function_intent_context(self, func_name: str,
                                     file_path: Optional[str] = None) -> str:
         """Format function intent as context string for agent prompts."""

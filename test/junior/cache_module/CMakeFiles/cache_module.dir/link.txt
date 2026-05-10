@@ -1,1 +1,0 @@
-/usr/bin/cc -fPIC -shared -Wl,-soname,libcache_module.so -o libcache_module.so CMakeFiles/cache_module.dir/src/cache_core.c.o CMakeFiles/cache_module.dir/src/cache_index.c.o CMakeFiles/cache_module.dir/src/cache_queue.c.o CMakeFiles/cache_module.dir/src/cache_storage.c.o CMakeFiles/cache_module.dir/src/cache_thread.c.o 

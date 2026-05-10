@@ -70,13 +70,23 @@ class ValidatorAgent(BaseAgent):
     def run(self, input_data: Dict[str, Any], max_retries: int = 2) -> AgentResponse:
         finding = input_data.get("finding")
         context_code = input_data.get("context_code")
+        agent_contract = input_data.get("agent_contract")
+        skill_contracts = input_data.get("skill_contracts")
+        workflow_context = input_data.get("workflow_context")
 
         prompt = f"Suspected Finding:\n{finding}\n\nRelevant Code Context:\n{context_code}"
         last_error = ""
 
         for attempt in range(1, max_retries + 1):
+            system_prompt = SYSTEM_PROMPT
+            if workflow_context:
+                system_prompt += f"\n\n[Workflow Contract]\n{workflow_context}"
+            if agent_contract:
+                system_prompt += f"\n\n[Agent Contract]\n{agent_contract}"
+            if skill_contracts:
+                system_prompt += f"\n\n[Loaded Skill Contracts]\n{skill_contracts}"
             messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
             ]
             # 重试时追加格式提醒
