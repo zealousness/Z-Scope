@@ -7,7 +7,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from .build_llvm import BitcodeBuilder
 from .knowledge_db import KnowledgeDB

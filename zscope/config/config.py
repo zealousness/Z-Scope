@@ -9,10 +9,13 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 import logging
 
+_yaml: Any
 try:
-    import yaml
+    import yaml as _yaml
 except ImportError:
-    yaml = None
+    _yaml = None
+
+yaml: Any = _yaml
 
 logger = logging.getLogger(__name__)
 

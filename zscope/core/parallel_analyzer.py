@@ -8,7 +8,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Any, Callable, Dict, List, Optional
 from dataclasses import dataclass, field
 
 from ..config.config import ZScopeConfig
@@ -74,7 +74,7 @@ class ParallelAnalyzer:
     def analyze_function_entries(
         self,
         entries: List[FunctionEntry],
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[Callable[[int, int, str], None]] = None
     ) -> Dict[str, ParallelAnalysisResult]:
         """
         Analyze multiple function entries with custom prompts.
@@ -146,7 +146,7 @@ class ParallelAnalyzer:
     def analyze_functions(
         self, 
         function_names: List[str],
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[Callable[[int, int, str], None]] = None
     ) -> Dict[str, ParallelAnalysisResult]:
         """
         Analyze multiple functions in parallel.
@@ -419,7 +419,7 @@ class ParallelAnalyzer:
     
     def _group_by_severity(self, issues: List[Dict]) -> Dict[str, List[Dict]]:
         """Group issues by impact level."""
-        groups = {"critical": [], "high": [], "medium": [], "low": []}
+        groups: Dict[str, List[Dict[str, Any]]] = {"critical": [], "high": [], "medium": [], "low": []}
         
         for issue in issues:
             level = issue.get("impact_level", "medium").lower()

@@ -7,7 +7,7 @@ import logging
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +192,7 @@ class KnowledgeDB:
         row = self._conn.execute(
             "SELECT id FROM translation_units WHERE file_path = ?", (file_path,)
         ).fetchone()
-        return row["id"]
+        return cast(int, row["id"])
 
     def register_tu_hash(self, file_path: str, file_hash: str) -> tuple:
         """注册 TU 并检查哈希。返回 (tu_id, changed: bool)。"""

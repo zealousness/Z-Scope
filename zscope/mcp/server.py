@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 from ..config.config import ConfigLoader
 from .provider import ZScopeMcpProvider
@@ -34,6 +34,7 @@ class JsonRpcStdioServer:
         params = request.get("params") or {}
 
         try:
+            result: Dict[str, Any]
             if method == "initialize":
                 result = {
                     "protocolVersion": "2024-11-05",
@@ -79,11 +80,11 @@ class JsonRpcStdioServer:
                 if header in (b"\r\n", b"\n", b""):
                     break
             body = sys.stdin.buffer.read(length)
-            return json.loads(body.decode("utf-8"))
+            return cast(Dict[str, Any], json.loads(body.decode("utf-8")))
         line = first.decode("utf-8").strip()
         if not line:
             return None
-        return json.loads(line)
+        return cast(Dict[str, Any], json.loads(line))
 
     def _write_message(self, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")

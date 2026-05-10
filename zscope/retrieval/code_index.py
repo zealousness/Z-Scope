@@ -6,7 +6,7 @@ Supports pluggable backends (Joern / Clang-SQLite / regex fallback).
 import logging
 import re
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Sequence, Union
 
 from ..common.utils import extract_function_calls, normalize_path
 from .backend_base import CodeBackend
@@ -31,8 +31,8 @@ class CodeIndex:
         backend: Optional[CodeBackend] = None,
         # 向后兼容：仍接受 joern_client 参数
         joern_client: Optional[Any] = None,
-        include_paths: Optional[List[Path]] = None,
-        exclude_paths: Optional[List[Path]] = None,
+        include_paths: Optional[Sequence[Union[str, Path]]] = None,
+        exclude_paths: Optional[Sequence[Union[str, Path]]] = None,
     ):
         self.project_root = Path(project_root).absolute()
         self.source_root = Path(source_root).absolute() if source_root else self.project_root
@@ -244,7 +244,7 @@ class CodeIndex:
             except Exception as e:
                 logger.debug(f"Failed to read {file_path}: {e}")
 
-    def _extract_functions_regex(self, file_path: Path, content: str) -> None:
+    def _extract_functions_regex(self, file_path: Union[str, Path], content: str) -> None:
         """Extract function definitions using regex."""
         lines = content.split("\n")
         in_function = False
@@ -266,8 +266,9 @@ class CodeIndex:
             elif in_function:
                 brace_count += clean_line.count("{") - clean_line.count("}")
                 if brace_count == 0:
+                    path = Path(file_path)
                     self._function_index[func_name] = {
-                        "file": str(file_path),
+                        "file": str(path),
                         "start_line": func_start,
                         "end_line": line_no,
                         "signature": func_name + "(...)",

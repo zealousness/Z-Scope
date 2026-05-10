@@ -10,7 +10,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,11 @@ class JoernClient:
             # Wait for server to be ready
             if not self._wait_for_server():
                 stderr_out = b""
-                if self._server_process and self._server_process.poll() is not None:
+                if (
+                    self._server_process
+                    and self._server_process.poll() is not None
+                    and self._server_process.stderr
+                ):
                     stderr_out = self._server_process.stderr.read()
                 logger.error(f"Joern server failed to start. stderr: {stderr_out.decode('utf-8', errors='ignore')}")
                 return False
@@ -251,7 +255,7 @@ class JoernClient:
     def query(self, cpgql: str) -> Any:
         """Execute a CPGQL query via cpgqls-client."""
         try:
-            from cpgqls_client import CPGQLSClient
+            from cpgqls_client import CPGQLSClient  # type: ignore[import-untyped]
             
             # Workaround for cpgqls-client concurrent UUID broadcast bug
             if not hasattr(CPGQLSClient, '_zscope_patched'):
@@ -388,7 +392,7 @@ class JoernClient:
             f')).l.toJson'
         )
         if isinstance(result, list) and result:
-            return result[0]
+            return cast(Dict[str, Any], result[0])
         return None
 
     def get_method_callers(self, name: str, limit: int = 20) -> List[Dict[str, Any]]:
@@ -420,7 +424,7 @@ class JoernClient:
             f')).l.toJson'
         )
         if isinstance(result, list) and result:
-            return result[0]
+            return cast(Dict[str, Any], result[0])
         return None
 
     def get_type_members(self, name: str) -> List[Dict[str, Any]]:

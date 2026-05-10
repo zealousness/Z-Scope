@@ -4,10 +4,11 @@ Unified backend — Clang AST extraction + SVF deep analysis sharing one Knowled
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from .backend_base import CodeBackend
 from .clang_backend import ClangBackend
+from .knowledge_db import KnowledgeDB
 from .svf_analyzer import SvfAnalyzer
 
 logger = logging.getLogger(__name__)
@@ -33,16 +34,17 @@ class UnifiedBackend(CodeBackend):
             clangd_path=clangd_path, db_path=db_path,
             batch_size=batch_size, max_threads=max_threads,
         )
-        self._svf_cfg = dict(
+        self._svf_cfg: Dict[str, Any] = dict(
             svf_bin_dir=svf_bin_dir, gclang_path=gclang_path,
             get_bc_path=get_bc_path, llvm_link_path=llvm_link_path,
             heap_limit_mb=svf_heap_limit_mb, timeout=svf_timeout,
         )
         self._svf: Optional[SvfAnalyzer] = None
+        self._svf_available = False
         self._status = "idle"
 
     @property
-    def db(self):
+    def db(self) -> Optional[KnowledgeDB]:
         return self._clang._db
 
     # ── 生命周期 ──
@@ -108,15 +110,15 @@ class UnifiedBackend(CodeBackend):
         import shutil
         missing = []
         # gclang (gllvm)
-        gclang = self._svf_cfg.get("gclang_path", "gclang")
+        gclang = str(self._svf_cfg.get("gclang_path", "gclang"))
         if not shutil.which(gclang):
             missing.append(f"gclang ({gclang})")
         # llvm-link
-        llvm_link = self._svf_cfg.get("llvm_link_path", "llvm-link")
+        llvm_link = str(self._svf_cfg.get("llvm_link_path", "llvm-link"))
         if not shutil.which(llvm_link):
             missing.append(f"llvm-link ({llvm_link})")
         # wpa (SVF)
-        svf_bin = self._svf_cfg.get("svf_bin_dir", "")
+        svf_bin = str(self._svf_cfg.get("svf_bin_dir", ""))
         if svf_bin:
             wpa = Path(svf_bin) / "wpa"
             saber = Path(svf_bin) / "saber"
@@ -165,32 +167,32 @@ class UnifiedBackend(CodeBackend):
         db = self.db
         if not db:
             return []
-        direct = db.get_callers(func_name, limit=limit)
-        indirect = db.get_indirect_callers(func_name, limit=limit)
+        direct = cast(List[Dict[str, Any]], db.get_callers(func_name, limit=limit))
+        indirect = cast(List[Dict[str, Any]], db.get_indirect_callers(func_name, limit=limit))
         seen = {d["name"] for d in direct}
         for ic in indirect:
             if ic["name"] not in seen:
                 direct.append({"name": ic["name"], "filename": ic.get("call_file", ""), "lineNumber": 0})
-        return direct[:limit]
+        return cast(List[Dict[str, Any]], direct[:limit])
 
     def get_callees(self, func_name: str, limit: int = 30) -> List[Dict[str, Any]]:
         db = self.db
         if not db:
             return []
-        direct = db.get_callees(func_name, limit=limit)
-        indirect = db.get_indirect_callees(func_name, limit=limit)
+        direct = cast(List[Dict[str, Any]], db.get_callees(func_name, limit=limit))
+        indirect = cast(List[Dict[str, Any]], db.get_indirect_callees(func_name, limit=limit))
         seen = {d["name"] for d in direct}
         for ic in indirect:
             if ic["name"] not in seen:
                 direct.append({"name": ic["name"], "source": ic.get("source", "svf")})
-        return direct[:limit]
+        return cast(List[Dict[str, Any]], direct[:limit])
 
     def get_data_flow(self, source_func: str, source_param: str,
                       sink_pattern: str) -> List[Dict[str, Any]]:
         db = self.db
         if not db:
             return []
-        return db.get_enriched_taint_bugs(bug_type=sink_pattern, func_name=source_func)
+        return cast(List[Dict[str, Any]], db.get_enriched_taint_bugs(bug_type=sink_pattern, func_name=source_func))
 
     # ── SVF 特有查询（供工具层调用）──
 
@@ -198,10 +200,10 @@ class UnifiedBackend(CodeBackend):
         db = self.db
         if not db:
             return []
-        return db.get_indirect_callees(func_name, limit=limit)
+        return cast(List[Dict[str, Any]], db.get_indirect_callees(func_name, limit=limit))
 
     def get_taint_bugs(self, bug_type: str = "", limit: int = 50) -> List[Dict[str, Any]]:
         db = self.db
         if not db:
             return []
-        return db.get_enriched_taint_bugs(bug_type=bug_type, limit=limit)
+        return cast(List[Dict[str, Any]], db.get_enriched_taint_bugs(bug_type=bug_type, limit=limit))

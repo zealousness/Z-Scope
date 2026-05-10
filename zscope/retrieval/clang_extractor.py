@@ -12,7 +12,9 @@ import time
 import re
 import hashlib
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+
+from .knowledge_db import KnowledgeDB
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +197,8 @@ class ClangExtractor:
     def _read_loop(self):
         """后台线程：从 stdout 读取 JSON-RPC 消息。"""
         buf = b""
+        if not self.process or not self.process.stdout:
+            return
         fd = self.process.stdout.fileno()
         while self._running:
             try:
@@ -236,7 +240,7 @@ class ClangExtractor:
 
     def _stderr_loop(self):
         """后台线程：读取 clangd stderr 日志。"""
-        while self._running and self.process:
+        while self._running and self.process and self.process.stderr:
             try:
                 line = self.process.stderr.readline()
                 if not line:
@@ -279,26 +283,29 @@ class ClangExtractor:
 
     def get_document_symbols(self, file_path: Path) -> Optional[List[Dict]]:
         uri = file_path.as_uri()
-        return self.send_request("textDocument/documentSymbol", {
+        result = self.send_request("textDocument/documentSymbol", {
             "textDocument": {"uri": uri}
         })
+        return cast(Optional[List[Dict]], result)
 
     def get_hover(self, file_path: Path, line: int, character: int = 0) -> Optional[Dict]:
         uri = file_path.as_uri()
-        return self.send_request("textDocument/hover", {
+        result = self.send_request("textDocument/hover", {
             "textDocument": {"uri": uri},
             "position": {"line": line, "character": character},
         }, timeout=30)
+        return cast(Optional[Dict], result)
 
     def get_definition(self, file_path: Path, line: int, character: int = 0) -> Optional[List]:
         uri = file_path.as_uri()
-        return self.send_request("textDocument/definition", {
+        result = self.send_request("textDocument/definition", {
             "textDocument": {"uri": uri},
             "position": {"line": line, "character": character},
         }, timeout=30)
+        return cast(Optional[List], result)
 
     def get_workspace_symbols(self, query: str = "") -> Optional[List[Dict]]:
-        return self.send_request("workspace/symbol", {"query": query})
+        return cast(Optional[List[Dict]], self.send_request("workspace/symbol", {"query": query}))
 
     # ── 索引等待 ──
 
@@ -334,7 +341,7 @@ class ClangExtractor:
     def extract_tu(
         self,
         file_path: Path,
-        db: "KnowledgeDB",
+        db: KnowledgeDB,
         tu_id: int,
         progress_cb: Optional[Callable] = None,
     ) -> bool:
@@ -354,8 +361,8 @@ class ClangExtractor:
             return False
 
         rel_path = str(file_path)
-        func_rows = []
-        call_rows = []
+        func_rows: List[Tuple[Any, ...]] = []
+        call_rows: List[Tuple[Any, ...]] = []
 
         for sym in symbols:
             self._process_symbol(sym, file_path, rel_path, tu_id, db, func_rows, call_rows)
@@ -379,8 +386,8 @@ class ClangExtractor:
 
     def _process_symbol(
         self, sym: Dict, file_path: Path, rel_path: str,
-        tu_id: int, db: "KnowledgeDB",
-        func_rows: list, call_rows: list,
+        tu_id: int, db: KnowledgeDB,
+        func_rows: List[Tuple[Any, ...]], call_rows: List[Tuple[Any, ...]],
     ):
         """递归处理单个 LSP DocumentSymbol 节点。"""
         kind = sym.get("kind", 0)
@@ -431,7 +438,7 @@ class ClangExtractor:
 
     def _extract_call_edges(
         self, file_path: Path, caller_name: str, caller_file: str,
-        start_line: int, end_line: int, call_rows: list,
+        start_line: int, end_line: int, call_rows: List[Tuple[Any, ...]],
     ):
         """通过正则提取调用标识符，并使用 LSP definition 定位具体的 callee_file。"""
         try:
@@ -488,7 +495,7 @@ class ClangExtractor:
         except Exception as e:
             logger.debug("Failed to extract calls in %s: %s", caller_name, e)
 
-    def _extract_includes(self, file_path: Path, rel_path: str, db: "KnowledgeDB"):
+    def _extract_includes(self, file_path: Path, rel_path: str, db: KnowledgeDB):
         """提取 #include 边。"""
         try:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -508,7 +515,7 @@ class ClangExtractor:
     def run_batch_extraction(
         self,
         file_list: List[Path],
-        db: "KnowledgeDB",
+        db: KnowledgeDB,
         batch_size: int = 50,
         progress_cb: Optional[Callable] = None,
     ) -> Dict[str, int]:

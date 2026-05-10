@@ -49,8 +49,8 @@ class ClangBackend(CodeBackend):
         self._source_path = Path(source_path).absolute()
         project_root = Path(project_root).absolute() if project_root else self._source_path
         
-        self._include_paths = kwargs.get("include_paths", []) or []
-        self._exclude_paths = kwargs.get("exclude_paths", []) or []
+        self._include_paths = [Path(p).absolute() for p in (kwargs.get("include_paths", []) or [])]
+        self._exclude_paths = [Path(p).absolute() for p in (kwargs.get("exclude_paths", []) or [])]
 
         # 初始化 SQLite 知识库（存储在 project_root）
         db_full_path = project_root / self._db_path
@@ -70,6 +70,8 @@ class ClangBackend(CodeBackend):
         """按需启动 clangd 提取器（仅在有文件需要提取时调用）。"""
         if self._extractor is not None:
             return True
+        if self._source_path is None:
+            return False
         cc_dir = Path(self._compile_commands_path).parent if self._compile_commands_path else None
         self._extractor = ClangExtractor(
             project_root=self._source_path,   # clangd cwd/rootUri = source_root
@@ -95,10 +97,15 @@ class ClangBackend(CodeBackend):
             # 预扫描：检查有多少文件真正需要提取
             from .clang_extractor import ClangExtractor
             changed_count = 0
+            if self._db is None:
+                self._status = "error"
+                return False
+
+            db = self._db
             for fp in file_list:
                 fp = fp.resolve()
                 file_hash = ClangExtractor._compute_file_hash(fp)
-                _, changed = self._db.register_tu_hash(str(fp), file_hash)
+                _, changed = db.register_tu_hash(str(fp), file_hash)
                 if changed:
                     changed_count += 1
 
@@ -119,13 +126,17 @@ class ClangBackend(CodeBackend):
             if not self._ensure_extractor():
                 self._status = "error"
                 return False
+            extractor = self._extractor
+            if extractor is None:
+                self._status = "error"
+                return False
 
             # 等待 clangd 后台索引稳定
-            self._extractor.wait_for_indexing(timeout=120, idle_threshold=3.0)
+            extractor.wait_for_indexing(timeout=120, idle_threshold=3.0)
 
             # 批量提取（内部会再次检查哈希，仅提取 changed 的）
-            stats = self._extractor.run_batch_extraction(
-                file_list, self._db, batch_size=self._batch_size,
+            stats = extractor.run_batch_extraction(
+                file_list, db, batch_size=self._batch_size,
             )
             logger.info(
                 "Extraction complete: %d extracted, %d skipped, %d failed",
@@ -179,6 +190,8 @@ class ClangBackend(CodeBackend):
     def _collect_source_files(self) -> List[Path]:
         """收集源码目录下所有 C/C++ 文件。"""
         files = []
+        if self._source_path is None:
+            return []
         extensions = ("*.c", "*.cpp", "*.cc", "*.cxx", "*.h", "*.hpp", "*.ph", "*.inc", "*.inl")
         
         bases_to_search = self._include_paths if self._include_paths else [self._source_path]

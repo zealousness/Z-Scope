@@ -104,14 +104,15 @@ class RuleEngine:
             name = item.get("name", "")
             if not name or name.startswith("<"):
                 continue
+            line_value = item.get("lineNumber", -1)
             matches.append(RuleMatch(
                 rule_id=f"paired_{acquire}_{release}",
                 rule_name=f"Missing {release} for {acquire}",
                 category=category,
                 score=6.0,
                 func_name=name,
-                file_path=item.get("filename", ""),
-                line_number=item.get("lineNumber", -1),
+                file_path=str(item.get("filename", "")),
+                line_number=int(line_value if line_value is not None else -1),
             ))
         return matches
 
@@ -126,15 +127,16 @@ class RuleEngine:
             return []
         matches = []
         for item in result:
+            line_value = item.get("lineNumber", -1)
             matches.append(RuleMatch(
-                rule_id=item.get("name", "unknown"),
-                rule_name=item.get("title", item.get("name", "")),
-                category=item.get("tags", ["unknown"])[0] if item.get("tags") else "unknown",
+                rule_id=str(item.get("name", "unknown")),
+                rule_name=str(item.get("title", item.get("name", ""))),
+                category=str(item.get("tags", ["unknown"])[0] if item.get("tags") else "unknown"),
                 score=float(item.get("score", 5.0)),
-                func_name=item.get("methodFullName", item.get("methodName", "")),
-                file_path=item.get("filename", ""),
-                line_number=int(item.get("lineNumber", -1)),
-                code_snippet=item.get("code", ""),
+                func_name=str(item.get("methodFullName", item.get("methodName", ""))),
+                file_path=str(item.get("filename", "")),
+                line_number=int(line_value if line_value is not None else -1),
+                code_snippet=str(item.get("code", "")),
                 evidence=item.get("evidence", []),
             ))
         return matches
@@ -147,15 +149,16 @@ class RuleEngine:
         for item in data:
             if not isinstance(item, dict):
                 continue
+            line_value = item.get("line_number", item.get("lineNumber", -1))
             matches.append(RuleMatch(
-                rule_id=item.get("rule_id", script_name),
-                rule_name=item.get("rule_name", script_name),
-                category=item.get("category", "custom"),
+                rule_id=str(item.get("rule_id", script_name)),
+                rule_name=str(item.get("rule_name", script_name)),
+                category=str(item.get("category", "custom")),
                 score=float(item.get("score", 5.0)),
-                func_name=item.get("function", item.get("func_name", "")),
-                file_path=item.get("file_path", item.get("filename", "")),
-                line_number=int(item.get("line_number", item.get("lineNumber", -1))),
-                code_snippet=item.get("code_snippet", item.get("code", "")),
+                func_name=str(item.get("function", item.get("func_name", ""))),
+                file_path=str(item.get("file_path", item.get("filename", ""))),
+                line_number=int(line_value if line_value is not None else -1),
+                code_snippet=str(item.get("code_snippet", item.get("code", ""))),
                 evidence=item.get("evidence", []),
             ))
         return matches
