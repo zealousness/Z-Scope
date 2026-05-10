@@ -1,0 +1,12 @@
+name: resume
+mode: resume
+description: Continue interrupted batch scans by skipping completed functions.
+entry_strategy: configured_or_discovered
+steps:
+  - id: load_snapshot_state
+    action: skip entries with successful final reports and no pending validations
+  - id: analyze_remaining
+    agent: semantic_modeler
+    action: reuse snapshots where valid and analyze remaining entries through the default workflow
+  - id: merge_skipped_reports
+    action: load skipped final reports from snapshot.db and merge with current results

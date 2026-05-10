@@ -14,7 +14,7 @@ llm:
   models:
     - Qwen/Qwen3-Coder-480B-A35B-Instruct
     - Qwen/Qwen3-Coder-30B-A3B-Instruct
-  api_key: REDACTED_REVOKED_CREDENTIAL
+  api_key: ${Z_SCOPE_API_KEY}
   temperature: 0.1
   max_tokens: 4096
   max_retries: 2

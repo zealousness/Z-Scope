@@ -1,4 +1,0 @@
-/mnt/c/Users/10273/home/work/Z-Scope/test/junior/cache_module/CMakeFiles/cache_module.dir
-/mnt/c/Users/10273/home/work/Z-Scope/test/junior/cache_module/CMakeFiles/cache_test.dir
-/mnt/c/Users/10273/home/work/Z-Scope/test/junior/cache_module/CMakeFiles/edit_cache.dir
-/mnt/c/Users/10273/home/work/Z-Scope/test/junior/cache_module/CMakeFiles/rebuild_cache.dir

@@ -14,6 +14,7 @@ from ..config.config import ZScopeConfig
 from ..config.user_config_store import UserConfigStore
 from ..retrieval.code_index import CodeIndex
 from .alert_adapter import AlertAdapter, ExternalAlert, AlertSeverity
+from .snapshot_store import SnapshotStore
 from .tools_runtime import ToolsRuntime
 from ..framework.llm_client import LLMClient
 from .report import FinalReport, Issue, ReportGenerator
@@ -68,9 +69,11 @@ class AlertVerifier:
         self.code_index = code_index
         self.llm_client = llm_client
         self.user_config = user_config
+        self.snapshot_store = SnapshotStore(Path(config.analysis.snapshot_dir))
         self.tools_runtime = ToolsRuntime(
             code_index=code_index,
-            user_config_store=user_config,
+            snapshot_store=self.snapshot_store,
+            user_config=user_config,
         )
 
     def verify_alerts(
@@ -115,19 +118,20 @@ class AlertVerifier:
         user_prompt = self._build_prompt(alert, alert_id, context)
 
         # 3. 调用 LLM 验证
-        tools_schema = self.tools_runtime.get_tools_schema()
-        messages = [{"role": "user", "content": user_prompt}]
+        messages = [
+            {"role": "system", "content": VERIFY_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
 
-        response = self.llm_client.chat_with_tools(
-            system_prompt=VERIFY_SYSTEM_PROMPT,
+        response = self.llm_client.run_conversation_with_tools(
             messages=messages,
-            tools=tools_schema,
+            tools_schema=self.tools_runtime.get_tools_schema(),
             tool_executor=self.tools_runtime.execute_tool,
             max_iterations=self.config.analysis.max_tool_iterations,
         )
 
         # 4. 解析验证结果
-        result = self._parse_verification(response, alert, alert_id)
+        result = self._parse_verification(response.get("content", ""), alert, alert_id)
         return result
 
     def _build_context(self, alert: ExternalAlert) -> Dict[str, Any]:
@@ -195,10 +199,6 @@ class AlertVerifier:
         self, response: str, alert: ExternalAlert, alert_id: str
     ) -> Dict[str, Any]:
         """从 LLM 响应中解析验证结果 JSON。"""
-        import re
-        json_pattern = re.compile(r"```json\s*\n(.*?)\n\s*```", re.DOTALL)
-        match = json_pattern.search(response or "")
-
         base = {
             "alert_id": alert_id,
             "tool": alert.tool,
@@ -209,23 +209,31 @@ class AlertVerifier:
             "original_severity": alert.severity.value,
         }
 
-        if not match:
+        from ..common.utils import extract_json_blocks
+
+        candidates = extract_json_blocks(response or "")
+        parsed = next(
+            (
+                item
+                for item in candidates
+                if isinstance(item, dict)
+                and (item.get("type") == "alert_verification" or "verdict" in item)
+            ),
+            None,
+        )
+
+        if not parsed:
             logger.warning("No JSON block found in verification response for %s", alert_id)
             base.update({"verdict": "uncertain", "confidence": 0.0, "reasoning": "无法解析验证结果"})
             return base
 
-        try:
-            parsed = json.loads(match.group(1))
-            base.update({
-                "verdict": parsed.get("verdict", "uncertain"),
-                "confidence": parsed.get("confidence", 0.0),
-                "reasoning": parsed.get("reasoning", ""),
-                "severity_adjustment": parsed.get("severity_adjustment", ""),
-                "missing_context": parsed.get("missing_context", []),
-            })
-        except json.JSONDecodeError:
-            base.update({"verdict": "uncertain", "confidence": 0.0, "reasoning": "JSON 解析失败"})
-
+        base.update({
+            "verdict": parsed.get("verdict", "uncertain"),
+            "confidence": parsed.get("confidence", 0.0),
+            "reasoning": parsed.get("reasoning", ""),
+            "severity_adjustment": parsed.get("severity_adjustment", ""),
+            "missing_context": parsed.get("missing_context", []),
+        })
         return base
 
     def _make_error_result(

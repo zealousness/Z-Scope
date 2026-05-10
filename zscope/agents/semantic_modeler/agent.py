@@ -48,9 +48,21 @@ class SemanticModeler(BaseAgent):
         func_code = input_data.get("code")
         location = input_data.get("location")
         schema = input_data.get("schema", "{}")
+        user_context = input_data.get("user_config_context")
+        agent_contract = input_data.get("agent_contract")
+        skill_contracts = input_data.get("skill_contracts")
+        workflow_context = input_data.get("workflow_context")
 
         system_prompt = SYSTEM_PROMPT.format(schema=json.dumps(schema, indent=2, ensure_ascii=False))
+        if workflow_context:
+            system_prompt += f"\n\n[Workflow Contract]\n{workflow_context}"
+        if agent_contract:
+            system_prompt += f"\n\n[Agent Contract]\n{agent_contract}"
+        if skill_contracts:
+            system_prompt += f"\n\n[Loaded Skill Contracts]\n{skill_contracts}"
         prompt = f"Please model the following function: {func_name}\nLocation: {location}\nCode:\n```c\n{func_code}\n```"
+        if user_context:
+            prompt += f"\n\nUser-provided project context:\n{user_context}"
         
         messages = [
             {"role": "system", "content": system_prompt},

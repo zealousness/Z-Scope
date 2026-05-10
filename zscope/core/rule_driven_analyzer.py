@@ -15,6 +15,7 @@ from ..retrieval.code_index import CodeIndex
 from .rule_engine import RuleEngine, RuleMatch
 from .report import FinalReport, Issue, ReportGenerator
 from ..framework.llm_client import LLMClient
+from .._version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +113,7 @@ class RuleDrivenAnalyzer:
         from .snapshot_store import SnapshotStore
 
         tools = [
-            GetFunctionImplTool(self.code_index),
+            GetFunctionImplTool(self.code_index, self.user_config),
             GetFunctionSnapshotTool(
                 SnapshotStore(Path(self.config.analysis.snapshot_dir))
             ),
@@ -182,7 +183,7 @@ class RuleDrivenAnalyzer:
         )
         report.metadata = {
             "timestamp": datetime.datetime.now().isoformat(),
-            "version": "0.1.0",
+            "version": __version__,
             "mode": "rule_driven",
         }
         self.report_generator.save_json_report(report)
