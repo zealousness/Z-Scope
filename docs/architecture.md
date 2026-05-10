@@ -130,7 +130,7 @@ Analyzer: 加载 zscope/workflows/maintain.yaml
 | Agent | 目录 | 职责 | 输入 | 输出 |
 |-------|------|------|------|------|
 | 语义建模 Agent | `agents/semantic_modeler/` | 理解函数语义、识别关键路径和副作用 | 函数源码 + 工具 | 语义快照 JSON |
-| 漏洞挖掘 Agent | `agents/vulnerability_analyzer/` | 基于语义模型发现潜在缺陷，并分发 Deep Worker 工单 | 语义模型 + 代码上下文 + 工具 | 疑似缺陷列表 |
+| 漏洞挖掘 Agent | `agents/vulnerability_analyzer/` | 基于 `task` 选择 active Skill，发现潜在缺陷，并分发 Deep Worker 工单 | 语义模型 + 代码上下文 + 工具 + active skills | 疑似缺陷列表 |
 | 验证 Agent | `agents/validator_agent/` | 二次确认疑似缺陷的真实性，过滤误报 | 疑似缺陷 + 源码 | validated / rejected |
 | Issue Reconciler | `agents/issue_reconciler/` | 代码变动后验证历史缺陷是否仍然存在；去重新旧缺陷 | 历史缺陷 + 新代码 | still_exists / fixed |
 | Deep Worker | `agents/deep_worker/` | 接收 Manager 下发的聚焦工单，做极度收敛的深度定向分析 | DFG 切片 + Hypothesis | Worker 报告 |
@@ -151,7 +151,25 @@ Analyzer: 加载 zscope/workflows/maintain.yaml
 
 Analyzer 会在每个 step 开始和结束时更新 `workflow_progress`，并将 `workflow`、`workflow_mode`、`workflow_progress`、`current_workflow_step` 写入最终报告 metadata。这样报告可以明确说明本次运行使用了哪个 workflow，以及执行过程停在或经过了哪些步骤。
 
-### 4.2 启发式 SubAgent 任务规划 (Deep Worker)
+### 4.2 Task 驱动的漏洞 Skill 选择
+
+`vulnerability_analyzer` 的 `task` 字段已经从普通提示词升级为本轮漏洞挖掘的 Skill 选择约束。运行时流程如下：
+
+1. `ConfigLoader` 将 `zscope.yaml` 中的 `project.agents[].task` 读入 `AgentConfig.task`。
+2. `Analyzer._select_vulnerability_skills_for_config()` 调用 `orchestration/skill_selection.py`，把自然语言关注点映射到 `resource_lifecycle`、`bounds_and_integer`、`null_and_failure`、`temporal_memory`、`concurrency_lock_order`、`shared_state_race` 等内置 Skill。
+3. `_attach_agent_contract()` 只注入 active skills 对应的 `SKILL.md` 契约，并在 `AGENT.md` 契约中展示本轮激活的 Skill 列表。
+4. `SubAgentOrchestrator.plan()` 使用同一组 active skills 过滤启发式 Deep Worker 工单，避免为不关心的漏洞类别创建子任务。
+5. `VulnerabilityAnalyzer.run()` 在 prompt 中明确 active skills，并对最终 JSON 报告做二次 family 过滤，丢弃明显不属于用户关注方向的 finding。
+
+如果 `task` 为空或没有命中已知关键词，系统保持历史兼容行为：启用 `vulnerability_analyzer/AGENT.md` 中声明的全部默认 Skill，不会因为配置老旧而意外漏扫。`task` 支持正向关注与简单否定，例如：
+
+| task 示例 | active skills |
+|-----------|---------------|
+| `只查找资源泄漏和空指针问题。` | `resource_lifecycle`, `null_and_failure` |
+| `查找内存安全问题和并发风险。` | 内存安全相关 Skill + 并发相关 Skill |
+| `只关注并发风险，不关心内存安全。` | `concurrency_lock_order`, `shared_state_race`, `stack_escape` |
+
+### 4.3 启发式 SubAgent 任务规划 (Deep Worker)
 
 为了防止 `漏洞挖掘 Agent` 同时处理过多的漏洞类型导致上下文窗口爆炸和注意力涣散，引入了 `SubAgentOrchestrator`：
 1. 挖掘管理器只看核心结构和关键语义，当发现特征点（如 `malloc`, `pthread_create`, `memcpy`）时。
@@ -159,7 +177,7 @@ Analyzer 会在每个 step 开始和结束时更新 `workflow_progress`，并将
 3. 生成一个针对性的子任务工单，派遣 `Deep Worker` 专门只调查该单一事件（如：调查 `malloc` 的释放路径）。
 4. `Deep Worker` 携带针对性的工具，进行深度调用图和数据流追踪，返回轻量级、无幻觉的确凿证据。
 
-### 4.2 关键机制说明
+### 4.4 关键机制说明
 
 > **绝对行号注入法**：工具总线在构造"函数源码"和"代码上下文"时，自动注入绝对行号前缀（例如 `142 |     int a = 0;`）。Agent 仅需直接读取前缀即可输出高精度的 `file:line` 物理坐标，根治模型基于扁平 Token 难以计算偏移量的"定位幻觉"问题。
 
@@ -172,14 +190,15 @@ Analyzer 会在每个 step 开始和结束时更新 `workflow_progress`，并将
 > **Validator 拒绝策略**：Validator Agent 判定为 `rejected` 的缺陷立即丢弃，不写入最终报告。用户通过 Web Dashboard 手动拒绝的缺陷标记 `rejection_source: "user"`，由 Issue Reconciler 在后续扫描中自动抑制同类缺陷。
 
 
-### 4.3 声明式编排与子智能体（SubAgent）
+### 4.5 声明式编排与子智能体（SubAgent）
 
 Z-SCOPE 采用声明式的工作流与契约体系控制复杂分析过程：
 - **`AGENT.md` 与 `SKILL.md` 契约**：每个 Agent 和 Skill 由带 YAML Frontmatter 的 Markdown 描述，包含其职责、允许使用的工具（`allowed_tools`）和触发条件。
 - **工作流（Workflows）**：`zscope/workflows/default.yaml` 等配置文件定义系统从入口探测、预建模、漏洞扫描到验证重整的生命周期。运行时只把 Agent/Skill 契约注入对应 Agent，workflow 本身用于 Python 编排层决策，不再作为 `workflow_context` 注入模型提示词。
+- **Task-selected Skills**：`vulnerability_analyzer.task` 会在运行时选择本轮 active skills。只有这些 Skill 的契约会进入模型上下文，Deep Worker 工单也会按同一集合过滤。
 - **聚焦子智能体（Deep Worker）**：为防止管理器（Vulnerability Analyzer）在遍历庞大函数调用链路时发生“上下文窗口污染幻觉”，系统使用 `SubAgentOrchestrator` 通过正则启发式探测（如定位到 `malloc`/`pthread_mutex_lock` 调用处），动态创建隔离上下文的 `deep_worker` 分析工单，保证缺陷验证的高专注度和低 Token 消耗。
 
-### 4.4 Model Context Protocol (MCP) 集成
+### 4.6 Model Context Protocol (MCP) 集成
 
 Z-SCOPE 原生集成了 MCP Server（`zscope/mcp/server.py`）：
 - **资源导出**：向 MCP 客户端暴露 `zscope://config`、`zscope://knowledge/stats` 等配置与数据库状态资源。
@@ -384,7 +403,7 @@ Z-Scope/
 │   ├── skills/                 # 各细分领域的安全审计技能（如 temporal_memory, shared_state_race 等）
 │   ├── workflows/              # 声明式工作流编排（default, maintain, resume）
 │   ├── mcp/                    # Model Context Protocol (MCP) Server、Client 与 Provider
-│   ├── orchestration/          # Agent/Skill/Workflow 契约解析器与子工单规划器
+│   ├── orchestration/          # Agent/Skill/Workflow 契约解析、task→skill 选择、子工单规划
 │   ├── core/
 │   │   ├── analyzer.py         # 默认模式编排器（单函数 + 批量）
 │   │   ├── parallel_analyzer.py# 多线程并行分析 + 报告生成
@@ -439,6 +458,8 @@ zscope.yaml ──→ ConfigLoader.load()
                   │
                   ├─→ include_paths / exclude_paths 路径解析
                   │
+                  ├─→ vulnerability_analyzer.task → active Skill 选择
+                  │
                   ├─→ CodeIndex 初始化（含路径过滤）
                   │
                   ├─→ UserConfigStore 加载
@@ -451,6 +472,9 @@ zscope.yaml ──→ ConfigLoader.load()
           │             │             │
           ▼             ▼             ▼
      Agent 管线    规则引擎→验证   SARIF→验证
+          │             │             │
+          ▼             │             │
+     Active Skill 注入 + Deep Worker 工单过滤
           │             │             │
           ▼             ▼             ▼
      Issue Reconciler（去重 + 调和历史缺陷）
