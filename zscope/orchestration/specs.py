@@ -126,14 +126,19 @@ class AgentSpec:
             body=body.strip(),
         )
 
-    def to_prompt_block(self, max_chars: int = 5000) -> str:
+    def to_prompt_block(
+        self,
+        max_chars: int = 5000,
+        active_skills: Optional[List[str]] = None,
+    ) -> str:
         body = self.body[:max_chars]
         if len(self.body) > max_chars:
             body += "\n\n[truncated]"
+        skill_names = self.skills if active_skills is None else active_skills
         return (
             f"## Agent: {self.name}\n"
             f"Role: {self.role or self.description}\n"
-            f"Skills: {', '.join(self.skills) or 'none'}\n"
+            f"Skills: {', '.join(skill_names) or 'none'}\n"
             f"Allowed tools: {', '.join(self.tools) or 'runtime default'}\n"
             f"Context policy: {self.context_policy or 'runtime default'}\n"
             f"Can spawn subagents: {self.can_spawn_subagents}\n\n"
@@ -267,15 +272,23 @@ class SpecRegistry:
     def get_workflow(self, name: str) -> Optional[WorkflowSpec]:
         return self.workflows.get(name)
 
-    def skills_for_agent(self, agent_name: str, extra: Optional[List[str]] = None) -> List[SkillSpec]:
+    def skills_for_agent(
+        self,
+        agent_name: str,
+        extra: Optional[List[str]] = None,
+        only: Optional[List[str]] = None,
+    ) -> List[SkillSpec]:
         names: List[str] = []
         agent = self.get_agent(agent_name)
         if agent:
             names.extend(agent.skills)
         names.extend(extra or [])
+        allowed = set(only) if only is not None else None
         seen = set()
         result: List[SkillSpec] = []
         for name in names:
+            if allowed is not None and name not in allowed:
+                continue
             if name in seen:
                 continue
             seen.add(name)
