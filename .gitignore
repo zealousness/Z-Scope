@@ -69,6 +69,7 @@ dependency/
 
 # ZScope specific
 .zscope_snapshots*/
+.zscope_conversations*/
 workspace/
 *.log
 report.json

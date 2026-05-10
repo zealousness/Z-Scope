@@ -73,6 +73,8 @@ class DeepWorkerAgent(BaseAgent):
                 tools_schema=self.tools_schema,
                 tool_executor=self._tool_executor,
                 max_iterations=max_iterations,
+                trace_agent=self.name,
+                trace_label=f"ticket={ticket_id}; skill={ticket.get('skill')}",
             )
             content = result.get("content", "")
             conversation = result.get("conversation", [])

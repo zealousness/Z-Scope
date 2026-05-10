@@ -48,6 +48,7 @@ class ClangExtractor:
         self._stderr_thread: Optional[threading.Thread] = None
         self._running = False
         self._initialized = False
+        self._call_hierarchy_supported = False
         self._last_progress_time = time.time()
         self._opened_documents: Dict[str, int] = {}
 
@@ -95,29 +96,38 @@ class ClangExtractor:
                 return False
 
             # LSP initialize 握手
-            init_result = self.send_request("initialize", {
-                "processId": os.getpid(),
-                "rootUri": self.project_root.as_uri(),
-                "capabilities": {
-                    "window": {"workDoneProgress": True},
-                    "textDocument": {
-                        "documentSymbol": {"hierarchicalDocumentSymbolSupport": True},
-                        "definition": {},
-                        "references": {},
-                        "hover": {},
-                        "typeDefinition": {},
+            init_result = self.send_request(
+                "initialize",
+                {
+                    "processId": os.getpid(),
+                    "rootUri": self.project_root.as_uri(),
+                    "capabilities": {
+                        "window": {"workDoneProgress": True},
+                        "textDocument": {
+                            "documentSymbol": {"hierarchicalDocumentSymbolSupport": True},
+                            "callHierarchy": {"dynamicRegistration": False},
+                            "definition": {},
+                            "references": {},
+                            "hover": {},
+                            "typeDefinition": {},
+                        },
+                        "workspace": {"symbol": {"dynamicRegistration": False}},
                     },
-                    "workspace": {"symbol": {"dynamicRegistration": False}},
+                    "initializationOptions": {
+                        "clangdFileStatus": True,
+                        "backgroundIndex": True,
+                    },
                 },
-                "initializationOptions": {
-                    "clangdFileStatus": True,
-                    "backgroundIndex": True,
-                },
-            })
+            )
             if init_result is None:
                 logger.error("LSP initialize failed")
                 self.stop()
                 return False
+
+            capabilities = (
+                init_result.get("capabilities", {}) if isinstance(init_result, dict) else {}
+            )
+            self._call_hierarchy_supported = bool(capabilities.get("callHierarchyProvider"))
 
             self.send_notification("initialized", {})
             self._initialized = True
@@ -214,14 +224,14 @@ class ClangExtractor:
                     header = buf[:header_end].decode("utf-8", errors="ignore")
                     match = re.search(r"Content-Length:\s*(\d+)", header)
                     if not match:
-                        buf = buf[header_end + 4:]
+                        buf = buf[header_end + 4 :]
                         continue
                     content_len = int(match.group(1))
                     body_start = header_end + 4
                     if len(buf) < body_start + content_len:
                         break  # 等待更多数据
-                    body = buf[body_start:body_start + content_len]
-                    buf = buf[body_start + content_len:]
+                    body = buf[body_start : body_start + content_len]
+                    buf = buf[body_start + content_len :]
                     try:
                         msg = json.loads(body)
                         self._dispatch_message(msg)
@@ -264,9 +274,10 @@ class ClangExtractor:
         except Exception:
             return False
         lang = "c" if file_path.suffix in (".c", ".h") else "cpp"
-        self.send_notification("textDocument/didOpen", {
-            "textDocument": {"uri": uri, "languageId": lang, "version": 1, "text": text}
-        })
+        self.send_notification(
+            "textDocument/didOpen",
+            {"textDocument": {"uri": uri, "languageId": lang, "version": 1, "text": text}},
+        )
         self._opened_documents[uri] = 1
         return True
 
@@ -274,35 +285,57 @@ class ClangExtractor:
         uri = file_path.as_uri()
         if uri not in self._opened_documents:
             return
-        self.send_notification("textDocument/didClose", {
-            "textDocument": {"uri": uri}
-        })
+        self.send_notification("textDocument/didClose", {"textDocument": {"uri": uri}})
         del self._opened_documents[uri]
 
     # ── LSP 查询 ──
 
     def get_document_symbols(self, file_path: Path) -> Optional[List[Dict]]:
         uri = file_path.as_uri()
-        result = self.send_request("textDocument/documentSymbol", {
-            "textDocument": {"uri": uri}
-        })
+        result = self.send_request("textDocument/documentSymbol", {"textDocument": {"uri": uri}})
         return cast(Optional[List[Dict]], result)
 
     def get_hover(self, file_path: Path, line: int, character: int = 0) -> Optional[Dict]:
         uri = file_path.as_uri()
-        result = self.send_request("textDocument/hover", {
-            "textDocument": {"uri": uri},
-            "position": {"line": line, "character": character},
-        }, timeout=30)
+        result = self.send_request(
+            "textDocument/hover",
+            {
+                "textDocument": {"uri": uri},
+                "position": {"line": line, "character": character},
+            },
+            timeout=30,
+        )
         return cast(Optional[Dict], result)
 
     def get_definition(self, file_path: Path, line: int, character: int = 0) -> Optional[List]:
         uri = file_path.as_uri()
-        result = self.send_request("textDocument/definition", {
-            "textDocument": {"uri": uri},
-            "position": {"line": line, "character": character},
-        }, timeout=30)
+        result = self.send_request(
+            "textDocument/definition",
+            {
+                "textDocument": {"uri": uri},
+                "position": {"line": line, "character": character},
+            },
+            timeout=30,
+        )
         return cast(Optional[List], result)
+
+    def prepare_call_hierarchy(
+        self, file_path: Path, line: int, character: int = 0
+    ) -> Optional[List[Dict[str, Any]]]:
+        uri = file_path.as_uri()
+        result = self.send_request(
+            "textDocument/prepareCallHierarchy",
+            {
+                "textDocument": {"uri": uri},
+                "position": {"line": line, "character": character},
+            },
+            timeout=30,
+        )
+        return cast(Optional[List[Dict[str, Any]]], result)
+
+    def get_outgoing_calls(self, item: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+        result = self.send_request("callHierarchy/outgoingCalls", {"item": item}, timeout=60)
+        return cast(Optional[List[Dict[str, Any]]], result)
 
     def get_workspace_symbols(self, query: str = "") -> Optional[List[Dict]]:
         return cast(Optional[List[Dict]], self.send_request("workspace/symbol", {"query": query}))
@@ -385,9 +418,14 @@ class ClangExtractor:
         return True
 
     def _process_symbol(
-        self, sym: Dict, file_path: Path, rel_path: str,
-        tu_id: int, db: KnowledgeDB,
-        func_rows: List[Tuple[Any, ...]], call_rows: List[Tuple[Any, ...]],
+        self,
+        sym: Dict,
+        file_path: Path,
+        rel_path: str,
+        tu_id: int,
+        db: KnowledgeDB,
+        func_rows: List[Tuple[Any, ...]],
+        call_rows: List[Tuple[Any, ...]],
     ):
         """递归处理单个 LSP DocumentSymbol 节点。"""
         kind = sym.get("kind", 0)
@@ -407,15 +445,28 @@ class ClangExtractor:
                 and not is_static
                 and not is_inline
             )
-            func_rows.append((
-                name, rel_path, start_line, end_line, signature,
-                int(is_static), int(is_inline), int(is_decl), tu_id,
-            ))
+            func_rows.append(
+                (
+                    name,
+                    rel_path,
+                    start_line,
+                    end_line,
+                    signature,
+                    int(is_static),
+                    int(is_inline),
+                    int(is_decl),
+                    tu_id,
+                )
+            )
             # 通过 hover 提取调用边
-            self._extract_call_edges(file_path, name, rel_path, start_line, end_line, call_rows)
+            self._extract_call_edges(
+                file_path, name, rel_path, start_line, end_line, call_rows, sym
+            )
 
         elif kind in (self.SK_STRUCT, self.SK_CLASS, self.SK_ENUM):
-            kind_str = {self.SK_STRUCT: "struct", self.SK_CLASS: "class", self.SK_ENUM: "enum"}.get(kind, "struct")
+            kind_str = {self.SK_STRUCT: "struct", self.SK_CLASS: "class", self.SK_ENUM: "enum"}.get(
+                kind, "struct"
+            )
             type_id = db.insert_type(name, kind_str, rel_path, start_line, end_line, tu_id=tu_id)
             # 处理子成员
             for idx, child in enumerate(sym.get("children", [])):
@@ -436,40 +487,56 @@ class ClangExtractor:
         for child in sym.get("children", []):
             self._process_symbol(child, file_path, rel_path, tu_id, db, func_rows, call_rows)
 
-    def _extract_call_edges(
-        self, file_path: Path, caller_name: str, caller_file: str,
-        start_line: int, end_line: int, call_rows: List[Tuple[Any, ...]],
+    def _extract_call_edges_legacy_regex(
+        self,
+        file_path: Path,
+        caller_name: str,
+        caller_file: str,
+        start_line: int,
+        end_line: int,
+        call_rows: List[Tuple[Any, ...]],
     ):
         """通过正则提取调用标识符，并使用 LSP definition 定位具体的 callee_file。"""
         try:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 lines = f.readlines()
-            body = "".join(lines[start_line - 1:end_line])
-            
+            body = "".join(lines[start_line - 1 : end_line])
+
             # 匹配函数调用: identifier(
             call_pattern = re.compile(r"\b([a-zA-Z_]\w*)\s*\(")
             c_keywords = {
-                "if", "else", "for", "while", "do", "switch", "case", "return",
-                "sizeof", "typeof", "alignof", "static_assert", "defined",
+                "if",
+                "else",
+                "for",
+                "while",
+                "do",
+                "switch",
+                "case",
+                "return",
+                "sizeof",
+                "typeof",
+                "alignof",
+                "static_assert",
+                "defined",
             }
-            
+
             for m in call_pattern.finditer(body):
                 callee = m.group(1)
                 if callee not in c_keywords and callee != caller_name:
                     # 计算在当前多行 body 中的绝对偏移（为 LSP 查询做准确定位）
                     match_start_idx = m.start(1)
                     prefix = body[:match_start_idx]
-                    
+
                     offset_lines = prefix.count("\n")
                     call_line = start_line + offset_lines
-                    
+
                     # 取最后一行前缀长度作为 character offset
                     last_newline = prefix.rfind("\n")
                     if last_newline == -1:
                         char_offset = len(prefix)
                     else:
                         char_offset = len(prefix) - last_newline - 1
-                        
+
                     # 尝试 LSP definition 获取真正的 callee_file
                     callee_file = ""
                     defs = self.get_definition(file_path, call_line - 1, char_offset)
@@ -480,18 +547,22 @@ class ClangExtractor:
                             # pathlib 的 as_uri 和从 uri 恢复会有细微差别，最稳妥是用 urllib.parse 或者直接截断
                             from urllib.request import url2pathname
                             from urllib.parse import urlparse
-                            
+
                             p = urlparse(uri)
                             # url2pathname 处理 file:/// => 本地绝对路径
                             abs_path = Path(url2pathname(p.path)).resolve()
-                            
+
                             # 转为相对 project / source root
                             try:
-                                callee_file = str(abs_path.relative_to(self.project_root)).replace("\\", "/")
+                                callee_file = str(abs_path.relative_to(self.project_root)).replace(
+                                    "\\", "/"
+                                )
                             except ValueError:
                                 callee_file = str(abs_path).replace("\\", "/")
 
-                    call_rows.append((caller_name, caller_file, callee, callee_file, call_line, "direct"))
+                    call_rows.append(
+                        (caller_name, caller_file, callee, callee_file, call_line, "direct")
+                    )
         except Exception as e:
             logger.debug("Failed to extract calls in %s: %s", caller_name, e)
 
@@ -523,7 +594,7 @@ class ClangExtractor:
         stats = {"total": len(file_list), "success": 0, "failed": 0, "skipped": 0}
 
         for i in range(0, len(file_list), batch_size):
-            batch = file_list[i:i + batch_size]
+            batch = file_list[i : i + batch_size]
             logger.info(
                 "Processing batch %d/%d (%d files)",
                 i // batch_size + 1,
@@ -554,10 +625,255 @@ class ClangExtractor:
             db.commit()
             logger.info(
                 "Batch committed. Progress: %d extracted, %d skipped, %d failed",
-                stats["success"], stats["skipped"], stats["failed"],
+                stats["success"],
+                stats["skipped"],
+                stats["failed"],
             )
 
         return stats
+
+    def _extract_call_edges(
+        self,
+        file_path: Path,
+        caller_name: str,
+        caller_file: str,
+        start_line: int,
+        end_line: int,
+        call_rows: List[Tuple[Any, ...]],
+        sym: Optional[Dict[str, Any]] = None,
+    ):
+        """Extract call edges, preferring clangd's AST-backed call hierarchy."""
+        hierarchy_count = self._extract_call_edges_from_call_hierarchy(
+            file_path, caller_name, caller_file, start_line, call_rows, sym
+        )
+        if hierarchy_count is not None:
+            return
+
+        self._extract_call_edges_by_regex(
+            file_path, caller_name, caller_file, start_line, end_line, call_rows
+        )
+
+    def _extract_call_edges_from_call_hierarchy(
+        self,
+        file_path: Path,
+        caller_name: str,
+        caller_file: str,
+        start_line: int,
+        call_rows: List[Tuple[Any, ...]],
+        sym: Optional[Dict[str, Any]] = None,
+    ) -> Optional[int]:
+        if not self._call_hierarchy_supported:
+            return None
+
+        try:
+            position = self._symbol_position(sym, start_line)
+            items = self.prepare_call_hierarchy(file_path, position["line"], position["character"])
+            if not items:
+                return None
+
+            local_rows: List[Tuple[Any, ...]] = []
+            seen: set[tuple[str, str, int]] = set()
+            for item in items:
+                outgoing = self.get_outgoing_calls(item)
+                if outgoing is None:
+                    return None
+                for call in outgoing:
+                    target = call.get("to", {}) if isinstance(call, dict) else {}
+                    callee = target.get("name", "")
+                    if not callee:
+                        continue
+                    callee_file = self._uri_to_project_path(target.get("uri", ""))
+                    call_line = self._call_line_from_ranges(call.get("fromRanges", []), start_line)
+                    key = (callee, callee_file, call_line)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    local_rows.append(
+                        (caller_name, caller_file, callee, callee_file, call_line, "direct")
+                    )
+            call_rows.extend(local_rows)
+            return len(local_rows)
+        except Exception as e:
+            logger.debug("Failed to extract call hierarchy in %s: %s", caller_name, e)
+            return None
+
+    def _extract_call_edges_by_regex(
+        self,
+        file_path: Path,
+        caller_name: str,
+        caller_file: str,
+        start_line: int,
+        end_line: int,
+        call_rows: List[Tuple[Any, ...]],
+    ):
+        """Fallback call extraction for clangd versions without call hierarchy."""
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+            body = "".join(lines[start_line - 1 : end_line])
+            masked_body = self._mask_c_comments_and_literals(body)
+
+            call_pattern = re.compile(r"\b([a-zA-Z_]\w*)\s*\(")
+            c_keywords = {
+                "if",
+                "else",
+                "for",
+                "while",
+                "do",
+                "switch",
+                "case",
+                "return",
+                "sizeof",
+                "typeof",
+                "alignof",
+                "static_assert",
+                "defined",
+                "asm",
+                "__asm",
+                "__asm__",
+                "__volatile",
+                "__volatile__",
+                "__attribute",
+                "__attribute__",
+                "__declspec",
+                "__extension__",
+            }
+
+            for m in call_pattern.finditer(masked_body):
+                callee = m.group(1)
+                if (
+                    callee in c_keywords
+                    or callee == caller_name
+                    or self._looks_like_member_call(masked_body, m.start(1))
+                ):
+                    continue
+
+                match_start_idx = m.start(1)
+                prefix = masked_body[:match_start_idx]
+                offset_lines = prefix.count("\n")
+                call_line = start_line + offset_lines
+
+                last_newline = prefix.rfind("\n")
+                if last_newline == -1:
+                    char_offset = len(prefix)
+                else:
+                    char_offset = len(prefix) - last_newline - 1
+
+                callee_file = ""
+                defs = self.get_definition(file_path, call_line - 1, char_offset)
+                if defs and isinstance(defs, list) and len(defs) > 0:
+                    uri = defs[0].get("targetUri") or defs[0].get("uri", "")
+                    callee_file = self._uri_to_project_path(uri)
+
+                if callee_file:
+                    call_rows.append(
+                        (caller_name, caller_file, callee, callee_file, call_line, "direct")
+                    )
+        except Exception as e:
+            logger.debug("Failed to extract calls in %s: %s", caller_name, e)
+
+    def _symbol_position(self, sym: Optional[Dict[str, Any]], start_line: int) -> Dict[str, int]:
+        if sym:
+            range_info = sym.get("selectionRange") or sym.get("range") or {}
+            start = range_info.get("start", {}) if isinstance(range_info, dict) else {}
+            line = start.get("line")
+            character = start.get("character", 0)
+            if isinstance(line, int) and isinstance(character, int):
+                return {"line": line, "character": character}
+        return {"line": max(start_line - 1, 0), "character": 0}
+
+    def _call_line_from_ranges(self, ranges: Any, default_line: int) -> int:
+        if isinstance(ranges, list) and ranges:
+            first = ranges[0]
+            if isinstance(first, dict):
+                start = first.get("start", {})
+                line = start.get("line")
+                if isinstance(line, int):
+                    return line + 1
+        return default_line
+
+    def _uri_to_project_path(self, uri: str) -> str:
+        if not uri or not uri.startswith("file://"):
+            return ""
+        try:
+            from urllib.parse import urlparse
+            from urllib.request import url2pathname
+
+            parsed = urlparse(uri)
+            abs_path = Path(url2pathname(parsed.path)).resolve()
+            try:
+                return str(abs_path.relative_to(self.project_root)).replace("\\", "/")
+            except ValueError:
+                return str(abs_path).replace("\\", "/")
+        except Exception:
+            return ""
+
+    def _looks_like_member_call(self, text: str, ident_start: int) -> bool:
+        i = ident_start - 1
+        while i >= 0 and text[i].isspace():
+            i -= 1
+        if i >= 0 and text[i] == ".":
+            return True
+        return i >= 1 and text[i - 1 : i + 1] == "->"
+
+    def _mask_c_comments_and_literals(self, text: str) -> str:
+        chars = list(text)
+        i = 0
+        state = "code"
+        while i < len(chars):
+            ch = chars[i]
+            nxt = chars[i + 1] if i + 1 < len(chars) else ""
+
+            if state == "code":
+                if ch == "/" and nxt == "/":
+                    chars[i] = chars[i + 1] = " "
+                    i += 2
+                    state = "line_comment"
+                    continue
+                if ch == "/" and nxt == "*":
+                    chars[i] = chars[i + 1] = " "
+                    i += 2
+                    state = "block_comment"
+                    continue
+                if ch == '"':
+                    chars[i] = " "
+                    i += 1
+                    state = "string"
+                    continue
+                if ch == "'":
+                    chars[i] = " "
+                    i += 1
+                    state = "char"
+                    continue
+            elif state == "line_comment":
+                if ch == "\n":
+                    state = "code"
+                else:
+                    chars[i] = " "
+            elif state == "block_comment":
+                if ch == "*" and nxt == "/":
+                    chars[i] = chars[i + 1] = " "
+                    i += 2
+                    state = "code"
+                    continue
+                if ch != "\n":
+                    chars[i] = " "
+            elif state in ("string", "char"):
+                quote = '"' if state == "string" else "'"
+                if ch == "\\":
+                    chars[i] = " "
+                    if i + 1 < len(chars) and chars[i + 1] != "\n":
+                        chars[i + 1] = " "
+                        i += 2
+                        continue
+                if ch == quote:
+                    chars[i] = " "
+                    state = "code"
+                elif ch != "\n":
+                    chars[i] = " "
+
+            i += 1
+        return "".join(chars)
 
     @staticmethod
     def _compute_file_hash(file_path: Path) -> str:

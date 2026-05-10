@@ -144,7 +144,9 @@ class IssueReconcilerAgent(BaseAgent):
                 messages=messages,
                 tools_schema=[],
                 tool_executor=lambda n, a: {},
-                max_iterations=1
+                max_iterations=1,
+                trace_agent=self.name,
+                trace_label=self._trace_label(user_prompt),
             )
             
             content = result["content"]
@@ -162,3 +164,8 @@ class IssueReconcilerAgent(BaseAgent):
         except Exception as e:
             logger.exception(f"IssueReconciler agent failed")
             return AgentResponse(success=False, data={}, error=str(e))
+
+    @staticmethod
+    def _trace_label(user_prompt: str) -> str:
+        first_line = next((line.strip() for line in user_prompt.splitlines() if line.strip()), "")
+        return first_line[:120]

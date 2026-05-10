@@ -105,6 +105,8 @@ class ValidatorAgent(BaseAgent):
                     messages=messages,
                     tools_schema=self.tools_schema,
                     tool_executor=self._tool_executor,
+                    trace_agent=self.name,
+                    trace_label=f"attempt={attempt}; finding={str(finding)[:120]}",
                 )
                 content = result["content"]
                 from ...common.utils import extract_json_blocks

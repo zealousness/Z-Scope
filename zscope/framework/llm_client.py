@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional, cast
 import requests
 
 from ..common.utils import extract_json_blocks
+from .conversation_recorder import ConversationSession, get_conversation_recorder
 
 logger = logging.getLogger(__name__)
 
@@ -61,11 +62,20 @@ class LLMClient:
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: float = 0.1,
         max_tokens: Optional[int] = None,
+        trace_agent: Optional[str] = None,
+        trace_label: Optional[str] = None,
+        trace_iteration: Optional[int] = None,
+        trace_session: Optional[ConversationSession] = None,
     ) -> Dict[str, Any]:
         """
         Send chat completion request with model fallback.
         """
         last_error = None
+        recorder = get_conversation_recorder()
+        created_trace_session = False
+        if recorder and trace_session is None:
+            trace_session = recorder.begin_session(trace_agent or "direct_chat", trace_label)
+            created_trace_session = True
         
         for model in self.models:
             logger.info(f"Using model: {model}")
@@ -158,7 +168,24 @@ class LLMClient:
                             f"Completion ≈ {completion_tokens:,} tk | "
                             f"Total ≈ {prompt_tokens + completion_tokens:,} tk"
                         )
-                            
+                        if recorder and trace_session:
+                            recorder.record_exchange(
+                                trace_session,
+                                trace_iteration,
+                                messages,
+                                assembled_message,
+                                finish_reason,
+                                model,
+                                prompt_tokens,
+                                completion_tokens,
+                            )
+                            if created_trace_session:
+                                recorder.record_session_end(
+                                    trace_session,
+                                    trace_iteration or 1,
+                                    prompt_tokens + completion_tokens,
+                                )
+
                         return {
                             "choices": [{
                                 "message": assembled_message,
@@ -231,12 +258,20 @@ class LLMClient:
         tools_schema: List[Dict[str, Any]],
         tool_executor: Callable[[str, Dict[str, Any]], Dict[str, Any]],
         max_iterations: int = 50,
+        trace_agent: Optional[str] = None,
+        trace_label: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run a conversation loop with tool calling support.
         """
         conversation = messages.copy()
         iterations = 0
+        recorder = get_conversation_recorder()
+        trace_session = (
+            recorder.begin_session(trace_agent or "unknown_agent", trace_label)
+            if recorder
+            else None
+        )
 
         while iterations < max_iterations:
             iterations += 1
@@ -244,7 +279,14 @@ class LLMClient:
             logger.info(f"Conversation iteration {iterations}/{max_iterations} | context ≈ {ctx_tokens:,} tokens")
 
             # Call LLM
-            response = self.chat_completion(conversation, tools=tools_schema)
+            response = self.chat_completion(
+                conversation,
+                tools=tools_schema,
+                trace_agent=trace_agent,
+                trace_label=trace_label,
+                trace_iteration=iterations,
+                trace_session=trace_session,
+            )
 
             # Extract assistant message
             choice = response.get("choices", [{}])[0]
@@ -259,6 +301,8 @@ class LLMClient:
                 content = self._get_combined_content(conversation)
                 final_tokens = self.estimate_tokens(conversation)
                 logger.info(f"Conversation complete: {iterations} iterations, final context ≈ {final_tokens:,} tokens")
+                if recorder and trace_session:
+                    recorder.record_session_end(trace_session, iterations, final_tokens)
                 return {"content": content, "conversation": conversation, "iterations": iterations, "context_tokens": final_tokens}
                 
             if finish_reason == "length":
@@ -303,6 +347,8 @@ class LLMClient:
                 content = self._get_combined_content(conversation)
                 final_tokens = self.estimate_tokens(conversation)
                 logger.info(f"Conversation complete (no more tool calls): {iterations} iterations, final context ≈ {final_tokens:,} tokens")
+                if recorder and trace_session:
+                    recorder.record_session_end(trace_session, iterations, final_tokens)
                 return {"content": content, "conversation": conversation, "iterations": iterations, "context_tokens": final_tokens}
 
             # Execute each tool call
@@ -328,6 +374,14 @@ class LLMClient:
                         "tool_call_id": tool_id,
                         "content": json.dumps(result, ensure_ascii=False),
                     })
+                    if recorder and trace_session:
+                        recorder.record_tool_result(
+                            trace_session,
+                            iterations,
+                            func_name,
+                            func_args,
+                            result,
+                        )
 
                 except Exception as e:
                     logger.error(f"Tool execution failed: {e}")
@@ -336,6 +390,15 @@ class LLMClient:
                         "tool_call_id": tool_id,
                         "content": json.dumps({"error": str(e)}),
                     })
+                    if recorder and trace_session:
+                        recorder.record_tool_result(
+                            trace_session,
+                            iterations,
+                            func_name,
+                            {},
+                            {},
+                            error=str(e),
+                        )
 
         if iterations >= max_iterations:
             logger.warning(f"Conversation reached max iterations ({max_iterations}). Possible loop.")
@@ -353,6 +416,13 @@ class LLMClient:
 
         final_tokens = self.estimate_tokens(conversation)
         logger.info(f"Conversation ended (truncated={iterations >= max_iterations}): {iterations} iterations, final context ≈ {final_tokens:,} tokens")
+        if recorder and trace_session:
+            recorder.record_session_end(
+                trace_session,
+                iterations,
+                final_tokens,
+                truncated=iterations >= max_iterations,
+            )
         return {
             "content": conversation[-1].get("content", "") if not message.get("tool_calls") else "",
             "conversation": conversation,
