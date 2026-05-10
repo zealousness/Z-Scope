@@ -260,12 +260,16 @@ class LLMClient:
         max_iterations: int = 50,
         trace_agent: Optional[str] = None,
         trace_label: Optional[str] = None,
+        max_identical_tool_calls: int = 2,
     ) -> Dict[str, Any]:
         """
         Run a conversation loop with tool calling support.
         """
         conversation = messages.copy()
         iterations = 0
+        tool_call_history: Dict[str, List[Dict[str, Any]]] = {}
+        warned_low_iterations = False
+        low_iteration_threshold = max(3, min(10, max_iterations // 10 or 1))
         recorder = get_conversation_recorder()
         trace_session = (
             recorder.begin_session(trace_agent or "unknown_agent", trace_label)
@@ -278,10 +282,41 @@ class LLMClient:
             ctx_tokens = self.estimate_tokens(conversation)
             logger.info(f"Conversation iteration {iterations}/{max_iterations} | context ≈ {ctx_tokens:,} tokens")
 
+            remaining_after_this = max_iterations - iterations
+            final_iteration = iterations >= max_iterations
+            if final_iteration:
+                conversation.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"This is the final allowed iteration ({iterations}/{max_iterations}). "
+                            "Tool use is now disabled. Produce the best final answer from the current "
+                            "conversation context. If the expected output is JSON, output valid JSON now. "
+                            "Do not ask for more tools or more turns."
+                        ),
+                    }
+                )
+            elif (
+                not warned_low_iterations
+                and remaining_after_this <= low_iteration_threshold
+            ):
+                warned_low_iterations = True
+                conversation.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Iteration budget warning: after this turn only {remaining_after_this} "
+                            f"of {max_iterations} iterations remain. Stop expanding the search unless "
+                            "a missing fact is essential; prefer synthesizing the final result from "
+                            "the evidence already in this conversation."
+                        ),
+                    }
+                )
+
             # Call LLM
             response = self.chat_completion(
                 conversation,
-                tools=tools_schema,
+                tools=None if final_iteration else tools_schema,
                 trace_agent=trace_agent,
                 trace_label=trace_label,
                 trace_iteration=iterations,
@@ -295,6 +330,7 @@ class LLMClient:
 
             # Add assistant message to conversation
             conversation.append(message)
+            assistant_message_index = len(conversation)
 
             # Check if done
             if finish_reason == "stop":
@@ -366,14 +402,60 @@ class LLMClient:
                     # VERY IMPORTANT: Re-serialize the corrected dict back into the conversation history
                     # so that strict upstreams like GLM-4/5 do not throw 400 Bad Request on "Expecting ','"
                     function["arguments"] = json.dumps(func_args, ensure_ascii=False)
-                    
-                    result = tool_executor(func_name, func_args)
 
+                    signature = self._tool_call_signature(func_name, func_args)
+                    previous_calls = tool_call_history.get(signature, [])
+                    repeat_notice = self._build_repeat_tool_notice(
+                        func_name,
+                        func_args,
+                        tool_id,
+                        previous_calls,
+                    )
+                    if (
+                        max_identical_tool_calls > 0
+                        and len(previous_calls) >= max_identical_tool_calls
+                    ):
+                        result = {
+                            "success": False,
+                            "error": (
+                                "Repeated identical tool call blocked by the loop guard. "
+                                "Use the earlier tool result already present in the conversation, "
+                                "or call a different tool/argument only if new evidence is required."
+                            ),
+                            "repeat_call_guard": True,
+                            **repeat_notice,
+                        }
+                        logger.warning(
+                            "Blocked repeated identical tool call: %s %s (repeat #%d)",
+                            func_name,
+                            func_args,
+                            len(previous_calls) + 1,
+                        )
+                    else:
+                        result = tool_executor(func_name, func_args)
+                        if previous_calls and isinstance(result, dict):
+                            result = dict(result)
+                            result["repeat_call_warning"] = repeat_notice
+
+                    tool_result_message_index = len(conversation) + 1
                     conversation.append({
                         "role": "tool",
                         "tool_call_id": tool_id,
                         "content": json.dumps(result, ensure_ascii=False),
                     })
+                    tool_call_history.setdefault(signature, []).append(
+                        {
+                            "iteration": iterations,
+                            "tool_call_id": tool_id,
+                            "assistant_message_index": assistant_message_index,
+                            "tool_result_message_index": tool_result_message_index,
+                            "arguments": func_args,
+                            "blocked": bool(
+                                isinstance(result, dict)
+                                and result.get("repeat_call_guard")
+                            ),
+                        }
+                    )
                     if recorder and trace_session:
                         recorder.record_tool_result(
                             trace_session,
@@ -430,6 +512,76 @@ class LLMClient:
             "truncated": iterations >= max_iterations,
             "context_tokens": final_tokens,
         }
+
+    @classmethod
+    def _tool_call_signature(cls, tool_name: Any, arguments: Dict[str, Any]) -> str:
+        """Return a stable signature for detecting identical tool calls."""
+        normalized_tool = str(tool_name or "")
+        normalized_args = cls._normalize_tool_args(normalized_tool, arguments)
+        return (
+            normalized_tool
+            + ":"
+            + json.dumps(
+                normalized_args,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+
+    @classmethod
+    def _normalize_tool_args(cls, tool_name: str, value: Any) -> Any:
+        if isinstance(value, dict):
+            normalized = {
+                str(key): cls._normalize_tool_args(tool_name, val)
+                for key, val in value.items()
+            }
+            if tool_name == "get_function_impl" and "max_lines" not in normalized:
+                normalized["max_lines"] = 200
+            if tool_name == "get_callers" and "limit" not in normalized:
+                normalized["limit"] = 20
+            if tool_name in {"get_call_graph", "query_pointer_alias"} and "limit" not in normalized:
+                normalized["limit"] = 30
+            return normalized
+        if isinstance(value, list):
+            return [cls._normalize_tool_args(tool_name, item) for item in value]
+        return value
+
+    @staticmethod
+    def _build_repeat_tool_notice(
+        tool_name: Any,
+        arguments: Dict[str, Any],
+        current_tool_call_id: Any,
+        previous_calls: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        first = previous_calls[0] if previous_calls else None
+        latest = previous_calls[-1] if previous_calls else None
+        notice: Dict[str, Any] = {
+            "tool": tool_name,
+            "arguments": arguments,
+            "current_tool_call_id": current_tool_call_id,
+            "identical_previous_call_count": len(previous_calls),
+            "instruction": (
+                "This exact tool call has already appeared in the current conversation. "
+                "Read the earlier tool result at the referenced conversation position "
+                "instead of requesting the same data again."
+            ),
+        }
+        if first:
+            notice["first_seen"] = {
+                "iteration": first.get("iteration"),
+                "assistant_tool_call_id": first.get("tool_call_id"),
+                "assistant_message_index": first.get("assistant_message_index"),
+                "tool_result_message_index": first.get("tool_result_message_index"),
+            }
+        if latest and latest is not first:
+            notice["latest_seen"] = {
+                "iteration": latest.get("iteration"),
+                "assistant_tool_call_id": latest.get("tool_call_id"),
+                "assistant_message_index": latest.get("assistant_message_index"),
+                "tool_result_message_index": latest.get("tool_result_message_index"),
+            }
+        return notice
 
     def _parse_tool_args(self, func_args_str: Any) -> Dict[str, Any]:
         """Parse tool arguments, with fallbacks for slightly malformed JSON."""
