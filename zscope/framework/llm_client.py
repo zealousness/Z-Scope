@@ -8,7 +8,7 @@ import re
 import json
 import logging
 import time
-from typing import List, Dict, Any, Optional
+from typing import Any, Callable, Dict, List, Optional, cast
 
 import requests
 
@@ -137,7 +137,7 @@ class LLMClient:
                                     except json.JSONDecodeError:
                                         pass
                                         
-                        assembled_message = {"role": "assistant"}
+                        assembled_message: Dict[str, Any] = {"role": "assistant"}
                         if tool_calls_map:
                             assembled_message["tool_calls"] = [tool_calls_map[i] for i in sorted(tool_calls_map.keys())]
                             if content_pieces:
@@ -229,7 +229,7 @@ class LLMClient:
         self,
         messages: List[Dict[str, Any]],
         tools_schema: List[Dict[str, Any]],
-        tool_executor: callable,
+        tool_executor: Callable[[str, Dict[str, Any]], Dict[str, Any]],
         max_iterations: int = 50,
     ) -> Dict[str, Any]:
         """
@@ -280,11 +280,11 @@ class LLMClient:
                     xml_args = {}
                     for param_match in re.finditer(r'<parameter name="([^"]+)">([\s\S]*?)(?=(?:</parameter>|<parameter|</invoke>|$))', xml_param_str):
                         # Attempt to cast numeric strings to int if applicable, else keep string
-                        val = param_match.group(2).strip()
-                        val = re.sub(r'</.*$', '', val, flags=re.DOTALL).strip()
-                        if val.isdigit():
-                            val = int(val)
-                        xml_args[param_match.group(1)] = val
+                        xml_val: Any = param_match.group(2).strip()
+                        xml_val = re.sub(r'</.*$', '', str(xml_val), flags=re.DOTALL).strip()
+                        if str(xml_val).isdigit():
+                            xml_val = int(xml_val)
+                        xml_args[param_match.group(1)] = xml_val
                         
                     tool_calls.append({
                         "id": f"call_xml_{uuid.uuid4().hex[:10]}",
@@ -347,7 +347,8 @@ class LLMClient:
                     content = msg.get("content") or "Tool Call"
                     history_summary.append(f"Assistant: {content[:100]}...")
                 elif role == "tool":
-                    history_summary.append(f"Tool Result: {msg.get('content')[:100]}...")
+                    content_preview = str(msg.get("content", ""))
+                    history_summary.append(f"Tool Result: {content_preview[:100]}...")
             logger.debug(f"Last steps: {history_summary}")
 
         final_tokens = self.estimate_tokens(conversation)
@@ -360,14 +361,14 @@ class LLMClient:
             "context_tokens": final_tokens,
         }
 
-    def _parse_tool_args(self, func_args_str: str) -> Dict[str, Any]:
+    def _parse_tool_args(self, func_args_str: Any) -> Dict[str, Any]:
         """Parse tool arguments, with fallbacks for slightly malformed JSON."""
         if isinstance(func_args_str, dict):
-            return func_args_str
+            return cast(Dict[str, Any], func_args_str)
         if func_args_str is None:
             return {}
         try:
-            return json.loads(func_args_str)
+            return cast(Dict[str, Any], json.loads(str(func_args_str)))
         except json.JSONDecodeError as exc:
             stripped = func_args_str.strip()
             if not stripped:
@@ -377,7 +378,7 @@ class LLMClient:
                 parsed = ast.literal_eval(stripped)
                 if isinstance(parsed, dict):
                     logger.warning("Recovered tool arguments via literal_eval.")
-                    return parsed
+                    return cast(Dict[str, Any], parsed)
             except (ValueError, SyntaxError):
                 pass
 
@@ -388,13 +389,13 @@ class LLMClient:
                         parsed = json.loads(candidate)
                         if isinstance(parsed, dict):
                             logger.warning("Recovered tool arguments via sanitized JSON.")
-                            return parsed
+                            return cast(Dict[str, Any], parsed)
                     except json.JSONDecodeError:
                         try:
                             parsed = ast.literal_eval(candidate)
                             if isinstance(parsed, dict):
                                 logger.warning("Recovered tool arguments via sanitized literal_eval.")
-                                return parsed
+                                return cast(Dict[str, Any], parsed)
                         except (ValueError, SyntaxError):
                             continue
 
@@ -404,14 +405,14 @@ class LLMClient:
                     parsed = ast.literal_eval(pythonized)
                     if isinstance(parsed, dict):
                         logger.warning("Recovered tool arguments via pythonized literal_eval.")
-                        return parsed
+                        return cast(Dict[str, Any], parsed)
                 except (ValueError, SyntaxError):
                     pass
 
-            for candidate in extract_json_blocks(func_args_str):
-                if isinstance(candidate, dict):
+            for json_candidate in extract_json_blocks(str(func_args_str)):
+                if isinstance(json_candidate, dict):
                     logger.warning("Recovered tool arguments from JSON block.")
-                    return candidate
+                    return cast(Dict[str, Any], json_candidate)
 
             fallback = self._extract_tool_args_fallback(stripped)
             if fallback is not None:
@@ -432,7 +433,7 @@ class LLMClient:
         if not isinstance(value, str):
             value = repr(value)
         if len(value) <= limit:
-            return value
+            return str(value)
         return f"{value[:limit]}…(truncated)"
 
     @staticmethod

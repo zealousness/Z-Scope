@@ -7,6 +7,7 @@ import logging
 import sys
 import os
 from pathlib import Path # Keep this import as it's used for 'config: Path'
+from typing import Optional
 from ..retrieval.code_index import CodeIndex
 from ..common.utils import setup_logging
 from ..config.config import ZScopeConfig, LLMConfig, AnalysisConfig, ProjectConfig, IndexingConfig, ConfigLoader
@@ -60,7 +61,7 @@ def main(
             zscope_config = ConfigLoader.load(str(config))
             cfg = zscope_config.indexing
             # 通过 CodeIndex 创建后端，保持统一入口
-            code_index = CodeIndex(
+            dashboard_code_index = CodeIndex(
                 zscope_config.project.project_root,
                 zscope_config.project.compile_commands_path,
                 source_root=zscope_config.project.source_root,
@@ -74,7 +75,7 @@ def main(
             snapshot_store = SnapshotStore(Path(zscope_config.analysis.snapshot_dir))
             
             run_server(
-                code_index=code_index,
+                code_index=dashboard_code_index,
                 user_config_store=ucs,
                 project_config=zscope_config.project,
                 snapshot_store=snapshot_store,
@@ -90,10 +91,19 @@ def main(
             click.echo("Error: Please provide a config file using --config or create zscope.yaml")
             sys.exit(1)
 
-    code_index = None
+    code_index: Optional[CodeIndex] = None
     try:
         zscope_config = ConfigLoader.load(str(config))
         logger.info(f"Loaded configuration from: {config}")
+
+        if resume and maintain:
+            click.echo("Error: --resume and --maintain cannot be used together.")
+            sys.exit(1)
+
+        if maintain:
+            zscope_config.analysis.workflow_name = "maintain"
+        elif resume:
+            zscope_config.analysis.workflow_name = "resume"
 
         if mcp_stdio:
             from ..mcp.server import run_stdio_server
@@ -192,16 +202,16 @@ def main(
                 llm_client=llm_client,
                 user_config=ucs,
             )
-            results = verifier.verify_alerts(alerts)
+            verification_results = verifier.verify_alerts(alerts)
 
             # 输出报告
             import json
             report_path = zscope_config.project.project_root / "zscope_alert_verify_report.json"
             with open(report_path, "w", encoding="utf-8") as f:
-                json.dump({"results": results}, f, ensure_ascii=False, indent=2)
+                json.dump({"results": verification_results}, f, ensure_ascii=False, indent=2)
 
-            confirmed = sum(1 for r in results if r.get("verdict") == "confirmed")
-            rejected = sum(1 for r in results if r.get("verdict") == "rejected")
+            confirmed = sum(1 for r in verification_results if r.get("verdict") == "confirmed")
+            rejected = sum(1 for r in verification_results if r.get("verdict") == "rejected")
             click.echo(f"\nVerification complete: {confirmed} confirmed, {rejected} rejected")
             click.echo(f"Report: {report_path}")
             sys.exit(1 if confirmed > 0 else 0)
@@ -251,11 +261,6 @@ def main(
             # Save the full entries list before slicing for resume
             all_entries = list(entries)
             skipped_entries = []
-            
-            # Determine mode flags
-            if resume and maintain:
-                click.echo("Error: --resume and --maintain cannot be used together.")
-                sys.exit(1)
             
             if resume:
                 # --resume: skip already-completed functions (auto mode)
@@ -388,7 +393,11 @@ def main(
 
             logger.info(f"Single mode: entry function = {entry_function}")
 
-            analyzer = Analyzer(zscope_config)
+            analyzer = Analyzer(
+                zscope_config,
+                force_ignore_history=not (resume or maintain),
+                maintain_mode=maintain,
+            )
             result = analyzer.run()
 
             overall_verdict = result.get("overall_verdict", "unknown")

@@ -27,34 +27,38 @@ Z-SCOPE 是一款基于多智能体协作的 C 语言深度静态分析工具。
 │                        CLI 入口层                             │
 │  zscope -c zscope.yaml                                       │
 │    [--resume] [--maintain] [--dashboard] [--build-cpg]       │
+│    [--discover-entries] [--mcp-stdio]                        │
 │    [--mode default|ruledriven|alert-verify] [--sarif *.sarif]│
-└──────┬─────────┬──────────┬──────────┬───────────────────────┘
-       │         │          │          │
-  ┌────▼────┐ ┌──▼───┐ ┌───▼────┐ ┌───▼──────┐
-  │ 默认 /  │ │规则  │ │ Alert  │ │Dashboard │
-  │ 批量模式│ │驱动  │ │ Verify │ │ WebUI    │
-  │analyzer │ │mode  │ │ mode   │ │ server   │
-  └────┬────┘ └──┬───┘ └───┬────┘ └──────────┘
-       │         │         │
-  ┌────▼─────────▼─────────▼───────────────────┐
-  │        多智能体系统 (agents/)                │
-  │ ┌──────────┐ ┌──────────┐ ┌────────────┐   │
-  │ │ 语义建模 │→│ 漏洞挖掘 │→│  验证Agent  │  │
-  │ │  Agent   │ │  Agent   │ │            │   │
-  │ └────┬─────┘ └────┬─────┘ └─────┬──────┘   │
-  │      │    ┌───────┐│    ┌───────┐│          │
-  │      │    │ 问题  ││    │ deep  ││          │
-  │      │    │ 调和  ││    │ worker││          │
-  │      │    │ Agent ││    │(预留) ││          │
-  │      │    └───────┘│    └───────┘│          │
-  └──────┼─────────────┼────────────┼──────────┘
-         │             │            │
-  ┌──────▼─────────────▼────────────▼──────────┐
-  │         工具总线 (tools_runtime.py)          │
-  │  代码检索 · 快照查询 · 调用图 · 类型信息     │
-  │  文件切片 · 数据流 · 污点追踪(预留)          │
-  │  + 用户配置自动注入                          │
-  └──────┬─────────────┬────────────┬──────────┘
+└──────┬─────────┬──────────┬──────────┬──────────┬────────────┘
+       │         │          │          │          │
+  ┌────▼────┐ ┌──▼───┐ ┌───▼────┐ ┌───▼──────┐ ┌──▼─────────┐
+  │ 默认 /  │ │规则  │ │ Alert  │ │Dashboard │ │ MCP Server │
+  │ 批量模式│ │驱动  │ │ Verify │ │ WebUI    │ │ (stdio)    │
+  │analyzer │ │mode  │ │ mode   │ │ server   │ │ mcp/server │
+  └────┬────┘ └──┬───┘ └───┬────┘ └──────────┘ └──────┬─────┘
+       │         │         │                          │
+  ┌────▼─────────▼─────────▼───────────────────┐      │
+  │    声明式工作流编排 (workflows/*.yaml)     │      │
+  └────────────────────┬───────────────────────┘      │
+                       │                              │
+  ┌────────────────────▼───────────────────────┐      │
+  │       多智能体系统 (agents/ + skills/)       │      │
+  │ ┌──────────┐ ┌──────────┐ ┌────────────┐   │      │
+  │ │ 语义建模 │→│ 漏洞挖掘 │→│  验证Agent  │  │      │
+  │ │  Agent   │ │  Agent   │ │            │   │      │
+  │ └────┬─────┘ └────┬─────┘ └─────┬──────┘   │      │
+  │      │    ┌───────┐│    ┌───────┐│          │     │
+  │      │    │ 问题  ││    │ deep  ││          │     │
+  │      │    │ 调和  ││    │ worker││          │     │
+  │      │    │ Agent ││    │ Agent ││          │     │
+  │      │    └───────┘│    └───────┘│          │     │
+  └──────┼─────────────┼────────────┼──────────┘      │
+         │             │            │                 │
+  ┌──────▼─────────────▼────────────▼─────────────────▼──┐
+  │               工具总线 (tools_runtime.py)              │
+  │        代码检索 · 快照查询 · 调用图 · 污点追踪          │
+  │          + 用户配置注入 + MCP 外部资源整合             │
+  └──────┬─────────────┬────────────┬────────────────────┘
          │             │            │
   ┌──────▼────┐ ┌──────▼───┐ ┌─────▼─────────┐
   │ CodeIndex │ │ Snapshot │ │ UserConfig    │
@@ -82,16 +86,23 @@ Z-SCOPE 是一款基于多智能体协作的 C 语言深度静态分析工具。
 | `zscope -c zscope.yaml` | **默认全新扫描**：对所有入口函数执行完整的多智能体分析 |
 | `zscope -c zscope.yaml --resume` | **断点续扫**：自动跳过已完成的函数，重扫失败/未完成的函数 |
 | `zscope -c zscope.yaml --maintain` | **增量维护扫描**：基于函数级源码哈希，跳过未变动的函数（零 Token 消耗） |
+| `zscope -c zscope.yaml --discover-entries` | **自动入口发现**：基于启发式扫描项目公共 API、IPC 及网络收发点并将其作为分析入口 |
+| `zscope -c zscope.yaml --mcp-stdio` | **MCP Server 模式**：通过 stdio 运行符合 MCP 标准的服务端，供 Claude Desktop 等客户端接入 |
 | `zscope -c zscope.yaml --mode ruledriven` | **规则驱动模式**：Joern 规则先扫 → LLM 验证过滤误报 |
-| `zscope -c zscope.yaml --mode alert-verify --sarif alerts.sarif` | **告警验证模式**：对外部工具（如 Coverity/Cppcheck）的 SARIF 输出进行 LLM 二次确认 |
+| `zscope -c zscope.yaml --mode alert-verify --sarif alerts.sarif` | **告警验证模式**：对外部工具（如 Coverity/Cppcheck/CodeQL）的输出进行 LLM 二次确认 |
 | `zscope -c zscope.yaml --dashboard` | **启动 Web 仪表盘**：查看扫描结果、管理用户配置 |
 | `zscope -c zscope.yaml --build-cpg` | **仅构建索引**：构建代码索引后退出，不执行分析 |
 
 > `--resume` 和 `--maintain` 互斥，不可同时使用。
 
+CLI 会在加载 `zscope.yaml` 后根据命令行参数设置当前工作流：默认使用 `analysis.workflow_name`（通常为 `default`）；传入 `--resume` 时强制切换为 `resume`；传入 `--maintain` 时强制切换为 `maintain`。这意味着 `--maintain` 本身就代表执行 `zscope/workflows/maintain.yaml`，不需要用户在配置文件里额外写 `analysis.workflow_name: maintain`。
+
 ### 3.2 `--resume` 断点续扫逻辑
 
 ```
+CLI: analysis.workflow_name = resume
+Analyzer: 加载 zscope/workflows/resume.yaml
+
 遍历全部入口函数：
   ├─ 有 final_report 且 verdict ≠ error 且无 pending issues → 【跳过】
   ├─ 有 final_report 但 verdict = error → 【重扫】
@@ -104,6 +115,9 @@ Z-SCOPE 是一款基于多智能体协作的 C 语言深度静态分析工具。
 ### 3.3 `--maintain` 增量维护逻辑
 
 ```
+CLI: analysis.workflow_name = maintain
+Analyzer: 加载 zscope/workflows/maintain.yaml
+
 对每个入口函数：
   源码哈希未变 且 有历史报告 → 直接复用历史报告（0 Token 消耗）
   源码哈希已变 → 全量重扫 + Issue Reconciler 对历史缺陷做修复验证
@@ -116,36 +130,34 @@ Z-SCOPE 是一款基于多智能体协作的 C 语言深度静态分析工具。
 | Agent | 目录 | 职责 | 输入 | 输出 |
 |-------|------|------|------|------|
 | 语义建模 Agent | `agents/semantic_modeler/` | 理解函数语义、识别关键路径和副作用 | 函数源码 + 工具 | 语义快照 JSON |
-| 漏洞挖掘 Agent | `agents/vulnerability_analyzer/` | 基于语义模型和代码上下文发现潜在缺陷 | 语义模型 + 代码上下文 + 工具 | 疑似缺陷列表 |
+| 漏洞挖掘 Agent | `agents/vulnerability_analyzer/` | 基于语义模型发现潜在缺陷，并分发 Deep Worker 工单 | 语义模型 + 代码上下文 + 工具 | 疑似缺陷列表 |
 | 验证 Agent | `agents/validator_agent/` | 二次确认疑似缺陷的真实性，过滤误报 | 疑似缺陷 + 源码 | validated / rejected |
 | Issue Reconciler | `agents/issue_reconciler/` | 代码变动后验证历史缺陷是否仍然存在；去重新旧缺陷 | 历史缺陷 + 新代码 | still_exists / fixed |
-| Deep Worker（预留） | `agents/deep_worker/` | 接收 Manager 下发的聚焦工单，做深层定向分析 | DFG 切片 + Hypothesis | Worker 报告 |
+| Deep Worker | `agents/deep_worker/` | 接收 Manager 下发的聚焦工单，做极度收敛的深度定向分析 | DFG 切片 + Hypothesis | Worker 报告 |
 
-### 4.1 分析管线流程
+### 4.1 声明式工作流编排
 
-```
-入口函数源码
-    │
-    ▼
-[语义建模 Agent] → 输出语义快照 → 存入 SnapshotStore
-    │
-    ▼
-[漏洞挖掘 Agent] → 输出疑似缺陷列表
-    │                  │
-    │    ┌─────────────▼──────────────┐
-    │    │  Issue Reconciler Agent    │
-    │    │  (去重 + 历史缺陷调和)      │
-    │    └─────────────┬──────────────┘
-    │                  │
-    ▼                  ▼
-[验证 Agent] → validated / rejected
-    │
-    ▼
-Final Report (JSON + Markdown)
-    │
-    ▼
-SnapshotStore 持久化（断电安全）
-```
+整体流程由 `zscope/workflows/` 下的 YAML 声明。系统不再把 workflow 作为大段提示词注入 Agent，而是由 Analyzer 将 YAML step 解释为可执行的编排步骤。工作流选择来自 `analysis.workflow_name`，但 CLI 参数拥有更高优先级：`--resume` 选择 `resume.yaml`，`--maintain` 选择 `maintain.yaml`。
+
+- **default**: 入口发现 → 递归预建模 → 主入口建模 → 漏洞挖掘规划（分配 Deep Worker） → 漏洞挖掘 → 漏洞验证 → 保存报告。
+- **maintain**: 增量分析专用，仅重跑变更代码段并利用 `Issue Reconciler` 进行缺陷调和。
+- **resume**: 从 SQLite 拉取快照，跳过已完成的，并执行 default 工作流的剩余部分。
+
+| Workflow | YAML steps | 执行语义 |
+|----------|------------|----------|
+| `default` | `discover_entries`, `premodel_reachable_callees`, `model_entry`, `focused_subagent_planning`, `vulnerability_mining`, `validate_findings`, `persist_report` | 完整的新扫描流程；入口发现与批量列表处理由 CLI 层完成，其余步骤由 Analyzer 编排 Agent |
+| `maintain` | `compare_hashes`, `reuse_unchanged`, `reconcile_changed`, `rescan_changed` | 先比较快照哈希，未变更直接复用历史报告；变更时先调和历史缺陷，再进入默认扫描子流程 |
+| `resume` | `load_snapshot_state`, `analyze_remaining`, `merge_skipped_reports` | CLI 先跳过已完成入口；Analyzer 对剩余入口运行默认扫描子流程；跳过入口的最终报告由批量汇总阶段合并 |
+
+Analyzer 会在每个 step 开始和结束时更新 `workflow_progress`，并将 `workflow`、`workflow_mode`、`workflow_progress`、`current_workflow_step` 写入最终报告 metadata。这样报告可以明确说明本次运行使用了哪个 workflow，以及执行过程停在或经过了哪些步骤。
+
+### 4.2 启发式 SubAgent 任务规划 (Deep Worker)
+
+为了防止 `漏洞挖掘 Agent` 同时处理过多的漏洞类型导致上下文窗口爆炸和注意力涣散，引入了 `SubAgentOrchestrator`：
+1. 挖掘管理器只看核心结构和关键语义，当发现特征点（如 `malloc`, `pthread_create`, `memcpy`）时。
+2. 剥离无关代码，构建一份切片代码（通常仅 20~30 行），附带明确的排查假设（Hypothesis）。
+3. 生成一个针对性的子任务工单，派遣 `Deep Worker` 专门只调查该单一事件（如：调查 `malloc` 的释放路径）。
+4. `Deep Worker` 携带针对性的工具，进行深度调用图和数据流追踪，返回轻量级、无幻觉的确凿证据。
 
 ### 4.2 关键机制说明
 
@@ -159,6 +171,21 @@ SnapshotStore 持久化（断电安全）
 
 > **Validator 拒绝策略**：Validator Agent 判定为 `rejected` 的缺陷立即丢弃，不写入最终报告。用户通过 Web Dashboard 手动拒绝的缺陷标记 `rejection_source: "user"`，由 Issue Reconciler 在后续扫描中自动抑制同类缺陷。
 
+
+### 4.3 声明式编排与子智能体（SubAgent）
+
+Z-SCOPE 采用声明式的工作流与契约体系控制复杂分析过程：
+- **`AGENT.md` 与 `SKILL.md` 契约**：每个 Agent 和 Skill 由带 YAML Frontmatter 的 Markdown 描述，包含其职责、允许使用的工具（`allowed_tools`）和触发条件。
+- **工作流（Workflows）**：`zscope/workflows/default.yaml` 等配置文件定义系统从入口探测、预建模、漏洞扫描到验证重整的生命周期。运行时只把 Agent/Skill 契约注入对应 Agent，workflow 本身用于 Python 编排层决策，不再作为 `workflow_context` 注入模型提示词。
+- **聚焦子智能体（Deep Worker）**：为防止管理器（Vulnerability Analyzer）在遍历庞大函数调用链路时发生“上下文窗口污染幻觉”，系统使用 `SubAgentOrchestrator` 通过正则启发式探测（如定位到 `malloc`/`pthread_mutex_lock` 调用处），动态创建隔离上下文的 `deep_worker` 分析工单，保证缺陷验证的高专注度和低 Token 消耗。
+
+### 4.4 Model Context Protocol (MCP) 集成
+
+Z-SCOPE 原生集成了 MCP Server（`zscope/mcp/server.py`）：
+- **资源导出**：向 MCP 客户端暴露 `zscope://config`、`zscope://knowledge/stats` 等配置与数据库状态资源。
+- **提示词注入**：提供 `zscope.entry_discovery`、`zscope.concurrency_audit` 等专家级审查提示词。
+- **工具透传**：将底层的 12 个分析工具（如 `get_call_graph`、`query_knowledge`）直接暴露给外部客户端（如 Claude Desktop），使安全分析师可以在个人桌面使用最强大的基础模型结合本地项目的绝对代码知识进行交互式代码审计。
+
 ## 5. 用户配置与上下文注入
 
 ### 5.1 设计原则
@@ -168,7 +195,7 @@ SnapshotStore 持久化（断电安全）
 1. **工具返回时**：`tools_runtime.py` 调用 `get_function_impl` 找不到实现时，自动查询 `UserConfigStore` 并附加外部函数描述
 2. **Agent prompt 构建时**：`analyzer.py` 将配对函数列表和函数设计意图注入 Agent 的 system prompt
 
-### 5.2 UserConfigStore（6 张表）
+### 5.2 UserConfigStore（5 张表）
 
 ```
 ┌─────────────────────────────────────────┐
@@ -178,7 +205,6 @@ SnapshotStore 持久化（断电安全）
 │ paired_functions       配对函数          │
 │ function_pointer_targets 函数指针指向   │
 │ function_intent        函数设计意图      │
-│ false_positives        已确认误报        │
 │ config_warnings        缺失配置告警      │
 └─────────────────────────────────────────┘
 ```
@@ -186,9 +212,12 @@ SnapshotStore 持久化（断电安全）
 ### 5.3 误报反馈闭环
 
 ```
-用户在 WebUI 标记误报 → false_positives 表写入 (function, location, subcategory)
-                      → 下次扫描时 analyzer 自动过滤匹配项
+Validator 判定 rejected → 该疑似缺陷不写入最终报告
+用户手动拒绝历史缺陷 → final_report 中保留 rejection_source="user"
+后续扫描 → Issue Reconciler 对新发现缺陷与用户拒绝项做语义去重，匹配时自动抑制
 ```
+
+当前 `UserConfigStore.is_false_positive()` 保留了过滤接口，但数据库 schema 尚未持久化独立的 `false_positives` 表；用户拒绝项主要通过最终报告中的 `validation_status` / `rejection_source` 参与后续调和。
 
 ### 5.4 配置告警
 
@@ -255,15 +284,21 @@ UnifiedBackend.initialize()
 
 坐标缝合原理：Clang AST 与 LLVM IR DWARF 在 `-g -O0` 下共享 `(file_path, line)` 坐标系。`SvfOutputMapper` 通过 `db.get_function(caller)` 查询 Clang 已入库的函数位置，将 SVF 结果关联回源码。
 
-## 7. LLM 客户端
+## 7. LLM 客户端与多模型路由
 
 `framework/llm_client.py` 实现 OpenAI 兼容的 LLM 通信层：
 
-### 7.1 核心特性
+### 7.1 多模型路由 (Multi-profile Routing)
+
+Z-SCOPE 支持在 `zscope.yaml` 的 `llms` 块中配置多个命名的大模型配置（如 `default`, `fast_model`, `smart_model`）。
+通过在 `AgentConfig` 显式设置 `llm_ref: smart_model`，可实现针对不同任务类型的算力资源最优分配（如简单总结用低成本模型，复杂漏洞挖掘用推理大模型）。
+
+### 7.2 核心通信特性
 
 | 特性 | 说明 |
 |------|------|
-| 模型优先级回退 | `models: [model_a, model_b]`，model_a 失败自动切换 model_b |
+| 多模型路由配置 | 支持 `llms` 块定义多个大模型 Provider（如 `fast_model`, `smart_model`），Agent 按需路由 |
+| 模型优先级回退 | 单个 profile 内可配 `models: [model_a, model_b]`，a 失败自动切换 b |
 | 流式传输 | 强制 `stream=True` 绕过中间代理超时（如 504 on 120s limit） |
 | 指数退避 | 429/5xx 错误自动 `2^n + jitter` 退避重试 |
 | 工具调用循环 | `run_conversation_with_tools()` 自动迭代工具调用直到模型输出最终报告 |
@@ -342,10 +377,14 @@ Z-Scope/
 │   │   └── cli.py              # CLI 入口，参数解析与模式分发
 │   ├── agents/
 │   │   ├── semantic_modeler/   # 语义建模 Agent
-│   │   ├── vulnerability_analyzer/ # 漏洞挖掘 Agent
+│   │   ├── vulnerability_analyzer/ # 漏洞挖掘 Agent (Manager)
 │   │   ├── validator_agent/    # 验证 Agent
 │   │   ├── issue_reconciler/   # 缺陷调和 Agent（去重 + 修复验证）
-│   │   └── deep_worker/        # 深度工单 Agent（预留）
+│   │   └── deep_worker/        # 深度工单子 Agent（隔离上下文验证）
+│   ├── skills/                 # 各细分领域的安全审计技能（如 temporal_memory, shared_state_race 等）
+│   ├── workflows/              # 声明式工作流编排（default, maintain, resume）
+│   ├── mcp/                    # Model Context Protocol (MCP) Server、Client 与 Provider
+│   ├── orchestration/          # Agent/Skill/Workflow 契约解析器与子工单规划器
 │   ├── core/
 │   │   ├── analyzer.py         # 默认模式编排器（单函数 + 批量）
 │   │   ├── parallel_analyzer.py# 多线程并行分析 + 报告生成
@@ -429,7 +468,19 @@ zscope.yaml ──→ ConfigLoader.load()
      SnapshotStore 持久化（支持 --resume / --maintain）
 ```
 
-## 11. 技术栈
+## 11. MCP (Model Context Protocol) 模块
+
+Z-SCOPE 作为极佳的静态分析底座，不仅可以自我闭环运行，还可以通过 `mcp` 模块暴露给外部工具：
+
+| 暴露资源 | 描述 |
+|----------|------|
+| **Resources** | `zscope://config`, `zscope://knowledge/stats`, `zscope://snapshots/list` 等项目元数据和状态 |
+| **Prompts** | 针对不同分析目标的结构化分析提示词生成（如 `zscope.concurrency_audit`） |
+| **Tools** | 所有的 CodeIndex 分析能力（`get_callers`, `get_call_graph`）、以及底层的 SQLite 直接查询 (`query_knowledge`) 和自动入口发现 (`discover_entries`) |
+
+利用 `zscope --mcp-stdio`，用户可直接在诸如 Claude Desktop、Cursor 等支持 MCP 的 AI IDE/助手中，透明地利用 Z-SCOPE 构建出的强大全局知识图谱，进行随心所欲的安全提问。
+
+## 12. 技术栈
 
 | 组件 | 技术选型 |
 |------|---------||
@@ -441,10 +492,21 @@ zscope.yaml ──→ ConfigLoader.load()
 | 配置 | YAML（支持 `${ENV_VAR}` 展开） |
 | 打包 | setuptools + pyproject.toml |
 | 格式化 | black (100 字符行宽) |
-| 类型检查 | mypy |
+| 类型检查 | mypy 1.x + types-PyYAML + types-requests |
 | 测试 | pytest |
 
-## 12. 持久化数据库详解
+推荐的开发校验命令：
+
+```bash
+python -m pip install -e ".[dev]"
+python -m mypy zscope
+python -m compileall -f -q zscope scripts test
+python -m pytest
+```
+
+`compileall` 用于在运行前强制编译所有 Python 模块，补足解释型语言只有执行到对应分支才暴露语法/导入问题的短板。当前仓库若没有测试用例，`pytest` 会显示 `collected 0 items` 并以非零状态退出。
+
+## 13. 持久化数据库详解
 
 Z-SCOPE 在工作过程中产生三个 SQLite 数据库文件，全部使用 WAL 模式以保证并发安全和断电恢复。
 

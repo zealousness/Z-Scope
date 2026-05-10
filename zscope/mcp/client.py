@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 from itertools import count
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 
 class McpClientError(RuntimeError):
@@ -46,7 +46,8 @@ class StdioMcpClient:
         response = self._read()
         if "error" in response:
             raise McpClientError(response["error"].get("message", "MCP error"))
-        return response.get("result", {})
+        result = response.get("result", {})
+        return cast(Dict[str, Any], result)
 
     def close(self) -> None:
         if not self.process:
@@ -71,11 +72,11 @@ class StdioMcpClient:
         if not first:
             raise McpClientError("MCP server closed stdout.")
         if not first.lower().startswith(b"content-length:"):
-            return json.loads(first.decode("utf-8"))
+            return cast(Dict[str, Any], json.loads(first.decode("utf-8")))
         length = int(first.split(b":", 1)[1].strip())
         while True:
             header = self.process.stdout.readline()
             if header in (b"\r\n", b"\n", b""):
                 break
         body = self.process.stdout.read(length)
-        return json.loads(body.decode("utf-8"))
+        return cast(Dict[str, Any], json.loads(body.decode("utf-8")))

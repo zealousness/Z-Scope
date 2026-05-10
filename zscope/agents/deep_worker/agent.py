@@ -1,4 +1,4 @@
-from typing import Dict, Any, List
+from typing import Any, Dict, List, cast
 import logging
 import json
 from ...framework.base import BaseAgent, AgentResponse
@@ -42,7 +42,7 @@ class DeepWorkerAgent(BaseAgent):
     def _tool_executor(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         for tool in self.tools:
             if tool.name == name:
-                return tool.execute(args)
+                return cast(Dict[str, Any], tool.execute(args))
         return {"error": f"Unknown tool: {name}"}
 
     def run(self, input_data: Dict[str, Any]) -> AgentResponse:

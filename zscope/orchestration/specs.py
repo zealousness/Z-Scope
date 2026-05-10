@@ -12,10 +12,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+_yaml: Any
 try:
-    import yaml
+    import yaml as _yaml
 except ImportError:  # pragma: no cover - ConfigLoader already depends on yaml.
-    yaml = None
+    _yaml = None
+
+yaml: Any = _yaml
 
 
 def _as_list(value: Any) -> List[str]:

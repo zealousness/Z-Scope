@@ -14,7 +14,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +175,7 @@ class BitcodeBuilder:
                 args,
                 cwd=directory,
                 env=self._env,
-                timeout=self.timeout // max(1, len(self._bc_files) + 1),
+                timeout=self.timeout,
                 capture_output=True,
                 text=True,
                 check=True,

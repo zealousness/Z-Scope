@@ -4,16 +4,19 @@
 
 ## 核心特性
 
-- **多智能体分治**：采用 `语义建模 Agent`、`漏洞扫描 Agent`、`Issue Reconciler Agent` 与 `验证 Agent` 独立协作，深度挖掘并去重逻辑缺陷。
-- **三种运行模式**：全新扫描（默认）、断点续扫（`--resume`）、增量维护（`--maintain`）。另支持规则驱动模式和告警验证模式。
+- **多智能体分治与声明式编排**：采用 `AGENT.md` 与 `SKILL.md` 契约定义各智能体与技能。支持 `语义建模 Agent`、`漏洞扫描 Agent`、`Issue Reconciler Agent`、`验证 Agent` 以及隔离上下文的聚焦型 `Deep Worker` 独立协作。分析流程由 `zscope/workflows/*.yaml` 驱动实际执行步骤，而不是仅作为提示词上下文注入。
+- **三种运行模式**：全新扫描（默认）、断点续扫（`--resume`）、增量维护（`--maintain`）。CLI 会把 `--resume` / `--maintain` 映射为 `analysis.workflow_name=resume|maintain`，无需在 `zscope.yaml` 中重复显式配置。另支持规则驱动模式和告警验证模式。
+- **自动入口发现**：支持基于启发式的智能扫描入口发现（`--discover-entries`），自动识别头文件暴露的公共 API、网络收发、线程入口及用户输入点。
+- **本地 MCP Server**：原生内置 Model Context Protocol (MCP) 标准的 stdio Server，允许外部工具（如 Claude Desktop）直接调用 Z-SCOPE 的代码索引、快照资源及工具总线。
+- **多模型配置与路由**：支持在 `zscope.yaml` 中定义多个大模型配置（如 `fast_model` / `smart_model`），不同 Agent 可按需绑定最佳模型。
 - **可插拔后端架构**：支持 Joern CPG、Clang libclang、Unified（Clang + SVF）、Regex 四种后端，按需选择分析深度。
 - **12 个分析工具**：函数源码获取、调用图分析、结构体查询、污点追踪、指针别名查询、深度调用上下文聚合等。
 - **用户辅助配置系统**：通过 WebUI 管理外部函数描述、配对函数、函数指针指向等信息，自动注入分析上下文。
-- **智能增量分析与缺陷去重**：支持断点续扫（`--resume`）和基于语义哈希的增量维护扫描（`--maintain`）。自动跟踪和验证缺陷随代码流转的修复状态。验证 Agent 拒绝的误报自动丢弃；用户手动拒绝的误报留存并在后续扫描中自动抑制。
+- **智能增量分析与缺陷去重**：支持断点续扫（`--resume`）和基于语义哈希的增量维护扫描（`--maintain`）。自动跟踪和验证缺陷随代码流转的修复状态。
 - **Web 仪表盘**：Alpine.js + DaisyUI 构建的交互式界面，集成扫描结果查看、用户配置管理和配置告警。
-- **批量函数并行扫描**：支持多 worker 并发，共享代码索引与快照数据库。
 - **SQLite 原生级持久化**：分析产生的终极漏洞（Issues）将直接与语义模型一同被永久锁定存入本地 `.zscope_snapshots/snapshots.db`，确保灾难级恢复能力。
 - **自动报告备份护城河**：每次批量生成或覆盖 JSON 分析主报告前，自动创建带时间戳的增量备份至 `.zscope_knowledge/backups/` 目录。
+- **严格编译与类型检查**：开发环境支持 `compileall` 强制编译检查和 `mypy` 静态类型检查，避免 Python 解释执行到冷门分支时才暴露错误。
 - **纯 YAML 驱动**：所有分析参数通过 `zscope.yaml` 统一定义，支持 `${ENV_VAR}` 环境变量展开。
 
 ## 系统架构
@@ -21,28 +24,31 @@
 ```
 CLI 入口层 (cli.py)
     │
-    ├─→ 默认模式 (analyzer.py)            — 全新扫描，忽略历史
-    ├─→ 续扫模式 --resume                 — 跳过已完成函数，继续中断的任务
-    ├─→ 维护模式 --maintain               — 增量检视，代码未变则跳过
-    ├─→ 规则驱动模式 --mode ruledriven     — Joern 规则 + LLM 验证
-    └─→ 告警验证模式 --mode alert-verify   — SARIF 导入 + LLM 二次确认
+    ├─→ 默认/批量模式 (analyzer.py)
+    ├─→ 规则驱动模式 --mode ruledriven
+    ├─→ 告警验证模式 --mode alert-verify
+    ├─→ 自动入口发现 --discover-entries
+    └─→ 本地 MCP 服务 --mcp-stdio
           │
           ▼
-    多智能体管线 (agents/)
-    语义建模 Agent → 漏洞扫描 Agent → 验证 Agent
+声明式工作流编排 (workflows/ + SpecRegistry)
           │
           ▼
-    工具总线 (tools_runtime.py) — 12 个分析工具 + 用户配置自动注入
+多智能体管线 (agents/ + skills/)
+语义建模 Agent → [漏洞扫描 Agent ⇌ Deep Worker] → Issue Reconciler → 验证 Agent
           │
           ▼
-    CodeIndex (可插拔后端) + SnapshotStore + UserConfigStore
+工具总线 (tools_runtime.py) ── 外部 MCP 集成
           │
           ▼
-    CodeBackend ABC (backend_base.py)
-    ├─ JoernBackend    — CPGQL via WebSocket
-    ├─ ClangBackend    — libclang 批量解析 → KnowledgeDB
-    ├─ UnifiedBackend  — ClangBackend + SvfAnalyzer (共享 KnowledgeDB)
-    └─ RegexBackend    — 正则回退
+CodeIndex (可插拔后端) + SnapshotStore + UserConfigStore
+          │
+          ▼
+CodeBackend ABC (backend_base.py)
+├─ JoernBackend    — CPGQL via WebSocket
+├─ ClangBackend    — libclang 批量解析 → KnowledgeDB
+├─ UnifiedBackend  — ClangBackend + SvfAnalyzer (共享 KnowledgeDB)
+└─ RegexBackend    — 正则回退
 ```
 
 ## 数据安全与强制恢复机制
@@ -68,6 +74,8 @@ Z-Scope 内置了严密的数据防丢失功能：
 | `pyyaml>=6.0` | YAML 配置解析 |
 
 开发依赖（可选）：`pytest`、`pytest-cov`、`black`、`mypy`。
+
+类型检查依赖包含 `mypy>=1.5,<2.0`、`types-PyYAML` 和 `types-requests`；`mypy<2.0` 是为了兼容当前 `pyproject.toml` 中的 Python 3.9 类型检查目标。
 
 ### 外部工具依赖（按后端）
 
@@ -197,6 +205,7 @@ indexing:
 在项目根目录创建 `zscope.yaml`：
 
 ```yaml
+# 支持多模型配置路由，Agent 可指定 llm_ref
 llms:
   default:
     provider: openai
@@ -206,62 +215,58 @@ llms:
     api_key: ollama
     temperature: 0.1
     max_tokens: 4096
-    timeout: 180           # API 读写超时设置（秒）
-    max_retries: 5         # 遇到并发拥堵时的最多重试次数
-    stream: true
+    timeout: 180
+  smart_model:
+    provider: openai
+    base_url: https://api.siliconflow.cn/v1
+    models:
+      - Qwen/Qwen3-Coder-30B-Instruct
+    api_key: ${Z_SCOPE_API_KEY}
 
 project:
   root: .                    # 被扫描项目根目录
-  source_root: .             # 源码搜索根目录（clangd/SVF 基于此查找源码）
-  # include_paths:           # （可选）仅分析包含在这些相对于 source_root 的目录下的文件
-  #   - src
-  #   - platform
-  # exclude_paths:           # （可选）排除的无关目录，提升索引速度
-  #   - build
-  #   - test
-  entry_function: main       # 默认模式入口函数
-  # entry_functions_list: functions.json  # 批量模式：函数列表文件
-  # compile_commands_path: build/compile_commands.json  # Clang/Unified 需要
+  source_root: .             # 源码搜索根目录
+  # entry_function: main     # 单函数入口模式
+  # entry_functions_list: functions.json  # 批量模式配置
+  
+  entry_discovery:           # 自动入口发现机制
+    enabled: true            # 为 true 时，如果未提供 entry_functions_list 则自动发现
+    max_candidates: 200
+
   agents:
     - name: semantic_modeler
       enabled: true
+      llm_ref: default
     - name: vulnerability_analyzer
-      task: "查找逻辑漏洞、内存安全问题和并发风险。"
       enabled: true
+      llm_ref: smart_model
+      can_spawn_subagents: true  # 允许创建 Deep Worker 分析上下文
     - name: issue_reconciler_agent
       enabled: true
-      llm_ref: default
     - name: validator_agent
       enabled: true
-      llm_ref: default
+      llm_ref: smart_model
 
 indexing:
-  backend: joern             # joern | clang | unified | regex
-
-  # ── Joern 后端 ──
-  joern_path: dependency/joern/joern
-  joern_server_host: 127.0.0.1
-  joern_server_port: 8080
-  joern_heap_size: 8g
-
-  # ── SVF / Unified 相关配置 ──
-  # svf_bin_dir: dependency/svf/bin
-  # gclang_path: gclang
-  # get_bc_path: get-bc
-  # llvm_link_path: llvm-link
-  # svf_heap_limit_mb: 32768
-  # svf_timeout: 1800
+  backend: unified             # joern | clang | unified | regex
+  clangd_path: clangd
+  # ... SVF 配置略 ...
 
 analysis:
   max_recursion_depth: 3
-  max_function_lines: 500
   snapshot_dir: .zscope_snapshots
   enable_snapshot_cache: true
-  parallel_workers: 16       # 高并发配置，结合 LLM 重试策略使用
-  max_premodel_depth: 3      # callee 递归预建模下探深度上限（默认 3层）
-  max_premodel_callees: 20   # 单层预建模最大扇出分支
-  trivial_function_max_lines: 5  # 拦截极简直通函数（≤5 行且不含高危关键字）并跳过大模型 API 调用
+  parallel_workers: 5
+  workflow_name: default     # default | maintain | resume；CLI 的 --maintain/--resume 会自动覆盖
+  enable_subagent_workers: true
+  max_subagent_tickets: 4
 ```
+
+#### Workflow 选择规则
+
+`workflow_name` 用于选择 `zscope/workflows/*.yaml` 中的执行编排。默认运行 `default.yaml`；传入 `--resume` 时 CLI 会把当前运行切换为 `resume.yaml`；传入 `--maintain` 时切换为 `maintain.yaml`。因此增量维护场景只需要执行 `zscope -c zscope.yaml --maintain`，不需要在配置文件中额外写 `analysis.workflow_name: maintain`。
+
+工作流文件定义的是运行时步骤，例如 `compare_hashes`、`reuse_unchanged`、`reconcile_changed`、`rescan_changed`。Analyzer 会按这些步骤推进 Agent 编排，并在最终报告的 `metadata.workflow_progress` 中记录当前 workflow 执行到了哪一步。
 
 ### Step 2：执行分析
 
@@ -276,7 +281,14 @@ zscope -c zscope.yaml
 zscope -c zscope.yaml --resume
 
 # 增量维护：仅对代码有变化的函数重新检视，复用未变化函数的历史报告
+# CLI 会自动选择 zscope/workflows/maintain.yaml
 zscope -c zscope.yaml --maintain
+
+# 自动发现入口点并扫描：基于启发式扫描项目网络收发、线程与 API 暴露点
+zscope -c zscope.yaml --discover-entries
+
+# 作为本地 MCP Server 运行（配合 Claude Desktop 等 MCP 客户端使用）
+zscope -c zscope.yaml --mcp-stdio
 
 # 规则驱动模式：Joern 内置规则扫描 + LLM 验证
 zscope --mode ruledriven -c zscope.yaml
@@ -356,27 +368,36 @@ zscope --dashboard -c zscope.yaml
 ## 开发命令
 
 ```bash
+# 安装开发依赖
+python -m pip install -e ".[dev]"
+
 # 格式化
 black zscope/ --line-length 100
 
-# 类型检查
-mypy zscope/
+# 严格类型检查
+python -m mypy zscope
 
-# 运行测试
-pytest tests/
+# 强制编译检查，覆盖 Python 解释执行前可能隐藏的分支语法/导入问题
+python -m compileall -f -q zscope scripts test
 
-# 运行集成测试
-python tmp/test_integration.py
+# 运行测试（当前仓库如果没有测试用例，pytest 会显示 collected 0 items）
+python -m pytest
 ```
 
 ## 更新日志
 
 ### v0.5.0
 - **全架构重构与扁平化**：扁平化了冗余的 `zscope/zscope` 目录结构，统一通过 `pip install -e .` 安装，更贴合标准 Python 打包规范。大幅强化三库同源（`code_knowledge.db`, `snapshots.db`, `user_config.db`）的底层持久化隔离与可观测性。
+- **声明式工作流与智能体编排**：引入 `workflows/` 机制（如 default/maintain/resume 工作流）和基于 Markdown Frontmatter 的 `AGENT.md`/`SKILL.md` 契约。`zscope/workflows/*.yaml` 现在驱动实际执行步骤和 Agent 编排，报告 metadata 会记录 `workflow_progress` 与当前步骤。
+- **CLI Workflow 自动映射**：`--maintain` 自动选择 `maintain.yaml`，`--resume` 自动选择 `resume.yaml`，无需在 `zscope.yaml` 中额外写 `analysis.workflow_name`。两者互斥，CLI 会提前拦截非法组合。
+- **Deep Worker 启发式任务规划**：引入 `SubAgentOrchestrator`，基于启发式自动探测函数内的分配、拷贝、加锁等关键操作，创建上下文极其干净的子任务并下发给聚焦型 `Deep Worker`，避免管理器的大上下文污染幻觉。
+- **智能入口点自动发现**：新增 `--discover-entries` 特性。如果未给定分析列表，通过 `EntryDiscovery` 启发式扫描公共头文件 API、通信 IPC 接口、线程创建函数和标准 IO 输入源，自动推测最优的安全审计切入点。
+- **原生支持 MCP (Model Context Protocol)**：内置本地 MCP stdio Server (`--mcp-stdio`)，对外暴露了 Z-SCOPE 专有的 `CodeIndex` 结构化查询、语义快照索引等能力，允许第三方 MCP 客户端（如 Claude Desktop）安全地调取分析底座的数据与工具链。
 - **递归预建模与并发防护**：引入 `SnapshotLockManager`，在实际漏洞分析前通过 BFS 逆拓扑遍历，提前将所有可达子函数推给 `语义建模Agent` 并在多 Worker 间互斥上锁。彻底消除上下文膨胀问题以及多线程同时并发请求同一个下层函数的复述问题。
 - **平凡函数旁路拦截器**：结合极简代码行数（默认 `≤5`）和危险关键字黑名单正则（杜绝 `alloc`、`lock` 等操作漏网），直接在调度层利用 Python 硬拼装阻断 LLM API 请求，实现零成本微快照注入，整体节约 `20~40%` 并发扫描 Token 开销。
 - **引入 IssueReconcilerAgent 增量分析优化**。支持断点续扫（`--resume`）特性的完善支持。利用大语言模型（LLM）精准跟踪源码变更情况下历史已验证缺陷的存在状态；对扫描阶段产生的新缺陷进行语义级别的去重判决。
-- **全新的缺陷生命周期管理**：废弃了传统的误报（False Positive）规则引擎，转而强化基于 `validation_status`（Pending/Validated/Rejected）的缺陷验证闭环流转，所有验证状态的修正现在通过全新的 SQLite 引擎强制原子级落盘。
+- **第三方告警标准化适配**：重构告警验证模式，引入统一的 `AlertAdapter` 适配层与 `ExternalAlert` 模型，轻松接入 Coverity/CodeQL/Cppcheck 等第三方 SAST 的告警确认。
+- **严格类型与编译检查补强**：开发依赖新增类型存根，并固定兼容的 `mypy<2.0`。当前代码通过 `python -m mypy zscope` 与 `python -m compileall -f -q zscope scripts test` 检查，降低解释型语言冷门分支延迟暴露错误的风险。
 
 ### v0.4.2 (2026-03-05)
 - **绝对行号注入法**：摒弃了大模型容易产生幻觉的相对偏移（Offset）行号计算，采用在源码侧直接注入绝对行号前缀的方式，将报告的定位精度提升至 100% 物理行级。

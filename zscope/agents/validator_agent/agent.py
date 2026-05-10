@@ -1,4 +1,4 @@
-from typing import Dict, Any, List
+from typing import Any, Dict, List, cast
 import json
 import logging
 import re
@@ -64,7 +64,7 @@ class ValidatorAgent(BaseAgent):
     def _tool_executor(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         for tool in self.tools:
             if tool.name == name:
-                return tool.execute(args)
+                return cast(Dict[str, Any], tool.execute(args))
         return {"error": f"Unknown tool: {name}"}
 
     def run(self, input_data: Dict[str, Any], max_retries: int = 2) -> AgentResponse:
@@ -98,7 +98,7 @@ class ValidatorAgent(BaseAgent):
                         "请严格按照 system prompt 中的 JSON 格式重新输出结果。"
                     ),
                 })
-                logger.info("Validator retry %d/%d for finding: %s", attempt, max_retries, finding[:80])
+                logger.info("Validator retry %d/%d for finding: %s", attempt, max_retries, str(finding)[:80])
 
             try:
                 result = self.llm_client.run_conversation_with_tools(

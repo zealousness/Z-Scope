@@ -299,6 +299,14 @@ class UserConfigStore:
         finally:
             conn.close()
 
+    def is_false_positive(self, func_name: str, location: str, category: str) -> bool:
+        """Return whether a finding is marked as a false positive.
+
+        The current schema does not persist suppressions yet, so all findings
+        remain active unless a future migration adds that table.
+        """
+        return False
+
     # ── Context Injection Helpers ──
 
     def get_paired_functions_context(self) -> str:
