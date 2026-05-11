@@ -231,13 +231,21 @@ class ConversationRecorder:
         role = msg.get("role", "unknown")
         parts = [f"**{role}**\n\n"]
         content = msg.get("content")
+        reasoning_content = msg.get("reasoning_content")
+        if reasoning_content:
+            parts.append("<details><summary>Model reasoning_content (thinking)</summary>\n\n")
+            parts.append(str(reasoning_content))
+            parts.append("\n\n</details>\n\n")
         if content:
+            label = (
+                "**Model content (output)**"
+                if role == "assistant"
+                else "**Content**"
+            )
+            parts.append(label)
+            parts.append("\n\n")
             parts.append(str(content))
             parts.append("\n\n")
-        if msg.get("reasoning_content"):
-            parts.append("<details><summary>reasoning_content</summary>\n\n")
-            parts.append(str(msg.get("reasoning_content")))
-            parts.append("\n\n</details>\n\n")
         if msg.get("tool_calls"):
             parts.append("Tool calls:\n\n")
             parts.append(self._fenced_json(msg.get("tool_calls")))
