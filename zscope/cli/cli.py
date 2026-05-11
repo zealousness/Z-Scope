@@ -10,11 +10,9 @@ from pathlib import Path # Keep this import as it's used for 'config: Path'
 from typing import Optional
 from ..retrieval.code_index import CodeIndex
 from ..common.utils import setup_logging
-from ..config.config import ZScopeConfig, LLMConfig, AnalysisConfig, ProjectConfig, IndexingConfig, ConfigLoader
-from ..config.function_entry import FunctionListLoader
-from ..core.analyzer import Analyzer
-from ..core.parallel_analyzer import ParallelAnalyzer
+from ..config.config import ConfigLoader
 from ..framework.conversation_recorder import enable_conversation_recording
+from ..orchestration.scan_session import ScanSessionRunner
 
 @click.command()
 @click.option(
@@ -222,200 +220,32 @@ def main(
             click.echo(f"Report: {report_path}")
             sys.exit(1 if confirmed > 0 else 0)
 
-        discovered_entries = []
-        should_discover_entries = discover_entries or zscope_config.project.entry_discovery.enabled
+        session_runner = ScanSessionRunner(
+            zscope_config,
+            resume=resume,
+            maintain=maintain,
+            discover_entries=discover_entries,
+            emit=click.echo,
+        )
+        session_result = session_runner.run()
 
-        if should_discover_entries:
-            from ..orchestration.entry_discovery import EntryDiscovery
-
-            logger.info("Entry discovery activated.")
-            click.echo("Discovering scan entries from headers, communication APIs, thread creation, and input sources...")
-            code_index = CodeIndex(
-                zscope_config.project.project_root,
-                zscope_config.project.compile_commands_path,
-                source_root=zscope_config.project.source_root,
-                indexing_config=zscope_config.indexing,
-                include_paths=zscope_config.project.include_paths,
-                exclude_paths=zscope_config.project.exclude_paths,
-            )
-            discovery_cfg = zscope_config.project.entry_discovery
-            discovery = EntryDiscovery(
-                code_index,
-                max_functions=discovery_cfg.max_functions,
-                header_files=discovery_cfg.header_files or None,
-            )
-            discovery_result = discovery.discover(max_candidates=discovery_cfg.max_candidates)
-            discovered_entries = discovery_result.to_function_entries()
-            click.echo(
-                f"Entry discovery: {discovery_result.exposure_kind}, "
-                f"{len(discovered_entries)} candidate(s), summary={discovery_result.summary}"
-            )
-            if not discovered_entries and zscope_config.project.entry_function:
-                click.echo("No discovered entries found; falling back to configured entry_function.")
-
-        # Detect batch mode vs single mode
-        if zscope_config.project.entry_functions_list or discovered_entries:
-            # Batch mode
-            if zscope_config.project.entry_functions_list:
-                logger.info(f"Batch mode activated: {zscope_config.project.entry_functions_list}")
-                entries = FunctionListLoader.load(zscope_config.project.entry_functions_list)
-                logger.info(f"Loaded {len(entries)} function entries")
-            else:
-                logger.info(f"Discovered batch mode activated: {len(discovered_entries)} entries")
-                entries = discovered_entries
-            
-            # Save the full entries list before slicing for resume
-            all_entries = list(entries)
-            skipped_entries = []
-            
-            if resume:
-                # --resume: skip already-completed functions (auto mode)
-                click.echo("Resuming scan: determining skip points from snapshot store...")
-                from ..core.snapshot_store import SnapshotStore
-                snapshot_store = SnapshotStore(Path(zscope_config.analysis.snapshot_dir))
-                
-                remaining = []
-                for e in entries:
-                    saved_report = snapshot_store.load_final_report(e.function_name)
-                    if saved_report and saved_report.get("overall_verdict") != "error":
-                        issues = saved_report.get("issues", [])
-                        has_pending = any(i.get("validation_status") == "pending" for i in issues)
-                        
-                        if has_pending:
-                            logger.info(f"Not auto-skipping '{e.function_name}': has pending validations.")
-                            remaining.append(e)
-                        else:
-                            logger.info(f"Auto-skipping '{e.function_name}': already successfully analyzed.")
-                            skipped_entries.append(e)
-                    else:
-                        remaining.append(e)
-                entries = remaining
-                click.echo(f"Skipped {len(skipped_entries)} already-completed functions, {len(entries)} remaining.")
-
-            # Build code index once (shared across all analyses)
-            logger.info("Building shared code index...")
-            if code_index is None:
-                code_index = CodeIndex(
-                    zscope_config.project.project_root,
-                    zscope_config.project.compile_commands_path,
-                    source_root=zscope_config.project.source_root,
-                    indexing_config=zscope_config.indexing,
-                    priority_functions=[e.function_name for e in entries],
-                    include_paths=zscope_config.project.include_paths,
-                    exclude_paths=zscope_config.project.exclude_paths,
-                )
-
-            # Create parallel analyzer with shared code index
-            #   default:   force_ignore_history=True,  maintain_mode=False
-            #   --resume:  force_ignore_history=False, maintain_mode=False
-            #   --maintain: force_ignore_history=False, maintain_mode=True
-            parallel_analyzer = ParallelAnalyzer(
-                zscope_config, 
-                code_index=code_index,
-                force_ignore_history=not (resume or maintain),
-                maintain_mode=maintain,
-            )
-
-            # Run batch analysis
-            results = parallel_analyzer.analyze_function_entries(entries)
-
-            # Generate reports
-            json_report_path = zscope_config.project.project_root / "zscope_batch_report.json"
-            md_report_path = zscope_config.project.project_root / "zscope_batch_report.md"
-
-            # For --resume-from: load skipped functions' issues from SQLite snapshot store
-            # (each function's final report is persisted to SQLite immediately after analysis,
-            #  so this is the reliable source of truth even if the previous run was Ctrl+C'd)
-            if skipped_entries:
-                from ..core.parallel_analyzer import ParallelAnalysisResult
-                from ..core.snapshot_store import SnapshotStore
-
-                snapshot_store = SnapshotStore(Path(zscope_config.analysis.snapshot_dir))
-                merged_count = 0
-
-                for entry in skipped_entries:
-                    fname = entry.function_name
-                    if fname in results:
-                        continue  # Already analyzed in this run (shouldn't happen, but be safe)
-
-                    saved_report = snapshot_store.load_final_report(fname)
-                    if saved_report:
-                        saved_issues = saved_report.get("issues", [])
-                        saved_verdict = saved_report.get("overall_verdict", "unknown")
-                        mock_result = ParallelAnalysisResult(
-                            function_name=fname,
-                            verdict=saved_verdict,
-                            issues=saved_issues,
-                            duration_seconds=0.0
-                        )
-                        results[fname] = mock_result
-                        merged_count += 1
-                    else:
-                        logger.warning(f"No saved report found in SQLite for skipped function '{fname}'")
-
-                if merged_count > 0:
-                    logger.info(f"Loaded {merged_count} skipped function reports from snapshot database.")
-
-            # Create a failsafe backup before overwriting existing report
-            if json_report_path.exists():
-                try:
-                    import shutil
-                    import time
-                    backup_dir = zscope_config.project.project_root / ".zscope_knowledge" / "backups"
-                    backup_dir.mkdir(parents=True, exist_ok=True)
-                    timestamp = time.strftime("%Y%m%d_%H%M%S")
-                    backup_path = backup_dir / f"zscope_batch_report_{timestamp}.json"
-                    shutil.copy2(json_report_path, backup_path)
-                    logger.info(f"Created failsafe backup of previous batch report at {backup_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to create backup of batch report: {e}")
-
-            combined_report = parallel_analyzer.generate_combined_report(results, json_report_path)
-            parallel_analyzer.generate_combined_markdown_report(results, md_report_path)
-
-            total_issues = combined_report["summary"]["total_issues"]
-            functions_analyzed = combined_report["summary"]["functions_analyzed"]
-
-            click.echo(f"\nBatch Analysis Complete.")
-            click.echo(f"Functions analyzed: {functions_analyzed}")
-            click.echo(f"Total issues found: {total_issues}")
-            click.echo(f"Reports saved: {json_report_path}, {md_report_path}")
-
-            # Force exit if interrupted to avoid hanging on thread pool cleanup
-            if getattr(parallel_analyzer, '_interrupted', False):
+        if session_result.is_batch:
+            reports = ", ".join(str(path) for path in session_result.reports)
+            click.echo("\nBatch Analysis Complete.")
+            click.echo(f"Functions analyzed: {session_result.functions_analyzed}")
+            click.echo(f"Total issues found: {session_result.issues_count}")
+            click.echo(f"Reports saved: {reports}")
+            if session_result.interrupted:
                 click.echo("[!] Exiting immediately due to prior interrupt.")
                 os._exit(1)
-
-            if total_issues > 0:
-                sys.exit(1)
-            else:
-                sys.exit(0)
         else:
-            # Single function mode
-            entry_function = zscope_config.project.entry_function
-            if not entry_function:
-                 click.echo("Error: No entry function or entry functions list provided.")
-                 sys.exit(1)
-
-            logger.info(f"Single mode: entry function = {entry_function}")
-
-            analyzer = Analyzer(
-                zscope_config,
-                force_ignore_history=not (resume or maintain),
-                maintain_mode=maintain,
+            click.echo(
+                f"\nAnalysis Complete. Verdict: {session_result.verdict}. "
+                f"Issues found: {session_result.issues_count}"
             )
-            result = analyzer.run()
+            click.echo(f"Reports saved in: {session_result.project_root}")
 
-            overall_verdict = result.get("overall_verdict", "unknown")
-            issues_count = len(result.get("issues", []))
-
-            click.echo(f"\nAnalysis Complete. Verdict: {overall_verdict}. Issues found: {issues_count}")
-            click.echo(f"Reports saved in: {zscope_config.project.project_root}")
-
-            if issues_count > 0:
-                sys.exit(1)
-            else:
-                sys.exit(0)
+        sys.exit(session_result.exit_code)
 
     except Exception as e:
         logger.error(f"Analysis failed: {e}", exc_info=True)

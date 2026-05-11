@@ -262,9 +262,11 @@ class SubAgentOrchestrator:
         reports: List[Dict[str, Any]] = []
         for ticket in tickets:
             skill = self.spec_registry.get_skill(ticket.skill)
+            agent = self.spec_registry.get_agent("deep_worker")
             input_data = {
                 "ticket": ticket.to_dict(),
                 "context_slice": ticket.context_slice,
+                "agent_contract": agent.to_prompt_block() if agent else "",
                 "skill_contract": skill.to_prompt_block() if skill else "",
                 "max_iterations": max_iterations,
             }

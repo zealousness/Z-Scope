@@ -23,6 +23,37 @@ class BaseAgent(ABC):
         self.name = name
         self.description = description
 
+    def _agent_system_prompt(
+        self,
+        input_data: Optional[Dict[str, Any]] = None,
+        *,
+        substitutions: Optional[Dict[str, Any]] = None,
+        active_skill_names: Optional[List[str]] = None,
+    ) -> str:
+        """Return the AGENT.md-backed system prompt for this agent."""
+        prompt = ""
+        if input_data:
+            prompt = str(input_data.get("agent_contract") or "")
+
+        if not prompt:
+            prompt = self._default_agent_contract(active_skill_names)
+
+        for key, value in (substitutions or {}).items():
+            prompt = prompt.replace("{" + key + "}", str(value))
+        return prompt
+
+    def _default_agent_contract(
+        self,
+        active_skill_names: Optional[List[str]] = None,
+    ) -> str:
+        from ..orchestration.specs import SpecRegistry
+
+        registry = SpecRegistry()
+        spec = registry.get_agent(self.name)
+        if not spec:
+            return self.description
+        return spec.to_prompt_block(active_skills=active_skill_names)
+
     @abstractmethod
     def run(self, input_data: Dict[str, Any]) -> AgentResponse:
         """Run the agent's logic."""
