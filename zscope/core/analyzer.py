@@ -9,7 +9,7 @@ import time
 import datetime
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, cast
+from typing import Any, Callable, Dict, List, Optional, Set, cast
 
 from ..config.config import ZScopeConfig
 from ..config.user_config_store import UserConfigStore
@@ -29,6 +29,17 @@ from ..orchestration.candidates import CandidateLedger
 from ..orchestration.skill_selection import SkillSelection, select_vulnerability_skills
 
 logger = logging.getLogger(__name__)
+
+WorkflowStepHandler = Callable[[Dict[str, Any], WorkflowStep], bool]
+
+DEFAULT_SCAN_STEP_IDS = (
+    "premodel_reachable_callees",
+    "model_entry",
+    "focused_subagent_planning",
+    "vulnerability_mining",
+    "validate_findings",
+    "persist_report",
+)
 
 
 # System Prompt Definitions
@@ -187,6 +198,9 @@ class Analyzer:
         self.candidate_ledger = candidate_ledger or CandidateLedger()
         self.workflow_progress: List[Dict[str, Any]] = []
         self.current_workflow_step: Optional[str] = None
+        self.workflow_step_handlers: Dict[str, WorkflowStepHandler] = (
+            self._build_workflow_step_handlers()
+        )
         
         self.analyzed_functions: Set[str] = set()
         self.issues: List[Issue] = []
@@ -279,14 +293,10 @@ class Analyzer:
     def _selected_workflow_steps(self) -> List[WorkflowStep]:
         if self.workflow_spec and self.workflow_spec.steps:
             return self.workflow_spec.steps
-        return [
-            WorkflowStep(id="premodel_reachable_callees"),
-            WorkflowStep(id="model_entry"),
-            WorkflowStep(id="focused_subagent_planning"),
-            WorkflowStep(id="vulnerability_mining"),
-            WorkflowStep(id="validate_findings"),
-            WorkflowStep(id="persist_report"),
-        ]
+        return self._default_scan_steps()
+
+    def _default_scan_steps(self) -> List[WorkflowStep]:
+        return [WorkflowStep(id=step_id) for step_id in DEFAULT_SCAN_STEP_IDS]
 
     def _execute_workflow_steps(self, state: Dict[str, Any], steps: List[WorkflowStep]) -> None:
         for step in steps:
@@ -301,41 +311,97 @@ class Analyzer:
                 raise
 
     def _execute_workflow_step(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
-        step_id = step.id
-        if step_id in {"discover_entries", "merge_skipped_reports"}:
-            logger.info("[workflow] Step '%s' is handled by the CLI layer.", step_id)
-            return False
-        if step_id in {"load_snapshot_state", "compare_hashes"}:
-            self._load_history_state(state)
-            return False
-        if step_id == "reuse_unchanged":
-            return self._reuse_unchanged_report(state)
-        if step_id == "reconcile_changed":
-            self._reconcile_changed_issues(state)
-            return False
-        if step_id in {"analyze_remaining", "rescan_changed"}:
-            self._execute_default_scan_subworkflow(state)
-            return True
-        if step_id == "premodel_reachable_callees":
-            self._step_premodel_reachable_callees(state)
-            return False
-        if step_id == "model_entry":
-            self._step_model_entry(state)
-            return False
-        if step_id == "focused_subagent_planning":
-            self._step_focused_subagent_planning(state)
-            return False
-        if step_id == "vulnerability_mining":
-            self._step_vulnerability_mining(state)
-            return False
-        if step_id == "validate_findings":
-            self._step_validate_findings(state)
-            return False
-        if step_id == "persist_report":
-            self._build_final_report(state)
-            return False
+        handler = self.workflow_step_handlers.get(step.id)
+        if not handler:
+            known_steps = ", ".join(sorted(self.workflow_step_handlers))
+            workflow_name = (
+                self.workflow_spec.name
+                if self.workflow_spec
+                else self.config.analysis.workflow_name
+            )
+            raise ValueError(
+                f"Unknown workflow step '{step.id}' in workflow '{workflow_name}'. "
+                f"Known steps: {known_steps}"
+            )
+        return handler(state, step)
 
-        logger.warning("[workflow] Unknown workflow step '%s'; skipping.", step_id)
+    def _build_workflow_step_handlers(self) -> Dict[str, WorkflowStepHandler]:
+        return {
+            "discover_entries": self._handle_cli_managed_step,
+            "merge_skipped_reports": self._handle_cli_managed_step,
+            "load_snapshot_state": self._handle_load_history_state,
+            "compare_hashes": self._handle_load_history_state,
+            "reuse_unchanged": self._handle_reuse_unchanged_report,
+            "reconcile_changed": self._handle_reconcile_changed_issues,
+            "analyze_remaining": self._handle_default_scan_subworkflow,
+            "rescan_changed": self._handle_default_scan_subworkflow,
+            "premodel_reachable_callees": self._handle_premodel_reachable_callees,
+            "model_entry": self._handle_model_entry,
+            "focused_subagent_planning": self._handle_focused_subagent_planning,
+            "vulnerability_mining": self._handle_vulnerability_mining,
+            "validate_findings": self._handle_validate_findings,
+            "persist_report": self._handle_persist_report,
+        }
+
+    def _handle_cli_managed_step(
+        self, state: Dict[str, Any], step: WorkflowStep
+    ) -> bool:
+        logger.info("[workflow] Step '%s' is handled by the CLI layer.", step.id)
+        return False
+
+    def _handle_load_history_state(
+        self, state: Dict[str, Any], step: WorkflowStep
+    ) -> bool:
+        self._load_history_state(state)
+        return False
+
+    def _handle_reuse_unchanged_report(
+        self, state: Dict[str, Any], step: WorkflowStep
+    ) -> bool:
+        return self._reuse_unchanged_report(state)
+
+    def _handle_reconcile_changed_issues(
+        self, state: Dict[str, Any], step: WorkflowStep
+    ) -> bool:
+        self._reconcile_changed_issues(state)
+        return False
+
+    def _handle_default_scan_subworkflow(
+        self, state: Dict[str, Any], step: WorkflowStep
+    ) -> bool:
+        self._execute_default_scan_subworkflow(state)
+        return True
+
+    def _handle_premodel_reachable_callees(
+        self, state: Dict[str, Any], step: WorkflowStep
+    ) -> bool:
+        self._step_premodel_reachable_callees(state)
+        return False
+
+    def _handle_model_entry(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
+        self._step_model_entry(state)
+        return False
+
+    def _handle_focused_subagent_planning(
+        self, state: Dict[str, Any], step: WorkflowStep
+    ) -> bool:
+        self._step_focused_subagent_planning(state)
+        return False
+
+    def _handle_vulnerability_mining(
+        self, state: Dict[str, Any], step: WorkflowStep
+    ) -> bool:
+        self._step_vulnerability_mining(state)
+        return False
+
+    def _handle_validate_findings(
+        self, state: Dict[str, Any], step: WorkflowStep
+    ) -> bool:
+        self._step_validate_findings(state)
+        return False
+
+    def _handle_persist_report(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
+        self._build_final_report(state)
         return False
 
     def _execute_default_scan_subworkflow(self, state: Dict[str, Any]) -> None:
@@ -344,15 +410,7 @@ class Analyzer:
         if not state.get("history_reconciled"):
             self._reconcile_changed_issues(state)
 
-        substeps = [
-            WorkflowStep(id="premodel_reachable_callees"),
-            WorkflowStep(id="model_entry"),
-            WorkflowStep(id="focused_subagent_planning"),
-            WorkflowStep(id="vulnerability_mining"),
-            WorkflowStep(id="validate_findings"),
-            WorkflowStep(id="persist_report"),
-        ]
-        self._execute_workflow_steps(state, substeps)
+        self._execute_workflow_steps(state, self._default_scan_steps())
 
     def _begin_workflow_step(self, step: WorkflowStep) -> None:
         self.current_workflow_step = step.id
