@@ -6,9 +6,13 @@ Supports pluggable backends (Joern / Clang-SQLite / regex fallback).
 import logging
 import re
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Sequence, Union
+from typing import Optional, Dict, Any, Iterable, List, Sequence, Union
 
-from ..common.utils import extract_function_calls, normalize_path
+from ..common.utils import (
+    extract_function_calls,
+    is_likely_function_call_identifier,
+    normalize_path,
+)
 from .backend_base import CodeBackend
 
 logger = logging.getLogger(__name__)
@@ -277,8 +281,17 @@ class CodeIndex:
 
     # ── Core retrieval methods ──
 
-    def get_function_impl(self, func_name: str, max_lines: int = 500) -> Optional[Dict[str, Any]]:
+    def get_function_impl(
+        self,
+        func_name: str,
+        max_lines: int = 500,
+        warn_missing: bool = True,
+    ) -> Optional[Dict[str, Any]]:
         """Get function implementation."""
+        if not is_likely_function_call_identifier(func_name):
+            logger.debug("Identifier '%s' is not a function call target", func_name)
+            return None
+
         # Try backend lookup if not in index
         if func_name not in self._function_index and self._backend:
             m = self._backend.get_method(func_name)
@@ -295,7 +308,8 @@ class CodeIndex:
             macro_result = self._find_macro_definition(func_name)
             if macro_result:
                 return macro_result
-            logger.warning(f"Function '{func_name}' not found in index")
+            if warn_missing:
+                logger.warning(f"Function '{func_name}' not found in index")
             return None
 
         func_info = self._function_index[func_name]
@@ -313,9 +327,11 @@ class CodeIndex:
             # Get callees from backend if available, else regex
             if self._backend:
                 callee_data = self._backend.get_method_callees(func_name)
-                callees = [c["name"] for c in callee_data if c.get("name")]
+                callees = self._filter_callee_names(
+                    c["name"] for c in callee_data if c.get("name")
+                )
             else:
-                callees = list(set(extract_function_calls(code)))
+                callees = self._filter_callee_names(extract_function_calls(code))
 
             return {
                 "func_name": func_name,
@@ -382,7 +398,7 @@ class CodeIndex:
         """Get functions called by the given function."""
         if not self._backend:
             return []
-        return self._backend.get_callees(func_name, limit=limit)
+        return self._filter_callee_records(self._backend.get_callees(func_name, limit=limit))
 
     def get_type_info(self, type_name: str) -> Optional[Dict[str, Any]]:
         """Get struct/union/enum definition and members."""
@@ -529,6 +545,28 @@ class CodeIndex:
         resolved = self._resolve_file_path(info["file"])
         file_path = normalize_path(resolved, self.project_root)
         return f"{file_path}:{info['start_line']}-{info['end_line']}"
+
+    def _filter_callee_names(self, names: Iterable[str]) -> List[str]:
+        """Filter obvious C pseudo-callees while preserving order."""
+        filtered = []
+        seen = set()
+        for name in names:
+            if not is_likely_function_call_identifier(name) or name in seen:
+                continue
+            seen.add(name)
+            filtered.append(name)
+        return filtered
+
+    def _filter_callee_records(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        filtered = []
+        seen = set()
+        for record in records:
+            name = record.get("name")
+            if not is_likely_function_call_identifier(name) or name in seen:
+                continue
+            seen.add(name)
+            filtered.append(record)
+        return filtered
 
     def close(self):
         """Close backend resources."""

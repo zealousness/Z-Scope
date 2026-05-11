@@ -974,7 +974,7 @@ class Analyzer:
         """Load a snapshot, or build and persist one under the snapshot lock."""
         existing = self.snapshot_store.load_snapshot(func_name, file_path=file_path)
         if existing is not None:
-            impl_for_refresh = self.code_index.get_function_impl(func_name)
+            impl_for_refresh = self.code_index.get_function_impl(func_name, warn_missing=False)
             if not impl_for_refresh:
                 return {"success": True, "data": existing}
             impl_file_for_refresh = str(impl_for_refresh.get("file") or "unknown")
@@ -1018,7 +1018,7 @@ class Analyzer:
 
         try:
             snapshot = self.snapshot_store.load_snapshot(func_name, file_path=file_path)
-            impl = self.code_index.get_function_impl(func_name)
+            impl = self.code_index.get_function_impl(func_name, warn_missing=False)
             if not impl:
                 self.snapshot_store.lock_manager.release(
                     func_name, success=snapshot is not None
@@ -1190,11 +1190,13 @@ class Analyzer:
             for c in callee_names:
                 if c in visited:
                     continue
-                impl = self.code_index.get_function_impl(c)
+                impl = self.code_index.get_function_impl(c, warn_missing=False)
                 if impl is not None:
                     impl_cache[c] = impl
                     resolvable.append(c)
                     queue.append((c, depth + 1))
+                else:
+                    logger.debug("[premodel] Skipping unresolved callee '%s'", c)
 
             callee_graph[func] = resolvable
 
@@ -1235,7 +1237,9 @@ class Analyzer:
 
             # status == "acquired"：由当前 Worker 建模
             try:
-                impl = impl_cache.get(func) or self.code_index.get_function_impl(func)
+                impl = impl_cache.get(func) or self.code_index.get_function_impl(
+                    func, warn_missing=False
+                )
                 if not impl:
                     self.snapshot_store.lock_manager.release(func, success=False)
                     continue

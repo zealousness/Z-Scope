@@ -21,7 +21,9 @@ class GetFunctionImplTool(BaseTool):
             
         max_lines = arguments.get("max_lines", 200)
         
-        result = self.code_index.get_function_impl(func_name, max_lines=max_lines)
+        result = self.code_index.get_function_impl(
+            func_name, max_lines=max_lines, warn_missing=False
+        )
         if result is None:
             if self.user_config:
                 ext = self.user_config.get_external_function(func_name)

@@ -14,6 +14,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
+from ..common.utils import is_likely_function_call_identifier
 from .knowledge_db import KnowledgeDB
 
 logger = logging.getLogger(__name__)
@@ -504,25 +505,9 @@ class ClangExtractor:
 
             # 匹配函数调用: identifier(
             call_pattern = re.compile(r"\b([a-zA-Z_]\w*)\s*\(")
-            c_keywords = {
-                "if",
-                "else",
-                "for",
-                "while",
-                "do",
-                "switch",
-                "case",
-                "return",
-                "sizeof",
-                "typeof",
-                "alignof",
-                "static_assert",
-                "defined",
-            }
-
             for m in call_pattern.finditer(body):
                 callee = m.group(1)
-                if callee not in c_keywords and callee != caller_name:
+                if is_likely_function_call_identifier(callee) and callee != caller_name:
                     # 计算在当前多行 body 中的绝对偏移（为 LSP 查询做准确定位）
                     match_start_idx = m.start(1)
                     prefix = body[:match_start_idx]
@@ -680,7 +665,11 @@ class ClangExtractor:
                 for call in outgoing:
                     target = call.get("to", {}) if isinstance(call, dict) else {}
                     callee = target.get("name", "")
-                    if not callee:
+                    if (
+                        not is_likely_function_call_identifier(callee)
+                        or callee == caller_name
+                        or self._looks_like_member_name(callee)
+                    ):
                         continue
                     callee_file = self._uri_to_project_path(target.get("uri", ""))
                     call_line = self._call_line_from_ranges(call.get("fromRanges", []), start_line)
@@ -714,35 +703,10 @@ class ClangExtractor:
             masked_body = self._mask_c_comments_and_literals(body)
 
             call_pattern = re.compile(r"\b([a-zA-Z_]\w*)\s*\(")
-            c_keywords = {
-                "if",
-                "else",
-                "for",
-                "while",
-                "do",
-                "switch",
-                "case",
-                "return",
-                "sizeof",
-                "typeof",
-                "alignof",
-                "static_assert",
-                "defined",
-                "asm",
-                "__asm",
-                "__asm__",
-                "__volatile",
-                "__volatile__",
-                "__attribute",
-                "__attribute__",
-                "__declspec",
-                "__extension__",
-            }
-
             for m in call_pattern.finditer(masked_body):
                 callee = m.group(1)
                 if (
-                    callee in c_keywords
+                    not is_likely_function_call_identifier(callee)
                     or callee == caller_name
                     or self._looks_like_member_call(masked_body, m.start(1))
                 ):
@@ -815,6 +779,9 @@ class ClangExtractor:
         if i >= 0 and text[i] == ".":
             return True
         return i >= 1 and text[i - 1 : i + 1] == "->"
+
+    def _looks_like_member_name(self, name: str) -> bool:
+        return "." in name or "->" in name or "::" in name
 
     def _mask_c_comments_and_literals(self, text: str) -> str:
         chars = list(text)

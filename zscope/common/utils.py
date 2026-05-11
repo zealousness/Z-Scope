@@ -9,6 +9,39 @@ from pathlib import Path
 from typing import Optional, Union
 
 
+C_NON_CALL_IDENTIFIERS = {
+    "if",
+    "else",
+    "for",
+    "while",
+    "do",
+    "switch",
+    "case",
+    "return",
+    "sizeof",
+    "typeof",
+    "alignof",
+    "static_assert",
+    "defined",
+    "_Generic",
+    "offsetof",
+    "asm",
+    "__asm",
+    "__asm__",
+    "__volatile",
+    "__volatile__",
+    "__attribute",
+    "__attribute__",
+    "__declspec",
+    "__extension__",
+}
+
+
+def is_likely_function_call_identifier(name: object) -> bool:
+    """Return whether an identifier is plausible as a C function call target."""
+    return isinstance(name, str) and bool(name) and name not in C_NON_CALL_IDENTIFIERS
+
+
 def setup_logging(verbose: bool = False) -> None:
     """Setup logging configuration."""
     level = logging.DEBUG if verbose else logging.INFO
@@ -151,13 +184,7 @@ def extract_function_calls(code: str) -> list[str]:
     pattern = r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\("
     matches = re.findall(pattern, code)
     
-    # Filter out common keywords that aren't function calls
-    keywords = {
-        "if", "while", "for", "switch", "return", "sizeof", "typeof",
-        "static_assert", "alignof", "_Generic", "offsetof"
-    }
-    
-    return [m for m in matches if m not in keywords]
+    return [m for m in matches if is_likely_function_call_identifier(m)]
 
 
 def truncate_string(s: str, max_length: int = 1000, ellipsis: str = "...") -> str:
