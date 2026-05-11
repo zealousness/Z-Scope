@@ -3,15 +3,26 @@ mode: maintain
 description: Incremental maintenance scan that reuses unchanged function reports.
 entry_strategy: configured_or_discovered
 steps:
+  - id: discover_entries
+    scope: session
+    handler: discover_entries
+    required: false
+    action: classify API, communication, thread, and other user-input entries when requested
   - id: compare_hashes
+    scope: entry
     action: compare code and semantic hashes in snapshot.db
   - id: reuse_unchanged
+    scope: entry
+    stop_policy: stop_if_handler_returns_true
     action: return historical reports for unchanged entries with zero LLM cost
   - id: reconcile_changed
+    scope: entry
     agent: issue_reconciler_agent
     action: verify whether historical issues still exist after source changes
     skills:
       - evidence_validation
   - id: rescan_changed
+    scope: entry
+    stop_policy: stop_if_handler_returns_true
     agent: vulnerability_analyzer
     action: run default vulnerability workflow only for changed entries

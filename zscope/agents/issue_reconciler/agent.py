@@ -1,20 +1,12 @@
-from typing import Dict, Any, List
+from typing import Any, Dict
 import json
 import logging
-from ...framework.base import BaseAgent, AgentResponse
+
+from ..base import ToolCallingAgent
+from ...framework.base import AgentResponse
 from ...framework.llm_client import LLMClient
 
 logger = logging.getLogger(__name__)
-
-SYSTEM_PROMPT = """You are the Issue Reconciler for Z-SCOPE, a world-class static analysis tool.
-Your job is to reconcile historical vulnerabilities with newly discovered ones, or verify if an old vulnerability has been fixed in changed code.
-
-Focus purely on the logic and semantics of the vulnerabilities. Do not be distracted by minor formatting changes or line number shifts.
-
-You will be called in one of two modes:
-1. `deduplicate`: Given a list of historical issues and a new issue, determine if the new issue is fundamentally the same as any of the historical issues.
-2. `verify_fix`: Given a historical issue and the updated source code of the function, determine if the issue still exists in the new code.
-"""
 
 DEDUPLICATE_PROMPT = """Mode: Deduplicate
 
@@ -77,93 +69,83 @@ Or if it is fixed:
 ```
 """
 
-class IssueReconcilerAgent(BaseAgent):
+
+class IssueReconcilerAgent(ToolCallingAgent):
     """Agent for reconciling historical issues with new code or new findings."""
-    
+
     def __init__(self, llm_client: LLMClient):
         super().__init__(
-            name="issue_reconciler",
-            description="Reconciles historical issues with new analysis results."
+            name="issue_reconciler_agent",
+            description="Reconciles historical issues with new analysis results.",
+            llm_client=llm_client,
+            tools=[],
         )
-        self.llm_client = llm_client
 
     def run(self, input_data: Dict[str, Any], max_iterations: int = 2) -> AgentResponse:
         mode = input_data.get("mode")
-        
+
         if mode == "deduplicate":
             return self._run_deduplicate(input_data)
-        elif mode == "verify_fix":
+        if mode == "verify_fix":
             return self._run_verify_fix(input_data)
-        else:
-            return AgentResponse(success=False, data={}, error=f"Unknown mode: {mode}")
+        return AgentResponse(success=False, data={}, error=f"Unknown mode: {mode}")
 
     def _run_deduplicate(self, input_data: Dict[str, Any]) -> AgentResponse:
         hist_issues = input_data.get("historical_issues", [])
         new_issue = input_data.get("new_issue", {})
-        
+
         if not hist_issues:
             return AgentResponse(success=True, data={"is_duplicate": False})
-            
-        # To avoid context limits, we only send essential parts of historical issues
+
         minimal_hist = []
         for issue in hist_issues:
-            minimal_hist.append({
-                "id": issue.get("id"),
-                "subcategory": issue.get("subcategory"),
-                "description": issue.get("description"),
-                "code_snippet": issue.get("code_snippet"),
-                "location": issue.get("location")
-            })
+            minimal_hist.append(
+                {
+                    "id": issue.get("id"),
+                    "subcategory": issue.get("subcategory"),
+                    "description": issue.get("description"),
+                    "code_snippet": issue.get("code_snippet"),
+                    "location": issue.get("location"),
+                }
+            )
 
         prompt = DEDUPLICATE_PROMPT.format(
             historical_issues=json.dumps(minimal_hist, ensure_ascii=False, indent=2),
-            new_issue=json.dumps(new_issue, ensure_ascii=False, indent=2)
+            new_issue=json.dumps(new_issue, ensure_ascii=False, indent=2),
         )
-        
         return self._call_llm(prompt)
 
     def _run_verify_fix(self, input_data: Dict[str, Any]) -> AgentResponse:
         hist_issue = input_data.get("historical_issue", {})
         new_code = input_data.get("new_code", "")
-        
+
         prompt = VERIFY_FIX_PROMPT.format(
             historical_issue=json.dumps(hist_issue, ensure_ascii=False, indent=2),
-            new_code=new_code
+            new_code=new_code,
         )
-        
         return self._call_llm(prompt)
 
     def _call_llm(self, user_prompt: str) -> AgentResponse:
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt}
-        ]
-
         try:
-            result = self.llm_client.run_conversation_with_tools(
-                messages=messages,
-                tools_schema=[],
-                tool_executor=lambda n, a: {},
+            result = self._run_tool_conversation(
+                self._messages({}, user_prompt),
                 max_iterations=1,
-                trace_agent=self.name,
                 trace_label=self._trace_label(user_prompt),
             )
-            
-            content = result["content"]
-            from ...common.utils import extract_json_blocks
-            json_blocks = extract_json_blocks(content)
-            
-            if not json_blocks:
-                logger.error(f"Failed to parse JSON from IssueReconciler: {content}")
+            decision = self._extract_first_json(
+                str(result.get("content") or ""),
+                result,
+                result.get("conversation", []),
+            )
+            if not isinstance(decision, dict):
+                logger.error("Failed to parse JSON from IssueReconciler: %s", result.get("content", ""))
                 return AgentResponse(success=False, data={}, error="No JSON block found")
 
-            decision = json_blocks[0]
-            logger.debug(f"IssueReconciler decision: {decision}")
+            logger.debug("IssueReconciler decision: %s", decision)
             return AgentResponse(success=True, data=decision)
-            
-        except Exception as e:
-            logger.exception(f"IssueReconciler agent failed")
-            return AgentResponse(success=False, data={}, error=str(e))
+        except Exception as exc:
+            logger.exception("IssueReconciler agent failed")
+            return AgentResponse(success=False, data={}, error=str(exc))
 
     @staticmethod
     def _trace_label(user_prompt: str) -> str:

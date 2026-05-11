@@ -31,6 +31,16 @@ def _as_list(value: Any) -> List[str]:
     return []
 
 
+def _as_bool(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value)
+
+
 def _read_frontmatter(path: Path) -> Tuple[Dict[str, Any], str]:
     text = path.read_text(encoding="utf-8")
     if text.startswith("---"):
@@ -149,11 +159,15 @@ class AgentSpec:
 @dataclass
 class WorkflowStep:
     id: str
+    scope: str = "entry"
+    handler: str = ""
     agent: str = ""
     action: str = ""
     skills: List[str] = field(default_factory=list)
     context_policy: str = ""
     spawn_policy: str = ""
+    stop_policy: str = "continue"
+    required: bool = True
 
 
 @dataclass
@@ -179,11 +193,15 @@ class WorkflowSpec:
             steps.append(
                 WorkflowStep(
                     id=str(raw.get("id") or f"step_{idx + 1}"),
+                    scope=str(raw.get("scope") or "entry"),
+                    handler=str(raw.get("handler") or ""),
                     agent=str(raw.get("agent") or ""),
                     action=str(raw.get("action") or ""),
                     skills=_as_list(raw.get("skills")),
                     context_policy=str(raw.get("context_policy") or ""),
                     spawn_policy=str(raw.get("spawn_policy") or ""),
+                    stop_policy=str(raw.get("stop_policy") or "continue"),
+                    required=_as_bool(raw.get("required"), True),
                 )
             )
         return cls(
@@ -205,8 +223,10 @@ class WorkflowSpec:
         ]
         for step in self.steps:
             lines.append(
-                f"- {step.id}: agent={step.agent}, action={step.action}, "
-                f"skills={','.join(step.skills) or 'none'}, spawn={step.spawn_policy or 'none'}"
+                f"- {step.id}: scope={step.scope}, handler={step.handler or step.id}, "
+                f"agent={step.agent}, action={step.action}, "
+                f"skills={','.join(step.skills) or 'none'}, spawn={step.spawn_policy or 'none'}, "
+                f"stop={step.stop_policy}"
             )
         return "\n".join(lines)
 

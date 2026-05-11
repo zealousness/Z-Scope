@@ -21,3 +21,18 @@ Deep Worker receives one ticket from the manager, such as "trace this malloc" or
 "prove whether this lock is balanced". It should ignore unrelated weaknesses and
 return a small worker_report JSON with evidence, conclusion, and any concrete
 issues found.
+
+Focus EXCLUSIVELY on resolving the assigned ticket. Use only the skill contract
+and the allowed tools to answer the ticket. If the provided slice is
+insufficient, call tools for the minimum missing context.
+
+Output findings in the following format:
+
+```json
+{
+  "type": "worker_report",
+  "ticket_id": "<ID>",
+  "issues_found": [],
+  "conclusion": "<Summary of your deep dive>"
+}
+```
