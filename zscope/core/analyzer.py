@@ -9,7 +9,7 @@ import time
 import datetime
 import re
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, cast
+from typing import Any, Dict, List, Optional, Set, cast
 
 from ..config.config import ZScopeConfig
 from ..config.user_config_store import UserConfigStore
@@ -24,13 +24,12 @@ from .report import FinalReport, Issue, ReportGenerator
 from ..common.utils import validate_json_schema
 from .._version import __version__
 from ..orchestration.specs import SpecRegistry, WorkflowStep
+from ..orchestration.workflow_executor import WorkflowExecutor, WorkflowStepHandler
 from ..orchestration.subagents import SubAgentOrchestrator
 from ..orchestration.candidates import CandidateLedger
 from ..orchestration.skill_selection import SkillSelection, select_vulnerability_skills
 
 logger = logging.getLogger(__name__)
-
-WorkflowStepHandler = Callable[[Dict[str, Any], WorkflowStep], bool]
 
 DEFAULT_SCAN_STEP_IDS = (
     "premodel_reachable_callees",
@@ -40,119 +39,6 @@ DEFAULT_SCAN_STEP_IDS = (
     "validate_findings",
     "persist_report",
 )
-
-
-# System Prompt Definitions
-SYSTEM_PROMPT = """You are Z-SCOPE, an advanced static analysis engine for C/C++ projects.
-Detect REAL defects: functionality bugs, reliability issues, performance bottlenecks, race conditions, resource leaks.
-Do NOT report stylistic issues, naming conventions, or readability suggestions.
-
-PROCESS:
-1. Analyze the given entry function thoroughly: logic, resource management, error handling.
-2. Use 'get_function_impl' or 'get_function_snapshot' tools to understand callees. Do not guess callee behavior.
-3. Standard library functions (malloc, printf, etc.) need not be analyzed unless misused.
-4. Depth-limited analysis: max depth 3.
-5. For every function analyzed, output a 'function_snapshot' JSON (serves as cache).
-6. Finally, output a 'final_report' JSON with all found issues.
-
-OUTPUT FORMATS:
-Output JSON blocks wrapped in ```json ... ``` for each phase.
-
-[Function Snapshot] - Output after analyzing each function:
-
-```json
-{
-  "type": "function_snapshot",
-  "func_name": "cache_get",
-  "location": "src/cache_core.c:140",
-  "summary": "从缓存中查找key对应的值，复制到输出缓冲区",
-  "inputs": [{"name": "handle", "type": "cache_t*", "role": "缓存句柄"}, {"name": "key", "type": "const char*", "role": "查找键"}],
-  "outputs": [{"kind": "return", "type": "int", "meaning": "0成功，-1失败"}],
-  "resources": {
-    "allocates_memory": false,
-    "frees_memory": false,
-    "locks": [{"lock": "handle->mutex", "mode": "exclusive", "balanced": true}],
-    "file_io": false,
-    "network_io": false
-  },
-  "error_handling": {
-    "checks_parameters": true,
-    "checks_alloc_failure": false,
-    "rollback_on_error": "full"
-  },
-  "concurrency": {
-    "thread_safe": "likely_yes",
-    "uses_global_state": false
-  },
-  "semantic_fingerprint": {
-    "normalized_hash_hint": "lookup key in hash table, copy value to output buffer",
-    "key_semantics": ["mutex protected", "memcpy without size check"]
-  },
-  "suspicious_points": [
-    {
-      "location": "src/cache_core.c:155",
-      "type": "buffer_overflow",
-      "description": "memcpy未检查目标缓冲区大小",
-      "confidence": 0.85,
-      "impact_category": "reliability"
-    }
-  ],
-  "callees": ["hash_lookup", "memcpy"]
-}
-```
-
-[Final Report] - Output after completing the entire analysis:
-
-```json
-{
-  "type": "final_report",
-  "entry_function": "cache_get",
-  "overall_verdict": "issues_found",
-  "issues": [
-    {
-      "id": "ISSUE_1",
-      "function": "cache_get",
-      "location": "cache_get:28",
-      "code_snippet": "memcpy(value_out, node->value, node->value_size);",
-      "category": "reliability",
-      "subcategory": "buffer_overflow",
-      "description": "memcpy未检查目标缓冲区大小，可能导致堆溢出",
-      "root_cause": "开发者未将buffer_size纳入memcpy的大小限制",
-      "suggested_fix": "在memcpy前添加大小检查",
-      "confidence": 0.85,
-      "impact_level": "high"
-    }
-  ],
-  "notes": ["已分析3个被调用函数"]
-}
-```
-
-Field rules for final_report:
-- overall_verdict: one of no_issue_found, issues_found, insufficient_info
-- location: "function_name:LINE_NUMBER" where LINE_NUMBER is a relative line offset within the function (starting from 1). Output ONLY digits, no text.
-- code_snippet: copy the exact problematic code lines from the source, do not modify
-- category: one of functionality, reliability, performance
-- confidence: a decimal number between 0 and 1
-- impact_level: one of low, medium, high, critical
-- description, root_cause, suggested_fix: 用中文描述
-
-[Refresh Decision] - Output when comparing old snapshot with new code:
-
-```json
-{
-  "type": "snapshot_refresh_decision",
-  "func_name": "cache_get",
-  "refresh_needed": true,
-  "reason": "memcpy调用新增了size参数检查",
-  "what_changed": ["添加了buffer_size边界检查", "修改了错误返回路径"],
-  "risk_if_not_refreshed": "high"
-}
-```
-
-- refresh_needed: true or false
-- risk_if_not_refreshed: one of low, medium, high
-- reason, what_changed: 用中文描述
-"""
 
 
 class Analyzer:
@@ -201,6 +87,13 @@ class Analyzer:
         self.workflow_step_handlers: Dict[str, WorkflowStepHandler] = (
             self._build_workflow_step_handlers()
         )
+        self.workflow_executor = WorkflowExecutor(
+            workflow_name=self.workflow_spec.name if self.workflow_spec else config.analysis.workflow_name,
+            scope="entry",
+            handlers=self.workflow_step_handlers,
+            progress=self.workflow_progress,
+        )
+        self.workflow_executor.validate(self._selected_workflow_steps())
         
         self.analyzed_functions: Set[str] = set()
         self.issues: List[Issue] = []
@@ -219,7 +112,8 @@ class Analyzer:
         )
 
         steps = self._selected_workflow_steps()
-        self._execute_workflow_steps(state, steps)
+        self.workflow_executor.execute(state, steps)
+        self.current_workflow_step = self.workflow_executor.current_step
 
         if state.get("final_report_dict"):
             return self._finalize_returned_report(state)
@@ -298,37 +192,8 @@ class Analyzer:
     def _default_scan_steps(self) -> List[WorkflowStep]:
         return [WorkflowStep(id=step_id) for step_id in DEFAULT_SCAN_STEP_IDS]
 
-    def _execute_workflow_steps(self, state: Dict[str, Any], steps: List[WorkflowStep]) -> None:
-        for step in steps:
-            self._begin_workflow_step(step)
-            try:
-                should_stop = self._execute_workflow_step(state, step)
-                self._finish_workflow_step(step, "completed")
-                if should_stop:
-                    return
-            except Exception as exc:
-                self._finish_workflow_step(step, "failed", str(exc))
-                raise
-
-    def _execute_workflow_step(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
-        handler = self.workflow_step_handlers.get(step.id)
-        if not handler:
-            known_steps = ", ".join(sorted(self.workflow_step_handlers))
-            workflow_name = (
-                self.workflow_spec.name
-                if self.workflow_spec
-                else self.config.analysis.workflow_name
-            )
-            raise ValueError(
-                f"Unknown workflow step '{step.id}' in workflow '{workflow_name}'. "
-                f"Known steps: {known_steps}"
-            )
-        return handler(state, step)
-
     def _build_workflow_step_handlers(self) -> Dict[str, WorkflowStepHandler]:
         return {
-            "discover_entries": self._handle_cli_managed_step,
-            "merge_skipped_reports": self._handle_cli_managed_step,
             "load_snapshot_state": self._handle_load_history_state,
             "compare_hashes": self._handle_load_history_state,
             "reuse_unchanged": self._handle_reuse_unchanged_report,
@@ -342,12 +207,6 @@ class Analyzer:
             "validate_findings": self._handle_validate_findings,
             "persist_report": self._handle_persist_report,
         }
-
-    def _handle_cli_managed_step(
-        self, state: Dict[str, Any], step: WorkflowStep
-    ) -> bool:
-        logger.info("[workflow] Step '%s' is handled by the CLI layer.", step.id)
-        return False
 
     def _handle_load_history_state(
         self, state: Dict[str, Any], step: WorkflowStep
@@ -410,38 +269,7 @@ class Analyzer:
         if not state.get("history_reconciled"):
             self._reconcile_changed_issues(state)
 
-        self._execute_workflow_steps(state, self._default_scan_steps())
-
-    def _begin_workflow_step(self, step: WorkflowStep) -> None:
-        self.current_workflow_step = step.id
-        record = {
-            "index": len(self.workflow_progress) + 1,
-            "id": step.id,
-            "agent": step.agent,
-            "action": step.action,
-            "status": "running",
-            "started_at": datetime.datetime.now().isoformat(),
-        }
-        self.workflow_progress.append(record)
-        workflow_name = self.workflow_spec.name if self.workflow_spec else self.config.analysis.workflow_name
-        logger.info(
-            "[workflow:%s] step %d start: %s%s",
-            workflow_name,
-            record["index"],
-            step.id,
-            f" ({step.action})" if step.action else "",
-        )
-
-    def _finish_workflow_step(self, step: WorkflowStep, status: str, error: str = "") -> None:
-        for record in reversed(self.workflow_progress):
-            if record["id"] == step.id and record["status"] == "running":
-                record["status"] = status
-                record["finished_at"] = datetime.datetime.now().isoformat()
-                if error:
-                    record["error"] = error
-                break
-        logger.info("[workflow] step %s %s", step.id, status)
-        self.current_workflow_step = None
+        self.workflow_executor.execute(state, self._default_scan_steps())
 
     def _load_history_state(self, state: Dict[str, Any]) -> None:
         if state.get("history_loaded"):
@@ -979,7 +807,7 @@ class Analyzer:
             "workflow": self.workflow_spec.name if self.workflow_spec else self.config.analysis.workflow_name,
             "workflow_mode": self.workflow_spec.mode if self.workflow_spec else self.config.analysis.workflow_name,
             "workflow_progress": list(self.workflow_progress),
-            "current_workflow_step": self.current_workflow_step,
+            "current_workflow_step": self.workflow_executor.current_step,
             "subagent_candidate_count": len(state.get("subagent_candidates", [])),
             "subagent_ticket_count": len(state.get("subagent_ticket_plan", [])),
             "subagent_unassigned_count": len(state.get("subagent_unassigned_candidates", [])),
@@ -1033,6 +861,23 @@ class Analyzer:
             context["skill_contracts"] = "\n\n".join(skill.to_prompt_block() for skill in skills)
         else:
             context.pop("skill_contracts", None)
+
+    def _agent_system_prompt(
+        self,
+        agent_name: str,
+        *,
+        active_skill_names: Optional[List[str]] = None,
+        substitutions: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        agent_spec = self.spec_registry.get_agent(agent_name)
+        prompt = (
+            agent_spec.to_prompt_block(active_skills=active_skill_names)
+            if agent_spec
+            else agent_name
+        )
+        for key, value in (substitutions or {}).items():
+            prompt = prompt.replace("{" + key + "}", str(value))
+        return prompt
 
     def _select_vulnerability_skills_for_config(self, agent_cfg: Any) -> SkillSelection:
         """Select active vulnerability skills from the configured analyzer task."""
@@ -1394,11 +1239,17 @@ New Code:
 {new_code}
 ```
 
-Determine if the semantic contract/behavior relevant to defect attributes (resources, errors, concurrency) has changed.
+        Determine if the semantic contract/behavior relevant to defect attributes (resources, errors, concurrency) has changed.
 Output a JSON of type 'snapshot_refresh_decision'.
 """
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "system",
+                "content": self._agent_system_prompt(
+                    "semantic_modeler",
+                    substitutions={"schema": "{}"},
+                ),
+            },
             {"role": "user", "content": prompt}
         ]
         

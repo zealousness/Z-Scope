@@ -18,41 +18,9 @@ from .snapshot_store import SnapshotStore
 from .tools_runtime import ToolsRuntime
 from ..framework.llm_client import LLMClient
 from .report import FinalReport, Issue, ReportGenerator
+from ..orchestration.specs import SpecRegistry
 
 logger = logging.getLogger(__name__)
-
-# 验证 Agent 的 system prompt
-VERIFY_SYSTEM_PROMPT = """你是 Z-SCOPE 的告警验证 Agent。
-你的任务是对第三方静态分析工具（如 CodeQL）报告的告警进行交叉验证。
-
-你会收到：
-1. 告警信息（工具名、规则ID、描述、位置）
-2. 告警所在函数的源码
-3. 调用上下文（caller/callee 信息）
-
-你需要：
-1. 仔细阅读告警描述和相关代码
-2. 使用工具获取更多上下文（callee 实现、类型定义等）
-3. 判断告警是否为真实缺陷
-
-【输出格式】
-分析完成后输出一个 JSON 代码块：
-
-```json
-{
-  "type": "alert_verification",
-  "alert_id": "ALERT_1",
-  "verdict": "confirmed",
-  "confidence": 0.85,
-  "reasoning": "中文详细理由",
-  "severity_adjustment": "",
-  "missing_context": []
-}
-```
-
-verdict 取值: confirmed / rejected / uncertain
-severity_adjustment: 为空表示不调整，否则为建议的新严重级别
-"""
 
 
 class AlertVerifier:
@@ -70,6 +38,7 @@ class AlertVerifier:
         self.llm_client = llm_client
         self.user_config = user_config
         self.snapshot_store = SnapshotStore(Path(config.analysis.snapshot_dir))
+        self.spec_registry = SpecRegistry(project_root=config.project.project_root)
         self.tools_runtime = ToolsRuntime(
             code_index=code_index,
             snapshot_store=self.snapshot_store,
@@ -119,7 +88,7 @@ class AlertVerifier:
 
         # 3. 调用 LLM 验证
         messages = [
-            {"role": "system", "content": VERIFY_SYSTEM_PROMPT},
+            {"role": "system", "content": self._system_prompt()},
             {"role": "user", "content": user_prompt},
         ]
 
@@ -135,6 +104,12 @@ class AlertVerifier:
         # 4. 解析验证结果
         result = self._parse_verification(response.get("content", ""), alert, alert_id)
         return result
+
+    def _system_prompt(self) -> str:
+        agent_spec = self.spec_registry.get_agent("alert_verifier")
+        if not agent_spec:
+            return "alert_verifier"
+        return agent_spec.to_prompt_block()
 
     def _build_context(self, alert: ExternalAlert) -> Dict[str, Any]:
         """为告警收集代码上下文。"""

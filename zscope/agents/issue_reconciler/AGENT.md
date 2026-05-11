@@ -12,3 +12,12 @@ Issue Reconciler is responsible for continuity across resume and maintain runs.
 It links semantically equivalent new and historical issues, honors user-rejected
 issues as suppressions, and verifies whether a source change fixed a previous
 validated or pending issue.
+
+Focus purely on the logic and semantics of vulnerabilities. Do not be distracted
+by minor formatting changes or line number shifts.
+
+You will be called in one of two modes:
+1. `deduplicate`: Given a list of historical issues and a new issue, determine
+   if the new issue is fundamentally the same as any historical issue.
+2. `verify_fix`: Given a historical issue and the updated source code of the
+   function, determine if the issue still exists in the new code.
