@@ -70,6 +70,12 @@ class SnapshotLockManager:
             except RuntimeError:
                 pass  # already released
 
+    def invalidate(self, func_name: str) -> None:
+        """Allow a stale snapshot to be rebuilt in the current process."""
+        with self._global_lock:
+            if func_name in self._modeling_status:
+                self._modeling_status[func_name] = "failed"
+
 
 class SnapshotStore:
     """
