@@ -8,7 +8,7 @@ import re
 import json
 import logging
 import time
-from typing import Any, Callable, Dict, List, Optional, cast
+from typing import Any, Callable, Dict, Iterable, List, Optional, cast
 
 import requests
 
@@ -105,58 +105,7 @@ class LLMClient:
                     )
 
                     if response.status_code == 200:
-                        content_pieces = []
-                        reasoning_pieces = []
-                        tool_calls_map = {}
-                        finish_reason = "stop"
-                        
-                        for line in response.iter_lines():
-                            if line:
-                                decoded_line = line.decode('utf-8')
-                                if decoded_line.startswith("data: "):
-                                    data_str = decoded_line[6:]
-                                    if data_str.strip() == "[DONE]":
-                                        break
-                                    try:
-                                        chunk = json.loads(data_str)
-                                        choices = chunk.get("choices", [])
-                                        if choices:
-                                            delta = choices[0].get("delta", {})
-                                            
-                                            if "content" in delta and delta["content"]:
-                                                content_pieces.append(delta["content"])
-                                                
-                                            if "reasoning_content" in delta and delta["reasoning_content"]:
-                                                reasoning_pieces.append(delta["reasoning_content"])
-                                                
-                                            if "tool_calls" in delta and delta["tool_calls"]:
-                                                for tc in delta["tool_calls"]:
-                                                    idx = tc.get("index")
-                                                    if idx not in tool_calls_map:
-                                                        tool_calls_map[idx] = tc
-                                                    else:
-                                                        if "function" in tc:
-                                                            if "name" in tc["function"] and tc["function"]["name"]:
-                                                                tool_calls_map[idx].setdefault("function", {})["name"] = tc["function"]["name"]
-                                                            if "arguments" in tc["function"] and tc["function"]["arguments"]:
-                                                                tool_calls_map[idx].setdefault("function", {}).setdefault("arguments", "")
-                                                                tool_calls_map[idx]["function"]["arguments"] += tc["function"]["arguments"]
-                                                                
-                                            if choices[0].get("finish_reason"):
-                                                finish_reason = choices[0]["finish_reason"]
-                                    except json.JSONDecodeError:
-                                        pass
-                                        
-                        assembled_message: Dict[str, Any] = {"role": "assistant"}
-                        if tool_calls_map:
-                            assembled_message["tool_calls"] = [tool_calls_map[i] for i in sorted(tool_calls_map.keys())]
-                            if content_pieces:
-                                assembled_message["content"] = "".join(content_pieces)
-                        else:
-                            assembled_message["content"] = "".join(content_pieces)
-                            
-                        if reasoning_pieces:
-                            assembled_message["reasoning_content"] = "".join(reasoning_pieces)
+                        assembled_message, finish_reason = self._assemble_chat_response(response)
                             
                         # Estimate single API call cost and log prominently
                         prompt_tokens = LLMClient.estimate_tokens(messages)
@@ -220,6 +169,108 @@ class LLMClient:
             logger.info(f"Falling back from model {model}...")
             
         raise Exception(f"All models failed. Last error: {last_error}")
+
+    def _assemble_chat_response(self, response: requests.Response) -> tuple[Dict[str, Any], str]:
+        """Assemble either SSE chunks or a plain JSON chat completion response."""
+        content_pieces: List[str] = []
+        reasoning_pieces: List[str] = []
+        tool_calls_map: Dict[Any, Dict[str, Any]] = {}
+        finish_reason = "stop"
+
+        for chunk in self._iter_chat_chunks(response):
+            choices = chunk.get("choices", [])
+            if not choices:
+                continue
+
+            choice = choices[0]
+            message_delta = choice.get("delta")
+            if not isinstance(message_delta, dict) or not message_delta:
+                message_delta = choice.get("message", {})
+            if not isinstance(message_delta, dict):
+                message_delta = {}
+
+            content = message_delta.get("content")
+            if content:
+                content_pieces.append(str(content))
+
+            reasoning = (
+                message_delta.get("reasoning_content")
+                or message_delta.get("reasoning")
+            )
+            if reasoning:
+                reasoning_pieces.append(str(reasoning))
+
+            tool_calls = message_delta.get("tool_calls") or []
+            if isinstance(tool_calls, list):
+                for fallback_index, tool_call in enumerate(tool_calls):
+                    if isinstance(tool_call, dict):
+                        self._merge_tool_call(tool_calls_map, tool_call, fallback_index)
+
+            if choice.get("finish_reason"):
+                finish_reason = choice["finish_reason"]
+
+        assembled_message: Dict[str, Any] = {"role": "assistant"}
+        if content_pieces:
+            assembled_message["content"] = "".join(content_pieces)
+        if tool_calls_map:
+            assembled_message["tool_calls"] = [
+                tool_calls_map[key] for key in sorted(tool_calls_map.keys(), key=str)
+            ]
+            assembled_message.setdefault("content", "")
+        else:
+            assembled_message.setdefault("content", "")
+        if reasoning_pieces:
+            assembled_message["reasoning_content"] = "".join(reasoning_pieces)
+
+        return assembled_message, finish_reason
+
+    @staticmethod
+    def _iter_chat_chunks(response: requests.Response) -> Iterable[Dict[str, Any]]:
+        for line in response.iter_lines():
+            if not line:
+                continue
+            decoded_line = line.decode("utf-8") if isinstance(line, bytes) else str(line)
+            decoded_line = decoded_line.strip()
+            if not decoded_line:
+                continue
+            if decoded_line.startswith("data:"):
+                decoded_line = decoded_line[len("data:"):].strip()
+            if decoded_line == "[DONE]":
+                break
+            if not decoded_line.startswith("{"):
+                continue
+            try:
+                chunk = json.loads(decoded_line)
+            except json.JSONDecodeError:
+                logger.debug("Ignoring malformed chat completion line: %s", decoded_line[:200])
+                continue
+            if isinstance(chunk, dict):
+                yield chunk
+
+    @staticmethod
+    def _merge_tool_call(
+        tool_calls_map: Dict[Any, Dict[str, Any]],
+        tool_call: Dict[str, Any],
+        fallback_index: int,
+    ) -> None:
+        idx = tool_call.get("index", fallback_index)
+        existing = tool_calls_map.setdefault(idx, {})
+
+        for key in ("id", "type", "index"):
+            if tool_call.get(key) is not None:
+                existing[key] = tool_call[key]
+
+        function_delta = tool_call.get("function")
+        if isinstance(function_delta, dict):
+            function = existing.setdefault("function", {})
+            if function_delta.get("name"):
+                function["name"] = function_delta["name"]
+            if function_delta.get("arguments") is not None:
+                function["arguments"] = (
+                    str(function.get("arguments", ""))
+                    + str(function_delta.get("arguments", ""))
+                )
+
     def _get_combined_content(self, conversation: List[Dict[str, Any]]) -> str:
         """Helper to combine all assistant generated text in case an auto-continue loop happened"""
         content_chunks = []
@@ -332,8 +383,13 @@ class LLMClient:
             conversation.append(message)
             assistant_message_index = len(conversation)
 
-            # Check if done
-            if finish_reason == "stop":
+            # Some compatible providers return finish_reason=stop even when
+            # the message carries tool_calls or XML-style invoke tags.
+            if (
+                finish_reason == "stop"
+                and not message.get("tool_calls")
+                and "<invoke name=" not in str(message.get("content", ""))
+            ):
                 content = self._get_combined_content(conversation)
                 final_tokens = self.estimate_tokens(conversation)
                 logger.info(f"Conversation complete: {iterations} iterations, final context ≈ {final_tokens:,} tokens")
@@ -351,7 +407,7 @@ class LLMClient:
             
             # --- XML Fallback (For GLM/Minimax models that emit raw text invoke tags) ---
             content = message.get("content", "")
-            if not tool_calls and "<invoke name=" in content:
+            if not final_iteration and not tool_calls and "<invoke name=" in content:
                 import uuid
                 invokes = re.finditer(r'<invoke name="([^"]+)">([\s\S]*?)(?:</invoke>|$)', content)
                 for match in invokes:
