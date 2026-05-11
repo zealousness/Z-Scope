@@ -18,6 +18,7 @@ from .snapshot_store import SnapshotStore
 from .tools_runtime import ToolsRuntime
 from ..framework.llm_client import LLMClient
 from ..agents.semantic_modeler.agent import SemanticModeler
+from ..agents.semantic_modeler.schema import DEFAULT_FUNCTION_SNAPSHOT_SCHEMA
 from ..agents.vulnerability_analyzer.agent import VulnerabilityAnalyzer
 from ..agents.validator_agent.agent import ValidatorAgent
 from .report import FinalReport, Issue, ReportGenerator
@@ -393,7 +394,10 @@ class Analyzer:
         sm_agent_cfg = next((a for a in self.config.project.agents if a.name == "semantic_modeler"), None)
         sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
         sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients["default"])
-        semantic_agent = SemanticModeler(sm_client, self._get_tools())
+        semantic_agent = SemanticModeler(
+            sm_client,
+            self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
+        )
         agent_context = state["agent_context"]
 
         logger.info("Running Semantic Modeler agent with '%s' LLM...", sm_llm_ref)
@@ -427,7 +431,7 @@ class Analyzer:
         if not va_agent_cfg:
             return
 
-        tools = self._get_tools()
+        tools = self._get_tools("deep_worker")
         orchestrator = SubAgentOrchestrator(self.spec_registry, tools)
         selection = self._select_vulnerability_skills_for_config(va_agent_cfg)
         ledger = state.get("candidate_ledger")
@@ -613,7 +617,10 @@ class Analyzer:
             logger.info("Running Vulnerability Analyzer agent for task: %s", agent_cfg.task)
             va_llm_ref = agent_cfg.llm_ref if agent_cfg.llm_ref else "default"
             va_client = self.llm_clients.get(va_llm_ref, self.llm_clients["default"])
-            analyzer_agent = VulnerabilityAnalyzer(va_client, self._get_tools())
+            analyzer_agent = VulnerabilityAnalyzer(
+                va_client,
+                self._get_tools("vulnerability_analyzer"),
+            )
             selection = self._select_vulnerability_skills_for_config(agent_cfg)
 
             agent_context["task"] = agent_cfg.task
@@ -722,7 +729,7 @@ class Analyzer:
         val_agent_cfg = next((a for a in self.config.project.agents if a.name == "validator_agent"), None)
         val_llm_ref = val_agent_cfg.llm_ref if val_agent_cfg and val_agent_cfg.llm_ref else "default"
         val_client = self.llm_clients.get(val_llm_ref, self.llm_clients["default"])
-        validator_agent = ValidatorAgent(val_client, self._get_tools())
+        validator_agent = ValidatorAgent(val_client, self._get_tools("validator_agent"))
 
         for raw_issue in new_issues:
             issue_func = raw_issue.get("function", state["agent_context"]["func_name"])
@@ -907,7 +914,12 @@ class Analyzer:
         agent_spec = self.spec_registry.get_agent("vulnerability_analyzer")
         return bool(agent_spec and agent_spec.can_spawn_subagents)
 
-    def _get_tools(self) -> List[Any]:
+    def _get_tools(
+        self,
+        agent_name: Optional[str] = None,
+        *,
+        enable_on_demand_snapshots: bool = True,
+    ) -> List[Any]:
         """Initialize and return the set of tools."""
         from ..tools.code_retrieval import GetFunctionImplTool
         from ..tools.snapshot_tool import GetFunctionSnapshotTool
@@ -925,9 +937,12 @@ class Analyzer:
         )
 
         # Base tools universally supported by all backends (including regex/clangd)
+        snapshot_resolver = (
+            self._get_or_build_snapshot if enable_on_demand_snapshots else None
+        )
         tools = [
             GetFunctionImplTool(self.code_index, self.user_config),
-            GetFunctionSnapshotTool(self.snapshot_store),
+            GetFunctionSnapshotTool(self.snapshot_store, resolver=snapshot_resolver),
             ListFunctionsTool(self.code_index),
             GetFileSnippetTool(self.code_index),
             GetCallersTool(self.code_index),
@@ -945,8 +960,208 @@ class Analyzer:
                 VerifyTaintReachabilityTool(self.code_index),
                 GetDeepCallContextTool(self.code_index),
             ])
-            
+        if agent_name:
+            agent_spec = self.spec_registry.get_agent(agent_name)
+            allowed = set(agent_spec.tools) if agent_spec else set()
+            if allowed:
+                tools = [tool for tool in tools if tool.name in allowed]
+
         return tools
+
+    def _get_or_build_snapshot(
+        self, func_name: str, file_path: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Load a snapshot, or build and persist one under the snapshot lock."""
+        existing = self.snapshot_store.load_snapshot(func_name, file_path=file_path)
+        if existing is not None:
+            impl_for_refresh = self.code_index.get_function_impl(func_name)
+            if not impl_for_refresh:
+                return {"success": True, "data": existing}
+            impl_file_for_refresh = str(impl_for_refresh.get("file") or "unknown")
+            if file_path and impl_file_for_refresh != file_path:
+                return {"success": True, "data": existing}
+            refresh_file = file_path or impl_file_for_refresh
+            needs_refresh, reason = self.snapshot_store.needs_refresh(
+                func_name,
+                str(impl_for_refresh.get("code") or ""),
+                refresh_file,
+            )
+            if not needs_refresh:
+                return {
+                    "success": True,
+                    "data": existing,
+                    "message": (
+                        f"Snapshot is current ({reason})."
+                        if reason
+                        else "Snapshot is current."
+                    ),
+                }
+            self.snapshot_store.lock_manager.invalidate(func_name)
+
+        status = self.snapshot_store.lock_manager.acquire(func_name, timeout=120.0)
+        if status == "done":
+            snapshot = self.snapshot_store.load_snapshot(func_name, file_path=file_path)
+            return {
+                "success": True,
+                "data": snapshot,
+                "message": (
+                    "Snapshot was built concurrently by another worker."
+                    if snapshot is not None
+                    else f"No snapshot exists for '{func_name}'"
+                ),
+            }
+        if status == "timeout":
+            return {
+                "success": False,
+                "error": f"Timed out waiting for snapshot build of '{func_name}'",
+            }
+
+        try:
+            snapshot = self.snapshot_store.load_snapshot(func_name, file_path=file_path)
+            impl = self.code_index.get_function_impl(func_name)
+            if not impl:
+                self.snapshot_store.lock_manager.release(
+                    func_name, success=snapshot is not None
+                )
+                if snapshot is not None:
+                    return {"success": True, "data": snapshot}
+                return {
+                    "success": True,
+                    "data": None,
+                    "message": (
+                        f"No snapshot exists for '{func_name}' and implementation was not found"
+                    ),
+                }
+
+            impl_file = str(impl.get("file") or "unknown")
+            if file_path and impl_file != file_path:
+                self.snapshot_store.lock_manager.release(
+                    func_name, success=snapshot is not None
+                )
+                if snapshot is not None:
+                    return {"success": True, "data": snapshot}
+                return {
+                    "success": True,
+                    "data": None,
+                    "message": (
+                        f"No snapshot exists for '{func_name}' at '{file_path}'. "
+                        f"Indexed implementation is at '{impl_file}'."
+                    ),
+                }
+
+            if snapshot is not None:
+                needs_refresh, reason = self.snapshot_store.needs_refresh(
+                    func_name,
+                    str(impl.get("code") or ""),
+                    file_path or impl_file,
+                )
+                if not needs_refresh:
+                    self.snapshot_store.lock_manager.release(func_name, success=True)
+                    return {
+                        "success": True,
+                        "data": snapshot,
+                        "message": (
+                            f"Snapshot is current ({reason})."
+                            if reason
+                            else "Snapshot is current."
+                        ),
+                    }
+
+            location = f"{impl_file}:{impl.get('start_line', 0)}"
+            if self._is_trivial_function(
+                str(impl.get("code") or ""),
+                self.config.analysis.trivial_function_max_lines,
+            ):
+                snapshot = self._build_trivial_snapshot(func_name, impl, location)
+                self.snapshot_store.save_snapshot(
+                    func_name,
+                    snapshot,
+                    str(impl.get("code") or ""),
+                    location,
+                )
+                self.snapshot_store.lock_manager.release(func_name, success=True)
+                return {
+                    "success": True,
+                    "data": snapshot,
+                    "message": "Generated and saved syntactic snapshot for trivial function.",
+                }
+
+            sm_agent_cfg = next(
+                (a for a in self.config.project.agents if a.name == "semantic_modeler"),
+                None,
+            )
+            sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
+            sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients.get("default"))
+            if sm_client is None:
+                self.snapshot_store.lock_manager.release(func_name, success=False)
+                return {"success": False, "error": "No LLM client configured for snapshot build"}
+
+            semantic_agent = SemanticModeler(
+                sm_client,
+                self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
+            )
+            context = {
+                "func_name": func_name,
+                "code": impl["code"],
+                "location": location,
+            }
+            self._attach_agent_contract(context, "semantic_modeler")
+            logger.info("[snapshot] On-demand modeling function '%s' ...", func_name)
+            response = semantic_agent.run(context)
+            if response.success:
+                self.snapshot_store.save_snapshot(
+                    func_name,
+                    response.data,
+                    impl["code"],
+                    location,
+                )
+                self.snapshot_store.lock_manager.release(func_name, success=True)
+                return {
+                    "success": True,
+                    "data": response.data,
+                    "metadata": response.metadata,
+                    "message": "Generated and saved semantic snapshot on demand.",
+                }
+
+            self.snapshot_store.lock_manager.release(func_name, success=False)
+            return {
+                "success": False,
+                "error": f"On-demand snapshot build failed for '{func_name}': {response.error}",
+                "metadata": response.metadata,
+            }
+        except Exception as exc:
+            self.snapshot_store.lock_manager.release(func_name, success=False)
+            logger.exception("On-demand snapshot build failed for '%s'", func_name)
+            return {"success": False, "error": str(exc)}
+
+    @staticmethod
+    def _build_trivial_snapshot(
+        func_name: str, impl: Dict[str, Any], location: str
+    ) -> Dict[str, Any]:
+        """Create a persisted syntactic snapshot for a short function."""
+        return {
+            "type": "function_snapshot",
+            "func_name": func_name,
+            "location": location,
+            "file_path": impl.get("file"),
+            "start_line": impl.get("start_line"),
+            "end_line": impl.get("end_line"),
+            "signature": impl.get("signature"),
+            "summary": "Short function stored verbatim without LLM semantic modeling.",
+            "snapshot_kind": "syntactic",
+            "is_trivial": True,
+            "code": impl.get("code", ""),
+            "inputs": [],
+            "outputs": [],
+            "resources": {},
+            "error_handling": {},
+            "concurrency": {},
+            "semantic_fingerprint": {
+                "key_semantics": ["short function source is embedded in snapshot"]
+            },
+            "suspicious_points": [],
+            "callees": impl.get("callees", []),
+        }
 
     def _premodel_callees(self, entry_func: str, sm_client: 'LLMClient',
                           max_depth: int = 3, max_callees: int = 20) -> tuple[int, int, int]:
@@ -994,7 +1209,10 @@ class Analyzer:
         logger.info(f"[premodel] {len(order)} reachable callees to pre-model for '{entry_func}'")
 
         # 3. 逐个建模
-        semantic_agent = SemanticModeler(sm_client, self._get_tools())
+        semantic_agent = SemanticModeler(
+            sm_client,
+            self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
+        )
         modeled = 0
         skipped = 0
         total_tokens = 0
@@ -1042,6 +1260,7 @@ class Analyzer:
                         "callees": impl.get("callees", []),
                         "is_trivial": True
                     }
+                    fake_snapshot = self._build_trivial_snapshot(func, impl, location)
                     self.snapshot_store.save_snapshot(func, fake_snapshot, impl["code"], location)
                     self.snapshot_store.lock_manager.release(func, success=True)
                     modeled += 1
@@ -1051,7 +1270,6 @@ class Analyzer:
                     "func_name": func,
                     "code": impl["code"],
                     "location": location,
-                    "schema": "{}",
                 }
                 self._attach_agent_contract(context, "semantic_modeler")
 
@@ -1247,7 +1465,13 @@ Output a JSON of type 'snapshot_refresh_decision'.
                 "role": "system",
                 "content": self._agent_system_prompt(
                     "semantic_modeler",
-                    substitutions={"schema": "{}"},
+                    substitutions={
+                        "schema": json.dumps(
+                            DEFAULT_FUNCTION_SNAPSHOT_SCHEMA,
+                            indent=2,
+                            ensure_ascii=False,
+                        )
+                    },
                 ),
             },
             {"role": "user", "content": prompt}

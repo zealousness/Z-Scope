@@ -35,6 +35,11 @@ Output a JSON block wrapped in ```json ... ``` that strictly follows the schema
 above. All descriptive fields such as summary, meaning, key_semantics, and role
 MUST be in Chinese.
 
+If a section is not applicable, keep the required field and use an empty array
+or object. Do not omit memory/resource/concurrency/path fields. Prefer concrete
+line numbers, ownership states, lock states, and caller obligations over broad
+summaries.
+
 Special attention:
 1. Resource lifecycle: for every resource (memory, fd, lock), state whether it
    is allocated, freed, or transferred to caller.

@@ -6,8 +6,15 @@ from ..base import JsonToolAgent
 from ...common.utils import is_valid_snapshot
 from ...framework.base import AgentResponse
 from ...framework.llm_client import LLMClient
+from .schema import DEFAULT_FUNCTION_SNAPSHOT_SCHEMA
 
 logger = logging.getLogger(__name__)
+
+
+def _schema_json(schema: Any) -> str:
+    if schema in (None, "", "{}") or schema == {}:
+        schema = DEFAULT_FUNCTION_SNAPSHOT_SCHEMA
+    return schema if isinstance(schema, str) else json.dumps(schema, indent=2, ensure_ascii=False)
 
 
 class SemanticModeler(JsonToolAgent):
@@ -25,14 +32,10 @@ class SemanticModeler(JsonToolAgent):
         func_name = input_data.get("func_name")
         func_code = input_data.get("code")
         location = input_data.get("location")
-        schema = input_data.get("schema", "{}")
+        schema = input_data.get("schema")
         user_context = input_data.get("user_config_context")
 
-        schema_json = (
-            schema
-            if isinstance(schema, str)
-            else json.dumps(schema, indent=2, ensure_ascii=False)
-        )
+        schema_json = _schema_json(schema)
         prompt = (
             f"Please model the following function: {func_name}\n"
             f"Location: {location}\n"
