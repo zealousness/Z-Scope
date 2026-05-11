@@ -435,7 +435,9 @@ class ToolsRuntime:
 
     def _get_function_impl(self, func_name: str, max_lines: int = 200) -> Dict[str, Any]:
         """Get function implementation. Falls back to user-provided external function description."""
-        result = self.code_index.get_function_impl(func_name, max_lines=max_lines)
+        result = self.code_index.get_function_impl(
+            func_name, max_lines=max_lines, warn_missing=False
+        )
         if result is None:
             # Check user config for external function description
             if self.user_config:
