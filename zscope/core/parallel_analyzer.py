@@ -62,7 +62,6 @@ class ParallelAnalyzer:
                 exclude_paths=config.project.exclude_paths,
             )
         self.snapshot_store = SnapshotStore(Path(config.analysis.snapshot_dir))
-        self.candidate_ledger = CandidateLedger()
         db_dir = Path(config.analysis.user_config_db) if config.analysis.user_config_db else Path(config.analysis.snapshot_dir)
         self.user_config = user_config or UserConfigStore(db_dir)
 
@@ -181,7 +180,7 @@ class ParallelAnalyzer:
                  user_config=self.user_config,
                  force_ignore_history=self.force_ignore_history,
                  maintain_mode=self.maintain_mode,
-                 candidate_ledger=self.candidate_ledger,
+                 candidate_ledger=CandidateLedger(),
             )
             report_dict = analyzer.run()
             

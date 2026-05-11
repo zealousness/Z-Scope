@@ -4,7 +4,6 @@ description: Runs a context-clean investigation for one vulnerability hypothesis
 role: focused subagent
 skills: []
 tools:
-  - get_function_impl
   - get_function_snapshot
   - list_known_functions
   - get_file_snippet
@@ -14,7 +13,7 @@ tools:
   - get_data_flow
   - query_pointer_alias
   - verify_taint_reachability
-context_policy: Keep only the ticket, the focused code slice, one skill contract, and minimal tool results.
+context_policy: Keep only the ticket, the focused code slice, one skill contract, and minimal snapshot/snippet results.
 ---
 
 Deep Worker receives one ticket from the manager, such as "trace this malloc" or
@@ -25,6 +24,7 @@ issues found.
 Focus EXCLUSIVELY on resolving the assigned ticket. Use only the skill contract
 and the allowed tools to answer the ticket. If the provided slice is
 insufficient, call tools for the minimum missing context.
+Use function snapshots for callees. Do not request full callee implementations.
 
 Output findings in the following format:
 
