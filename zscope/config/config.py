@@ -37,6 +37,7 @@ class LLMConfig:
 @dataclass
 class AgentConfig:
     """Configuration for a specific agent."""
+
     name: str
     task: Optional[str] = None
     enabled: bool = True
@@ -55,6 +56,18 @@ class EntryDiscoveryConfig:
     max_candidates: int = 200
     max_functions: int = 10000
     header_files: List[str] = field(default_factory=list)
+
+
+@dataclass
+class PromptAutofillConfig:
+    """Configuration for batch-entry custom_prompt autofill."""
+
+    enabled: bool = False
+    overwrite_existing: bool = False
+    write_back: bool = True
+    min_custom_prompt_chars: int = 20
+    max_callees: int = 30
+    max_function_lines: int = 220
 
 
 @dataclass
@@ -80,7 +93,6 @@ class IndexingConfig:
     svf_heap_limit_mb: int = 32768  # SVF 内存上限（默认 32GB）
     svf_timeout: int = 1800  # SVF 单次执行超时（秒）
     svf_groups_config: str = ""  # JSON file for multi-group bitcode linking
-
 
 
 @dataclass
@@ -115,10 +127,11 @@ class ProjectConfig:
     include_paths: List[str] = field(default_factory=list)
     exclude_paths: List[str] = field(default_factory=list)
     entry_discovery: EntryDiscoveryConfig = field(default_factory=EntryDiscoveryConfig)
+    prompt_autofill: PromptAutofillConfig = field(default_factory=PromptAutofillConfig)
 
     def __post_init__(self):
         self.project_root = Path(self.project_root).resolve()
-        
+
         # Resolve source_root: relative to project_root if not absolute
         if not self.source_root:
             self.source_root = self.project_root
@@ -131,7 +144,7 @@ class ProjectConfig:
 
         # Resolve include/exclude paths relative to source_root
         resolved_includes = []
-        for p in (self.include_paths or []):
+        for p in self.include_paths or []:
             path_obj = Path(p)
             if not path_obj.is_absolute():
                 resolved_includes.append((self.source_root / path_obj).absolute())
@@ -140,7 +153,7 @@ class ProjectConfig:
         self.include_paths = resolved_includes
 
         resolved_excludes = []
-        for p in (self.exclude_paths or []):
+        for p in self.exclude_paths or []:
             path_obj = Path(p)
             if not path_obj.is_absolute():
                 resolved_excludes.append((self.source_root / path_obj).absolute())
@@ -154,7 +167,9 @@ class ProjectConfig:
         if self.compile_commands_path:
             self.compile_commands_path = Path(self.compile_commands_path)
             if not self.compile_commands_path.is_absolute():
-                self.compile_commands_path = (self.project_root / self.compile_commands_path).resolve()
+                self.compile_commands_path = (
+                    self.project_root / self.compile_commands_path
+                ).resolve()
             else:
                 self.compile_commands_path = self.compile_commands_path.resolve()
         else:
@@ -164,11 +179,13 @@ class ProjectConfig:
                 if candidate.exists():
                     self.compile_commands_path = candidate
                     break
-        
+
         # Resolve entry_functions_list path relative to project root
         if self.entry_functions_list:
             if not Path(self.entry_functions_list).is_absolute():
-                self.entry_functions_list = (self.project_root / self.entry_functions_list).resolve()
+                self.entry_functions_list = (
+                    self.project_root / self.entry_functions_list
+                ).resolve()
             else:
                 self.entry_functions_list = Path(self.entry_functions_list).resolve()
 
@@ -249,10 +266,10 @@ class ConfigLoader:
             # LLM config
             llms_data = raw_config.get("llms", {})
             llm_data = raw_config.get("llm", {})
-            
+
             parsed_llms = {}
             default_llm_config = None
-            
+
             # 1. Parse legacy 'llm' block if present
             if llm_data:
                 models = llm_data.get("models", [])
@@ -270,7 +287,7 @@ class ConfigLoader:
                         max_retries=llm_data.get("max_retries", 2),
                     )
                     parsed_llms["default"] = default_llm_config
-            
+
             # 2. Parse 'llms' block if present
             for name, data in llms_data.items():
                 models = data.get("models", [])
@@ -300,7 +317,6 @@ class ConfigLoader:
                 default_llm_config = list(parsed_llms.values())[0]
                 parsed_llms["default"] = default_llm_config
 
-
             # Indexing config
             indexing_data = raw_config.get("indexing", {})
             indexing_config = IndexingConfig(
@@ -310,7 +326,9 @@ class ConfigLoader:
                 joern_server_port=indexing_data.get("joern_server_port", 8080),
                 joern_heap_size=indexing_data.get("joern_heap_size", "8g"),
                 clangd_path=indexing_data.get("clangd_path", "clangd"),
-                knowledge_db_path=indexing_data.get("knowledge_db_path", ".zscope_knowledge/code_knowledge.db"),
+                knowledge_db_path=indexing_data.get(
+                    "knowledge_db_path", ".zscope_knowledge/code_knowledge.db"
+                ),
                 batch_size=indexing_data.get("batch_size", 50),
                 max_clangd_threads=indexing_data.get("max_clangd_threads", 8),
                 svf_bin_dir=indexing_data.get("svf_bin_dir", ""),
@@ -355,7 +373,7 @@ class ConfigLoader:
 
             entry_function = project_data.get("entry_function")
             entry_functions_list = project_data.get("entry_functions_list")
-            
+
             entry_discovery_data = project_data.get("entry_discovery") or {}
             entry_discovery_config = EntryDiscoveryConfig(
                 enabled=entry_discovery_data.get("enabled", False),
@@ -363,29 +381,48 @@ class ConfigLoader:
                 max_functions=entry_discovery_data.get("max_functions", 10000),
                 header_files=entry_discovery_data.get("header_files", []),
             )
+            prompt_autofill_data = project_data.get("prompt_autofill") or {}
+            if isinstance(prompt_autofill_data, bool):
+                prompt_autofill_data = {"enabled": prompt_autofill_data}
+            if not isinstance(prompt_autofill_data, dict):
+                raise ValueError("'project.prompt_autofill' must be an object or boolean")
+            prompt_autofill_config = PromptAutofillConfig(
+                enabled=prompt_autofill_data.get("enabled", False),
+                overwrite_existing=prompt_autofill_data.get("overwrite_existing", False),
+                write_back=prompt_autofill_data.get("write_back", True),
+                min_custom_prompt_chars=prompt_autofill_data.get("min_custom_prompt_chars", 20),
+                max_callees=prompt_autofill_data.get("max_callees", 30),
+                max_function_lines=prompt_autofill_data.get("max_function_lines", 220),
+            )
 
             # Parse Agents
             agents_data = project_data.get("agents", [])
             agents = []
             for a in agents_data:
-                agents.append(AgentConfig(
-                    name=a.get("name"),
-                    task=a.get("task"),
-                    enabled=a.get("enabled", True),
-                    llm_ref=a.get("llm_ref"),
-                    skills=a.get("skills", []) or [],
-                    tools=a.get("tools", []) or [],
-                    mcp_servers=a.get("mcp_servers", []) or a.get("mcpServers", []) or [],
-                    can_spawn_subagents=a.get("can_spawn_subagents"),
-                ))
-            
+                agents.append(
+                    AgentConfig(
+                        name=a.get("name"),
+                        task=a.get("task"),
+                        enabled=a.get("enabled", True),
+                        llm_ref=a.get("llm_ref"),
+                        skills=a.get("skills", []) or [],
+                        tools=a.get("tools", []) or [],
+                        mcp_servers=a.get("mcp_servers", []) or a.get("mcpServers", []) or [],
+                        can_spawn_subagents=a.get("can_spawn_subagents"),
+                    )
+                )
+
             # Fallback for old 'task' field
             if not agents and project_data.get("task"):
-                 agents.append(AgentConfig(name="vulnerability_analyzer", task=project_data.get("task")))
+                agents.append(
+                    AgentConfig(name="vulnerability_analyzer", task=project_data.get("task"))
+                )
 
-            compile_commands = project_data.get("compile_commands_path") or project_data.get("compile_commands")
+            compile_commands = project_data.get("compile_commands_path") or project_data.get(
+                "compile_commands"
+            )
             compile_commands_path = Path(compile_commands) if compile_commands else None
-            
+
             # Parse entry_functions_list for batch mode
             entry_functions_list = project_data.get("entry_functions_list")
             entry_functions_list_path = Path(entry_functions_list) if entry_functions_list else None
@@ -400,6 +437,7 @@ class ConfigLoader:
                 include_paths=project_data.get("include_paths", []),
                 exclude_paths=project_data.get("exclude_paths", []),
                 entry_discovery=entry_discovery_config,
+                prompt_autofill=prompt_autofill_config,
             )
 
             return ZScopeConfig(
