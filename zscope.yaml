@@ -42,6 +42,14 @@ project:
   # Batch mode:
   # entry_functions_list: functions.json
 
+  # Optional: fill missing custom_prompt fields in entry_functions_list before
+  # batch analysis. Existing non-empty prompts are preserved by default.
+  prompt_autofill:
+    enabled: false
+    overwrite_existing: false
+    write_back: true
+    min_custom_prompt_chars: 20
+
   # Entry discovery is used by CLI --discover-entries, and can also provide
   # candidates when no explicit batch list is supplied.
   entry_discovery:
