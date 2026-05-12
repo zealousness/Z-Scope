@@ -41,6 +41,7 @@ include = ["zscope*"]
 zscope = [
     "agents/*/AGENT.md",
     "skills/*/SKILL.md",
+    "skills/*/references/*.md",
     "workflows/*.yaml",
 ]
 

@@ -16,6 +16,7 @@ from ..core.parallel_analyzer import ParallelAnalysisResult, ParallelAnalyzer
 from ..core.snapshot_store import SnapshotStore
 from ..retrieval.code_index import CodeIndex
 from .entry_discovery import EntryDiscovery
+from .prompt_autofill import PromptAutofillExecutor
 from .specs import SpecRegistry, WorkflowStep
 from .workflow_executor import WorkflowExecutor, WorkflowStepHandler
 
@@ -123,12 +124,8 @@ class ScanSessionRunner:
             "merge_skipped_reports": self._handle_merge_skipped_reports,
         }
 
-    def _handle_discover_entries(
-        self, state: Dict[str, Any], step: WorkflowStep
-    ) -> bool:
-        should_discover = (
-            self.discover_entries or self.config.project.entry_discovery.enabled
-        )
+    def _handle_discover_entries(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
+        should_discover = self.discover_entries or self.config.project.entry_discovery.enabled
         if not should_discover:
             return False
 
@@ -144,9 +141,7 @@ class ScanSessionRunner:
             max_functions=discovery_cfg.max_functions,
             header_files=discovery_cfg.header_files or None,
         )
-        discovery_result = discovery.discover(
-            max_candidates=discovery_cfg.max_candidates
-        )
+        discovery_result = discovery.discover(max_candidates=discovery_cfg.max_candidates)
         discovered_entries = discovery_result.to_function_entries()
         state["discovery_result"] = discovery_result.to_dict()
         state["discovered_entries"] = discovered_entries
@@ -155,14 +150,10 @@ class ScanSessionRunner:
             f"{len(discovered_entries)} candidate(s), summary={discovery_result.summary}"
         )
         if not discovered_entries and self.config.project.entry_function:
-            self.emit(
-                "No discovered entries found; falling back to configured entry_function."
-            )
+            self.emit("No discovered entries found; falling back to configured entry_function.")
         return False
 
-    def _handle_plan_resume_entries(
-        self, state: Dict[str, Any], step: WorkflowStep
-    ) -> bool:
+    def _handle_plan_resume_entries(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
         if not self.resume:
             return False
 
@@ -179,10 +170,7 @@ class ScanSessionRunner:
             saved_report = snapshot_store.load_final_report(entry.function_name)
             if saved_report and saved_report.get("overall_verdict") != "error":
                 issues = saved_report.get("issues", [])
-                has_pending = any(
-                    issue.get("validation_status") == "pending"
-                    for issue in issues
-                )
+                has_pending = any(issue.get("validation_status") == "pending" for issue in issues)
                 if has_pending:
                     logger.info(
                         "Not auto-skipping '%s': has pending validations.",
@@ -201,14 +189,11 @@ class ScanSessionRunner:
         state["entries"] = remaining
         state["skipped_entries"] = skipped
         self.emit(
-            f"Skipped {len(skipped)} already-completed functions, "
-            f"{len(remaining)} remaining."
+            f"Skipped {len(skipped)} already-completed functions, " f"{len(remaining)} remaining."
         )
         return False
 
-    def _handle_merge_skipped_reports(
-        self, state: Dict[str, Any], step: WorkflowStep
-    ) -> bool:
+    def _handle_merge_skipped_reports(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
         skipped_entries: List[FunctionEntry] = state.get("skipped_entries", [])
         if not skipped_entries:
             return False
@@ -256,6 +241,11 @@ class ScanSessionRunner:
             )
             entries = FunctionListLoader.load(self.config.project.entry_functions_list)
             logger.info("Loaded %d function entries", len(entries))
+            self._autofill_custom_prompts(
+                state,
+                entries,
+                source_json_path=self.config.project.entry_functions_list,
+            )
             batch_mode = True
         elif discovered_entries:
             logger.info(
@@ -263,6 +253,7 @@ class ScanSessionRunner:
                 len(discovered_entries),
             )
             entries = discovered_entries
+            self._autofill_custom_prompts(state, entries)
             batch_mode = True
         else:
             entries = []
@@ -273,13 +264,52 @@ class ScanSessionRunner:
         state["entries_loaded"] = True
         state["batch_mode"] = batch_mode
 
-    def _ensure_code_index(self, state: Dict[str, Any]) -> CodeIndex:
+    def _autofill_custom_prompts(
+        self,
+        state: Dict[str, Any],
+        entries: List[FunctionEntry],
+        *,
+        source_json_path: Optional[Path] = None,
+    ) -> None:
+        if not self.config.project.prompt_autofill.enabled or not entries:
+            return
+
+        self.emit("Autofilling batch custom prompts from code-index evidence...")
+        code_index = self._ensure_code_index(
+            state,
+            priority_functions=[entry.function_name for entry in entries],
+        )
+        result = PromptAutofillExecutor(
+            code_index,
+            config=self.config.project.prompt_autofill,
+        ).autofill(entries, source_json_path=source_json_path)
+        logger.info(
+            "Prompt autofill: updated=%d skipped_existing=%d unmatched=%d missing_impl=%d",
+            len(result.updated),
+            len(result.skipped_existing),
+            len(result.unmatched),
+            len(result.missing_impl),
+        )
+        if result.write_back_path:
+            self.emit(
+                f"Prompt autofill updated {len(result.updated)} entries and wrote "
+                f"{result.write_back_path}."
+            )
+        else:
+            self.emit(f"Prompt autofill updated {len(result.updated)} entries in memory.")
+
+    def _ensure_code_index(
+        self,
+        state: Dict[str, Any],
+        priority_functions: Optional[List[str]] = None,
+    ) -> CodeIndex:
         if state.get("code_index") is None:
             state["code_index"] = CodeIndex(
                 self.config.project.project_root,
                 self.config.project.compile_commands_path,
                 source_root=self.config.project.source_root,
                 indexing_config=self.config.indexing,
+                priority_functions=priority_functions,
                 include_paths=self.config.project.include_paths,
                 exclude_paths=self.config.project.exclude_paths,
             )
@@ -366,9 +396,7 @@ class ScanSessionRunner:
         if not json_report_path.exists():
             return
         try:
-            backup_dir = (
-                self.config.project.project_root / ".zscope_knowledge" / "backups"
-            )
+            backup_dir = self.config.project.project_root / ".zscope_knowledge" / "backups"
             backup_dir.mkdir(parents=True, exist_ok=True)
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             backup_path = backup_dir / f"zscope_batch_report_{timestamp}.json"

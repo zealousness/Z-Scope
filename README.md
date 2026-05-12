@@ -10,7 +10,7 @@
 - **自动入口发现**：支持基于启发式的智能扫描入口发现（`--discover-entries`），自动识别头文件暴露的公共 API、网络收发、线程入口及用户输入点。
 - **本地 MCP Server**：原生内置 Model Context Protocol (MCP) 标准的 stdio Server，允许外部工具（如 Claude Desktop）直接调用 Z-SCOPE 的代码索引、快照资源及工具总线。
 - **多模型配置与路由**：支持在 `zscope.yaml` 中定义多个大模型配置（如 `fast_model` / `smart_model`），不同 Agent 可按需绑定最佳模型。
-- **可插拔后端架构**：支持 Joern CPG、Clang libclang、Unified（Clang + SVF）、Regex 四种后端，按需选择分析深度。
+- **可插拔后端架构**：支持 Joern CPG、Clang（clangd LSP）、Unified（Clang + SVF）、Regex 四种后端，按需选择分析深度。
 - **12 个分析工具**：函数源码获取、调用图分析、结构体查询、污点追踪、指针别名查询、深度调用上下文聚合等。
 - **用户辅助配置系统**：通过 WebUI 管理外部函数描述、配对函数、函数指针指向等信息，自动注入分析上下文。
 - **智能增量分析与缺陷去重**：支持断点续扫（`--resume`）和基于语义哈希的增量维护扫描（`--maintain`）。自动跟踪和验证缺陷随代码流转的修复状态。
@@ -47,7 +47,7 @@ CodeIndex (可插拔后端) + SnapshotStore + UserConfigStore
           ▼
 CodeBackend ABC (backend_base.py)
 ├─ JoernBackend    — CPGQL via WebSocket
-├─ ClangBackend    — libclang 批量解析 → KnowledgeDB
+├─ ClangBackend    — clangd LSP 批量提取 → KnowledgeDB
 ├─ UnifiedBackend  — ClangBackend + SvfAnalyzer (共享 KnowledgeDB)
 └─ RegexBackend    — 正则回退
 ```
@@ -84,8 +84,8 @@ Z-Scope 内置了严密的数据防丢失功能：
 |------|---------|------|
 | `regex` | 无 | 纯正则，零外部依赖 |
 | `joern` | Joern CLI + JDK 21 | 从 [Joern Releases](https://github.com/joernio/joern/releases) 下载 |
-| `clang` | clangd + compile_commands.json | clangd LSP 符号提取，无需 `pip install libclang` |
-| `unified` | clangd + (可选) clang-18 + gllvm + SVF 3.2 + LLVM | Clang AST + SVF 深度分析，SVF 不可用时优雅降级 |
+| `clang` | clangd >= 20.1 + compile_commands.json | clangd LSP 符号提取，无需 `pip install libclang` |
+| `unified` | clangd >= 20.1 + (可选) clang-18 + gllvm + SVF 3.2 + LLVM | Clang AST + SVF 深度分析，SVF 不可用时优雅降级；clang-18 仅用于 SVF/gllvm bitcode 链路 |
 
 ## 安装指南
 
@@ -119,11 +119,11 @@ joern --version
 
 ```bash
 # 1. 安装 clangd（用于 LSP 符号提取）
-#    方法 A: 系统包（推荐）
-sudo apt install clangd-18      # Ubuntu 24.04
+#    方法 A: 系统包（如果发行版提供 clangd >= 20.1）
+sudo apt install clangd-20
 #    方法 B: 独立二进制（无需 root）
 mkdir -p ~/.local/clangd && cd ~/.local/clangd
-curl -sL https://github.com/clangd/clangd/releases/download/18.1.3/clangd-linux-18.1.3.zip -o clangd.zip
+curl -sL https://github.com/clangd/clangd/releases/download/22.1.0/clangd-linux-22.1.0.zip -o clangd.zip
 unzip clangd.zip
 # 然后在 zscope.yaml 中配置 clangd_path
 
@@ -132,7 +132,7 @@ cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ..
 # 或使用 bear: bear -- make
 ```
 
-> **注意**: Clang 后端使用 clangd LSP 进行符号提取和调用图构建，不需要 `pip install libclang`，只需要 clangd 二进制。
+> **注意**: Clang 后端使用 clangd LSP 进行符号提取和调用图构建，不需要 `pip install libclang`。建议使用 clangd >= 20.1；`callHierarchy/outgoingCalls` 从 clangd 20.1.0 起支持，旧版会自动降级到 regex + definition fallback。
 
 **Unified 后端**（Clang + SVF，完整安装）：
 
@@ -141,8 +141,8 @@ Unified 模式 = Clang AST 提取 + SVF 深度分析。Clang 部分为必需，S
 ```bash
 # ═══ 必需：Clang AST 提取 ═══
 
-# 1. clangd（同 Clang 后端）
-sudo apt install clangd-18
+# 1. clangd（同 Clang 后端，建议 >= 20.1）
+sudo apt install clangd-20
 
 # 2. compile_commands.json
 cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ..
@@ -150,7 +150,7 @@ cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ..
 # ═══ 可选：SVF 深度分析 ═══
 # 如果不安装 SVF，unified 模式退化为 clang 模式（自动告警）
 
-# 3. 安装 Clang 编译器（gclang 依赖）
+# 3. 安装 Clang 编译器（仅 SVF/gllvm bitcode 链路需要；需与 SVF 预编译包匹配）
 sudo apt install clang-18
 
 # 4. 安装 LLVM 工具链（llvm-link）
@@ -190,7 +190,7 @@ export LLVM_CC_NAME=clang-18
 ```yaml
 indexing:
   backend: unified
-  clangd_path: clangd-18          # 或完整路径
+  clangd_path: clangd             # clangd >= 20.1；也可填完整路径
   svf_bin_dir: ~/.local/svf/SVF-linux-x86_64/bin
   gclang_path: gclang             # 或 ~/go/bin/gclang
   get_bc_path: get-bc
@@ -400,7 +400,7 @@ zscope --dashboard -c zscope.yaml
 
 | 特性 | regex | joern | clang | unified |
 |------|-------|-------|-------|---------|
-| 外部依赖 | 无 | JDK 21 + Joern | libclang | libclang + gllvm + SVF + LLVM |
+| 外部依赖 | 无 | JDK 21 + Joern | clangd >= 20.1 | clangd >= 20.1 + gllvm + SVF + LLVM |
 | 函数源码提取 | 正则匹配 | CPGQL 精确 | AST 精确 | AST 精确 |
 | 调用图 | 不支持 | 完整 CPG | 直接调用 | 直接 + 间接（SVF 指针分析） |
 | 类型查询 | 不支持 | 完整 | AST 精确 | AST 精确 |
