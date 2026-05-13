@@ -67,6 +67,7 @@ class SkillSpec:
     allowed_mcp_tools: List[str] = field(default_factory=list)
     allowed_mcp_resources: List[str] = field(default_factory=list)
     allowed_mcp_prompts: List[str] = field(default_factory=list)
+    references: List[str] = field(default_factory=list)
     context: str = "inline"
     path: Optional[Path] = None
     body: str = ""
@@ -83,6 +84,7 @@ class SkillSpec:
             allowed_mcp_tools=_as_list(meta.get("allowed_mcp_tools")),
             allowed_mcp_resources=_as_list(meta.get("allowed_mcp_resources")),
             allowed_mcp_prompts=_as_list(meta.get("allowed_mcp_prompts")),
+            references=_as_list(meta.get("references")),
             context=str(meta.get("context") or "inline"),
             path=path,
             body=body.strip(),
@@ -98,7 +100,8 @@ class SkillSpec:
             f"Category: {self.category}\n"
             f"Allowed tools: {', '.join(self.allowed_tools) or 'none'}\n"
             f"Allowed MCP tools: {', '.join(self.allowed_mcp_tools) or 'none'}\n"
-            f"Allowed MCP resources: {', '.join(self.allowed_mcp_resources) or 'none'}\n\n"
+            f"Allowed MCP resources: {', '.join(self.allowed_mcp_resources) or 'none'}\n"
+            f"References: {', '.join(self.references) or 'none'}\n\n"
             f"{body}"
         )
 

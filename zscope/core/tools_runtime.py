@@ -30,6 +30,7 @@ class ToolsRuntime:
             "start_line": None,
             "end_line": None,
         }
+        self._negative_tool_cache: Dict[tuple[str, str], Dict[str, Any]] = {}
 
     def _update_location_context(
         self,
@@ -403,6 +404,13 @@ class ToolsRuntime:
             validation_error = self._validate_tool_args(tool_name, effective_args)
             if validation_error:
                 return validation_error
+            if tool_name == "get_type_info":
+                type_name = str(effective_args.get("type_name") or "")
+                cache_key = (tool_name, type_name)
+                if cache_key in self._negative_tool_cache:
+                    cached = dict(self._negative_tool_cache[cache_key])
+                    cached["cached_negative_result"] = True
+                    return cached
             if tool_name == "get_function_impl":
                 return self._get_function_impl(**effective_args)
             elif tool_name == "get_function_snapshot":
@@ -414,7 +422,12 @@ class ToolsRuntime:
             elif tool_name == "get_callers":
                 return self._get_callers(**effective_args)
             elif tool_name == "get_type_info":
-                return self._get_type_info(**effective_args)
+                result = self._get_type_info(**effective_args)
+                if result.get("success") is False:
+                    self._negative_tool_cache[
+                        (tool_name, str(effective_args.get("type_name") or ""))
+                    ] = dict(result)
+                return result
             elif tool_name == "get_call_graph":
                 return self._get_call_graph(**effective_args)
             elif tool_name == "get_data_flow":

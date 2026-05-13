@@ -8,6 +8,7 @@
 - **Task 驱动的漏洞 Skill 选择**：`vulnerability_analyzer.task` 不只是提示词描述。系统会从用户关注点中选择 `resource_lifecycle`、`bounds_and_integer`、`null_and_failure`、`concurrency_lock_order` 等漏洞挖掘 Skill，只注入匹配的 Skill 契约并过滤不关心类别的结果。
 - **三种运行模式**：全新扫描（默认）、断点续扫（`--resume`）、增量维护（`--maintain`）。Workflow 选择由 CLI 运行模式控制，不允许在 `zscope.yaml` 中配置。另支持规则驱动模式和告警验证模式。
 - **自动入口发现**：支持基于启发式的智能扫描入口发现（`--discover-entries`），自动识别头文件暴露的公共 API、网络收发、线程入口及用户输入点。
+- **批量入口提示词自动补齐**：`zscope-prompt-autofill` 可在批量扫描前根据源码索引为 `entry_functions_list` 中空缺的 `custom_prompt` 生成中文审计提示，保留项目领域知识（如 `DDM_ALLOC`/`DDM_FREE`、跨 handler 生命周期、条件参数释放路径）并可安全回写 JSON。
 - **本地 MCP Server**：原生内置 Model Context Protocol (MCP) 标准的 stdio Server，允许外部工具（如 Claude Desktop）直接调用 Z-SCOPE 的代码索引、快照资源及工具总线。
 - **多模型配置与路由**：支持在 `zscope.yaml` 中定义多个大模型配置（如 `fast_model` / `smart_model`），不同 Agent 可按需绑定最佳模型。
 - **可插拔后端架构**：支持 Joern CPG、Clang（clangd LSP）、Unified（Clang + SVF）、Regex 四种后端，按需选择分析深度。
@@ -229,6 +230,12 @@ project:
   source_root: .             # 源码搜索根目录
   entry_function: main       # 单函数入口模式
   # entry_functions_list: functions.json  # 批量模式配置
+
+  prompt_autofill:           # 可选：批量扫描前补齐 entry_functions_list.custom_prompt
+    enabled: false           # 开启后只补齐空缺/过短的 custom_prompt
+    overwrite_existing: false
+    write_back: true         # 为 true 时仅回写 JSON 中的 custom_prompt 字段
+    min_custom_prompt_chars: 20
   
   entry_discovery:           # 自动入口发现机制
     enabled: true            # 为 true 时，如果未提供 entry_functions_list 则自动发现
@@ -311,6 +318,45 @@ analysis:
 Workflow 选择是运行时行为，不是 YAML 配置项。普通 `zscope -c zscope.yaml` 固定使用 `default.yaml`；传入 `--resume` 时 CLI 会把当前运行切换为 `resume.yaml`；传入 `--maintain` 时切换为 `maintain.yaml`。如果 `zscope.yaml` 中出现 `analysis.workflow_name`，配置加载会直接报错。
 
 工作流文件定义的是运行时步骤，例如 `compare_hashes`、`reuse_unchanged`、`reconcile_changed`、`rescan_changed`。Analyzer 会按这些步骤推进 Agent 编排，并在最终报告的 `metadata.workflow_progress` 中记录当前 workflow 执行到了哪一步。
+
+#### 批量入口 custom_prompt 自动补齐
+
+当 `project.entry_functions_list` 指向批量入口 JSON，且 `project.prompt_autofill.enabled: true` 时，Z-SCOPE 会在加载 entries 后、启动 `ParallelAnalyzer` 前执行一次提示词补齐。补齐器复用当前项目的 `source_root`、`CodeIndex.get_function_impl()` 和调用图信息，不需要用户额外传源码根路径，也不会绕过已有索引后端。
+
+输入 JSON 仍保持原格式：
+
+```json
+{
+  "functions": [
+    {
+      "function_name": "meshServerPortApplyProc",
+      "file_path": "src/mesh_server.c",
+      "custom_prompt": ""
+    }
+  ]
+}
+```
+
+补齐行为：
+
+- 只处理 `custom_prompt` 缺失、为空或短于 `min_custom_prompt_chars` 的条目。
+- 默认不覆盖已有完整提示；需要重生成时设置 `overwrite_existing: true`。
+- `write_back: true` 时仅修改 JSON 中的 `custom_prompt` 字段，保留 `function_name`、`file_path` 和其它字段。
+- 生成内容使用 `zscope/skills/zscope-prompt-autofill/SKILL.md` 与 `references/*.md` 中的规则，重点保留项目领域知识，例如 DDM 资源接口、mesh/xmesh 跨 handler 生命周期、配对释放 handler、条件参数硬编码导致的释放路径选择风险。
+
+典型配置：
+
+```yaml
+project:
+  entry_functions_list: config/mesh_server_entry_functions.json
+  prompt_autofill:
+    enabled: true
+    overwrite_existing: false
+    write_back: true
+    min_custom_prompt_chars: 20
+```
+
+`zscope-prompt-autofill` 中偏通用的语义建模要求（例如消息分发覆盖、全局数据结构挂载/摘除、条件控制参数语义）已吸收到 `code_semantic_modeling`，因此这些事实会进入函数快照；DDM、mesh/xmesh 等项目定制知识则保留为 `custom_prompt` 注入给漏洞分析阶段。
 
 ### Step 2：执行分析
 
@@ -434,6 +480,7 @@ python -m pytest
 - **全架构重构与扁平化**：扁平化了冗余的 `zscope/zscope` 目录结构，统一通过 `pip install -e .` 安装，更贴合标准 Python 打包规范。大幅强化三库同源（`code_knowledge.db`, `snapshots.db`, `user_config.db`）的底层持久化隔离与可观测性。
 - **声明式工作流与智能体编排**：引入 `workflows/` 机制（如 default/maintain/resume 工作流）和基于 Markdown Frontmatter 的 `AGENT.md`/`SKILL.md` 契约。`zscope/workflows/*.yaml` 现在驱动实际执行步骤和 Agent 编排，报告 metadata 会记录 `workflow_progress` 与当前步骤。
 - **Task 驱动的 Skill 选择**：`vulnerability_analyzer.task` 现在会解析用户关注点并限制本轮启用的漏洞挖掘 Skill。Agent 契约注入、Deep Worker 工单规划和最终 finding 过滤都遵循同一组 active skills，从源头减少用户不关心类别的检出。
+- **批量 custom_prompt 自动补齐**：新增 `zscope-prompt-autofill` Skill 与 `PromptAutofillExecutor`。批量扫描可在分析前自动补齐 `entry_functions_list` 中缺失或过短的 `custom_prompt`，并支持只回写该字段；通用建模规则同步沉淀到 `code_semantic_modeling`，领域定制规则保留在 custom prompt 中。
 - **CLI Workflow 自动映射**：`--maintain` 自动选择 `maintain.yaml`，`--resume` 自动选择 `resume.yaml`。`analysis.workflow_name` 是运行时内部字段，禁止写入 `zscope.yaml`；两种 CLI 模式互斥，CLI 会提前拦截非法组合。
 - **Deep Worker 启发式任务规划**：引入 `SubAgentOrchestrator`，基于启发式自动探测函数内的分配、拷贝、加锁等关键操作，先全量收集候选点，再按风险和预算下发给聚焦型 `Deep Worker`。未执行候选、失败/invalid/partial Worker 结果都会回传给主 Agent，避免预算截断造成静默漏检。
 - **智能入口点自动发现**：新增 `--discover-entries` 特性。如果未给定分析列表，通过 `EntryDiscovery` 启发式扫描公共头文件 API、通信 IPC 接口、线程创建函数和标准 IO 输入源，自动推测最优的安全审计切入点。

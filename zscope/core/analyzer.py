@@ -41,6 +41,15 @@ DEFAULT_SCAN_STEP_IDS = (
     "persist_report",
 )
 
+LIGHTWEIGHT_MACRO_RE = re.compile(
+    r"^(?:LOG_(?:DEBUG|INFO|WARN|ERROR)|LOCK(?:_READ|_WRITE)?|UNLOCK|"
+    r"SAFE_FREE|ARRAY_SIZE|OFFSET_OF|RETURN_IF_(?:NULL|ERR)|GOTO_IF_(?:NULL|ERR)|"
+    r"MIN|MAX|CLAMP|STR_LEN|STR_EQ|STR_EMPTY|LIKELY|UNLIKELY)$"
+)
+LIGHTWEIGHT_WRAPPER_RE = re.compile(
+    r"^_(?:log|lock|unlock|lock_read|lock_write)_wrapper$"
+)
+
 
 class Analyzer:
     """
@@ -639,6 +648,12 @@ class Analyzer:
 
             if response.success:
                 raw_new_issues = response.data.get("issues", [])
+                rule_candidates = self._detect_local_rule_candidates(state)
+                if rule_candidates:
+                    raw_new_issues = list(raw_new_issues) + rule_candidates
+                    state["notes"].append(
+                        f"Added {len(rule_candidates)} deterministic rule candidate(s)."
+                    )
                 va_ctx_tokens = response.metadata.get("context_tokens", 0) if response.metadata else 0
                 state["total_context_tokens"] += va_ctx_tokens
                 logger.info(
@@ -709,10 +724,92 @@ class Analyzer:
                 new_issues.append(raw_issue)
         return new_issues
 
+    def _detect_local_rule_candidates(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Seed high-signal deterministic candidates before LLM validation."""
+        entry_func = state["entry_func"]
+        impl = state.get("impl_result") or {}
+        code = str(impl.get("code") or "")
+        file_path = str(impl.get("file") or "")
+        candidates: List[Dict[str, Any]] = []
+        lines = code.splitlines()
+
+        for idx, line in enumerate(lines):
+            clean = re.sub(r"^\s*(\d+)\s*\|\s*", "", line).strip()
+            line_no_match = re.match(r"^\s*(\d+)\s*\|", line)
+            source_line = int(line_no_match.group(1)) if line_no_match else int(impl.get("start_line") or 0) + idx
+            assign = re.search(
+                r"\b(?:size_t|uint(?:32|64)_t|unsigned(?:\s+long|\s+int)?)\s+"
+                r"(?P<var>[A-Za-z_]\w*)\s*=\s*(?P<lhs>[A-Za-z_]\w*)\s*\*\s*(?P<rhs>[A-Za-z_]\w*|\d+)",
+                clean,
+            )
+            if not assign:
+                continue
+
+            var = assign.group("var")
+            lhs = assign.group("lhs")
+            rhs = assign.group("rhs")
+            window = "\n".join(
+                re.sub(r"^\s*\d+\s*\|\s*", "", item).strip()
+                for item in lines[idx + 1 : idx + 7]
+            )
+            has_post_check = re.search(
+                rf"\bif\s*\([^)]*\b{re.escape(var)}\s*<\s*(?:{re.escape(lhs)}|{re.escape(rhs)})\b",
+                window,
+            )
+            if not has_post_check:
+                continue
+            has_pre_guard = re.search(
+                rf"(?:{re.escape(lhs)}\s*<=\s*(?:SIZE_MAX|UINT_MAX)\s*/\s*{re.escape(rhs)}|"
+                rf"{re.escape(rhs)}\s*<=\s*(?:SIZE_MAX|UINT_MAX)\s*/\s*{re.escape(lhs)})",
+                "\n".join(lines[max(0, idx - 6) : idx]),
+            )
+            if has_pre_guard:
+                continue
+
+            candidates.append(
+                {
+                    "id": f"RULE_INT_OVERFLOW_{entry_func}_{source_line}",
+                    "function": entry_func,
+                    "location": f"{file_path}:{source_line}",
+                    "category": "memory_safety",
+                    "subcategory": "integer_overflow",
+                    "description": (
+                        f"`{var}` is computed as `{lhs} * {rhs}` before the overflow check. "
+                        "If the multiplication wraps, the later comparison observes the wrapped value."
+                    ),
+                    "root_cause": "Multiplication is performed before proving operands are bounded.",
+                    "suggested_fix": (
+                        f"Check `{lhs} <= SIZE_MAX / {rhs}` before computing `{var}`, "
+                        "or use a checked-multiply helper."
+                    ),
+                    "confidence": 0.86,
+                    "impact_level": "medium",
+                    "reasoning": (
+                        "Deterministic rule: post-computation overflow checks cannot prevent "
+                        "wraparound that already happened."
+                    ),
+                    "code_snippet": "\n".join(lines[idx : idx + 6]),
+                    "source": lhs,
+                    "sink": "* allocation size",
+                }
+            )
+
+        return candidates
+
     def _step_validate_findings(self, state: Dict[str, Any]) -> None:
         new_issues = state.get("pending_new_issues", [])
         if not new_issues:
             return
+        deduped_issues = self._deduplicate_candidate_issues(new_issues)
+        if len(deduped_issues) != len(new_issues):
+            logger.info(
+                "Merged %d duplicate candidate issue(s) before validation.",
+                len(new_issues) - len(deduped_issues),
+            )
+            state["notes"].append(
+                f"Merged {len(new_issues) - len(deduped_issues)} duplicate candidate issue(s) before validation."
+            )
+        new_issues = deduped_issues
 
         validator_enabled = any(
             a.name == "validator_agent" and a.enabled
@@ -744,6 +841,11 @@ class Analyzer:
             val_input = {
                 "finding": json.dumps(raw_issue, indent=2, ensure_ascii=False),
                 "context_code": issue_code,
+                "evidence_pack": self._build_validation_evidence_pack(
+                    raw_issue,
+                    state,
+                    issue_code,
+                ),
             }
             self._attach_agent_contract(val_input, "validator_agent")
             val_resp = validator_agent.run(val_input)
@@ -780,6 +882,188 @@ class Analyzer:
                 state["issues"].append(raw_issue)
 
         state["pending_new_issues"] = []
+
+    def _deduplicate_candidate_issues(
+        self, issues: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Merge candidate findings that point at the same root-cause sink."""
+        records: Dict[str, Dict[str, Any]] = {}
+        for issue in issues:
+            key = self._canonical_issue_key(issue)
+            existing = records.get(key)
+            if existing is None:
+                issue.setdefault("dedup_key", key)
+                issue.setdefault("duplicate_sources", [])
+                records[key] = issue
+                continue
+
+            existing["duplicate_count"] = int(existing.get("duplicate_count", 0) or 0) + 1
+            sources = existing.setdefault("duplicate_sources", [])
+            source = issue.get("id") or issue.get("analyzed_from") or issue.get("function")
+            if source and source not in sources:
+                sources.append(source)
+
+            if self._issue_rank(issue) > self._issue_rank(existing):
+                merged_sources = list(sources)
+                issue["duplicate_count"] = existing.get("duplicate_count", 0)
+                issue["duplicate_sources"] = merged_sources
+                issue["dedup_key"] = key
+                records[key] = issue
+        return list(records.values())
+
+    def _build_validation_evidence_pack(
+        self,
+        issue: Dict[str, Any],
+        state: Dict[str, Any],
+        issue_code: str,
+    ) -> Dict[str, Any]:
+        """Build compact deterministic evidence so the validator starts from facts."""
+        issue_func = str(issue.get("function") or state["agent_context"]["func_name"])
+        location = str(issue.get("location") or "")
+        file_path, line = self._parse_issue_location(location)
+        snippet = None
+        if file_path and line:
+            snippet = self.code_index.get_file_snippet(
+                file_path,
+                max(1, line - 12),
+                line + 12,
+            )
+
+        snapshot = self.snapshot_store.load_snapshot(issue_func)
+        try:
+            callers = self.code_index.get_callers(issue_func, limit=8)
+        except Exception:
+            callers = []
+        try:
+            callees = self.code_index.get_callees(issue_func, limit=12)
+        except Exception:
+            callees = []
+
+        return {
+            "mode": "strict_exploitability_validation",
+            "dedup_key": issue.get("dedup_key") or self._canonical_issue_key(issue),
+            "finding_summary": {
+                "id": issue.get("id"),
+                "function": issue_func,
+                "location": location,
+                "category": issue.get("category"),
+                "subcategory": issue.get("subcategory"),
+                "confidence": issue.get("confidence"),
+                "description": issue.get("description"),
+            },
+            "primary_location_snippet": snippet,
+            "function_context": {
+                "code": self._trim_code(issue_code, max_lines=140),
+                "snapshot_summary": self._compact_snapshot(snapshot),
+                "callers": callers,
+                "callees": callees,
+            },
+            "validation_requirements": [
+                "Validate only if there is a concrete public/API or caller-controlled trigger path.",
+                "Identify source, sink, source controllability, and the missing/insufficient guard.",
+                "Reject hardening/style/theoretical findings without a source-to-sink path.",
+                "For integer overflow, multiplication/addition must be checked before the operation or by a proven bounded operand.",
+            ],
+        }
+
+    @staticmethod
+    def _issue_rank(issue: Dict[str, Any]) -> tuple[int, float, int]:
+        severity_order = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+        severity = severity_order.get(str(issue.get("impact_level") or issue.get("severity") or "").lower(), 0)
+        try:
+            confidence = float(issue.get("confidence", 0) or 0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        return severity, confidence, len(str(issue.get("reasoning") or issue.get("description") or ""))
+
+    @classmethod
+    def _canonical_issue_key(cls, issue: Dict[str, Any]) -> str:
+        text = cls._flatten_issue_text(issue)
+        file_path, line = cls._parse_issue_location(str(issue.get("location") or issue.get("file") or text))
+        if not file_path:
+            match = re.search(r"((?:src|include|internal)/[A-Za-z0-9_./-]+\.[chp]+)", text)
+            file_path = match.group(1).lower() if match else ""
+        category = cls._normalize_issue_category(
+            str(issue.get("category") or issue.get("subcategory") or issue.get("vulnerability_type") or text)
+        )
+        sink = str(issue.get("sink") or issue.get("sink_function") or "")
+        if not sink:
+            sink_match = re.search(
+                r"\b(memcpy|memmove|strcpy|strcat|sprintf|snprintf|printf|system|fopen|free|malloc|"
+                r"pthread_mutex_lock|pthread_mutex_unlock|strlen)\b",
+                text,
+                flags=re.IGNORECASE,
+            )
+            sink = sink_match.group(1).lower() if sink_match else ""
+        line_key = str(line or "")
+        return "|".join(
+            cls._normalize_issue_key_part(part)
+            for part in (category, file_path, line_key, sink or issue.get("function", ""))
+        )
+
+    @staticmethod
+    def _normalize_issue_category(value: str) -> str:
+        text = value.replace("_", " ").replace("-", " ").lower()
+        groups = {
+            "integer_overflow": ("integer", "overflow", "wrap", "cwe-190"),
+            "bounds": ("bounds", "buffer", "out of bounds", "cwe-125", "cwe-787"),
+            "format_string": ("format string", "cwe-134"),
+            "command_injection": ("command injection", "system", "shell", "cwe-78"),
+            "race": ("race", "toctou", "concurrency", "cwe-362", "cwe-367"),
+            "deadlock": ("deadlock", "cwe-833"),
+            "double_free": ("double free", "cwe-415"),
+            "memory_leak": ("leak", "cwe-401"),
+        }
+        for canonical, needles in groups.items():
+            if any(needle in text for needle in needles):
+                return canonical
+        return text.strip() or "unknown"
+
+    @staticmethod
+    def _normalize_issue_key_part(value: Any) -> str:
+        text = str(value or "").replace("\\", "/").lower().strip()
+        return re.sub(r"\s+", " ", text)
+
+    @classmethod
+    def _flatten_issue_text(cls, value: Any) -> str:
+        if isinstance(value, dict):
+            return " ".join(cls._flatten_issue_text(v) for v in value.values())
+        if isinstance(value, list):
+            return " ".join(cls._flatten_issue_text(v) for v in value)
+        return "" if value is None else str(value)
+
+    @staticmethod
+    def _parse_issue_location(location: str) -> tuple[str, Optional[int]]:
+        normalized = location.replace("\\", "/")
+        match = re.search(r"((?:src|include|internal)/[A-Za-z0-9_./-]+\.[chp]+):(\d+)", normalized)
+        if match:
+            return match.group(1).lower(), int(match.group(2))
+        match = re.search(r"(.+\.[chp]+):(\d+)", normalized)
+        if match:
+            return match.group(1).lower(), int(match.group(2))
+        return normalized.lower(), None
+
+    @staticmethod
+    def _trim_code(code: str, max_lines: int = 140) -> str:
+        lines = str(code or "").splitlines()
+        if len(lines) <= max_lines:
+            return code
+        head = max_lines // 2
+        tail = max_lines - head
+        return "\n".join(lines[:head] + ["/* ... trimmed for validator evidence pack ... */"] + lines[-tail:])
+
+    @staticmethod
+    def _compact_snapshot(snapshot: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not isinstance(snapshot, dict):
+            return None
+        return {
+            "summary": snapshot.get("summary"),
+            "resources": snapshot.get("resources"),
+            "error_handling": snapshot.get("error_handling"),
+            "concurrency": snapshot.get("concurrency"),
+            "suspicious_points": snapshot.get("suspicious_points"),
+            "semantic_fingerprint": snapshot.get("semantic_fingerprint"),
+        }
 
     def _build_final_report(self, state: Dict[str, Any]) -> None:
         all_issues = state.get("issues", []) + state.get("verified_hist_issues", [])
@@ -1068,6 +1352,21 @@ class Analyzer:
                     }
 
             location = f"{impl_file}:{impl.get('start_line', 0)}"
+            if self._is_lightweight_snapshot_candidate(func_name, impl):
+                snapshot = self._build_lightweight_snapshot(func_name, impl, location)
+                self.snapshot_store.save_snapshot(
+                    func_name,
+                    snapshot,
+                    str(impl.get("code") or ""),
+                    location,
+                )
+                self.snapshot_store.lock_manager.release(func_name, success=True)
+                return {
+                    "success": True,
+                    "data": snapshot,
+                    "message": "Generated and saved deterministic lightweight snapshot.",
+                }
+
             if self._is_trivial_function(
                 str(impl.get("code") or ""),
                 self.config.analysis.trivial_function_max_lines,
@@ -1163,6 +1462,82 @@ class Analyzer:
             "callees": impl.get("callees", []),
         }
 
+    @staticmethod
+    def _is_lightweight_snapshot_candidate(func_name: str, impl: Dict[str, Any]) -> bool:
+        """Return true for macros/wrappers that can be summarized deterministically."""
+        if impl.get("is_macro"):
+            if LIGHTWEIGHT_MACRO_RE.match(func_name):
+                return True
+            code = str(impl.get("code") or "")
+            return bool(
+                re.search(r"#\s*define\s+\w+\s+\(?[0-9A-Za-z_+\-*/<>=&| ]+\)?\s*$", code)
+                and len(code.splitlines()) <= 3
+            )
+        if LIGHTWEIGHT_WRAPPER_RE.match(func_name):
+            return True
+        return False
+
+    @staticmethod
+    def _build_lightweight_snapshot(
+        func_name: str, impl: Dict[str, Any], location: str
+    ) -> Dict[str, Any]:
+        """Create a deterministic snapshot for common macros and tiny wrapper APIs."""
+        code = str(impl.get("code") or "")
+        upper = func_name.upper()
+        key_semantics: List[str] = ["deterministic lightweight snapshot; no LLM call"]
+        resources: Dict[str, Any] = {}
+        concurrency: Dict[str, Any] = {}
+        error_handling: Dict[str, Any] = {}
+        summary = "Lightweight macro/wrapper summarized without LLM semantic modeling."
+
+        if upper.startswith("LOG_") or func_name == "_log_wrapper":
+            summary = (
+                "Logging helper. Validate format-string safety at the call site where "
+                "the format argument is chosen; this helper alone is not a vulnerability."
+            )
+            key_semantics.append("logging side effect")
+        elif upper.startswith("LOCK") or upper == "UNLOCK" or "lock" in func_name:
+            summary = (
+                "Locking helper. Treat calls as acquiring or releasing the referenced "
+                "mutex/rwlock at the call site; inspect caller ordering for deadlocks."
+            )
+            concurrency = {"lock_effect": "call-site lock/unlock wrapper"}
+            key_semantics.append("synchronization wrapper")
+        elif upper in {"SAFE_FREE"}:
+            summary = "SAFE_FREE-style macro: frees a non-null pointer and nulls the lvalue."
+            resources = {"memory": "conditional free and null assignment"}
+            key_semantics.append("conditional release")
+        elif upper in {"MIN", "MAX", "CLAMP", "ARRAY_SIZE", "OFFSET_OF"}:
+            summary = "Pure expression macro. Analyze bounds at the caller expression."
+            key_semantics.append("pure expression macro")
+        elif upper.startswith(("RETURN_IF_", "GOTO_IF_")):
+            summary = "Guard/control-flow macro. Analyze the caller's guarded path."
+            error_handling = {"control_flow": "guard macro expands to return/goto"}
+            key_semantics.append("guard macro")
+
+        return {
+            "type": "function_snapshot",
+            "func_name": func_name,
+            "location": location,
+            "file_path": impl.get("file"),
+            "start_line": impl.get("start_line"),
+            "end_line": impl.get("end_line"),
+            "signature": impl.get("signature"),
+            "summary": summary,
+            "snapshot_kind": "lightweight",
+            "is_trivial": True,
+            "is_macro": bool(impl.get("is_macro")),
+            "code": code,
+            "inputs": [],
+            "outputs": [],
+            "resources": resources,
+            "error_handling": error_handling,
+            "concurrency": concurrency,
+            "semantic_fingerprint": {"key_semantics": key_semantics},
+            "suspicious_points": [],
+            "callees": impl.get("callees", []),
+        }
+
     def _premodel_callees(self, entry_func: str, sm_client: 'LLMClient',
                           max_depth: int = 3, max_callees: int = 20) -> tuple[int, int, int]:
         """
@@ -1194,7 +1569,8 @@ class Analyzer:
                 if impl is not None:
                     impl_cache[c] = impl
                     resolvable.append(c)
-                    queue.append((c, depth + 1))
+                    if not self._is_lightweight_snapshot_candidate(c, impl):
+                        queue.append((c, depth + 1))
                 else:
                     logger.debug("[premodel] Skipping unresolved callee '%s'", c)
 
@@ -1245,6 +1621,14 @@ class Analyzer:
                     continue
 
                 location = f"{impl['file']}:{impl['start_line']}"
+
+                if self._is_lightweight_snapshot_candidate(func, impl):
+                    logger.info(f"[premodel] Auto-summarizing lightweight helper '{func}'")
+                    snapshot = self._build_lightweight_snapshot(func, impl, location)
+                    self.snapshot_store.save_snapshot(func, snapshot, impl["code"], location)
+                    self.snapshot_store.lock_manager.release(func, success=True)
+                    modeled += 1
+                    continue
 
                 # 高效拦截：平凡函数不需要让大模型看
                 if self._is_trivial_function(impl["code"], self.config.analysis.trivial_function_max_lines):
