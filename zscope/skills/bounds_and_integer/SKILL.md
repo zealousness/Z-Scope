@@ -26,3 +26,9 @@ object. Track size_t/int signedness, truncation, multiplication/addition
 overflow, sentinel bytes, NUL termination, and whether the bound is checked
 before the sink. A finding needs the source of the size/index, the sink, and the
 missing or incorrect guard.
+
+Integer-overflow rule: a post-computation check such as `total < input` is not
+sufficient when `total` was already computed by `input * k` or `a + b` and could
+have wrapped. Treat it as valid only if there is a precondition before the
+operation, for example `input <= SIZE_MAX / k`, `a <= SIZE_MAX - b`, or an
+equivalent proven bound on each operand.

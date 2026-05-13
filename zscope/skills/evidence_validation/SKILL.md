@@ -16,7 +16,10 @@ allowed_mcp_tools:
   - zscope.get_function_snapshot
 ---
 
-Compare the finding's path and assumptions with code evidence. Validate when the
-path is plausible and no mitigation is visible. Reject only when a concrete
-guard, range proof, ownership transfer, cleanup path, or synchronization rule
-clearly eliminates the issue.
+Compare the finding's path and assumptions with code evidence under a strict
+exploitability bar. Validate only when the source, sink, source controllability,
+and feasible trigger path are concrete. Reject hardening/style/theoretical
+findings when they do not prove a source-to-sink path, even if the code could be
+made more defensive. A missing guard matters only when the relevant input can
+reach the sink in the shown path. For mitigations, cite the concrete guard,
+range proof, ownership transfer, cleanup path, or synchronization rule.

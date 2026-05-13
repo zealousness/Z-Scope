@@ -22,7 +22,19 @@ class ValidatorAgent(ToolCallingAgent):
     def run(self, input_data: Dict[str, Any], max_retries: int = 2) -> AgentResponse:
         finding = input_data.get("finding")
         context_code = input_data.get("context_code")
-        prompt = f"Suspected Finding:\n{finding}\n\nRelevant Code Context:\n{context_code}"
+        evidence_pack = input_data.get("evidence_pack")
+        evidence_text = ""
+        if evidence_pack:
+            import json
+            evidence_text = (
+                "\n\nCompact Evidence Pack:\n"
+                + json.dumps(evidence_pack, ensure_ascii=False, indent=2)
+            )
+        prompt = (
+            f"Suspected Finding:\n{finding}"
+            f"{evidence_text}"
+            f"\n\nRelevant Code Context:\n{context_code}"
+        )
         last_error = ""
 
         for attempt in range(1, max_retries + 1):

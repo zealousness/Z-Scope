@@ -13,6 +13,8 @@ from ..common.utils import compute_code_hash, compute_semantic_fingerprint
 
 logger = logging.getLogger(__name__)
 
+_SQLITE_PRAGMA_LOCK = threading.Lock()
+
 
 class SnapshotLockManager:
     """
@@ -93,8 +95,8 @@ class SnapshotStore:
 
     def _connect(self) -> sqlite3.Connection:
         """Create a configured SQLite connection."""
-        conn = sqlite3.connect(str(self.db_path))
-        conn.execute("PRAGMA journal_mode=WAL")
+        conn = sqlite3.connect(str(self.db_path), timeout=30.0)
+        conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
@@ -102,6 +104,8 @@ class SnapshotStore:
         """Initialize SQLite database for snapshot metadata."""
         conn = self._connect()
         try:
+            with _SQLITE_PRAGMA_LOCK:
+                conn.execute("PRAGMA journal_mode=WAL")
             # Check if we need to migrate from old schema
             cursor = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='snapshots'"
