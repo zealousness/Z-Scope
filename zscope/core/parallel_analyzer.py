@@ -6,6 +6,7 @@ Supports concurrent analysis of multiple functions using thread pool.
 import concurrent.futures
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -402,22 +403,98 @@ class ParallelAnalyzer:
 
     
     def _deduplicate_issues(self, issues: List[Dict]) -> List[Dict]:
-        """Remove duplicate issues based on location and description."""
-        seen = set()
-        unique = []
-        
+        """Remove duplicate issues based on canonical sink/root-cause evidence."""
+        records: Dict[str, Dict[str, Any]] = {}
         for issue in issues:
-            # Safer key construction: ensure all parts are strings
-            loc = str(issue.get("location", ""))
-            sub = str(issue.get("subcategory", ""))
-            desc = str(issue.get("description", ""))[:100]
-            
-            key = (loc, sub, desc)
-            if key not in seen:
-                seen.add(key)
-                unique.append(issue)
-        
-        return unique
+            key = self._canonical_issue_key(issue)
+            existing = records.get(key)
+            if existing is None:
+                issue.setdefault("dedup_key", key)
+                records[key] = issue
+                continue
+            existing["duplicate_count"] = int(existing.get("duplicate_count", 0) or 0) + 1
+            sources = existing.setdefault("duplicate_sources", [])
+            source = issue.get("analyzed_from") or issue.get("id") or issue.get("function")
+            if source and source not in sources:
+                sources.append(source)
+            if self._issue_rank(issue) > self._issue_rank(existing):
+                issue["duplicate_count"] = existing.get("duplicate_count", 0)
+                issue["duplicate_sources"] = list(sources)
+                issue["dedup_key"] = key
+                records[key] = issue
+        return list(records.values())
+
+    @staticmethod
+    def _issue_rank(issue: Dict[str, Any]) -> tuple[int, float, int]:
+        severity_order = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+        severity = severity_order.get(str(issue.get("impact_level") or issue.get("severity") or "").lower(), 0)
+        try:
+            confidence = float(issue.get("confidence", 0) or 0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        return severity, confidence, len(str(issue.get("reasoning") or issue.get("description") or ""))
+
+    @classmethod
+    def _canonical_issue_key(cls, issue: Dict[str, Any]) -> str:
+        text = cls._flatten_issue_text(issue)
+        location = str(issue.get("location") or issue.get("file") or text)
+        file_path, line = cls._parse_issue_location(location)
+        if not file_path:
+            match = re.search(r"((?:src|include|internal)/[A-Za-z0-9_./-]+\.[chp]+)", text)
+            file_path = match.group(1).lower() if match else ""
+        category = cls._normalize_issue_category(
+            str(issue.get("category") or issue.get("subcategory") or issue.get("vulnerability_type") or text)
+        )
+        sink_match = re.search(
+            r"\b(memcpy|memmove|strcpy|strcat|sprintf|snprintf|printf|system|fopen|free|malloc|"
+            r"pthread_mutex_lock|pthread_mutex_unlock|strlen)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        sink = str(issue.get("sink") or (sink_match.group(1).lower() if sink_match else issue.get("function", "")))
+        return "|".join(cls._normalize_issue_key_part(part) for part in (category, file_path, line or "", sink))
+
+    @staticmethod
+    def _normalize_issue_category(value: str) -> str:
+        text = value.replace("_", " ").replace("-", " ").lower()
+        groups = {
+            "integer_overflow": ("integer", "overflow", "wrap", "cwe-190"),
+            "bounds": ("bounds", "buffer", "out of bounds", "cwe-125", "cwe-787"),
+            "format_string": ("format string", "cwe-134"),
+            "command_injection": ("command injection", "system", "shell", "cwe-78"),
+            "race": ("race", "toctou", "concurrency", "cwe-362", "cwe-367"),
+            "deadlock": ("deadlock", "cwe-833"),
+            "double_free": ("double free", "cwe-415"),
+            "memory_leak": ("leak", "cwe-401"),
+        }
+        for canonical, needles in groups.items():
+            if any(needle in text for needle in needles):
+                return canonical
+        return text.strip() or "unknown"
+
+    @staticmethod
+    def _normalize_issue_key_part(value: Any) -> str:
+        text = str(value or "").replace("\\", "/").lower().strip()
+        return re.sub(r"\s+", " ", text)
+
+    @classmethod
+    def _flatten_issue_text(cls, value: Any) -> str:
+        if isinstance(value, dict):
+            return " ".join(cls._flatten_issue_text(v) for v in value.values())
+        if isinstance(value, list):
+            return " ".join(cls._flatten_issue_text(v) for v in value)
+        return "" if value is None else str(value)
+
+    @staticmethod
+    def _parse_issue_location(location: str) -> tuple[str, Optional[int]]:
+        normalized = location.replace("\\", "/")
+        match = re.search(r"((?:src|include|internal)/[A-Za-z0-9_./-]+\.[chp]+):(\d+)", normalized)
+        if match:
+            return match.group(1).lower(), int(match.group(2))
+        match = re.search(r"(.+\.[chp]+):(\d+)", normalized)
+        if match:
+            return match.group(1).lower(), int(match.group(2))
+        return normalized.lower(), None
     
     def _group_by_severity(self, issues: List[Dict]) -> Dict[str, List[Dict]]:
         """Group issues by impact level."""
