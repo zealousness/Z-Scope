@@ -10,6 +10,8 @@ import sqlite3
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+from .user_config_workbook import UserConfigWorkbook
+
 logger = logging.getLogger(__name__)
 
 
@@ -17,9 +19,20 @@ class UserConfigStore:
     """SQLite-backed store for user-provided analysis configuration."""
 
     def __init__(self, db_dir: Path):
-        self.db_dir = Path(db_dir)
-        self.db_dir.mkdir(parents=True, exist_ok=True)
-        self.db_path = self.db_dir / "user_config.db"
+        raw_path = Path(db_dir)
+        self.workbook: Optional[UserConfigWorkbook] = None
+        if raw_path.suffix.lower() == ".xlsx":
+            self.db_dir = raw_path.parent
+            self.db_dir.mkdir(parents=True, exist_ok=True)
+            self.db_path = raw_path.with_suffix(".state.db")
+            self.workbook = UserConfigWorkbook(raw_path)
+        else:
+            self.db_dir = raw_path
+            self.db_dir.mkdir(parents=True, exist_ok=True)
+            self.db_path = self.db_dir / "user_config.db"
+            workbook_path = self.db_dir / "user_config.xlsx"
+            if workbook_path.exists():
+                self.workbook = UserConfigWorkbook(workbook_path)
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -114,6 +127,16 @@ class UserConfigStore:
                                  library: str = "", memory_behavior: Optional[Dict] = None,
                                  concurrency_behavior: Optional[Dict] = None,
                                  return_semantics: str = "") -> None:
+        if self.workbook:
+            self.workbook.upsert_external_function(
+                func_name,
+                description,
+                library=library,
+                memory_behavior=memory_behavior,
+                concurrency_behavior=concurrency_behavior,
+                return_semantics=return_semantics,
+            )
+            return
         conn = self._connect()
         try:
             conn.execute(
@@ -130,6 +153,11 @@ class UserConfigStore:
             conn.close()
 
     def get_external_function(self, func_name: str) -> Optional[Dict[str, Any]]:
+        if self.workbook:
+            for item in self.workbook.list_external_functions():
+                if item.get("func_name") == func_name:
+                    return item
+            return None
         conn = self._connect()
         try:
             row = conn.execute(
@@ -140,6 +168,8 @@ class UserConfigStore:
             conn.close()
 
     def list_external_functions(self) -> List[Dict[str, Any]]:
+        if self.workbook:
+            return self.workbook.list_external_functions()
         conn = self._connect()
         try:
             rows = conn.execute("SELECT * FROM external_functions ORDER BY func_name").fetchall()
@@ -148,6 +178,9 @@ class UserConfigStore:
             conn.close()
 
     def delete_external_function(self, func_name: str) -> None:
+        if self.workbook:
+            self.workbook.delete_external_function(func_name)
+            return
         conn = self._connect()
         try:
             conn.execute("DELETE FROM external_functions WHERE func_name = ?", (func_name,))
@@ -159,6 +192,9 @@ class UserConfigStore:
 
     def upsert_paired_function(self, category: str, acquire_func: str,
                                release_func: str, description: str = "") -> None:
+        if self.workbook:
+            self.workbook.upsert_paired_function(category, acquire_func, release_func, description)
+            return
         conn = self._connect()
         try:
             conn.execute(
@@ -171,6 +207,8 @@ class UserConfigStore:
             conn.close()
 
     def list_paired_functions(self, category: Optional[str] = None) -> List[Dict[str, Any]]:
+        if self.workbook:
+            return self.workbook.list_paired_functions(category)
         conn = self._connect()
         try:
             if category:
@@ -185,6 +223,9 @@ class UserConfigStore:
             conn.close()
 
     def delete_paired_function(self, id: int) -> None:
+        if self.workbook:
+            self.workbook.delete_paired_function(id)
+            return
         conn = self._connect()
         try:
             conn.execute("DELETE FROM paired_functions WHERE id = ?", (id,))
@@ -196,6 +237,9 @@ class UserConfigStore:
 
     def upsert_pointer_target(self, pointer_location: str, scope: str,
                               target_functions: List[str], context: str = "") -> None:
+        if self.workbook:
+            self.workbook.upsert_pointer_target(pointer_location, scope, target_functions, context)
+            return
         conn = self._connect()
         try:
             conn.execute(
@@ -209,6 +253,13 @@ class UserConfigStore:
 
     def get_pointer_targets(self, pointer_location: Optional[str] = None,
                             context: Optional[str] = None) -> List[Dict[str, Any]]:
+        if self.workbook:
+            rows = self.workbook.list_pointer_targets()
+            if pointer_location:
+                rows = [row for row in rows if row.get("pointer_location") == pointer_location]
+            if context:
+                rows = [row for row in rows if row.get("context") == context]
+            return rows
         conn = self._connect()
         try:
             if pointer_location and context:
@@ -226,6 +277,9 @@ class UserConfigStore:
             conn.close()
 
     def delete_pointer_target(self, id: int) -> None:
+        if self.workbook:
+            self.workbook.delete_pointer_target(id)
+            return
         conn = self._connect()
         try:
             conn.execute("DELETE FROM function_pointer_targets WHERE id = ?", (id,))
@@ -235,11 +289,31 @@ class UserConfigStore:
 
     # ── Function Intent ──
 
+    def list_dispatchers(self) -> List[Dict[str, Any]]:
+        if self.workbook:
+            return self.workbook.list_dispatchers()
+        return []
+
+    def list_module_lifecycle(self) -> List[Dict[str, Any]]:
+        if self.workbook:
+            return self.workbook.list_module_lifecycle()
+        return []
+
     def upsert_function_intent(self, func_name: str, file_path: str = "",
                                caller_constraints: Optional[Dict] = None,
                                concurrency_group: str = "",
                                concurrent_with: Optional[List[str]] = None,
                                notes: str = "") -> None:
+        if self.workbook:
+            self.workbook.upsert_function_intent(
+                func_name,
+                file_path=file_path,
+                caller_constraints=caller_constraints,
+                concurrency_group=concurrency_group,
+                concurrent_with=concurrent_with,
+                notes=notes,
+            )
+            return
         conn = self._connect()
         try:
             conn.execute(
@@ -258,6 +332,8 @@ class UserConfigStore:
 
     def get_function_intent(self, func_name: str,
                             file_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        if self.workbook:
+            return self.workbook.get_function_intent(func_name, file_path)
         conn = self._connect()
         try:
             if file_path:
@@ -273,6 +349,8 @@ class UserConfigStore:
             conn.close()
 
     def list_function_intents(self) -> List[Dict[str, Any]]:
+        if self.workbook:
+            return self.workbook.list_function_intents()
         conn = self._connect()
         try:
             rows = conn.execute("SELECT * FROM function_intent ORDER BY func_name").fetchall()
@@ -281,6 +359,9 @@ class UserConfigStore:
             conn.close()
 
     def delete_function_intent(self, func_name: str, file_path: str = "") -> None:
+        if self.workbook:
+            self.workbook.delete_function_intent(func_name, file_path)
+            return
         conn = self._connect()
         try:
             conn.execute(
@@ -457,16 +538,19 @@ class UserConfigStore:
         if not intent:
             return ""
         lines = [f"[函数设计意图: {func_name}]"]
+        if intent.get("intents"):
+            lines.append(f"  用户补充: {intent['intents']}")
+            return "\n".join(lines)
         constraints = intent.get("caller_constraints", "{}")
         if isinstance(constraints, str):
-            constraints = json.loads(constraints)
+            constraints = self._parse_json_value(constraints, {})
         if constraints:
             lines.append(f"  调用者约束: {json.dumps(constraints, ensure_ascii=False)}")
         if intent.get("concurrency_group"):
             lines.append(f"  并发组: {intent['concurrency_group']}")
         concurrent = intent.get("concurrent_with", "[]")
         if isinstance(concurrent, str):
-            concurrent = json.loads(concurrent)
+            concurrent = self._parse_json_value(concurrent, [])
         if concurrent:
             lines.append(f"  与以下组存在并发: {', '.join(concurrent)}")
         if intent.get("notes"):
@@ -482,3 +566,12 @@ class UserConfigStore:
     @staticmethod
     def _normalize_key(value: str) -> str:
         return str(value or "").replace("\\", "/").strip().lower()
+
+    @staticmethod
+    def _parse_json_value(value: str, default: Any) -> Any:
+        if not value:
+            return default
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return default

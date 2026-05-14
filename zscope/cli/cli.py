@@ -29,6 +29,7 @@ from ..orchestration.scan_session import ScanSessionRunner
 @click.option("--resume", is_flag=True, default=False, help="Resume interrupted batch scan from last checkpoint.")
 @click.option("--maintain", is_flag=True, default=False, help="Incremental maintenance scan: skip unchanged functions, verify historical issues.")
 @click.option("--discover-entries", is_flag=True, default=False, help="Discover public API, communication, thread, and other input entries before scanning.")
+@click.option("--infer-user-config", is_flag=True, default=False, help="Infer/update the human-editable user_config.xlsx and exit.")
 @click.option("--mcp-stdio", is_flag=True, default=False, help="Run Z-SCOPE local MCP server over stdio.")
 def main(
     config: Path,
@@ -40,6 +41,7 @@ def main(
     resume: bool,
     maintain: bool,
     discover_entries: bool,
+    infer_user_config: bool,
     mcp_stdio: bool,
 ):
     """
@@ -113,6 +115,36 @@ def main(
             from ..mcp.server import run_stdio_server
 
             run_stdio_server(str(config))
+            sys.exit(0)
+
+        if infer_user_config:
+            from ..config.user_config_workbook import UserConfigWorkbook
+            from ..orchestration.user_config_inference import infer_user_config_rows
+
+            click.echo("Inferring user configuration candidates...")
+            code_index = CodeIndex(
+                zscope_config.project.project_root,
+                zscope_config.project.compile_commands_path,
+                source_root=zscope_config.project.source_root,
+                indexing_config=zscope_config.indexing,
+                include_paths=zscope_config.project.include_paths,
+                exclude_paths=zscope_config.project.exclude_paths,
+                wait_for_cpg=True,
+            )
+            workbook_path = _resolve_user_config_workbook_path(zscope_config)
+            generated = infer_user_config_rows(
+                code_index,
+                snapshot_dir=Path(zscope_config.analysis.snapshot_dir),
+            )
+            stats = UserConfigWorkbook(workbook_path).merge_generated(generated)
+            total_symbols = sum(len(items) for items in generated.values())
+            click.echo(f"User config workbook: {workbook_path}")
+            click.echo(
+                "Inference complete: "
+                f"{total_symbols} generated row(s), "
+                f"{stats['added']} added, {stats['refreshed']} refreshed, {stats['removed']} removed."
+            )
+            click.echo("Review the workbook, then run Z-SCOPE normally.")
             sys.exit(0)
 
         if build_cpg:
@@ -253,6 +285,16 @@ def main(
     finally:
         if code_index:
             code_index.close()
+
+
+def _resolve_user_config_workbook_path(zscope_config) -> Path:
+    configured = zscope_config.analysis.user_config_db
+    raw_path = Path(configured) if configured else Path(zscope_config.analysis.snapshot_dir)
+    if raw_path.suffix.lower() == ".xlsx":
+        return raw_path
+    if raw_path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+        return raw_path.with_suffix(".xlsx")
+    return raw_path / "user_config.xlsx"
 
 
 if __name__ == "__main__":

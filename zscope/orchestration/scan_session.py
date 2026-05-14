@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -16,11 +17,12 @@ from ..core.parallel_analyzer import ParallelAnalysisResult, ParallelAnalyzer
 from ..core.snapshot_store import SnapshotStore
 from ..retrieval.code_index import CodeIndex
 from .entry_discovery import EntryDiscovery
-from .prompt_autofill import PromptAutofillExecutor
 from .specs import SpecRegistry, WorkflowStep
 from .workflow_executor import WorkflowExecutor, WorkflowStepHandler
 
 logger = logging.getLogger(__name__)
+
+DISCOVERED_ENTRY_FUNCTIONS_FILENAME = "entry_functions_list.json"
 
 
 @dataclass
@@ -140,18 +142,38 @@ class ScanSessionRunner:
             code_index,
             max_functions=discovery_cfg.max_functions,
             header_files=discovery_cfg.header_files or None,
+            project_root=self.config.project.project_root,
+            source_root=self.config.project.source_root,
+            search_root=discovery_cfg.search_root,
         )
         discovery_result = discovery.discover(max_candidates=discovery_cfg.max_candidates)
         discovered_entries = discovery_result.to_function_entries()
         state["discovery_result"] = discovery_result.to_dict()
         state["discovered_entries"] = discovered_entries
+        entry_list_path = self._write_discovered_entry_functions_list(discovery_result)
+        state["discovered_entry_functions_list"] = str(entry_list_path)
+        if discovered_entries and not self.config.project.entry_functions_list:
+            self.config.project.entry_functions_list = entry_list_path
         self.emit(
             f"Entry discovery: {discovery_result.exposure_kind}, "
             f"{len(discovered_entries)} candidate(s), summary={discovery_result.summary}"
         )
+        self.emit(f"Discovered entry function list written to: {entry_list_path}")
         if not discovered_entries and self.config.project.entry_function:
             self.emit("No discovered entries found; falling back to configured entry_function.")
         return False
+
+    def _write_discovered_entry_functions_list(
+        self,
+        discovery_result: Any,
+    ) -> Path:
+        path = self.config.project.project_root / DISCOVERED_ENTRY_FUNCTIONS_FILENAME
+        payload = discovery_result.to_entry_functions_payload()
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return path
 
     def _handle_plan_resume_entries(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
         if not self.resume:
@@ -241,11 +263,6 @@ class ScanSessionRunner:
             )
             entries = FunctionListLoader.load(self.config.project.entry_functions_list)
             logger.info("Loaded %d function entries", len(entries))
-            self._autofill_custom_prompts(
-                state,
-                entries,
-                source_json_path=self.config.project.entry_functions_list,
-            )
             batch_mode = True
         elif discovered_entries:
             logger.info(
@@ -253,7 +270,6 @@ class ScanSessionRunner:
                 len(discovered_entries),
             )
             entries = discovered_entries
-            self._autofill_custom_prompts(state, entries)
             batch_mode = True
         else:
             entries = []
@@ -263,40 +279,6 @@ class ScanSessionRunner:
         state["all_entries"] = list(entries)
         state["entries_loaded"] = True
         state["batch_mode"] = batch_mode
-
-    def _autofill_custom_prompts(
-        self,
-        state: Dict[str, Any],
-        entries: List[FunctionEntry],
-        *,
-        source_json_path: Optional[Path] = None,
-    ) -> None:
-        if not self.config.project.prompt_autofill.enabled or not entries:
-            return
-
-        self.emit("Autofilling batch custom prompts from code-index evidence...")
-        code_index = self._ensure_code_index(
-            state,
-            priority_functions=[entry.function_name for entry in entries],
-        )
-        result = PromptAutofillExecutor(
-            code_index,
-            config=self.config.project.prompt_autofill,
-        ).autofill(entries, source_json_path=source_json_path)
-        logger.info(
-            "Prompt autofill: updated=%d skipped_existing=%d unmatched=%d missing_impl=%d",
-            len(result.updated),
-            len(result.skipped_existing),
-            len(result.unmatched),
-            len(result.missing_impl),
-        )
-        if result.write_back_path:
-            self.emit(
-                f"Prompt autofill updated {len(result.updated)} entries and wrote "
-                f"{result.write_back_path}."
-            )
-        else:
-            self.emit(f"Prompt autofill updated {len(result.updated)} entries in memory.")
 
     def _ensure_code_index(
         self,

@@ -38,4 +38,25 @@ int _lifecycle_map_rules(const char* path, size_t len);
 int _lifecycle_unload_rules(void);
 int _lifecycle_match_rule_byte(size_t offset);
 
+int _lifecycle_mesh_authorize_init(void);
+int _lifecycle_mesh_control_message(const char* msg, int transport_id);
+int _lifecycle_mesh_disconnect(const char* key);
+int _lifecycle_customize_control_message(const char* msg, int protocol_id);
+int _lifecycle_customize_transport_cleanup(int protocol_id);
+int _lifecycle_register_guarded_subscription(const char* topic);
+int _lifecycle_unregister_guarded_subscription(const char* topic);
+
+int _lifecycle_scheduler_add_pipe(int pipe_id);
+int _lifecycle_dispatch_pipe_tick(int expected_pipe_id);
+int _lifecycle_close_pipe(int pipe_id);
+int _lifecycle_tick_timer_callback(int pipe_id);
+
+int _lifecycle_register_os_node(const char* os_name);
+int _lifecycle_attach_proc_node(const char* os_name, int pid, const char* proc_name);
+int _lifecycle_delete_os_node(const char* os_name);
+int _lifecycle_avl_policy_upsert(const char* full_key, int policy_id);
+int _lifecycle_avl_register_route(int key, int fail_after_insert);
+int _lifecycle_avl_walk_duplicate_routes(int limit);
+uint32_t _lifecycle_macro_guarded_counter_update(uint32_t delta);
+
 #endif

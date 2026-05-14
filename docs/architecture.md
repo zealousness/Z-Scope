@@ -71,7 +71,7 @@ flowchart TB
 
     Tools["ToolsRuntime<br/>12 agent tools"]
     Snapshot["SnapshotStore<br/>snapshots + reports"]
-    UserCfg["UserConfigStore<br/>semantics + feedback"]
+    UserCfg["UserConfigStore<br/>user_config.xlsx + feedback state"]
     Report["Report Layer<br/>issues / observations / metadata"]
 
     Ingress --> Config --> Workflow
@@ -101,7 +101,7 @@ flowchart TB
     Report --> UserCfg
 ```
 
-总体架构由四个主平面组成。事实平面负责代码索引和程序事实沉淀；证据平面负责候选生成、去重和合并；智能体平面负责语义建模、漏洞挖掘、聚焦深挖、问题调和和三态验证；反馈平面通过 SnapshotStore 与 UserConfigStore 保留语义快照、最终报告、人工抑制和 baseline。LLM Agent 通过 ToolsRuntime 访问被索引、被切片、被缓存、被配置增强过的事实，分析过程与底层代码库保持可追踪边界。
+总体架构由四个主平面组成。事实平面负责代码索引和程序事实沉淀；证据平面负责候选生成、去重和合并；智能体平面负责语义建模、漏洞挖掘、聚焦深挖、问题调和和三态验证；反馈平面通过 SnapshotStore 与 UserConfigStore 保留语义快照、最终报告、人工抑制和 baseline。UserConfigStore 当前既能读取历史 SQLite 配置，也能以 `user_config.xlsx` 作为人工可审阅的主配置界面，并用旁路 state DB 保存反馈状态。LLM Agent 通过 ToolsRuntime 访问被索引、被切片、被缓存、被配置增强过的事实，分析过程与底层代码库保持可追踪边界。
 
 ## 4. 运行时主流程
 
@@ -109,7 +109,7 @@ flowchart TB
 
 默认工作流来自 `zscope/workflows/default.yaml`：
 
-1. `discover_entries`：按需发现公共 API、通信/IPC、线程入口和用户输入点。
+1. `discover_entries`：按需发现公共 API、通信/IPC、线程入口和用户输入点，并把候选入口列表写入项目根目录 `entry_functions_list.json`。
 2. `premodel_reachable_callees`：为可达子函数提前构建语义快照。
 3. `model_entry`：为入口函数构建语义快照。
 4. `focused_subagent_planning`：从启发式、语义快照、确定性规则和后端信号中规划聚焦工单。
@@ -123,7 +123,7 @@ Workflow 是 Python 编排层的执行计划，不作为大段提示词注入模
 
 | 模式 | 入口 | 行为 |
 |------|------|------|
-| 默认批量 | `project.entry_functions_list` 或自动发现结果 | 多线程执行每个入口，汇总 `zscope_batch_report.json/md` |
+| 默认批量 | `project.entry_functions_list` 或自动发现生成的 `entry_functions_list.json` | 多线程执行每个入口，汇总 `zscope_batch_report.json/md` |
 | `--resume` | `resume.yaml` | 从 `snapshots.db` 跳过已有成功 final report 且无 pending validation 的函数，最后合并跳过项报告 |
 | `--maintain` | `maintain.yaml` | 比较源码/语义哈希，未变更函数零 Token 复用历史报告，变更函数先调和历史缺陷再重扫 |
 | `--mode ruledriven` | Joern | Joern 规则扫描后交给 LLM 验证 |
@@ -137,9 +137,11 @@ Workflow 是 Python 编排层的执行计划，不作为大段提示词注入模
 
 控制平面负责把用户意图变成可执行流程：
 
-- `zscope/cli/cli.py` 处理运行模式、WebUI、MCP、SARIF 和索引预热。
-- `zscope/orchestration/scan_session.py` 统一入口发现、批量加载、prompt autofill、断点续扫和报告备份。
+- `zscope/cli/cli.py` 处理运行模式、WebUI、MCP、SARIF、索引预热和 `--infer-user-config` 工作簿推断。
+- `zscope/orchestration/scan_session.py` 统一入口发现、发现结果落盘、批量加载、断点续扫和报告备份。
 - `zscope/orchestration/workflow_executor.py` 执行声明式 workflow step，并在报告 metadata 中记录进度。
+
+`--infer-user-config` 是独立的控制面命令：它构建 CodeIndex，运行 `infer_user_config_rows()`，把推断出的 resource/lock/dispatcher/module lifecycle/pointer target/function intent 行合并进 `user_config.xlsx`，然后退出。该命令不会触发漏洞扫描，适合在首次接入项目或接口语义变化后让人工先审阅配置。
 
 这种设计把“什么时候运行哪个阶段”从 Agent prompt 中拿出来，放到可测试、可审计的 Python 编排层。
 
@@ -163,6 +165,8 @@ Workflow 是 Python 编排层的执行计划，不作为大段提示词注入模
 
 架构收益是明显的：LLM 的每次判断都可以回落到文件、行号、函数、路径切片、资源事件和锁事件，避免停留在自然语言印象。
 
+当前 `CodeIndex.get_function_impl()` 还会查找函数声明和实现前的 C/C++ 注释块，并把这些 comment block 连同带绝对行号的实现源码一起返回。这样头文件中的 API 契约、所有权说明、锁要求和参数语义可以在不额外检索文档的情况下进入 Agent 上下文，同时仍然保留文件与行号来源。
+
 ### 5.3 证据平面：Deterministic Candidates + Backend Signals
 
 v0.6 的关键演进是证据候选层。候选来源包括：
@@ -171,6 +175,8 @@ v0.6 的关键演进是证据候选层。候选来源包括：
 - `KnowledgeDB.get_enriched_taint_bugs()`：把 SVF/Saber 的 taint signatures 归一化为 `backend_signal`。
 - 语义快照中的历史候选和 Agent 新发现。
 - Deep Worker 返回的聚焦报告。
+
+确定性候选生成器不再只依赖内置 API 名称表。Analyzer 会在单次运行中构建 `DeterministicSemantics`，来源包括 typedef/宏别名扫描、`user_config.xlsx` 中的资源和锁语义、历史语义快照以及项目函数命名启发式。该语义会扩展 allocator/deallocator/reallocator/copy/lock/unlock/size type 集合，使项目私有 API 可以参与同一套候选规则。
 
 候选会被 `CandidateLedger` 统一去重和合并。去重综合 defect class、resource kind、source、sink、root cause key 和 call path，避免仅按行号合并。每个候选携带：
 
@@ -199,7 +205,7 @@ Z-SCOPE 的多智能体采用职责分离设计：
 | `issue_reconciler_agent` | 增量维护中判断历史缺陷仍存在还是已修复 | 历史 issue、新代码 | still_exists / fixed |
 | `validator_agent` | 做可利用性和证据闭合验证 | 候选证据、源码上下文、调用关系 | verified / rejected / uncertain |
 
-Skill 是漏洞领域契约，用于约束分析目标和证据要求。`vulnerability_analyzer.task` 会被解析为 active skills，例如 `bounds_and_integer`、`resource_lifecycle`、`temporal_memory`、`shared_state_race` 等。未命中时保持全量默认 Skill，避免老配置漏扫。
+Skill 是漏洞领域契约，用于约束分析目标和证据要求。`vulnerability_analyzer.task` 会被解析为 active skills，例如 `bounds_and_integer`、`resource_lifecycle`、`temporal_memory`、`shared_state_race` 等。当前选择器先用本地关键词、否定词和范围词做快速判断；当本地置信度不足时，可调用同一 Agent 模型做语义路由。语义路由低置信或与本地结果冲突时会保守放宽到全量 Skill，避免老配置和含糊任务漏扫。
 
 ToolsRuntime 提供 12 个内置 Agent 工具：
 
@@ -212,27 +218,29 @@ ToolsRuntime 提供 12 个内置 Agent 工具：
 
 ### 5.5 持久化与反馈平面
 
-Z-SCOPE 使用三个主要持久化区域：
+Z-SCOPE 使用四类主要持久化区域：
 
 | 存储 | 内容 | 作用 |
 |------|------|------|
 | `.zscope_knowledge/code_knowledge.db` | 代码事实、SVF 信号、Inspection IR | 全局代码知识图谱和候选证据审计 |
 | `.zscope_snapshots/snapshots.db` | 语义快照索引、final report 索引 | `--resume`、`--maintain` 和函数级缓存 |
-| `.zscope_snapshots/user_config.db` | 外部函数、配对函数、函数指针、函数意图、抑制和 baseline | 用户领域知识与误报反馈 |
+| `.zscope_snapshots/user_config.xlsx` | 外部函数、配对函数、函数指针、dispatcher、模块生命周期、函数意图 | 人工可审阅的用户领域知识 |
+| `.zscope_snapshots/user_config.state.db` 或 `user_config.db` | 抑制、baseline、配置告警和历史兼容数据 | 误报反馈与旧 SQLite 配置兼容 |
 
-`UserConfigStore` 当前核心表：
+`UserConfigStore` 当前的人工配置工作簿 sheet：
 
-| 表 | 作用 |
-|----|------|
-| `external_functions` | 为无源码外部函数补充内存/并发/返回语义 |
-| `paired_functions` | 描述自定义 acquire/release 或 lock/unlock 对 |
-| `function_pointer_targets` | 补充函数指针和回调目标 |
-| `function_intent` | 描述函数设计意图、调用者约束、并发关系 |
-| `config_warnings` | 记录缺失外部函数描述等配置告警 |
-| `finding_suppressions` | 按函数、位置、类别、规则抑制已确认误报 |
-| `finding_baselines` | 保存 dedup_key 对应的 true_positive / false_positive / needs_review 等历史反馈 |
+| Sheet | 作用 |
+|-------|------|
+| `resource` | 描述 allocator、reallocator、deallocator、copy API 与多对多资源配对 |
+| `lock` | 描述自定义 lock/unlock API 和锁配对 |
+| `dispatcher` | 描述消息分发入口、message type、handler、handler kind、资源和分支配对 |
+| `module_lifecycle` | 描述 init/finit、模块资源、错误路径清理和全局生命周期约束 |
+| `pointer_targets` | 补充函数指针、ops 表、hook slot 的目标函数 |
+| `function_intents` | 保存人工确认的函数设计意图和特殊约束 |
 
-人工反馈不会只是前端状态。Web 保存验证结果时会持久化 baseline 和 suppression，下一次扫描会在验证前参与过滤和评分。
+旧 SQLite 路径仍然保留 `external_functions`、`paired_functions`、`function_pointer_targets`、`function_intent`、`config_warnings`、`finding_suppressions` 和 `finding_baselines`。当配置路径指向 `.xlsx`，语义配置走工作簿，反馈状态写入同名 `.state.db`；当配置路径指向目录且存在 `user_config.xlsx`，目录模式也会自动优先使用工作簿。
+
+人工反馈不会只是前端状态。Web 保存验证结果时会持久化 baseline 和 suppression，下一次扫描会在验证前参与过滤和评分。Analyzer 还会按当前函数源码标识符和文件 scope 过滤用户配置，只注入与当前入口相关的 resource、lock、pointer target、dispatcher、module lifecycle 和 function intent 片段。
 
 ## 6. 架构优势
 
@@ -296,7 +304,7 @@ Z-SCOPE 的差异化不在单个算法，而在“程序事实、候选证据、
 
 | 环节 | 开源工具常见能力 | 商用工具常见能力 | Z-SCOPE 实现 |
 |------|------------------|------------------|--------------|
-| 入口发现 | 通常依赖配置、构建数据库或查询入口 | 依赖扫描配置、仓库集成和语言前端 | `entry_functions_list` + `--discover-entries` + `prompt_autofill` |
+| 入口发现 | 通常依赖配置、构建数据库或查询入口 | 依赖扫描配置、仓库集成和语言前端 | `entry_functions_list` + `--discover-entries` 落盘 + `entry_discovery.search_root` |
 | 代码事实 | AST/CFG/CPG/规则匹配，各工具侧重点不同 | 专有前端和数据流引擎 | `CodeIndex` 统一 Clang、Joern、Regex、Unified 后端 |
 | 跨函数关系 | 依赖数据流查询、库模型或指针分析能力 | 专有模型和框架配置 | SVF Andersen、Saber、调用图、语义快照共同补强 |
 | 候选生成 | 查询或规则命中即输出告警 | 内置规则和数据流引擎输出告警 | 确定性规则、后端信号、语义快照、外部 SARIF 统一入 ledger |
@@ -306,7 +314,9 @@ Z-SCOPE 的差异化不在单个算法，而在“程序事实、候选证据、
 
 - 显式支持批量入口 `entry_functions_list`。
 - `--discover-entries` 能扫描头文件公共 API、网络/IPC、线程创建、文件/环境/标准输入等入口。
-- `prompt_autofill` 可为批量入口补齐审计提示，帮助模型理解 handler、allocator、release、dispatch 等项目语义。
+- 自动发现结果会写入 `entry_functions_list.json`，包含 exposure、reasons、confidence 和入口级审计提示，可由人工继续编辑后复用。
+- `entry_discovery.search_root` 可把入口发现限制到指定绝对目录，适合只审计大型仓库中的某个模块。
+- handler、allocator、release、dispatch 等项目语义由 `user_config.xlsx` 与 `--infer-user-config` 承担，不再通过批量 prompt autofill 注入。
 
 ### 8.3 事实覆盖
 
@@ -410,6 +420,7 @@ WebUI 保存验证状态时，`rejected` 会写入 `finding_suppressions`，后�
 | `zscope -c zscope.yaml --resume` | 断点续扫 |
 | `zscope -c zscope.yaml --maintain` | 增量维护 |
 | `zscope -c zscope.yaml --discover-entries` | 自动入口发现 |
+| `zscope -c zscope.yaml --infer-user-config` | 推断或刷新 `user_config.xlsx` 后退出 |
 | `zscope -c zscope.yaml --build-cpg` | 仅构建索引 |
 | `zscope -c zscope.yaml --dashboard` | 启动 Web 仪表盘 |
 | `zscope -c zscope.yaml --mcp-stdio` | 启动 MCP stdio server |
@@ -446,6 +457,7 @@ MCP 暴露三类能力：
 | 新增代码分析后端 | 实现 `CodeBackend` ABC，并在 `CodeIndex` 工厂中注册 |
 | 新增漏洞类型 | 新建或扩展 `zscope/skills/<skill>/SKILL.md`，并补充 task-to-skill 映射 |
 | 新增确定性规则 | 扩展 `DeterministicCandidateGenerator`，输出完整 `evidence_pack` 和 `dedup_key` |
+| 新增用户配置推断 | 扩展 `infer_user_config_rows()` 或 `UserConfigWorkbook` sheet 映射，保持人工行不被覆盖 |
 | 新增后端信号归一化 | 在 Analyzer 中把 KnowledgeDB/SVF/Joern 结果转为候选 issue/ticket |
 | 新增工作流 | 添加 `zscope/workflows/*.yaml`，并实现对应 handler |
 | 新增 MCP 能力 | 扩展 `ZScopeMcpProvider.list_tools/read_resource/get_prompt` |
