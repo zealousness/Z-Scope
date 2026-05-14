@@ -56,18 +56,7 @@ class EntryDiscoveryConfig:
     max_candidates: int = 200
     max_functions: int = 10000
     header_files: List[str] = field(default_factory=list)
-
-
-@dataclass
-class PromptAutofillConfig:
-    """Configuration for batch-entry custom_prompt autofill."""
-
-    enabled: bool = False
-    overwrite_existing: bool = False
-    write_back: bool = True
-    min_custom_prompt_chars: int = 20
-    max_callees: int = 30
-    max_function_lines: int = 220
+    search_root: Optional[Path] = None
 
 
 @dataclass
@@ -105,7 +94,7 @@ class AnalysisConfig:
     snapshot_dir: str = ".zscope_snapshots"
     enable_snapshot_cache: bool = True
     parallel_workers: int = 5  # Number of concurrent workers for batch analysis
-    user_config_db: str = ""  # Path to user config DB, defaults to {snapshot_dir}/
+    user_config_db: str = ""  # Path to user config workbook or DB dir, defaults to {snapshot_dir}/
     max_premodel_depth: int = 3  # Callee recursive pre-modeling max depth
     max_premodel_callees: int = 20  # Max callees to expand per level
     trivial_function_max_lines: int = 5  # Skip modeling if function <= this many valid lines
@@ -127,7 +116,6 @@ class ProjectConfig:
     include_paths: List[str] = field(default_factory=list)
     exclude_paths: List[str] = field(default_factory=list)
     entry_discovery: EntryDiscoveryConfig = field(default_factory=EntryDiscoveryConfig)
-    prompt_autofill: PromptAutofillConfig = field(default_factory=PromptAutofillConfig)
 
     def __post_init__(self):
         self.project_root = Path(self.project_root).resolve()
@@ -188,6 +176,17 @@ class ProjectConfig:
                 ).resolve()
             else:
                 self.entry_functions_list = Path(self.entry_functions_list).resolve()
+
+        if self.entry_discovery.search_root:
+            search_root = Path(self.entry_discovery.search_root)
+            if not search_root.is_absolute():
+                raise ValueError("project.entry_discovery.search_root must be an absolute path")
+            search_root = search_root.resolve()
+            if not search_root.is_dir():
+                raise ValueError(
+                    f"project.entry_discovery.search_root is not a directory: {search_root}"
+                )
+            self.entry_discovery.search_root = search_root
 
 
 @dataclass
@@ -380,21 +379,12 @@ class ConfigLoader:
                 max_candidates=entry_discovery_data.get("max_candidates", 200),
                 max_functions=entry_discovery_data.get("max_functions", 10000),
                 header_files=entry_discovery_data.get("header_files", []),
+                search_root=(
+                    entry_discovery_data.get("search_root")
+                    or entry_discovery_data.get("root")
+                    or entry_discovery_data.get("discovery_root")
+                ),
             )
-            prompt_autofill_data = project_data.get("prompt_autofill") or {}
-            if isinstance(prompt_autofill_data, bool):
-                prompt_autofill_data = {"enabled": prompt_autofill_data}
-            if not isinstance(prompt_autofill_data, dict):
-                raise ValueError("'project.prompt_autofill' must be an object or boolean")
-            prompt_autofill_config = PromptAutofillConfig(
-                enabled=prompt_autofill_data.get("enabled", False),
-                overwrite_existing=prompt_autofill_data.get("overwrite_existing", False),
-                write_back=prompt_autofill_data.get("write_back", True),
-                min_custom_prompt_chars=prompt_autofill_data.get("min_custom_prompt_chars", 20),
-                max_callees=prompt_autofill_data.get("max_callees", 30),
-                max_function_lines=prompt_autofill_data.get("max_function_lines", 220),
-            )
-
             # Parse Agents
             agents_data = project_data.get("agents", [])
             agents = []
@@ -437,7 +427,6 @@ class ConfigLoader:
                 include_paths=project_data.get("include_paths", []),
                 exclude_paths=project_data.get("exclude_paths", []),
                 entry_discovery=entry_discovery_config,
-                prompt_autofill=prompt_autofill_config,
             )
 
             return ZScopeConfig(

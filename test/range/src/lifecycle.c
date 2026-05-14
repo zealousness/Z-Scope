@@ -427,3 +427,547 @@ int _lifecycle_match_rule_byte(size_t offset) {
     const unsigned char* rules = (const unsigned char*)g_rules_map;
     return rules[offset] == 0x42;
 }
+
+typedef struct ControlSession {
+    char key[64];
+    char* owner;
+    int transport_id;
+    pthread_mutex_t guard;
+    struct ControlSession* next;
+} ControlSession;
+
+typedef int (*control_session_add_fn)(const char* key, const char* owner, int transport_id);
+typedef int (*control_session_drop_fn)(const char* key);
+
+typedef struct {
+    control_session_add_fn pfnAddSession;
+    control_session_drop_fn pfnDropSession;
+    control_session_drop_fn pfnExpireSession;
+} MeshControlHooks;
+
+typedef struct GuardedSubscription {
+    char topic[64];
+    pthread_mutex_t mutex;
+    struct GuardedSubscription* next;
+} GuardedSubscription;
+
+static ControlSession* g_control_sessions = NULL;
+static pthread_mutex_t g_control_lock = PTHREAD_MUTEX_INITIALIZER;
+static MeshControlHooks g_mesh_control_hooks = {0};
+static GuardedSubscription* g_guarded_subscriptions = NULL;
+static pthread_mutex_t g_subscription_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int _parse_key_and_owner(const char* payload, char* key, size_t key_size,
+                                const char** owner) {
+    const char* sep = strchr(payload, ':');
+    if (!sep || !key || key_size == 0 || !owner) {
+        return -1;
+    }
+
+    size_t key_len = (size_t)(sep - payload);
+    if (key_len >= key_size) {
+        key_len = key_size - 1;
+    }
+    memcpy(key, payload, key_len);
+    key[key_len] = '\0';
+    *owner = sep + 1;
+    return 0;
+}
+
+static int _control_session_add_to_global(const char* key, const char* owner, int transport_id) {
+    if (!key || !owner) {
+        return -1;
+    }
+
+    ControlSession* session = (ControlSession*)_safe_calloc(1, sizeof(ControlSession));
+    if (!session) {
+        return -1;
+    }
+
+    STR_COPY(session->key, key);
+    session->owner = _str_dup(owner);
+    if (!session->owner) {
+        SAFE_FREE(session);
+        return -1;
+    }
+    session->transport_id = transport_id;
+    pthread_mutex_init(&session->guard, NULL);
+
+    LOCK(&g_control_lock);
+    session->next = g_control_sessions;
+    g_control_sessions = session;
+    UNLOCK(&g_control_lock);
+    return 0;
+}
+
+static int _control_session_drop_from_global(const char* key) {
+    if (!key) {
+        return -1;
+    }
+
+    LOCK(&g_control_lock);
+    ControlSession** cursor = &g_control_sessions;
+    while (*cursor) {
+        ControlSession* session = *cursor;
+        if (strcmp(session->key, key) == 0) {
+            *cursor = session->next;
+            UNLOCK(&g_control_lock);
+            pthread_mutex_destroy(&session->guard);
+            SAFE_FREE(session->owner);
+            SAFE_FREE(session);
+            return 0;
+        }
+        cursor = &session->next;
+    }
+    UNLOCK(&g_control_lock);
+    return -1;
+}
+
+static int _control_session_detach_without_release(const char* key) {
+    if (!key) {
+        return -1;
+    }
+
+    LOCK(&g_control_lock);
+    ControlSession** cursor = &g_control_sessions;
+    while (*cursor) {
+        ControlSession* session = *cursor;
+        if (strcmp(session->key, key) == 0) {
+            *cursor = session->next;
+            UNLOCK(&g_control_lock);
+            return 0;
+        }
+        cursor = &session->next;
+    }
+    UNLOCK(&g_control_lock);
+    return -1;
+}
+
+int _lifecycle_mesh_authorize_init(void) {
+    memset(&g_mesh_control_hooks, 0, sizeof(g_mesh_control_hooks));
+    g_mesh_control_hooks.pfnAddSession = _control_session_add_to_global;
+    g_mesh_control_hooks.pfnExpireSession = _control_session_drop_from_global;
+    return 0;
+}
+
+int _lifecycle_mesh_control_message(const char* msg, int transport_id) {
+    if (!msg) {
+        return -1;
+    }
+
+    if (strncmp(msg, "ADD:", 4) == 0) {
+        char key[64];
+        const char* owner = NULL;
+        if (_parse_key_and_owner(msg + 4, key, sizeof(key), &owner) != 0) {
+            return -1;
+        }
+        if (g_mesh_control_hooks.pfnAddSession) {
+            return g_mesh_control_hooks.pfnAddSession(key, owner, transport_id);
+        }
+    } else if (strncmp(msg, "DETACH:", 7) == 0) {
+        return _control_session_detach_without_release(msg + 7);
+    } else if (strncmp(msg, "EXPIRE:", 7) == 0) {
+        if (g_mesh_control_hooks.pfnExpireSession != NULL) {
+            return g_mesh_control_hooks.pfnExpireSession(msg + 7);
+        }
+    }
+    return 0;
+}
+
+int _lifecycle_mesh_disconnect(const char* key) {
+    if (!key) {
+        return -1;
+    }
+
+    if (g_mesh_control_hooks.pfnDropSession != NULL) {
+        return g_mesh_control_hooks.pfnDropSession(key);
+    }
+    return 0;
+}
+
+int _lifecycle_customize_control_message(const char* msg, int protocol_id) {
+    if (!msg) {
+        return -1;
+    }
+
+    if (strncmp(msg, "OPEN:", 5) == 0) {
+        char key[64];
+        const char* owner = NULL;
+        if (_parse_key_and_owner(msg + 5, key, sizeof(key), &owner) != 0) {
+            return -1;
+        }
+        return _control_session_add_to_global(key, owner, protocol_id);
+    }
+    return 0;
+}
+
+int _lifecycle_customize_transport_cleanup(int protocol_id) {
+    LOG_INFO("customize cleanup for protocol %d", protocol_id);
+    return 0;
+}
+
+int _lifecycle_register_guarded_subscription(const char* topic) {
+    if (!topic) {
+        return -1;
+    }
+
+    GuardedSubscription* sub = (GuardedSubscription*)_safe_calloc(1, sizeof(GuardedSubscription));
+    if (!sub) {
+        return -1;
+    }
+
+    STR_COPY(sub->topic, topic);
+    pthread_mutex_init(&sub->mutex, NULL);
+
+    LOCK(&g_subscription_lock);
+    sub->next = g_guarded_subscriptions;
+    g_guarded_subscriptions = sub;
+    UNLOCK(&g_subscription_lock);
+    return 0;
+}
+
+int _lifecycle_unregister_guarded_subscription(const char* topic) {
+    if (!topic) {
+        return -1;
+    }
+
+    LOCK(&g_subscription_lock);
+    GuardedSubscription** cursor = &g_guarded_subscriptions;
+    while (*cursor) {
+        GuardedSubscription* sub = *cursor;
+        if (strcmp(sub->topic, topic) == 0) {
+            *cursor = sub->next;
+            UNLOCK(&g_subscription_lock);
+            SAFE_FREE(sub);
+            return 0;
+        }
+        cursor = &sub->next;
+    }
+    UNLOCK(&g_subscription_lock);
+    return -1;
+}
+
+typedef struct PipeNode {
+    int pipe_id;
+    int active;
+    uint32_t poison_marker;
+    pthread_mutex_t ctrl_lock;
+    struct PipeNode* next;
+} PipeNode;
+
+typedef struct {
+    PipeNode* head;
+    pthread_mutex_t sched_lock;
+} PipeScheduler;
+
+static PipeScheduler g_pipe_scheduler = {
+    .head = NULL,
+    .sched_lock = PTHREAD_MUTEX_INITIALIZER
+};
+
+int _lifecycle_scheduler_add_pipe(int pipe_id) {
+    PipeNode* pipe = (PipeNode*)_safe_calloc(1, sizeof(PipeNode));
+    if (!pipe) {
+        return -1;
+    }
+
+    pipe->pipe_id = pipe_id;
+    pipe->active = 1;
+    pthread_mutex_init(&pipe->ctrl_lock, NULL);
+
+    LOCK(&g_pipe_scheduler.sched_lock);
+    pipe->next = g_pipe_scheduler.head;
+    g_pipe_scheduler.head = pipe;
+    UNLOCK(&g_pipe_scheduler.sched_lock);
+    return 0;
+}
+
+int _lifecycle_dispatch_pipe_tick(int expected_pipe_id) {
+    LOCK(&g_pipe_scheduler.sched_lock);
+    PipeNode* pipe = g_pipe_scheduler.head;
+    while (pipe) {
+        LOCK(&pipe->ctrl_lock);
+        if (!pipe->active) {
+            UNLOCK(&pipe->ctrl_lock);
+            pipe = pipe->next;
+            continue;
+        }
+        if (pipe->poison_marker == 0xFFFFFFFFu) {
+            LOG_ERROR("pipe %d control block is poisoned", pipe->pipe_id);
+            UNLOCK(&pipe->ctrl_lock);
+            pipe = pipe->next;
+            continue;
+        }
+        if (pipe->pipe_id == expected_pipe_id) {
+            LOG_INFO("dispatching pipe %d", pipe->pipe_id);
+        }
+        UNLOCK(&pipe->ctrl_lock);
+        pipe = pipe->next;
+    }
+    UNLOCK(&g_pipe_scheduler.sched_lock);
+    return 0;
+}
+
+int _lifecycle_close_pipe(int pipe_id) {
+    PipeNode* pipe = g_pipe_scheduler.head;
+    while (pipe && pipe->pipe_id != pipe_id) {
+        pipe = pipe->next;
+    }
+    if (!pipe) {
+        return -1;
+    }
+
+    LOCK(&pipe->ctrl_lock);
+    pipe->active = 0;
+    LOCK(&g_pipe_scheduler.sched_lock);
+    PipeNode** cursor = &g_pipe_scheduler.head;
+    while (*cursor) {
+        if (*cursor == pipe) {
+            *cursor = pipe->next;
+            break;
+        }
+        cursor = &(*cursor)->next;
+    }
+    pipe->poison_marker = 0xFFFFFFFFu;
+    pipe->next = pipe;
+    UNLOCK(&g_pipe_scheduler.sched_lock);
+    UNLOCK(&pipe->ctrl_lock);
+    return 0;
+}
+
+int _lifecycle_tick_timer_callback(int pipe_id) {
+    PipeNode* pipe = g_pipe_scheduler.head;
+    while (pipe) {
+        if (pipe->pipe_id == pipe_id) {
+            LOCK(&pipe->ctrl_lock);
+            LOG_INFO("timer tick for pipe %d", pipe->pipe_id);
+            UNLOCK(&pipe->ctrl_lock);
+            return 0;
+        }
+        pipe = pipe->next;
+    }
+    return -1;
+}
+
+typedef struct ProcNode {
+    int pid;
+    char* proc_name;
+    struct ProcNode* next;
+} ProcNode;
+
+typedef struct OSNode {
+    char os_name[64];
+    ProcNode* proc_head;
+    struct OSNode* next;
+} OSNode;
+
+static OSNode* g_os_nodes = NULL;
+static pthread_mutex_t g_os_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static OSNode* _find_os_node_locked(const char* os_name) {
+    for (OSNode* os = g_os_nodes; os; os = os->next) {
+        if (strcmp(os->os_name, os_name) == 0) {
+            return os;
+        }
+    }
+    return NULL;
+}
+
+int _lifecycle_register_os_node(const char* os_name) {
+    if (!os_name) {
+        return -1;
+    }
+
+    OSNode* os = (OSNode*)_safe_calloc(1, sizeof(OSNode));
+    if (!os) {
+        return -1;
+    }
+
+    STR_COPY(os->os_name, os_name);
+    LOCK(&g_os_lock);
+    os->next = g_os_nodes;
+    g_os_nodes = os;
+    UNLOCK(&g_os_lock);
+    return 0;
+}
+
+int _lifecycle_attach_proc_node(const char* os_name, int pid, const char* proc_name) {
+    if (!os_name || !proc_name) {
+        return -1;
+    }
+
+    ProcNode* proc = (ProcNode*)_safe_calloc(1, sizeof(ProcNode));
+    if (!proc) {
+        return -1;
+    }
+
+    proc->pid = pid;
+    proc->proc_name = _str_dup(proc_name);
+    if (!proc->proc_name) {
+        SAFE_FREE(proc);
+        return -1;
+    }
+
+    LOCK(&g_os_lock);
+    OSNode* os = _find_os_node_locked(os_name);
+    if (!os) {
+        UNLOCK(&g_os_lock);
+        SAFE_FREE(proc->proc_name);
+        SAFE_FREE(proc);
+        return -1;
+    }
+    proc->next = os->proc_head;
+    os->proc_head = proc;
+    UNLOCK(&g_os_lock);
+    return 0;
+}
+
+int _lifecycle_delete_os_node(const char* os_name) {
+    if (!os_name) {
+        return -1;
+    }
+
+    LOCK(&g_os_lock);
+    OSNode** cursor = &g_os_nodes;
+    while (*cursor) {
+        OSNode* os = *cursor;
+        if (strcmp(os->os_name, os_name) == 0) {
+            *cursor = os->next;
+            UNLOCK(&g_os_lock);
+            SAFE_FREE(os);
+            return 0;
+        }
+        cursor = &os->next;
+    }
+    UNLOCK(&g_os_lock);
+    return -1;
+}
+
+#define POLICY_AVL_KEY_LIMIT 128
+
+typedef struct PolicyAvlNode {
+    char key[POLICY_AVL_KEY_LIMIT];
+    int policy_id;
+    struct PolicyAvlNode* left;
+    struct PolicyAvlNode* right;
+} PolicyAvlNode;
+
+static PolicyAvlNode* g_policy_avl_root = NULL;
+
+static PolicyAvlNode* _policy_avl_find_full_key(const char* full_key) {
+    PolicyAvlNode* node = g_policy_avl_root;
+    while (node) {
+        int cmp = strcmp(full_key, node->key);
+        if (cmp == 0) {
+            return node;
+        }
+        node = (cmp < 0) ? node->left : node->right;
+    }
+    return NULL;
+}
+
+static void _policy_avl_insert_truncated_key(PolicyAvlNode* node) {
+    PolicyAvlNode** cursor = &g_policy_avl_root;
+    while (*cursor) {
+        int cmp = strcmp(node->key, (*cursor)->key);
+        cursor = (cmp < 0) ? &(*cursor)->left : &(*cursor)->right;
+    }
+    *cursor = node;
+}
+
+int _lifecycle_avl_policy_upsert(const char* full_key, int policy_id) {
+    if (!full_key) {
+        return -1;
+    }
+
+    PolicyAvlNode* existing = _policy_avl_find_full_key(full_key);
+    if (existing) {
+        existing->policy_id = policy_id;
+        return 0;
+    }
+
+    PolicyAvlNode* node = (PolicyAvlNode*)_safe_calloc(1, sizeof(PolicyAvlNode));
+    if (!node) {
+        return -1;
+    }
+
+    strncpy(node->key, full_key, POLICY_AVL_KEY_LIMIT - 1);
+    node->key[POLICY_AVL_KEY_LIMIT - 1] = '\0';
+    node->policy_id = policy_id;
+    _policy_avl_insert_truncated_key(node);
+    return 0;
+}
+
+typedef struct RouteAvlNode {
+    int key;
+    int route_state;
+    struct RouteAvlNode* left;
+    struct RouteAvlNode* right;
+    struct RouteAvlNode* duplicate_next;
+} RouteAvlNode;
+
+static RouteAvlNode* g_route_avl_root = NULL;
+static RouteAvlNode* g_route_duplicate_head = NULL;
+
+static void _route_avl_insert_node(RouteAvlNode* node) {
+    RouteAvlNode** cursor = &g_route_avl_root;
+    while (*cursor) {
+        if (node->key == (*cursor)->key) {
+            node->duplicate_next = (*cursor)->duplicate_next;
+            (*cursor)->duplicate_next = node;
+            return;
+        }
+        cursor = (node->key < (*cursor)->key) ? &(*cursor)->left : &(*cursor)->right;
+    }
+    *cursor = node;
+    if (node->key == 275) {
+        node->duplicate_next = g_route_duplicate_head;
+        g_route_duplicate_head = node;
+    }
+}
+
+int _lifecycle_avl_register_route(int key, int fail_after_insert) {
+    RouteAvlNode* node = (RouteAvlNode*)_safe_calloc(1, sizeof(RouteAvlNode));
+    if (!node) {
+        return -1;
+    }
+
+    node->key = key;
+    node->route_state = TASK_STATUS_RUNNING;
+    _route_avl_insert_node(node);
+    if (fail_after_insert) {
+        free(node);
+        return -1;
+    }
+    return 0;
+}
+
+int _lifecycle_avl_walk_duplicate_routes(int limit) {
+    int visited = 0;
+    RouteAvlNode* node = g_route_duplicate_head;
+    while (node && visited < limit) {
+        LOG_INFO("route key %d state %d", node->key, node->route_state);
+        node = node->duplicate_next;
+        visited++;
+    }
+    return visited;
+}
+
+static uint32_t g_macro_guarded_counter = 0;
+static pthread_mutex_t g_macro_guarded_lock = PTHREAD_MUTEX_INITIALIZER;
+
+#if defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__)
+#define MACRO_GUARDED_LOCK() LOCK(&g_macro_guarded_lock)
+#define MACRO_GUARDED_UNLOCK() UNLOCK(&g_macro_guarded_lock)
+#else
+#define MACRO_GUARDED_LOCK() do { } while (0)
+#define MACRO_GUARDED_UNLOCK() do { } while (0)
+#endif
+
+uint32_t _lifecycle_macro_guarded_counter_update(uint32_t delta) {
+    MACRO_GUARDED_LOCK();
+    uint32_t old_value = g_macro_guarded_counter;
+    g_macro_guarded_counter = old_value + delta;
+    MACRO_GUARDED_UNLOCK();
+    return g_macro_guarded_counter;
+}

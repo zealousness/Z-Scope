@@ -168,6 +168,78 @@
     {
       "function_name": "_lifecycle_match_rule_byte",
       "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_mesh_authorize_init",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_mesh_control_message",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_mesh_disconnect",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_customize_control_message",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_customize_transport_cleanup",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_register_guarded_subscription",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_unregister_guarded_subscription",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_scheduler_add_pipe",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_dispatch_pipe_tick",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_close_pipe",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_tick_timer_callback",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_register_os_node",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_attach_proc_node",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_delete_os_node",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_avl_policy_upsert",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_avl_register_route",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_avl_walk_duplicate_routes",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_macro_guarded_counter_update",
+      "file_path": "src/lifecycle.c"
     }
   ]
 }

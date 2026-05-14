@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple
 
 if TYPE_CHECKING:
@@ -26,18 +26,136 @@ class CodeLine:
     index: int
 
 
+@dataclass
+class DeterministicSemantics:
+    """Project-specific C aliases and API roles used by deterministic rules."""
+
+    type_aliases: Dict[str, str] = field(default_factory=dict)
+    allocators: Dict[str, List[str]] = field(default_factory=dict)
+    calloc_allocators: Dict[str, List[str]] = field(default_factory=dict)
+    reallocators: Dict[str, List[str]] = field(default_factory=dict)
+    deallocators: Dict[str, List[str]] = field(default_factory=dict)
+    copy_sinks: Dict[str, List[str]] = field(default_factory=dict)
+    lock_apis: Dict[str, List[str]] = field(default_factory=dict)
+    unlock_apis: Dict[str, List[str]] = field(default_factory=dict)
+
+    def add_api(self, category: str, name: str, source: str) -> None:
+        target = {
+            "allocator": self.allocators,
+            "calloc": self.calloc_allocators,
+            "reallocator": self.reallocators,
+            "deallocator": self.deallocators,
+            "copy": self.copy_sinks,
+            "lock": self.lock_apis,
+            "unlock": self.unlock_apis,
+        }.get(category)
+        if target is None:
+            return
+        clean = str(name or "").strip()
+        if not re.fullmatch(r"[A-Za-z_]\w*", clean):
+            return
+        sources = target.setdefault(clean, [])
+        if source and source not in sources:
+            sources.append(source)
+
+    def merge(self, other: "DeterministicSemantics") -> None:
+        self.type_aliases.update(other.type_aliases)
+        for attr in (
+            "allocators",
+            "calloc_allocators",
+            "reallocators",
+            "deallocators",
+            "copy_sinks",
+            "lock_apis",
+            "unlock_apis",
+        ):
+            for name, sources in getattr(other, attr).items():
+                for source in sources:
+                    self.add_api(_CATEGORY_BY_ATTR[attr], name, source)
+
+
+_CATEGORY_BY_ATTR = {
+    "allocators": "allocator",
+    "calloc_allocators": "calloc",
+    "reallocators": "reallocator",
+    "deallocators": "deallocator",
+    "copy_sinks": "copy",
+    "lock_apis": "lock",
+    "unlock_apis": "unlock",
+}
+
+
 class DeterministicCandidateGenerator:
     """Generate structured candidates for high-signal C memory/concurrency bugs."""
 
     _LINE_RE = re.compile(r"^\s*(\d+)\s*\|\s?(.*)$")
     _IDENT_RE = re.compile(r"\b[A-Za-z_]\w*\b")
-    _ALLOC_RE = re.compile(r"\b(?:malloc|_safe_malloc|realloc|_safe_realloc)\s*\(")
-    _COPY_OR_ALLOC_RE = re.compile(
-        r"\b(?:malloc|_safe_malloc|calloc|_safe_calloc|realloc|_safe_realloc|"
-        r"memcpy|memmove|read|recv|fread|_net_recv_data|_net_send_data)\s*\("
-    )
-    _LOCK_RE = re.compile(r"\b(?:LOCK|LOCK_READ|LOCK_WRITE|pthread_mutex_lock|pthread_rwlock_[rw]dlock)\s*\(")
-    _UNLOCK_RE = re.compile(r"\b(?:UNLOCK|pthread_mutex_unlock|pthread_rwlock_unlock)\s*\(")
+    _DEFAULT_ALLOCATORS = {"malloc", "_safe_malloc"}
+    _DEFAULT_CALLOC_ALLOCATORS = {"calloc", "_safe_calloc"}
+    _DEFAULT_REALLOCATORS = {"realloc", "_safe_realloc"}
+    _DEFAULT_DEALLOCATORS = {"free", "SAFE_FREE"}
+    _DEFAULT_COPY_SINKS = {
+        "memcpy",
+        "memmove",
+        "read",
+        "recv",
+        "fread",
+        "send",
+        "write",
+        "_net_recv_data",
+        "_net_send_data",
+    }
+    _DEFAULT_LOCK_APIS = {"LOCK", "LOCK_READ", "LOCK_WRITE", "pthread_mutex_lock"}
+    _DEFAULT_UNLOCK_APIS = {"UNLOCK", "pthread_mutex_unlock", "pthread_rwlock_unlock"}
+    _DEFAULT_SIZE_TYPES = {
+        "size_t",
+        "uint16_t",
+        "uint32_t",
+        "uint64_t",
+        "int16_t",
+        "int32_t",
+        "int64_t",
+        "uint8_t",
+        "unsigned char",
+        "unsigned int",
+        "unsigned long",
+        "int",
+        "char",
+    }
+
+    def __init__(self, semantics: Optional[DeterministicSemantics] = None):
+        self.semantics = semantics or DeterministicSemantics()
+        self._compile_patterns()
+
+    def _compile_patterns(self) -> None:
+        self._allocator_names = self._DEFAULT_ALLOCATORS | set(self.semantics.allocators)
+        self._calloc_names = self._DEFAULT_CALLOC_ALLOCATORS | set(self.semantics.calloc_allocators)
+        self._reallocator_names = self._DEFAULT_REALLOCATORS | set(self.semantics.reallocators)
+        self._deallocator_names = self._DEFAULT_DEALLOCATORS | set(self.semantics.deallocators)
+        self._copy_sink_names = self._DEFAULT_COPY_SINKS | set(self.semantics.copy_sinks)
+        self._lock_names = self._DEFAULT_LOCK_APIS | set(self.semantics.lock_apis)
+        self._unlock_names = self._DEFAULT_UNLOCK_APIS | set(self.semantics.unlock_apis)
+        self._size_type_names = self._DEFAULT_SIZE_TYPES | set(self.semantics.type_aliases)
+
+        self._alloc_re = self._call_re(self._allocator_names)
+        self._calloc_re = self._call_re(self._calloc_names)
+        self._realloc_re = self._call_re(self._reallocator_names)
+        self._dealloc_re = self._call_re(self._deallocator_names)
+        self._copy_or_alloc_re = self._call_re(
+            self._allocator_names
+            | self._calloc_names
+            | self._reallocator_names
+            | self._copy_sink_names
+        )
+        self._copy_sink_re = self._call_re(self._copy_sink_names)
+        self._lock_re = self._call_re(self._lock_names, extra_patterns=[r"pthread_rwlock_[rw]dlock"])
+        self._unlock_re = self._call_re(self._unlock_names)
+        self._size_type_pattern = self._type_pattern(self._size_type_names)
+        self._integer_pointer_type_pattern = self._type_pattern(
+            name
+            for name in self._size_type_names
+            if name != "char" and name != "unsigned char"
+        )
 
     _CWE_BY_CLASS = {
         "integer_overflow": "CWE-190",
@@ -135,6 +253,7 @@ class DeterministicCandidateGenerator:
         *,
         allowed_skills: Optional[Iterable[str]] = None,
     ) -> List[Dict[str, Any]]:
+        self._augment_name_heuristics_from_code(str(code or ""))
         lines = self._parse_lines(code)
         if not lines:
             return []
@@ -250,6 +369,7 @@ class DeterministicCandidateGenerator:
                 ]
             )
             pos = list(positive or [])
+            pos.extend(self._api_evidence_for_line(line.text))
             neg = list(negative or [])
             pack = {
                 "candidate_id": candidate_id,
@@ -321,7 +441,7 @@ class DeterministicCandidateGenerator:
         for line in lines:
             clean = line.text
             assign = re.search(
-                r"\b(?:size_t|uint(?:32|64)_t|unsigned(?:\s+long|\s+int)?)\s+"
+                rf"\b(?:{self._size_type_pattern})\s+"
                 r"(?P<var>[A-Za-z_]\w*)\s*=\s*(?P<expr>[^;]*[+*][^;]*);",
                 clean,
             )
@@ -356,12 +476,16 @@ class DeterministicCandidateGenerator:
                         negative=self._guard_evidence(lines, line.index, operands),
                     )
 
-            alloc_call = re.search(r"\b(?:malloc|_safe_malloc)\s*\((?P<expr>[^)]*)\)", clean)
-            if alloc_call and "realloc" not in clean:
+            alloc_call = self._match_call(clean, self._allocator_names, "expr")
+            if alloc_call:
                 expr = alloc_call.group("expr")
                 if not re.search(r"[+*]", expr) or not self._is_high_risk_size_expr(expr, params):
                     continue
-                identifiers = [item for item in self._IDENT_RE.findall(expr) if item not in {"sizeof", "malloc", "realloc", "_safe_malloc", "_safe_realloc"}]
+                identifiers = [
+                    item
+                    for item in self._IDENT_RE.findall(expr)
+                    if item not in {"sizeof"} | self._allocator_names | self._reallocator_names
+                ]
                 if identifiers and not self._has_pre_overflow_guard(lines, line.index, identifiers):
                     emit(
                         defect_class="integer_overflow",
@@ -381,7 +505,7 @@ class DeterministicCandidateGenerator:
 
         for line in lines:
             clean = line.text
-            call = re.search(r"\b(?:_safe_calloc|calloc)\s*\((?P<args>[^;]+)\)", clean)
+            call = self._match_call(clean, self._calloc_names, "args", until=";")
             if not call:
                 continue
             args = call.group("args")
@@ -415,7 +539,7 @@ class DeterministicCandidateGenerator:
         for line in lines:
             match = re.search(
                 r"\b(?P<lhs>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?"
-                r"(?:_safe_realloc|realloc)\s*\(\s*(?P=lhs)\s*,(?P<size>[^;]+)\)",
+                rf"(?:{self._names_pattern(self._reallocator_names)})\s*\(\s*(?P=lhs)\s*,(?P<size>[^;]+)\)",
                 line.text,
             )
             if not match:
@@ -443,13 +567,16 @@ class DeterministicCandidateGenerator:
         for line in lines:
             alloc = re.search(
                 r"^\s*(?:[A-Za-z_][A-Za-z_0-9]*\s*\*?\s+)?(?P<var>[A-Za-z_]\w*)\s*="
-                r"\s*(?:\([^)]*\)\s*)?(?:malloc|_safe_malloc|calloc|_safe_calloc)\s*\(",
+                rf"\s*(?:\([^)]*\)\s*)?(?:{self._names_pattern(self._allocator_names | self._calloc_names)})\s*\(",
                 line.text,
             )
             if alloc:
                 allocations[alloc.group("var")] = line
             for var in list(allocations):
-                if re.search(rf"\b(?:free|SAFE_FREE)\s*\(\s*{re.escape(var)}\s*\)", line.text):
+                if re.search(
+                    rf"\b(?:{self._names_pattern(self._deallocator_names)})\s*\(\s*{re.escape(var)}\s*\)",
+                    line.text,
+                ):
                     released.add(var)
                 if re.search(rf"\breturn\s+{re.escape(var)}\s*;", line.text):
                     escaped.add(var)
@@ -489,13 +616,16 @@ class DeterministicCandidateGenerator:
     def _rule_double_and_invalid_free(self, lines: List[CodeLine], emit) -> None:
         last_free: Dict[str, CodeLine] = {}
         for line in lines:
-            free = re.search(r"\b(?:free|SAFE_FREE)\s*\(\s*(?P<arg>[^)]+)\)", line.text)
+            free = self._match_call(line.text, self._deallocator_names, "arg")
             if not free:
                 if re.search(r"\breturn\b", line.text):
                     last_free.clear()
                     continue
                 for var in list(last_free):
-                    if re.search(rf"\b{re.escape(var)}\s*=\s*(?:NULL|0|malloc|_safe_malloc|calloc|_safe_calloc)", line.text):
+                    if re.search(
+                        rf"\b{re.escape(var)}\s*=\s*(?:NULL|0|{self._names_pattern(self._allocator_names | self._calloc_names)})",
+                        line.text,
+                    ):
                         last_free.pop(var, None)
                 continue
 
@@ -506,7 +636,7 @@ class DeterministicCandidateGenerator:
                     rule="free_non_owner_pointer",
                     line=line,
                     description=f"`{arg}` is freed even though it is not the base owner pointer.",
-                    root_cause="free/SAFE_FREE receives an interior or stack-address expression.",
+                    root_cause="A deallocator receives an interior or stack-address expression.",
                     suggested_fix="Free only the owning base pointer returned by the allocator.",
                     source=arg,
                     sink=line.text.strip(),
@@ -584,7 +714,7 @@ class DeterministicCandidateGenerator:
     def _rule_lock_balance_and_callbacks(self, lines: List[CodeLine], emit) -> None:
         held: List[CodeLine] = []
         for line in lines:
-            if self._LOCK_RE.search(line.text):
+            if self._lock_re.search(line.text):
                 held.append(line)
             if held and re.search(r"\b[A-Za-z_]\w*(?:callback|cb|handler)[A-Za-z_0-9]*\s*\(", line.text, re.IGNORECASE):
                 lock_line = held[-1]
@@ -622,7 +752,7 @@ class DeterministicCandidateGenerator:
                         f"line {line.number}: return before matching unlock",
                     ],
                 )
-            if self._UNLOCK_RE.search(line.text) and held:
+            if self._unlock_re.search(line.text) and held:
                 held.pop()
 
     def _rule_condvar_wait(self, lines: List[CodeLine], emit) -> None:
@@ -701,7 +831,7 @@ class DeterministicCandidateGenerator:
                 )
 
             vla = re.search(
-                r"\b(?:char|unsigned\s+char|uint8_t|int|uint32_t)\s+(?P<var>[A-Za-z_]\w*)\s*\[\s*(?P<expr>[^]\d][^]]*)\s*\]\s*;",
+                rf"\b(?:{self._size_type_pattern})\s+(?P<var>[A-Za-z_]\w*)\s*\[\s*(?P<expr>[^]\d][^]]*)\s*\]\s*;",
                 line.text,
             )
             if vla and not self._is_macro_size_expr(vla.group("expr")) and re.search(r"[+*]|[A-Za-z_]\w*", vla.group("expr")):
@@ -719,7 +849,10 @@ class DeterministicCandidateGenerator:
                     positive=[f"line {line.number}: stack allocation size `{vla.group('expr').strip()}`"],
                 )
 
-            align = re.search(r"\*\s*\(\s*(?:uint(?:16|32|64)_t|int(?:16|32|64)_t)\s*\*\s*\)\s*\([^)]*\+\s*1\s*\)", line.text)
+            align = re.search(
+                rf"\*\s*\(\s*(?:{self._integer_pointer_type_pattern})\s*\*\s*\)\s*\([^)]*\+\s*1\s*\)",
+                line.text,
+            )
             if align:
                 emit(
                     defect_class="alignment",
@@ -734,7 +867,7 @@ class DeterministicCandidateGenerator:
                     positive=[f"line {line.number}: dereferences integer pointer from byte offset"],
                 )
             ptr_cast = re.search(
-                r"\b(?P<var>[A-Za-z_]\w*)\s*=\s*\([^;]*(?:uint(?:16|32|64)_t|int(?:16|32|64)_t)\s*\*\s*\)"
+                rf"\b(?P<var>[A-Za-z_]\w*)\s*=\s*\([^;]*(?:{self._integer_pointer_type_pattern})\s*\*\s*\)"
                 r"\s*\([^;]*\+\s*1\s*\)",
                 line.text,
             )
@@ -823,7 +956,7 @@ class DeterministicCandidateGenerator:
             if dcl:
                 obj = dcl.group("obj")
                 window = "\n".join(item.text for item in lines[idx + 1 : idx + 9])
-                if self._LOCK_RE.search(window) and re.search(rf"\bif\s*\(\s*!\s*{re.escape(obj)}\s*\)", window):
+                if self._lock_re.search(window) and re.search(rf"\bif\s*\(\s*!\s*{re.escape(obj)}\s*\)", window):
                     emit(
                         defect_class="double_checked_locking",
                         rule="double_checked_global_without_atomic",
@@ -864,7 +997,7 @@ class DeterministicCandidateGenerator:
             if find_locked:
                 var = find_locked.group("var")
                 later = lines[idx + 1 : idx + 12]
-                unlock_idx = next((item.index for item in later if self._UNLOCK_RE.search(item.text)), None)
+                unlock_idx = next((item.index for item in later if self._unlock_re.search(item.text)), None)
                 if unlock_idx is not None:
                     for item in later:
                         if item.index <= unlock_idx:
@@ -897,7 +1030,7 @@ class DeterministicCandidateGenerator:
             )
             if callback_ctx:
                 later = lines[idx + 1 : idx + 8]
-                if any(self._UNLOCK_RE.search(item.text) for item in later):
+                if any(self._unlock_re.search(item.text) for item in later):
                     emit(
                         defect_class="use_after_free",
                         rule="global_callback_context_borrowed_under_lock",
@@ -920,7 +1053,7 @@ class DeterministicCandidateGenerator:
                 line.text,
                 re.IGNORECASE,
             )
-            if race and not (self._LOCK_RE.search(line.text) or self._UNLOCK_RE.search(line.text)):
+            if race and not (self._lock_re.search(line.text) or self._unlock_re.search(line.text)):
                 global_name = race.group("global")
                 if global_name not in seen_race_globals and re.search(r"\+\+|--|while\s*\(|if\s*\(|=[^=]", line.text):
                     seen_race_globals.add(global_name)
@@ -946,7 +1079,7 @@ class DeterministicCandidateGenerator:
         held_locks: List[CodeLine] = []
         for line in lines:
             length_def = re.search(
-                r"\b(?:size_t|uint(?:16|32|64)_t|unsigned(?:\s+long|\s+int)?|int)\s+"
+                rf"\b(?:{self._size_type_pattern})\s+"
                 r"(?P<var>[A-Za-z_]\w*(?:len|length|size)[A-Za-z_0-9]*)\s*=\s*"
                 r"(?P<src>[A-Za-z_]\w*(?:->|\.)[A-Za-z_0-9]*(?:len|length|size)[A-Za-z_0-9]*)\s*;",
                 line.text,
@@ -957,7 +1090,10 @@ class DeterministicCandidateGenerator:
             for len_var, (src_line, src_expr) in list(length_field_defs.items()):
                 if line.index <= src_line.index:
                     continue
-                if not re.search(rf"\b(?:memcpy|memmove|read|recv|fread|send|write)\s*\([^;]*\b{re.escape(len_var)}\b", line.text):
+                if not re.search(
+                    rf"\b(?:{self._names_pattern(self._copy_sink_names)})\s*\([^;]*\b{re.escape(len_var)}\b",
+                    line.text,
+                ):
                     continue
                 guard_window = "\n".join(item.text for item in lines[max(0, line.index - 12) : line.index])
                 if re.search(rf"\b{re.escape(len_var)}\b\s*[<>]=?\s*[^;]*(?:data_len|buf_len|buffer_len|remaining|capacity|sizeof)", guard_window):
@@ -996,7 +1132,7 @@ class DeterministicCandidateGenerator:
                     positive=[f"line {line.number}: non-literal printf-style format"],
                 )
 
-            if self._LOCK_RE.search(line.text):
+            if self._lock_re.search(line.text):
                 held_locks.append(line)
             nested_lookup = re.search(
                 r"\b(?P<fn>[A-Za-z_]\w*(?:find|lookup|search|get)[A-Za-z_0-9]*)\s*\(",
@@ -1011,7 +1147,7 @@ class DeterministicCandidateGenerator:
                     nested_lookup = None
                 elif not re.search(rf"\b{re.escape(fn_name)}\s*\(", lock_line.text):
                     has_local_lock_evidence = (
-                        re.search(rf"\b{re.escape(fn_name)}\s*\([^)]*\)\s*{{[^}}]*(?:LOCK|pthread_mutex_lock)\s*\(", nearby, re.S)
+                        re.search(rf"\b{re.escape(fn_name)}\s*\([^)]*\)\s*{{[^}}]*(?:{self._names_pattern(self._lock_names)})\s*\(", nearby, re.S)
                         or re.search(rf"\b{re.escape(fn_name)}\s*[:=].*(?:requires|takes|locks)", nearby, re.I)
                     )
                     emit(
@@ -1037,7 +1173,7 @@ class DeterministicCandidateGenerator:
                 nearby = "\n".join(item.text for item in lines[max(0, line.index - 30) : line.index + 30])
                 fn_name = nested_lookup.group("fn")
                 if (
-                    re.search(rf"\b{re.escape(fn_name)}\s*\([^)]*\)\s*{{[^}}]*(?:LOCK|pthread_mutex_lock)\s*\(", nearby, re.S)
+                    re.search(rf"\b{re.escape(fn_name)}\s*\([^)]*\)\s*{{[^}}]*(?:{self._names_pattern(self._lock_names)})\s*\(", nearby, re.S)
                     or re.search(rf"\b{re.escape(fn_name)}\s*[:=].*(?:requires|takes|locks)", nearby, re.I)
                 ):
                     emit(
@@ -1056,7 +1192,7 @@ class DeterministicCandidateGenerator:
                             f"line {line.number}: lookup-like helper called while lock is held",
                         ],
                     )
-            if self._UNLOCK_RE.search(line.text) and held_locks:
+            if self._unlock_re.search(line.text) and held_locks:
                 held_locks.pop()
 
             if re.search(r"\b(?:access|stat|lstat|faccessat|fstatat)\s*\(", line.text) or re.search(
@@ -1108,7 +1244,7 @@ class DeterministicCandidateGenerator:
         assigned = None
         saw_unlock = False
         for item in previous:
-            if self._UNLOCK_RE.search(item.text):
+            if self._unlock_re.search(item.text):
                 saw_unlock = True
             if re.search(rf"\b{re.escape(ret)}\s*=\s*[^;]*->[A-Za-z_]\w*", item.text):
                 assigned = item
@@ -1171,6 +1307,105 @@ class DeterministicCandidateGenerator:
                         positive=[f"line {line.number}: munmap without nearby NULL reset"],
                     )
 
+    @staticmethod
+    def _names_pattern(names: Iterable[str]) -> str:
+        escaped = [
+            re.escape(name).replace(r"\ ", r"\s+")
+            for name in sorted({str(item) for item in names if item}, key=len, reverse=True)
+        ]
+        return "|".join(escaped) or r"a\bnothing_matches"
+
+    @classmethod
+    def _call_re(
+        cls,
+        names: Iterable[str],
+        *,
+        extra_patterns: Optional[Iterable[str]] = None,
+    ) -> re.Pattern[str]:
+        patterns = [cls._names_pattern(names)]
+        patterns.extend(str(item) for item in extra_patterns or [] if item)
+        return re.compile(rf"\b(?:{'|'.join(patterns)})\s*\(")
+
+    @classmethod
+    def _type_pattern(cls, names: Iterable[str]) -> str:
+        return cls._names_pattern(names)
+
+    @classmethod
+    def _match_call(
+        cls,
+        text: str,
+        names: Iterable[str],
+        arg_group: str,
+        *,
+        until: str = ")",
+    ) -> Optional[re.Match[str]]:
+        terminator = r";" if until == ";" else r"\)"
+        return re.search(
+            rf"\b(?:{cls._names_pattern(names)})\s*\(\s*(?P<{arg_group}>[^{terminator}]+)",
+            text,
+        )
+
+    def _api_evidence_for_line(self, text: str) -> List[str]:
+        evidence: List[str] = []
+        categories = [
+            ("allocator", self.semantics.allocators),
+            ("calloc", self.semantics.calloc_allocators),
+            ("reallocator", self.semantics.reallocators),
+            ("deallocator", self.semantics.deallocators),
+            ("copy", self.semantics.copy_sinks),
+            ("lock", self.semantics.lock_apis),
+            ("unlock", self.semantics.unlock_apis),
+        ]
+        for category, mapping in categories:
+            for name, sources in mapping.items():
+                if re.search(rf"\b{re.escape(name)}\s*\(", text):
+                    evidence.append(
+                        f"`{name}` classified as {category} API via {', '.join(sources)}"
+                    )
+        return evidence
+
+    def _augment_name_heuristics_from_code(self, code: str) -> None:
+        changed = False
+        for name in sorted(set(re.findall(r"\b([A-Za-z_]\w*)\s*\(", code))):
+            category = self._classify_api_name(name)
+            if not category:
+                continue
+            before = set(getattr(self.semantics, self._attr_for_category(category)))
+            self.semantics.add_api(category, name, "name_heuristic")
+            after = set(getattr(self.semantics, self._attr_for_category(category)))
+            changed = changed or before != after
+        if changed:
+            self._compile_patterns()
+
+    @staticmethod
+    def _classify_api_name(name: str) -> str:
+        lower = name.lower()
+        if re.search(r"(?:^|_)(?:un)?lock(?:_|$)", lower) or lower.endswith("unlock"):
+            return "unlock" if "unlock" in lower else "lock"
+        if "realloc" in lower:
+            return "reallocator"
+        if "calloc" in lower:
+            return "calloc"
+        if "alloc" in lower or "malloc" in lower:
+            return "allocator"
+        if re.search(r"(?:^|_)(?:free|dealloc)(?:_|$)", lower) or lower.endswith(("free", "dealloc")):
+            return "deallocator"
+        if re.search(r"(?:mem)?(?:copy|cpy|move)", lower):
+            return "copy"
+        return ""
+
+    @staticmethod
+    def _attr_for_category(category: str) -> str:
+        return {
+            "allocator": "allocators",
+            "calloc": "calloc_allocators",
+            "reallocator": "reallocators",
+            "deallocator": "deallocators",
+            "copy": "copy_sinks",
+            "lock": "lock_apis",
+            "unlock": "unlock_apis",
+        }[category]
+
     def _parse_lines(self, code: str) -> List[CodeLine]:
         parsed: List[CodeLine] = []
         for idx, raw in enumerate(str(code or "").splitlines()):
@@ -1207,7 +1442,7 @@ class DeterministicCandidateGenerator:
 
     def _next_window_has_sink(self, lines: List[CodeLine], idx: int, var: str) -> bool:
         window = "\n".join(item.text for item in lines[idx + 1 : idx + 9])
-        return bool(re.search(rf"\b{re.escape(var)}\b", window) and self._COPY_OR_ALLOC_RE.search(window))
+        return bool(re.search(rf"\b{re.escape(var)}\b", window) and self._copy_or_alloc_re.search(window))
 
     def _has_pre_overflow_guard(self, lines: List[CodeLine], idx: int, operands: Iterable[str]) -> bool:
         operand_list = [item for item in operands if item]
