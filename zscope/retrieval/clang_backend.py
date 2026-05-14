@@ -289,4 +289,4 @@ class ClangBackend(CodeBackend):
     ) -> List[Dict[str, Any]]:
         if not self._db:
             return []
-        return self._db.get_header_functions(header_files)
+        return self._db.get_header_functions(header_files, source_root=self._source_path)

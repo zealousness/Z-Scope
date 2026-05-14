@@ -624,21 +624,52 @@ class KnowledgeDB:
 
     # ── Header functions ──
 
-    def get_header_functions(self, header_files: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-        if header_files:
-            placeholders = ",".join("?" for _ in header_files)
-            rows = self._conn.execute(
-                f"SELECT name, file_path, start_line FROM functions "
-                f"WHERE is_declaration = 1 AND file_path IN ({placeholders})",
-                header_files,
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT name, file_path, start_line FROM functions "
-                "WHERE is_declaration = 1 AND file_path LIKE '%.h'"
-            ).fetchall()
-        return [{"name": r["name"], "filename": r["file_path"],
-                 "lineNumber": r["start_line"]} for r in rows]
+    def get_header_functions(
+        self,
+        header_files: Optional[List[str]] = None,
+        source_root: Optional[Path] = None,
+    ) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT name, file_path, start_line FROM functions "
+            "WHERE is_declaration = 1"
+        ).fetchall()
+
+        normalized_headers = (
+            {
+                self._normalize_source_relative_path(header, source_root)
+                for header in header_files
+            }
+            if header_files
+            else None
+        )
+
+        results = []
+        for row in rows:
+            filename = self._normalize_source_relative_path(row["file_path"], source_root)
+            if normalized_headers is not None and filename not in normalized_headers:
+                continue
+            if normalized_headers is None and not filename.endswith((".h", ".hpp", ".ph", ".inc")):
+                continue
+            results.append(
+                {
+                    "name": row["name"],
+                    "filename": filename,
+                    "lineNumber": row["start_line"],
+                }
+            )
+        return results
+
+    @staticmethod
+    def _normalize_source_relative_path(path: str, source_root: Optional[Path] = None) -> str:
+        raw = Path(str(path))
+        if source_root is not None:
+            root = Path(source_root).resolve()
+            candidate = raw if raw.is_absolute() else root / raw
+            try:
+                return candidate.resolve().relative_to(root).as_posix()
+            except ValueError:
+                pass
+        return raw.as_posix()
 
     # ── Indirect Calls (SVF) ──
 

@@ -105,6 +105,25 @@ int td_register_plugin(const char* plugin_name, task_handler_t handler_fn);
  */
 int td_execute_command(const char* command);
 
+int td_send_message(int fd, const void* data, size_t len);
+int td_send_status(int fd);
+char* td_receive_string(int fd, size_t max_len);
+int td_receive_message(int fd, char* dst, size_t dst_size);
+int td_report_network_error(int error_code);
+int td_handle_network_task(Task* task);
+int td_serialize_task_message(const Task* task, void** buffer, size_t* len);
+
+int td_process_control_message(const char* msg, int transport_id);
+int td_manage_runtime_config(const char* text, size_t metric_count);
+int td_format_and_parse_frame(const char* prefix, uint32_t id, char* out, size_t out_size);
+int td_watch_connection_event(int fd, char* buffer, size_t len);
+int td_configure_rules(const char* path, size_t len, size_t offset);
+int td_handle_mesh_message(const char* msg, int transport_id);
+int td_update_subscription(const char* topic);
+int td_control_pipe(int pipe_id);
+int td_update_os_policy(const char* os_name, int pid, const char* proc_name,
+                        const char* policy_key, int route_key, uint32_t delta);
+
 /**
  * Query the status of a previously submitted task
  * 
