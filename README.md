@@ -1,6 +1,6 @@
-# Z-SCOPE (v0.5.0)
+# Z-SCOPE (v0.6.0)
 
-**Z-SCOPE** 是一款基于 **多智能体（Multi-Agent）** 协作的 C 项目深度静态分析工具。它通过模拟资深安全研究员的思考过程，利用大语言模型（LLM）对代码进行深度的语义建模与漏洞扫描，旨在精准发现内存安全、逻辑漏洞及跨文件资源管理问题。
+**Z-SCOPE** 是一款基于 **多智能体（Multi-Agent）** 协作的 C 项目深度静态分析工具。它把可插拔代码索引、确定性 C 内存/并发候选、SVF/Saber 后端信号与大语言模型（LLM）语义验证结合起来，模拟资深安全研究员的审计过程，旨在精准发现内存安全、资源生命周期、并发时序、逻辑漏洞及跨文件资源管理问题。
 
 ## 核心特性
 
@@ -8,15 +8,17 @@
 - **Task 驱动的漏洞 Skill 选择**：`vulnerability_analyzer.task` 不只是提示词描述。系统会从用户关注点中选择 `resource_lifecycle`、`bounds_and_integer`、`null_and_failure`、`concurrency_lock_order` 等漏洞挖掘 Skill，只注入匹配的 Skill 契约并过滤不关心类别的结果。
 - **三种运行模式**：全新扫描（默认）、断点续扫（`--resume`）、增量维护（`--maintain`）。Workflow 选择由 CLI 运行模式控制，不允许在 `zscope.yaml` 中配置。另支持规则驱动模式和告警验证模式。
 - **自动入口发现**：支持基于启发式的智能扫描入口发现（`--discover-entries`），自动识别头文件暴露的公共 API、网络收发、线程入口及用户输入点。
-- **批量入口提示词自动补齐**：`zscope-prompt-autofill` 可在批量扫描前根据源码索引为 `entry_functions_list` 中空缺的 `custom_prompt` 生成中文审计提示，保留项目领域知识（如 `DDM_ALLOC`/`DDM_FREE`、跨 handler 生命周期、条件参数释放路径）并可安全回写 JSON。
+- **批量入口提示词自动补齐**：`zscope-prompt-autofill` 可在批量扫描前根据源码索引为 `entry_functions_list` 中空缺的 `custom_prompt` 生成中文审计提示。该 Skill 是用户可填写模板，项目专有 allocator/free/锁/handler 语义需要直接写入 `SKILL.md`。
+- **证据优先的候选流水线**：`DeterministicCandidateGenerator` 针对 C 内存和并发缺陷生成通用候选；SVF/Saber/KnowledgeDB 后端信号会被归一化为同一类候选。候选携带 source/sink、对象或锁、正反证据、`dedup_key` 与 `evidence_refs`，再交给 Deep Worker 与 Validator 收敛误报。
+- **三态验证与审计观察项**：Validator 支持 `verified` / `rejected` / `uncertain` 三态输出。Validator 启用时，Z-SCOPE 会计算 `final_score`，高分缺陷进入默认漏洞报告，`needs_review` / `uncertain` 进入 `metadata.audit_observations`，避免把证据不足的候选直接当成漏洞。
 - **本地 MCP Server**：原生内置 Model Context Protocol (MCP) 标准的 stdio Server，允许外部工具（如 Claude Desktop）直接调用 Z-SCOPE 的代码索引、快照资源及工具总线。
 - **多模型配置与路由**：支持在 `zscope.yaml` 中定义多个大模型配置（如 `fast_model` / `smart_model`），不同 Agent 可按需绑定最佳模型。
 - **可插拔后端架构**：支持 Joern CPG、Clang（clangd LSP）、Unified（Clang + SVF）、Regex 四种后端，按需选择分析深度。
 - **12 个分析工具**：函数源码获取、调用图分析、结构体查询、污点追踪、指针别名查询、深度调用上下文聚合等。
-- **用户辅助配置系统**：通过 WebUI 管理外部函数描述、配对函数、函数指针指向等信息，自动注入分析上下文。
+- **用户辅助配置系统**：通过 WebUI 管理外部函数描述、配对函数、函数指针指向等信息，自动注入分析上下文；手工验证反馈会写入误报抑制与 finding baseline，后续扫描自动复用。
 - **智能增量分析与缺陷去重**：支持断点续扫（`--resume`）和基于语义哈希的增量维护扫描（`--maintain`）。自动跟踪和验证缺陷随代码流转的修复状态。
-- **Web 仪表盘**：Alpine.js + DaisyUI 构建的交互式界面，集成扫描结果查看、用户配置管理和配置告警。
-- **SQLite 原生级持久化**：分析产生的终极漏洞（Issues）将直接与语义模型一同被永久锁定存入本地 `.zscope_snapshots/snapshots.db`，确保灾难级恢复能力。
+- **Web 仪表盘**：Alpine.js + DaisyUI 构建的交互式界面，集成扫描结果查看、`validated` / `needs_review` / `uncertain` / `unvalidated` / `pending` / `rejected` 状态标记、用户配置管理和配置告警。
+- **SQLite 原生级持久化**：分析产生的终极漏洞（Issues）与语义模型会写入本地 `.zscope_snapshots/snapshots.db`；`code_knowledge.db` schema v7 新增轻量 Inspection IR 表，持久化候选 source/sink、资源事件、锁事件、共享访问与路径切片。
 - **自动报告备份护城河**：每次批量生成或覆盖 JSON 分析主报告前，自动创建带时间戳的增量备份至 `.zscope_knowledge/backups/` 目录。
 - **严格编译与类型检查**：开发环境支持 `compileall` 强制编译检查和 `mypy` 静态类型检查，避免 Python 解释执行到冷门分支时才暴露错误。
 - **纯 YAML 驱动**：所有分析参数通过 `zscope.yaml` 统一定义，支持 `${ENV_VAR}` 环境变量展开。
@@ -36,31 +38,32 @@ CLI 入口层 (cli.py)
 声明式工作流编排 (workflows/ + SpecRegistry)
           │
           ▼
+CodeIndex (可插拔后端) + SnapshotStore + UserConfigStore + KnowledgeDB IR
+          │
+          ├─ CodeBackend ABC (backend_base.py)
+          │  ├─ JoernBackend    — CPGQL via WebSocket
+          │  ├─ ClangBackend    — clangd LSP 批量提取 → KnowledgeDB
+          │  ├─ UnifiedBackend  — ClangBackend + SvfAnalyzer (共享 KnowledgeDB)
+          │  └─ RegexBackend    — 正则回退
+          │
+          ├─→ 证据候选层 (DeterministicCandidateGenerator + Backend Signals + CandidateLedger)
+          ├─→ 工具总线 (tools_runtime.py) ── 外部 MCP 集成
+          │
+          ▼
 多智能体管线 (agents/ + skills/)
 语义建模 Agent → [漏洞扫描 Agent ⇌ Deep Worker] → Issue Reconciler → 验证 Agent
           │
           ▼
-工具总线 (tools_runtime.py) ── 外部 MCP 集成
-          │
-          ▼
-CodeIndex (可插拔后端) + SnapshotStore + UserConfigStore
-          │
-          ▼
-CodeBackend ABC (backend_base.py)
-├─ JoernBackend    — CPGQL via WebSocket
-├─ ClangBackend    — clangd LSP 批量提取 → KnowledgeDB
-├─ UnifiedBackend  — ClangBackend + SvfAnalyzer (共享 KnowledgeDB)
-└─ RegexBackend    — 正则回退
+报告生成 + 快照持久化 + Web 反馈闭环
 ```
 
-## 数据安全与强制恢复机制
-Z-Scope 内置了严密的数据防丢失功能：
-1. **快照级持久化**：所有的 `VulnerabilityAnalyzer` 输出（即真正发现的漏洞 JSON）都会在扫描结束的第一时间原封不动被硬编码打入 SQLite 数据库。哪怕程序异常终止，单函数的成果也绝对不会丢失。
-2. **热备份轮转**：在汇总合并最终的 `zscope_batch_report.json` 时，旧版本的文件会被自动加盖时间戳并归档至 `.zscope_knowledge/backups/` 目录下。
-3. **离线报告起死回生**：如果您不慎清空了所有的 JSON 与 SQLite 数据库，但手中恰好还有一份从网页前端导出的**离线 HTML 审计报告**（`offline_template.html`），可以使用根目录的救灾脚本瞬间将数据逆向复原进 SQLite 数据库中：
-   ```bash
-   python restore_from_html.py zscope_offline_report.html
-   ```
+## 数据安全与审计留痕
+Z-Scope 内置了多层防丢失和可追溯机制：
+1. **快照级持久化**：语义快照与单函数最终报告会写入 `.zscope_snapshots/snapshots.db`，`--resume` 和 `--maintain` 都以该库作为跳过、复用和调和依据。
+2. **热备份轮转**：在汇总合并最终的 `zscope_batch_report.json` 前，旧版本 JSON 会自动加盖时间戳并归档至 `.zscope_knowledge/backups/` 目录。
+3. **证据 IR 留痕**：确定性规则与后端信号产生的候选会将 source/sink、路径切片、资源/锁/共享状态事件写入 `code_knowledge.db` 的 IR 表，便于复查和回归分析。
+4. **人工反馈复用**：Web 仪表盘中的验证状态会持久化为 `finding_suppressions` 与 `finding_baselines`。后续扫描会自动抑制已确认误报，并把历史反馈纳入评分。
+5. **离线报告导出**：Web 前端可导出自包含 HTML 审计报告，用于脱离仪表盘查看和归档；该报告不依赖在线服务即可浏览。
 
 ## 依赖说明
 
@@ -236,6 +239,8 @@ project:
     overwrite_existing: false
     write_back: true         # 为 true 时仅回写 JSON 中的 custom_prompt 字段
     min_custom_prompt_chars: 20
+    max_callees: 30          # 生成提示词时最多参考的直接 callee 数
+    max_function_lines: 220  # 生成提示词时读取的单函数最大行数
   
   entry_discovery:           # 自动入口发现机制
     enabled: true            # 为 true 时，如果未提供 entry_functions_list 则自动发现
@@ -258,6 +263,16 @@ project:
       llm_ref: smart_model
       can_spawn_subagents: true  # 允许创建 Deep Worker 分析上下文
       # task 会选择本次启用的漏洞挖掘 Skill；未识别/为空时保持全量 Skill。
+      # 当前支持的漏洞扫描 Skill：
+      # resource_lifecycle（资源/句柄生命周期）
+      # bounds_and_integer（边界、拷贝、整数溢出）
+      # temporal_memory（UAF、double free、invalid free）
+      # null_and_failure（空指针、失败返回未检查）
+      # stack_escape（栈地址逃逸到异步上下文）
+      # concurrency_lock_order（锁顺序、缺失解锁、递归死锁）
+      # shared_state_race（共享状态竞态、TOCTOU、refcount、condvar）
+      # ownership_contract（所有权/借用/转移契约）
+      # string_and_format（字符串、格式串、命令构造）
       # 例如："只查找资源泄漏和空指针问题。" -> resource_lifecycle, null_and_failure
       # 例如："只关注并发风险，不关心内存安全。" -> concurrency_lock_order, shared_state_race, stack_escape
       task: "查找逻辑漏洞、内存安全问题和并发风险。"
@@ -285,6 +300,7 @@ analysis:
   max_tool_iterations: 50
   snapshot_dir: .zscope_snapshots
   enable_snapshot_cache: true
+  user_config_db: ""          # 为空时使用 {snapshot_dir}/user_config.db
   parallel_workers: 5
   max_premodel_depth: 3
   max_premodel_callees: 20
@@ -292,6 +308,10 @@ analysis:
   enable_subagent_workers: true
   max_subagent_tickets: 4  # Deep Worker 执行预算；候选点会全量保留并传给主 Agent
 ```
+
+本地 API key 建议放在 git 忽略的环境文件中。例如 range benchmark 可复制
+`test/range/zscope.local.env.example` 为 `test/range/zscope.local.env`，填入
+`Z_SCOPE_API_KEY` 并取消注释；`test/range/benchmark/run_zscope_scan.sh` 会自动加载它。
 
 #### Vulnerability Analyzer 的 task 语义
 
@@ -313,6 +333,14 @@ analysis:
 
 每个 Worker 报告都会带明确状态：`completed`、`failed`、`invalid`、`partial` 或 `killed`。其中 `invalid` 表示 Worker 返回了文本但没有合法 `worker_report` JSON；原始输出和 partial text 会保留给主 Agent，但不会被当作可靠证据。
 
+#### 证据候选、评分与观察项
+
+v0.6 的主路径是“候选先于结论”：本地确定性规则会先识别通用 C 缺陷形态，例如整数/边界错误、资源泄漏、`realloc` 误用、UAF、double/invalid free、栈逃逸、缺失解锁、回调持锁、条件变量误用、signed/unsigned 转换、空指针、共享状态竞态、格式串、命令注入、stale fd 和 stale mmap 指针。
+
+Unified 后端中的 SVF/Saber 结果也会被转为同一类 `backend_signal` 候选。候选进入 `CandidateLedger` 去重后，会按激活 Skill 下发给 Deep Worker；即使超过 `max_subagent_tickets`，剩余候选也会作为上下文传回主 Agent。
+
+Validator 启用时使用三态语义：`verified` 表示证据可闭合，`rejected` 表示被源码或用户配置否决，`uncertain` 表示值得人工复查但不应直接报告。Z-SCOPE 会计算 `final_score`；默认只有高分验证结果进入 `issues`，`needs_review` / `uncertain` 进入 `metadata.audit_observations`，退出码也只基于 `issues` 判断。若关闭 Validator，候选会以 `unvalidated` 状态进入报告，供人工后续复核。
+
 #### Workflow 选择规则
 
 Workflow 选择是运行时行为，不是 YAML 配置项。普通 `zscope -c zscope.yaml` 固定使用 `default.yaml`；传入 `--resume` 时 CLI 会把当前运行切换为 `resume.yaml`；传入 `--maintain` 时切换为 `maintain.yaml`。如果 `zscope.yaml` 中出现 `analysis.workflow_name`，配置加载会直接报错。
@@ -329,8 +357,8 @@ Workflow 选择是运行时行为，不是 YAML 配置项。普通 `zscope -c zs
 {
   "functions": [
     {
-      "function_name": "meshServerPortApplyProc",
-      "file_path": "src/mesh_server.c",
+      "function_name": "service_register_handler",
+      "file_path": "src/service.c",
       "custom_prompt": ""
     }
   ]
@@ -342,13 +370,13 @@ Workflow 选择是运行时行为，不是 YAML 配置项。普通 `zscope -c zs
 - 只处理 `custom_prompt` 缺失、为空或短于 `min_custom_prompt_chars` 的条目。
 - 默认不覆盖已有完整提示；需要重生成时设置 `overwrite_existing: true`。
 - `write_back: true` 时仅修改 JSON 中的 `custom_prompt` 字段，保留 `function_name`、`file_path` 和其它字段。
-- 生成内容使用 `zscope/skills/zscope-prompt-autofill/SKILL.md` 与 `references/*.md` 中的规则，重点保留项目领域知识，例如 DDM 资源接口、mesh/xmesh 跨 handler 生命周期、配对释放 handler、条件参数硬编码导致的释放路径选择风险。
+- 生成内容只读取 `zscope/skills/zscope-prompt-autofill/SKILL.md`。Z-SCOPE 运行时不会读取 Skill 目录下的 `references/` 文件，因此项目专有资源接口、跨 handler 生命周期、配对释放 handler、条件参数语义等知识必须直接填在该模板里。
 
 典型配置：
 
 ```yaml
 project:
-  entry_functions_list: config/mesh_server_entry_functions.json
+  entry_functions_list: config/service_entry_functions.json
   prompt_autofill:
     enabled: true
     overwrite_existing: false
@@ -356,7 +384,7 @@ project:
     min_custom_prompt_chars: 20
 ```
 
-`zscope-prompt-autofill` 中偏通用的语义建模要求（例如消息分发覆盖、全局数据结构挂载/摘除、条件控制参数语义）已吸收到 `code_semantic_modeling`，因此这些事实会进入函数快照；DDM、mesh/xmesh 等项目定制知识则保留为 `custom_prompt` 注入给漏洞分析阶段。
+`zscope-prompt-autofill` 中偏通用的语义建模要求（例如消息分发覆盖、全局数据结构挂载/摘除、条件控制参数语义）已吸收到 `code_semantic_modeling`，因此这些事实会进入函数快照；项目定制知识则由用户填写在模板中，再作为 `custom_prompt` 注入给漏洞分析阶段。
 
 ### Step 2：执行分析
 
@@ -397,11 +425,14 @@ zscope --build-cpg -c zscope.yaml
 | 文件 | 说明 |
 |------|------|
 | `zscope_batch_report.md` | 人类可读的审计汇总报告 |
-| `zscope_batch_report.json` | 结构化缺陷数据（可供 CI 集成） |
+| `zscope_batch_report.json` | 结构化缺陷数据（可供 CI 集成），包含 `issues[]`、严重度分组和批量统计 |
 | `zscope_alert_verify_report.json` | 告警验证模式的验证结果 |
 | `.zscope_snapshots/` | 语义快照缓存（加速重复扫描） |
+| `.zscope_knowledge/code_knowledge.db` | 代码索引、SVF/Saber 信号和候选证据 IR |
 
-退出码：发现缺陷返回 `1`，无缺陷返回 `0`，可直接用于 CI/CD 流水线。
+单函数最终报告的 `metadata` 会记录 `candidate_signal_summary`、`candidate_ledger_summary`、`audit_observation_count` 和 `audit_observations`。`issues[]` 中的缺陷会带 `finding_kind`、`final_score`、`score_components`、`source`、`sink`、`positive_evidence`、`negative_evidence` 等字段。
+
+退出码：默认漏洞报告中的 `issues` 非空返回 `1`，无缺陷返回 `0`。`needs_review` / `uncertain` 观察项不会单独拉高退出码，适合 CI/CD 只阻断已验证或高分问题。
 
 ### Step 4：启动 Web 仪表盘（可选）
 
@@ -410,11 +441,11 @@ zscope --dashboard -c zscope.yaml
 ```
 
 仪表盘提供三个主要页面：
-- **扫描结果**：查看缺陷列表，支持验证状态标记和误报反馈
+- **扫描结果**：查看缺陷列表，支持六种验证状态标记，并将 `rejected` 反馈持久化为误报抑制和 baseline
 - **配置管理**：管理外部函数描述、配对函数、函数指针指向、函数设计意图 + CPG 构建控制
 - **配置告警**：展示工具怀疑缺少的配置信息，引导用户补充
 
-## 分析工具清单（12 个）
+## 分析工具清单（12 个内置 Agent 工具）
 
 | # | 工具名 | 用途 | 后端要求 |
 |---|--------|------|---------|
@@ -431,6 +462,8 @@ zscope --dashboard -c zscope.yaml
 | 11 | `verify_taint_reachability` | 污点可达性验证 | unified |
 | 12 | `get_deep_call_context` | 高聚合查询（调用者+被调用者+间接调用+污点缺陷） | unified |
 
+MCP Server 会额外暴露 `query_knowledge`（只读查询 `code_knowledge.db`）与 `discover_entries`（入口发现）两个工具，供外部 MCP 客户端交互式审计使用。
+
 ## 用户辅助配置
 
 静态分析工具存在能力边界，Z-SCOPE 支持用户通过 Web 仪表盘补充以下信息，分析时自动注入上下文：
@@ -441,6 +474,10 @@ zscope --dashboard -c zscope.yaml
 | 自定义配对函数 | 用户实现的 malloc/free、lock/unlock 等配对 | `my_alloc` ↔ `my_free` |
 | 函数指针指向 | 函数指针的具体目标函数 | `handler_ptr` → `handle_read` |
 | 函数设计意图 | 函数对调用者的约束和并发关系 | "此函数不会被并发调用" |
+| Finding 抑制 | 对已确认误报按函数、位置、类别或规则进行抑制 | `src/demo.c:42` 的 `double_free` |
+| Finding baseline | 记录历史验证结论，影响后续评分与过滤 | `true_positive` / `false_positive` / `needs_review` |
+
+Web 仪表盘保存验证结果时会自动维护 `finding_suppressions` 与 `finding_baselines`。分析阶段会先检查这些配置：命中误报抑制或 `false_positive` baseline 的候选会被过滤；命中 `true_positive` 的历史项会提高评分中的历史反馈分。
 
 ## 后端对比
 
@@ -452,6 +489,7 @@ zscope --dashboard -c zscope.yaml
 | 类型查询 | 不支持 | 完整 | AST 精确 | AST 精确 |
 | 污点分析 | 不支持 | 数据流追踪 | 不支持 | SVF saber（内存泄漏/UAF/双重释放） |
 | 间接调用解析 | 不支持 | 有限 | 不支持 | SVF Andersen 指针分析 |
+| 后端信号入报告链路 | 不支持 | 规则驱动模式 | 不支持 | SVF/Saber 信号归一化为候选并进入证据 IR |
 | 规则驱动模式 | 不支持 | 支持 | 不支持 | 不支持 |
 | 内存占用 | 极低 | 高（JVM） | 中 | 中高 |
 
@@ -468,19 +506,33 @@ black zscope/ --line-length 100
 python -m mypy zscope
 
 # 强制编译检查，覆盖 Python 解释执行前可能隐藏的分支语法/导入问题
-python -m compileall -f -q zscope scripts test
+python -m compileall -f -q zscope scripts test tests
 
 # 运行测试
 python -m pytest
+
+# 仅评估确定性候选在 range benchmark 上的覆盖率
+python scripts/evaluate_range_regression.py --deterministic-candidates
 ```
 
 ## 更新日志
+
+### v0.6.0
+- **证据优先候选流水线成型**：新增 `DeterministicCandidateGenerator`，以通用 C 语言模式生成带 `candidate_id`、`dedup_key`、source/sink、正反证据和 `evidence_pack` 的候选，覆盖整数/边界、资源生命周期、时序内存、栈逃逸、空指针、锁与共享状态、格式串、命令注入和 stale fd/mmap 等问题。
+- **后端信号进入同一报告链路**：Unified 后端产生的 SVF/Saber/KnowledgeDB 信号会被规范化为 `backend_signal` 候选，与本地规则和 LLM finding 一起进入 CandidateLedger、Deep Worker、Validator、去重和报告输出。
+- **KnowledgeDB schema v7 与 Inspection IR**：`code_knowledge.db` 新增 `ir_statements`、`ir_resource_events`、`ir_lock_events`、`ir_shared_accesses`、`ir_path_slices` 和 `function_contracts`，用于保存候选证据、路径切片、资源/锁/共享状态事件及评分组件。
+- **三态验证与评分分层**：Validator 支持 `verified` / `rejected` / `uncertain`，Analyzer 计算 `final_score` 与 `score_components`。高分结果进入 `issues`；`needs_review`、`uncertain` 和验证失败的候选进入 `metadata.audit_observations`，默认不触发 CI 失败。
+- **人工反馈闭环落地**：`UserConfigStore` 新增 `finding_suppressions` 与 `finding_baselines`。Web 仪表盘支持六种验证状态，并会把 `rejected` 写成误报抑制，把 `validated` / `needs_review` / `uncertain` 写成 baseline，后续扫描自动过滤或调整评分。
+- **Prompt Autofill 模板去项目化**：`zscope-prompt-autofill` 改为单文件模板，不再依赖 `references/` 目录；通用提示词生成逻辑扩展为 allocator/create、release/destroy、register/unregister、handler table、全局容器和条件参数等更通用的 C 项目语义。
+- **Range benchmark 回归体系**：新增 `test/range` C 内存/并发基准、`scripts/evaluate_range_regression.py` 和 pytest 回归用例，可独立评估确定性候选覆盖率，防止规则过拟合 benchmark 专有名称。
+- **索引与构建鲁棒性补强**：Clang/regex 函数识别支持更多 C 声明修饰；SVF bitcode 构建自动注入兼容 flag；Deep Worker 会接收结构化 evidence，Validator 输出兼容旧 `is_valid` 与新 `verdict` 格式。
 
 ### v0.5.0
 - **全架构重构与扁平化**：扁平化了冗余的 `zscope/zscope` 目录结构，统一通过 `pip install -e .` 安装，更贴合标准 Python 打包规范。大幅强化三库同源（`code_knowledge.db`, `snapshots.db`, `user_config.db`）的底层持久化隔离与可观测性。
 - **声明式工作流与智能体编排**：引入 `workflows/` 机制（如 default/maintain/resume 工作流）和基于 Markdown Frontmatter 的 `AGENT.md`/`SKILL.md` 契约。`zscope/workflows/*.yaml` 现在驱动实际执行步骤和 Agent 编排，报告 metadata 会记录 `workflow_progress` 与当前步骤。
 - **Task 驱动的 Skill 选择**：`vulnerability_analyzer.task` 现在会解析用户关注点并限制本轮启用的漏洞挖掘 Skill。Agent 契约注入、Deep Worker 工单规划和最终 finding 过滤都遵循同一组 active skills，从源头减少用户不关心类别的检出。
-- **批量 custom_prompt 自动补齐**：新增 `zscope-prompt-autofill` Skill 与 `PromptAutofillExecutor`。批量扫描可在分析前自动补齐 `entry_functions_list` 中缺失或过短的 `custom_prompt`，并支持只回写该字段；通用建模规则同步沉淀到 `code_semantic_modeling`，领域定制规则保留在 custom prompt 中。
+- **批量 custom_prompt 自动补齐**：新增 `zscope-prompt-autofill` Skill 与 `PromptAutofillExecutor`。批量扫描可在分析前自动补齐 `entry_functions_list` 中缺失或过短的 `custom_prompt`，并支持只回写该字段；Skill 已改为单文件模板，用户需要把项目领域规则直接填入 `SKILL.md`。
+- **C 内存/并发确定性候选层**：新增通用候选生成与证据包路径，覆盖边界/整数、资源生命周期、时序内存、栈逃逸、锁与共享状态等高价值缺陷，并接入 Deep Worker、Validator、报告分层和回归评测。
 - **CLI Workflow 自动映射**：`--maintain` 自动选择 `maintain.yaml`，`--resume` 自动选择 `resume.yaml`。`analysis.workflow_name` 是运行时内部字段，禁止写入 `zscope.yaml`；两种 CLI 模式互斥，CLI 会提前拦截非法组合。
 - **Deep Worker 启发式任务规划**：引入 `SubAgentOrchestrator`，基于启发式自动探测函数内的分配、拷贝、加锁等关键操作，先全量收集候选点，再按风险和预算下发给聚焦型 `Deep Worker`。未执行候选、失败/invalid/partial Worker 结果都会回传给主 Agent，避免预算截断造成静默漏检。
 - **智能入口点自动发现**：新增 `--discover-entries` 特性。如果未给定分析列表，通过 `EntryDiscovery` 启发式扫描公共头文件 API、通信 IPC 接口、线程创建函数和标准 IO 输入源，自动推测最优的安全审计切入点。

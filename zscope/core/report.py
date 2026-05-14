@@ -26,8 +26,26 @@ class Issue:
     impact_level: str  # low, medium, high, critical
     reasoning: Optional[str] = None
     code_snippet: Optional[str] = None
-    validation_status: str = "pending" # pending, validated, rejected
+    validation_status: str = "pending" # pending, validated, needs_review, uncertain, unvalidated, rejected
     validation_reasoning: Optional[str] = None
+    finding_kind: Optional[str] = None
+    validator_verdict: Optional[str] = None
+    cwe: Optional[str] = None
+    source: Optional[str] = None
+    sink: Optional[str] = None
+    guard_analysis: Optional[str] = None
+    exploit_scenario: Optional[str] = None
+    positive_evidence: Optional[List[str]] = None
+    negative_evidence: Optional[List[str]] = None
+    candidate_id: Optional[str] = None
+    candidate_source: Optional[str] = None
+    defect_class: Optional[str] = None
+    rule: Optional[str] = None
+    evidence_pack: Optional[Dict[str, Any]] = None
+    dedup_key: Optional[str] = None
+    final_score: Optional[float] = None
+    score_components: Optional[Dict[str, float]] = None
+    evidence_refs: Optional[List[str]] = None
 
 
     @classmethod
@@ -171,6 +189,10 @@ class ReportGenerator:
                 md_content += f"- **所在函数**: `{issue.function}`\n"
                 md_content += f"- **代码位置**: `{issue.location}`\n"
                 md_content += f"- **置信度**: {issue.confidence:.0%}\n"
+                if issue.final_score is not None:
+                    md_content += f"- **综合评分**: {issue.final_score:.0%}\n"
+                if issue.finding_kind:
+                    md_content += f"- **Finding 类型**: `{issue.finding_kind}`\n"
                 if issue.code_snippet:
                     md_content += f"\n**相关代码**:\n```c\n{self._normalize_md_text(issue.code_snippet)}\n```\n"
                 md_content += f"\n**问题描述**:\n{self._normalize_md_text(issue.description)}\n"
@@ -180,7 +202,14 @@ class ReportGenerator:
                 md_content += f"\n**修复建议**:\n> {self._normalize_md_text(issue.suggested_fix)}\n"
                 
                 if issue.validation_reasoning:
-                    status_label = "✅ Validator 确认" if issue.validation_status == "validated" else "❌ Validator 否决"
+                    status_label = {
+                        "validated": "✅ Validator 确认",
+                        "needs_review": "🟡 Validator 待复核",
+                        "uncertain": "🟠 Validator 证据不足",
+                        "unvalidated": "⚪ Validator 未启用",
+                        "pending": "⚪ Validator 未完成",
+                        "rejected": "❌ Validator 否决",
+                    }.get(issue.validation_status, "⚪ Validator 未完成")
                     md_content += f"\n**{status_label}**:\n{self._normalize_md_text(issue.validation_reasoning)}\n"
                     
                 md_content += "\n---\n"
