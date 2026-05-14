@@ -23,15 +23,15 @@ QUERY_NAME_RE = re.compile(r"(Get|Query|Info|Stat)", re.I)
 INIT_NAME_RE = re.compile(r"(Init|Finit|ResInit|ResFinit)", re.I)
 
 ALLOC_CALL_RE = re.compile(
-    r"\b(DDM_ALLOC|DDM_BitMapGetFree|DDM_BitMapSet|malloc|calloc|realloc|mmap|open|socket)\s*\(",
+    r"\b([A-Za-z_][A-Za-z0-9_]*(?:alloc|create|new|open|socket|mmap|register|bind|connect)[A-Za-z0-9_]*)\s*\(",
     re.I,
 )
 RELEASE_CALL_RE = re.compile(
-    r"\b(DDM_FREE|DDM_BitMapUnSet|free|munmap|close|MESH_CLOSE_FD|DDM_Close_s)\s*\(",
+    r"\b([A-Za-z_][A-Za-z0-9_]*(?:free|release|destroy|delete|remove|close|munmap|unregister|unbind|disconnect)[A-Za-z0-9_]*)\s*\(",
     re.I,
 )
 GLOBAL_DS_RE = re.compile(
-    r"\b(g_st\w+|LIST|List|Hash|hash|BitMap|Bitmap|DDM_List|ADD|DEL|REMOVE)\b"
+    r"\b(g_[A-Za-z0-9_]+|LIST|List|Hash|hash|Map|map|BitMap|Bitmap|RBTree|Tree|ADD|DEL|REMOVE|INSERT)\b"
 )
 LOCK_RE = re.compile(
     r"(mutex|rwlock|spinlock|pthread_mutex|pthread_rwlock|\bLOCK\b|\bUNLOCK\b)", re.I
@@ -41,11 +41,12 @@ MESSAGE_TYPE_RE = re.compile(
     r"\b([A-Z][A-Z0-9_]+_(?:MSG|REQUEST|NOTIFY|APPLY|FREE|CLOSE)[A-Z0-9_]*)\b"
 )
 LITERAL_PARAM_CALL_RE = re.compile(
-    r"\b(?P<callee>[A-Za-z_][A-Za-z0-9_]*)\s*\((?P<args>[^;{}]*\b(?:VOS_TRUE|VOS_FALSE|TRUE|FALSE|0|1)\b[^;{}]*)\)\s*;",
+    r"\b(?P<callee>[A-Za-z_][A-Za-z0-9_]*)\s*\((?P<args>[^;{}]*\b(?:TRUE|FALSE|true|false|0|1)\b[^;{}]*)\)\s*;",
     re.S,
 )
 ROLE_FIELD_RE = re.compile(
-    r"\b(uc[A-Za-z0-9_]*(?:Type|Role|Mode)|en[A-Za-z0-9_]*(?:Type|Role|Mode))\b"
+    r"\b([A-Za-z_][A-Za-z0-9_]*(?:type|role|mode|kind|state|status)[A-Za-z0-9_]*)\b",
+    re.I,
 )
 
 
@@ -248,7 +249,7 @@ class PromptAutofillExecutor:
         has_dispatch_body = (
             "switch" in evidence.code
             or "case " in evidence.code
-            or "astMsgProcApi" in evidence.code
+            or re.search(r"\b(?:handler|dispatch|proc|ops)[A-Za-z0-9_]*(?:table|api|map|list|array)\b", evidence.code, re.I)
         )
         if DISPATCH_NAME_RE.search(name) and has_dispatch_body:
             return "dispatch"
@@ -274,8 +275,8 @@ class PromptAutofillExecutor:
 
     def _dispatch_prompt(self, evidence: FunctionEvidence) -> str:
         module = self._module_name(evidence)
-        if "astMsgProcApi" in evidence.code:
-            dispatch = "采用表驱动分发(函数指针数组astMsgProcApi)"
+        if re.search(r"\b(?:handler|dispatch|proc|ops)[A-Za-z0-9_]*(?:table|api|map|list|array)\b", evidence.code, re.I):
+            dispatch = "采用表驱动或函数指针分发"
             first_check = "数组中是否有消息类型重复"
         elif "switch" in evidence.code:
             dispatch = (
@@ -287,7 +288,7 @@ class PromptAutofillExecutor:
             first_check = "分发条件是否覆盖所有有效消息类型"
 
         release_call = self._first_matching_name(
-            evidence.release_calls, ("MsgFree", "DlinkMsgFree", "Free")
+            evidence.release_calls, ("MsgFree", "Free", "Release", "Destroy")
         )
         release_check = (
             f"每个分支处理完毕后消息缓冲区是否被正确释放({release_call})"
@@ -306,9 +307,7 @@ class PromptAutofillExecutor:
     ) -> str:
         msg = f"处理{evidence.message_type}。" if evidence.message_type else ""
         resource = self._resource_name(evidence)
-        alloc = self._call_summary(
-            evidence.allocation_calls, fallback="DDM_ALLOC/位图/系统资源分配"
-        )
+        alloc = self._call_summary(evidence.allocation_calls, fallback="allocator/系统资源创建")
         ds = self._global_ds_summary(evidence)
         pair_text = (
             f"，在{pair}(正常释放/故障清理)中被释放"
@@ -319,11 +318,6 @@ class PromptAutofillExecutor:
         checks = []
         if evidence.has_error_paths:
             checks.append("错误路径上的资源回滚是否完整")
-        if (
-            "DDM_BitMapGetFree" in evidence.allocation_calls
-            or "DDM_BitMapSet" in evidence.allocation_calls
-        ):
-            checks.append("位图分配失败、耗尽以及后续失败时是否正确回滚位图")
         if evidence.has_global_ds:
             checks.append(
                 f"{resource}节点挂载到{ds}后的条件覆盖是否完整，是否存在某种条件下永远不会被摘除"
@@ -347,7 +341,7 @@ class PromptAutofillExecutor:
 
         msg = f"处理{evidence.message_type}。" if evidence.message_type else ""
         resource = self._resource_name(evidence)
-        release = self._call_summary(evidence.release_calls, fallback="DDM_FREE/close/位图释放")
+        release = self._call_summary(evidence.release_calls, fallback="release/free/close")
         ds = self._global_ds_summary(evidence)
         pair_text = f"这是{pair}的配对释放handler。" if pair else "这是配对分配handler的释放端。"
         checks = [
@@ -356,8 +350,6 @@ class PromptAutofillExecutor:
         ]
         if evidence.has_global_ds:
             checks.insert(1, f"从{ds}移除时链表/hash/位图操作是否正确")
-        if "DDM_BitMapUnSet" in evidence.release_calls:
-            checks.append("位图槽位释放(DDM_BitMapUnSet)与DDM_FREE的顺序是否安全")
         if evidence.has_locks:
             checks.append("释放流程是否完整处于正确锁保护下")
         return (
@@ -505,7 +497,7 @@ class PromptAutofillExecutor:
 
     @staticmethod
     def _first_literal(args: str) -> str:
-        match = re.search(r"\b(VOS_TRUE|VOS_FALSE|TRUE|FALSE|0|1)\b", args)
+        match = re.search(r"\b(TRUE|FALSE|true|false|0|1)\b", args)
         return match.group(1) if match else ""
 
     @staticmethod
@@ -514,7 +506,7 @@ class PromptAutofillExecutor:
             stem = Path(evidence.file_path).stem
             if stem:
                 return stem
-        match = re.match(r"([a-z]+(?:Server|Client|Mcm|Mesh|Xmesh)?)", evidence.name)
+        match = re.match(r"([A-Za-z][A-Za-z0-9_]*?)(?:Create|Add|Alloc|Register|Delete|Remove|Free|Release|Dispatch|Handle|Get|Query)", evidence.name)
         return match.group(1) if match else "当前模块"
 
     @staticmethod
@@ -522,8 +514,8 @@ class PromptAutofillExecutor:
         lower = evidence.name.lower()
         if "port" in lower:
             return "端口号"
-        if "mcm" in lower or "member" in lower:
-            return "MCM/成员节点"
+        if "member" in lower:
+            return "成员节点"
         if "conn" in lower:
             return "连接"
         if "bind" in lower:

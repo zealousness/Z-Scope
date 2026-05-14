@@ -8,7 +8,14 @@ PORT = 8000
 WEB_DIR = Path(__file__).parent / "static"
 REPORT_FILENAME = "zscope_batch_report.json"
 CONFIG_FILENAME = "zscope.yaml"
-ALLOWED_VALIDATION_STATUSES = {"validated", "pending", "rejected"}
+ALLOWED_VALIDATION_STATUSES = {
+    "validated",
+    "needs_review",
+    "uncertain",
+    "unvalidated",
+    "pending",
+    "rejected",
+}
 
 # Shared state set by run_server()
 _user_config_store = None
@@ -79,6 +86,63 @@ def normalize_validation(issue):
         status = "pending"
     reasoning = issue.get("validation_reasoning")
     return status, reasoning
+
+
+def feedback_category(issue: Dict[str, Any]) -> str:
+    return str(
+        issue.get("defect_class")
+        or issue.get("subcategory")
+        or issue.get("category")
+        or ""
+    )
+
+
+def feedback_dedup_key(issue: Dict[str, Any]) -> str:
+    explicit = issue.get("dedup_key")
+    if explicit:
+        return str(explicit)
+    parts = [
+        issue.get("defect_class") or issue.get("subcategory") or issue.get("category") or "",
+        issue.get("function") or "",
+        issue.get("location") or "",
+        issue.get("sink") or "",
+        issue.get("source") or "",
+    ]
+    return "|".join(str(part) for part in parts)
+
+
+def persist_validation_feedback(updates):
+    global _user_config_store
+    if not _user_config_store:
+        return
+    for issue in updates:
+        if not isinstance(issue, dict):
+            continue
+        status, reasoning = normalize_validation(issue)
+        dedup_key = feedback_dedup_key(issue)
+        if dedup_key:
+            baseline_status = {
+                "validated": "true_positive",
+                "needs_review": "needs_review",
+                "uncertain": "uncertain",
+                "rejected": "false_positive",
+            }.get(status)
+            if baseline_status:
+                _user_config_store.upsert_finding_baseline(
+                    dedup_key,
+                    baseline_status,
+                    issue,
+                )
+        if status == "rejected":
+            _user_config_store.add_false_positive_suppression(
+                func_name=str(issue.get("function") or ""),
+                location=str(issue.get("location") or ""),
+                category=feedback_category(issue),
+                reason=str(reasoning or "user rejected finding"),
+                scope="finding",
+                rule=str(issue.get("rule") or issue.get("candidate_source") or ""),
+                note=str(issue.get("description") or ""),
+            )
 
 
 def apply_validation_updates(report, updates):
@@ -208,6 +272,7 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
                 return
             apply_validation_updates(report, updates)
             apply_validation_to_snapshots(updates)
+            persist_validation_feedback(updates)
             save_report(report)
             self._send_json({"success": True})
         elif self.path == "/api/build_cpg":

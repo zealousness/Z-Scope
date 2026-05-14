@@ -143,10 +143,13 @@
                             <h3 class="text-sm font-bold">验证结果</h3>
                             <select class="select select-bordered select-sm" x-model="selectedFinding.validation_status">
                                 <option value="validated">validated</option>
+                                <option value="needs_review">needs_review</option>
+                                <option value="uncertain">uncertain</option>
+                                <option value="unvalidated">unvalidated</option>
                                 <option value="pending">pending</option>
                                 <option value="rejected">rejected</option>
                             </select>
-                            <span class="text-xs opacity-60">仅允许 validated / pending / rejected</span>
+                            <span class="text-xs opacity-60">validated / needs_review / uncertain / unvalidated / pending / rejected</span>
                         </div>
                         <textarea
                             class="textarea textarea-bordered w-full min-h-[140px]"
@@ -665,6 +668,9 @@
                 getValidationClass(status) {
                     const classes = {
                         validated: 'badge-success',
+                        needs_review: 'badge-info',
+                        uncertain: 'badge-ghost',
+                        unvalidated: 'badge-warning',
                         pending: 'badge-warning',
                         rejected: 'badge-error'
                     };

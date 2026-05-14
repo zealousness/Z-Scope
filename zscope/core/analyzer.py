@@ -15,6 +15,7 @@ from ..config.config import ZScopeConfig
 from ..config.user_config_store import UserConfigStore
 from ..retrieval.code_index import CodeIndex
 from .snapshot_store import SnapshotStore
+from .deterministic_candidates import DeterministicCandidateGenerator
 from .tools_runtime import ToolsRuntime
 from ..framework.llm_client import LLMClient
 from ..agents.semantic_modeler.agent import SemanticModeler
@@ -169,6 +170,7 @@ class Analyzer:
             "agent_context": agent_context,
             "notes": [],
             "issues": [],
+            "observations": [],
             "pending_new_issues": [],
             "verified_hist_issues": [],
             "valid_hist_issues": [],
@@ -468,6 +470,22 @@ class Analyzer:
             selection.skills,
             local_records,
         )
+        deterministic_tickets = self._detect_local_rule_tickets(state, selection.skills)
+        for ticket in deterministic_tickets:
+            record, _ = ledger.add(
+                ticket,
+                source=f"deterministic_rule:{state['entry_func']}",
+                call_path=[state["entry_func"]],
+            )
+            local_records.append(record)
+        backend_tickets = self._detect_backend_signal_tickets(state, selection.skills)
+        for ticket in backend_tickets:
+            record, _ = ledger.add(
+                ticket,
+                source=f"static_backend_signal:{state['entry_func']}",
+                call_path=[state["entry_func"]],
+            )
+            local_records.append(record)
 
         seen_local_keys = set()
         candidates = []
@@ -525,7 +543,9 @@ class Analyzer:
             f"Planned {len(tickets)} focused subagent ticket(s) from {len(candidates)} "
             f"pending candidate(s); merged {ledger_summary.get('duplicates_merged', 0)} "
             f"duplicate candidate source(s), including {snapshot_candidate_count} "
-            "semantic snapshot candidate(s)."
+            f"semantic snapshot candidate(s) and {len(deterministic_tickets)} "
+            f"deterministic candidate(s), plus {len(backend_tickets)} "
+            "backend signal candidate(s)."
         )
         if unassigned:
             state["notes"].append(
@@ -641,6 +661,17 @@ class Analyzer:
                 agent_cfg.skills,
                 active_skill_names=selection.skills,
             )
+            rule_candidates = self._detect_local_rule_candidates(state)
+            backend_candidates = self._detect_backend_signal_candidates(state)
+            candidate_signals = rule_candidates + backend_candidates
+            signal_summary = state.setdefault(
+                "candidate_signal_summary",
+                {"deterministic": 0, "backend": 0, "total": 0},
+            )
+            signal_summary["deterministic"] += len(rule_candidates)
+            signal_summary["backend"] += len(backend_candidates)
+            signal_summary["total"] += len(candidate_signals)
+            self._persist_candidate_ir_records(candidate_signals)
             response = analyzer_agent.run(
                 agent_context,
                 max_iterations=self.config.analysis.max_tool_iterations,
@@ -648,11 +679,11 @@ class Analyzer:
 
             if response.success:
                 raw_new_issues = response.data.get("issues", [])
-                rule_candidates = self._detect_local_rule_candidates(state)
-                if rule_candidates:
-                    raw_new_issues = list(raw_new_issues) + rule_candidates
+                if candidate_signals:
+                    raw_new_issues = list(raw_new_issues) + candidate_signals
                     state["notes"].append(
-                        f"Added {len(rule_candidates)} deterministic rule candidate(s)."
+                        f"Added {len(rule_candidates)} deterministic rule candidate(s) "
+                        f"and {len(backend_candidates)} backend signal candidate(s)."
                     )
                 va_ctx_tokens = response.metadata.get("context_tokens", 0) if response.metadata else 0
                 state["total_context_tokens"] += va_ctx_tokens
@@ -669,6 +700,13 @@ class Analyzer:
             else:
                 logger.error("Vulnerability analysis failed: %s", response.error)
                 state["notes"].append(f"Vulnerability analysis failed: {response.error}")
+                if candidate_signals:
+                    new_issues = self._deduplicate_against_history(candidate_signals, state)
+                    state["pending_new_issues"].extend(new_issues)
+                    state["notes"].append(
+                        f"Retained {len(new_issues)} deterministic/backend candidate(s) "
+                        "despite vulnerability analyzer failure."
+                    )
                 state["any_failure"] = True
                 state["failure_msg"] = response.error
 
@@ -730,71 +768,259 @@ class Analyzer:
         impl = state.get("impl_result") or {}
         code = str(impl.get("code") or "")
         file_path = str(impl.get("file") or "")
+        generator = DeterministicCandidateGenerator()
+        return generator.generate_issues(entry_func, code, file_path)
+
+    def _detect_local_rule_tickets(
+        self,
+        state: Dict[str, Any],
+        allowed_skills: Optional[List[str]] = None,
+    ) -> List[Any]:
+        """Create deterministic candidates as focused subagent tickets."""
+        entry_func = state["entry_func"]
+        impl = state.get("impl_result") or {}
+        generator = DeterministicCandidateGenerator()
+        return generator.generate_tickets(
+            entry_func,
+            str(impl.get("code") or ""),
+            str(impl.get("file") or ""),
+            allowed_skills=allowed_skills,
+        )
+
+    def _detect_backend_signal_candidates(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Convert KnowledgeDB/SVF/Saber findings into normal candidates."""
+        db = self._get_knowledge_db()
+        if db is None:
+            return []
+        entry_func = str(state.get("entry_func") or "")
+        try:
+            bugs = db.get_enriched_taint_bugs(func_name=entry_func, limit=50)
+        except Exception as exc:
+            logger.debug("Unable to read backend taint bugs: %s", exc)
+            return []
+
         candidates: List[Dict[str, Any]] = []
-        lines = code.splitlines()
-
-        for idx, line in enumerate(lines):
-            clean = re.sub(r"^\s*(\d+)\s*\|\s*", "", line).strip()
-            line_no_match = re.match(r"^\s*(\d+)\s*\|", line)
-            source_line = int(line_no_match.group(1)) if line_no_match else int(impl.get("start_line") or 0) + idx
-            assign = re.search(
-                r"\b(?:size_t|uint(?:32|64)_t|unsigned(?:\s+long|\s+int)?)\s+"
-                r"(?P<var>[A-Za-z_]\w*)\s*=\s*(?P<lhs>[A-Za-z_]\w*)\s*\*\s*(?P<rhs>[A-Za-z_]\w*|\d+)",
-                clean,
-            )
-            if not assign:
-                continue
-
-            var = assign.group("var")
-            lhs = assign.group("lhs")
-            rhs = assign.group("rhs")
-            window = "\n".join(
-                re.sub(r"^\s*\d+\s*\|\s*", "", item).strip()
-                for item in lines[idx + 1 : idx + 7]
-            )
-            has_post_check = re.search(
-                rf"\bif\s*\([^)]*\b{re.escape(var)}\s*<\s*(?:{re.escape(lhs)}|{re.escape(rhs)})\b",
-                window,
-            )
-            if not has_post_check:
-                continue
-            has_pre_guard = re.search(
-                rf"(?:{re.escape(lhs)}\s*<=\s*(?:SIZE_MAX|UINT_MAX)\s*/\s*{re.escape(rhs)}|"
-                rf"{re.escape(rhs)}\s*<=\s*(?:SIZE_MAX|UINT_MAX)\s*/\s*{re.escape(lhs)})",
-                "\n".join(lines[max(0, idx - 6) : idx]),
-            )
-            if has_pre_guard:
-                continue
-
+        for bug in bugs:
+            defect_class = self._class_from_backend_bug(str(bug.get("bug_type") or ""))
+            file_path = str(bug.get("file_path") or "")
+            line = int(bug.get("line") or bug.get("func_start") or 0)
+            func = str(bug.get("func_name") or bug.get("source_func") or entry_func)
+            candidate_id = f"BACKEND_{defect_class.upper()}_{func}_{line}"
+            source = str(bug.get("source_func") or bug.get("tool") or "backend")
+            sink = str(bug.get("sink_func") or bug.get("bug_type") or defect_class)
+            evidence = {
+                "candidate_id": candidate_id,
+                "candidate_source": str(bug.get("tool") or "knowledge_db"),
+                "defect_class": defect_class,
+                "rule": "backend_taint_signature",
+                "source": {"expression": source, "file": file_path, "line": line},
+                "sink": {"operation": sink, "file": file_path, "line": line},
+                "path": {
+                    "function": func,
+                    "complete_in_function": False,
+                    "backend": "SVF/Saber/KnowledgeDB",
+                },
+                "positive_evidence": [
+                    f"{bug.get('tool') or 'backend'} reported {bug.get('bug_type')} at {file_path}:{line}",
+                ],
+                "negative_evidence": [],
+            }
             candidates.append(
                 {
-                    "id": f"RULE_INT_OVERFLOW_{entry_func}_{source_line}",
-                    "function": entry_func,
-                    "location": f"{file_path}:{source_line}",
-                    "category": "memory_safety",
-                    "subcategory": "integer_overflow",
-                    "description": (
-                        f"`{var}` is computed as `{lhs} * {rhs}` before the overflow check. "
-                        "If the multiplication wraps, the later comparison observes the wrapped value."
-                    ),
-                    "root_cause": "Multiplication is performed before proving operands are bounded.",
-                    "suggested_fix": (
-                        f"Check `{lhs} <= SIZE_MAX / {rhs}` before computing `{var}`, "
-                        "or use a checked-multiply helper."
-                    ),
-                    "confidence": 0.86,
-                    "impact_level": "medium",
-                    "reasoning": (
-                        "Deterministic rule: post-computation overflow checks cannot prevent "
-                        "wraparound that already happened."
-                    ),
-                    "code_snippet": "\n".join(lines[idx : idx + 6]),
-                    "source": lhs,
-                    "sink": "* allocation size",
+                    "id": candidate_id,
+                    "candidate_id": candidate_id,
+                    "function": func,
+                    "location": f"{file_path}:{line}" if file_path else f"{func}:{line}",
+                    "category": defect_class,
+                    "subcategory": defect_class,
+                    "defect_class": defect_class,
+                    "finding_kind": "backend_signal",
+                    "rule": "backend_taint_signature",
+                    "description": f"Static backend reported `{bug.get('bug_type')}` for `{func}`.",
+                    "root_cause": "External static analysis backend produced a memory/concurrency signal.",
+                    "suggested_fix": "Validate the backend source/sink path and repair the reported lifetime or bounds issue.",
+                    "confidence": 0.72,
+                    "rule_confidence": 0.72,
+                    "impact_level": "high" if defect_class in {"use_after_free", "double_free"} else "medium",
+                    "reasoning": "Backend signal normalized into Z-SCOPE candidate/evidence pack.",
+                    "source": source,
+                    "sink": sink,
+                    "positive_evidence": evidence["positive_evidence"],
+                    "negative_evidence": [],
+                    "evidence_pack": evidence,
                 }
             )
-
         return candidates
+
+    def _detect_backend_signal_tickets(
+        self,
+        state: Dict[str, Any],
+        allowed_skills: Optional[List[str]] = None,
+    ) -> List[Any]:
+        generator = DeterministicCandidateGenerator()
+        tickets = [
+            generator.issue_to_ticket(issue)
+            for issue in self._detect_backend_signal_candidates(state)
+        ]
+        if allowed_skills is None:
+            return tickets
+        allowed = set(allowed_skills)
+        return [ticket for ticket in tickets if ticket.skill in allowed]
+
+    @staticmethod
+    def _class_from_backend_bug(bug_type: str) -> str:
+        text = bug_type.replace("_", " ").replace("-", " ").lower()
+        if any(word in text for word in ("double", "dfree")):
+            return "double_free"
+        if any(word in text for word in ("uaf", "use after", "dangling")):
+            return "use_after_free"
+        if "leak" in text:
+            return "memory_leak"
+        if any(word in text for word in ("overflow", "bounds", "oob")):
+            return "bounds"
+        if "race" in text:
+            return "race"
+        return "backend_signal"
+
+    def _get_knowledge_db(self) -> Optional[Any]:
+        backend = getattr(self.code_index, "_backend", None)
+        if backend is None:
+            return None
+        db = getattr(backend, "db", None)
+        if db is not None:
+            return db
+        return getattr(backend, "_db", None)
+
+    def _persist_candidate_ir_records(self, issues: List[Dict[str, Any]]) -> None:
+        """Persist compact candidate evidence into KnowledgeDB inspection IR tables."""
+        if not issues:
+            return
+        db = self._get_knowledge_db()
+        if db is None:
+            return
+
+        for issue in issues:
+            try:
+                candidate_id = str(issue.get("candidate_id") or issue.get("id") or "")
+                if not candidate_id:
+                    continue
+                issue_func = str(issue.get("function") or "")
+                location = str(issue.get("location") or "")
+                file_path, line = self._parse_issue_location(location)
+                if not file_path:
+                    file_path = location.split(":")[0] if ":" in location else ""
+                if not line:
+                    line = 0
+                defect_class = str(issue.get("defect_class") or issue.get("subcategory") or "")
+                source_text = str(issue.get("source") or "")
+                sink_text = str(issue.get("sink") or "")
+                source_stmt = db.upsert_ir_statement(
+                    file_path,
+                    line,
+                    issue_func,
+                    kind="candidate_source",
+                    normalized_code=source_text or str(issue.get("description") or ""),
+                    ast_kind=defect_class,
+                )
+                sink_stmt = db.upsert_ir_statement(
+                    file_path,
+                    line,
+                    issue_func,
+                    kind="candidate_sink",
+                    normalized_code=sink_text or str(issue.get("description") or ""),
+                    ast_kind=defect_class,
+                )
+                score_components = self._score_components(issue, {})
+                path_id = db.upsert_ir_path_slice(
+                    candidate_id,
+                    issue_func,
+                    source_stmt=source_stmt,
+                    sink_stmt=sink_stmt,
+                    path_summary=json.dumps(
+                        (issue.get("evidence_pack") or {}).get("path") or {},
+                        ensure_ascii=False,
+                    ),
+                    guards=json.dumps(issue.get("negative_evidence") or [], ensure_ascii=False),
+                    contradictions=json.dumps(issue.get("negative_evidence") or [], ensure_ascii=False),
+                    score_components=json.dumps(score_components, ensure_ascii=False),
+                )
+                refs = [f"ir_path_slices:{path_id}"] if path_id else []
+                confidence = float(issue.get("rule_confidence") or issue.get("confidence") or 0.5)
+                if defect_class in {
+                    "memory_leak",
+                    "double_free",
+                    "invalid_free",
+                    "use_after_free",
+                    "realloc_misuse",
+                    "stack_escape",
+                    "stale_fd",
+                    "type_confusion",
+                    "bounds",
+                    "integer_overflow",
+                }:
+                    event_id = db.insert_ir_resource_event(
+                        candidate_id,
+                        source_text or sink_text or defect_class,
+                        defect_class,
+                        str(issue.get("rule") or ""),
+                        file_path,
+                        line,
+                        issue_func,
+                        confidence=confidence,
+                    )
+                    refs.append(f"ir_resource_events:{event_id}")
+                if defect_class in {
+                    "deadlock",
+                    "missing_unlock",
+                    "held_lock_callback",
+                    "lost_wakeup",
+                    "double_checked_locking",
+                }:
+                    event_id = db.insert_ir_lock_event(
+                        candidate_id,
+                        source_text or sink_text or "lock",
+                        defect_class,
+                        file_path,
+                        line,
+                        issue_func,
+                        confidence=confidence,
+                    )
+                    refs.append(f"ir_lock_events:{event_id}")
+                if defect_class in {
+                    "race",
+                    "refcount_race",
+                    "object_publication",
+                    "double_checked_locking",
+                    "toctou",
+                    "stale_fd",
+                }:
+                    event_id = db.insert_ir_shared_access(
+                        candidate_id,
+                        source_text or sink_text or defect_class,
+                        "",
+                        defect_class,
+                        file_path,
+                        line,
+                        issue_func,
+                        confidence=confidence,
+                    )
+                    refs.append(f"ir_shared_accesses:{event_id}")
+
+                issue.setdefault("evidence_refs", [])
+                for ref in refs:
+                    if ref not in issue["evidence_refs"]:
+                        issue["evidence_refs"].append(ref)
+                evidence_pack = issue.setdefault("evidence_pack", {})
+                evidence_refs = evidence_pack.setdefault("evidence_refs", [])
+                for ref in refs:
+                    if ref not in evidence_refs:
+                        evidence_refs.append(ref)
+            except Exception as exc:
+                logger.debug("Failed to persist candidate IR for %s: %s", issue.get("id"), exc)
+        try:
+            db.commit()
+        except Exception:
+            pass
 
     def _step_validate_findings(self, state: Dict[str, Any]) -> None:
         new_issues = state.get("pending_new_issues", [])
@@ -818,7 +1044,39 @@ class Analyzer:
         if not validator_enabled:
             logger.info("Validator agent disabled, marking %d issue(s) unvalidated.", len(new_issues))
             for raw_issue in new_issues:
+                issue_func = raw_issue.get("function", state["agent_context"]["func_name"])
+                suppression_category = str(
+                    raw_issue.get("defect_class")
+                    or raw_issue.get("subcategory")
+                    or raw_issue.get("category")
+                    or ""
+                )
+                if self.user_config.is_false_positive(
+                    str(issue_func),
+                    str(raw_issue.get("location") or ""),
+                    suppression_category,
+                ):
+                    raw_issue["validation_status"] = "rejected"
+                    raw_issue["finding_kind"] = "suppressed_false_positive"
+                    raw_issue["rejection_source"] = "user_config"
+                    continue
+                baseline = self.user_config.get_finding_baseline(
+                    str(raw_issue.get("dedup_key") or self._canonical_issue_key(raw_issue))
+                )
+                if baseline and str(baseline.get("status") or "").lower() in {
+                    "false_positive",
+                    "rejected",
+                    "suppressed",
+                }:
+                    raw_issue["validation_status"] = "rejected"
+                    raw_issue["finding_kind"] = "suppressed_baseline"
+                    raw_issue["rejection_source"] = "finding_baseline"
+                    continue
                 raw_issue["validation_status"] = "unvalidated"
+                raw_issue.setdefault("finding_kind", "unvalidated_candidate")
+                score_data = self._score_components(raw_issue, {})
+                raw_issue["score_components"] = score_data
+                raw_issue["final_score"] = score_data["final_score"]
                 state["issues"].append(raw_issue)
             state["pending_new_issues"] = []
             return
@@ -831,6 +1089,65 @@ class Analyzer:
         for raw_issue in new_issues:
             issue_func = raw_issue.get("function", state["agent_context"]["func_name"])
             logger.info("Validating issue: %s in %s", raw_issue.get("id", "unknown"), issue_func)
+            suppression_category = str(
+                raw_issue.get("defect_class")
+                or raw_issue.get("subcategory")
+                or raw_issue.get("category")
+                or ""
+            )
+            if self.user_config.is_false_positive(
+                str(issue_func),
+                str(raw_issue.get("location") or ""),
+                suppression_category,
+            ):
+                raw_issue["validation_status"] = "rejected"
+                raw_issue["finding_kind"] = "suppressed_false_positive"
+                raw_issue["rejection_source"] = "user_config"
+                logger.info("Issue %s suppressed by user configuration.", raw_issue.get("id"))
+                continue
+            baseline = self.user_config.get_finding_baseline(
+                str(raw_issue.get("dedup_key") or self._canonical_issue_key(raw_issue))
+            )
+            if baseline and str(baseline.get("status") or "").lower() in {
+                "false_positive",
+                "rejected",
+                "suppressed",
+            }:
+                raw_issue["validation_status"] = "rejected"
+                raw_issue["finding_kind"] = "suppressed_baseline"
+                raw_issue["rejection_source"] = "finding_baseline"
+                logger.info("Issue %s suppressed by finding baseline.", raw_issue.get("id"))
+                continue
+
+            if self._should_auto_accept_deterministic_candidate(raw_issue):
+                score_data = self._score_components(
+                    raw_issue,
+                    {
+                        "verdict": "verified",
+                        "confidence_score": max(
+                            self._coerce_score(
+                                raw_issue.get("rule_confidence", raw_issue.get("confidence", 0.82)),
+                                default=0.82,
+                            ),
+                            0.82,
+                        ),
+                    },
+                )
+                raw_issue["score_components"] = score_data
+                raw_issue["final_score"] = score_data["final_score"]
+                raw_issue["validation_status"] = "validated"
+                raw_issue["validator_verdict"] = "verified"
+                raw_issue["finding_kind"] = "verified_vulnerability"
+                raw_issue.setdefault(
+                    "validation_reasoning",
+                    "Accepted high-confidence deterministic candidate with complete local evidence.",
+                )
+                logger.info(
+                    "Issue %s auto-accepted as deterministic evidence-backed finding.",
+                    raw_issue.get("id"),
+                )
+                state["issues"].append(raw_issue)
+                continue
 
             issue_code = state["agent_context"]["code"]
             if issue_func != state["agent_context"]["func_name"]:
@@ -852,21 +1169,67 @@ class Analyzer:
 
             if val_resp.success:
                 val_data = val_resp.data
-                if val_data.get("is_valid"):
-                    raw_issue["validation_status"] = "validated"
+                verdict = self._validation_verdict(val_data)
+                score_data = self._score_components(raw_issue, val_data)
+                raw_issue["score_components"] = score_data
+                raw_issue["final_score"] = score_data["final_score"]
+                raw_issue["validator_verdict"] = verdict
+                if verdict == "verified" and raw_issue["final_score"] >= 0.6:
+                    if raw_issue["final_score"] >= 0.8:
+                        raw_issue["validation_status"] = "validated"
+                        raw_issue["finding_kind"] = val_data.get("finding_kind") or "verified_vulnerability"
+                        report_issue = True
+                    else:
+                        raw_issue["validation_status"] = "needs_review"
+                        raw_issue["finding_kind"] = "needs_review"
+                        report_issue = False
                     raw_issue["validation_reasoning"] = val_data.get("reasoning")
                     raw_issue["confidence"] = val_data.get(
                         "confidence_score",
                         raw_issue.get("confidence", 0.5),
                     )
+                    for field in (
+                        "exploit_scenario",
+                        "source",
+                        "sink",
+                        "control_of_source",
+                        "guard_analysis",
+                        "positive_evidence",
+                        "negative_evidence",
+                    ):
+                        if field in val_data and val_data.get(field) not in (None, ""):
+                            raw_issue[field] = val_data.get(field)
                     logger.info(
                         "Issue %s VALIDATED with confidence %s",
                         raw_issue.get("id"),
                         raw_issue["confidence"],
                     )
-                    state["issues"].append(raw_issue)
+                    if report_issue:
+                        state["issues"].append(raw_issue)
+                    else:
+                        state["observations"].append(raw_issue)
+                elif verdict == "verified":
+                    raw_issue["validation_status"] = "uncertain"
+                    raw_issue["finding_kind"] = "audit_observation"
+                    raw_issue["validation_reasoning"] = val_data.get("reasoning")
+                    state["observations"].append(raw_issue)
+                    logger.info(
+                        "Issue %s verified by validator but final_score %.2f is below report threshold.",
+                        raw_issue.get("id"),
+                        raw_issue["final_score"],
+                    )
+                elif verdict == "uncertain":
+                    raw_issue["validation_status"] = "uncertain"
+                    raw_issue["finding_kind"] = val_data.get("finding_kind") or "audit_observation"
+                    raw_issue["validation_reasoning"] = val_data.get("reasoning")
+                    state["observations"].append(raw_issue)
+                    logger.info(
+                        "Issue %s marked UNCERTAIN by Validator; kept as observation.",
+                        raw_issue.get("id"),
+                    )
                 else:
                     raw_issue["validation_status"] = "rejected"
+                    raw_issue["finding_kind"] = "rejected"
                     raw_issue["rejection_source"] = "validator"
                     raw_issue["validation_reasoning"] = val_data.get("reasoning")
                     logger.info("Issue %s REJECTED by Validator, discarding.", raw_issue.get("id"))
@@ -878,10 +1241,146 @@ class Analyzer:
                     val_resp.error,
                 )
                 raw_issue["validation_status"] = "pending"
+                raw_issue.setdefault("finding_kind", "validation_pending")
                 raw_issue["validation_error"] = val_resp.error
-                state["issues"].append(raw_issue)
+                state["observations"].append(raw_issue)
 
         state["pending_new_issues"] = []
+
+    def _should_auto_accept_deterministic_candidate(self, issue: Dict[str, Any]) -> bool:
+        """Return whether a deterministic local-rule candidate is report-ready."""
+        evidence = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+        candidate_source = str(
+            evidence.get("candidate_source")
+            or issue.get("candidate_source")
+            or issue.get("finding_kind")
+            or ""
+        )
+        issue_id = str(issue.get("id") or issue.get("candidate_id") or "")
+        if "deterministic" not in candidate_source and not issue_id.startswith("RULE_"):
+            return False
+
+        defect_class = str(
+            evidence.get("defect_class")
+            or issue.get("defect_class")
+            or issue.get("subcategory")
+            or ""
+        )
+        confidence = self._coerce_score(
+            issue.get("rule_confidence", issue.get("confidence", 0.0)),
+            default=0.0,
+        )
+        min_confidence = {
+            "race": 0.68,
+            "stale_fd": 0.62,
+            "use_after_free": 0.70,
+        }.get(defect_class, 0.72)
+        if confidence < min_confidence:
+            return False
+
+        positive = issue.get("positive_evidence") or evidence.get("positive_evidence") or []
+        if not positive:
+            return False
+
+        negative = issue.get("negative_evidence") or evidence.get("negative_evidence") or []
+        if negative:
+            return False
+
+        path = evidence.get("path") if isinstance(evidence.get("path"), dict) else {}
+        return bool(path.get("complete") is True or path.get("complete_in_function") is True)
+
+    def _score_components(self, issue: Dict[str, Any], val_data: Dict[str, Any]) -> Dict[str, float]:
+        rule_confidence = self._coerce_score(
+            issue.get("rule_confidence", issue.get("confidence", 0.5)),
+            default=0.5,
+        )
+        path_completeness = self._path_completeness_score(issue)
+        contract_consistency = self._contract_consistency_score(issue, val_data)
+        validation_confidence = self._coerce_score(
+            val_data.get("confidence_score", issue.get("confidence", 0.5)),
+            default=0.5,
+        )
+        history_feedback = self._history_feedback_score(issue)
+        final_score = (
+            0.25 * rule_confidence
+            + 0.25 * path_completeness
+            + 0.20 * contract_consistency
+            + 0.20 * validation_confidence
+            + 0.10 * history_feedback
+        )
+        return {
+            "rule_confidence": round(rule_confidence, 4),
+            "path_completeness": round(path_completeness, 4),
+            "contract_consistency": round(contract_consistency, 4),
+            "validation_confidence": round(validation_confidence, 4),
+            "history_feedback": round(history_feedback, 4),
+            "final_score": round(final_score, 4),
+        }
+
+    @staticmethod
+    def _coerce_score(value: Any, default: float = 0.5) -> float:
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            score = default
+        return max(0.0, min(1.0, score))
+
+    def _path_completeness_score(self, issue: Dict[str, Any]) -> float:
+        evidence = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+        path = evidence.get("path") if isinstance(evidence.get("path"), dict) else {}
+        if path.get("complete") is True or path.get("complete_in_function") is True:
+            return 1.0
+        if issue.get("source") and issue.get("sink"):
+            return 0.75
+        if issue.get("evidence_refs"):
+            return 0.7
+        return 0.5
+
+    def _contract_consistency_score(self, issue: Dict[str, Any], val_data: Dict[str, Any]) -> float:
+        negative = issue.get("negative_evidence") or val_data.get("negative_evidence") or []
+        if negative:
+            return 0.55
+        if issue.get("source") and issue.get("sink"):
+            return 0.8
+        if issue.get("finding_kind") == "backend_signal":
+            return 0.7
+        return 0.6
+
+    def _history_feedback_score(self, issue: Dict[str, Any]) -> float:
+        dedup_key = str(issue.get("dedup_key") or self._canonical_issue_key(issue))
+        try:
+            baseline = self.user_config.get_finding_baseline(dedup_key)
+        except Exception:
+            baseline = None
+        if not baseline:
+            return 0.5
+        status = str(baseline.get("status") or "").lower()
+        if status in {"accepted", "verified", "true_positive"}:
+            return 1.0
+        if status in {"false_positive", "rejected", "suppressed"}:
+            return 0.0
+        return 0.5
+
+    @staticmethod
+    def _validation_verdict(val_data: Dict[str, Any]) -> str:
+        """Normalize old boolean validator output and new tri-state verdicts."""
+        verdict = str(val_data.get("verdict") or "").strip().lower()
+        aliases = {
+            "valid": "verified",
+            "true": "verified",
+            "confirmed": "verified",
+            "invalid": "rejected",
+            "false": "rejected",
+            "reject": "rejected",
+            "needs_review": "uncertain",
+            "unknown": "uncertain",
+        }
+        if not verdict and "is_valid" in val_data:
+            return "verified" if bool(val_data.get("is_valid")) else "rejected"
+        verdict = aliases.get(verdict, verdict)
+        if verdict in {"verified", "rejected", "uncertain"}:
+            return verdict
+        return "rejected"
 
     def _deduplicate_candidate_issues(
         self, issues: List[Dict[str, Any]]
@@ -939,9 +1438,16 @@ class Analyzer:
         except Exception:
             callees = []
 
+        candidate_evidence = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
         return {
-            "mode": "strict_exploitability_validation",
+            "mode": "tri_state_exploitability_validation",
             "dedup_key": issue.get("dedup_key") or self._canonical_issue_key(issue),
+            "candidate_id": issue.get("candidate_id") or issue.get("id"),
+            "finding_kind": issue.get("finding_kind"),
+            "defect_class": issue.get("defect_class") or issue.get("subcategory"),
+            "rule_confidence": issue.get("rule_confidence"),
+            "score_components": issue.get("score_components") or self._score_components(issue, {}),
+            "evidence_refs": issue.get("evidence_refs") or candidate_evidence.get("evidence_refs") or [],
             "finding_summary": {
                 "id": issue.get("id"),
                 "function": issue_func,
@@ -950,7 +1456,13 @@ class Analyzer:
                 "subcategory": issue.get("subcategory"),
                 "confidence": issue.get("confidence"),
                 "description": issue.get("description"),
+                "source": issue.get("source"),
+                "sink": issue.get("sink"),
+                "cwe": issue.get("cwe"),
             },
+            "candidate_evidence": candidate_evidence,
+            "positive_evidence": issue.get("positive_evidence") or candidate_evidence.get("positive_evidence") or [],
+            "negative_evidence": issue.get("negative_evidence") or candidate_evidence.get("negative_evidence") or [],
             "primary_location_snippet": snippet,
             "function_context": {
                 "code": self._trim_code(issue_code, max_lines=140),
@@ -959,7 +1471,9 @@ class Analyzer:
                 "callees": callees,
             },
             "validation_requirements": [
-                "Validate only if there is a concrete public/API or caller-controlled trigger path.",
+                "Return verdict=verified only if there is a concrete public/API or caller-controlled trigger path.",
+                "Return verdict=rejected when local evidence or guards disprove the candidate.",
+                "Return verdict=uncertain only when the candidate is plausible but decisive context is missing.",
                 "Identify source, sink, source controllability, and the missing/insufficient guard.",
                 "Reject hardening/style/theoretical findings without a source-to-sink path.",
                 "For integer overflow, multiplication/addition must be checked before the operation or by a proven bounded operand.",
@@ -986,11 +1500,18 @@ class Analyzer:
         category = cls._normalize_issue_category(
             str(issue.get("category") or issue.get("subcategory") or issue.get("vulnerability_type") or text)
         )
+        if category == "race" and issue.get("source"):
+            return "|".join(
+                cls._normalize_issue_key_part(part)
+                for part in (category, file_path, issue.get("source"))
+            )
         sink = str(issue.get("sink") or issue.get("sink_function") or "")
         if not sink:
             sink_match = re.search(
                 r"\b(memcpy|memmove|strcpy|strcat|sprintf|snprintf|printf|system|fopen|free|malloc|"
-                r"pthread_mutex_lock|pthread_mutex_unlock|strlen)\b",
+                r"calloc|realloc|close|munmap|pthread_create|pthread_cond_wait|pthread_mutex_lock|"
+                r"pthread_mutex_unlock|pthread_rwlock_wrlock|pthread_rwlock_rdlock|pthread_rwlock_unlock|"
+                r"strlen|callback|handler)\b",
                 text,
                 flags=re.IGNORECASE,
             )
@@ -1012,7 +1533,26 @@ class Analyzer:
             "race": ("race", "toctou", "concurrency", "cwe-362", "cwe-367"),
             "deadlock": ("deadlock", "cwe-833"),
             "double_free": ("double free", "cwe-415"),
+            "invalid_free": ("invalid free", "non owner", "cwe-590"),
+            "use_after_free": ("use after free", "uaf", "stale mapping", "borrowed pointer", "cwe-416"),
+            "stack_escape": ("stack escape", "use after return", "return stack", "cwe-562"),
             "memory_leak": ("leak", "cwe-401"),
+            "type_confusion": ("type confusion", "wrong type", "invalid mutex", "sharedresources", "cwe-843"),
+            "realloc_misuse": ("realloc misuse", "direct realloc", "cwe-401"),
+            "missing_unlock": ("missing unlock", "return while lock", "lock held", "cwe-667"),
+            "held_lock_callback": ("callback while lock", "held lock callback", "cwe-667"),
+            "lost_wakeup": ("lost wakeup", "condition variable", "pthread cond wait", "cwe-366"),
+            "refcount_race": ("refcount race", "reference count", "ref count"),
+            "object_publication": ("object publication", "published before initialization"),
+            "double_checked_locking": ("double checked locking", "double checked"),
+            "signed_unsigned": ("signed unsigned", "negative length", "cwe-195"),
+            "off_by_one": ("off by one", "sizeof index", "cwe-193"),
+            "uninitialized_read": ("uninitialized read", "stale stack bytes", "cwe-457"),
+            "stack_overflow": ("stack overflow", "vla", "stack array", "cwe-121"),
+            "alignment": ("alignment", "unaligned", "cwe-704"),
+            "null_pointer_dereference": ("null pointer", "null dereference", "cwe-476"),
+            "stale_fd": ("stale fd", "file descriptor", "cwe-672"),
+            "backend_signal": ("backend signal", "svf", "saber", "knowledge db"),
         }
         for canonical, needles in groups.items():
             if any(needle in text for needle in needles):
@@ -1068,6 +1608,11 @@ class Analyzer:
     def _build_final_report(self, state: Dict[str, Any]) -> None:
         all_issues = state.get("issues", []) + state.get("verified_hist_issues", [])
         self._resolve_issue_locations(all_issues)
+        if state.get("observations"):
+            state["notes"].append(
+                f"Validator kept {len(state.get('observations', []))} uncertain candidate(s) "
+                "as audit observations; they are excluded from the default vulnerability report."
+            )
 
         if state.get("any_failure") and not all_issues:
             verdict = "error"
@@ -1105,6 +1650,9 @@ class Analyzer:
             "subagent_reports_count": len(state.get("subagent_reports", [])),
             "subagent_report_summary": dict(state.get("subagent_report_summary", {})),
             "candidate_ledger_summary": dict(state.get("candidate_ledger_summary", {})),
+            "candidate_signal_summary": dict(state.get("candidate_signal_summary", {})),
+            "audit_observation_count": len(state.get("observations", [])),
+            "audit_observations": list(state.get("observations", [])),
         }
 
     def _persist_final_report(self, state: Dict[str, Any]) -> Dict[str, Any]:

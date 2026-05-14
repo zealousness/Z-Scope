@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class KnowledgeDB:
     """SQLite-backed code knowledge store."""
 
-    SCHEMA_VERSION = "6"
+    SCHEMA_VERSION = "7"
 
     def __init__(self, db_path: str):
         self._db_path = Path(db_path)
@@ -150,6 +150,117 @@ class KnowledgeDB:
                 UNIQUE(bug_type, file_path, line, svf_group)
             );
             CREATE INDEX IF NOT EXISTS idx_taint_type ON taint_signatures(bug_type);
+
+            CREATE TABLE IF NOT EXISTS ir_statements (
+                id          INTEGER PRIMARY KEY,
+                file_path   TEXT NOT NULL,
+                line        INTEGER NOT NULL,
+                function    TEXT NOT NULL,
+                kind        TEXT DEFAULT '',
+                normalized_code TEXT DEFAULT '',
+                ast_kind    TEXT DEFAULT '',
+                defs        TEXT DEFAULT '[]',
+                uses        TEXT DEFAULT '[]',
+                UNIQUE(file_path, line, function, normalized_code)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ir_stmt_func ON ir_statements(function);
+            CREATE INDEX IF NOT EXISTS idx_ir_stmt_file_line ON ir_statements(file_path, line);
+
+            CREATE TABLE IF NOT EXISTS ir_cfg_edges (
+                id          INTEGER PRIMARY KEY,
+                function    TEXT NOT NULL,
+                from_stmt   INTEGER,
+                to_stmt     INTEGER,
+                edge_kind   TEXT DEFAULT '',
+                condition   TEXT DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_ir_cfg_func ON ir_cfg_edges(function);
+
+            CREATE TABLE IF NOT EXISTS ir_def_use_edges (
+                id          INTEGER PRIMARY KEY,
+                variable    TEXT NOT NULL,
+                object_id   TEXT DEFAULT '',
+                def_stmt    INTEGER,
+                use_stmt    INTEGER,
+                may_alias   INTEGER DEFAULT 0,
+                confidence  REAL DEFAULT 0.5
+            );
+            CREATE INDEX IF NOT EXISTS idx_ir_du_var ON ir_def_use_edges(variable);
+
+            CREATE TABLE IF NOT EXISTS ir_resource_events (
+                id          INTEGER PRIMARY KEY,
+                candidate_id TEXT DEFAULT '',
+                object_id   TEXT DEFAULT '',
+                event_kind  TEXT NOT NULL,
+                api         TEXT DEFAULT '',
+                file_path   TEXT NOT NULL,
+                line        INTEGER NOT NULL,
+                function    TEXT NOT NULL,
+                owner_before TEXT DEFAULT '',
+                owner_after TEXT DEFAULT '',
+                condition   TEXT DEFAULT '',
+                confidence  REAL DEFAULT 0.5
+            );
+            CREATE INDEX IF NOT EXISTS idx_ir_resource_candidate ON ir_resource_events(candidate_id);
+            CREATE INDEX IF NOT EXISTS idx_ir_resource_object ON ir_resource_events(object_id);
+
+            CREATE TABLE IF NOT EXISTS ir_lock_events (
+                id          INTEGER PRIMARY KEY,
+                candidate_id TEXT DEFAULT '',
+                lock_id     TEXT DEFAULT '',
+                event_kind  TEXT NOT NULL,
+                file_path   TEXT NOT NULL,
+                line        INTEGER NOT NULL,
+                function    TEXT NOT NULL,
+                path_id     TEXT DEFAULT '',
+                held_before TEXT DEFAULT '',
+                held_after  TEXT DEFAULT '',
+                confidence  REAL DEFAULT 0.5
+            );
+            CREATE INDEX IF NOT EXISTS idx_ir_lock_candidate ON ir_lock_events(candidate_id);
+            CREATE INDEX IF NOT EXISTS idx_ir_lock_id ON ir_lock_events(lock_id);
+
+            CREATE TABLE IF NOT EXISTS ir_shared_accesses (
+                id          INTEGER PRIMARY KEY,
+                candidate_id TEXT DEFAULT '',
+                object_id   TEXT DEFAULT '',
+                field       TEXT DEFAULT '',
+                access_kind TEXT NOT NULL,
+                file_path   TEXT NOT NULL,
+                line        INTEGER NOT NULL,
+                function    TEXT NOT NULL,
+                guard_lock  TEXT DEFAULT '',
+                thread_context TEXT DEFAULT '',
+                confidence  REAL DEFAULT 0.5
+            );
+            CREATE INDEX IF NOT EXISTS idx_ir_shared_candidate ON ir_shared_accesses(candidate_id);
+            CREATE INDEX IF NOT EXISTS idx_ir_shared_object ON ir_shared_accesses(object_id);
+
+            CREATE TABLE IF NOT EXISTS ir_path_slices (
+                id          INTEGER PRIMARY KEY,
+                candidate_id TEXT NOT NULL UNIQUE,
+                function    TEXT NOT NULL,
+                source_stmt INTEGER,
+                sink_stmt   INTEGER,
+                path_summary TEXT DEFAULT '{}',
+                guards      TEXT DEFAULT '[]',
+                contradictions TEXT DEFAULT '[]',
+                score_components TEXT DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS idx_ir_path_func ON ir_path_slices(function);
+
+            CREATE TABLE IF NOT EXISTS function_contracts (
+                id          INTEGER PRIMARY KEY,
+                function    TEXT NOT NULL UNIQUE,
+                allocates   TEXT DEFAULT '[]',
+                releases    TEXT DEFAULT '[]',
+                transfers   TEXT DEFAULT '[]',
+                borrows     TEXT DEFAULT '[]',
+                locks       TEXT DEFAULT '[]',
+                thread_effects TEXT DEFAULT '[]',
+                return_semantics TEXT DEFAULT '',
+                updated_at  REAL DEFAULT 0
+            );
         """)
         # 写入 schema 版本
         c.execute(
@@ -237,6 +348,13 @@ class KnowledgeDB:
             self._conn.execute("DELETE FROM include_edges WHERE source_file = ?", (fp,))
             self._conn.execute("DELETE FROM global_variables WHERE file_path = ?", (fp,))
             self._conn.execute("DELETE FROM macro_definitions WHERE file_path = ?", (fp,))
+            for table in (
+                "ir_statements",
+                "ir_resource_events",
+                "ir_lock_events",
+                "ir_shared_accesses",
+            ):
+                self._conn.execute(f"DELETE FROM {table} WHERE file_path = ?", (fp,))
         self._conn.execute(
             "DELETE FROM type_members WHERE type_id IN "
             "(SELECT id FROM type_definitions WHERE tu_id = ?)", (tu_id,),
@@ -256,6 +374,108 @@ class KnowledgeDB:
             "SELECT id, file_path, last_modified FROM translation_units WHERE status = 'pending'"
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # Inspection IR
+
+    def upsert_ir_statement(self, file_path: str, line: int, function: str,
+                            kind: str = "", normalized_code: str = "",
+                            ast_kind: str = "", defs: str = "[]",
+                            uses: str = "[]") -> int:
+        self._conn.execute(
+            "INSERT OR IGNORE INTO ir_statements "
+            "(file_path, line, function, kind, normalized_code, ast_kind, defs, uses) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (file_path, line, function, kind, normalized_code, ast_kind, defs, uses),
+        )
+        row = self._conn.execute(
+            "SELECT id FROM ir_statements WHERE file_path = ? AND line = ? "
+            "AND function = ? AND normalized_code = ?",
+            (file_path, line, function, normalized_code),
+        ).fetchone()
+        return int(row["id"]) if row else 0
+
+    def insert_ir_resource_event(self, candidate_id: str, object_id: str,
+                                 event_kind: str, api: str, file_path: str,
+                                 line: int, function: str,
+                                 owner_before: str = "", owner_after: str = "",
+                                 condition: str = "", confidence: float = 0.5) -> int:
+        cur = self._conn.execute(
+            "INSERT INTO ir_resource_events "
+            "(candidate_id, object_id, event_kind, api, file_path, line, function, "
+            "owner_before, owner_after, condition, confidence) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (candidate_id, object_id, event_kind, api, file_path, line, function,
+             owner_before, owner_after, condition, confidence),
+        )
+        return int(cur.lastrowid or 0)
+
+    def insert_ir_lock_event(self, candidate_id: str, lock_id: str,
+                             event_kind: str, file_path: str, line: int,
+                             function: str, path_id: str = "",
+                             held_before: str = "", held_after: str = "",
+                             confidence: float = 0.5) -> int:
+        cur = self._conn.execute(
+            "INSERT INTO ir_lock_events "
+            "(candidate_id, lock_id, event_kind, file_path, line, function, path_id, "
+            "held_before, held_after, confidence) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (candidate_id, lock_id, event_kind, file_path, line, function, path_id,
+             held_before, held_after, confidence),
+        )
+        return int(cur.lastrowid or 0)
+
+    def insert_ir_shared_access(self, candidate_id: str, object_id: str,
+                                field: str, access_kind: str, file_path: str,
+                                line: int, function: str, guard_lock: str = "",
+                                thread_context: str = "", confidence: float = 0.5) -> int:
+        cur = self._conn.execute(
+            "INSERT INTO ir_shared_accesses "
+            "(candidate_id, object_id, field, access_kind, file_path, line, function, "
+            "guard_lock, thread_context, confidence) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (candidate_id, object_id, field, access_kind, file_path, line, function,
+             guard_lock, thread_context, confidence),
+        )
+        return int(cur.lastrowid or 0)
+
+    def upsert_ir_path_slice(self, candidate_id: str, function: str,
+                             source_stmt: int = 0, sink_stmt: int = 0,
+                             path_summary: str = "{}", guards: str = "[]",
+                             contradictions: str = "[]",
+                             score_components: str = "{}") -> int:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO ir_path_slices "
+            "(candidate_id, function, source_stmt, sink_stmt, path_summary, guards, "
+            "contradictions, score_components) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (candidate_id, function, source_stmt, sink_stmt, path_summary, guards,
+             contradictions, score_components),
+        )
+        row = self._conn.execute(
+            "SELECT id FROM ir_path_slices WHERE candidate_id = ?",
+            (candidate_id,),
+        ).fetchone()
+        return int(row["id"]) if row else 0
+
+    def upsert_function_contract(self, function: str, allocates: str = "[]",
+                                 releases: str = "[]", transfers: str = "[]",
+                                 borrows: str = "[]", locks: str = "[]",
+                                 thread_effects: str = "[]",
+                                 return_semantics: str = "") -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO function_contracts "
+            "(function, allocates, releases, transfers, borrows, locks, "
+            "thread_effects, return_semantics, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (function, allocates, releases, transfers, borrows, locks,
+             thread_effects, return_semantics, time.time()),
+        )
+
+    def get_ir_path_slice(self, candidate_id: str) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            "SELECT * FROM ir_path_slices WHERE candidate_id = ?",
+            (candidate_id,),
+        ).fetchone()
+        return dict(row) if row else None
 
     def get_all_tus(self) -> List[Dict[str, Any]]:
         rows = self._conn.execute("SELECT * FROM translation_units").fetchall()
@@ -517,7 +737,10 @@ class KnowledgeDB:
         result = {}
         for table in ("functions", "type_definitions", "call_edges",
                        "macro_definitions", "translation_units",
-                       "indirect_calls", "taint_signatures"):
+                       "indirect_calls", "taint_signatures",
+                       "ir_statements", "ir_resource_events", "ir_lock_events",
+                       "ir_shared_accesses", "ir_path_slices",
+                       "function_contracts"):
             row = self._conn.execute(f"SELECT COUNT(*) as cnt FROM {table}").fetchone()
             result[table] = row["cnt"]
         return result

@@ -68,13 +68,19 @@ venv.bak/
 dependency/
 
 # ZScope specific
+.zscope.local.env
+zscope.local.yaml
 .zscope_snapshots*/
 .zscope_conversations*/
+.zscope_knowledge/
 workspace/
 *.log
 report.json
 report.md
 parallel_report.json
+zscope_batch_report.json
+zscope_batch_report.md
+zscope_alert_verify_report.json
 
 # OS
 .DS_Store
@@ -82,4 +88,17 @@ Thumbs.db
 
 # Test outputs
 scan_output.log
-test/range/
+test/range/build/
+test/range/.zscope_knowledge/
+test/range/.zscope_snapshots*/
+test/range/.zscope_svf/
+test/range/.zscope_conversations*/
+test/range/benchmark_runs/
+test/range/zscope_batch_report.json
+test/range/zscope_batch_report.md
+test/range/zscope_alert_verify_report.json
+test/range/report.json
+test/range/report.md
+test/range/zscope_run.log
+test/range/zscope.local.yaml
+test/range/zscope.local.env

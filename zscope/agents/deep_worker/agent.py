@@ -38,6 +38,7 @@ class DeepWorkerAgent(ToolCallingAgent):
             f"Sink: {ticket.get('sink')}\n"
             f"Sources: {json.dumps(ticket.get('sources') or [], ensure_ascii=False)}\n"
             f"Call paths: {json.dumps(ticket.get('call_paths') or [], ensure_ascii=False)}\n"
+            f"Structured evidence: {json.dumps(ticket.get('evidence') or {}, ensure_ascii=False, indent=2)}\n"
             f"Task: {ticket.get('task')}\n\n"
             f"Skill Contract:\n{skill_contract or '[no skill contract loaded]'}\n\n"
             f"Focused Code Context:\n```c\n{context_slice}\n```"

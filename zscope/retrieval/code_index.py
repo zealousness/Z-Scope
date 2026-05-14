@@ -259,7 +259,9 @@ class CodeIndex:
             clean_line = re.sub(r"//.*$", "", line)
             clean_line = re.sub(r"/\*.*?\*/", "", clean_line)
             match = re.search(
-                r"^(?:static\s+|inline\s+|extern\s+)?(?:\w+(?:\s*\*)*)\s+(\w+)\s*\([^)]*\)\s*\{",
+                r"^(?:(?:static|inline|extern)\s+)*"
+                r"(?:(?:const|volatile|struct|enum|union|unsigned|signed|long|short)\s+)*"
+                r"[A-Za-z_]\w*(?:\s*\*)*\s+(\w+)\s*\([^;]*\)\s*\{",
                 clean_line.strip(),
             )
             if match and not in_function:

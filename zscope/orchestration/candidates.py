@@ -23,6 +23,10 @@ class CandidateRecord:
     call_paths: List[List[str]] = field(default_factory=list)
     duplicate_count: int = 0
     worker_report_id: Optional[str] = None
+    defect_class: str = ""
+    canonical_source: str = ""
+    canonical_sink: str = ""
+    root_cause_key: str = ""
 
     def to_ticket(self) -> SubAgentTicket:
         ticket = self.ticket
@@ -30,6 +34,15 @@ class CandidateRecord:
         ticket.sources = list(self.sources)
         ticket.call_paths = [list(path) for path in self.call_paths]
         ticket.dedup_key = self.dedup_key
+        ticket.evidence.setdefault("candidate_record", {})
+        ticket.evidence["candidate_record"].update(
+            {
+                "defect_class": self.defect_class,
+                "canonical_source": self.canonical_source,
+                "canonical_sink": self.canonical_sink,
+                "root_cause_key": self.root_cause_key,
+            }
+        )
         return ticket
 
     def to_dict(self, include_context: bool = True) -> Dict[str, Any]:
@@ -41,6 +54,10 @@ class CandidateRecord:
             "dedup_key": self.dedup_key,
             "status": self.status,
             "duplicate_count": self.duplicate_count,
+            "defect_class": self.defect_class,
+            "canonical_source": self.canonical_source,
+            "canonical_sink": self.canonical_sink,
+            "root_cause_key": self.root_cause_key,
             "sources": list(self.sources),
             "call_paths": [list(path) for path in self.call_paths],
             "worker_report_id": self.worker_report_id,
@@ -70,6 +87,10 @@ class CandidateLedger:
                     candidate_id=self._candidate_id(dedup_key),
                     dedup_key=dedup_key,
                     ticket=ticket,
+                    defect_class=self._ticket_defect_class(ticket),
+                    canonical_source=self._ticket_source(ticket),
+                    canonical_sink=self._ticket_sink(ticket),
+                    root_cause_key=self._ticket_root_cause_key(ticket, dedup_key),
                 )
                 self._records[dedup_key] = record
             else:
@@ -158,6 +179,9 @@ class CandidateLedger:
 
     @classmethod
     def canonical_key(cls, ticket: SubAgentTicket) -> str:
+        root_key = cls._ticket_root_cause_key(ticket, "")
+        if root_key:
+            return root_key
         parts = [
             ticket.skill,
             ticket.resource_kind or cls._infer_resource_kind(ticket),
@@ -197,3 +221,42 @@ class CandidateLedger:
         text = str(value or "").strip().lower()
         text = re.sub(r"\s+", " ", text)
         return text
+
+    @classmethod
+    def _ticket_defect_class(cls, ticket: SubAgentTicket) -> str:
+        evidence = ticket.evidence or {}
+        return cls._normalize(
+            evidence.get("defect_class")
+            or evidence.get("subcategory")
+            or ticket.skill
+        )
+
+    @classmethod
+    def _ticket_source(cls, ticket: SubAgentTicket) -> str:
+        evidence = ticket.evidence or {}
+        source = evidence.get("source")
+        if isinstance(source, dict):
+            source = source.get("expression") or source.get("object") or source.get("line")
+        return cls._normalize(source or ticket.origin)
+
+    @classmethod
+    def _ticket_sink(cls, ticket: SubAgentTicket) -> str:
+        evidence = ticket.evidence or {}
+        sink = evidence.get("sink")
+        if isinstance(sink, dict):
+            sink = sink.get("operation") or sink.get("line")
+        return cls._normalize(sink or ticket.sink)
+
+    @classmethod
+    def _ticket_root_cause_key(cls, ticket: SubAgentTicket, fallback: str) -> str:
+        evidence = ticket.evidence or {}
+        explicit = evidence.get("root_cause_key") or evidence.get("dedup_key")
+        if explicit:
+            return cls._normalize(explicit)
+        defect = cls._ticket_defect_class(ticket)
+        source = cls._ticket_source(ticket)
+        sink = cls._ticket_sink(ticket)
+        location = cls._site_key(ticket.origin or ticket.sink or f"{ticket.task}:{ticket.line}")
+        parts = [defect, ticket.resource_kind or cls._infer_resource_kind(ticket), location, source, sink]
+        key = "|".join(cls._normalize(part) for part in parts if cls._normalize(part))
+        return key or fallback

@@ -1,0 +1,173 @@
+{
+  "description": "Fixed Z-SCOPE benchmark entry list for the task dispatcher fixture. Entries intentionally omit custom prompts so the benchmark measures generic analysis behavior.",
+  "functions": [
+    {
+      "function_name": "td_init",
+      "file_path": "src/main.c"
+    },
+    {
+      "function_name": "td_submit_task",
+      "file_path": "src/main.c"
+    },
+    {
+      "function_name": "_worker_thread",
+      "file_path": "src/main.c"
+    },
+    {
+      "function_name": "td_execute_command",
+      "file_path": "src/main.c"
+    },
+    {
+      "function_name": "td_cleanup",
+      "file_path": "src/main.c"
+    },
+    {
+      "function_name": "_parse_task_buffer",
+      "file_path": "src/parser.c"
+    },
+    {
+      "function_name": "_serialize_task",
+      "file_path": "src/parser.c"
+    },
+    {
+      "function_name": "_validate_task",
+      "file_path": "src/parser.c"
+    },
+    {
+      "function_name": "_allocate_buffer",
+      "file_path": "src/parser.c"
+    },
+    {
+      "function_name": "_executor_execute_task",
+      "file_path": "src/executor.c"
+    },
+    {
+      "function_name": "_executor_execute_command",
+      "file_path": "src/executor.c"
+    },
+    {
+      "function_name": "_executor_handle_network_request",
+      "file_path": "src/executor.c"
+    },
+    {
+      "function_name": "_executor_cleanup_resources",
+      "file_path": "src/executor.c"
+    },
+    {
+      "function_name": "_executor_log_message",
+      "file_path": "src/executor.c"
+    },
+    {
+      "function_name": "_executor_build_command_args",
+      "file_path": "src/executor.c"
+    },
+    {
+      "function_name": "_plugin_unregister",
+      "file_path": "src/plugin.c"
+    },
+    {
+      "function_name": "_plugin_dispatch",
+      "file_path": "src/plugin.c"
+    },
+    {
+      "function_name": "_net_handle_error",
+      "file_path": "src/network.c"
+    },
+    {
+      "function_name": "_net_recv_string",
+      "file_path": "src/network.c"
+    },
+    {
+      "function_name": "_lifecycle_parse_control_message",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_add_entry",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_get_value",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_ref_get",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_register_entry_callback",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_fire_callback_under_lock",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_schedule_flush",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_reload_config",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_get_config_length",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_wait_for_work",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_resize_metrics",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_recv_packet",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_format_topic",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_send_status",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_release_value_slice",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_parse_frame",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_decode_unaligned_id",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_watch_connection",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_close_connection",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_dispatch_watched_event",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_map_rules",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_unload_rules",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_lifecycle_match_rule_byte",
+      "file_path": "src/lifecycle.c"
+    }
+  ]
+}

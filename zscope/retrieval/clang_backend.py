@@ -38,6 +38,10 @@ class ClangBackend(CodeBackend):
         self._include_paths: List[Path] = []
         self._exclude_paths: List[Path] = []
 
+    @property
+    def db(self) -> Optional[KnowledgeDB]:
+        return self._db
+
     # ── 生命周期 ──
 
     def initialize(self, source_path: str, **kwargs) -> bool:

@@ -122,6 +122,9 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
           <h3 style="margin:0; font-size:14px;">验证结果</h3>
           <select id="status" style="width:auto; padding:4px 8px;">
             <option value="validated">validated</option>
+            <option value="needs_review">needs_review</option>
+            <option value="uncertain">uncertain</option>
+            <option value="unvalidated">unvalidated</option>
             <option value="pending">pending</option>
             <option value="rejected">rejected</option>
           </select>
@@ -194,7 +197,14 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
   }
 
   function getValidationClass(status) {
-    const cls = { validated:'badge-success', pending:'badge-warning', rejected:'badge-error' };
+    const cls = {
+      validated:'badge-success',
+      needs_review:'badge-info',
+      uncertain:'badge-ghost',
+      unvalidated:'badge-warning',
+      pending:'badge-warning',
+      rejected:'badge-error'
+    };
     return cls[(status||'').toLowerCase()] || 'badge-ghost';
   }
 
