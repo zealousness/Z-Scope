@@ -11,6 +11,7 @@ LLVM Bitcode builder — wraps gllvm/wllvm to produce whole-program .bc from com
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -22,10 +23,11 @@ logger = logging.getLogger(__name__)
 class BitcodeBuilder:
     """从 compile_commands.json 构建全程序 LLVM bitcode。"""
 
-    # compile_commands.json 中需要跳过的 -D 宏前缀（通常含未展开的 Make 函数）
-    _SKIP_DEFINE_PREFIXES = [
-        "-D__VOSFILENAME__",
-    ]
+    # compile_commands.json 中需要跳过的 -D 宏（通常含未展开的 Make 函数）
+    _SKIP_DEFINE_NAMES = {
+        "__FILENAME__",
+        "__VOSFILENAME__",
+    }
 
     def __init__(
         self,
@@ -154,7 +156,7 @@ class BitcodeBuilder:
         if arguments:
             args = list(arguments)
         elif command_str:
-            args = command_str.split()
+            args = self._split_command(command_str)
         else:
             return
 
@@ -316,20 +318,71 @@ class BitcodeBuilder:
             result.insert(1, "-c")
         return result
 
+    @staticmethod
+    def _split_command(command_str: str) -> List[str]:
+        """Split a compile_commands.json command using shell quoting rules."""
+        try:
+            return shlex.split(command_str)
+        except ValueError as e:
+            logger.debug(
+                "Failed to parse compile command with shlex, falling back to split(): %s", e
+            )
+            return command_str.split()
+
+    @classmethod
+    def _skipped_define_name(cls, arg: str) -> Optional[str]:
+        if not arg.startswith("-D"):
+            return None
+        name = arg[2:].split("=", 1)[0]
+        return name if name in cls._SKIP_DEFINE_NAMES else None
+
+    @classmethod
+    def _skipped_define_value_name(cls, arg: str) -> Optional[str]:
+        name = arg.split("=", 1)[0]
+        return name if name in cls._SKIP_DEFINE_NAMES else None
+
+    @staticmethod
+    def _make_filename_define(name: str, src_file: str) -> str:
+        filename = Path(src_file).name or "unknown"
+        filename = filename.replace("\\", "\\\\").replace('"', '\\"')
+        return f'-D{name}="{filename}"'
+
     @classmethod
     def _sanitize_args(cls, args: List[str], src_file: str = "") -> List[str]:
         """过滤 compile_commands.json 中无法被 clang 处理的参数。
 
         处理两类问题：
-        1. 黑名单 -D 宏（_SKIP_DEFINE_PREFIXES 中定义）
+        1. 将坏的文件名 -D 宏（_SKIP_DEFINE_NAMES 中定义）改写为安全文件名
         2. 含未展开 Make 函数的参数（检测 '$(' 语法）
         """
         cleaned = []
         dropped = []
-        for arg in args:
-            # 检查黑名单 -D 宏前缀
-            if any(arg.startswith(prefix) for prefix in cls._SKIP_DEFINE_PREFIXES):
+        rewritten = []
+        skip_next = False
+        for idx, arg in enumerate(args):
+            if skip_next:
                 dropped.append(arg)
+                skip_next = False
+                continue
+            # 将未展开 Make 语法的文件名宏替换为当前源文件 basename，避免源码引用宏时报未声明。
+            define_name = cls._skipped_define_name(arg)
+            if define_name:
+                replacement = cls._make_filename_define(define_name, src_file)
+                cleaned.append(replacement)
+                rewritten.append((arg, replacement))
+                dropped.append(arg)
+                continue
+            split_define_name = (
+                cls._skipped_define_value_name(args[idx + 1])
+                if arg == "-D" and idx + 1 < len(args)
+                else None
+            )
+            if split_define_name:
+                replacement = cls._make_filename_define(split_define_name, src_file)
+                cleaned.append(replacement)
+                rewritten.append((f"{arg} {args[idx + 1]}", replacement))
+                dropped.append(arg)
+                skip_next = True
                 continue
             # 检测未展开的 Make 函数 $(...) 或 ${...}
             if "$(" in arg or "${" in arg:
@@ -345,5 +398,10 @@ class BitcodeBuilder:
             logger.debug(
                 "Sanitized %d broken args for %s: %s",
                 len(dropped), Path(src_file).name, dropped,
+            )
+        if rewritten:
+            logger.debug(
+                "Rewrote %d filename define(s) for %s: %s",
+                len(rewritten), Path(src_file).name, rewritten,
             )
         return cleaned
