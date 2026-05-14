@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
+import re
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set
 
 
 @dataclass
@@ -12,6 +13,12 @@ class SkillSelection:
 
     skills: List[str]
     restricted: bool
+    source: str = "local"
+    confidence: float = 0.0
+    reasons: List[str] = field(default_factory=list)
+
+
+SemanticSkillRouter = Callable[[str, Sequence[str]], Mapping[str, Any]]
 
 
 NEGATION_MARKERS = [
@@ -283,38 +290,327 @@ ISSUE_KEYWORDS: Dict[str, List[str]] = {
 }
 
 
+EXPLICIT_SCOPE_MARKERS = [
+    "only",
+    "focus",
+    "focused",
+    "specifically",
+    "particular",
+    "restrict",
+    "limit",
+    "just ",
+    "只",
+    "仅",
+    "专门",
+    "重点",
+    "聚焦",
+    "关注",
+    "排查",
+    "检查",
+    "分析",
+]
+
+
+GENERAL_SCOPE_MARKERS = [
+    "all",
+    "general",
+    "overall",
+    "comprehensive",
+    "full",
+    "security audit",
+    "all vulnerabilities",
+    "全面",
+    "所有",
+    "全部",
+    "整体",
+    "通用",
+    "安全审计",
+]
+
+
+STRONG_SKILL_KEYWORDS: Dict[str, List[str]] = {
+    "resource_lifecycle": [
+        "resource leak",
+        "memory leak",
+        "leak",
+        "cleanup",
+        "release path",
+        "lifecycle",
+        "生命周期",
+        "资源泄漏",
+        "内存泄漏",
+        "释放路径",
+        "清理路径",
+    ],
+    "bounds_and_integer": [
+        "buffer overflow",
+        "overflow",
+        "underflow",
+        "out of bounds",
+        "out-of-bounds",
+        "oob",
+        "integer overflow",
+        "integer truncation",
+        "越界",
+        "溢出",
+        "整数",
+        "截断",
+    ],
+    "null_and_failure": [
+        "null pointer",
+        "null dereference",
+        "unchecked return",
+        "failure path",
+        "error handling",
+        "空指针",
+        "失败分支",
+        "错误处理",
+        "返回值未检查",
+    ],
+    "temporal_memory": [
+        "use after free",
+        "use-after-free",
+        "uaf",
+        "double free",
+        "invalid free",
+        "释放后使用",
+        "重复释放",
+        "二次释放",
+        "野指针",
+    ],
+    "concurrency_lock_order": [
+        "deadlock",
+        "lock order",
+        "missing unlock",
+        "mutex",
+        "死锁",
+        "锁顺序",
+        "未解锁",
+    ],
+    "shared_state_race": [
+        "data race",
+        "race condition",
+        "shared state",
+        "toctou",
+        "竞态",
+        "数据竞争",
+        "共享状态",
+    ],
+    "stack_escape": [
+        "stack escape",
+        "stack address",
+        "return stack",
+        "async lifetime",
+        "栈逃逸",
+        "栈地址",
+        "局部变量地址",
+    ],
+    "ownership_contract": [
+        "ownership",
+        "ownership contract",
+        "api contract",
+        "caller owns",
+        "callee owns",
+        "所有权",
+        "归属",
+        "契约",
+    ],
+    "string_and_format": [
+        "format string",
+        "printf",
+        "string termination",
+        "null termination",
+        "格式化字符串",
+        "格式串",
+        "字符串终止",
+    ],
+}
+
+
+SEMANTIC_CONFIDENCE_THRESHOLD = 0.68
+
+
 def select_vulnerability_skills(
     task: Optional[str],
     available_skill_names: Sequence[str],
+    semantic_router: Optional[SemanticSkillRouter] = None,
 ) -> SkillSelection:
-    """Resolve the vulnerability skills explicitly requested by a task.
+    """Resolve vulnerability skills requested by a task.
 
-    Empty or unrecognized tasks keep the historical behavior and use every
-    available skill. Any recognized concern restricts the run to that subset.
+    The selector is intentionally conservative: local rules provide stable
+    fast-path hints, an optional semantic router can refine intent, and
+    uncertain or conflicting results widen back to all available skills.
     """
 
     available = list(dict.fromkeys(available_skill_names))
     if not task or not task.strip():
-        return SkillSelection(skills=available, restricted=False)
+        return SkillSelection(
+            skills=available,
+            restricted=False,
+            source="default_all",
+            confidence=1.0,
+            reasons=["empty task uses every available skill"],
+        )
 
     text = task.lower()
+    local_selection = _select_by_local_hints(text, available)
+    if (
+        semantic_router is None
+        or local_selection.confidence >= 0.85
+        or (local_selection.restricted and local_selection.confidence >= 0.85)
+    ):
+        return local_selection
+    semantic_selection = _select_by_semantic_router(task, available, semantic_router)
+    return _merge_selections(local_selection, semantic_selection, available)
+
+
+def _select_by_local_hints(text: str, available: Sequence[str]) -> SkillSelection:
     selected: Set[str] = set()
+    reasons: List[str] = []
+
+    if _has_general_scope_marker(text) and not _has_explicit_scope_marker(text):
+        return SkillSelection(
+            skills=list(available),
+            restricted=False,
+            source="local_all",
+            confidence=0.88,
+            reasons=["general scope marker keeps all skills active"],
+        )
 
     for group_keyword, group_skills in GROUP_KEYWORDS.items():
         if _contains_non_negated(text, group_keyword.lower()):
             selected.update(group_skills)
+            reasons.append(f"group:{group_keyword}")
 
-    for skill, keywords in SKILL_KEYWORDS.items():
+    for skill, keywords in STRONG_SKILL_KEYWORDS.items():
         if any(_contains_non_negated(text, keyword.lower()) for keyword in keywords):
             selected.add(skill)
+            reasons.append(f"strong:{skill}")
+
+    explicit_scope = _has_explicit_scope_marker(text)
+    if explicit_scope:
+        for skill, keywords in SKILL_KEYWORDS.items():
+            if any(_contains_non_negated(text, keyword.lower()) for keyword in keywords):
+                selected.add(skill)
+                reasons.append(f"scoped_keyword:{skill}")
 
     filtered = [name for name in available if name in selected]
     if not filtered:
-        return SkillSelection(skills=available, restricted=False)
-    return SkillSelection(skills=filtered, restricted=True)
+        return SkillSelection(
+            skills=list(available),
+            restricted=False,
+            source="local_all",
+            confidence=0.45,
+            reasons=["no clear local skill intent"],
+        )
+
+    confidence = (
+        0.82 if any(reason.startswith(("group:", "strong:")) for reason in reasons) else 0.66
+    )
+    return SkillSelection(
+        skills=filtered,
+        restricted=True,
+        source="local",
+        confidence=confidence,
+        reasons=list(dict.fromkeys(reasons)),
+    )
 
 
-def filter_report_issues_for_skills(report: Dict[str, Any], active_skills: Iterable[str]) -> Dict[str, Any]:
+def _select_by_semantic_router(
+    task: str,
+    available: Sequence[str],
+    semantic_router: Optional[SemanticSkillRouter],
+) -> Optional[SkillSelection]:
+    if semantic_router is None:
+        return None
+    try:
+        decision = semantic_router(task, available)
+    except Exception:
+        return None
+
+    if not isinstance(decision, Mapping):
+        return None
+
+    selected = [
+        name for name in available if name in {str(item) for item in decision.get("skills", [])}
+    ]
+    confidence = _coerce_confidence(decision.get("confidence"), default=0.0)
+    restricted = bool(decision.get("restricted")) and bool(selected)
+    reasons = decision.get("reasons")
+    if not isinstance(reasons, list):
+        reasons = []
+
+    if not restricted:
+        return SkillSelection(
+            skills=list(available),
+            restricted=False,
+            source="semantic",
+            confidence=confidence,
+            reasons=[str(item) for item in reasons] or ["semantic router did not restrict scope"],
+        )
+
+    return SkillSelection(
+        skills=selected,
+        restricted=True,
+        source="semantic",
+        confidence=confidence,
+        reasons=[str(item) for item in reasons],
+    )
+
+
+def _merge_selections(
+    local: SkillSelection,
+    semantic: Optional[SkillSelection],
+    available: Sequence[str],
+) -> SkillSelection:
+    if semantic is None:
+        return local
+
+    if semantic.confidence < SEMANTIC_CONFIDENCE_THRESHOLD:
+        if local.restricted and local.confidence >= 0.80:
+            return SkillSelection(
+                skills=local.skills,
+                restricted=True,
+                source="local_semantic_low_confidence",
+                confidence=local.confidence,
+                reasons=local.reasons + ["semantic router confidence below threshold"],
+            )
+        return SkillSelection(
+            skills=list(available),
+            restricted=False,
+            source="conservative_all",
+            confidence=max(local.confidence, semantic.confidence),
+            reasons=local.reasons + semantic.reasons + ["low confidence widened to all skills"],
+        )
+
+    if not semantic.restricted:
+        if local.restricted and local.confidence >= 0.85:
+            return SkillSelection(
+                skills=local.skills,
+                restricted=True,
+                source="local_over_semantic_all",
+                confidence=local.confidence,
+                reasons=local.reasons + semantic.reasons,
+            )
+        return semantic
+
+    if not local.restricted:
+        return semantic
+
+    combined = [name for name in available if name in set(local.skills) | set(semantic.skills)]
+    source = "semantic" if set(local.skills) == set(semantic.skills) else "hybrid"
+    return SkillSelection(
+        skills=combined,
+        restricted=bool(combined),
+        source=source,
+        confidence=max(local.confidence, semantic.confidence),
+        reasons=list(dict.fromkeys(local.reasons + semantic.reasons)),
+    )
+
+
+def filter_report_issues_for_skills(
+    report: Dict[str, Any], active_skills: Iterable[str]
+) -> Dict[str, Any]:
     """Drop findings that do not match the task-selected skill families."""
 
     selected = set(active_skills)
@@ -332,6 +628,31 @@ def filter_report_issues_for_skills(report: Dict[str, Any], active_skills: Itera
     new_report = dict(report)
     new_report["issues"] = filtered
     return new_report
+
+
+def _has_explicit_scope_marker(text: str) -> bool:
+    return any(_contains_scope_marker(text, marker) for marker in EXPLICIT_SCOPE_MARKERS)
+
+
+def _has_general_scope_marker(text: str) -> bool:
+    return any(_contains_scope_marker(text, marker) for marker in GENERAL_SCOPE_MARKERS)
+
+
+def _contains_scope_marker(text: str, marker: str) -> bool:
+    marker = marker.strip().lower()
+    if not marker:
+        return False
+    if marker.isascii() and re.fullmatch(r"[a-z0-9_ ]+", marker):
+        return bool(re.search(rf"\b{re.escape(marker)}\b", text))
+    return marker in text
+
+
+def _coerce_confidence(value: Any, *, default: float) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(1.0, confidence))
 
 
 def _contains_non_negated(text: str, needle: str) -> bool:

@@ -8,14 +8,15 @@ import logging
 import time
 import datetime
 import re
+import fnmatch
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, cast
+from typing import Any, Dict, List, Optional, Sequence, Set, cast
 
 from ..config.config import ZScopeConfig
 from ..config.user_config_store import UserConfigStore
 from ..retrieval.code_index import CodeIndex
 from .snapshot_store import SnapshotStore
-from .deterministic_candidates import DeterministicCandidateGenerator
+from .deterministic_candidates import DeterministicCandidateGenerator, DeterministicSemantics
 from .tools_runtime import ToolsRuntime
 from ..framework.llm_client import LLMClient
 from ..agents.semantic_modeler.agent import SemanticModeler
@@ -23,7 +24,7 @@ from ..agents.semantic_modeler.schema import DEFAULT_FUNCTION_SNAPSHOT_SCHEMA
 from ..agents.vulnerability_analyzer.agent import VulnerabilityAnalyzer
 from ..agents.validator_agent.agent import ValidatorAgent
 from .report import FinalReport, Issue, ReportGenerator
-from ..common.utils import validate_json_schema
+from ..common.utils import extract_json_blocks, validate_json_schema
 from .._version import __version__
 from ..orchestration.specs import SpecRegistry, WorkflowStep
 from ..orchestration.workflow_executor import WorkflowExecutor, WorkflowStepHandler
@@ -93,6 +94,8 @@ class Analyzer:
         self.force_ignore_history = force_ignore_history
         self.maintain_mode = maintain_mode
         self.candidate_ledger = candidate_ledger or CandidateLedger()
+        self._skill_selection_cache: Dict[str, SkillSelection] = {}
+        self._deterministic_semantics: Optional[DeterministicSemantics] = None
         self.workflow_progress: List[Dict[str, Any]] = []
         self.current_workflow_step: Optional[str] = None
         self.workflow_step_handlers: Dict[str, WorkflowStepHandler] = (
@@ -151,18 +154,13 @@ class Analyzer:
             "location": f"{impl_result['file']}:{impl_result['start_line']}",
         }
 
-        user_context_parts = []
-        paired_ctx = self.user_config.get_paired_functions_context()
-        if paired_ctx:
-            user_context_parts.append(paired_ctx)
-        pointer_ctx = self.user_config.get_pointer_targets_context()
-        if pointer_ctx:
-            user_context_parts.append(pointer_ctx)
-        intent_ctx = self.user_config.get_function_intent_context(entry_func)
-        if intent_ctx:
-            user_context_parts.append(intent_ctx)
-        if user_context_parts:
-            agent_context["user_config_context"] = "\n".join(user_context_parts)
+        user_config_context = self._relevant_user_config_context(
+            entry_func,
+            impl_result["code"],
+            impl_result.get("file", ""),
+        )
+        if user_config_context:
+            agent_context["user_config_context"] = user_config_context
 
         return {
             "entry_func": entry_func,
@@ -195,6 +193,131 @@ class Analyzer:
             "final_report": None,
             "final_report_dict": None,
         }
+
+    def _relevant_user_config_context(self, entry_func: str, code: str, file_path: str = "") -> str:
+        """Return only user-config rows referenced by the current function."""
+
+        identifiers = set(re.findall(r"\b[A-Za-z_]\w*\b", code or ""))
+        identifiers.add(entry_func)
+        parts: List[str] = []
+
+        external_lines = []
+        for item in self.user_config.list_external_functions():
+            name = str(item.get("func_name") or "")
+            if name not in identifiers:
+                continue
+            summary = str(item.get("description") or "").strip()
+            memory = str(item.get("memory_behavior") or "").strip()
+            concurrency = str(item.get("concurrency_behavior") or "").strip()
+            details = ", ".join(part for part in (summary, memory, concurrency) if part)
+            external_lines.append(f"  {name}: {details}" if details else f"  {name}")
+        if external_lines:
+            parts.append("[Relevant user-config API semantics]\n" + "\n".join(external_lines))
+
+        pair_lines = []
+        for pair in self.user_config.list_paired_functions():
+            acquire = str(pair.get("acquire_func") or "")
+            release = str(pair.get("release_func") or "")
+            if acquire not in identifiers and release not in identifiers:
+                continue
+            desc = str(pair.get("description") or "").strip()
+            suffix = f" ({desc})" if desc else ""
+            pair_lines.append(
+                f"  {pair.get('category', 'pair')}: {acquire} <-> {release}{suffix}"
+            )
+        if pair_lines:
+            parts.append("[Relevant user-config pairs]\n" + "\n".join(pair_lines))
+
+        pointer_lines = []
+        for target in self.user_config.get_pointer_targets():
+            if not Analyzer._user_config_scope_matches(str(target.get("scope") or "*"), file_path):
+                continue
+            pointer_location = str(target.get("pointer_location") or "")
+            target_functions = Analyzer._parse_user_config_list(target.get("target_functions"))
+            if (
+                pointer_location not in code
+                and pointer_location not in identifiers
+                and not identifiers.intersection(target_functions)
+            ):
+                continue
+            pointer_lines.append(
+                f"  {pointer_location} -> {', '.join(target_functions)}"
+                + (f" (scope: {target.get('scope')})" if target.get("scope") else "")
+            )
+        if pointer_lines:
+            parts.append("[Relevant user-config function pointers]\n" + "\n".join(pointer_lines))
+
+        dispatcher_lines = []
+        list_dispatchers = getattr(self.user_config, "list_dispatchers", None)
+        if callable(list_dispatchers):
+            for row in list_dispatchers():
+                if not Analyzer._user_config_scope_matches(str(row.get("file_path") or "*"), file_path):
+                    continue
+                dispatcher = str(row.get("dispatcher_name") or "")
+                handler = str(row.get("handler_name") or "")
+                pair = str(row.get("pair") or "")
+                if dispatcher not in identifiers and handler not in identifiers and pair not in identifiers:
+                    continue
+                fields = [
+                    f"message={row.get('message_type', '')}",
+                    f"handler={handler}",
+                    f"kind={row.get('handler_kind', '')}",
+                    f"resource={row.get('resource', '')}",
+                ]
+                if pair:
+                    fields.append(f"pair={pair}")
+                desc = str(row.get("description") or "").strip()
+                dispatcher_lines.append(f"  {dispatcher}: " + ", ".join(fields) + (f" ({desc})" if desc else ""))
+        if dispatcher_lines:
+            parts.append("[Relevant user-config dispatcher branches]\n" + "\n".join(dispatcher_lines))
+
+        lifecycle_lines = []
+        list_module_lifecycle = getattr(self.user_config, "list_module_lifecycle", None)
+        if callable(list_module_lifecycle):
+            for row in list_module_lifecycle():
+                if not Analyzer._user_config_scope_matches(str(row.get("file_path") or "*"), file_path):
+                    continue
+                name = str(row.get("symbol_name") or "")
+                pair = str(row.get("pair") or "")
+                if name not in identifiers and pair not in identifiers:
+                    continue
+                lifecycle_lines.append(
+                    f"  {name}: kind={row.get('kind', '')}, pair={pair}, "
+                    f"needs_finit={row.get('needs_finit', '')}, "
+                    f"error_path_cleanup_required={row.get('error_path_cleanup_required', '')}, "
+                    f"description={row.get('description', '')}"
+                )
+        if lifecycle_lines:
+            parts.append("[Relevant user-config module lifecycle]\n" + "\n".join(lifecycle_lines))
+
+        intent_ctx = self.user_config.get_function_intent_context(entry_func, file_path)
+        if intent_ctx:
+            parts.append(intent_ctx)
+
+        return "\n".join(parts)
+
+    @staticmethod
+    def _user_config_scope_matches(scope: str, file_path: str) -> bool:
+        scope = (scope or "*").replace("\\", "/").strip()
+        if scope in {"", "*"}:
+            return True
+        normalized = str(file_path or "").replace("\\", "/")
+        candidates = [normalized, "/" + normalized.lstrip("/")]
+        return any(fnmatch.fnmatch(candidate, scope) for candidate in candidates)
+
+    @staticmethod
+    def _parse_user_config_list(value: Any) -> List[str]:
+        if isinstance(value, list):
+            return [str(item) for item in value if item]
+        if not value:
+            return []
+        try:
+            parsed = json.loads(str(value))
+        except json.JSONDecodeError:
+            return [item.strip() for item in str(value).split(",") if item.strip()]
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed if item]
+        return [str(parsed)]
 
     def _selected_workflow_steps(self) -> List[WorkflowStep]:
         if self.workflow_spec and self.workflow_spec.steps:
@@ -444,7 +567,9 @@ class Analyzer:
 
         tools = self._get_tools("deep_worker")
         orchestrator = SubAgentOrchestrator(self.spec_registry, tools)
-        selection = self._select_vulnerability_skills_for_config(va_agent_cfg)
+        va_llm_ref = va_agent_cfg.llm_ref if va_agent_cfg.llm_ref else "default"
+        va_client = self.llm_clients.get(va_llm_ref, self.llm_clients.get("default"))
+        selection = self._select_vulnerability_skills_for_config(va_agent_cfg, va_client)
         ledger = state.get("candidate_ledger")
         if not isinstance(ledger, CandidateLedger):
             ledger = CandidateLedger()
@@ -650,7 +775,7 @@ class Analyzer:
                 va_client,
                 self._get_tools("vulnerability_analyzer"),
             )
-            selection = self._select_vulnerability_skills_for_config(agent_cfg)
+            selection = self._select_vulnerability_skills_for_config(agent_cfg, va_client)
 
             agent_context["task"] = agent_cfg.task
             agent_context["active_skills"] = selection.skills
@@ -768,7 +893,7 @@ class Analyzer:
         impl = state.get("impl_result") or {}
         code = str(impl.get("code") or "")
         file_path = str(impl.get("file") or "")
-        generator = DeterministicCandidateGenerator()
+        generator = DeterministicCandidateGenerator(self._get_deterministic_semantics())
         return generator.generate_issues(entry_func, code, file_path)
 
     def _detect_local_rule_tickets(
@@ -779,7 +904,7 @@ class Analyzer:
         """Create deterministic candidates as focused subagent tickets."""
         entry_func = state["entry_func"]
         impl = state.get("impl_result") or {}
-        generator = DeterministicCandidateGenerator()
+        generator = DeterministicCandidateGenerator(self._get_deterministic_semantics())
         return generator.generate_tickets(
             entry_func,
             str(impl.get("code") or ""),
@@ -857,7 +982,7 @@ class Analyzer:
         state: Dict[str, Any],
         allowed_skills: Optional[List[str]] = None,
     ) -> List[Any]:
-        generator = DeterministicCandidateGenerator()
+        generator = DeterministicCandidateGenerator(self._get_deterministic_semantics())
         tickets = [
             generator.issue_to_ticket(issue)
             for issue in self._detect_backend_signal_candidates(state)
@@ -866,6 +991,224 @@ class Analyzer:
             return tickets
         allowed = set(allowed_skills)
         return [ticket for ticket in tickets if ticket.skill in allowed]
+
+    def _get_deterministic_semantics(self) -> DeterministicSemantics:
+        """Build once-per-run deterministic aliases and project API semantics."""
+
+        if self._deterministic_semantics is not None:
+            return self._deterministic_semantics
+        semantics = DeterministicSemantics()
+        semantics.merge(self._scan_typedef_aliases())
+        semantics.merge(self._semantics_from_user_config())
+        semantics.merge(self._semantics_from_snapshots())
+        semantics.merge(self._semantics_from_function_names())
+        self._deterministic_semantics = semantics
+        logger.info(
+            "Deterministic semantics: %d typedef alias(es), %d allocator(s), %d deallocator(s), "
+            "%d reallocator(s), %d copy sink(s), %d lock API(s), %d unlock API(s).",
+            len(semantics.type_aliases),
+            len(semantics.allocators) + len(semantics.calloc_allocators),
+            len(semantics.deallocators),
+            len(semantics.reallocators),
+            len(semantics.copy_sinks),
+            len(semantics.lock_apis),
+            len(semantics.unlock_apis),
+        )
+        return semantics
+
+    def _scan_typedef_aliases(self) -> DeterministicSemantics:
+        semantics = DeterministicSemantics()
+        roots = [self.code_index.source_root]
+        if self.code_index.project_root not in roots:
+            roots.append(self.code_index.project_root)
+        suffixes = {".h", ".hh", ".hpp", ".c", ".cc", ".cpp"}
+        base_pattern = (
+            r"(?:size_t|u?int(?:8|16|32|64)_t|"
+            r"(?:unsigned|signed)?\s*(?:char|short|int|long|long\s+long))"
+        )
+        typedef_re = re.compile(
+            rf"\btypedef\s+(?P<base>{base_pattern})\s+(?P<alias>[A-Za-z_]\w*)\s*;",
+            re.MULTILINE,
+        )
+        define_re = re.compile(
+            rf"^\s*#\s*define\s+(?P<alias>[A-Za-z_]\w*)\s+(?P<base>{base_pattern})\s*$",
+            re.MULTILINE,
+        )
+        for root in roots:
+            if not root.exists():
+                continue
+            for path in root.rglob("*"):
+                if self._skip_semantic_source_scan_path(path):
+                    continue
+                if not path.is_file() or path.suffix.lower() not in suffixes:
+                    continue
+                try:
+                    if path.stat().st_size > 1_000_000:
+                        continue
+                    text = path.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                for match in list(typedef_re.finditer(text)) + list(define_re.finditer(text)):
+                    alias = match.group("alias")
+                    if alias not in {"size_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t"}:
+                        semantics.type_aliases[alias] = re.sub(r"\s+", " ", match.group("base")).strip()
+        return semantics
+
+    def _skip_semantic_source_scan_path(self, path: Path) -> bool:
+        ignored_parts = {
+            ".git",
+            ".venv",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".zscope_snapshots",
+            "zscope.egg-info",
+            "build",
+            "tmp",
+        }
+        if any(part in ignored_parts for part in path.parts):
+            return True
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return True
+        return any(
+            resolved == excluded or excluded in resolved.parents
+            for excluded in self.config.project.exclude_paths
+        )
+
+    def _semantics_from_user_config(self) -> DeterministicSemantics:
+        semantics = DeterministicSemantics()
+        for ext in self.user_config.list_external_functions():
+            name = str(ext.get("func_name") or "")
+            kind = str(ext.get("kind") or "").lower()
+            if kind in {"allocator", "resource_acquire"}:
+                semantics.add_api("allocator", name, "user_config")
+            elif kind == "calloc":
+                semantics.add_api("calloc", name, "user_config")
+            elif kind == "reallocator":
+                semantics.add_api("reallocator", name, "user_config")
+            elif kind in {"deallocator", "resource_release"}:
+                semantics.add_api("deallocator", name, "user_config")
+            elif kind == "copy":
+                semantics.add_api("copy", name, "user_config")
+            elif kind == "lock":
+                semantics.add_api("lock", name, "user_config")
+            elif kind == "unlock":
+                semantics.add_api("unlock", name, "user_config")
+            memory = self._parse_jsonish(ext.get("memory_behavior"))
+            concurrency = self._parse_jsonish(ext.get("concurrency_behavior"))
+            text = " ".join(
+                [
+                    str(ext.get("description") or ""),
+                    str(ext.get("return_semantics") or ""),
+                    json.dumps(memory, ensure_ascii=False),
+                    json.dumps(concurrency, ensure_ascii=False),
+                ]
+            ).lower()
+            self._add_api_from_semantic_text(semantics, name, text, "user_config")
+
+        for pair in self.user_config.list_paired_functions():
+            category = str(pair.get("category") or "").lower()
+            acquire = str(pair.get("acquire_func") or "")
+            release = str(pair.get("release_func") or "")
+            if any(word in category for word in ("lock", "mutex", "rwlock", "spin", "sync", "并发", "锁")):
+                semantics.add_api("lock", acquire, "user_config:paired_functions")
+                semantics.add_api("unlock", release, "user_config:paired_functions")
+            elif any(word in category for word in ("memory", "resource", "alloc", "生命周期", "资源", "内存")):
+                semantics.add_api("allocator", acquire, "user_config:paired_functions")
+                semantics.add_api("deallocator", release, "user_config:paired_functions")
+            else:
+                self._add_api_by_name_heuristic(semantics, acquire, "user_config:paired_functions")
+                self._add_api_by_name_heuristic(semantics, release, "user_config:paired_functions")
+        return semantics
+
+    def _semantics_from_snapshots(self) -> DeterministicSemantics:
+        semantics = DeterministicSemantics()
+        snapshot_dir = self.snapshot_store.snapshot_dir
+        if not snapshot_dir.exists():
+            return semantics
+        for path in snapshot_dir.glob("*.json"):
+            if path.name.endswith("_final.json"):
+                continue
+            try:
+                snapshot = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(snapshot, dict):
+                continue
+            name = str(snapshot.get("func_name") or "")
+            if not name:
+                continue
+            text = self._snapshot_contract_text(snapshot)
+            self._add_api_from_semantic_text(semantics, name, text, "semantic_snapshot")
+        return semantics
+
+    def _semantics_from_function_names(self) -> DeterministicSemantics:
+        semantics = DeterministicSemantics()
+        for name in self.code_index.list_functions(limit=100000):
+            self._add_api_by_name_heuristic(semantics, name, "name_heuristic")
+        return semantics
+
+    @staticmethod
+    def _parse_jsonish(value: Any) -> Dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        if not value:
+            return {}
+        try:
+            parsed = json.loads(str(value))
+        except json.JSONDecodeError:
+            return {"text": str(value)}
+        return parsed if isinstance(parsed, dict) else {"value": parsed}
+
+    @staticmethod
+    def _snapshot_contract_text(snapshot: Dict[str, Any]) -> str:
+        fields = [
+            snapshot.get("summary"),
+            snapshot.get("role"),
+            snapshot.get("outputs"),
+            snapshot.get("key_semantics"),
+            snapshot.get("semantic_fingerprint"),
+        ]
+        if snapshot.get("snapshot_kind") == "lightweight":
+            fields.extend([snapshot.get("resources"), snapshot.get("concurrency")])
+        return " ".join(json.dumps(field, ensure_ascii=False) for field in fields if field).lower()
+
+    @staticmethod
+    def _add_api_by_name_heuristic(
+        semantics: DeterministicSemantics,
+        name: str,
+        source: str,
+    ) -> None:
+        category = DeterministicCandidateGenerator._classify_api_name(name)
+        if category:
+            semantics.add_api(category, name, source)
+
+    def _add_api_from_semantic_text(
+        self,
+        semantics: DeterministicSemantics,
+        name: str,
+        text: str,
+        source: str,
+    ) -> None:
+        if not name:
+            return
+        lower = text.lower()
+        if "realloc" in lower or "重新分配" in lower:
+            semantics.add_api("reallocator", name, source)
+        if any(word in lower for word in ("calloc", "zeroed allocation", "清零分配")):
+            semantics.add_api("calloc", name, source)
+        if any(word in lower for word in ("allocate", "allocates", "allocation", "returns allocated", "分配", "申请内存")):
+            semantics.add_api("allocator", name, source)
+        if any(word in lower for word in ("free", "deallocate", "release memory", "释放", "释放内存")):
+            semantics.add_api("deallocator", name, source)
+        if any(word in lower for word in ("copy", "memcpy", "memmove", "buffer_bounds", "拷贝", "复制")):
+            semantics.add_api("copy", name, source)
+        if any(word in lower for word in ("acquire lock", "lock acquisition", "locks", "加锁", "获取锁")):
+            semantics.add_api("lock", name, source)
+        if any(word in lower for word in ("unlock", "release lock", "解锁", "释放锁")):
+            semantics.add_api("unlock", name, source)
+        self._add_api_by_name_heuristic(semantics, name, source)
 
     @staticmethod
     def _class_from_backend_bug(bug_type: str) -> str:
@@ -1718,7 +2061,11 @@ class Analyzer:
             prompt = prompt.replace("{" + key + "}", str(value))
         return prompt
 
-    def _select_vulnerability_skills_for_config(self, agent_cfg: Any) -> SkillSelection:
+    def _select_vulnerability_skills_for_config(
+        self,
+        agent_cfg: Any,
+        llm_client: Optional[LLMClient] = None,
+    ) -> SkillSelection:
         """Select active vulnerability skills from the configured analyzer task."""
         available = [
             skill.name
@@ -1727,14 +2074,117 @@ class Analyzer:
                 extra=getattr(agent_cfg, "skills", None),
             )
         ]
-        selection = select_vulnerability_skills(getattr(agent_cfg, "task", None), available)
+        task = getattr(agent_cfg, "task", None)
+        semantic_router = None
+        if llm_client is not None:
+            semantic_router = lambda task_text, skill_names: self._route_vulnerability_skills_with_llm(
+                task_text,
+                skill_names,
+                llm_client,
+            )
+        selection = select_vulnerability_skills(task, available, semantic_router=semantic_router)
         if selection.restricted:
             logger.info(
-                "Task-selected vulnerability skills for '%s': %s",
-                getattr(agent_cfg, "task", ""),
+                "Task-selected vulnerability skills for '%s': %s (source=%s, confidence=%.2f)",
+                task or "",
                 ", ".join(selection.skills) or "none",
+                selection.source,
+                selection.confidence,
             )
         return selection
+
+    def _route_vulnerability_skills_with_llm(
+        self,
+        task: str,
+        available_skill_names: Sequence[str],
+        llm_client: LLMClient,
+    ) -> Dict[str, Any]:
+        """Ask the analyzer model for a tiny structured skill-routing decision."""
+
+        available = list(dict.fromkeys(available_skill_names))
+        cache_key = json.dumps(
+            {
+                "task": task,
+                "available": available,
+                "models": getattr(llm_client, "models", []),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        if cache_key in self._skill_selection_cache:
+            cached = self._skill_selection_cache[cache_key]
+            return {
+                "skills": cached.skills,
+                "restricted": cached.restricted,
+                "confidence": cached.confidence,
+                "reasons": cached.reasons,
+            }
+
+        skill_descriptions = {
+            "resource_lifecycle": "allocation, ownership, cleanup, leaks, missing release",
+            "bounds_and_integer": "buffer bounds, length validation, integer overflow/truncation",
+            "null_and_failure": "null dereference, unchecked return, failure/error paths",
+            "temporal_memory": "use-after-free, double free, invalid free, stale pointer",
+            "concurrency_lock_order": "deadlock, lock balance, lock-order problems",
+            "shared_state_race": "data race, TOCTOU, shared mutable state",
+            "stack_escape": "stack address escaping, async lifetime of locals",
+            "ownership_contract": "API ownership contracts, caller/callee responsibility",
+            "string_and_format": "format strings, string termination, printf-like misuse",
+        }
+        catalog = {name: skill_descriptions.get(name, name) for name in available}
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Classify a vulnerability-analysis task into the provided skill names. "
+                    "Return only JSON with keys: skills (array), restricted (boolean), "
+                    "confidence (0..1), reasons (array of short strings). "
+                    "Use restricted=false when the task is broad, ambiguous, or asks for a general audit. "
+                    "Prefer widening over missing a relevant vulnerability family."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "task": task,
+                        "available_skills": catalog,
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+        response = llm_client.chat_completion(
+            messages,
+            temperature=0.0,
+            max_tokens=300,
+            trace_agent="skill_selection",
+            trace_label=str(task)[:120],
+        )
+        content = str(
+            ((response.get("choices") or [{}])[0].get("message") or {}).get("content")
+            or ""
+        )
+        blocks = extract_json_blocks(content)
+        parsed = blocks[0] if blocks else json.loads(content)
+        if not isinstance(parsed, dict):
+            raise ValueError("skill router returned non-object JSON")
+
+        try:
+            confidence = float(parsed.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        selection = SkillSelection(
+            skills=[name for name in available if name in {str(item) for item in parsed.get("skills", [])}],
+            restricted=bool(parsed.get("restricted")),
+            source="semantic_cache",
+            confidence=max(0.0, min(1.0, confidence)),
+            reasons=[str(item) for item in parsed.get("reasons", [])]
+            if isinstance(parsed.get("reasons"), list)
+            else [],
+        )
+        self._skill_selection_cache[cache_key] = selection
+        return parsed
 
     def _should_spawn_subagents(self, agent_cfg: Any) -> bool:
         """Decide whether focused deep-worker LLM calls are enabled for this run."""

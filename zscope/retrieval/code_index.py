@@ -6,7 +6,7 @@ Supports pluggable backends (Joern / Clang-SQLite / regex fallback).
 import logging
 import re
 from pathlib import Path
-from typing import Optional, Dict, Any, Iterable, List, Sequence, Union
+from typing import Optional, Dict, Any, Iterable, List, Sequence, Union, Tuple
 
 from ..common.utils import (
     extract_function_calls,
@@ -16,6 +16,11 @@ from ..common.utils import (
 from .backend_base import CodeBackend
 
 logger = logging.getLogger(__name__)
+
+DECLARATION_LINE_RE = re.compile(
+    r"^[ \t]*(?!(?:return|if|while|for|switch)\b)"
+    r"(?:[A-Za-z_]\w*[\s*]+)+(?P<name>[A-Za-z_]\w*)\s*\([^;{}]*\)\s*;"
+)
 
 
 class CodeIndex:
@@ -45,6 +50,7 @@ class CodeIndex:
         self.exclude_paths = [Path(p).absolute() for p in (exclude_paths or [])]
         self.backend_name = indexing_config.backend if indexing_config else "joern"
         self._function_index: Dict[str, Dict[str, Any]] = {}
+        self._declaration_comment_index: Optional[Dict[str, List[Dict[str, Any]]]] = None
         self._backend: Optional[CodeBackend] = backend
         self._index_ready = False
 
@@ -281,6 +287,125 @@ class CodeIndex:
                     }
                     in_function = False
 
+    def _numbered_code(self, lines: Sequence[str], start_idx: int) -> str:
+        """Format source lines with the line-number prefix used by tool outputs."""
+        return "".join(f"{start_idx + i + 1} | {line}" for i, line in enumerate(lines))
+
+    def _find_leading_c_comment_block(
+        self,
+        lines: Sequence[str],
+        start_line: int,
+    ) -> Optional[Tuple[int, int]]:
+        """Find the closest C/C++ comment block immediately above a source line."""
+        idx = start_line - 2
+        while idx >= 0 and not lines[idx].strip():
+            idx -= 1
+        if idx < 0:
+            return None
+
+        stripped = lines[idx].strip()
+        if stripped.startswith("//"):
+            end_idx = idx
+            while idx >= 0 and lines[idx].strip().startswith("//"):
+                idx -= 1
+            return (idx + 2, end_idx + 1)
+
+        if stripped.endswith("*/"):
+            end_idx = idx
+            while idx >= 0:
+                current = lines[idx].strip()
+                if current.startswith("/*"):
+                    return (idx + 1, end_idx + 1)
+                if not (current.startswith("*") or current == ""):
+                    break
+                idx -= 1
+
+        return None
+
+    def _comment_block_payload(
+        self,
+        *,
+        kind: str,
+        file_path: Path,
+        lines: Sequence[str],
+        block: Tuple[int, int],
+    ) -> Dict[str, Any]:
+        start_line, end_line = block
+        raw_lines = list(lines[start_line - 1 : end_line])
+        return {
+            "kind": kind,
+            "file": normalize_path(file_path, self.source_root),
+            "start_line": start_line,
+            "end_line": end_line,
+            "text": "".join(raw_lines),
+            "code": self._numbered_code(raw_lines, start_line - 1),
+        }
+
+    def _find_function_declaration_comments(
+        self,
+        func_name: str,
+        implementation_file: Path,
+        max_blocks: int = 3,
+    ) -> List[Dict[str, Any]]:
+        """Find leading comments above C function declarations/prototypes."""
+        index = self._get_declaration_comment_index()
+        results = []
+        impl_info = self._function_index.get(func_name, {})
+        for block in index.get(func_name, []):
+            block_file = self._resolve_file_path(str(block.get("file") or ""))
+            if block_file == implementation_file and block.get("start_line") == impl_info.get(
+                "start_line"
+            ):
+                continue
+            results.append(dict(block))
+            if len(results) >= max_blocks:
+                break
+        return results
+
+    def _get_declaration_comment_index(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Build a cached map of function declaration comments keyed by function name."""
+        if self._declaration_comment_index is not None:
+            return self._declaration_comment_index
+
+        index: Dict[str, List[Dict[str, Any]]] = {}
+        seen: set[Tuple[str, int, int]] = set()
+        for file_name in sorted(self._find_all_files()):
+            file_path = self._resolve_file_path(file_name)
+            if not file_path.exists() or file_path.is_dir():
+                continue
+            try:
+                lines = file_path.read_text(encoding="utf-8", errors="ignore").splitlines(
+                    keepends=True
+                )
+            except Exception:
+                continue
+            if not lines:
+                continue
+
+            for line_no, line in enumerate(lines, start=1):
+                match = DECLARATION_LINE_RE.match(line)
+                if not match:
+                    continue
+                block = self._find_leading_c_comment_block(lines, line_no)
+                if not block:
+                    continue
+                key = (str(file_path), block[0], block[1])
+                if key in seen:
+                    continue
+                seen.add(key)
+                func_name = match.group("name")
+                index.setdefault(func_name, []).append(
+                    self._comment_block_payload(
+                        kind="declaration",
+                        file_path=file_path,
+                        lines=lines,
+                        block=block,
+                    )
+                )
+
+        self._declaration_comment_index = index
+        return index
+
     # ── Core retrieval methods ──
 
     def get_function_impl(
@@ -324,7 +449,30 @@ class CodeIndex:
             if end - start > max_lines:
                 end = start + max_lines
             code_lines = lines[start:end]
-            code = "".join(f"{start + i + 1} | {line}" for i, line in enumerate(code_lines))
+            comment_blocks = self._find_function_declaration_comments(
+                func_name,
+                file_path,
+            )
+            impl_comment = self._find_leading_c_comment_block(lines, func_info["start_line"])
+            if impl_comment:
+                comment_blocks.append(
+                    self._comment_block_payload(
+                        kind="implementation",
+                        file_path=file_path,
+                        lines=lines,
+                        block=impl_comment,
+                    )
+                )
+
+            code_parts: List[str] = []
+            for block in comment_blocks:
+                code_parts.append(
+                    f"/* {block['kind']} comment from "
+                    f"{block['file']}:{block['start_line']}-{block['end_line']} */\n"
+                )
+                code_parts.append(str(block["code"]))
+            code_parts.append(self._numbered_code(code_lines, start))
+            code = "".join(code_parts)
 
             # Get callees from backend if available, else regex
             if self._backend:
@@ -344,6 +492,7 @@ class CodeIndex:
                 "callees": callees,
                 "signature": func_info.get("signature", f"{func_name}(...)"),
                 "truncated": (func_info["end_line"] - func_info["start_line"] + 1) > max_lines,
+                "comment_blocks": comment_blocks,
             }
         except Exception as e:
             logger.error(f"Failed to read function '{func_name}': {e}")

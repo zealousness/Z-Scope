@@ -190,7 +190,6 @@ class ZScopeMcpProvider:
                 "source_root": str(self.config.project.source_root),
                 "entry_function": self.config.project.entry_function,
                 "entry_functions_list": str(self.config.project.entry_functions_list or ""),
-                "prompt_autofill": self.config.project.prompt_autofill.__dict__,
                 "include_paths": [str(p) for p in self.config.project.include_paths],
                 "exclude_paths": [str(p) for p in self.config.project.exclude_paths],
             },
