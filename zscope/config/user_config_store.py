@@ -81,6 +81,28 @@ class UserConfigStore:
                     message TEXT NOT NULL,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 );
+
+                CREATE TABLE IF NOT EXISTS finding_suppressions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    func_name TEXT NOT NULL DEFAULT '',
+                    location TEXT NOT NULL DEFAULT '',
+                    category TEXT NOT NULL DEFAULT '',
+                    scope TEXT NOT NULL DEFAULT '',
+                    rule TEXT NOT NULL DEFAULT '',
+                    reason TEXT DEFAULT '',
+                    note TEXT DEFAULT '',
+                    expires_at DATETIME DEFAULT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(func_name, location, category)
+                );
+
+                CREATE TABLE IF NOT EXISTS finding_baselines (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    dedup_key TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL DEFAULT 'accepted',
+                    issue_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
             """)
             conn.commit()
         finally:
@@ -296,16 +318,99 @@ class UserConfigStore:
         try:
             conn.execute("DELETE FROM config_warnings")
             conn.commit()
+            for column, decl in (
+                ("scope", "TEXT NOT NULL DEFAULT ''"),
+                ("rule", "TEXT NOT NULL DEFAULT ''"),
+                ("note", "TEXT DEFAULT ''"),
+                ("expires_at", "DATETIME DEFAULT NULL"),
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE finding_suppressions ADD COLUMN {column} {decl}")
+                    conn.commit()
+                except sqlite3.OperationalError:
+                    pass
+        finally:
+            conn.close()
+
+    # False-positive suppressions and baselines
+
+    def add_false_positive_suppression(self, func_name: str = "",
+                                       location: str = "",
+                                       category: str = "",
+                                       reason: str = "",
+                                       scope: str = "",
+                                       rule: str = "",
+                                       note: str = "",
+                                       expires_at: str = "") -> None:
+        """Persist a false-positive suppression.
+
+        Empty fields act as wildcards during lookup, so callers can suppress by
+        exact location, whole function/category, or category-only.
+        """
+        conn = self._connect()
+        try:
+            conn.execute(
+                """INSERT OR REPLACE INTO finding_suppressions
+                   (func_name, location, category, scope, rule, reason, note, expires_at, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), CURRENT_TIMESTAMP)""",
+                (
+                    self._normalize_key(func_name),
+                    self._normalize_key(location),
+                    self._normalize_key(category),
+                    self._normalize_key(scope),
+                    self._normalize_key(rule),
+                    reason,
+                    note,
+                    expires_at,
+                ),
+            )
+            conn.commit()
         finally:
             conn.close()
 
     def is_false_positive(self, func_name: str, location: str, category: str) -> bool:
-        """Return whether a finding is marked as a false positive.
+        """Return whether a finding is marked as a false positive."""
+        func = self._normalize_key(func_name)
+        loc = self._normalize_key(location)
+        cat = self._normalize_key(category)
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """SELECT func_name, location, category FROM finding_suppressions
+                   WHERE (func_name = '' OR func_name = ?)
+                     AND (location = '' OR location = ?)
+                     AND (category = '' OR category = ?)
+                     AND (expires_at IS NULL OR expires_at = '' OR expires_at > CURRENT_TIMESTAMP)""",
+                (func, loc, cat),
+            ).fetchall()
+            return bool(rows)
+        finally:
+            conn.close()
 
-        The current schema does not persist suppressions yet, so all findings
-        remain active unless a future migration adds that table.
-        """
-        return False
+    def upsert_finding_baseline(self, dedup_key: str, status: str,
+                                issue: Optional[Dict[str, Any]] = None) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                """INSERT OR REPLACE INTO finding_baselines
+                   (dedup_key, status, issue_json, updated_at)
+                   VALUES (?, ?, ?, CURRENT_TIMESTAMP)""",
+                (self._normalize_key(dedup_key), status, json.dumps(issue or {}, ensure_ascii=False)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_finding_baseline(self, dedup_key: str) -> Optional[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM finding_baselines WHERE dedup_key = ?",
+                (self._normalize_key(dedup_key),),
+            ).fetchone()
+            return self._row_to_dict(row) if row else None
+        finally:
+            conn.close()
 
     # ── Context Injection Helpers ──
 
@@ -373,3 +478,7 @@ class UserConfigStore:
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
         return dict(row)
+
+    @staticmethod
+    def _normalize_key(value: str) -> str:
+        return str(value or "").replace("\\", "/").strip().lower()

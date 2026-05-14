@@ -105,5 +105,5 @@ class ValidatorAgent(ToolCallingAgent):
     @staticmethod
     def _is_validation_result(data: Any) -> bool:
         return isinstance(data, dict) and (
-            data.get("type") == "validation_result" or "is_valid" in data
+            data.get("type") == "validation_result" or "is_valid" in data or "verdict" in data
         )

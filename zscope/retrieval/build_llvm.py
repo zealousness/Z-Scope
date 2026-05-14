@@ -273,12 +273,20 @@ class BitcodeBuilder:
 
     @staticmethod
     def _inject_flags(args: List[str]) -> List[str]:
-        """注入 -g -O0，移除优化标志。"""
+        """注入 bitcode 构建所需的兼容标志，移除优化标志。"""
         filtered = []
         for a in args:
             if a.startswith("-O") and a != "-O0":
                 continue
             filtered.append(a)
+        injected = [
+            "-Wno-implicit-function-declaration",
+            "-include",
+            "stddef.h",
+        ]
+        for flag in reversed(injected):
+            if flag not in filtered:
+                filtered.insert(1, flag)
         if "-g" not in filtered:
             filtered.insert(1, "-g")
         if "-O0" not in filtered:

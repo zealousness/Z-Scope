@@ -1,38 +1,83 @@
 # Z-SCOPE Layered Optimization
 
-This document records the new four-layer architecture.
+Z-SCOPE uses layered analysis so each stage has a narrow job and a reusable
+artifact. This keeps prompt size down and makes benchmark results auditable.
 
-## 1. Workflow
+## 1. Layer Overview
 
-Workflow specs live in `zscope/workflows/*.yaml`.
+| Layer | Code | Responsibility |
+| --- | --- | --- |
+| workflow | `zscope/workflows/*.yaml`, `SpecRegistry` | choose runtime steps for default/resume/maintain |
+| backend facts | `zscope/retrieval/*`, `KnowledgeDB` | extract functions, types, calls, globals, SVF facts |
+| semantic/evidence | semantic snapshots, deterministic candidates | summarize behavior and create evidence-backed candidates |
+| agent validation | vulnerability analyzer, deep worker, validator, reconciler | interpret, verify, deduplicate and persist findings |
 
-- `default.yaml`: fresh scan. It discovers entries when requested, premodels callees, models the entry, plans focused worker tickets, mines vulnerabilities, validates findings, and persists reports.
-- `resume.yaml`: skips completed entries by `snapshot.db` state, analyzes the rest, then merges skipped reports.
-- `maintain.yaml`: compares fingerprints, reuses unchanged reports, reconciles changed historical findings, and rescans only changed entries.
+## 2. Workflow Layer
 
-The runtime loads workflow specs through `SpecRegistry` and injects the selected workflow contract into agent prompts only when that agent runs.
+Workflow specs are declarative execution plans:
 
-## 2. Agent
+- `default.yaml`: fresh scan, premodel callees, model entry, plan focused
+  candidates, mine vulnerabilities, validate, persist.
+- `resume.yaml`: skip completed entries by snapshot state, analyze the rest, and
+  merge skipped reports.
+- `maintain.yaml`: compare fingerprints, reuse unchanged reports, reconcile
+  changed historical findings, and rescan changed entries.
 
-Agent contracts live beside each Python agent as `AGENT.md`.
+The CLI, not YAML config, chooses the workflow. `--resume` and `--maintain` are
+mutually exclusive.
 
-- `semantic_modeler`: builds compact function snapshots.
-- `vulnerability_analyzer`: manages C memory and concurrency vulnerability mining.
-- `deep_worker`: performs one context-clean focused investigation.
-- `validator_agent`: confirms or rejects findings with source evidence.
-- `issue_reconciler_agent`: deduplicates and verifies historical issue state.
+## 3. Backend Fact Layer
 
-The vulnerability analyzer can plan focused subagent tickets for allocation,
-release, copy, lock, thread, and stack-escape triggers. By default this is only
-a plan injected into the manager context. Set `analysis.enable_subagent_workers:
-true` or `can_spawn_subagents: true` for the agent to execute the deep workers.
+`CodeIndex` hides backend differences behind one query surface. Unified mode is
+the preferred C backend:
 
-## 3. Skill
+```text
+UnifiedBackend
+  |
+  +-- ClangBackend -> KnowledgeDB: functions/types/globals/macros/calls
+  |
+  +-- SvfAnalyzer  -> KnowledgeDB: indirect_calls + taint_signatures
+```
 
-Skill contracts live in `zscope/skills/*/SKILL.md`. Each declares triggers,
-allowed tools, allowed MCP tools/resources/prompts, and the focused audit model.
+SVF is an enrichment path. A missing or failing SVF installation should not
+erase Clang facts.
 
-Current C audit skills:
+## 4. Semantic And Evidence Layer
+
+Semantic modeling produces compact per-function JSON snapshots. Deterministic
+candidate generation adds local, reproducible signals for high-value C bugs.
+
+A candidate should include:
+
+- stable `candidate_id`
+- defect class and mapped skill
+- source and sink location
+- object, lock or resource identity when known
+- positive and negative evidence
+- rule confidence
+- dedup key
+
+Generic rules are allowed; benchmark-specific rules are not. For example,
+matching `access/stat` followed by `open/fopen` is valid. Matching a fixture
+helper name from `test/range` is not.
+
+## 5. Agent Layer
+
+The agent layer consumes facts rather than inventing them from a blank prompt:
+
+- `semantic_modeler` builds snapshots.
+- `vulnerability_analyzer` receives active skills, snapshots, candidates and
+  worker summaries.
+- `deep_worker` investigates focused source/sink/path questions.
+- `validator_agent` confirms, rejects or downgrades findings.
+- `issue_reconciler_agent` compares historical and current findings.
+
+Worker budget is not a coverage boundary. Candidates that exceed
+`max_subagent_tickets` are still passed to the main analyzer.
+
+## 6. Skill Layer
+
+Vulnerability skills:
 
 - `bounds_and_integer`
 - `resource_lifecycle`
@@ -43,60 +88,27 @@ Current C audit skills:
 - `shared_state_race`
 - `ownership_contract`
 - `string_and_format`
+
+Support skills:
+
 - `code_semantic_modeling`
 - `evidence_validation`
+- `snapshot_refresh_decision`
+- `zscope-prompt-autofill`
 
-The goal is to avoid one giant prompt that asks the model to find everything at
-once. The manager identifies concrete code events and dispatches the narrow
-skill that can prove or disprove that class.
+`zscope-prompt-autofill` is a template-only skill. Users must fill project
+vocabulary directly in its `SKILL.md`; Z-SCOPE does not load skill
+`references/` files at runtime.
 
-## 4. Tool And MCP
+## 7. Benchmark Discipline
 
-Existing `ToolsRuntime`, `CodeIndex`, `KnowledgeDB`, and `SnapshotStore` remain
-the execution layer. The new `zscope/mcp` package exposes them as MCP-style
-primitives:
+Benchmark runs must separate source fixture, config, runtime output and secrets:
 
-- Resources: `zscope://config`, `zscope://knowledge/stats`,
-  `zscope://knowledge/functions`, `zscope://snapshots/list`
-- Prompts: `zscope.entry_discovery`, `zscope.resource_lifecycle_audit`,
-  `zscope.concurrency_audit`
-- Tools: all existing analysis tools plus `query_knowledge` and
-  `discover_entries`
+- keep `test/range` tracked as source test code
+- ignore build directories, snapshots, benchmark runs and reports
+- store API keys in environment variables
+- keep range entries free of `custom_prompt` for generic benchmark runs
+- rerun entry coverage before full benchmark scans
 
-Run the local MCP server with:
-
-```bash
-python -m zscope.mcp.server -c zscope.yaml
-```
-
-or through CLI:
-
-```bash
-zscope -c zscope.yaml --mcp-stdio
-```
-
-## Entry Discovery
-
-`EntryDiscovery` classifies scan entries into:
-
-- `api`: functions declared in `.h`/`.hpp`
-- `communication`: functions calling send/recv/read/write/socket/shared-memory APIs
-- `thread`: functions creating threads or passing work to async execution
-- `other_user_input`: scanf/getline/getenv/getopt/ioctl/fread/open-like inputs
-
-Enable it with:
-
-```yaml
-project:
-  entry_discovery:
-    enabled: true
-    max_candidates: 200
-    max_functions: 10000
-    header_files: []
-```
-
-or run:
-
-```bash
-zscope -c zscope.yaml --discover-entries
-```
+This discipline lets recall, false-positive rate and scan speed reflect the
+analyzer rather than hidden prompts or fixture-specific shortcuts.
