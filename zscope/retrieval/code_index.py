@@ -594,7 +594,7 @@ class CodeIndex:
                     if name in self._function_index:
                         results.append({
                             "name": name,
-                            "filename": str(fp),
+                            "filename": normalize_path(fp, self.source_root),
                             "lineNumber": content[:m.start()].count("\n") + 1,
                         })
         return results
