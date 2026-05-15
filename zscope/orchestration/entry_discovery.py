@@ -268,6 +268,9 @@ class EntryDiscovery:
             name = item.get("name")
             if not name:
                 continue
+            decl_file = item.get("filename") or ""
+            if decl_file and not self._is_in_search_root(decl_file):
+                continue
             impl = self._get_function_impl(name)
             if not impl:
                 continue
