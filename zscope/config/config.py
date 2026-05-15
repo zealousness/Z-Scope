@@ -46,6 +46,7 @@ class AgentConfig:
     tools: List[str] = field(default_factory=list)
     mcp_servers: List[str] = field(default_factory=list)
     can_spawn_subagents: Optional[bool] = None
+    entry_custom_prompt: Optional[str] = None
 
 
 @dataclass

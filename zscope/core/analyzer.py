@@ -869,6 +869,11 @@ class Analyzer:
             selection = self._select_vulnerability_skills_for_config(agent_cfg, va_client)
 
             agent_context["task"] = agent_cfg.task
+            agent_context["entry_custom_prompt"] = getattr(
+                agent_cfg,
+                "entry_custom_prompt",
+                None,
+            )
             agent_context["active_skills"] = selection.skills
             agent_context["skill_selection_restricted"] = selection.restricted
             self._attach_agent_contract(
@@ -923,6 +928,10 @@ class Analyzer:
                 new_issues = self._deduplicate_against_history(raw_new_issues, state)
                 state["pending_new_issues"].extend(new_issues)
                 state["notes"].append(f"Analyzed task: {agent_cfg.task}")
+                if agent_context.get("entry_custom_prompt"):
+                    state["notes"].append(
+                        f"Entry custom prompt: {agent_context['entry_custom_prompt']}"
+                    )
             else:
                 logger.error("Vulnerability analysis failed: %s", response.error)
                 state["notes"].append(f"Vulnerability analysis failed: {response.error}")

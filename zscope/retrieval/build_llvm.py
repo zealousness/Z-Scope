@@ -11,6 +11,7 @@ LLVM Bitcode builder — wraps gllvm/wllvm to produce whole-program .bc from com
 import json
 import logging
 import os
+import hashlib
 import shlex
 import shutil
 import subprocess
@@ -30,6 +31,7 @@ class BitcodeBuilder:
         "__FILENAME__",
         "__VOSFILENAME__",
     }
+    _MANIFEST_VERSION = 1
 
     def __init__(
         self,
@@ -58,6 +60,9 @@ class BitcodeBuilder:
         # Map of generated .bc Path -> original c_src_path
         self._bc_to_src: Dict[Path, Path] = {}
         self._env = self._make_gllvm_env()
+        self._manifest_path = self.output_dir / "bitcode_manifest.json"
+        self._manifest: Dict[str, Any] = {}
+        self._manifest_dirty = False
 
     @staticmethod
     def _make_gllvm_env() -> dict:
@@ -96,6 +101,8 @@ class BitcodeBuilder:
         groups: 可选的分组配置，格式 {"group_name": ["exclude_file1.c", ...]}
         """
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._manifest = self._load_manifest()
+        self._manifest_dirty = False
 
         commands = self._load_compile_commands()
         if not commands:
@@ -166,7 +173,35 @@ class BitcodeBuilder:
             if merged:
                 results[group_name] = merged
 
+        self._save_manifest()
         return results
+
+    def _load_manifest(self) -> Dict[str, Any]:
+        if not self._manifest_path.exists():
+            return {"version": self._MANIFEST_VERSION, "bitcode": {}}
+        try:
+            with open(self._manifest_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.debug("Ignoring unreadable bitcode manifest %s: %s", self._manifest_path, exc)
+            return {"version": self._MANIFEST_VERSION, "bitcode": {}}
+        if not isinstance(data, dict) or data.get("version") != self._MANIFEST_VERSION:
+            return {"version": self._MANIFEST_VERSION, "bitcode": {}}
+        bitcode = data.get("bitcode", {})
+        if not isinstance(bitcode, dict):
+            bitcode = {}
+        return {"version": self._MANIFEST_VERSION, "bitcode": bitcode}
+
+    def _save_manifest(self) -> None:
+        if not self._manifest_dirty:
+            return
+        try:
+            self._manifest_path.write_text(
+                json.dumps(self._manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            logger.debug("Failed to write bitcode manifest %s: %s", self._manifest_path, exc)
 
     def _load_compile_commands(self) -> List[dict]:
         """加载并过滤 compile_commands.json。"""
@@ -205,11 +240,22 @@ class BitcodeBuilder:
             args[0] = self.gclang
         args = self._inject_flags(args)
         args = self._sanitize_args(args, src_file)
+        resolved_src = self._resolve_source_file(src_file, directory)
+        command_fingerprint = self._tu_fingerprint(
+            src_file=src_file,
+            resolved_src=resolved_src,
+            directory=directory,
+            args=args,
+        )
 
         # 输出 .o 到 output_dir
         obj_name = f"tu_{idx}_{Path(src_file).stem}.o"
         obj_path = self.output_dir / obj_name
         args = self._replace_output(args, str(obj_path))
+        bc_path = Path(str(obj_path) + ".bc")
+
+        if self._reuse_bitcode_if_current(bc_path, resolved_src, command_fingerprint):
+            return
 
         try:
             logger.info("gclang cmd: %s (cwd=%s)", " ".join(args), directory)
@@ -235,7 +281,6 @@ class BitcodeBuilder:
         logger.info("Compiled %s -> %s (%d bytes)", src_file, obj_path, obj_path.stat().st_size)
 
         # get-bc 提取 .bc（get-bc 在原文件名后追加 .bc）
-        bc_path = Path(str(obj_path) + ".bc")
         try:
             proc2 = subprocess.run(
                 [self.get_bc, str(obj_path)],
@@ -247,7 +292,9 @@ class BitcodeBuilder:
                 check=True,
             )
             if bc_path.exists():
-                self._bc_to_src[bc_path.resolve()] = self._resolve_source_file(src_file, directory)
+                resolved_bc = bc_path.resolve()
+                self._bc_to_src[resolved_bc] = resolved_src
+                self._record_bitcode_manifest(resolved_bc, resolved_src, command_fingerprint)
                 logger.info("Extracted %s (%d bytes)", bc_path, bc_path.stat().st_size)
             else:
                 logger.warning("get-bc succeeded but %s not found", bc_path)
@@ -255,12 +302,54 @@ class BitcodeBuilder:
             stderr = getattr(e, 'stderr', '') or ''
             logger.warning("get-bc failed for %s: %s stderr=%s", obj_path, e, stderr[:300])
 
+    def _reuse_bitcode_if_current(self, bc_path: Path, src_path: Path, fingerprint: str) -> bool:
+        resolved_bc = bc_path.resolve()
+        entry = self._manifest.get("bitcode", {}).get(str(resolved_bc), {})
+        if (
+            entry.get("fingerprint") != fingerprint
+            or not resolved_bc.exists()
+            or entry.get("bitcode_hash") != self._file_hash(resolved_bc)
+        ):
+            return False
+        self._bc_to_src[resolved_bc] = src_path
+        logger.info("Reusing unchanged bitcode %s", resolved_bc)
+        return True
+
+    def _record_bitcode_manifest(self, bc_path: Path, src_path: Path, fingerprint: str) -> None:
+        bitcode = self._manifest.setdefault("bitcode", {})
+        bitcode[str(bc_path)] = {
+            "fingerprint": fingerprint,
+            "bitcode_hash": self._file_hash(bc_path),
+            "source": str(src_path),
+        }
+        self._manifest_dirty = True
+
+    def _tu_fingerprint(
+        self,
+        *,
+        src_file: str,
+        resolved_src: Path,
+        directory: str,
+        args: Sequence[str],
+    ) -> str:
+        payload = {
+            "builder_version": self._MANIFEST_VERSION,
+            "source": str(resolved_src),
+            "source_hash": self._file_hash(resolved_src),
+            "directory": str(Path(directory).resolve()),
+            "args": list(args),
+            "gclang": self.gclang,
+            "get_bc": self.get_bc,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
     def _link_all(self, bc_files: List[Path], group_name: str) -> Optional[Path]:
         """llvm-link 合并所有给定的 .bc 为单一文件（支持分批以避免参数过长）。"""
         merged_path = self.output_dir / f"merged_{group_name}.bc"
         if not bc_files:
             return None
-
         # 尝试一次性链接
         try:
             cmd = [self.llvm_link, "-o", str(merged_path)] + [str(p) for p in bc_files]
@@ -368,6 +457,17 @@ class BitcodeBuilder:
                 "Failed to parse compile command with shlex, falling back to split(): %s", e
             )
             return command_str.split()
+
+    @staticmethod
+    def _file_hash(path: Path) -> str:
+        digest = hashlib.sha256()
+        try:
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(8192), b""):
+                    digest.update(chunk)
+        except OSError:
+            digest.update(b"__missing__")
+        return digest.hexdigest()
 
     @staticmethod
     def _resolve_source_file(src_file: str, directory: str) -> Path:

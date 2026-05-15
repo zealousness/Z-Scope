@@ -221,14 +221,12 @@ class ParallelAnalyzer:
         config = deepcopy(self.base_config)
         config.project.entry_function = entry.function_name
         
-        # Merge custom prompt with agent tasks
+        # Keep entry-specific focus separate from the configured task so skill
+        # routing remains driven by the global vulnerability scope.
         if entry.custom_prompt:
             for agent_cfg in config.project.agents:
-                if agent_cfg.name == "vulnerability_analyzer" and agent_cfg.task:
-                    # Append custom prompt to base task
-                    agent_cfg.task = f"{agent_cfg.task}\n\n额外关注点：{entry.custom_prompt}"
-                elif agent_cfg.name == "vulnerability_analyzer":
-                    agent_cfg.task = entry.custom_prompt
+                if agent_cfg.name == "vulnerability_analyzer":
+                    agent_cfg.entry_custom_prompt = entry.custom_prompt
         
         return config
     
