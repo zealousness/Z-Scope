@@ -60,6 +60,8 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
 <script id="zscope-offline-state" type="application/json">__ZCOPE_OFFLINE_STATE__</script>
 <header>
   <button id="savePageBtn">保存当前离线页面</button>
+  <button id="defaultViewBtn" type="button">Default</button>
+  <button id="needsReviewViewBtn" type="button">With needs_review</button>
   <small>离线模式支持筛选、查看详情并编辑 validation_status / validation_reasoning。</small>
 </header>
 <main>
@@ -169,6 +171,11 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
 
   const stateScript = document.getElementById('zscope-offline-state');
   const state = parseOfflineState(stateScript ? stateScript.textContent : '{}');
+  state.reportViews = state.reportViews || {};
+  state.reportView = state.reportView || 'default';
+  if (state.reportViews[state.reportView] && Array.isArray(state.reportViews[state.reportView].issues)) {
+    state.findings = state.reportViews[state.reportView].issues;
+  }
   state.findings = Array.isArray(state.findings) ? state.findings : [];
   let currentIndex = -1;
   let filteredIndexes = state.findings.map((_, i) => i);
@@ -190,6 +197,36 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
   const detailsCardEl = document.getElementById('detailsCard');
   const selectedViewEl = document.getElementById('selectedView');
   const emptyViewEl = document.getElementById('emptyView');
+  const defaultViewBtn = document.getElementById('defaultViewBtn');
+  const needsReviewViewBtn = document.getElementById('needsReviewViewBtn');
+
+  function updateViewButtons() {
+    if (!defaultViewBtn || !needsReviewViewBtn) return;
+    defaultViewBtn.style.background = state.reportView === 'default' ? '#0284c7' : '#334155';
+    needsReviewViewBtn.style.background = state.reportView === 'with_needs_review' ? '#0284c7' : '#334155';
+    defaultViewBtn.disabled = !(state.reportViews.default && Array.isArray(state.reportViews.default.issues));
+    needsReviewViewBtn.disabled = !(
+      state.reportViews.with_needs_review && Array.isArray(state.reportViews.with_needs_review.issues)
+    );
+  }
+
+  function activateReportView(view) {
+    const selected = state.reportViews[view];
+    if (!selected || !Array.isArray(selected.issues)) {
+      return;
+    }
+    state.reportView = view;
+    state.findings = selected.issues;
+    currentIndex = -1;
+    filteredIndexes = state.findings.map((_, i) => i);
+    renderList();
+    updateViewButtons();
+    if (state.findings.length > 0) {
+      select(filteredIndexes[0] ?? 0);
+    } else {
+      select(-1);
+    }
+  }
 
   function getSeverityClass(level) {
     const cls = { critical:'badge-error', high:'badge-warning', medium:'badge-info', low:'badge-ghost' };
@@ -348,6 +385,14 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
     URL.revokeObjectURL(a.href);
   });
 
+  if (defaultViewBtn) {
+    defaultViewBtn.addEventListener('click', () => activateReportView('default'));
+  }
+  if (needsReviewViewBtn) {
+    needsReviewViewBtn.addEventListener('click', () => activateReportView('with_needs_review'));
+  }
+
+  updateViewButtons();
   renderList();
   if (state.findings.length > 0) {
     select(filteredIndexes[0] ?? 0);

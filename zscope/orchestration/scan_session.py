@@ -136,7 +136,7 @@ class ScanSessionRunner:
             "Discovering scan entries from headers, communication APIs, "
             "thread creation, and input sources..."
         )
-        code_index = self._ensure_code_index(state)
+        code_index = self._ensure_code_index(state, defer_svf=True)
         discovery_cfg = self.config.project.entry_discovery
         discovery = EntryDiscovery(
             code_index,
@@ -234,6 +234,10 @@ class ScanSessionRunner:
                     function_name=fname,
                     verdict=saved_report.get("overall_verdict", "unknown"),
                     issues=saved_report.get("issues", []),
+                    audit_observations=saved_report.get("metadata", {}).get(
+                        "audit_observations",
+                        [],
+                    ),
                     duration_seconds=0.0,
                 )
                 merged_count += 1
@@ -284,6 +288,8 @@ class ScanSessionRunner:
         self,
         state: Dict[str, Any],
         priority_functions: Optional[List[str]] = None,
+        svf_entry_functions: Optional[List[Any]] = None,
+        defer_svf: bool = False,
     ) -> CodeIndex:
         if state.get("code_index") is None:
             state["code_index"] = CodeIndex(
@@ -294,8 +300,24 @@ class ScanSessionRunner:
                 priority_functions=priority_functions,
                 include_paths=self.config.project.include_paths,
                 exclude_paths=self.config.project.exclude_paths,
+                svf_entry_functions=svf_entry_functions,
+                defer_svf=defer_svf,
             )
         return state["code_index"]
+
+    @staticmethod
+    def _entry_names(entries: List[FunctionEntry]) -> List[str]:
+        return [entry.function_name for entry in entries if entry.function_name]
+
+    def _ensure_svf_for_entries(self, state: Dict[str, Any], entries: List[FunctionEntry]) -> None:
+        code_index = state.get("code_index")
+        if not code_index:
+            return
+        entry_names = self._entry_names(entries)
+        if not entry_names and self.config.project.entry_function:
+            entry_names = [self.config.project.entry_function]
+        if entry_names:
+            code_index.run_svf(entries)
 
     def _run_batch(
         self,
@@ -303,6 +325,7 @@ class ScanSessionRunner:
         steps: List[WorkflowStep],
     ) -> ScanSessionResult:
         entries: List[FunctionEntry] = state["entries"]
+        entry_names = self._entry_names(entries)
         logger.info("Building shared code index...")
         if state.get("code_index") is None:
             state["code_index"] = CodeIndex(
@@ -310,10 +333,13 @@ class ScanSessionRunner:
                 self.config.project.compile_commands_path,
                 source_root=self.config.project.source_root,
                 indexing_config=self.config.indexing,
-                priority_functions=[entry.function_name for entry in entries],
+                priority_functions=entry_names,
                 include_paths=self.config.project.include_paths,
                 exclude_paths=self.config.project.exclude_paths,
+                svf_entry_functions=entries,
             )
+        else:
+            self._ensure_svf_for_entries(state, entries)
 
         parallel_analyzer = ParallelAnalyzer(
             self.config,
@@ -356,6 +382,7 @@ class ScanSessionRunner:
             raise ValueError("No entry function or entry functions list provided.")
 
         logger.info("Single mode: entry function = %s", entry_function)
+        self._ensure_svf_for_entries(state, [FunctionEntry(entry_function)])
         analyzer = Analyzer(
             self.config,
             code_index=state.get("code_index"),

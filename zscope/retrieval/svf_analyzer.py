@@ -1,24 +1,25 @@
-"""
-SVF analyzer — runs SVF tools and writes results into a shared KnowledgeDB.
-Not a CodeBackend; used as an internal component of UnifiedBackend.
-"""
+"""Run SVF tools and import their results into KnowledgeDB."""
+
+from __future__ import annotations
 
 import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
+from ..config.function_entry import FunctionEntry
+from .bitcode_scope import BitcodeScopeConfig
 from .build_llvm import BitcodeBuilder
 from .knowledge_db import KnowledgeDB
-from .svf_runner import SvfRunner, SvfResult
 from .svf_parser import SvfOutputMapper
+from .svf_runner import SvfResult, SvfRunner
 
 logger = logging.getLogger(__name__)
 
 
 class SvfAnalyzer:
-    """SVF 分析器：接受共享 KnowledgeDB，运行 SVF 并写入结果。"""
+    """Build bitcode, run SVF, and write indirect-call/Saber data."""
 
     def __init__(
         self,
@@ -29,6 +30,12 @@ class SvfAnalyzer:
         llvm_link_path: str = "llvm-link",
         heap_limit_mb: int = 32768,
         timeout: int = 1800,
+        scope: str = "auto",
+        entry_depth: int = 4,
+        max_selected_tus: int = 300,
+        fallback: str = "full",
+        always_include: Optional[List[str]] = None,
+        symbol_closure: bool = True,
     ):
         self._db = db
         self._svf_bin_dir = svf_bin_dir
@@ -37,36 +44,41 @@ class SvfAnalyzer:
         self._llvm_link = llvm_link_path
         self._heap_limit = heap_limit_mb
         self._timeout = timeout
+        self._scope_config = BitcodeScopeConfig(
+            mode=scope,
+            entry_depth=entry_depth,
+            max_selected_tus=max_selected_tus,
+            fallback=fallback,
+            always_include=list(always_include or []),
+            symbol_closure=symbol_closure,
+        )
         self._results: Dict[str, SvfResult] = {}
 
-    def run(self, source_path: Path, project_root: Path,
-            compile_commands_path: Optional[Path] = None,
-            svf_groups_config: str = "") -> bool:
-        """构建 bitcode 并按分组运行 SVF 分析，结果隔离写入共享 DB。"""
+    def run(
+        self,
+        source_path: Path,
+        project_root: Path,
+        compile_commands_path: Optional[Path] = None,
+        svf_groups_config: str = "",
+        entry_functions: Optional[Sequence[Any]] = None,
+    ) -> bool:
         if not compile_commands_path:
             logger.warning("No compile_commands_path, skipping SVF")
             return True
-        try:
-            # 解析分组配置
-            groups: Dict[str, List[str]] = {"default": []}
-            if svf_groups_config:
-                groups_path = Path(svf_groups_config)
-                if not groups_path.is_absolute():
-                    groups_path = project_root / groups_path
-                if groups_path.exists():
-                    try:
-                        with open(groups_path, "r", encoding="utf-8") as f:
-                            groups = json.load(f)
-                    except json.JSONDecodeError as e:
-                        logger.error("Failed to parse SVF groups config %s: %s", groups_path, e)
 
-            # 增量检查：计算源码聚合哈希（连同分组配置的内容一起哈希，使得配置更改能触发重新分析）
-            agg_hash = self._compute_aggregate_hash(compile_commands_path, groups)
+        try:
+            groups = self._load_groups_config(project_root, svf_groups_config)
+            normalized_entries = self._normalize_entry_functions(entry_functions)
+            scope_entries = list(entry_functions or normalized_entries)
+            cache_fingerprint = self._compute_aggregate_hash(
+                compile_commands_path,
+                groups,
+                self._cache_config(),
+                normalized_entries,
+            )
             old_hash = self._db.get_svf_hash()
-            if agg_hash and agg_hash == old_hash:
-                logger.info(
-                    "SVF incremental: source hash unchanged, reusing cached SVF data"
-                )
+            if cache_fingerprint and cache_fingerprint == old_hash:
+                logger.info("SVF incremental: cache fingerprint unchanged; reusing cached data")
                 return True
 
             builder = BitcodeBuilder(
@@ -77,10 +89,19 @@ class SvfAnalyzer:
                 llvm_link_path=self._llvm_link,
                 timeout=self._timeout,
             )
-            # 获取分组构建的三方件结果字典
-            bc_paths = builder.build(groups=groups)
+            if normalized_entries and self._scope_config.mode != "full":
+                bc_paths = builder.build(
+                    groups=groups,
+                    scope_config=self._scope_config,
+                    entry_functions=scope_entries,
+                    knowledge_db=self._db,
+                    project_root=project_root,
+                )
+            else:
+                bc_paths = builder.build(groups=groups)
+
             if not bc_paths:
-                logger.warning("Bitcode build failed or no bitcode generated, SVF skipped")
+                logger.warning("Bitcode build failed or no bitcode generated; SVF skipped")
                 return True
 
             runner = SvfRunner(
@@ -88,21 +109,18 @@ class SvfAnalyzer:
                 heap_limit_mb=self._heap_limit,
                 timeout=self._timeout,
             )
-            
-            # 循环对每一组进行分析
+
+            had_timeout = False
             for group_name, bc_path in bc_paths.items():
                 logger.info("Running SVF analysis for group '%s' using %s", group_name, bc_path)
-                
-                # 为每组独立输出目录
                 group_suffix = f"_{group_name}" if group_name != "default" else ""
                 output_dir = project_root / f".zscope_svf{group_suffix}"
-                
-                self._results = runner.run_all(bc_path, output_dir)
 
-                # 清除当前组的旧 SVF 数据
+                self._results = runner.run_all(bc_path, output_dir)
+                if any(result.timed_out for result in self._results.values()):
+                    had_timeout = True
+
                 self._db.purge_svf_data(group=group_name)
-                
-                # 当前组数据映射到 DB
                 mapper = SvfOutputMapper(self._db, svf_group=group_name)
                 ander = self._results.get("ander")
                 if ander and ander.output_file:
@@ -111,17 +129,78 @@ class SvfAnalyzer:
                 if saber and saber.bugs:
                     mapper.import_saber_bugs(saber.bugs)
 
-            # 记录新哈希
-            if agg_hash:
-                self._db.set_svf_hash(agg_hash)
+            if had_timeout:
+                logger.warning("SVF analysis timed out; cache fingerprint will not be updated")
+                return False
+
+            if cache_fingerprint:
+                self._db.set_svf_hash(cache_fingerprint)
             return True
-        except Exception as e:
-            logger.error("SVF analysis failed: %s", e)
+        except Exception as exc:
+            logger.error("SVF analysis failed: %s", exc)
             return False
 
     @staticmethod
-    def _compute_aggregate_hash(compile_commands_path: Path, groups_config: Optional[Dict] = None) -> str:
-        """基于 compile_commands.json 中所有源文件计算聚合 SHA-256。"""
+    def _load_groups_config(project_root: Path, svf_groups_config: str) -> Dict[str, List[str]]:
+        groups: Dict[str, List[str]] = {"default": []}
+        if not svf_groups_config:
+            return groups
+
+        groups_path = Path(svf_groups_config)
+        if not groups_path.is_absolute():
+            groups_path = project_root / groups_path
+        if not groups_path.exists():
+            logger.warning("SVF groups config not found: %s", groups_path)
+            return groups
+        try:
+            with open(groups_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return {str(k): list(v or []) for k, v in data.items()}
+        except (json.JSONDecodeError, OSError, TypeError) as exc:
+            logger.error("Failed to parse SVF groups config %s: %s", groups_path, exc)
+        return groups
+
+    def _cache_config(self) -> Dict[str, Any]:
+        return {
+            "svf_bin_dir": str(self._svf_bin_dir or ""),
+            "gclang_path": str(self._gclang),
+            "get_bc_path": str(self._get_bc),
+            "llvm_link_path": str(self._llvm_link),
+            "heap_limit_mb": self._heap_limit,
+            "timeout": self._timeout,
+            "scope": self._scope_config.mode,
+            "entry_depth": self._scope_config.entry_depth,
+            "max_selected_tus": self._scope_config.max_selected_tus,
+            "fallback": self._scope_config.fallback,
+            "always_include": self._scope_config.always_include,
+            "symbol_closure": self._scope_config.symbol_closure,
+        }
+
+    @staticmethod
+    def _normalize_entry_functions(entries: Optional[Sequence[Any]]) -> List[str]:
+        if not entries:
+            return []
+        normalized: List[str] = []
+        seen = set()
+        for entry in entries:
+            name = entry.function_name if isinstance(entry, FunctionEntry) else entry
+            if not name:
+                continue
+            name = str(name)
+            if name in seen:
+                continue
+            seen.add(name)
+            normalized.append(name)
+        return normalized
+
+    @staticmethod
+    def _compute_aggregate_hash(
+        compile_commands_path: Path,
+        groups_config: Optional[Dict] = None,
+        execution_config: Optional[Dict[str, Any]] = None,
+        entry_functions: Optional[Sequence[str]] = None,
+    ) -> str:
         try:
             with open(compile_commands_path, "r", encoding="utf-8") as f:
                 commands = json.load(f)
@@ -137,15 +216,15 @@ class SvfAnalyzer:
                 if not src_path.is_absolute():
                     src_path = Path(cmd.get("directory", ".")) / src_path
                 source_files.append(src_path.resolve())
-
-        # 按路径排序以保证确定性
         source_files.sort()
 
         agg = hashlib.sha256()
-        
-        # 将最新的分组配置内容先作为盐加进 hash，若配置变动立刻重新分析
         if groups_config:
             agg.update(json.dumps(groups_config, sort_keys=True).encode("utf-8"))
+        if execution_config:
+            agg.update(json.dumps(execution_config, sort_keys=True).encode("utf-8"))
+        if entry_functions:
+            agg.update(json.dumps(list(entry_functions), sort_keys=True).encode("utf-8"))
 
         for fp in source_files:
             agg.update(str(fp).encode("utf-8"))

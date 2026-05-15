@@ -102,6 +102,20 @@ metrics = {
 eval_path = run_dir / "evaluation.json"
 if eval_path.exists():
     metrics["evaluation"] = json.loads(eval_path.read_text(encoding="utf-8"))
+    views = metrics["evaluation"].get("report_views", {})
+    if views:
+        metrics["benchmark_views"] = {
+            name: {
+                "issues": view.get("report_issue_count"),
+                "true_positives": view.get("true_positives"),
+                "false_positives": view.get("false_positives"),
+                "false_negatives": view.get("false_negatives"),
+                "detection_rate": view.get("recall"),
+                "false_positive_rate": view.get("false_positive_rate"),
+            }
+            for name, view in views.items()
+            if isinstance(view, dict) and name in {"default", "with_needs_review"}
+        }
 (run_dir / "metrics.json").write_text(
     json.dumps(metrics, ensure_ascii=False, indent=2),
     encoding="utf-8",

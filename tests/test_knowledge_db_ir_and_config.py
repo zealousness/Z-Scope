@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from zscope.config.user_config_store import UserConfigStore
@@ -44,6 +45,60 @@ def test_knowledge_db_ir_tables_round_trip(tmp_path: Path) -> None:
     assert db.get_ir_path_slice("CAND_1")["function"] == "demo"
     assert db.stats()["ir_resource_events"] == 1
     db.close()
+
+
+def test_header_functions_match_absolute_db_paths_by_source_relative_path(tmp_path: Path) -> None:
+    source_root = tmp_path / "project"
+    header = source_root / "include" / "task_dispatcher.h"
+    header.parent.mkdir(parents=True)
+    header.write_text("int td_init(void);\n", encoding="utf-8")
+
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    db.insert_function(
+        "td_init",
+        str(header),
+        1,
+        1,
+        signature="int (void) td_init",
+        is_declaration=True,
+    )
+    db.commit()
+
+    rows = db.get_header_functions(["include/task_dispatcher.h"], source_root=source_root)
+
+    assert rows == [
+        {
+            "name": "td_init",
+            "filename": "include/task_dispatcher.h",
+            "lineNumber": 1,
+        }
+    ]
+    db.close()
+
+
+def test_knowledge_db_uses_thread_local_connections_for_parallel_access(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_function("entry", "src/demo.c", 1, 10)
+        db.insert_call_edge("entry", "src/demo.c", "helper", "src/demo.c", 5)
+        db.commit()
+
+        def worker(worker_id: int) -> int:
+            conn_id = id(db._conn)
+            for _ in range(5):
+                assert db.get_function("entry")["name"] == "entry"
+                assert db.get_callees("entry")[0]["name"] == "helper"
+            db.upsert_function_contract(f"worker_{worker_id}", locks='["m"]')
+            db.commit()
+            return conn_id
+
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            connection_ids = set(executor.map(worker, range(12)))
+
+        assert len(connection_ids) > 1
+        assert db.stats()["function_contracts"] == 12
+    finally:
+        db.close()
 
 
 def test_user_config_suppression_and_baseline(tmp_path: Path) -> None:
