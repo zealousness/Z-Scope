@@ -133,9 +133,9 @@ Environment:
 Result:
 
 ```text
-Functions analyzed: 14
-Total issues found: 47
-Total duration seconds: 15548.37
+Functions analyzed: 12
+Total issues found: 35
+Total duration seconds: 5173.37
 Total context tokens: 855654
 ```
 
@@ -143,13 +143,13 @@ Benchmark scorer:
 
 ```json
 {
-  "true_positives": 11,
-  "false_positives": 36,
-  "false_negatives": 1,
-  "precision": 0.234,
-  "recall": 0.9167,
-  "f1": 0.3729,
-  "missed": ["RANGE-003"]
+  "true_positives": 30,
+  "false_positives": 5,
+  "false_negatives": 3,
+  "precision": 0.8571,
+  "recall": 0.1429,
+  "f1": 0.8824,
+  "missed": ["RANGE-005","RANGE-013","RANGE-014"]
 }
 ```
 
