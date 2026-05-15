@@ -126,6 +126,33 @@ int Main(int argc, char **argv) {
     assert "input:argv" in candidate.reasons
 
 
+def test_pthread_create_discovers_thread_entry_not_creator():
+    discovery = EntryDiscovery(
+        FakeCodeIndex(
+            {
+                "StartWorkers": """
+int StartWorkers(void) {
+    pthread_t tid;
+    return pthread_create(&tid, NULL, WorkerMain, NULL);
+}
+""",
+                "WorkerMain": """
+static void* WorkerMain(void* arg) {
+    return arg;
+}
+""",
+            }
+        )
+    )
+
+    result = discovery.discover()
+
+    assert [candidate.function_name for candidate in result.candidates] == ["WorkerMain"]
+    candidate = result.candidates[0]
+    assert candidate.exposure == "thread"
+    assert "thread_entry:pthread_create" in candidate.reasons
+
+
 def test_search_root_limits_discovered_entries_to_that_directory(tmp_path):
     project_root = tmp_path
     source_root = project_root
@@ -174,6 +201,26 @@ ssize_t MsgRecv(int fd, char *buf, size_t len) {
     assert payload["functions"][0]["function_name"] == "MsgRecv"
     assert payload["functions"][0]["custom_prompt"]
     assert payload["functions"][0]["exposure"] == "communication"
+
+
+def test_public_api_prompt_requires_callee_sink_audit():
+    class HeaderCodeIndex(FakeCodeIndex):
+        def get_header_declared_functions(self, header_files=None):
+            return [{"name": "PublicFacade", "filename": "include/api.h", "lineNumber": 1}]
+
+    discovery = EntryDiscovery(
+        HeaderCodeIndex(
+            {
+                "PublicFacade": "int PublicFacade(const char *msg) { return InternalSink(msg); }",
+            }
+        )
+    )
+
+    payload = discovery.discover().to_entry_functions_payload()
+
+    prompt = payload["functions"][0]["custom_prompt"]
+    assert "follow its callees" in prompt
+    assert "concrete vulnerable callee location" in prompt
 
 
 def test_config_loader_accepts_absolute_entry_discovery_search_root(tmp_path):

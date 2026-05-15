@@ -394,7 +394,7 @@ class ClangExtractor:
             self.close_document(file_path)
             return False
 
-        rel_path = str(file_path)
+        rel_path = self._project_relative_path(file_path)
         func_rows: List[Tuple[Any, ...]] = []
         call_rows: List[Tuple[Any, ...]] = []
 
@@ -765,12 +765,16 @@ class ClangExtractor:
 
             parsed = urlparse(uri)
             abs_path = Path(url2pathname(parsed.path)).resolve()
-            try:
-                return str(abs_path.relative_to(self.project_root)).replace("\\", "/")
-            except ValueError:
-                return str(abs_path).replace("\\", "/")
+            return self._project_relative_path(abs_path)
         except Exception:
             return ""
+
+    def _project_relative_path(self, path: Path) -> str:
+        resolved = Path(path).resolve()
+        try:
+            return resolved.relative_to(self.project_root).as_posix()
+        except ValueError:
+            return resolved.as_posix()
 
     def _looks_like_member_call(self, text: str, ident_start: int) -> bool:
         i = ident_start - 1

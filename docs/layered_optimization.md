@@ -75,6 +75,14 @@ The agent layer consumes facts rather than inventing them from a blank prompt:
 Worker budget is not a coverage boundary. Candidates that exceed
 `max_subagent_tickets` are still passed to the main analyzer.
 
+The user-facing `max_recursion_depth`, `max_premodel_depth`,
+`max_premodel_callees`, and `max_subagent_tickets` settings are hard caps, not
+always-on spending targets. At runtime `RiskBudgetPlanner` derives a smaller
+effective budget per entry function from separate risk signals for graph
+recursion, semantic premodel depth, callee fanout, and focused worker tickets.
+The effective budget and its reasons are written to report metadata so a scan
+can be audited without adding extra configuration burden.
+
 ## 6. Skill Layer
 
 Vulnerability skills:

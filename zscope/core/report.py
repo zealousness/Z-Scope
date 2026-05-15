@@ -46,6 +46,24 @@ class Issue:
     final_score: Optional[float] = None
     score_components: Optional[Dict[str, float]] = None
     evidence_refs: Optional[List[str]] = None
+    run_id: Optional[str] = None
+    rule_id: Optional[str] = None
+    source_loc: Optional[str] = None
+    sink_loc: Optional[str] = None
+    call_path: Optional[List[str]] = None
+    path_constraints: Optional[List[str]] = None
+    allocator_kind: Optional[str] = None
+    owner_object: Optional[str] = None
+    lockset: Optional[List[str]] = None
+    thread_object: Optional[str] = None
+    llm_model: Optional[str] = None
+    prompt_hash: Optional[str] = None
+    tokens_in: Optional[int] = None
+    tokens_out: Optional[int] = None
+    latency_ms: Optional[int] = None
+    human_disposition: Optional[str] = None
+    time_to_review: Optional[float] = None
+    time_to_fix: Optional[float] = None
 
 
     @classmethod
@@ -114,6 +132,7 @@ class FinalReport:
     issues: List[Issue] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    report_views: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -122,6 +141,7 @@ class FinalReport:
             "issues": [issue.to_dict() for issue in self.issues],
             "notes": self.notes,
             "metadata": self.metadata,
+            "report_views": self.report_views,
         }
 
 

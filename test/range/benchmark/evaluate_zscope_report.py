@@ -9,6 +9,20 @@ import re
 from pathlib import Path
 from typing import Any
 
+FUNC_DEF_RE = re.compile(
+    r"(?m)^[A-Za-z_][\w\s\*\(\),]*\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*\{"
+)
+CALL_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
+KEYWORDS = {
+    "if",
+    "for",
+    "while",
+    "switch",
+    "return",
+    "sizeof",
+    "case",
+}
+
 
 def load_json(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
@@ -28,9 +42,29 @@ def flatten_text(value: Any) -> str:
     return str(value)
 
 
-def report_issues(report: dict[str, Any]) -> list[dict[str, Any]]:
+def report_issues(report: dict[str, Any], view: str = "default") -> list[dict[str, Any]]:
+    report_views = report.get("report_views")
+    if isinstance(report_views, dict):
+        selected = report_views.get(view)
+        if isinstance(selected, dict) and isinstance(selected.get("issues"), list):
+            return [x for x in selected["issues"] if isinstance(x, dict)]
+    if view == "with_needs_review":
+        issues = report_issues(report, "default")
+        metadata = report.get("metadata") if isinstance(report.get("metadata"), dict) else {}
+        observations = metadata.get("audit_observations") if isinstance(metadata, dict) else []
+        if isinstance(observations, list):
+            issues = list(issues) + [
+                x
+                for x in observations
+                if isinstance(x, dict)
+                and str(x.get("validation_status") or "").lower() == "needs_review"
+            ]
+        return issues
     if isinstance(report.get("issues"), list):
-        return [x for x in report["issues"] if isinstance(x, dict)]
+        issues = [x for x in report["issues"] if isinstance(x, dict)]
+        if not issues and isinstance(report.get("findings"), list) and report.get("findings"):
+            return [x for x in report["findings"] if isinstance(x, dict)]
+        return issues
     results = report.get("results")
     if isinstance(results, dict):
         issues: list[dict[str, Any]] = []
@@ -51,6 +85,95 @@ def normalize_path(text: str) -> str:
     return text.replace("\\", "/").lower()
 
 
+def source_files(root: Path) -> list[Path]:
+    files: list[Path] = []
+    for rel in ("src", "include", "internal"):
+        base = root / rel
+        if base.exists():
+            files.extend(base.rglob("*.c"))
+            files.extend(base.rglob("*.h"))
+            files.extend(base.rglob("*.ph"))
+    return sorted(files)
+
+
+def find_matching_brace(text: str, open_idx: int) -> int:
+    depth = 0
+    for idx in range(open_idx, len(text)):
+        char = text[idx]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return idx
+    return len(text)
+
+
+def build_source_index(root: Path) -> dict[str, Any]:
+    functions: dict[str, dict[str, Any]] = {}
+    calls: dict[str, set[str]] = {}
+    all_names: set[str] = set()
+    file_texts: dict[str, str] = {}
+
+    for path in source_files(root):
+        rel = path.relative_to(root).as_posix()
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        file_texts[rel] = text
+        for match in FUNC_DEF_RE.finditer(text):
+            name = match.group(1)
+            open_idx = text.find("{", match.end() - 1)
+            if open_idx < 0:
+                continue
+            end_idx = find_matching_brace(text, open_idx)
+            start_line = text[: match.start()].count("\n") + 1
+            end_line = text[:end_idx].count("\n") + 1
+            body = text[open_idx:end_idx]
+            functions[name] = {
+                "file": rel,
+                "line": start_line,
+                "end_line": end_line,
+                "body": body,
+            }
+            all_names.add(name)
+
+    for name, info in functions.items():
+        callees = {
+            call.group(1)
+            for call in CALL_RE.finditer(str(info.get("body") or ""))
+            if call.group(1) not in KEYWORDS
+        }
+        calls[name] = callees & all_names
+
+    return {"functions": functions, "calls": calls, "files": file_texts}
+
+
+def reachable_functions(start: str, calls: dict[str, set[str]]) -> set[str]:
+    seen = {start}
+    stack = [start]
+    while stack:
+        current = stack.pop()
+        for callee in calls.get(current, set()):
+            if callee not in seen:
+                seen.add(callee)
+                stack.append(callee)
+    return seen
+
+
+def enrich_truth_locations(truth: dict[str, Any], source_index: dict[str, Any]) -> None:
+    funcs = source_index.get("functions", {})
+    for vuln in truth.get("vulnerabilities", []):
+        primary = funcs.get(str(vuln.get("function") or ""))
+        if primary:
+            vuln["_current_file"] = primary["file"]
+            vuln["_current_line"] = primary["line"]
+            vuln["_current_end_line"] = primary["end_line"]
+        secondary = funcs.get(str(vuln.get("secondary_function") or ""))
+        if secondary:
+            vuln["_current_secondary_file"] = secondary["file"]
+            vuln["_current_secondary_line"] = secondary["line"]
+            vuln["_current_secondary_end_line"] = secondary["end_line"]
+
+
 def issue_file_and_line(issue: dict[str, Any]) -> tuple[str, int | None]:
     text = flatten_text(issue)
     norm = normalize_path(text)
@@ -68,21 +191,21 @@ def issue_file_and_line(issue: dict[str, Any]) -> tuple[str, int | None]:
 def line_near(line: int | None, truth: dict[str, Any], tolerance: int) -> bool:
     if line is None:
         return False
-    start = int(truth["line"])
-    end = int(truth.get("end_line", start))
+    start = int(truth.get("_current_line") or truth["line"])
+    end = int(truth.get("_current_end_line") or truth.get("end_line", start))
     if start - tolerance <= line <= end + tolerance:
         return True
-    secondary = truth.get("secondary_line")
+    secondary = truth.get("_current_secondary_line") or truth.get("secondary_line")
     if secondary is None:
         return False
-    secondary_end = int(truth.get("secondary_end_line", secondary))
+    secondary_end = int(truth.get("_current_secondary_end_line") or truth.get("secondary_end_line", secondary))
     return int(secondary) - tolerance <= line <= secondary_end + tolerance
 
 
 def file_matches(issue_file: str, truth: dict[str, Any]) -> bool:
     issue_file = normalize_path(issue_file)
-    primary = normalize_path(str(truth["file"]))
-    secondary = normalize_path(str(truth.get("secondary_file", "")))
+    primary = normalize_path(str(truth.get("_current_file") or truth["file"]))
+    secondary = normalize_path(str(truth.get("_current_secondary_file") or truth.get("secondary_file", "")))
     return primary in issue_file or bool(secondary and secondary in issue_file)
 
 
@@ -112,6 +235,23 @@ def function_matches(issue: dict[str, Any], truth: dict[str, Any]) -> bool:
         return True
     text = flatten_text(issue).lower()
     return any(value in text for value in expected)
+
+
+def call_reachable_function_matches(
+    issue: dict[str, Any],
+    truth: dict[str, Any],
+    source_index: dict[str, Any],
+) -> bool:
+    actual = issue_function(issue)
+    if not actual:
+        return False
+    calls = source_index.get("calls", {})
+    reachable = reachable_functions(actual, calls)
+    expected = {
+        str(truth.get("function") or ""),
+        str(truth.get("secondary_function") or ""),
+    }
+    return bool(reachable & {item for item in expected if item})
 
 
 def category_matches(issue: dict[str, Any], truth: dict[str, Any]) -> bool:
@@ -161,19 +301,30 @@ def category_matches(issue: dict[str, Any], truth: dict[str, Any]) -> bool:
     return any(needle and needle in text for needle in needles)
 
 
-def match_issue(issue: dict[str, Any], truth: dict[str, Any], tolerance: int) -> bool:
+def match_issue(
+    issue: dict[str, Any],
+    truth: dict[str, Any],
+    tolerance: int,
+    source_index: dict[str, Any] | None = None,
+) -> bool:
     issue_file, issue_line = issue_file_and_line(issue)
-    if not file_matches(issue_file, truth):
-        return False
     if not category_matches(issue, truth):
         return False
-    if not function_matches(issue, truth):
-        return False
-    return line_near(issue_line, truth, tolerance) and text_matches(issue, truth)
+    if file_matches(issue_file, truth) and function_matches(issue, truth):
+        return line_near(issue_line, truth, tolerance) and text_matches(issue, truth)
+    if source_index and call_reachable_function_matches(issue, truth, source_index):
+        return text_matches(issue, truth)
+    return False
 
 
-def score(report: dict[str, Any], truth: dict[str, Any], tolerance: int) -> dict[str, Any]:
-    issues = report_issues(report)
+def score(
+    report: dict[str, Any],
+    truth: dict[str, Any],
+    tolerance: int,
+    source_index: dict[str, Any] | None = None,
+    view: str = "default",
+) -> dict[str, Any]:
+    issues = report_issues(report, view)
     vulns = truth.get("vulnerabilities", [])
     matched_truth: dict[str, int] = {}
     matched_issues: set[int] = set()
@@ -182,7 +333,7 @@ def score(report: dict[str, Any], truth: dict[str, Any], tolerance: int) -> dict
         for iidx, issue in enumerate(issues):
             if iidx in matched_issues:
                 continue
-            if match_issue(issue, vuln, tolerance):
+            if match_issue(issue, vuln, tolerance, source_index):
                 matched_truth[vuln["id"]] = iidx
                 matched_issues.add(iidx)
                 break
@@ -191,6 +342,7 @@ def score(report: dict[str, Any], truth: dict[str, Any], tolerance: int) -> dict
     fp = max(0, len(issues) - len(matched_issues))
     fn = max(0, len(vulns) - tp)
     precision = tp / (tp + fp) if tp + fp else 0.0
+    false_positive_rate = fp / (tp + fp) if tp + fp else 0.0
     recall = tp / len(vulns) if vulns else 0.0
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
 
@@ -204,10 +356,50 @@ def score(report: dict[str, Any], truth: dict[str, Any], tolerance: int) -> dict
         "false_positives": fp,
         "false_negatives": fn,
         "precision": round(precision, 4),
+        "false_positive_rate": round(false_positive_rate, 4),
         "recall": round(recall, 4),
         "f1": round(f1, 4),
         "matched": matched,
         "missed": missed,
+    }
+
+
+def score_report_views(
+    report: dict[str, Any],
+    truth: dict[str, Any],
+    tolerance: int,
+    source_index: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    default_result = score(report, truth, tolerance, source_index, view="default")
+    with_review_result = score(
+        report,
+        truth,
+        tolerance,
+        source_index,
+        view="with_needs_review",
+    )
+    return {
+        "default": default_result,
+        "with_needs_review": with_review_result,
+        "comparison": {
+            "issue_delta": with_review_result["report_issue_count"]
+            - default_result["report_issue_count"],
+            "true_positive_delta": with_review_result["true_positives"]
+            - default_result["true_positives"],
+            "false_positive_delta": with_review_result["false_positives"]
+            - default_result["false_positives"],
+            "false_negative_delta": with_review_result["false_negatives"]
+            - default_result["false_negatives"],
+            "recall_delta": round(
+                with_review_result["recall"] - default_result["recall"],
+                4,
+            ),
+            "false_positive_rate_delta": round(
+                with_review_result["false_positive_rate"]
+                - default_result["false_positive_rate"],
+                4,
+            ),
+        },
     }
 
 
@@ -216,9 +408,20 @@ def main() -> None:
     parser.add_argument("--report", required=True, type=Path)
     parser.add_argument("--truth", required=True, type=Path)
     parser.add_argument("--line-tolerance", type=int, default=5)
+    parser.add_argument("--root", type=Path, default=Path("test/range"))
     args = parser.parse_args()
 
-    result = score(load_json(args.report), load_json(args.truth), args.line_tolerance)
+    truth = load_json(args.truth)
+    source_index = build_source_index(args.root)
+    enrich_truth_locations(truth, source_index)
+    report = load_json(args.report)
+    result = score(report, truth, args.line_tolerance, source_index)
+    result["report_views"] = score_report_views(
+        report,
+        truth,
+        args.line_tolerance,
+        source_index,
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

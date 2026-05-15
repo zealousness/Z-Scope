@@ -22,6 +22,7 @@ class SvfResult:
     """SVF 单次执行结果。"""
     tool: str  # "wpa" | "saber"
     success: bool = False
+    timed_out: bool = False
     output_file: Optional[Path] = None
     stderr: str = ""
     bugs: List[Dict[str, Any]] = field(default_factory=list)
@@ -123,6 +124,7 @@ class SvfRunner:
             )
         except subprocess.TimeoutExpired:
             logger.error("wpa-ander timed out after %ds", self.timeout)
+            result.timed_out = True
             result.stderr = f"Timeout after {self.timeout}s"
         except FileNotFoundError:
             logger.error("wpa not found; check svf_bin_dir config")
@@ -158,6 +160,7 @@ class SvfRunner:
             )
         except subprocess.TimeoutExpired:
             logger.error("saber timed out after %ds", self.timeout)
+            result.timed_out = True
             result.stderr = f"Timeout after {self.timeout}s"
         except FileNotFoundError:
             logger.error("saber not found; check svf_bin_dir config")

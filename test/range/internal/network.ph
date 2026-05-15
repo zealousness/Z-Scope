@@ -12,5 +12,7 @@ Connection* _net_create_connection(int fd);
 void _net_destroy_connection(Connection* conn);
 int _net_set_nonblocking(int fd);
 int _net_set_timeout(int fd, uint32_t timeout_ms);
+char* _net_recv_string(int fd, size_t max_len);
+int _net_handle_error(int error_code);
 
 #endif

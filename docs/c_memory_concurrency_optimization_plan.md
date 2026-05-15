@@ -40,6 +40,9 @@ The current codebase has landed the first evidence-driven stage:
   `test/range/benchmark/evaluate_zscope_report.py` provide regression metrics.
 - `test/range` is the tracked fixture; build outputs, snapshots and benchmark
   runs are ignored.
+- `RiskBudgetPlanner` keeps the existing `max_*` settings as hardware-backed
+  hard caps while deriving lower per-entry effective budgets for graph
+  recursion, premodel depth, callee breadth and focused subagent tickets.
 
 ## 3. Current Vulnerability Coverage
 
@@ -99,9 +102,12 @@ Invalid examples:
    small worker budget does not silently drop risky code.
 3. Feed SVF indirect calls and Saber signatures into the same candidate/evidence
    path instead of leaving them as passive query data.
-4. Expand entry discovery for public APIs, network/IPC, file parsing, callbacks,
+4. Use risk-adaptive budgets so low-risk functions do not consume full
+   recursion/premodel/subagent capacity while protocol-heavy functions can
+   approach the configured hard caps.
+5. Expand entry discovery for public APIs, network/IPC, file parsing, callbacks,
    thread starts and environment/input handling.
-5. Add regression fixtures for every new memory/concurrency pattern before
+6. Add regression fixtures for every new memory/concurrency pattern before
    relaxing thresholds.
 
 ## 7. Benchmark Protocol
@@ -175,6 +181,22 @@ cross-function init cleanup ownership, and recursive-lock proof without fixture
 function-name matching.
 
 ## 9. Remaining Work
+
+- Keep the v6 candidate-coverage gate active:
+
+  ```bash
+  python scripts/evaluate_range_regression.py \
+    --project-root test/range \
+    --deterministic-candidates \
+    --min-precision 0.60 \
+    --min-recall 0.75 \
+    --min-f1 0.67
+  ```
+
+  The gate uses the current `benchmark/ground_truth.json` truth version and
+  combines local deterministic candidates with graph/protocol candidates. It is
+  a fast signal for candidate coverage, not a replacement for full LLM +
+  validator benchmark runs.
 
 - Build more cross-function alias and ownership proofs instead of relying on
   same-function source slices.

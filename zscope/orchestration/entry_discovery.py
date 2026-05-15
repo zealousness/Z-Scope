@@ -11,7 +11,12 @@ from ..config.function_entry import FunctionEntry
 from ..retrieval.code_index import CodeIndex
 
 
-API_PROMPT = "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse."
+API_PROMPT = (
+    "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. "
+    "Treat this as an externally reachable facade: follow its callees and callback/worker paths to the "
+    "actual internal source/sink operations, and report the concrete vulnerable callee location rather "
+    "than stopping at the wrapper call site."
+)
 COMM_PROMPT = (
     "Communication or IPC entry. Treat bytes read from peers/shared channels as untrusted. "
     "Audit framing, length checks, return-value handling, and trust boundaries before parsing, "
@@ -305,8 +310,25 @@ class EntryDiscovery:
                 reasons.extend([f"calls:{hit}" for hit in comm_hits])
                 reasons.extend([f"shared_memory:{hit}" for hit in shm_hits])
             if thread_hits:
-                exposure_parts.append("thread")
                 reasons.extend([f"thread:{hit}" for hit in thread_hits])
+                for target in self._find_thread_entry_targets(code, thread_hits):
+                    target_impl = self.code_index.get_function_impl(target)
+                    if not target_impl:
+                        continue
+                    target_file = target_impl.get("file", "")
+                    if not self._is_in_search_root(target_file):
+                        continue
+                    candidates.append(
+                        EntryCandidate(
+                            function_name=target,
+                            exposure="thread",
+                            reasons=sorted(set([f"thread_entry:{hit}" for hit in thread_hits])),
+                            file_path=target_file,
+                            line=int(target_impl.get("start_line") or 0),
+                            custom_prompt=THREAD_PROMPT,
+                            confidence=0.88,
+                        )
+                    )
             if input_hits and not exposure_parts:
                 exposure_parts.append("other_user_input")
                 reasons.extend([f"input:{hit}" for hit in input_hits])
@@ -391,3 +413,20 @@ class EntryDiscovery:
             if re.search(pattern, stripped):
                 hits.append(name)
         return hits
+
+    @staticmethod
+    def _find_thread_entry_targets(code: str, thread_calls: Sequence[str]) -> List[str]:
+        stripped = re.sub(r"^\s*\d+\s*\|\s*", "", code, flags=re.MULTILINE)
+        targets: List[str] = []
+        for call in thread_calls:
+            if call != "pthread_create":
+                continue
+            pattern = re.compile(
+                rf"\b{re.escape(call)}\s*\(\s*[^,]+,\s*[^,]+,\s*&?\s*([A-Za-z_]\w*)\s*,",
+                flags=re.DOTALL,
+            )
+            for match in pattern.finditer(stripped):
+                target = match.group(1)
+                if target not in targets:
+                    targets.append(target)
+        return targets
