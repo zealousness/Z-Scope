@@ -108,6 +108,10 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
         <div class="block-card">
           <div class="sec-title" style="color:var(--primary);">✨ AI 推理链 (Reasoning)</div>
           <div style="font-size:13px; line-height:1.6; color:#d1d5db; white-space:pre-wrap;" id="reasoning"></div>
+          <div style="border-top:1px solid #374151; margin-top:12px; padding-top:12px;">
+            <label>规则 / 验证证据</label>
+            <div style="font-size:12px; line-height:1.6; color:#d1d5db; white-space:pre-wrap;" id="evidenceDetails"></div>
+          </div>
         </div>
         <div class="block-card" style="border-left: 4px solid var(--border);" id="detailsCard">
           <div class="sec-title" style="color:white;">漏洞详情</div>
@@ -192,6 +196,7 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
   const reasonEl = document.getElementById('reason');
   const snippetEl = document.getElementById('snippet');
   const reasoningEl = document.getElementById('reasoning');
+  const evidenceDetailsEl = document.getElementById('evidenceDetails');
   const rootCauseEl = document.getElementById('rootCause');
   const fixEl = document.getElementById('fix');
   const detailsCardEl = document.getElementById('detailsCard');
@@ -248,6 +253,44 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
   function getBorderColor(level) {
     const cls = { critical:'var(--error)', high:'var(--warning)', medium:'var(--info)', low:'var(--muted)' };
     return cls[(level||'').toLowerCase()] || 'var(--border)';
+  }
+
+  function formatFindingEvidence(finding) {
+    if (!finding) return '';
+    const lines = [];
+    const evidencePack = finding.evidence_pack || {};
+    const score = finding.final_score ?? evidencePack.final_score;
+    if (finding.source || finding.sink) {
+      lines.push(`Source/Sink: ${finding.source || 'unknown'} -> ${finding.sink || 'unknown'}`);
+    }
+    if (finding.rule || finding.cwe || finding.defect_class) {
+      lines.push(`Rule: ${finding.rule || finding.defect_class || 'unknown'}${finding.cwe ? ` (${finding.cwe})` : ''}`);
+    }
+    if (score !== undefined && score !== null && score !== '') {
+      const numeric = Number(score);
+      lines.push(`Score: ${Number.isFinite(numeric) ? numeric.toFixed(2) : score}`);
+    }
+    const positives = Array.isArray(finding.positive_evidence)
+      ? finding.positive_evidence
+      : (Array.isArray(evidencePack.positive_evidence) ? evidencePack.positive_evidence : []);
+    const negatives = Array.isArray(finding.negative_evidence)
+      ? finding.negative_evidence
+      : (Array.isArray(evidencePack.negative_evidence) ? evidencePack.negative_evidence : []);
+    if (positives.length) {
+      lines.push('正向证据:');
+      positives.slice(0, 8).forEach(item => lines.push(`- ${item}`));
+    }
+    if (negatives.length) {
+      lines.push('反向证据 / 待复核点:');
+      negatives.slice(0, 6).forEach(item => lines.push(`- ${item}`));
+    }
+    const refs = Array.isArray(finding.evidence_refs)
+      ? finding.evidence_refs
+      : (Array.isArray(evidencePack.evidence_refs) ? evidencePack.evidence_refs : []);
+    if (refs.length) {
+      lines.push(`Evidence refs: ${refs.slice(0, 8).join(', ')}`);
+    }
+    return lines.join('\n');
   }
 
   function fuzzyScore(text, query) {
@@ -338,6 +381,7 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
     
     snippetEl.textContent = f.code_snippet || '暂无代码片段';
     reasoningEl.textContent = f.reasoning || f.reasoning_process || '暂无推理过程';
+    evidenceDetailsEl.textContent = formatFindingEvidence(f) || '暂无结构化证据';
     rootCauseEl.textContent = f.root_cause || f.description || '暂无根本原因分析';
     fixEl.textContent = f.suggested_fix || '暂无修复建议';
     
