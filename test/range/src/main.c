@@ -16,6 +16,10 @@ static volatile int g_running = 1;
 static uint32_t g_shared_counter = 0;
 static pthread_mutex_t g_counter_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_ready = 0;
+static pthread_t g_receiver_thread;
+static int g_receiver_started = 0;
+static volatile int g_receiver_running = 0;
+static int g_receiver_server_fd = -1;
 
 static void _free_task(Task* task) {
     if (!task) {
@@ -89,6 +93,26 @@ static void* _worker_thread(void* arg) {
     return NULL;
 }
 
+static void* _packet_receiver_thread(void* arg) {
+    int server_fd = *(int*)arg;
+    char packet[512];
+
+    while (g_receiver_running) {
+        int client_fd = _net_accept_connection(server_fd);
+        if (client_fd < 0) {
+            usleep(1000);
+            continue;
+        }
+
+        _lifecycle_watch_connection(client_fd);
+        _lifecycle_recv_packet(client_fd, packet, sizeof(packet));
+        _lifecycle_dispatch_watched_event(packet, sizeof(packet));
+        _net_close_connection(client_fd);
+    }
+
+    return NULL;
+}
+
 static void _default_task_handler(Task* task) {
     if (!task) {
         return;
@@ -139,6 +163,20 @@ int td_init(const char* config_str) {
     
     _executor_init(&g_dispatcher.config);
     _lifecycle_service_init(g_dispatcher.config.thread_count);
+
+    g_receiver_server_fd = _net_init_server(0);
+    if (g_receiver_server_fd >= 0) {
+        _net_set_nonblocking(g_receiver_server_fd);
+        g_receiver_running = 1;
+        if (pthread_create(&g_receiver_thread, NULL, _packet_receiver_thread,
+                           &g_receiver_server_fd) == 0) {
+            g_receiver_started = 1;
+        } else {
+            g_receiver_running = 0;
+            _net_close_connection(g_receiver_server_fd);
+            g_receiver_server_fd = -1;
+        }
+    }
     
     g_dispatcher.threads = (pthread_t*)_safe_calloc(
         g_dispatcher.config.thread_count, sizeof(pthread_t));
@@ -260,6 +298,126 @@ int td_execute_command(const char* command) {
     return task_id;
 }
 
+int td_send_message(int fd, const void* data, size_t len) {
+    if (!data || len == 0) {
+        return -1;
+    }
+    return _net_send_data(fd, data, len);
+}
+
+int td_send_status(int fd) {
+    return _lifecycle_send_status(fd);
+}
+
+char* td_receive_string(int fd, size_t max_len) {
+    return _net_recv_string(fd, max_len);
+}
+
+int td_receive_message(int fd, char* dst, size_t dst_size) {
+    return _lifecycle_recv_packet(fd, dst, dst_size);
+}
+
+int td_report_network_error(int error_code) {
+    return _net_handle_error(error_code);
+}
+
+int td_handle_network_task(Task* task) {
+    return _executor_handle_network_request(task);
+}
+
+int td_serialize_task_message(const Task* task, void** buffer, size_t* len) {
+    return _serialize_task(task, buffer, len);
+}
+
+static void _public_lifecycle_callback(void* context) {
+    (void)context;
+}
+
+int td_process_control_message(const char* msg, int transport_id) {
+    char* key = _lifecycle_parse_control_message(msg);
+    if (!key) {
+        return -1;
+    }
+
+    _lifecycle_add_entry(key, msg);
+    (void)_lifecycle_get_value(key);
+    _lifecycle_ref_get(key);
+    _lifecycle_ref_put(key);
+    _lifecycle_register_entry_callback(key, _public_lifecycle_callback);
+    _lifecycle_fire_registered_callback();
+    _lifecycle_fire_callback_under_lock();
+    _lifecycle_mesh_control_message(msg, transport_id);
+    _lifecycle_remove_entry(key);
+    free(key);
+    return 0;
+}
+
+int td_manage_runtime_config(const char* text, size_t metric_count) {
+    int rc = _lifecycle_reload_config(text);
+    (void)_lifecycle_get_config_length();
+    _lifecycle_wait_for_work();
+    _lifecycle_resize_metrics(metric_count);
+    return rc;
+}
+
+int td_format_and_parse_frame(const char* prefix, uint32_t id, char* out, size_t out_size) {
+    unsigned char packet[8] = {0};
+    char line[MAX_PATH_LEN];
+
+    snprintf(line, sizeof(line), "%s=value", prefix ? prefix : "topic");
+    _lifecycle_format_topic(prefix, id, out, out_size);
+    _lifecycle_parse_frame((size_t)id);
+    _lifecycle_decode_unaligned_id(packet, sizeof(packet));
+    _lifecycle_release_value_slice(line);
+    return 0;
+}
+
+int td_watch_connection_event(int fd, char* buffer, size_t len) {
+    _lifecycle_watch_connection(fd);
+    _lifecycle_dispatch_watched_event(buffer, len);
+    return _lifecycle_close_connection(fd);
+}
+
+int td_configure_rules(const char* path, size_t len, size_t offset) {
+    int rc = _lifecycle_map_rules(path, len);
+    _lifecycle_match_rule_byte(offset);
+    _lifecycle_unload_rules();
+    return rc;
+}
+
+int td_handle_mesh_message(const char* msg, int transport_id) {
+    _lifecycle_mesh_authorize_init();
+    _lifecycle_mesh_control_message(msg, transport_id);
+    _lifecycle_mesh_disconnect(msg);
+    _lifecycle_customize_control_message(msg, transport_id);
+    return _lifecycle_customize_transport_cleanup(transport_id);
+}
+
+int td_update_subscription(const char* topic) {
+    _lifecycle_register_guarded_subscription(topic);
+    return _lifecycle_unregister_guarded_subscription(topic);
+}
+
+int td_control_pipe(int pipe_id) {
+    _lifecycle_scheduler_add_pipe(pipe_id);
+    _lifecycle_dispatch_pipe_tick(pipe_id);
+    _lifecycle_tick_timer_callback(pipe_id);
+    _lifecycle_close_pipe(pipe_id);
+    return _lifecycle_dispatch_pipe_tick(pipe_id);
+}
+
+int td_update_os_policy(const char* os_name, int pid, const char* proc_name,
+                        const char* policy_key, int route_key, uint32_t delta) {
+    _lifecycle_register_os_node(os_name);
+    _lifecycle_attach_proc_node(os_name, pid, proc_name);
+    _lifecycle_delete_os_node(os_name);
+    _lifecycle_avl_policy_upsert(policy_key, pid);
+    _lifecycle_avl_register_route(route_key, 1);
+    _lifecycle_avl_walk_duplicate_routes(16);
+    _lifecycle_macro_guarded_counter_update(delta);
+    return 0;
+}
+
 int td_query_status(task_id_t task_id) {
     return TASK_STATUS_PENDING;
 }
@@ -276,6 +434,16 @@ int td_cleanup(void) {
     g_running = 0;
     g_dispatcher.running = 0;
     g_ready = 0;
+    g_receiver_running = 0;
+
+    if (g_receiver_server_fd >= 0) {
+        _net_close_connection(g_receiver_server_fd);
+        g_receiver_server_fd = -1;
+    }
+    if (g_receiver_started) {
+        pthread_join(g_receiver_thread, NULL);
+        g_receiver_started = 0;
+    }
     
     pthread_cond_broadcast(&g_dispatcher.queue.cond);
     

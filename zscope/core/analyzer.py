@@ -9,6 +9,7 @@ import time
 import datetime
 import re
 import fnmatch
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, cast
 
@@ -17,6 +18,7 @@ from ..config.user_config_store import UserConfigStore
 from ..retrieval.code_index import CodeIndex
 from .snapshot_store import SnapshotStore
 from .deterministic_candidates import DeterministicCandidateGenerator, DeterministicSemantics
+from .graph_candidates import GraphCandidateGenerator
 from .tools_runtime import ToolsRuntime
 from ..framework.llm_client import LLMClient
 from ..agents.semantic_modeler.agent import SemanticModeler
@@ -24,12 +26,23 @@ from ..agents.semantic_modeler.schema import DEFAULT_FUNCTION_SNAPSHOT_SCHEMA
 from ..agents.vulnerability_analyzer.agent import VulnerabilityAnalyzer
 from ..agents.validator_agent.agent import ValidatorAgent
 from .report import FinalReport, Issue, ReportGenerator
+from .issue_dedup import (
+    canonical_issue_key,
+    deduplicate_issues,
+    flatten_issue_text,
+    issue_rank,
+    normalize_issue_category,
+    normalize_issue_key_part,
+    parse_issue_location,
+)
+from .report_views import build_report_views, report_view_summary
 from ..common.utils import extract_json_blocks, validate_json_schema
 from .._version import __version__
 from ..orchestration.specs import SpecRegistry, WorkflowStep
 from ..orchestration.workflow_executor import WorkflowExecutor, WorkflowStepHandler
 from ..orchestration.subagents import SubAgentOrchestrator
 from ..orchestration.candidates import CandidateLedger
+from ..orchestration.budget import EffectiveBudget, RiskBudgetPlanner
 from ..orchestration.skill_selection import SkillSelection, select_vulnerability_skills
 
 logger = logging.getLogger(__name__)
@@ -73,6 +86,7 @@ class Analyzer:
             priority_functions=[config.project.entry_function] if config.project.entry_function else None,
             include_paths=config.project.include_paths,
             exclude_paths=config.project.exclude_paths,
+            svf_entry_functions=[config.project.entry_function] if config.project.entry_function else None,
         )
         self.snapshot_store = snapshot_store or SnapshotStore(Path(config.analysis.snapshot_dir))
         db_dir = Path(config.analysis.user_config_db) if config.analysis.user_config_db else Path(config.analysis.snapshot_dir)
@@ -94,6 +108,7 @@ class Analyzer:
         self.force_ignore_history = force_ignore_history
         self.maintain_mode = maintain_mode
         self.candidate_ledger = candidate_ledger or CandidateLedger()
+        self.budget_planner = RiskBudgetPlanner(config.analysis)
         self._skill_selection_cache: Dict[str, SkillSelection] = {}
         self._deterministic_semantics: Optional[DeterministicSemantics] = None
         self.workflow_progress: List[Dict[str, Any]] = []
@@ -162,8 +177,9 @@ class Analyzer:
         if user_config_context:
             agent_context["user_config_context"] = user_config_context
 
-        return {
+        state = {
             "entry_func": entry_func,
+            "run_id": uuid.uuid4().hex,
             "impl_result": impl_result,
             "agent_context": agent_context,
             "notes": [],
@@ -193,6 +209,48 @@ class Analyzer:
             "final_report": None,
             "final_report_dict": None,
         }
+        self._refresh_effective_budget(state, "initial")
+        return state
+
+    def _refresh_effective_budget(
+        self,
+        state: Dict[str, Any],
+        stage: str,
+        *,
+        rule_candidates: Optional[Sequence[Any]] = None,
+        graph_candidates: Optional[Sequence[Any]] = None,
+        backend_candidates: Optional[Sequence[Any]] = None,
+        subagent_candidates: Optional[Sequence[Any]] = None,
+    ) -> EffectiveBudget:
+        """Compute and attach the current adaptive budget to workflow state."""
+
+        budget = self.budget_planner.plan(
+            state,
+            rule_candidates=rule_candidates,
+            graph_candidates=graph_candidates,
+            backend_candidates=backend_candidates,
+            subagent_candidates=subagent_candidates,
+        )
+        budget_dict = budget.to_dict()
+        state["effective_budget"] = budget_dict
+        state["budget_stage"] = stage
+        state["budget_hard_caps"] = dict(budget.hard_caps)
+        state["budget_scores"] = dict(budget.risk_scores)
+        state["budget_reasons"] = {
+            key: list(value) for key, value in budget.risk_reasons.items()
+        }
+
+        agent_context = state.get("agent_context")
+        if isinstance(agent_context, dict):
+            agent_context["effective_budget"] = budget_dict
+            agent_context["budget_stage"] = stage
+        return budget
+
+    def _current_effective_budget(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        budget = state.get("effective_budget")
+        if isinstance(budget, dict):
+            return budget
+        return self._refresh_effective_budget(state, "late_init").to_dict()
 
     def _relevant_user_config_context(self, entry_func: str, code: str, file_path: str = "") -> str:
         """Return only user-config rows referenced by the current function."""
@@ -512,13 +570,29 @@ class Analyzer:
         sm_agent_cfg = next((a for a in self.config.project.agents if a.name == "semantic_modeler"), None)
         sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
         sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients["default"])
+        budget = self._refresh_effective_budget(state, "premodel")
+        if budget.premodel_depth <= 0 or budget.premodel_callees <= 0:
+            state["notes"].append("Premodel skipped because adaptive budget is 0.")
+            return
 
-        modeled, skipped, tokens = self._premodel_callees(
-            state["entry_func"],
-            sm_client,
-            max_depth=self.config.analysis.max_premodel_depth,
-            max_callees=self.config.analysis.max_premodel_callees,
-        )
+        try:
+            modeled, skipped, tokens = self._premodel_callees(
+                state["entry_func"],
+                sm_client,
+                max_depth=budget.premodel_depth,
+                max_callees=budget.premodel_callees,
+            )
+        except Exception as exc:
+            logger.exception(
+                "[premodel] Reachable callee premodeling failed for '%s'; "
+                "continuing with entry analysis.",
+                state["entry_func"],
+            )
+            state["notes"].append(
+                "Premodel reachable callees skipped after retrieval error: "
+                f"{exc}"
+            )
+            return
         state["total_context_tokens"] += tokens
         state["notes"].append(
             f"Premodeled {modeled} reachable callee(s), reused {skipped} snapshot(s)."
@@ -588,18 +662,29 @@ class Analyzer:
                 call_path=[state["entry_func"]],
             )
             local_records.append(record)
+        collection_budget = self._refresh_effective_budget(state, "subagent_collect")
         snapshot_candidate_count = self._add_snapshot_candidates_to_ledger(
             ledger,
             orchestrator,
             state["entry_func"],
             selection.skills,
             local_records,
+            max_depth=collection_budget.premodel_depth,
+            max_callees=collection_budget.premodel_callees,
         )
         deterministic_tickets = self._detect_local_rule_tickets(state, selection.skills)
         for ticket in deterministic_tickets:
             record, _ = ledger.add(
                 ticket,
                 source=f"deterministic_rule:{state['entry_func']}",
+                call_path=[state["entry_func"]],
+            )
+            local_records.append(record)
+        graph_tickets = self._detect_graph_rule_tickets(state, selection.skills)
+        for ticket in graph_tickets:
+            record, _ = ledger.add(
+                ticket,
+                source=f"graph_rule:{state['entry_func']}",
                 call_path=[state["entry_func"]],
             )
             local_records.append(record)
@@ -619,9 +704,14 @@ class Analyzer:
                 continue
             seen_local_keys.add(record.dedup_key)
             candidates.append(record.to_ticket())
+        planning_budget = self._refresh_effective_budget(
+            state,
+            "subagent_planning",
+            subagent_candidates=candidates,
+        )
         tickets = orchestrator.select_tickets(
             candidates,
-            self.config.analysis.max_subagent_tickets,
+            planning_budget.subagent_tickets,
         )
         unassigned = orchestrator.unassigned_candidates(candidates, tickets)
         ledger.mark_planned(tickets)
@@ -669,8 +759,8 @@ class Analyzer:
             f"pending candidate(s); merged {ledger_summary.get('duplicates_merged', 0)} "
             f"duplicate candidate source(s), including {snapshot_candidate_count} "
             f"semantic snapshot candidate(s) and {len(deterministic_tickets)} "
-            f"deterministic candidate(s), plus {len(backend_tickets)} "
-            "backend signal candidate(s)."
+            f"deterministic candidate(s), {len(graph_tickets)} graph/protocol "
+            f"candidate(s), plus {len(backend_tickets)} backend signal candidate(s)."
         )
         if unassigned:
             state["notes"].append(
@@ -717,13 +807,14 @@ class Analyzer:
         entry_func: str,
         active_skills: List[str],
         local_records: List[Any],
+        *,
+        max_depth: int,
+        max_callees: int,
     ) -> int:
         """Add semantic-snapshot suspicious points from reachable functions to the ledger."""
         added = 0
         visited: Set[str] = set()
         queue: List[tuple[str, List[str], int]] = [(entry_func, [entry_func], 0)]
-        max_depth = self.config.analysis.max_premodel_depth
-        max_callees = self.config.analysis.max_premodel_callees
 
         while queue:
             func, path, depth = queue.pop(0)
@@ -787,13 +878,22 @@ class Analyzer:
                 active_skill_names=selection.skills,
             )
             rule_candidates = self._detect_local_rule_candidates(state)
+            graph_candidates = self._detect_graph_rule_candidates(state)
             backend_candidates = self._detect_backend_signal_candidates(state)
-            candidate_signals = rule_candidates + backend_candidates
+            candidate_signals = rule_candidates + graph_candidates + backend_candidates
+            self._refresh_effective_budget(
+                state,
+                "candidate_signals",
+                rule_candidates=rule_candidates,
+                graph_candidates=graph_candidates,
+                backend_candidates=backend_candidates,
+            )
             signal_summary = state.setdefault(
                 "candidate_signal_summary",
-                {"deterministic": 0, "backend": 0, "total": 0},
+                {"deterministic": 0, "graph": 0, "backend": 0, "total": 0},
             )
             signal_summary["deterministic"] += len(rule_candidates)
+            signal_summary["graph"] += len(graph_candidates)
             signal_summary["backend"] += len(backend_candidates)
             signal_summary["total"] += len(candidate_signals)
             self._persist_candidate_ir_records(candidate_signals)
@@ -808,6 +908,7 @@ class Analyzer:
                     raw_new_issues = list(raw_new_issues) + candidate_signals
                     state["notes"].append(
                         f"Added {len(rule_candidates)} deterministic rule candidate(s) "
+                        f"{len(graph_candidates)} graph/protocol candidate(s), "
                         f"and {len(backend_candidates)} backend signal candidate(s)."
                     )
                 va_ctx_tokens = response.metadata.get("context_tokens", 0) if response.metadata else 0
@@ -894,7 +995,42 @@ class Analyzer:
         code = str(impl.get("code") or "")
         file_path = str(impl.get("file") or "")
         generator = DeterministicCandidateGenerator(self._get_deterministic_semantics())
-        return generator.generate_issues(entry_func, code, file_path)
+        issues = generator.generate_issues(entry_func, code, file_path)
+        issues.extend(self._detect_direct_callee_rule_candidates(impl, generator))
+        return self._dedupe_rule_candidates(issues)
+
+    def _detect_graph_rule_candidates(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Seed cross-function graph/protocol candidates before LLM validation."""
+        entry_func = state["entry_func"]
+        impl = state.get("impl_result") or {}
+        budget = self._current_effective_budget(state)
+        graph_depth = int(budget.get("graph_depth", 0) or 0)
+        graph_functions = int(budget.get("graph_functions", 0) or 0)
+        if graph_depth <= 0 or graph_functions <= 0:
+            return []
+        generator = GraphCandidateGenerator(self.code_index)
+        issues = generator.generate_for_entry(
+            entry_func,
+            impl,
+            max_depth=graph_depth,
+            max_functions=graph_functions,
+        )
+        return self._dedupe_rule_candidates(issues)
+
+    def _detect_graph_rule_tickets(
+        self,
+        state: Dict[str, Any],
+        allowed_skills: Optional[List[str]] = None,
+    ) -> List[Any]:
+        generator = GraphCandidateGenerator(self.code_index)
+        tickets = [
+            generator.issue_to_ticket(issue)
+            for issue in self._detect_graph_rule_candidates(state)
+        ]
+        if allowed_skills is None:
+            return tickets
+        allowed = set(allowed_skills)
+        return [ticket for ticket in tickets if ticket.skill in allowed]
 
     def _detect_local_rule_tickets(
         self,
@@ -905,12 +1041,95 @@ class Analyzer:
         entry_func = state["entry_func"]
         impl = state.get("impl_result") or {}
         generator = DeterministicCandidateGenerator(self._get_deterministic_semantics())
-        return generator.generate_tickets(
+        issues = generator.generate_issues(
             entry_func,
             str(impl.get("code") or ""),
             str(impl.get("file") or ""),
             allowed_skills=allowed_skills,
         )
+        issues.extend(
+            self._detect_direct_callee_rule_candidates(
+                impl,
+                generator,
+                allowed_skills=allowed_skills,
+            )
+        )
+        return [
+            generator.issue_to_ticket(issue)
+            for issue in self._dedupe_rule_candidates(issues)
+        ]
+
+    def _detect_direct_callee_rule_candidates(
+        self,
+        impl: Dict[str, Any],
+        generator: DeterministicCandidateGenerator,
+        *,
+        allowed_skills: Optional[List[str]] = None,
+        limit: int = 16,
+        max_depth: int = 2,
+        total_limit: int = 80,
+    ) -> List[Dict[str, Any]]:
+        """Run deterministic rules on project callees of thin public facades."""
+        issues: List[Dict[str, Any]] = []
+        queued: List[tuple[str, int]] = [
+            (str(name), 1)
+            for name in impl.get("callees", [])
+            if str(name).startswith("_")
+        ][:limit]
+        visited: Set[str] = set()
+        analyzed = 0
+        while queued and analyzed < total_limit:
+            callee, depth = queued.pop(0)
+            if callee in visited:
+                continue
+            visited.add(callee)
+            try:
+                callee_impl = self.code_index.get_function_impl(callee, warn_missing=False)
+            except Exception as exc:
+                logger.warning(
+                    "Skipping direct callee candidate scan for '%s': %s",
+                    callee,
+                    exc,
+                    exc_info=True,
+                )
+                continue
+            if not callee_impl:
+                continue
+            analyzed += 1
+            issues.extend(
+                generator.generate_issues(
+                    callee,
+                    str(callee_impl.get("code") or ""),
+                    str(callee_impl.get("file") or ""),
+                    allowed_skills=allowed_skills,
+                )
+            )
+            if depth >= max_depth:
+                continue
+            for nested in callee_impl.get("callees", [])[:limit]:
+                nested_name = str(nested)
+                if nested_name.startswith("_") and nested_name not in visited:
+                    queued.append((nested_name, depth + 1))
+        return issues
+
+    @staticmethod
+    def _dedupe_rule_candidates(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        deduped: Dict[str, Dict[str, Any]] = {}
+        for issue in issues:
+            key = str(
+                issue.get("dedup_key")
+                or issue.get("candidate_id")
+                or issue.get("id")
+                or (
+                    issue.get("function"),
+                    issue.get("defect_class"),
+                    issue.get("rule"),
+                    issue.get("file") or issue.get("file_path"),
+                    issue.get("line"),
+                )
+            )
+            deduped.setdefault(key, issue)
+        return list(deduped.values())
 
     def _detect_backend_signal_candidates(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Convert KnowledgeDB/SVF/Saber findings into normal candidates."""
@@ -1193,6 +1412,12 @@ class Analyzer:
     ) -> None:
         if not name:
             return
+        if source == "semantic_snapshot":
+            # Snapshot text describes a function's internal behavior.  Generic
+            # fields such as "locks", "release_line", or cleanup notes must not
+            # turn the described function itself into a lock/free/copy API.
+            self._add_api_by_name_heuristic(semantics, name, source)
+            return
         lower = text.lower()
         if "realloc" in lower or "重新分配" in lower:
             semantics.add_api("reallocator", name, source)
@@ -1300,6 +1525,9 @@ class Analyzer:
                     "type_confusion",
                     "bounds",
                     "integer_overflow",
+                    "infinite_loop",
+                    "log_amplification",
+                    "key_truncation",
                 }:
                     event_id = db.insert_ir_resource_event(
                         candidate_id,
@@ -1318,6 +1546,7 @@ class Analyzer:
                     "held_lock_callback",
                     "lost_wakeup",
                     "double_checked_locking",
+                    "deadlock",
                 }:
                     event_id = db.insert_ir_lock_event(
                         candidate_id,
@@ -1490,6 +1719,7 @@ class Analyzer:
                     raw_issue.get("id"),
                 )
                 state["issues"].append(raw_issue)
+                self._remember_validation_result(raw_issue, "validated")
                 continue
 
             issue_code = state["agent_context"]["code"]
@@ -1551,11 +1781,13 @@ class Analyzer:
                         state["issues"].append(raw_issue)
                     else:
                         state["observations"].append(raw_issue)
+                    self._remember_validation_result(raw_issue, raw_issue["validation_status"])
                 elif verdict == "verified":
                     raw_issue["validation_status"] = "uncertain"
                     raw_issue["finding_kind"] = "audit_observation"
                     raw_issue["validation_reasoning"] = val_data.get("reasoning")
                     state["observations"].append(raw_issue)
+                    self._remember_validation_result(raw_issue, "uncertain")
                     logger.info(
                         "Issue %s verified by validator but final_score %.2f is below report threshold.",
                         raw_issue.get("id"),
@@ -1566,6 +1798,7 @@ class Analyzer:
                     raw_issue["finding_kind"] = val_data.get("finding_kind") or "audit_observation"
                     raw_issue["validation_reasoning"] = val_data.get("reasoning")
                     state["observations"].append(raw_issue)
+                    self._remember_validation_result(raw_issue, "uncertain")
                     logger.info(
                         "Issue %s marked UNCERTAIN by Validator; kept as observation.",
                         raw_issue.get("id"),
@@ -1575,6 +1808,7 @@ class Analyzer:
                     raw_issue["finding_kind"] = "rejected"
                     raw_issue["rejection_source"] = "validator"
                     raw_issue["validation_reasoning"] = val_data.get("reasoning")
+                    self._remember_validation_result(raw_issue, "rejected")
                     logger.info("Issue %s REJECTED by Validator, discarding.", raw_issue.get("id"))
             else:
                 logger.warning(
@@ -1589,6 +1823,22 @@ class Analyzer:
                 state["observations"].append(raw_issue)
 
         state["pending_new_issues"] = []
+
+    def _remember_validation_result(self, issue: Dict[str, Any], status: str) -> None:
+        """Persist validator disposition as review memory for later scans."""
+        dedup_key = str(issue.get("dedup_key") or self._canonical_issue_key(issue))
+        if not dedup_key:
+            return
+        memory_status = {
+            "validated": "verified",
+            "needs_review": "uncertain",
+            "uncertain": "uncertain",
+            "rejected": "rejected",
+        }.get(str(status or "").lower(), str(status or "unknown").lower())
+        try:
+            self.user_config.upsert_finding_baseline(dedup_key, memory_status, issue)
+        except Exception as exc:
+            logger.debug("Failed to persist validation memory for %s: %s", issue.get("id"), exc)
 
     def _should_auto_accept_deterministic_candidate(self, issue: Dict[str, Any]) -> bool:
         """Return whether a deterministic local-rule candidate is report-ready."""
@@ -1729,29 +1979,7 @@ class Analyzer:
         self, issues: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """Merge candidate findings that point at the same root-cause sink."""
-        records: Dict[str, Dict[str, Any]] = {}
-        for issue in issues:
-            key = self._canonical_issue_key(issue)
-            existing = records.get(key)
-            if existing is None:
-                issue.setdefault("dedup_key", key)
-                issue.setdefault("duplicate_sources", [])
-                records[key] = issue
-                continue
-
-            existing["duplicate_count"] = int(existing.get("duplicate_count", 0) or 0) + 1
-            sources = existing.setdefault("duplicate_sources", [])
-            source = issue.get("id") or issue.get("analyzed_from") or issue.get("function")
-            if source and source not in sources:
-                sources.append(source)
-
-            if self._issue_rank(issue) > self._issue_rank(existing):
-                merged_sources = list(sources)
-                issue["duplicate_count"] = existing.get("duplicate_count", 0)
-                issue["duplicate_sources"] = merged_sources
-                issue["dedup_key"] = key
-                records[key] = issue
-        return list(records.values())
+        return deduplicate_issues(issues)
 
     def _build_validation_evidence_pack(
         self,
@@ -1825,106 +2053,27 @@ class Analyzer:
 
     @staticmethod
     def _issue_rank(issue: Dict[str, Any]) -> tuple[int, float, int]:
-        severity_order = {"critical": 4, "high": 3, "medium": 2, "low": 1}
-        severity = severity_order.get(str(issue.get("impact_level") or issue.get("severity") or "").lower(), 0)
-        try:
-            confidence = float(issue.get("confidence", 0) or 0)
-        except (TypeError, ValueError):
-            confidence = 0.0
-        return severity, confidence, len(str(issue.get("reasoning") or issue.get("description") or ""))
+        return issue_rank(issue)
 
     @classmethod
     def _canonical_issue_key(cls, issue: Dict[str, Any]) -> str:
-        text = cls._flatten_issue_text(issue)
-        file_path, line = cls._parse_issue_location(str(issue.get("location") or issue.get("file") or text))
-        if not file_path:
-            match = re.search(r"((?:src|include|internal)/[A-Za-z0-9_./-]+\.[chp]+)", text)
-            file_path = match.group(1).lower() if match else ""
-        category = cls._normalize_issue_category(
-            str(issue.get("category") or issue.get("subcategory") or issue.get("vulnerability_type") or text)
-        )
-        if category == "race" and issue.get("source"):
-            return "|".join(
-                cls._normalize_issue_key_part(part)
-                for part in (category, file_path, issue.get("source"))
-            )
-        sink = str(issue.get("sink") or issue.get("sink_function") or "")
-        if not sink:
-            sink_match = re.search(
-                r"\b(memcpy|memmove|strcpy|strcat|sprintf|snprintf|printf|system|fopen|free|malloc|"
-                r"calloc|realloc|close|munmap|pthread_create|pthread_cond_wait|pthread_mutex_lock|"
-                r"pthread_mutex_unlock|pthread_rwlock_wrlock|pthread_rwlock_rdlock|pthread_rwlock_unlock|"
-                r"strlen|callback|handler)\b",
-                text,
-                flags=re.IGNORECASE,
-            )
-            sink = sink_match.group(1).lower() if sink_match else ""
-        line_key = str(line or "")
-        return "|".join(
-            cls._normalize_issue_key_part(part)
-            for part in (category, file_path, line_key, sink or issue.get("function", ""))
-        )
+        return canonical_issue_key(issue)
 
     @staticmethod
     def _normalize_issue_category(value: str) -> str:
-        text = value.replace("_", " ").replace("-", " ").lower()
-        groups = {
-            "integer_overflow": ("integer", "overflow", "wrap", "cwe-190"),
-            "bounds": ("bounds", "buffer", "out of bounds", "cwe-125", "cwe-787"),
-            "format_string": ("format string", "cwe-134"),
-            "command_injection": ("command injection", "system", "shell", "cwe-78"),
-            "race": ("race", "toctou", "concurrency", "cwe-362", "cwe-367"),
-            "deadlock": ("deadlock", "cwe-833"),
-            "double_free": ("double free", "cwe-415"),
-            "invalid_free": ("invalid free", "non owner", "cwe-590"),
-            "use_after_free": ("use after free", "uaf", "stale mapping", "borrowed pointer", "cwe-416"),
-            "stack_escape": ("stack escape", "use after return", "return stack", "cwe-562"),
-            "memory_leak": ("leak", "cwe-401"),
-            "type_confusion": ("type confusion", "wrong type", "invalid mutex", "sharedresources", "cwe-843"),
-            "realloc_misuse": ("realloc misuse", "direct realloc", "cwe-401"),
-            "missing_unlock": ("missing unlock", "return while lock", "lock held", "cwe-667"),
-            "held_lock_callback": ("callback while lock", "held lock callback", "cwe-667"),
-            "lost_wakeup": ("lost wakeup", "condition variable", "pthread cond wait", "cwe-366"),
-            "refcount_race": ("refcount race", "reference count", "ref count"),
-            "object_publication": ("object publication", "published before initialization"),
-            "double_checked_locking": ("double checked locking", "double checked"),
-            "signed_unsigned": ("signed unsigned", "negative length", "cwe-195"),
-            "off_by_one": ("off by one", "sizeof index", "cwe-193"),
-            "uninitialized_read": ("uninitialized read", "stale stack bytes", "cwe-457"),
-            "stack_overflow": ("stack overflow", "vla", "stack array", "cwe-121"),
-            "alignment": ("alignment", "unaligned", "cwe-704"),
-            "null_pointer_dereference": ("null pointer", "null dereference", "cwe-476"),
-            "stale_fd": ("stale fd", "file descriptor", "cwe-672"),
-            "backend_signal": ("backend signal", "svf", "saber", "knowledge db"),
-        }
-        for canonical, needles in groups.items():
-            if any(needle in text for needle in needles):
-                return canonical
-        return text.strip() or "unknown"
+        return normalize_issue_category(value)
 
     @staticmethod
     def _normalize_issue_key_part(value: Any) -> str:
-        text = str(value or "").replace("\\", "/").lower().strip()
-        return re.sub(r"\s+", " ", text)
+        return normalize_issue_key_part(value)
 
     @classmethod
     def _flatten_issue_text(cls, value: Any) -> str:
-        if isinstance(value, dict):
-            return " ".join(cls._flatten_issue_text(v) for v in value.values())
-        if isinstance(value, list):
-            return " ".join(cls._flatten_issue_text(v) for v in value)
-        return "" if value is None else str(value)
+        return flatten_issue_text(value)
 
     @staticmethod
     def _parse_issue_location(location: str) -> tuple[str, Optional[int]]:
-        normalized = location.replace("\\", "/")
-        match = re.search(r"((?:src|include|internal)/[A-Za-z0-9_./-]+\.[chp]+):(\d+)", normalized)
-        if match:
-            return match.group(1).lower(), int(match.group(2))
-        match = re.search(r"(.+\.[chp]+):(\d+)", normalized)
-        if match:
-            return match.group(1).lower(), int(match.group(2))
-        return normalized.lower(), None
+        return parse_issue_location(location)
 
     @staticmethod
     def _trim_code(code: str, max_lines: int = 140) -> str:
@@ -1951,6 +2100,10 @@ class Analyzer:
     def _build_final_report(self, state: Dict[str, Any]) -> None:
         all_issues = state.get("issues", []) + state.get("verified_hist_issues", [])
         self._resolve_issue_locations(all_issues)
+        observations = state.get("observations", [])
+        self._resolve_issue_locations(observations)
+        if observations:
+            state["observations"] = self._deduplicate_candidate_issues(observations)
         if state.get("observations"):
             state["notes"].append(
                 f"Validator kept {len(state.get('observations', []))} uncertain candidate(s) "
@@ -1975,13 +2128,24 @@ class Analyzer:
             ] or [i for i in all_issues if isinstance(i, Issue)],
             notes=state["notes"],
         )
+        final_report.report_views = build_report_views(
+            all_issues,
+            state.get("observations", []),
+        )
         final_report.metadata = self._build_workflow_metadata(state)
+        final_report.metadata["report_view_summary"] = report_view_summary(final_report.to_dict())
         state["final_report"] = final_report
 
     def _build_workflow_metadata(self, state: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "timestamp": datetime.datetime.now().isoformat(),
+            "run_id": state.get("run_id", ""),
+            "repo": str(self.config.project.project_root),
+            "source_root": str(self.config.project.source_root),
+            "commit_sha": self._git_commit_sha(self.config.project.project_root),
             "version": __version__,
+            "knowledge_db_version": self._knowledge_db_version(),
+            "snapshot_schema_version": "semantic_snapshot_v1",
             "context_tokens": state.get("total_context_tokens", 0),
             "workflow": self.workflow_spec.name if self.workflow_spec else self.config.analysis.workflow_name,
             "workflow_mode": self.workflow_spec.mode if self.workflow_spec else self.config.analysis.workflow_name,
@@ -1994,13 +2158,43 @@ class Analyzer:
             "subagent_report_summary": dict(state.get("subagent_report_summary", {})),
             "candidate_ledger_summary": dict(state.get("candidate_ledger_summary", {})),
             "candidate_signal_summary": dict(state.get("candidate_signal_summary", {})),
+            "budget_stage": state.get("budget_stage", ""),
+            "budget_hard_caps": dict(state.get("budget_hard_caps", {})),
+            "effective_budget": dict(state.get("effective_budget", {})),
+            "budget_scores": dict(state.get("budget_scores", {})),
+            "budget_reasons": dict(state.get("budget_reasons", {})),
             "audit_observation_count": len(state.get("observations", [])),
             "audit_observations": list(state.get("observations", [])),
         }
 
+    @staticmethod
+    def _git_commit_sha(project_root: Path) -> str:
+        git_dir = project_root / ".git"
+        head_path = git_dir / "HEAD"
+        try:
+            head = head_path.read_text(encoding="utf-8").strip()
+            if head.startswith("ref:"):
+                ref_path = git_dir / head.split(":", 1)[1].strip()
+                if ref_path.exists():
+                    return ref_path.read_text(encoding="utf-8").strip()
+            return head
+        except OSError:
+            return ""
+
+    def _knowledge_db_version(self) -> str:
+        db = self._get_knowledge_db()
+        version = getattr(db, "SCHEMA_VERSION", "") if db is not None else ""
+        return str(version or "")
+
     def _persist_final_report(self, state: Dict[str, Any]) -> Dict[str, Any]:
         final_report = state["final_report"]
         final_report.metadata = self._build_workflow_metadata(state)
+        if not final_report.report_views:
+            final_report.report_views = build_report_views(
+                state.get("issues", []) + state.get("verified_hist_issues", []),
+                state.get("observations", []),
+            )
+        final_report.metadata["report_view_summary"] = report_view_summary(final_report.to_dict())
         self.report_generator.save_json_report(final_report)
         self.report_generator.save_markdown_report(final_report)
 
@@ -2555,7 +2749,18 @@ class Analyzer:
                 continue
             visited.add(func)
 
-            callees_raw = self.code_index.get_callees(func, limit=max_callees)
+            try:
+                callees_raw = self.code_index.get_callees(func, limit=max_callees)
+            except Exception as exc:
+                logger.warning(
+                    "[premodel] Failed to retrieve callees for '%s'; "
+                    "continuing without this branch: %s",
+                    func,
+                    exc,
+                    exc_info=True,
+                )
+                callee_graph[func] = []
+                continue
             callee_names = [c["name"] for c in callees_raw if c.get("name")]
 
             # 过滤掉无源码的函数（标准库等）
@@ -2563,7 +2768,16 @@ class Analyzer:
             for c in callee_names:
                 if c in visited:
                     continue
-                impl = self.code_index.get_function_impl(c, warn_missing=False)
+                try:
+                    impl = self.code_index.get_function_impl(c, warn_missing=False)
+                except Exception as exc:
+                    logger.warning(
+                        "[premodel] Failed to resolve callee '%s'; skipping: %s",
+                        c,
+                        exc,
+                        exc_info=True,
+                    )
+                    continue
                 if impl is not None:
                     impl_cache[c] = impl
                     resolvable.append(c)
@@ -2943,13 +3157,24 @@ Output a JSON of type 'snapshot_refresh_decision'.
             if not isinstance(issue, dict):
                 continue
 
+            raw_location = str(issue.get("location", ""))
+            file_path, parsed_line = parse_issue_location(raw_location)
+            if file_path and parsed_line:
+                issue["location"] = f"{file_path}:{parsed_line}"
+                continue
+
             func_name = issue.get("function")
             if not func_name:
                 continue
 
-            # Try to find the file from the function name
-            func_info = self.code_index.get_function_impl(func_name)
-            raw_location = str(issue.get("location", ""))
+            # Try to find the file from the function name.
+            try:
+                func_info = self.code_index.get_function_impl(str(func_name), warn_missing=False)
+            except TypeError:
+                func_info = self.code_index.get_function_impl(str(func_name))
+            except Exception as exc:
+                logger.debug("Failed to resolve issue location for %s: %s", func_name, exc)
+                func_info = None
             
             # Extract line number/range from LLM output (e.g., "142" or "142-145" or "cache_get:142")
             nums = re.findall(r"\d+", raw_location)
@@ -2958,6 +3183,8 @@ Output a JSON of type 'snapshot_refresh_decision'.
                 line_suffix = f"{nums[0]}-{nums[1]}"
             elif len(nums) == 1:
                 line_suffix = f"{nums[0]}"
+            elif func_info and func_info.get("start_line"):
+                line_suffix = str(func_info["start_line"])
 
             if not func_info:
                 issue["location"] = f"unknown_file:{line_suffix}"

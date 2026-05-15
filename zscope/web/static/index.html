@@ -61,6 +61,26 @@
                     <h2 class="text-sm font-semibold uppercase tracking-wider opacity-60">审计发现</h2>
                     <span class="text-xs opacity-60"><span x-text="filteredFindings().length"></span> / <span x-text="findings.length"></span></span>
                 </div>
+                <div class="join w-full">
+                    <button
+                        class="btn btn-xs join-item flex-1"
+                        :class="reportView === 'default' ? 'btn-primary' : 'btn-ghost'"
+                        @click="setReportView('default')">
+                        Default
+                    </button>
+                    <button
+                        class="btn btn-xs join-item flex-1"
+                        :class="reportView === 'with_needs_review' ? 'btn-primary' : 'btn-ghost'"
+                        @click="setReportView('with_needs_review')">
+                        With needs_review
+                    </button>
+                </div>
+                <div class="text-[11px] opacity-60" x-show="viewSummary">
+                    <span x-text="viewSummary?.[reportView]?.issue_count ?? findings.length"></span>
+                    findings,
+                    <span x-text="viewSummary?.[reportView]?.included_needs_review_count ?? 0"></span>
+                    needs_review included
+                </div>
                 <div class="flex flex-col gap-2">
                     <input
                         type="text"
@@ -416,6 +436,9 @@
                 findings: [],
                 selectedFinding: null,
                 reportSummary: null,
+                reportViews: {},
+                reportView: 'default',
+                viewSummary: null,
                 statusText: '就绪',
                 statusClass: 'badge-ghost',
                 statusDotClass: 'bg-ghost',
@@ -445,10 +468,13 @@
 
                 refreshData() {
                     this.statusText = '同步中...';
-                    fetch('/api/findings')
+                    fetch(`/api/findings?view=${encodeURIComponent(this.reportView)}`)
                         .then(res => res.json())
                         .then(data => {
                             this.reportSummary = data.report?.summary || null;
+                            this.reportViews = data.report?.report_views || {};
+                            this.viewSummary = data.views || data.report?.metadata?.report_view_summary || null;
+                            this.reportView = data.view || this.reportView;
                             const issues = data.findings || [];
                             this.findings = issues.map((issue, index) => ({
                                 ...issue,
@@ -473,6 +499,15 @@
                             this.statusClass = 'badge-error/20 text-error';
                             this.statusDotClass = 'bg-error';
                         });
+                },
+
+                setReportView(view) {
+                    if (this.reportView === view) {
+                        return;
+                    }
+                    this.reportView = view;
+                    this.selectedFinding = null;
+                    this.refreshData();
                 },
 
                 loadConfig() {
@@ -547,6 +582,9 @@
                                 uid: `${issue.id || 'issue'}-${issue.function || 'fn'}-${issue.location || 'loc'}-${index}`
                             }));
                             this.reportSummary = offlineState.reportSummary || this.reportSummary;
+                            this.reportViews = offlineState.reportViews || this.reportViews;
+                            this.reportView = offlineState.reportView || this.reportView;
+                            this.viewSummary = offlineState.viewSummary || this.viewSummary;
                             this.selectFinding(this.findings[0]);
                             this.saveFindings();
                         } catch (error) {
@@ -581,6 +619,9 @@
                 async exportOfflinePage() {
                     const payload = {
                         reportSummary: this.reportSummary,
+                        reportViews: this.reportViews,
+                        reportView: this.reportView,
+                        viewSummary: this.viewSummary,
                         findings: this.findings.map(({ uid, ...rest }) => ({ ...rest })),
                         exportedAt: new Date().toISOString()
                     };

@@ -1,54 +1,87 @@
-# Z-SCOPE configuration
+# Z-SCOPE 配置文件
 #
-# All fields map to dataclasses in zscope/config/config.py.
-# String values support environment variable expansion, for example ${Z_SCOPE_API_KEY}.
+# 说明：
+# - 本文件字段来自 zscope/config/config.py 的 ConfigLoader.load()。
+# - 字符串支持环境变量展开，例如 ${Z_SCOPE_API_KEY}。
+# - analysis.workflow_name 是运行时内部字段，请不要写入 zscope.yaml；需要切换工作流时使用 CLI 的 --resume / --maintain。
 
-# 支持多模型配置路由，Agent 可指定 llm_ref
-llms:
-  default:
-    provider: openai
-    base_url: http://127.0.0.1:11434/v1   # Ollama 本地或其他 OpenAI 兼容服务
-    models:
-      - qwen3:latest
-    api_key: ollama
-    temperature: 0.1
-    max_tokens: 4096
-    timeout: 180
+# llm:                                      # 兼容旧版单模型配置；推荐使用下面的 llms 多模型配置
+#   provider: openai                        # LLM 服务类型预留字段，当前按 OpenAI 兼容接口调用
+#   base_url: https://api.openai.com/v1      # OpenAI 兼容 API 地址
+#   model: gpt-4.1-mini                     # 兼容旧字段：单模型名称；未配置 models 时生效
+#   models: []                              # 模型回退列表；优先使用此字段
+#   api_key: ${OPENAI_API_KEY}              # API Key，可使用环境变量
+#   temperature: 0.1                        # 采样温度，越低越稳定
+#   max_tokens: 4096                        # 单次模型响应最大 token 数
+#   timeout: 120                            # 单次 LLM 请求超时时间，单位秒
+#   max_retries: 2                          # LLM 请求失败后的最大重试次数
 
-  smart_model:
-    provider: openai
-    base_url: https://api.siliconflow.cn/v1
-    models:
-      - Qwen/Qwen3-Coder-30B-Instruct
-    api_key: ${Z_SCOPE_API_KEY}
+llms:                                      # 多模型配置；Agent 通过 llm_ref 引用其中一个 profile
+  default:                                 # 默认 LLM profile；未指定 llm_ref 时使用
+    provider: openai                       # LLM 服务类型预留字段，当前按 OpenAI 兼容接口调用
+    base_url: http://127.0.0.1:11434/v1    # OpenAI 兼容 API 地址，例如 Ollama、本地网关或云服务
+    # model: qwen3:latest                  # 兼容旧字段：单模型名称；未配置 models 时生效
+    models:                                # 模型回退列表，按顺序尝试
+      - qwen3:latest                       # 当前 profile 的首选模型
+    api_key: ollama                        # API Key；本地 Ollama 可使用占位值
+    temperature: 0.1                       # 采样温度，越低越稳定
+    max_tokens: 4096                       # 单次模型响应最大 token 数
+    timeout: 180                           # 单次 LLM 请求超时时间，单位秒
+    max_retries: 2                         # LLM 请求失败后的最大重试次数
 
-project:
-  root: .                    # 被扫描项目根目录
-  source_root: .             # 源码搜索根目录
-  entry_function: main       # 单函数入口模式
-  # entry_functions_list: functions.json  # 批量模式配置
+  smart_model:                             # 更强模型 profile；供复杂 Agent 或验证阶段引用
+    provider: openai                       # LLM 服务类型预留字段，当前按 OpenAI 兼容接口调用
+    base_url: https://api.siliconflow.cn/v1 # OpenAI 兼容 API 地址
+    # model: Qwen/Qwen3-Coder-30B-Instruct # 兼容旧字段：单模型名称；未配置 models 时生效
+    models:                                # 模型回退列表，按顺序尝试
+      - Qwen/Qwen3-Coder-30B-Instruct      # 当前 profile 的首选模型
+    api_key: ${Z_SCOPE_API_KEY}            # API Key，可使用环境变量
+    temperature: 0.1                       # 采样温度，越低越稳定
+    max_tokens: 4096                       # 单次模型响应最大 token 数
+    timeout: 120                           # 单次 LLM 请求超时时间，单位秒
+    max_retries: 2                         # LLM 请求失败后的最大重试次数
 
-  entry_discovery:           # 自动入口发现机制
-    enabled: true            # 为 true 时，如果未提供 entry_functions_list 则自动发现
-    max_candidates: 200
-    max_functions: 10000
+project:                                  # 被分析项目配置
+  root: .                                  # 项目根目录；相对路径基于当前工作目录解析
+  source_root: .                           # 源码根目录；相对路径基于 project.root 解析
+  entry_function: main                     # 单入口扫描的入口函数名；批量模式或自动发现时可留空
+  # entry_functions_list: functions.json   # 批量入口 JSON 文件；相对路径基于 project.root 解析
+  # task: "查找内存安全问题。"              # 兼容旧字段：仅当 agents 为空时作为 vulnerability_analyzer 的任务
 
-  # compile_commands_path: build/compile_commands.json
-  include_paths: []
-  exclude_paths:
-    - build
-    - tmp
+  entry_discovery:                         # 自动入口发现配置
+    enabled: true                          # 为 true 时，未显式提供 entry_functions_list 可自动发现入口
+    max_candidates: 200                    # 自动入口发现最多保留的候选入口数量
+    max_functions: 10000                   # 自动入口发现最多扫描的函数数量上限
+    header_files: []                       # 入口发现重点关注的头文件列表，常用于公共 API 暴露面
+    # search_root: /absolute/path/to/src   # 限制入口发现范围；必须是已存在的绝对目录
+    # root: /absolute/path/to/src          # search_root 的兼容别名；不建议新配置使用
+    # discovery_root: /absolute/path/to/src # search_root 的兼容别名；不建议新配置使用
 
-  agents:
-    - name: semantic_modeler
-      enabled: true
-      llm_ref: default
+  # compile_commands_path: build/compile_commands.json # Clang/unified/SVF 后端使用的编译数据库；相对路径基于 project.root 解析
+  # compile_commands: build/compile_commands.json      # compile_commands_path 的兼容别名；不建议新配置使用
+  include_paths: []                        # 仅扫描这些路径；为空表示扫描 source_root 下全部支持的源码文件
+  exclude_paths:                           # 扫描时排除的路径；相对路径基于 source_root 解析
+    - build                                # 排除构建目录，避免索引生成物
+    - tmp                                  # 排除临时目录，避免无关文件污染扫描
 
-    - name: vulnerability_analyzer
-      enabled: true
-      llm_ref: smart_model
-      can_spawn_subagents: true  # 允许创建 Deep Worker 分析上下文
-      # task 会选择本次启用的漏洞挖掘 Skill；未识别/为空时保持全量 Skill。
+  agents:                                  # Agent 编排配置；name 需匹配内置 Agent 名称
+    - name: semantic_modeler               # 语义建模 Agent，负责函数语义和上下文建模
+      enabled: true                        # 是否启用该 Agent
+      llm_ref: default                     # 使用 llms 中的哪个模型 profile
+      task: ""                             # 可选任务补充说明；为空时使用 Agent 默认职责
+      skills: []                           # 可选 Skill 名称列表；通常留空由系统自动选择
+      tools: []                            # 可选工具名列表；通常留空使用默认工具集
+      mcp_servers: []                      # 可选 MCP server 名称列表；兼容字段 mcpServers 也可被读取
+      # can_spawn_subagents: false         # 可选：是否允许该 Agent 创建子 Agent；不写则使用 Agent 规格默认值
+
+    - name: vulnerability_analyzer         # 漏洞分析 Agent，负责主漏洞挖掘流程
+      enabled: true                        # 是否启用该 Agent
+      llm_ref: smart_model                 # 使用 llms 中的哪个模型 profile
+      can_spawn_subagents: true            # 是否允许创建 Deep Worker 分析上下文
+      skills: []                           # 可选 Skill 名称列表；通常留空由 task 和候选点自动选择
+      tools: []                            # 可选工具名列表；通常留空使用默认工具集
+      mcp_servers: []                      # 可选 MCP server 名称列表；兼容字段 mcpServers 也可被读取
+      # task 会选择本次启用的漏洞挖掘 Skill；未识别或为空时保持全量 Skill。
       # 当前支持的漏洞扫描 Skill：
       # resource_lifecycle（资源/句柄生命周期）
       # bounds_and_integer（边界、拷贝、整数溢出）
@@ -59,37 +92,62 @@ project:
       # shared_state_race（共享状态竞态、TOCTOU、refcount、condvar）
       # ownership_contract（所有权/借用/转移契约）
       # string_and_format（字符串、格式串、命令构造）
-      # 例如："只查找资源泄漏和空指针问题。" -> resource_lifecycle, null_and_failure
-      # 例如："只关注并发风险，不关心内存安全。" -> concurrency_lock_order, shared_state_race, stack_escape
-      task: "查找逻辑漏洞、内存安全问题和并发风险。"
+      task: "查找逻辑漏洞、内存安全问题和并发风险。" # 漏洞分析任务描述，用于引导 Skill 选择和审计重点
 
-    - name: issue_reconciler_agent
-      enabled: true
+    - name: issue_reconciler_agent         # Issue 归并 Agent，负责合并、去重和整理发现
+      enabled: true                        # 是否启用该 Agent
+      llm_ref: default                     # 使用 llms 中的哪个模型 profile
+      task: ""                             # 可选任务补充说明；为空时使用 Agent 默认职责
+      skills: []                           # 可选 Skill 名称列表；通常留空由系统自动选择
+      tools: []                            # 可选工具名列表；通常留空使用默认工具集
+      mcp_servers: []                      # 可选 MCP server 名称列表；兼容字段 mcpServers 也可被读取
 
-    - name: validator_agent
-      enabled: true
-      llm_ref: smart_model
+    - name: validator_agent                # 验证 Agent，负责确认或驳回候选漏洞
+      enabled: true                        # 是否启用该 Agent
+      llm_ref: smart_model                 # 使用 llms 中的哪个模型 profile
+      task: ""                             # 可选任务补充说明；为空时使用 Agent 默认职责
+      skills: []                           # 可选 Skill 名称列表；通常留空由系统自动选择
+      tools: []                            # 可选工具名列表；通常留空使用默认工具集
+      mcp_servers: []                      # 可选 MCP server 名称列表；兼容字段 mcpServers 也可被读取
 
-indexing:
-  backend: unified             # joern | clang | unified | regex
-  clangd_path: clangd
-  knowledge_db_path: .zscope_knowledge/code_knowledge.db
-  # joern_path: dependency/joern/joern
-  # svf_bin_dir: /path/to/svf/bin
-  # gclang_path: gclang
-  # get_bc_path: get-bc
-  # llvm_link_path: llvm-link
+indexing:                                  # 代码索引和确定性后端配置
+  backend: unified                         # 后端类型：joern | clang | unified | regex
 
-analysis:
-  max_recursion_depth: 3
-  max_function_lines: 500
-  max_tool_iterations: 50
-  snapshot_dir: .zscope_snapshots
-  enable_snapshot_cache: true
-  user_config_db: ""          # 为空时使用 {snapshot_dir}/user_config.db
-  parallel_workers: 5
-  max_premodel_depth: 3
-  max_premodel_callees: 20
-  trivial_function_max_lines: 5
-  enable_subagent_workers: true
-  max_subagent_tickets: 4     # Deep Worker 执行预算；候选点会全量保留并传给主 Agent
+  joern_path: joern                        # Joern 可执行文件路径；backend=joern 时使用
+  joern_server_host: 127.0.0.1             # Joern server 监听地址；backend=joern 时使用
+  joern_server_port: 8080                  # Joern server 监听端口；backend=joern 时使用
+  joern_heap_size: 8g                      # Joern JVM 堆大小；backend=joern 时使用
+
+  clangd_path: clangd                      # clangd 可执行文件路径；backend=clang/unified 时使用
+  knowledge_db_path: .zscope_knowledge/code_knowledge.db # KnowledgeDB SQLite 文件路径
+  batch_size: 50                           # Clang 抽取时每批处理的翻译单元数量
+  max_clangd_threads: 8                    # Clang/clangd 并发线程上限
+
+  svf_bin_dir: ""                          # SVF 工具目录，需包含 wpa、saber；为空时从 PATH 查找
+  gclang_path: gclang                      # gllvm 的 gclang 可执行文件路径；用于构建 LLVM bitcode
+  get_bc_path: get-bc                      # gllvm 的 get-bc 可执行文件路径；用于从目标文件提取 bitcode
+  llvm_link_path: llvm-link                # llvm-link 可执行文件路径；用于合并多文件 bitcode
+  svf_heap_limit_mb: 32768                 # SVF 内存上限，单位 MB；默认 32GB
+  svf_timeout: 1800                        # SVF 单次工具执行超时时间，单位秒；ander/saber 超时后调大此值会触发重跑
+  # svf_groups_config: svf_groups.json     # 可选：按 JSON 分组链接 bitcode
+  svf_scope: auto                          # full | auto | entry；auto 会按入口裁剪并在不确定时保守回退
+  svf_entry_depth: 4                       # entry scope 从入口沿调用图扩展的最大深度
+  svf_max_selected_tus: 300                # 超过该 TU 数量时按 svf_fallback 策略处理；0 表示不设上限
+  svf_fallback: full                       # full | skip；entry scope 无法安全裁剪时的回退策略
+  svf_always_include: []                   # 可选：无论入口可达性如何都纳入的源码目录/路径片段
+  svf_symbol_closure: true                 # 是否用 llvm-nm 根据 undefined symbol 自动补齐依赖 .bc
+
+analysis:                                  # 分析流程和缓存行为配置
+  max_recursion_depth: 3                   # 函数调用递归分析最大深度
+  max_function_lines: 500                  # 单个函数超过该行数时限制深度分析，避免上下文过大
+  max_tool_iterations: 50                  # 单个 Agent 最大工具调用轮数
+  snapshot_dir: .zscope_snapshots          # 快照、检查点、用户配置默认存放目录
+  enable_snapshot_cache: true              # 是否启用函数实现和语义快照缓存
+  user_config_db: ""                       # 用户配置 workbook 或 DB 目录；为空时使用 {snapshot_dir}/user_config.xlsx / user_config.db
+  parallel_workers: 5                      # 批量入口扫描时的并发 worker 数
+  max_premodel_depth: 3                    # 语义预建模时向下展开 callee 的最大深度
+  max_premodel_callees: 20                 # 语义预建模每层最多展开的 callee 数量
+  trivial_function_max_lines: 5            # 小于等于该有效行数的函数可视为 trivial，减少建模开销
+  enable_subagent_workers: true            # 是否允许全局启用 Deep Worker 子 Agent
+  max_subagent_tickets: 4                  # Deep Worker 执行预算；候选点仍会全量保留并传给主 Agent
+  # workflow_name: default                 # 禁止配置：运行时内部字段；使用 --resume / --maintain 选择工作流

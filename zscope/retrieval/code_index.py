@@ -42,6 +42,8 @@ class CodeIndex:
         joern_client: Optional[Any] = None,
         include_paths: Optional[Sequence[Union[str, Path]]] = None,
         exclude_paths: Optional[Sequence[Union[str, Path]]] = None,
+        svf_entry_functions: Optional[Sequence[Any]] = None,
+        defer_svf: bool = False,
     ):
         self.project_root = Path(project_root).absolute()
         self.source_root = Path(source_root).absolute() if source_root else self.project_root
@@ -52,6 +54,8 @@ class CodeIndex:
         self._function_index: Dict[str, Dict[str, Any]] = {}
         self._declaration_comment_index: Optional[Dict[str, List[Dict[str, Any]]]] = None
         self._backend: Optional[CodeBackend] = backend
+        self._svf_entry_functions = list(svf_entry_functions or [])
+        self._defer_svf = defer_svf
         self._index_ready = False
 
         # 向后兼容：如果传入了 joern_client，包装为 JoernBackend
@@ -132,6 +136,13 @@ class CodeIndex:
                 llvm_link_path=cfg.llvm_link_path if cfg else "llvm-link",
                 svf_heap_limit_mb=cfg.svf_heap_limit_mb if cfg else 32768,
                 svf_timeout=cfg.svf_timeout if cfg else 1800,
+                svf_groups_config=cfg.svf_groups_config if cfg else "",
+                svf_scope=cfg.svf_scope if cfg else "auto",
+                svf_entry_depth=cfg.svf_entry_depth if cfg else 4,
+                svf_max_selected_tus=cfg.svf_max_selected_tus if cfg else 300,
+                svf_fallback=cfg.svf_fallback if cfg else "full",
+                svf_always_include=cfg.svf_always_include if cfg else [],
+                svf_symbol_closure=cfg.svf_symbol_closure if cfg else True,
             )
             cc_path = str(self.compile_commands_path) if self.compile_commands_path else None
             ok = ub.initialize(
@@ -141,6 +152,8 @@ class CodeIndex:
                 wait=wait_for_cpg,
                 include_paths=self.include_paths,
                 exclude_paths=self.exclude_paths,
+                svf_entry_functions=self._svf_entry_functions,
+                defer_svf=self._defer_svf,
             )
             if not ok and wait_for_cpg:
                 logger.warning("Unified backend init failed, falling back to regex")
@@ -162,6 +175,14 @@ class CodeIndex:
         self._build_index()
         self._index_ready = True
         return True
+
+    def run_svf(self, entry_functions: Optional[Sequence[Any]] = None) -> bool:
+        """Run deferred SVF enrichment when the active backend supports it."""
+        if not self._backend or not hasattr(self._backend, "run_svf"):
+            return False
+        entries = list(entry_functions or self._svf_entry_functions)
+        self._svf_entry_functions = entries
+        return bool(getattr(self._backend, "run_svf")(entry_functions=entries))
 
     @property
     def backend(self) -> Optional[CodeBackend]:
@@ -495,7 +516,7 @@ class CodeIndex:
                 "comment_blocks": comment_blocks,
             }
         except Exception as e:
-            logger.error(f"Failed to read function '{func_name}': {e}")
+            logger.exception("Failed to read function '%s': %s", func_name, e)
             return None
 
     def get_file_snippet(
@@ -594,7 +615,7 @@ class CodeIndex:
                     if name in self._function_index:
                         results.append({
                             "name": name,
-                            "filename": str(fp),
+                            "filename": normalize_path(fp, self.source_root),
                             "lineNumber": content[:m.start()].count("\n") + 1,
                         })
         return results

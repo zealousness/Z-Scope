@@ -3,6 +3,15 @@ import socketserver
 import json
 from pathlib import Path
 from typing import Any, Dict
+from urllib.parse import parse_qs, urlparse
+
+from ..core.report_views import (
+    DEFAULT_REPORT_VIEW,
+    WITH_NEEDS_REVIEW_REPORT_VIEW,
+    build_report_views,
+    findings_for_view,
+    report_view_summary,
+)
 
 PORT = 8000
 WEB_DIR = Path(__file__).parent / "static"
@@ -69,6 +78,15 @@ def save_report(report):
     report_path = Path(REPORT_FILENAME)
     with report_path.open("w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
+
+
+def selected_report_view(path: str) -> str:
+    parsed = urlparse(path)
+    query = parse_qs(parsed.query)
+    view = str((query.get("view") or [DEFAULT_REPORT_VIEW])[0] or DEFAULT_REPORT_VIEW)
+    if view not in {DEFAULT_REPORT_VIEW, WITH_NEEDS_REVIEW_REPORT_VIEW}:
+        view = DEFAULT_REPORT_VIEW
+    return view
 
 
 def issue_key(issue):
@@ -167,6 +185,36 @@ def apply_validation_updates(report, updates):
     for issue in report.get("findings", []):
         update_issue(issue)
 
+    metadata = report.get("metadata")
+    if isinstance(metadata, dict):
+        for issue in metadata.get("audit_observations", []):
+            update_issue(issue)
+
+    for issue in report.get("issues_with_needs_review", []):
+        update_issue(issue)
+
+    report_views = report.get("report_views")
+    if isinstance(report_views, dict):
+        for view in report_views.values():
+            if isinstance(view, dict):
+                for issue in view.get("issues", []):
+                    update_issue(issue)
+
+    if isinstance(report_views, dict):
+        metadata = report.get("metadata") if isinstance(report.get("metadata"), dict) else {}
+        rebuilt_views = build_report_views(
+            report.get("issues", []),
+            metadata.get("audit_observations", []),
+        )
+        report["report_views"] = rebuilt_views
+        with_review = rebuilt_views.get(WITH_NEEDS_REVIEW_REPORT_VIEW, {})
+        report["issues_with_needs_review"] = with_review.get("issues", [])
+        report["issues_by_severity_with_needs_review"] = with_review.get(
+            "issues_by_severity",
+            {},
+        )
+        report.setdefault("metadata", {})["report_view_summary"] = report_view_summary(report)
+
 def apply_validation_to_snapshots(updates):
     global _snapshot_store
     if not _snapshot_store:
@@ -224,13 +272,20 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_GET(self):
-        if self.path == "/api/findings":
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/findings":
             report = load_report()
-            findings = report.get("issues")
-            if findings is None or (isinstance(findings, list) and not findings and isinstance(report.get("findings"), list) and report.get("findings")):
-                findings = report.get("findings", [])
-            self._send_json({"report": report, "findings": findings})
-        elif self.path == "/api/config":
+            view = selected_report_view(self.path)
+            findings = findings_for_view(report, view)
+            self._send_json(
+                {
+                    "report": report,
+                    "findings": findings,
+                    "view": view,
+                    "views": report_view_summary(report),
+                }
+            )
+        elif parsed.path == "/api/config":
             config_path = Path(CONFIG_FILENAME)
             if config_path.exists():
                 try:
@@ -241,11 +296,11 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json({"content": content})
             else:
                 self._send_json({"content": ""})
-        elif self.path == "/api/cpg_status":
+        elif parsed.path == "/api/cpg_status":
             self._handle_cpg_status()
-        elif self.path == "/api/user_config/warnings":
+        elif parsed.path == "/api/user_config/warnings":
             self._handle_get_warnings()
-        elif self.path.startswith("/api/user_config/"):
+        elif parsed.path.startswith("/api/user_config/"):
             self._handle_user_config_get()
         else:
             super().do_GET()

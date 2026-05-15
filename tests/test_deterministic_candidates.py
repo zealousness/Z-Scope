@@ -144,6 +144,34 @@ int entry(VOS_UINT32 count, VOS_UINT32 width) {
     )
 
 
+def test_scalar_arguments_are_not_double_free_candidates() -> None:
+    code = r"""
+int entry(int pipe_id) {
+    _lifecycle_tick_timer_callback(pipe_id);
+    _lifecycle_close_pipe(pipe_id);
+    return _lifecycle_dispatch_pipe_tick(pipe_id);
+}
+"""
+    assert "double_free" not in _classes(code)
+
+
+def test_socket_cleanup_close_is_not_stale_fd_candidate() -> None:
+    code = r"""
+int entry(void) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return -1;
+    }
+    if (bind(fd, 0, 0) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+"""
+    assert "stale_fd" not in _classes(code)
+
+
 def test_name_heuristics_cover_custom_alloc_and_lock_wrappers() -> None:
     code = r"""
 int entry(size_t packet_len) {

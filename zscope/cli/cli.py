@@ -31,6 +31,7 @@ from ..orchestration.scan_session import ScanSessionRunner
 @click.option("--discover-entries", is_flag=True, default=False, help="Discover public API, communication, thread, and other input entries before scanning.")
 @click.option("--infer-user-config", is_flag=True, default=False, help="Infer/update the human-editable user_config.xlsx and exit.")
 @click.option("--mcp-stdio", is_flag=True, default=False, help="Run Z-SCOPE local MCP server over stdio.")
+@click.option("--export-sarif", type=click.Path(dir_okay=False, path_type=Path), default=None, help="Export the completed Z-SCOPE report to SARIF v2.1.0.")
 def main(
     config: Path,
     verbose: bool,
@@ -43,6 +44,7 @@ def main(
     discover_entries: bool,
     infer_user_config: bool,
     mcp_stdio: bool,
+    export_sarif: Optional[Path],
 ):
     """
     Z-SCOPE: AI-powered defect detection for C projects.
@@ -260,6 +262,21 @@ def main(
             emit=click.echo,
         )
         session_result = session_runner.run()
+        if export_sarif:
+            from ..core.sarif_exporter import save_sarif_report
+
+            json_reports = [
+                path for path in session_result.reports
+                if isinstance(path, Path) and path.suffix.lower() == ".json"
+            ]
+            report_path = json_reports[0] if json_reports else session_result.project_root / "report.json"
+            if not report_path.exists():
+                raise FileNotFoundError(f"Unable to export SARIF; report not found: {report_path}")
+            save_sarif_report(
+                report_path,
+                export_sarif,
+                source_root=zscope_config.project.source_root,
+            )
 
         if session_result.is_batch:
             reports = ", ".join(str(path) for path in session_result.reports)
@@ -267,6 +284,8 @@ def main(
             click.echo(f"Functions analyzed: {session_result.functions_analyzed}")
             click.echo(f"Total issues found: {session_result.issues_count}")
             click.echo(f"Reports saved: {reports}")
+            if export_sarif:
+                click.echo(f"SARIF saved: {export_sarif}")
             if session_result.interrupted:
                 click.echo("[!] Exiting immediately due to prior interrupt.")
                 os._exit(1)
@@ -276,6 +295,8 @@ def main(
                 f"Issues found: {session_result.issues_count}"
             )
             click.echo(f"Reports saved in: {session_result.project_root}")
+            if export_sarif:
+                click.echo(f"SARIF saved: {export_sarif}")
 
         sys.exit(session_result.exit_code)
 

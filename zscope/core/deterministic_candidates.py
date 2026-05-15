@@ -615,6 +615,7 @@ class DeterministicCandidateGenerator:
 
     def _rule_double_and_invalid_free(self, lines: List[CodeLine], emit) -> None:
         last_free: Dict[str, CodeLine] = {}
+        pointer_owners = self._pointer_owner_vars(lines)
         for line in lines:
             free = self._match_call(line.text, self._deallocator_names, "arg")
             if not free:
@@ -649,6 +650,8 @@ class DeterministicCandidateGenerator:
             if not var_match:
                 continue
             var = var_match.group(1)
+            if var not in pointer_owners:
+                continue
             previous = last_free.get(var)
             if previous:
                 emit(
@@ -1380,8 +1383,16 @@ class DeterministicCandidateGenerator:
     @staticmethod
     def _classify_api_name(name: str) -> str:
         lower = name.lower()
-        if re.search(r"(?:^|_)(?:un)?lock(?:_|$)", lower) or lower.endswith("unlock"):
-            return "unlock" if "unlock" in lower else "lock"
+        tokens = [token for token in re.split(r"_+", lower) if token]
+        if tokens:
+            last = tokens[-1]
+            previous = tokens[-2] if len(tokens) > 1 else ""
+            if last == "unlock":
+                return "unlock"
+            if last == "lock" and previous not in {"under", "with", "while"}:
+                return "lock"
+            if lower.startswith("unlock") or lower.startswith("lock"):
+                return "unlock" if lower.startswith("unlock") else "lock"
         if "realloc" in lower:
             return "reallocator"
         if "calloc" in lower:
@@ -1503,7 +1514,27 @@ class DeterministicCandidateGenerator:
     @staticmethod
     def _previous_assignment_from_open(lines: List[CodeLine], idx: int, fd: str) -> bool:
         previous = "\n".join(item.text for item in lines[max(0, idx - 12) : idx])
-        return bool(re.search(rf"\b{re.escape(fd)}\s*=\s*open\s*\(", previous))
+        return bool(re.search(rf"\b{re.escape(fd)}\s*=\s*(?:open|socket|accept|accept4)\s*\(", previous))
+
+    def _pointer_owner_vars(self, lines: List[CodeLine]) -> set[str]:
+        owners: set[str] = set()
+        alloc_names = self._allocator_names | self._calloc_names | self._reallocator_names
+        for line in lines:
+            pointer_decl = re.search(
+                r"(?:^|[;{]\s*)(?:const\s+)?(?:struct\s+)?[A-Za-z_]\w*(?:\s*\*)+\s*"
+                r"(?P<var>[A-Za-z_]\w*)\b",
+                line.text,
+            )
+            if pointer_decl:
+                owners.add(pointer_decl.group("var"))
+            alloc_assign = re.search(
+                rf"\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?"
+                rf"(?:{self._names_pattern(alloc_names)})\s*\(",
+                line.text,
+            )
+            if alloc_assign:
+                owners.add(alloc_assign.group("var"))
+        return owners
 
     def _guard_evidence(self, lines: List[CodeLine], idx: int, operands: Iterable[str]) -> List[str]:
         if self._has_pre_overflow_guard(lines, idx, operands):

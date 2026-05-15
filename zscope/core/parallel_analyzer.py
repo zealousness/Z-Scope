@@ -6,7 +6,6 @@ Supports concurrent analysis of multiple functions using thread pool.
 import concurrent.futures
 import json
 import logging
-import re
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -19,6 +18,16 @@ from .analyzer import Analyzer
 from .snapshot_store import SnapshotStore
 from ..retrieval.code_index import CodeIndex
 from ..orchestration.candidates import CandidateLedger
+from .issue_dedup import (
+    canonical_issue_key,
+    deduplicate_issues,
+    flatten_issue_text,
+    issue_rank,
+    normalize_issue_category,
+    normalize_issue_key_part,
+    parse_issue_location,
+)
+from .report_views import build_report_views, report_view_summary
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +38,7 @@ class ParallelAnalysisResult:
     function_name: str
     verdict: str
     issues: List[Dict[str, Any]] = field(default_factory=list)
+    audit_observations: List[Dict[str, Any]] = field(default_factory=list)
     error: Optional[str] = None
     duration_seconds: float = 0.0
     context_tokens: int = 0
@@ -191,6 +201,7 @@ class ParallelAnalyzer:
                 function_name=entry.function_name,
                 verdict=report_dict.get("overall_verdict", "unknown"),
                 issues=report_dict.get("issues", []),
+                audit_observations=report_dict.get("metadata", {}).get("audit_observations", []),
                 duration_seconds=duration,
                 context_tokens=report_dict.get("metadata", {}).get("context_tokens", 0),
             )
@@ -238,6 +249,7 @@ class ParallelAnalyzer:
             Combined report dict
         """
         all_issues = []
+        all_observations = []
         function_summaries = []
         total_duration = 0.0
         
@@ -248,6 +260,7 @@ class ParallelAnalyzer:
                 "function": func_name,
                 "verdict": result.verdict,
                 "issue_count": len(result.issues),
+                "audit_observation_count": len(result.audit_observations),
                 "duration_seconds": round(result.duration_seconds, 2),
                 "context_tokens": result.context_tokens,
                 "error": result.error
@@ -258,9 +271,17 @@ class ParallelAnalyzer:
                 issue_copy = issue.copy()
                 issue_copy["analyzed_from"] = func_name
                 all_issues.append(issue_copy)
+            for observation in result.audit_observations:
+                observation_copy = observation.copy()
+                observation_copy["analyzed_from"] = func_name
+                all_observations.append(observation_copy)
         
         # Deduplicate issues by location
         unique_issues = self._deduplicate_issues(all_issues)
+        unique_observations = self._deduplicate_issues(all_observations)
+        report_views = build_report_views(unique_issues, unique_observations)
+        view_summary = report_view_summary({"report_views": report_views})
+        with_review_view = report_views.get("with_needs_review", {})
         
         combined_report = {
             "type": "parallel_analysis_report",
@@ -268,18 +289,33 @@ class ParallelAnalyzer:
                 "functions_analyzed": len(results),
                 "total_issues": len(unique_issues),
                 "unique_issues": len(unique_issues),
+                "audit_observations": len(unique_observations),
+                "needs_review_issues": int(
+                    with_review_view.get("included_needs_review_count") or 0
+                ),
+                "total_issues_with_needs_review": int(
+                    with_review_view.get("issue_count") or len(with_review_view.get("issues", []))
+                ),
                 "total_duration_seconds": round(total_duration, 2),
                 "total_context_tokens": sum(r.context_tokens for r in results.values()),
                 "parallel_speedup": f"{len(results)}x potential (using {self.max_workers} workers)"
             },
             "function_results": function_summaries,
             "issues": unique_issues,
-            "issues_by_severity": self._group_by_severity(unique_issues)
+            "issues_by_severity": self._group_by_severity(unique_issues),
+            "report_views": report_views,
+            "issues_with_needs_review": with_review_view.get("issues", []),
+            "issues_by_severity_with_needs_review": with_review_view.get("issues_by_severity", {}),
+            "metadata": {
+                "audit_observation_count": len(unique_observations),
+                "audit_observations": unique_observations,
+                "report_view_summary": view_summary,
+            },
         }
         
         if output_path:
-            with open(output_path, 'w') as f:
-                json.dump(combined_report, f, indent=2)
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump(combined_report, f, indent=2, ensure_ascii=False)
             logger.info(f"Combined report saved to: {output_path}")
         
         return combined_report
@@ -305,6 +341,7 @@ class ParallelAnalyzer:
             "no_issue": sum(1 for r in results.values() if r.verdict == "no_issue_found"),
             "error": sum(1 for r in results.values() if r.verdict == "error"),
             "total_issues": sum(len(r.issues) for r in results.values()),
+            "audit_observations": sum(len(r.audit_observations) for r in results.values()),
         }
         
         md = [
@@ -316,16 +353,25 @@ class ParallelAnalyzer:
             f"- **No Issues Found**: {summary['no_issue']}",
             f"- **Errors**: {summary['error']}",
             f"- **Total Issues Detected**: {summary['total_issues']}",
+            f"- **Audit Observations**: {summary['audit_observations']}",
             "",
             "## Function Details",
             "",
-            "| Function | Verdict | Issues | Duration |",
-            "| :--- | :--- | :--- | :--- |"
+            "| Function | Verdict | Issues | Needs Review / Audit | Duration |",
+            "| :--- | :--- | :--- | :--- | :--- |"
         ]
         
         for name, res in sorted(results.items()):
             duration_str = f"{res.duration_seconds:.1f}s" if res.duration_seconds else "N/A"
-            md.append(f"| {name} | {res.verdict} | {len(res.issues)} | {duration_str} |")
+            needs_review_count = sum(
+                1
+                for issue in res.audit_observations
+                if str(issue.get("validation_status") or "").lower() == "needs_review"
+            )
+            md.append(
+                f"| {name} | {res.verdict} | {len(res.issues)} | "
+                f"{needs_review_count} / {len(res.audit_observations)} | {duration_str} |"
+            )
         
         md.append("")
         md.append("## Detected Issues")
@@ -393,6 +439,44 @@ class ParallelAnalyzer:
                             md.append(f"- **Validation Reasoning**: {self._normalize_md_text(val_reasoning)}")
                     
                     md.append("")
+
+        needs_review_by_entry = {}
+        for r in results.values():
+            review_items = [
+                issue
+                for issue in r.audit_observations
+                if str(issue.get("validation_status") or "").lower() == "needs_review"
+            ]
+            if review_items:
+                needs_review_by_entry[r.function_name] = review_items
+
+        md.append("")
+        md.append("## Needs Review Findings")
+        md.append("")
+        if not needs_review_by_entry:
+            md.append("*No needs_review observations.*")
+        else:
+            for entry_func, issues in sorted(needs_review_by_entry.items()):
+                md.append(f"### Entry Function: `{entry_func}`")
+                md.append("")
+                for idx, issue in enumerate(issues, 1):
+                    impact = str(issue.get("impact_level", "UNKNOWN")).upper()
+                    conf = issue.get("confidence", "N/A")
+                    if isinstance(conf, float):
+                        conf = f"{conf:.2f}"
+                    md.extend([
+                        f"#### {idx}. [{impact}] {issue.get('id', f'REVIEW_{idx}')}: {issue.get('function', 'N/A')}",
+                        f"- **Location**: `{issue.get('location', 'N/A')}`",
+                        f"- **Confidence**: `{conf}`",
+                        f"- **Category**: {issue.get('category', 'N/A')} ({issue.get('subcategory', 'N/A')})",
+                        f"- **Description**: {self._normalize_md_text(issue.get('description', 'N/A'))}",
+                        f"- **Root Cause**: {self._normalize_md_text(issue.get('root_cause', 'N/A'))}",
+                        f"- **Suggested Fix**: {self._normalize_md_text(issue.get('suggested_fix', 'N/A'))}",
+                    ])
+                    val_reasoning = issue.get("validation_reasoning")
+                    if val_reasoning:
+                        md.append(f"- **Validation Reasoning**: {self._normalize_md_text(val_reasoning)}")
+                    md.append("")
                 
         content = "\n".join(md)
         with open(output_path, "w", encoding="utf-8") as f:
@@ -404,97 +488,31 @@ class ParallelAnalyzer:
     
     def _deduplicate_issues(self, issues: List[Dict]) -> List[Dict]:
         """Remove duplicate issues based on canonical sink/root-cause evidence."""
-        records: Dict[str, Dict[str, Any]] = {}
-        for issue in issues:
-            key = self._canonical_issue_key(issue)
-            existing = records.get(key)
-            if existing is None:
-                issue.setdefault("dedup_key", key)
-                records[key] = issue
-                continue
-            existing["duplicate_count"] = int(existing.get("duplicate_count", 0) or 0) + 1
-            sources = existing.setdefault("duplicate_sources", [])
-            source = issue.get("analyzed_from") or issue.get("id") or issue.get("function")
-            if source and source not in sources:
-                sources.append(source)
-            if self._issue_rank(issue) > self._issue_rank(existing):
-                issue["duplicate_count"] = existing.get("duplicate_count", 0)
-                issue["duplicate_sources"] = list(sources)
-                issue["dedup_key"] = key
-                records[key] = issue
-        return list(records.values())
+        return deduplicate_issues(issues)
 
     @staticmethod
     def _issue_rank(issue: Dict[str, Any]) -> tuple[int, float, int]:
-        severity_order = {"critical": 4, "high": 3, "medium": 2, "low": 1}
-        severity = severity_order.get(str(issue.get("impact_level") or issue.get("severity") or "").lower(), 0)
-        try:
-            confidence = float(issue.get("confidence", 0) or 0)
-        except (TypeError, ValueError):
-            confidence = 0.0
-        return severity, confidence, len(str(issue.get("reasoning") or issue.get("description") or ""))
+        return issue_rank(issue)
 
     @classmethod
     def _canonical_issue_key(cls, issue: Dict[str, Any]) -> str:
-        text = cls._flatten_issue_text(issue)
-        location = str(issue.get("location") or issue.get("file") or text)
-        file_path, line = cls._parse_issue_location(location)
-        if not file_path:
-            match = re.search(r"((?:src|include|internal)/[A-Za-z0-9_./-]+\.[chp]+)", text)
-            file_path = match.group(1).lower() if match else ""
-        category = cls._normalize_issue_category(
-            str(issue.get("category") or issue.get("subcategory") or issue.get("vulnerability_type") or text)
-        )
-        sink_match = re.search(
-            r"\b(memcpy|memmove|strcpy|strcat|sprintf|snprintf|printf|system|fopen|free|malloc|"
-            r"pthread_mutex_lock|pthread_mutex_unlock|strlen)\b",
-            text,
-            flags=re.IGNORECASE,
-        )
-        sink = str(issue.get("sink") or (sink_match.group(1).lower() if sink_match else issue.get("function", "")))
-        return "|".join(cls._normalize_issue_key_part(part) for part in (category, file_path, line or "", sink))
+        return canonical_issue_key(issue)
 
     @staticmethod
     def _normalize_issue_category(value: str) -> str:
-        text = value.replace("_", " ").replace("-", " ").lower()
-        groups = {
-            "integer_overflow": ("integer", "overflow", "wrap", "cwe-190"),
-            "bounds": ("bounds", "buffer", "out of bounds", "cwe-125", "cwe-787"),
-            "format_string": ("format string", "cwe-134"),
-            "command_injection": ("command injection", "system", "shell", "cwe-78"),
-            "race": ("race", "toctou", "concurrency", "cwe-362", "cwe-367"),
-            "deadlock": ("deadlock", "cwe-833"),
-            "double_free": ("double free", "cwe-415"),
-            "memory_leak": ("leak", "cwe-401"),
-        }
-        for canonical, needles in groups.items():
-            if any(needle in text for needle in needles):
-                return canonical
-        return text.strip() or "unknown"
+        return normalize_issue_category(value)
 
     @staticmethod
     def _normalize_issue_key_part(value: Any) -> str:
-        text = str(value or "").replace("\\", "/").lower().strip()
-        return re.sub(r"\s+", " ", text)
+        return normalize_issue_key_part(value)
 
     @classmethod
     def _flatten_issue_text(cls, value: Any) -> str:
-        if isinstance(value, dict):
-            return " ".join(cls._flatten_issue_text(v) for v in value.values())
-        if isinstance(value, list):
-            return " ".join(cls._flatten_issue_text(v) for v in value)
-        return "" if value is None else str(value)
+        return flatten_issue_text(value)
 
     @staticmethod
     def _parse_issue_location(location: str) -> tuple[str, Optional[int]]:
-        normalized = location.replace("\\", "/")
-        match = re.search(r"((?:src|include|internal)/[A-Za-z0-9_./-]+\.[chp]+):(\d+)", normalized)
-        if match:
-            return match.group(1).lower(), int(match.group(2))
-        match = re.search(r"(.+\.[chp]+):(\d+)", normalized)
-        if match:
-            return match.group(1).lower(), int(match.group(2))
-        return normalized.lower(), None
+        return parse_issue_location(location)
     
     def _group_by_severity(self, issues: List[Dict]) -> Dict[str, List[Dict]]:
         """Group issues by impact level."""

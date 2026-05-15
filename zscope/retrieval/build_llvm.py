@@ -15,7 +15,9 @@ import shlex
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
+
+from .bitcode_scope import BitcodeScopeConfig, EntryBitcodeSelector
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +82,15 @@ class BitcodeBuilder:
                     break
         return env
 
-    def build(self, groups: Optional[Dict[str, List[str]]] = None) -> Dict[str, Path]:
+    def build(
+        self,
+        groups: Optional[Dict[str, List[str]]] = None,
+        *,
+        scope_config: Optional[BitcodeScopeConfig] = None,
+        entry_functions: Optional[Sequence[Any]] = None,
+        knowledge_db: Optional[Any] = None,
+        project_root: Optional[Path] = None,
+    ) -> Dict[str, Path]:
         """执行完整构建流程，返回各分组合并后的 .bc 路径字典。
         
         groups: 可选的分组配置，格式 {"group_name": ["exclude_file1.c", ...]}
@@ -106,6 +116,15 @@ class BitcodeBuilder:
         if not groups:
             groups = {"default": []}
 
+        selector: Optional[EntryBitcodeSelector] = None
+        if scope_config and scope_config.mode != "full" and entry_functions and knowledge_db:
+            selector = EntryBitcodeSelector(
+                db=knowledge_db,
+                source_root=self.source_root,
+                project_root=Path(project_root or self.source_root),
+                config=scope_config,
+            )
+
         results: Dict[str, Path] = {}
         # 为每组过滤并合并 bc 文件
         for group_name, exclude_list in groups.items():
@@ -120,6 +139,27 @@ class BitcodeBuilder:
 
             if not group_bcs:
                 logger.warning("No .bc files left for group '%s' after exclusions", group_name)
+                continue
+
+            if selector:
+                selected_bcs, plan = selector.select(
+                    group_name=group_name,
+                    candidate_bcs=group_bcs,
+                    bc_to_src=self._bc_to_src,
+                    entries=entry_functions or [],
+                )
+                selector.write_plan(plan, self.output_dir)
+                logger.info(
+                    "SVF bitcode scope for group '%s': %d/%d .bc selected%s",
+                    group_name,
+                    len(selected_bcs),
+                    len(group_bcs),
+                    f" (fallback={plan.fallback_reason})" if plan.fallback_reason else "",
+                )
+                group_bcs = selected_bcs
+
+            if not group_bcs:
+                logger.warning("No .bc files selected for group '%s'", group_name)
                 continue
 
             merged = self._link_all(group_bcs, group_name)
@@ -207,7 +247,7 @@ class BitcodeBuilder:
                 check=True,
             )
             if bc_path.exists():
-                self._bc_to_src[bc_path] = Path(src_file)
+                self._bc_to_src[bc_path.resolve()] = self._resolve_source_file(src_file, directory)
                 logger.info("Extracted %s (%d bytes)", bc_path, bc_path.stat().st_size)
             else:
                 logger.warning("get-bc succeeded but %s not found", bc_path)
@@ -328,6 +368,13 @@ class BitcodeBuilder:
                 "Failed to parse compile command with shlex, falling back to split(): %s", e
             )
             return command_str.split()
+
+    @staticmethod
+    def _resolve_source_file(src_file: str, directory: str) -> Path:
+        path = Path(src_file)
+        if not path.is_absolute():
+            path = Path(directory) / path
+        return path.resolve()
 
     @classmethod
     def _skipped_define_name(cls, arg: str) -> Optional[str]:
