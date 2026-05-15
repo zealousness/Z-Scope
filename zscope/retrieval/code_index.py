@@ -434,6 +434,7 @@ class CodeIndex:
         func_name: str,
         max_lines: int = 500,
         warn_missing: bool = True,
+        include_context: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """Get function implementation."""
         if not is_likely_function_call_identifier(func_name):
@@ -470,20 +471,22 @@ class CodeIndex:
             if end - start > max_lines:
                 end = start + max_lines
             code_lines = lines[start:end]
-            comment_blocks = self._find_function_declaration_comments(
-                func_name,
-                file_path,
-            )
-            impl_comment = self._find_leading_c_comment_block(lines, func_info["start_line"])
-            if impl_comment:
-                comment_blocks.append(
-                    self._comment_block_payload(
-                        kind="implementation",
-                        file_path=file_path,
-                        lines=lines,
-                        block=impl_comment,
-                    )
+            comment_blocks: List[Dict[str, Any]] = []
+            if include_context:
+                comment_blocks = self._find_function_declaration_comments(
+                    func_name,
+                    file_path,
                 )
+                impl_comment = self._find_leading_c_comment_block(lines, func_info["start_line"])
+                if impl_comment:
+                    comment_blocks.append(
+                        self._comment_block_payload(
+                            kind="implementation",
+                            file_path=file_path,
+                            lines=lines,
+                            block=impl_comment,
+                        )
+                    )
 
             code_parts: List[str] = []
             for block in comment_blocks:
@@ -496,7 +499,9 @@ class CodeIndex:
             code = "".join(code_parts)
 
             # Get callees from backend if available, else regex
-            if self._backend:
+            if not include_context:
+                callees = []
+            elif self._backend:
                 callee_data = self._backend.get_method_callees(func_name)
                 callees = self._filter_callee_names(
                     c["name"] for c in callee_data if c.get("name")
@@ -547,9 +552,34 @@ class CodeIndex:
             logger.error(f"Failed to read file snippet: {e}")
             return None
 
-    def list_functions(self, pattern: Optional[str] = None, limit: int = 50) -> List[str]:
-        """List known functions, optionally filtered by regex pattern."""
+    def list_functions(
+        self,
+        pattern: Optional[str] = None,
+        limit: int = 50,
+        file_root: Optional[Union[str, Path]] = None,
+    ) -> List[str]:
+        """List known functions, optionally filtered by regex pattern and source directory."""
         funcs = list(self._function_index.keys())
+        if file_root:
+            root = Path(file_root)
+            if not root.is_absolute():
+                root = self.source_root / root
+            root = root.resolve()
+
+            scoped_funcs = []
+            for name in funcs:
+                info = self._function_index.get(name) or {}
+                indexed_file = str(info.get("file") or "")
+                if not indexed_file or indexed_file.startswith("<"):
+                    continue
+                try:
+                    resolved_file = self._resolve_file_path(indexed_file).resolve()
+                    resolved_file.relative_to(root)
+                except (OSError, ValueError):
+                    continue
+                scoped_funcs.append(name)
+            funcs = scoped_funcs
+
         if pattern:
             try:
                 pat = re.compile(pattern)

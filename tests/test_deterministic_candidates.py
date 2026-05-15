@@ -198,3 +198,25 @@ int entry(size_t packet_len) {
         for issue in issues
         for evidence in issue.get("positive_evidence", [])
     )
+
+
+def test_deterministic_reasoning_is_chinese_and_evidence_backed() -> None:
+    code = r"""
+int entry(size_t payload_len) {
+    void* response = _safe_malloc(payload_len * 2);
+    return response ? 0 : -1;
+}
+"""
+    issues = DeterministicCandidateGenerator().generate_issues(
+        "entry",
+        code,
+        "src/demo.c",
+    )
+    issue = next(item for item in issues if item["defect_class"] == "integer_overflow")
+
+    reasoning = issue["reasoning"]
+    assert "确定性规则" in reasoning
+    assert "关键证据" in reasoning
+    assert "根因" in reasoning
+    assert "line 3" in reasoning
+    assert "Deterministic candidate generated" not in reasoning
