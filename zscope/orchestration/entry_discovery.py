@@ -268,7 +268,7 @@ class EntryDiscovery:
             name = item.get("name")
             if not name:
                 continue
-            impl = self.code_index.get_function_impl(name)
+            impl = self._get_function_impl(name)
             if not impl:
                 continue
             impl_file = impl.get("file", "")
@@ -289,8 +289,8 @@ class EntryDiscovery:
 
     def _discover_body_entries(self) -> List[EntryCandidate]:
         candidates: List[EntryCandidate] = []
-        for name in self.code_index.list_functions(limit=self.max_functions):
-            impl = self.code_index.get_function_impl(name)
+        for name in self._list_functions_for_discovery():
+            impl = self._get_function_impl(name)
             if not impl:
                 continue
             file_path = impl.get("file", "")
@@ -312,7 +312,7 @@ class EntryDiscovery:
             if thread_hits:
                 reasons.extend([f"thread:{hit}" for hit in thread_hits])
                 for target in self._find_thread_entry_targets(code, thread_hits):
-                    target_impl = self.code_index.get_function_impl(target)
+                    target_impl = self._get_function_impl(target)
                     if not target_impl:
                         continue
                     target_file = target_impl.get("file", "")
@@ -357,6 +357,23 @@ class EntryDiscovery:
                 )
             )
         return candidates
+
+    def _list_functions_for_discovery(self) -> List[str]:
+        if self.search_root:
+            try:
+                return self.code_index.list_functions(
+                    limit=self.max_functions,
+                    file_root=self.search_root,
+                )
+            except TypeError:
+                pass
+        return self.code_index.list_functions(limit=self.max_functions)
+
+    def _get_function_impl(self, name: str) -> Optional[Dict[str, Any]]:
+        try:
+            return self.code_index.get_function_impl(name, include_context=False)
+        except TypeError:
+            return self.code_index.get_function_impl(name)
 
     def _merge_candidates(self, candidates: Iterable[EntryCandidate]) -> List[EntryCandidate]:
         by_name: Dict[str, EntryCandidate] = {}

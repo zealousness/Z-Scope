@@ -2,19 +2,22 @@ import json
 
 from zscope.config.config import ConfigLoader
 from zscope.orchestration.entry_discovery import EntryDiscovery
+from zscope.retrieval.code_index import CodeIndex
 
 
 class FakeCodeIndex:
     def __init__(self, functions):
         self.functions = functions
+        self.list_calls = []
 
     def get_header_declared_functions(self, header_files=None):
         return []
 
-    def list_functions(self, limit=10000):
+    def list_functions(self, limit=10000, file_root=None):
+        self.list_calls.append(file_root)
         return list(self.functions)[:limit]
 
-    def get_function_impl(self, name):
+    def get_function_impl(self, name, include_context=True):
         value = self.functions.get(name)
         if value is None:
             return None
@@ -181,6 +184,75 @@ def test_search_root_limits_discovered_entries_to_that_directory(tmp_path):
     result = discovery.discover()
 
     assert [candidate.function_name for candidate in result.candidates] == ["NetRecv"]
+
+
+def test_search_root_is_pushed_into_function_listing(tmp_path):
+    project_root = tmp_path
+    search_root = project_root / "src" / "net"
+    search_root.mkdir(parents=True)
+    fake_index = FakeCodeIndex(
+        {
+            "NetRecv": {
+                "code": "int NetRecv(int fd, char *buf, size_t len) { return recv(fd, buf, len, 0); }",
+                "file": "src/net/net.c",
+            },
+        }
+    )
+
+    discovery = EntryDiscovery(
+        fake_index,
+        project_root=project_root,
+        source_root=project_root,
+        search_root=search_root,
+    )
+
+    discovery.discover()
+
+    assert fake_index.list_calls == [search_root.resolve()]
+
+
+def test_code_index_lists_only_functions_under_file_root(tmp_path):
+    net_dir = tmp_path / "src" / "net"
+    cli_dir = tmp_path / "src" / "cli"
+    net_dir.mkdir(parents=True)
+    cli_dir.mkdir(parents=True)
+    (net_dir / "net.c").write_text(
+        "int NetRecv(int fd, char *buf, unsigned long len) { return recv(fd, buf, len, 0); }\n",
+        encoding="utf-8",
+    )
+    (cli_dir / "main.c").write_text(
+        "int CliMain(int argc, char **argv) { return argc; }\n",
+        encoding="utf-8",
+    )
+    code_index = CodeIndex(tmp_path, source_root=tmp_path)
+
+    try:
+        assert code_index.list_functions(limit=20, file_root=net_dir) == ["NetRecv"]
+    finally:
+        code_index.close()
+
+
+def test_code_index_file_root_filter_uses_source_root_relative_paths(tmp_path):
+    project_root = tmp_path / "project"
+    source_root = project_root / "src"
+    net_dir = source_root / "net"
+    cli_dir = source_root / "cli"
+    net_dir.mkdir(parents=True)
+    cli_dir.mkdir(parents=True)
+    (net_dir / "net.c").write_text(
+        "int NetRecv(int fd, char *buf, unsigned long len) { return recv(fd, buf, len, 0); }\n",
+        encoding="utf-8",
+    )
+    (cli_dir / "main.c").write_text(
+        "int CliMain(int argc, char **argv) { return argc; }\n",
+        encoding="utf-8",
+    )
+    code_index = CodeIndex(project_root, source_root=source_root)
+
+    try:
+        assert code_index.list_functions(limit=20, file_root="net") == ["NetRecv"]
+    finally:
+        code_index.close()
 
 
 def test_discovery_result_can_be_written_as_entry_functions_list_payload():
