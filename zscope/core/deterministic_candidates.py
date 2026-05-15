@@ -403,6 +403,22 @@ class DeterministicCandidateGenerator:
             if evidence:
                 pack.update(evidence)
 
+            reasoning = self._build_readable_reasoning(
+                defect_class=defect_class,
+                rule=rule,
+                func_name=func_name,
+                file_path=file_path,
+                line=line.number,
+                description=description,
+                root_cause=root_cause,
+                suggested_fix=suggested_fix,
+                source=source,
+                sink=sink,
+                positive_evidence=pos,
+                negative_evidence=neg,
+                evidence_pack=pack,
+            )
+
             issues.append(
                 {
                     "id": candidate_id,
@@ -421,7 +437,7 @@ class DeterministicCandidateGenerator:
                     "confidence": confidence,
                     "rule_confidence": confidence,
                     "impact_level": impact_level,
-                    "reasoning": "Deterministic candidate generated from local C memory/concurrency facts.",
+                    "reasoning": reasoning,
                     "code_snippet": self._context(lines, line.index + context_start, line.index + context_end),
                     "source": source,
                     "sink": sink,
@@ -434,6 +450,64 @@ class DeterministicCandidateGenerator:
             )
 
         return emit
+
+    @staticmethod
+    def _build_readable_reasoning(
+        *,
+        defect_class: str,
+        rule: str,
+        func_name: str,
+        file_path: str,
+        line: int,
+        description: str,
+        root_cause: str,
+        suggested_fix: str,
+        source: str,
+        sink: str,
+        positive_evidence: List[str],
+        negative_evidence: List[str],
+        evidence_pack: Dict[str, Any],
+    ) -> str:
+        """Build Chinese human-readable reasoning from deterministic evidence."""
+
+        cwe = DeterministicCandidateGenerator._CWE_BY_CLASS.get(defect_class, "")
+        path = evidence_pack.get("path") if isinstance(evidence_pack.get("path"), dict) else {}
+        guard_status = str(path.get("guard_status") or "")
+        if guard_status == "insufficient_or_absent":
+            guard_text = "当前函数内未看到足够的边界检查、所有权转移或同步保护。"
+        elif guard_status == "needs_validation":
+            guard_text = "存在部分保护或反向证据，需要结合上下文继续确认。"
+        else:
+            guard_text = "规则证据未给出额外保护状态。"
+
+        flow_parts = []
+        if source:
+            flow_parts.append(f"源/对象 `{source}`")
+        if sink:
+            flow_parts.append(f"汇点/操作 `{sink}`")
+        flow = " -> ".join(flow_parts) if flow_parts else "规则命中的本地代码片段"
+
+        lines = [
+            f"确定性规则 `{rule}` 在 `{func_name}` 的 `{file_path}:{line}` 命中了 `{defect_class}`"
+            + (f"（{cwe}）" if cwe else "")
+            + " 候选。",
+            f"问题判断：{description}",
+            f"数据/资源路径：{flow}。",
+            f"保护状态：{guard_text}",
+        ]
+        if positive_evidence:
+            lines.append("关键证据：")
+            lines.extend(f"- {item}" for item in positive_evidence[:6])
+            if len(positive_evidence) > 6:
+                lines.append(f"- 另有 {len(positive_evidence) - 6} 条结构化证据未展开。")
+        if negative_evidence:
+            lines.append("需要复核的反向证据：")
+            lines.extend(f"- {item}" for item in negative_evidence[:4])
+        else:
+            lines.append("反向证据：未发现能否定该候选的本地保护或清理证据。")
+        lines.append(f"根因：{root_cause}")
+        lines.append(f"建议：{suggested_fix}")
+        return "\n".join(lines)
 
     def _rule_allocation_size_overflow(self, lines: List[CodeLine], emit) -> None:
         params = self._function_params(lines)

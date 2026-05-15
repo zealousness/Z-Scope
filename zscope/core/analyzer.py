@@ -1692,6 +1692,12 @@ class Analyzer:
                 continue
 
             if self._should_auto_accept_deterministic_candidate(raw_issue):
+                issue_code = state["agent_context"]["code"]
+                if issue_func != state["agent_context"]["func_name"]:
+                    impl = self.code_index.get_function_impl(issue_func)
+                    if impl:
+                        issue_code = impl["code"]
+
                 score_data = self._score_components(
                     raw_issue,
                     {
@@ -1710,9 +1716,11 @@ class Analyzer:
                 raw_issue["validation_status"] = "validated"
                 raw_issue["validator_verdict"] = "verified"
                 raw_issue["finding_kind"] = "verified_vulnerability"
-                raw_issue.setdefault(
-                    "validation_reasoning",
-                    "Accepted high-confidence deterministic candidate with complete local evidence.",
+                self._enrich_auto_accepted_reasoning(
+                    raw_issue,
+                    state,
+                    issue_code,
+                    validator_agent,
                 )
                 logger.info(
                     "Issue %s auto-accepted as deterministic evidence-backed finding.",
@@ -1839,6 +1847,90 @@ class Analyzer:
             self.user_config.upsert_finding_baseline(dedup_key, memory_status, issue)
         except Exception as exc:
             logger.debug("Failed to persist validation memory for %s: %s", issue.get("id"), exc)
+
+    def _enrich_auto_accepted_reasoning(
+        self,
+        issue: Dict[str, Any],
+        state: Dict[str, Any],
+        issue_code: str,
+        validator_agent: ValidatorAgent,
+    ) -> None:
+        """Ask the validator LLM to write Chinese reasoning for deterministic auto-accepts."""
+        fallback_reasoning = str(
+            issue.get("reasoning")
+            or "确定性规则证据完整且置信度达到自动确认阈值，已按本地代码事实直接确认；详细证据见 positive_evidence 和 evidence_pack。"
+        ).strip()
+
+        evidence_pack = self._build_validation_evidence_pack(issue, state, issue_code)
+        evidence_pack["mode"] = "deterministic_auto_accept_reasoning"
+        requirements = list(evidence_pack.get("validation_requirements") or [])
+        requirements.extend(
+            [
+                "This finding has already passed deterministic auto-acceptance; use the evidence to write a human-readable Chinese audit reasoning.",
+                "reasoning 必须使用中文，并说明触发路径/输入来源、危险操作、缺失保护以及为什么该问题可达。",
+                "Do not output the generic deterministic-candidate placeholder as reasoning.",
+            ]
+        )
+        evidence_pack["validation_requirements"] = requirements
+
+        val_input = {
+            "finding": json.dumps(issue, indent=2, ensure_ascii=False),
+            "context_code": issue_code,
+            "evidence_pack": evidence_pack,
+        }
+        try:
+            self._attach_agent_contract(val_input, "validator_agent")
+            val_resp = validator_agent.run(val_input)
+        except Exception as exc:
+            issue.setdefault("reasoning", fallback_reasoning)
+            issue.setdefault("validation_reasoning", fallback_reasoning)
+            issue["reasoning_source"] = "deterministic_fallback"
+            issue["llm_reasoning_error"] = str(exc)
+            logger.warning(
+                "LLM reasoning enrichment failed for auto-accepted issue %s: %s",
+                issue.get("id"),
+                exc,
+            )
+            return
+
+        if not val_resp.success:
+            issue.setdefault("reasoning", fallback_reasoning)
+            issue.setdefault("validation_reasoning", fallback_reasoning)
+            issue["reasoning_source"] = "deterministic_fallback"
+            issue["llm_reasoning_error"] = val_resp.error
+            return
+
+        val_data = val_resp.data or {}
+        llm_reasoning = str(val_data.get("reasoning") or "").strip()
+        verdict = self._validation_verdict(val_data)
+        if llm_reasoning:
+            issue["llm_reasoning"] = llm_reasoning
+            issue["llm_reasoning_verdict"] = verdict
+
+        if llm_reasoning and verdict == "verified":
+            issue["reasoning"] = llm_reasoning
+            issue["validation_reasoning"] = llm_reasoning
+            issue["reasoning_source"] = "validator_agent_llm"
+            for field in (
+                "exploit_scenario",
+                "source",
+                "sink",
+                "control_of_source",
+                "guard_analysis",
+                "positive_evidence",
+                "negative_evidence",
+            ):
+                if field in val_data and val_data.get(field) not in (None, ""):
+                    issue[field] = val_data.get(field)
+            return
+
+        issue.setdefault("reasoning", fallback_reasoning)
+        issue.setdefault("validation_reasoning", fallback_reasoning)
+        issue["reasoning_source"] = "deterministic_fallback"
+        if llm_reasoning:
+            issue["validation_reasoning"] = (
+                f"{fallback_reasoning}\n\nLLM 审计补充（未作为自动确认结论采纳，verdict={verdict}）：{llm_reasoning}"
+            )
 
     def _should_auto_accept_deterministic_candidate(self, issue: Dict[str, Any]) -> bool:
         """Return whether a deterministic local-rule candidate is report-ready."""
