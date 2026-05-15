@@ -9,6 +9,7 @@ class FakeCodeIndex:
     def __init__(self, functions):
         self.functions = functions
         self.list_calls = []
+        self.impl_calls = []
 
     def get_header_declared_functions(self, header_files=None):
         return []
@@ -17,7 +18,14 @@ class FakeCodeIndex:
         self.list_calls.append(file_root)
         return list(self.functions)[:limit]
 
-    def get_function_impl(self, name, include_context=True):
+    def get_function_impl(self, name, include_context=True, warn_missing=True):
+        self.impl_calls.append(
+            {
+                "name": name,
+                "include_context": include_context,
+                "warn_missing": warn_missing,
+            }
+        )
         value = self.functions.get(name)
         if value is None:
             return None
@@ -293,6 +301,51 @@ def test_public_api_prompt_requires_callee_sink_audit():
     prompt = payload["functions"][0]["custom_prompt"]
     assert "follow its callees" in prompt
     assert "concrete vulnerable callee location" in prompt
+
+
+def test_search_root_skips_header_declarations_before_impl_lookup(tmp_path):
+    project_root = tmp_path
+    source_root = project_root
+    search_root = project_root / "src" / "api"
+    search_root.mkdir(parents=True)
+    (project_root / "vendor" / "boring").mkdir(parents=True)
+
+    class HeaderCodeIndex(FakeCodeIndex):
+        def get_header_declared_functions(self, header_files=None):
+            return [
+                {
+                    "name": "_goboringcrypto_OPENSSL_malloc",
+                    "filename": "vendor/boring/crypto.h",
+                    "lineNumber": 10,
+                },
+                {
+                    "name": "PublicFacade",
+                    "filename": "src/api/public.h",
+                    "lineNumber": 20,
+                },
+            ]
+
+    fake_index = HeaderCodeIndex(
+        {
+            "PublicFacade": {
+                "code": "int PublicFacade(int fd, char *buf, size_t len) { return recv(fd, buf, len, 0); }",
+                "file": "src/api/public.c",
+            },
+        }
+    )
+
+    discovery = EntryDiscovery(
+        fake_index,
+        project_root=project_root,
+        source_root=source_root,
+        search_root=search_root,
+    )
+
+    result = discovery.discover()
+
+    assert [candidate.function_name for candidate in result.candidates] == ["PublicFacade"]
+    assert [call["name"] for call in fake_index.impl_calls] == ["PublicFacade", "PublicFacade"]
+    assert all(call["warn_missing"] is True for call in fake_index.impl_calls)
 
 
 def test_config_loader_accepts_absolute_entry_discovery_search_root(tmp_path):
