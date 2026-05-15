@@ -142,6 +142,10 @@
                                 AI 推理链 (Reasoning)
                             </h3>
                             <div class="text-sm leading-relaxed opacity-80 whitespace-pre-wrap" x-text="selectedFinding.reasoning || selectedFinding.reasoning_process || '暂无推理过程'"></div>
+                            <div class="mt-4 pt-4 border-t border-white/10" x-show="formatFindingEvidence(selectedFinding)">
+                                <h4 class="text-[10px] uppercase opacity-40 font-bold mb-2">规则 / 验证证据</h4>
+                                <div class="text-xs leading-relaxed opacity-75 whitespace-pre-wrap" x-text="formatFindingEvidence(selectedFinding)"></div>
+                            </div>
                         </div>
                         <div class="glass rounded-2xl p-6 overflow-y-auto border-l-4" :class="getBorderClass(selectedFinding.impact_level)">
                             <h3 class="text-sm font-bold mb-3 text-white">漏洞详情</h3>
@@ -694,6 +698,46 @@
                     this.$nextTick(() => {
                         Prism.highlightAll();
                     });
+                },
+
+                formatFindingEvidence(finding) {
+                    if (!finding) {
+                        return '';
+                    }
+                    const lines = [];
+                    const evidencePack = finding.evidence_pack || {};
+                    const score = finding.final_score ?? evidencePack.final_score;
+                    if (finding.source || finding.sink) {
+                        lines.push(`Source/Sink: ${finding.source || 'unknown'} -> ${finding.sink || 'unknown'}`);
+                    }
+                    if (finding.rule || finding.cwe || finding.defect_class) {
+                        lines.push(`Rule: ${finding.rule || finding.defect_class || 'unknown'}${finding.cwe ? ` (${finding.cwe})` : ''}`);
+                    }
+                    if (score !== undefined && score !== null && score !== '') {
+                        const numeric = Number(score);
+                        lines.push(`Score: ${Number.isFinite(numeric) ? numeric.toFixed(2) : score}`);
+                    }
+                    const positives = Array.isArray(finding.positive_evidence)
+                        ? finding.positive_evidence
+                        : (Array.isArray(evidencePack.positive_evidence) ? evidencePack.positive_evidence : []);
+                    const negatives = Array.isArray(finding.negative_evidence)
+                        ? finding.negative_evidence
+                        : (Array.isArray(evidencePack.negative_evidence) ? evidencePack.negative_evidence : []);
+                    if (positives.length) {
+                        lines.push('正向证据:');
+                        positives.slice(0, 8).forEach(item => lines.push(`- ${item}`));
+                    }
+                    if (negatives.length) {
+                        lines.push('反向证据 / 待复核点:');
+                        negatives.slice(0, 6).forEach(item => lines.push(`- ${item}`));
+                    }
+                    const refs = Array.isArray(finding.evidence_refs)
+                        ? finding.evidence_refs
+                        : (Array.isArray(evidencePack.evidence_refs) ? evidencePack.evidence_refs : []);
+                    if (refs.length) {
+                        lines.push(`Evidence refs: ${refs.slice(0, 8).join(', ')}`);
+                    }
+                    return lines.join('\n');
                 },
 
                 getSeverityClass(level) {
