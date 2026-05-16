@@ -143,7 +143,7 @@ analysis:                                  # 分析流程和缓存行为配置
   max_tool_iterations: 50                  # 单个 Agent 最大工具调用轮数
   snapshot_dir: .zscope_snapshots          # 快照、检查点、用户配置默认存放目录
   enable_snapshot_cache: true              # 是否启用函数实现和语义快照缓存
-  user_config_db: ""                       # 用户配置 workbook 或 DB 目录；为空时使用 {snapshot_dir}/user_config.xlsx / user_config.db
+  user_config_db: ""                       # 用户配置 workbook 或目录；为空时使用 {snapshot_dir}/user_config.xlsx
   parallel_workers: 5                      # 批量入口扫描时的并发 worker 数
   max_premodel_depth: 3                    # 语义预建模时向下展开 callee 的最大深度
   max_premodel_callees: 20                 # 语义预建模每层最多展开的 callee 数量

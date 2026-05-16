@@ -81,7 +81,7 @@ project:
 
 indexing:
   backend: unified
-  joern_path: dependency/joern/joern
+  joern_path: /mnt/c/tmp/joern/joern-cli/joern
   joern_server_host: 127.0.0.1
   joern_server_port: 8080
   joern_heap_size: 4g

@@ -7,6 +7,7 @@ import json
 import logging
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -32,6 +33,8 @@ class JoernClient:
         self.heap_size = heap_size
 
         self._server_process: Optional[subprocess.Popen] = None
+        self._cli_mode = False
+        self._cpg_path: Optional[str] = None
         self._cpg_loaded = False
         self._cpg_build_status = "idle"  # idle | building | ready | error
         self._cpg_build_error: Optional[str] = None
@@ -40,12 +43,19 @@ class JoernClient:
         self._cleanup_registered = False
 
     def start_server(self) -> bool:
-        """Start joern-server subprocess."""
+        """Start joern-server subprocess, falling back to CLI project mode."""
         if self._server_process and self._server_process.poll() is None:
+            return True
+        if self._cli_mode:
+            return True
+        if str(self.joern_path).lower().endswith(".bat"):
+            logger.info("Using Joern CLI mode for launcher: %s", self.joern_path)
+            self._cli_mode = True
             return True
         try:
             cmd = [
-                self.joern_path, "--server",
+                self.joern_path,
+                "--server",
                 "--server-host", self.host,
                 "--server-port", str(self.port),
                 f"-J-Xmx{self.heap_size}",
@@ -55,7 +65,7 @@ class JoernClient:
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
             # Wait for server to be ready
-            if not self._wait_for_server():
+            if not self._wait_for_server(timeout=45):
                 stderr_out = b""
                 if (
                     self._server_process
@@ -63,8 +73,13 @@ class JoernClient:
                     and self._server_process.stderr
                 ):
                     stderr_out = self._server_process.stderr.read()
-                logger.error(f"Joern server failed to start. stderr: {stderr_out.decode('utf-8', errors='ignore')}")
-                return False
+                logger.warning(
+                    "Joern server did not become ready; falling back to CLI mode. stderr: %s",
+                    stderr_out.decode("utf-8", errors="ignore"),
+                )
+                self.stop_server()
+                self._cli_mode = True
+                return True
             logger.info("Joern server started on %s:%d", self.host, self.port)
             self._register_cleanup()
             return True
@@ -152,6 +167,9 @@ class JoernClient:
         compile_commands_path: Optional[str] = None,
     ) -> bool:
         """Build CPG from source directory or load existing cpg.bin."""
+        if self._cli_mode:
+            return self._import_cpg_via_cli(source_path, project_root, compile_commands_path)
+
         import os
         logger.info("Importing CPG for source: %s", source_path)
 
@@ -190,6 +208,78 @@ class JoernClient:
             self._cpg_build_error = "CPG import returned None"
         return False
 
+    def _import_cpg_via_cli(
+        self,
+        source_path: str,
+        project_root: Optional[str] = None,
+        compile_commands_path: Optional[str] = None,
+    ) -> bool:
+        """Build or reuse a CPG for Joern CLI script execution."""
+        import os
+
+        logger.info("Importing CPG via Joern CLI for source: %s", source_path)
+        source = Path(source_path).resolve()
+        root = (Path(project_root).resolve() if project_root else (source if source.is_dir() else source.parent))
+
+        candidates = [
+            source / "cpg.bin",
+            root / "cpg.bin",
+            root / ".zscope_joern" / "cpg.bin",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                self._cpg_path = str(candidate)
+                self._cpg_loaded = True
+                with self._cpg_lock:
+                    self._cpg_build_status = "ready"
+                    self._cpg_build_error = None
+                return True
+
+        out_dir = root / ".zscope_joern"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        cpg_path = out_dir / "cpg.bin"
+        parse_cmd = [
+            self._joern_parse_path(),
+            str(source),
+            "-o",
+            str(cpg_path),
+        ]
+        if compile_commands_path:
+            parse_cmd.extend([
+                "--frontend-args",
+                "--compilation-database",
+                str(compile_commands_path),
+            ])
+        try:
+            proc = subprocess.run(
+                parse_cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=7200,
+            )
+        except Exception as exc:
+            with self._cpg_lock:
+                self._cpg_build_status = "error"
+                self._cpg_build_error = str(exc)
+            logger.error("Joern CLI parse failed: %s", exc)
+            return False
+        if proc.returncode != 0 or not os.path.exists(cpg_path):
+            err = (proc.stderr or proc.stdout or "Joern parse failed").strip()
+            with self._cpg_lock:
+                self._cpg_build_status = "error"
+                self._cpg_build_error = err
+            logger.error("Joern CLI parse failed: %s", err)
+            return False
+        self._cpg_path = str(cpg_path)
+        self._cpg_loaded = True
+        with self._cpg_lock:
+            self._cpg_build_status = "ready"
+            self._cpg_build_error = None
+        logger.info("Joern CLI CPG ready at %s", cpg_path)
+        return True
+
     def import_cpg_async(
         self,
         source_path: str,
@@ -206,6 +296,9 @@ class JoernClient:
 
         def _build():
             try:
+                if self._cli_mode:
+                    self._import_cpg_via_cli(source_path, project_root, compile_commands_path)
+                    return
                 import os
                 cpg_bin = os.path.join(source_path, "cpg.bin")
                 if project_root and not os.path.exists(cpg_bin):
@@ -254,6 +347,8 @@ class JoernClient:
 
     def query(self, cpgql: str) -> Any:
         """Execute a CPGQL query via cpgqls-client."""
+        if self._cli_mode:
+            return self._query_via_cli(cpgql)
         try:
             from cpgqls_client import CPGQLSClient  # type: ignore[import-untyped]
             
@@ -363,21 +458,77 @@ class JoernClient:
 
     def _query_via_cli(self, cpgql: str) -> Any:
         """Fallback: execute query via joern CLI."""
+        script_path = None
         try:
-            cmd = [self.joern_path, "--script", "/dev/stdin"]
+            script_path = self._write_cli_query_script(cpgql, self._cpg_path)
+            cmd = [self.joern_path, "--nocolors", "--script", script_path]
             proc = subprocess.run(
-                cmd, input=cpgql, capture_output=True, text=True, timeout=300
+                cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600
             )
             if proc.returncode != 0:
                 logger.error("Joern CLI error: %s", proc.stderr)
                 return None
-            try:
-                return json.loads(proc.stdout)
-            except json.JSONDecodeError:
-                return proc.stdout.strip()
+            return self._parse_cli_query_stdout(proc.stdout)
         except Exception as e:
             logger.error("Joern CLI query failed: %s", e)
             return None
+        finally:
+            if script_path:
+                try:
+                    Path(script_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+    def _joern_parse_path(self) -> str:
+        raw = str(self.joern_path)
+        lower = raw.lower()
+        if lower.endswith("joern.bat"):
+            return raw[:-len("joern.bat")] + "joern-parse.bat"
+        if lower.endswith("joern"):
+            prefix = raw[:-len("joern")]
+            return prefix + "joern-parse" if prefix else "joern-parse"
+        return "joern-parse"
+
+    def _write_cli_query_script(self, cpgql: str, cpg_path: Optional[str] = None) -> str:
+        prelude = ""
+        if cpg_path:
+            escaped = str(Path(cpg_path).resolve()).replace("\\", "\\\\").replace('"', '\\"')
+            prelude = f'importCpg("{escaped}", "zscope_cli", enhance=true)\n'
+        body = prelude + (
+            "val __zscope_result = {\n"
+            f"{cpgql}\n"
+            "}\n"
+            "println(\"__ZSCOPE_JSON_BEGIN__\")\n"
+            "println(__zscope_result)\n"
+            "println(\"__ZSCOPE_JSON_END__\")\n"
+        )
+        handle = tempfile.NamedTemporaryFile(
+            "w", suffix=".sc", prefix="zscope_joern_", delete=False, encoding="utf-8"
+        )
+        try:
+            handle.write(body)
+            return handle.name
+        finally:
+            handle.close()
+
+    @staticmethod
+    def _parse_cli_query_stdout(stdout: str) -> Any:
+        import re
+
+        ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+        clean = ansi_escape.sub("", stdout or "")
+        marker = re.search(
+            r"__ZSCOPE_JSON_BEGIN__\s*(.*?)\s*__ZSCOPE_JSON_END__",
+            clean,
+            re.DOTALL,
+        )
+        text = marker.group(1).strip() if marker else clean.strip()
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return text
 
     # ── Convenience methods ──
 

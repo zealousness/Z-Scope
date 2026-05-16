@@ -73,13 +73,6 @@ SHEET_HEADERS: Dict[str, List[str]] = {
     ],
 }
 
-LEGACY_SHEET_MAP = {
-    "external_functions": "resource",
-    "resource_pairs": "resource",
-    "lock_pairs": "lock",
-}
-
-
 class UserConfigWorkbook:
     """Read and write the XLSX user configuration workbook."""
 
@@ -398,47 +391,7 @@ class UserConfigWorkbook:
 
 def _normalize_workbook_shape(rows_by_sheet: Dict[str, List[Dict[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
     normalized = {name: list(rows_by_sheet.get(name, [])) for name in SHEET_HEADERS}
-    normalized["resource"].extend(_legacy_external_rows(rows_by_sheet.get("external_functions", [])))
-    normalized["resource"].extend(_legacy_pair_rows(rows_by_sheet.get("resource_pairs", []), "resource"))
-    normalized["lock"].extend(_legacy_pair_rows(rows_by_sheet.get("lock_pairs", []), "lock"))
     return _collapse_symbol_rows(normalized)
-
-
-def _legacy_external_rows(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    converted = []
-    for row in rows:
-        kind = row.get("kind", "")
-        converted.append(
-            {
-                "symbol_name": row.get("symbol_name") or row.get("func_name", ""),
-                "kind": kind,
-                "symbol_type": row.get("symbol_type", ""),
-                "pair": row.get("pair", ""),
-                "description": row.get("description", ""),
-                "source": row.get("source", ""),
-                "confidence": row.get("confidence", ""),
-                "notes": row.get("notes", ""),
-            }
-        )
-    return converted
-
-
-def _legacy_pair_rows(rows: Iterable[Dict[str, Any]], sheet: str) -> List[Dict[str, Any]]:
-    converted = []
-    for row in rows:
-        converted.append(
-            {
-                "symbol_name": row.get("symbol_name") or row.get("acquire_func", ""),
-                "kind": row.get("kind") or _acquire_kind_for_sheet(sheet),
-                "symbol_type": row.get("symbol_type", "function"),
-                "pair": row.get("pair") or row.get("release_func", ""),
-                "description": row.get("description", ""),
-                "source": row.get("source", ""),
-                "confidence": row.get("confidence", ""),
-                "notes": row.get("notes", ""),
-            }
-        )
-    return converted
 
 
 def _collapse_symbol_rows(rows_by_sheet: Dict[str, List[Dict[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
@@ -497,14 +450,7 @@ def _cell_text(value: Any) -> str:
 
 
 def _is_active(row: Dict[str, str]) -> bool:
-    # Backward compatibility for older workbooks that had a status column.
-    return str(row.get("status", "active")).strip().lower() not in {
-        "deleted",
-        "ignore",
-        "ignored",
-        "disabled",
-        "stale",
-    }
+    return True
 
 
 def _is_inferred_row(sheet: str, row: Dict[str, str]) -> bool:
@@ -712,7 +658,6 @@ def _worksheet_xml(sheet: str, rows: List[Dict[str, str]]) -> str:
 
 def _read_xlsx(path: Path) -> Dict[str, List[Dict[str, str]]]:
     rows_by_sheet: Dict[str, List[Dict[str, str]]] = {name: [] for name in SHEET_HEADERS}
-    legacy_rows: Dict[str, List[Dict[str, str]]] = {}
     with zipfile.ZipFile(path) as zf:
         shared = _read_shared_strings(zf)
         workbook = ET.fromstring(zf.read("xl/workbook.xml"))
@@ -723,8 +668,7 @@ def _read_xlsx(path: Path) -> Dict[str, List[Dict[str, str]]]:
         }
         for sheet_el in workbook.findall(".//m:sheet", ns):
             name = sheet_el.attrib.get("name", "")
-            canonical_name = LEGACY_SHEET_MAP.get(name, name)
-            if canonical_name not in SHEET_HEADERS:
+            if name not in SHEET_HEADERS:
                 continue
             rel_id = sheet_el.attrib.get(f"{{{ns['r']}}}id", "")
             target = rels.get(rel_id)
@@ -743,12 +687,7 @@ def _read_xlsx(path: Path) -> Dict[str, List[Dict[str, str]]]:
                 row = {headers[idx]: values[idx] if idx < len(values) else "" for idx in range(len(headers))}
                 if any(str(value).strip() for value in row.values()):
                     parsed_rows.append(row)
-            if name in LEGACY_SHEET_MAP:
-                legacy_rows.setdefault(name, []).extend(parsed_rows)
-            else:
-                rows_by_sheet[canonical_name].extend(parsed_rows)
-    if legacy_rows:
-        rows_by_sheet = _normalize_workbook_shape({**rows_by_sheet, **legacy_rows})
+            rows_by_sheet[name].extend(parsed_rows)
     return rows_by_sheet
 
 

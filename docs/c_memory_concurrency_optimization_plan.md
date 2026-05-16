@@ -17,7 +17,7 @@ shape first.
 
 Target pipeline:
 
-1. deterministic rule or backend signal creates a candidate
+1. regex local rule or backend signal creates a candidate
 2. candidate carries source, sink, object/lock, path hints and guards
 3. Deep Worker optionally expands the path under a focused skill
 4. Validator decides verified / needs review / rejected
@@ -30,7 +30,7 @@ The current codebase has landed the first evidence-driven stage:
 - `UnifiedBackend` combines Clang indexing with SVF/Saber enrichment.
 - `KnowledgeDB` stores functions, types, globals, direct calls, indirect calls,
   taint signatures and lightweight evidence tables.
-- `DeterministicCandidateGenerator` generates issue-like candidates for common
+- `RegexCandidateGenerator` generates issue-like candidates for common
   C memory/concurrency classes.
 - Candidates are routed through the same vulnerability skills, Deep Worker
   planning, validator flow and report output as LLM findings.
@@ -85,7 +85,7 @@ Invalid examples:
 
 1. Keep report defaults focused on verified findings and high-score
    `needs_review` items.
-2. Require each deterministic candidate to carry positive evidence and, where
+2. Require each regex candidate to carry positive evidence and, where
    possible, negative evidence such as guards or ownership transfer.
 3. Deduplicate by defect class, canonical source/sink and object/lock identity,
    not only by line text.
@@ -96,7 +96,7 @@ Invalid examples:
 
 ## 6. High Recall Strategy
 
-1. Keep deterministic rules broad enough to cover the C idiom, then use the
+1. Keep regex local rules broad enough to cover the C idiom, then use the
    validator to reject weak paths.
 2. Preserve unexecuted Deep Worker candidates in the main analyzer context so a
    small worker budget does not silently drop risky code.
@@ -180,21 +180,130 @@ rate <= 50%. Remaining work should focus on generic type-contract checks,
 cross-function init cleanup ownership, and recursive-lock proof without fixture
 function-name matching.
 
-## 9. Remaining Work
+## 9. Current Clang AST/CFG Candidate Rules
+
+The Clang candidate generator uses clangd/CodeIndex function bodies and
+synthesized statement/CFG facts. It should use parsed calls, local
+declarations, condition guards, event streams, configured resource/lock/macro
+models and backend call edges first. Regex-like fragments are allowed only as a
+statement parser fallback inside an indexed function body; rules must not
+depend on benchmark function names or fixture-only identifiers.
+
+Current checker rules:
+
+- `clang_cfg_same_object_released_twice`
+- `clang_cfg_use_after_release`
+- `clang_cfg_acquire_without_release_on_exit`
+- `clang_cfg_return_with_lock_held`
+- `clang_cfg_alloc_result_deref_without_null_guard`
+- `clang_cfg_realloc_lost_original`
+- `clang_cfg_out_param_used_before_success_check`
+- `clang_cfg_external_length_field_reaches_copy`
+- `clang_cfg_allocation_size_arithmetic_without_overflow_guard`
+- `clang_cfg_size_addition_without_overflow_guard`
+- `clang_cfg_narrowing_size_cast_without_range_guard`
+- `clang_cfg_nonliteral_format_string`
+- `clang_cfg_path_check_before_open`
+- `clang_cfg_object_published_before_initialization`
+- `clang_cfg_double_checked_global_without_atomic`
+- `clang_cfg_cond_wait_guarded_by_if`
+- `clang_cfg_borrowed_pointer_returned_after_unlock`
+- `clang_cfg_sizeof_index_write`
+- `clang_cfg_unaligned_integer_pointer_cast`
+- `clang_cfg_fd_closed_without_owner_invalidation`
+- `clang_cfg_callback_while_lock_held`
+- `clang_cfg_macro_guarded_lock_may_compile_to_noop`
+
+Out-param resource rules treat calls like
+`uiRet = SHM_FileMngFileCreate(path, &fd)` as:
+
+- `uiRet`: status value
+- `fd`: resource carrier
+- misuse only if `fd` is used or released before the `uiRet` success check
+
+## 10. Internal Sink Extraction Plan
+
+Problem: automatic entry discovery starts from public APIs, thread entries and
+communication boundaries, but some reports stop at the facade or a nearby
+helper instead of consistently lifting the concrete vulnerable internal
+source/sink into the candidate sent to Validator.
+
+Non-overlap with existing layers:
+
+- Entry discovery only decides where analysis starts.
+- Backend indexing only provides facts: functions, calls, types, macros,
+  globals, SVF/Saber signals and backend-specific facts.
+- Candidate layer is responsible for suspicious source/sink evidence.
+- Validator decides exploitability and reportability.
+- Report/scorer only presents and measures validated output.
+
+Implemented baseline:
+
+- The local candidate layer now scans depth-limited project callees from each
+  entry, including helpers that do not use a leading underscore naming
+  convention.
+- Internal callee candidates are lifted with:
+  - `function` / `location`: concrete vulnerable helper or sink.
+  - `analyzed_from` / `entry_function`: public API, task entry or boundary
+    function that made the helper reachable.
+  - `call_path`: bounded entry-to-sink call chain.
+  - `evidence_pack.path.complete_to_entry=true`.
+- Clang AST matcher facts are also collected for reachable callees, not only
+  for the entry function.
+- Lifted call-path edges now carry best-effort argument evidence. Clang AST
+  `CallExpr` argument references are preferred when tooling evidence is
+  available; otherwise the candidate records source-text fallback extraction
+  with `evidence_source=source_text_best_effort`.
+- Lifted call-path edges now include non-conclusive guard summaries. The
+  summary records caller-side and callee-entry condition/assert/validation
+  facts for mapped arguments, with `is_conclusive=false` so Validator remains
+  responsible for deciding whether a guard is sufficient.
+- Lifted internal sink dedup now merges repeated candidates for the same
+  concrete sink. The primary candidate keeps the sink location while
+  `duplicate_sources`, `call_paths` and evidence-pack duplicate call edges keep
+  the alternate entry paths.
+- The lifted candidate still carries `validation_required=true` and is sent to
+  Validator; the candidate layer does not auto-convict.
+
+Remaining implementation plan:
+
+1. Use backend-specific strengths.
+   Clang: call edges, declarations, type widths, macros, local CFG guards.
+   SVF: value-flow/object identity and memory bug signals.
+   Joern: CPG data-flow from configured boundary sources to semantic sinks.
+   Unified: Clang + SVF/Saber only. It merges Clang local candidates, SVF
+   signals and call graph reachability into one evidence pack instead of
+   emitting parallel near-duplicates. Joern remains a separate backend profile.
+
+2. Benchmark gates.
+   The regression script now supports backend-specific candidate coverage:
+
+   ```bash
+   python scripts/evaluate_range_regression.py \
+     --project-root test/range \
+     --candidate-backend unified \
+     --min-recall 0.75
+   ```
+
+   This is intentionally recall-focused: candidate precision is expected to be
+   low before Validator review. Full benchmark precision/FPR must still be
+   measured after LLM validation.
+
+## 11. Remaining Work
 
 - Keep the v6 candidate-coverage gate active:
 
   ```bash
   python scripts/evaluate_range_regression.py \
     --project-root test/range \
-    --deterministic-candidates \
+    --regex-candidates \
     --min-precision 0.60 \
     --min-recall 0.75 \
     --min-f1 0.67
   ```
 
   The gate uses the current `benchmark/ground_truth.json` truth version and
-  combines local deterministic candidates with graph/protocol candidates. It is
+  combines local regex candidates with graph/protocol candidates. It is
   a fast signal for candidate coverage, not a replacement for full LLM +
   validator benchmark runs.
 
@@ -206,3 +315,6 @@ function-name matching.
 - Add sanitizer harness generation for high-confidence memory candidates.
 - Keep `test/range` broad, but add additional real-project-style fixtures for
   ring buffers, callback cancellation, RCU/epoch lifetime and custom allocators.
+
+
+

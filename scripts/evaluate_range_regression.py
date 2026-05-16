@@ -1,4 +1,4 @@
-"""Evaluate Z-SCOPE range benchmark reports or deterministic candidate coverage."""
+"""Evaluate Z-SCOPE range benchmark reports or local candidate coverage."""
 
 from __future__ import annotations
 
@@ -8,9 +8,31 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from zscope.core.deterministic_candidates import DeterministicCandidateGenerator
+from zscope.config.config import IndexingConfig
+from zscope.core.analyzer import Analyzer
+from zscope.core.regex_candidates import LocalPatternSemantics, RegexCandidateGenerator
 from zscope.core.graph_candidates import GraphCandidateGenerator
 from zscope.retrieval.code_index import CodeIndex
+
+
+class _EmptyUserConfig:
+    def list_external_functions(self) -> List[Dict[str, Any]]:
+        return []
+
+    def list_paired_functions(self) -> List[Dict[str, Any]]:
+        return []
+
+    def list_dispatchers(self) -> List[Dict[str, Any]]:
+        return []
+
+    def list_module_lifecycle(self) -> List[Dict[str, Any]]:
+        return []
+
+    def get_pointer_targets(self) -> List[Dict[str, Any]]:
+        return []
+
+    def list_function_intents(self) -> List[Dict[str, Any]]:
+        return []
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -27,15 +49,89 @@ def _load_scorer(benchmark_dir: Path):
     return module
 
 
-def _deterministic_report(project_root: Path, entries_path: Path) -> Dict[str, Any]:
+def _empty_semantic_overlay() -> Dict[str, Any]:
+    return {
+        "resource_models": [],
+        "lock_models": [],
+        "macro_models": [],
+        "dispatcher_models": [],
+        "lifecycle_models": [],
+        "pointer_target_models": [],
+        "function_intent_models": [],
+        "summary": {},
+    }
+
+
+def _candidate_report(project_root: Path, entries_path: Path, *, backend: str = "regex") -> Dict[str, Any]:
     entries = _load_json(entries_path).get("functions", [])
     compile_commands = project_root / "build" / "compile_commands.json"
     index = CodeIndex(
         project_root,
         compile_commands_path=compile_commands if compile_commands.exists() else None,
         source_root=project_root,
+        indexing_config=IndexingConfig(backend="regex"),
     )
-    generator = DeterministicCandidateGenerator()
+    semantics = LocalPatternSemantics()
+    overlay = _empty_semantic_overlay()
+    analyzer = object.__new__(Analyzer)
+    analyzer.code_index = index
+    analyzer.user_config = _EmptyUserConfig()
+    analyzer._local_pattern_semantics = semantics
+    analyzer._semantic_overlay = overlay
+    analyzer._clang_tooling_provider = None
+    analyzer._clang_tooling_evidence_cache = {}
+    analyzer._candidate_backend_profile = lambda: backend  # type: ignore[method-assign]
+    graph_generator = GraphCandidateGenerator(index, semantics, semantic_overlay=overlay)
+    issues: List[Dict[str, Any]] = []
+    graph_issues: List[Dict[str, Any]] = []
+    missing: List[str] = []
+    entry_names: List[str] = []
+    for entry in entries:
+        func = str(entry.get("function_name") or "")
+        if not func:
+            continue
+        entry_names.append(func)
+        impl = index.get_function_impl(func)
+        if not impl:
+            missing.append(func)
+            continue
+        issues.extend(
+            analyzer._detect_local_rule_candidates(
+                {"entry_func": func, "impl_result": impl}
+            )
+        )
+    graph_issues.extend(graph_generator.generate_for_functions(entry_names))
+    issues.extend(graph_issues)
+    issue_sources: Dict[str, int] = {}
+    for issue in issues:
+        source = str(issue.get("candidate_source") or issue.get("finding_kind") or "unknown")
+        issue_sources[source] = issue_sources.get(source, 0) + 1
+    return {
+        "entry_function": f"range_{backend}_candidates",
+        "overall_verdict": "issues_found" if issues else "no_issue_found",
+        "issues": issues,
+        "metadata": {
+            "mode": f"{backend}_candidate_coverage",
+            "candidate_backend": backend,
+            "missing_entry_impls": missing,
+            "local_issue_count": len(issues) - len(graph_issues),
+            "regex_issue_count": len(issues) - len(graph_issues) if backend == "regex" else 0,
+            "graph_issue_count": len(graph_issues),
+            "issue_sources": issue_sources,
+        },
+    }
+
+
+def _legacy_regex_candidate_report(project_root: Path, entries_path: Path) -> Dict[str, Any]:
+    entries = _load_json(entries_path).get("functions", [])
+    compile_commands = project_root / "build" / "compile_commands.json"
+    index = CodeIndex(
+        project_root,
+        compile_commands_path=compile_commands if compile_commands.exists() else None,
+        source_root=project_root,
+        indexing_config=IndexingConfig(backend="regex"),
+    )
+    generator = RegexCandidateGenerator()
     graph_generator = GraphCandidateGenerator(index)
     issues: List[Dict[str, Any]] = []
     graph_issues: List[Dict[str, Any]] = []
@@ -54,16 +150,112 @@ def _deterministic_report(project_root: Path, entries_path: Path) -> Dict[str, A
     graph_issues.extend(graph_generator.generate_for_functions(entry_names))
     issues.extend(graph_issues)
     return {
-        "entry_function": "range_deterministic_candidates",
+        "entry_function": "range_regex_candidates",
         "overall_verdict": "issues_found" if issues else "no_issue_found",
         "issues": issues,
         "metadata": {
-            "mode": "deterministic_candidate_coverage",
+            "mode": "regex_candidate_coverage",
+            "candidate_backend": "regex",
             "missing_entry_impls": missing,
-            "deterministic_issue_count": len(issues) - len(graph_issues),
+            "local_issue_count": len(issues) - len(graph_issues),
+            "regex_issue_count": len(issues) - len(graph_issues),
             "graph_issue_count": len(graph_issues),
         },
     }
+
+
+def _candidate_miss_analysis(
+    report: Dict[str, Any],
+    truth: Dict[str, Any],
+    scorer: Any,
+    *,
+    tolerance: int,
+    source_index: Optional[Dict[str, Any]],
+    missed_ids: List[str],
+) -> List[Dict[str, Any]]:
+    if not missed_ids:
+        return []
+    issues = scorer.report_issues(report) if hasattr(scorer, "report_issues") else report.get("issues", [])
+    issues = [issue for issue in issues if isinstance(issue, dict)]
+    vulns = {
+        str(vuln.get("id") or ""): vuln
+        for vuln in truth.get("vulnerabilities", [])
+        if isinstance(vuln, dict)
+    }
+    rows: List[Dict[str, Any]] = []
+    for truth_id in missed_ids:
+        vuln = vulns.get(str(truth_id))
+        if not vuln:
+            continue
+        probes = []
+        for issue in issues:
+            issue_file, issue_line = scorer.issue_file_and_line(issue)
+            same_file = scorer.file_matches(issue_file, vuln)
+            same_function = scorer.function_matches(issue, vuln)
+            near_line = scorer.line_near(issue_line, vuln, tolerance)
+            category = scorer.category_matches(issue, vuln)
+            text = scorer.text_matches(issue, vuln)
+            reachable = (
+                bool(source_index)
+                and hasattr(scorer, "call_reachable_function_matches")
+                and scorer.call_reachable_function_matches(issue, vuln, source_index)
+            )
+            if not (same_file or same_function or category or reachable):
+                continue
+            probes.append(
+                {
+                    "candidate_id": issue.get("candidate_id") or issue.get("id"),
+                    "candidate_source": issue.get("candidate_source") or issue.get("finding_kind"),
+                    "function": issue.get("function"),
+                    "location": issue.get("location"),
+                    "defect_class": issue.get("defect_class") or issue.get("category"),
+                    "same_file": same_file,
+                    "same_function": same_function,
+                    "near_line": near_line,
+                    "category_match": category,
+                    "text_match": text,
+                    "call_reachable": reachable,
+                }
+            )
+        same_function_count = sum(1 for item in probes if item["same_function"])
+        near_count = sum(1 for item in probes if item["same_file"] and item["near_line"])
+        text_count = sum(1 for item in probes if item["text_match"])
+        category_count = sum(1 for item in probes if item["category_match"])
+        if not probes:
+            reason = "no_related_candidate"
+        elif same_function_count == 0:
+            reason = "no_candidate_in_truth_function"
+        elif near_count == 0:
+            reason = "candidate_in_function_but_not_near_truth_line"
+        elif text_count == 0:
+            reason = "near_candidate_missing_truth_keywords"
+        elif category_count == 0:
+            reason = "near_candidate_category_drift"
+        else:
+            reason = "candidate_related_but_scorer_did_not_match"
+        source_counts: Dict[str, int] = {}
+        for item in probes:
+            source = str(item.get("candidate_source") or "unknown")
+            source_counts[source] = source_counts.get(source, 0) + 1
+        rows.append(
+            {
+                "truth_id": truth_id,
+                "truth_function": vuln.get("function"),
+                "truth_secondary_function": vuln.get("secondary_function"),
+                "truth_file": vuln.get("_current_file") or vuln.get("file"),
+                "truth_line": vuln.get("_current_line") or vuln.get("line"),
+                "truth_category": vuln.get("category"),
+                "reason": reason,
+                "related_candidate_count": len(probes),
+                "same_function_candidate_count": same_function_count,
+                "near_line_candidate_count": near_count,
+                "text_match_candidate_count": text_count,
+                "category_match_candidate_count": category_count,
+                "candidate_sources": source_counts,
+                "top_candidates": probes[:5],
+            }
+        )
+    return rows
 
 
 def evaluate_range_regression(
@@ -73,7 +265,8 @@ def evaluate_range_regression(
     truth_path: Optional[Path] = None,
     entries_path: Optional[Path] = None,
     report_path: Optional[Path] = None,
-    deterministic_candidates: bool = False,
+    regex_candidates: bool = False,
+    candidate_backend: Optional[str] = None,
     line_tolerance: int = 5,
     min_precision: Optional[float] = None,
     min_recall: Optional[float] = None,
@@ -84,12 +277,15 @@ def evaluate_range_regression(
     entries_path = entries_path or benchmark_dir / "entries.json"
     scorer = _load_scorer(benchmark_dir)
 
-    if deterministic_candidates:
-        report = _deterministic_report(project_root, entries_path)
+    if regex_candidates:
+        report = _legacy_regex_candidate_report(project_root, entries_path)
+        candidate_backend = "regex"
+    elif candidate_backend:
+        report = _candidate_report(project_root, entries_path, backend=candidate_backend)
     elif report_path:
         report = _load_json(report_path)
     else:
-        raise ValueError("Pass report_path or deterministic_candidates=True")
+        raise ValueError("Pass report_path, regex_candidates=True, or candidate_backend")
 
     truth = _load_json(truth_path)
     source_index = None
@@ -111,11 +307,27 @@ def evaluate_range_regression(
             )
         except TypeError:
             result["report_views"] = scorer.score_report_views(report, truth, line_tolerance)
-    if deterministic_candidates:
+    if candidate_backend:
         result["candidate_coverage_mode"] = True
+        result["candidate_backend"] = candidate_backend
         result["missing_entry_impls"] = report.get("metadata", {}).get("missing_entry_impls", [])
-        result["deterministic_issue_count"] = report.get("metadata", {}).get("deterministic_issue_count", 0)
+        result["local_issue_count"] = report.get("metadata", {}).get("local_issue_count", 0)
+        result["regex_issue_count"] = report.get("metadata", {}).get("regex_issue_count", 0)
         result["graph_issue_count"] = report.get("metadata", {}).get("graph_issue_count", 0)
+        result["issue_sources"] = report.get("metadata", {}).get("issue_sources", {})
+        result["miss_analysis"] = _candidate_miss_analysis(
+            report,
+            truth,
+            scorer,
+            tolerance=line_tolerance,
+            source_index=source_index,
+            missed_ids=[str(item) for item in result.get("missed", [])],
+        )
+        miss_reason_summary: Dict[str, int] = {}
+        for row in result["miss_analysis"]:
+            reason = str(row.get("reason") or "unknown")
+            miss_reason_summary[reason] = miss_reason_summary.get(reason, 0) + 1
+        result["miss_reason_summary"] = miss_reason_summary
     thresholds = {
         "precision": min_precision,
         "recall": min_recall,
@@ -141,7 +353,8 @@ def main() -> None:
     parser.add_argument("--truth", type=Path, default=None)
     parser.add_argument("--entries", type=Path, default=None)
     parser.add_argument("--report", type=Path, default=None)
-    parser.add_argument("--deterministic-candidates", action="store_true")
+    parser.add_argument("--regex-candidates", action="store_true")
+    parser.add_argument("--candidate-backend", choices=["regex", "clang", "unified"], default=None)
     parser.add_argument("--line-tolerance", type=int, default=5)
     parser.add_argument("--min-precision", type=float, default=None)
     parser.add_argument("--min-recall", type=float, default=None)
@@ -155,7 +368,8 @@ def main() -> None:
         truth_path=args.truth,
         entries_path=args.entries,
         report_path=args.report,
-        deterministic_candidates=args.deterministic_candidates,
+        regex_candidates=args.regex_candidates,
+        candidate_backend=args.candidate_backend,
         line_tolerance=args.line_tolerance,
         min_precision=args.min_precision,
         min_recall=args.min_recall,
@@ -172,3 +386,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+

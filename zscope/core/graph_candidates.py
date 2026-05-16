@@ -1,6 +1,6 @@
 """Graph-shaped C memory/concurrency candidate generation.
 
-This module complements the local lexical rules in ``deterministic_candidates``.
+This module complements the local lexical rules in ``regex_candidates``.
 It looks across function boundaries and protocol-like source shapes that a
 single-line rule tends to miss: helper calls under locks, wrong cleanup
 contracts, container lifecycle gaps, opposite lock order, and stale tree/list
@@ -12,11 +12,15 @@ paths can consume it without a special tier.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ..retrieval.code_index import CodeIndex
+
+if TYPE_CHECKING:
+    from .regex_candidates import LocalPatternSemantics
 
 
 @dataclass(frozen=True)
@@ -51,19 +55,33 @@ class GraphCandidateGenerator:
 
     _LINE_RE = re.compile(r"^\s*(\d+)\s*\|\s?(.*)$")
     _CALL_NAME_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
-    _LOCK_CALL_RE = re.compile(
-        r"\b(?:LOCK|LOCK_READ|LOCK_WRITE|pthread_mutex_lock|pthread_rwlock_[rw]dlock|"
-        r"spin_lock|mtx_lock)\s*\((?P<arg>[^)]*)\)"
-    )
-    _UNLOCK_CALL_RE = re.compile(
-        r"\b(?:UNLOCK|pthread_mutex_unlock|pthread_rwlock_unlock|spin_unlock|mtx_unlock)\s*\("
-    )
-    _ALLOC_ASSIGN_RE = re.compile(
-        r"(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?"
-        r"(?:malloc|calloc|realloc|strdup|_safe_malloc|_safe_calloc|_safe_realloc|"
-        r"[A-Za-z_]\w*(?:Alloc|AllocZero|Create|New))\s*\("
-    )
-    _FREE_RE = re.compile(r"\b(?:free|SAFE_FREE|destroy|release|delete)\s*\((?P<arg>[^)]*)\)", re.I)
+    _DEFAULT_LOCK_APIS = {
+        "LOCK",
+        "LOCK_READ",
+        "LOCK_WRITE",
+        "pthread_mutex_lock",
+        "pthread_rwlock_rdlock",
+        "pthread_rwlock_wrlock",
+        "spin_lock",
+        "mtx_lock",
+    }
+    _DEFAULT_UNLOCK_APIS = {
+        "UNLOCK",
+        "pthread_mutex_unlock",
+        "pthread_rwlock_unlock",
+        "spin_unlock",
+        "mtx_unlock",
+    }
+    _DEFAULT_ALLOC_APIS = {
+        "malloc",
+        "calloc",
+        "realloc",
+        "strdup",
+        "_safe_malloc",
+        "_safe_calloc",
+        "_safe_realloc",
+    }
+    _DEFAULT_FREE_APIS = {"free", "destroy", "release", "delete"}
 
     _CWE_BY_CLASS = {
         "deadlock": "CWE-833",
@@ -76,10 +94,21 @@ class GraphCandidateGenerator:
         "race": "CWE-362",
     }
 
-    def __init__(self, code_index: CodeIndex):
+    def __init__(
+        self,
+        code_index: CodeIndex,
+        semantics: Optional["LocalPatternSemantics"] = None,
+        semantic_overlay: Optional[Dict[str, Any]] = None,
+    ):
         self.code_index = code_index
+        self.semantics = semantics
+        self.semantic_overlay = semantic_overlay or {}
+        self.pointer_target_models = self._pointer_target_models(self.semantic_overlay)
+        self.dispatcher_models = self._dispatcher_models(self.semantic_overlay)
         self._impl_cache: Dict[str, Optional[Dict[str, Any]]] = {}
         self._view_cache: Dict[str, Optional[FunctionView]] = {}
+        self._callee_evidence: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._compile_semantic_patterns()
 
     def generate_for_entry(
         self,
@@ -91,6 +120,49 @@ class GraphCandidateGenerator:
     ) -> List[Dict[str, Any]]:
         views = self._reachable_views(func_name, impl, max_depth=max_depth, max_functions=max_functions)
         return self.generate_for_views(views)
+
+    def _compile_semantic_patterns(self) -> None:
+        lock_names = set(self._DEFAULT_LOCK_APIS)
+        unlock_names = set(self._DEFAULT_UNLOCK_APIS)
+        alloc_names = set(self._DEFAULT_ALLOC_APIS)
+        free_names = set(self._DEFAULT_FREE_APIS)
+        if self.semantics is not None:
+            lock_names.update(self.semantics.lock_apis)
+            unlock_names.update(self.semantics.unlock_apis)
+            alloc_names.update(self.semantics.allocators)
+            alloc_names.update(self.semantics.calloc_allocators)
+            alloc_names.update(self.semantics.reallocators)
+            free_names.update(self.semantics.deallocators)
+        self._lock_names = lock_names
+        self._unlock_names = unlock_names
+        self._alloc_names = alloc_names
+        self._free_names = free_names
+        self._lock_call_re = re.compile(
+            rf"\b(?:{self._names_pattern(lock_names)})\s*\((?P<arg>[^)]*)\)"
+        )
+        self._unlock_call_re = re.compile(rf"\b(?:{self._names_pattern(unlock_names)})\s*\(")
+        self._alloc_assign_re = re.compile(
+            rf"(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?"
+            rf"(?:{self._names_pattern(alloc_names)}|[A-Za-z_]\w*(?:Alloc|AllocZero|Create|New))\s*\("
+        )
+        self._free_re = re.compile(
+            rf"\b(?:{self._names_pattern(free_names)})\s*\((?P<arg>[^)]*)\)",
+            re.I,
+        )
+
+    @staticmethod
+    def _pointer_target_models(overlay: Dict[str, Any]) -> List[Dict[str, Any]]:
+        rows = overlay.get("pointer_target_models") if isinstance(overlay, dict) else []
+        if not isinstance(rows, list):
+            return []
+        return [dict(row) for row in rows if isinstance(row, dict)]
+
+    @staticmethod
+    def _dispatcher_models(overlay: Dict[str, Any]) -> List[Dict[str, Any]]:
+        rows = overlay.get("dispatcher_models") if isinstance(overlay, dict) else []
+        if not isinstance(rows, list):
+            return []
+        return [dict(row) for row in rows if isinstance(row, dict)]
 
     def generate_for_functions(
         self,
@@ -122,14 +194,15 @@ class GraphCandidateGenerator:
             self._rule_tree_and_liveness_protocols(view, issues)
 
         self._rule_paired_lifecycle_protocols(views, issues)
+        self._rule_paired_global_registration_cleanup(views, issues)
         self._rule_timer_cascade_wait(views, issues)
         self._rule_lock_order_inversion(views, issues)
         return self._dedupe(issues)
 
     def issue_to_ticket(self, issue: Dict[str, Any]) -> Any:
-        from .deterministic_candidates import DeterministicCandidateGenerator
+        from .regex_candidates import RegexCandidateGenerator
 
-        return DeterministicCandidateGenerator().issue_to_ticket(issue)
+        return RegexCandidateGenerator().issue_to_ticket(issue)
 
     def _reachable_views(
         self,
@@ -154,8 +227,11 @@ class GraphCandidateGenerator:
             if depth >= max_depth:
                 continue
             for callee in view.callees:
-                if callee.startswith("_") and callee not in seen:
-                    queue.append((callee, None, depth + 1))
+                if callee in seen:
+                    continue
+                callee_impl = self._impl_for(callee)
+                if callee_impl:
+                    queue.append((callee, callee_impl, depth + 1))
         return views
 
     def _view_for(
@@ -169,12 +245,15 @@ class GraphCandidateGenerator:
         if not impl:
             self._view_cache[func_name] = None
             return None
+        lines = tuple(self._parse_lines(str(impl.get("code") or "")))
+        file_path = str(impl.get("file") or "")
+        direct_callees = [str(item) for item in impl.get("callees") or [] if item]
         view = FunctionView(
             name=func_name,
-            file_path=str(impl.get("file") or ""),
+            file_path=file_path,
             signature=self._signature_from_impl(func_name, impl),
-            lines=tuple(self._parse_lines(str(impl.get("code") or ""))),
-            callees=tuple(str(item) for item in impl.get("callees") or [] if item),
+            lines=lines,
+            callees=tuple(self._merged_callee_names(func_name, file_path, lines, direct_callees)),
         )
         self._view_cache[func_name] = view
         return view
@@ -186,6 +265,140 @@ class GraphCandidateGenerator:
                 warn_missing=False,
             )
         return self._impl_cache[func_name]
+
+    def _merged_callee_names(
+        self,
+        func_name: str,
+        file_path: str,
+        lines: Sequence[GraphLine],
+        direct_callees: Sequence[str],
+    ) -> List[str]:
+        merged: List[str] = []
+        for callee in direct_callees:
+            self._add_callee(func_name, callee, {"source": "lexical_call", "kind": "direct"})
+            if callee not in merged:
+                merged.append(callee)
+
+        get_callees = getattr(self.code_index, "get_callees", None)
+        if callable(get_callees):
+            try:
+                records = get_callees(func_name, limit=80)
+            except Exception:
+                records = []
+            for record in records or []:
+                if not isinstance(record, dict):
+                    continue
+                callee = str(record.get("name") or record.get("callee_name") or "").strip()
+                if not callee:
+                    continue
+                evidence = {
+                    "source": str(record.get("source") or "backend_call_graph"),
+                    "kind": "backend_call_graph",
+                    "call_line": record.get("call_line") or record.get("lineNumber"),
+                    "confidence": record.get("confidence"),
+                }
+                self._add_callee(func_name, callee, evidence)
+                if callee not in merged:
+                    merged.append(callee)
+
+        for target in self._configured_pointer_targets(func_name, file_path, lines):
+            callee = str(target.get("target") or "").strip()
+            if not callee:
+                continue
+            self._add_callee(func_name, callee, target)
+            if callee not in merged:
+                merged.append(callee)
+        for target in self._configured_dispatcher_targets(func_name, file_path):
+            callee = str(target.get("target") or "").strip()
+            if not callee:
+                continue
+            self._add_callee(func_name, callee, target)
+            if callee not in merged:
+                merged.append(callee)
+        return merged
+
+    def _add_callee(self, caller: str, callee: str, evidence: Dict[str, Any]) -> None:
+        if not caller or not callee:
+            return
+        current = self._callee_evidence.setdefault((caller, callee), {})
+        current.update({k: v for k, v in evidence.items() if v not in (None, "", [], {})})
+
+    def _configured_pointer_targets(
+        self,
+        func_name: str,
+        file_path: str,
+        lines: Sequence[GraphLine],
+    ) -> List[Dict[str, Any]]:
+        if not self.pointer_target_models:
+            return []
+        text = "\n".join(line.text for line in lines)
+        targets: List[Dict[str, Any]] = []
+        for row in self.pointer_target_models:
+            scope = str(row.get("scope") or "*").strip()
+            pointer_location = str(row.get("pointer_location") or "").strip()
+            if not self._pointer_scope_matches(scope, func_name, file_path):
+                continue
+            if pointer_location and pointer_location not in text:
+                continue
+            for target in self._target_functions(row.get("target_functions")):
+                targets.append(
+                    {
+                        "target": target,
+                        "source": "user_config:pointer_targets",
+                        "kind": "configured_indirect_call",
+                        "pointer_location": pointer_location,
+                        "scope": scope,
+                    }
+                )
+        return targets
+
+    def _configured_dispatcher_targets(self, func_name: str, file_path: str) -> List[Dict[str, Any]]:
+        if not self.dispatcher_models:
+            return []
+        targets: List[Dict[str, Any]] = []
+        for row in self.dispatcher_models:
+            dispatcher = str(row.get("dispatcher_name") or "").strip()
+            handler = str(row.get("handler_name") or "").strip()
+            scope_file = str(row.get("file_path") or "").strip()
+            if not dispatcher or not handler:
+                continue
+            if dispatcher != func_name:
+                continue
+            if scope_file and not self._pointer_scope_matches(scope_file, func_name, file_path):
+                continue
+            targets.append(
+                {
+                    "target": handler,
+                    "source": "user_config:dispatcher",
+                    "kind": "configured_dispatcher_edge",
+                    "dispatcher_name": dispatcher,
+                    "message_type": row.get("message_type"),
+                    "handler_kind": row.get("handler_kind"),
+                }
+            )
+        return targets
+
+    @staticmethod
+    def _pointer_scope_matches(scope: str, func_name: str, file_path: str) -> bool:
+        if not scope or scope == "*":
+            return True
+        scope_norm = scope.replace("\\", "/")
+        file_norm = file_path.replace("\\", "/")
+        return scope == func_name or scope_norm == file_norm or scope_norm in file_norm
+
+    @staticmethod
+    def _target_functions(value: Any) -> List[str]:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if not value:
+            return []
+        try:
+            parsed = json.loads(str(value))
+        except json.JSONDecodeError:
+            parsed = [part.strip() for part in str(value).split(",")]
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+        return [str(parsed).strip()] if str(parsed).strip() else []
 
     def _rule_recursive_lock(
         self,
@@ -199,12 +412,12 @@ class GraphCandidateGenerator:
             if lock:
                 held.append((lock, line))
                 continue
-            if self._UNLOCK_CALL_RE.search(line.text) and held:
+            if self._unlock_call_re.search(line.text) and held:
                 held.pop()
                 continue
             if not held:
                 continue
-            for call_name in self._called_names(line.text):
+            for call_name in self._call_targets_for_line(view.name, line):
                 callee = by_name.get(call_name) or self._view_for(call_name)
                 if not callee:
                     continue
@@ -223,6 +436,8 @@ class GraphCandidateGenerator:
                 )
                 if not same_lock:
                     continue
+                call_evidence = self._callee_evidence.get((view.name, call_name), {})
+                reachability = self._callee_reachability_text(call_name, call_evidence)
                 issues.append(
                     self._issue(
                         defect_class="deadlock",
@@ -242,6 +457,7 @@ class GraphCandidateGenerator:
                         positive=[
                             f"line {held_line.number}: caller acquires `{held_lock}`",
                             f"line {line.number}: caller invokes `{call_name}` while lock is held",
+                            reachability,
                             f"{call_name} line {same_lock[1].number}: callee acquires `{same_lock[0]}`",
                         ],
                         evidence={
@@ -249,6 +465,7 @@ class GraphCandidateGenerator:
                                 "caller": view.name,
                                 "callee": call_name,
                                 "call_line": line.number,
+                                "call_evidence": call_evidence,
                                 "path_constraints": ["same thread", "callee reachable from locked region"],
                             }
                         },
@@ -315,10 +532,10 @@ class GraphCandidateGenerator:
         released: set = set()
         thread_args: Dict[str, GraphLine] = {}
         for line in view.lines:
-            alloc = self._ALLOC_ASSIGN_RE.search(line.text)
+            alloc = self._alloc_assign_re.search(line.text)
             if alloc:
                 allocations[alloc.group("var")] = line
-            free = self._FREE_RE.search(line.text)
+            free = self._free_re.search(line.text)
             if free:
                 arg = free.group("arg")
                 for var in allocations:
@@ -428,8 +645,9 @@ class GraphCandidateGenerator:
                 )
             )
 
-        if re.search(r"pthread_mutex_init", text) and re.search(r"SAFE_FREE\s*\(", text) and not re.search(r"pthread_mutex_destroy", text):
-            line = self._first_line_matching(view, re.compile(r"SAFE_FREE\s*\(")) or view.lines[0]
+        free_line = self._first_line_matching(view, self._free_re)
+        if re.search(r"pthread_mutex_init", text) and free_line and not re.search(r"pthread_mutex_destroy", text):
+            line = free_line
             issues.append(
                 self._issue(
                     defect_class="memory_leak",
@@ -451,8 +669,8 @@ class GraphCandidateGenerator:
                 )
             )
 
-        if re.search(r"proc_head|child|children", text, re.I) and re.search(r"SAFE_FREE\s*\(", text) and not re.search(r"\bwhile\b[^{;]*(?:proc|child)|for\s*\([^;]*(?:proc|child)", text, re.I):
-            line = self._first_line_matching(view, re.compile(r"SAFE_FREE\s*\(")) or view.lines[0]
+        if re.search(r"proc_head|child|children", text, re.I) and free_line and not re.search(r"\bwhile\b[^{;]*(?:proc|child)|for\s*\([^;]*(?:proc|child)", text, re.I):
+            line = free_line
             issues.append(
                 self._issue(
                     defect_class="memory_leak",
@@ -546,8 +764,12 @@ class GraphCandidateGenerator:
                 )
             )
 
-        if re.search(r"(?:insert|add).*node", text, re.I) and re.search(r"\bfree\s*\(\s*node\s*\)|SAFE_FREE\s*\(\s*node\s*\)", text) and not re.search(r"(?:remove|unlink|delete).*node", text, re.I):
-            line = self._first_line_matching(view, re.compile(r"\b(?:free|SAFE_FREE)\s*\(\s*node\s*\)", re.I)) or view.lines[0]
+        node_free_re = re.compile(
+            rf"\b(?:{self._names_pattern(self._free_names)})\s*\(\s*node\s*\)",
+            re.I,
+        )
+        if re.search(r"(?:insert|add).*node", text, re.I) and node_free_re.search(text) and not re.search(r"(?:remove|unlink|delete).*node", text, re.I):
+            line = self._first_line_matching(view, node_free_re) or view.lines[0]
             issues.append(
                 self._issue(
                     defect_class="use_after_free",
@@ -584,7 +806,7 @@ class GraphCandidateGenerator:
             if not re.search(r"(?:unregister|delete|remove|cleanup|destroy)", view.name, re.I):
                 continue
             text = texts[view.name]
-            free_line = self._first_line_matching(view, re.compile(r"\b(?:SAFE_FREE|free)\s*\("))
+            free_line = self._first_line_matching(view, self._free_re)
             if not free_line:
                 continue
 
@@ -656,8 +878,87 @@ class GraphCandidateGenerator:
                             f"line {free_line.number}: cleanup frees the parent object",
                             "no child/list cleanup loop is visible in the delete path",
                         ],
+                        )
                     )
+
+    def _rule_paired_global_registration_cleanup(
+        self,
+        views: Sequence[FunctionView],
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        texts = {view.name: "\n".join(line.text for line in view.lines) for view in views}
+        cleanup_views = [
+            view
+            for view in views
+            if re.search(r"(?:cleanup|disconnect|close|destroy|release)", view.name, re.I)
+        ]
+        for view in views:
+            text = texts[view.name]
+            has_global_add = re.search(
+                r"\b(?:OPEN|ADD)\b|_control_session_add_to_global|(?:add|insert|register).*global|global.*(?:add|insert|register)",
+                text,
+                re.I,
+            )
+            if not has_global_add or not re.search(r"_control_session_add_to_global|global", text, re.I):
+                continue
+            line = (
+                self._first_line_matching(view, re.compile(r"_control_session_add_to_global", re.I))
+                or self._first_line_matching(view, re.compile(r"\b(?:OPEN|ADD)\b", re.I))
+                or view.lines[0]
+            )
+            paired_cleanup = next(
+                (
+                    cleanup
+                    for cleanup in cleanup_views
+                    if cleanup.name != view.name
+                    and self._views_share_protocol_terms(view, cleanup)
+                    and not re.search(r"(?:_control_session_(?:remove|release|free|drop)|remove|drop|release|free|destroy)", texts[cleanup.name], re.I)
+                ),
+                None,
+            )
+            if not paired_cleanup:
+                continue
+            cleanup_line = (
+                self._first_line_matching(paired_cleanup, re.compile(r"LOG_|return", re.I))
+                or paired_cleanup.lines[0]
+            )
+            issues.append(
+                self._issue(
+                    defect_class="memory_leak",
+                    rule="paired_global_registration_cleanup_omitted",
+                    view=view,
+                    line=line,
+                    description=(
+                        f"`{view.name}` registers a session/object into global ownership, while paired "
+                        f"cleanup `{paired_cleanup.name}` returns without removing or releasing that object."
+                    ),
+                    root_cause="The protocol OPEN/add path transfers ownership to a global container, but the protocol cleanup endpoint does not unregister or release the registered object.",
+                    suggested_fix="Pair the OPEN/add path with a cleanup path that removes the exact key/object from the global container and releases its allocation.",
+                    source=f"{view.name}:{line.number}:global registration",
+                    sink=f"{paired_cleanup.name}:{cleanup_line.number}:missing remove/release",
+                    confidence=0.82,
+                    impact_level="high",
+                    positive=[
+                        f"{view.name} line {line.number}: global registration path `{line.text.strip()}`",
+                        f"{paired_cleanup.name} line {cleanup_line.number}: cleanup path `{cleanup_line.text.strip()}`",
+                        "paired cleanup contains no remove/drop/release/free operation for the global session/object",
+                    ],
+                    evidence={
+                        "path": {
+                            "function": view.name,
+                            "cleanup_function": paired_cleanup.name,
+                            "source_line": line.number,
+                            "sink_line": cleanup_line.number,
+                            "complete_in_function": False,
+                            "path_constraints": ["OPEN/add succeeds", "cleanup is later invoked for the same protocol"],
+                        },
+                        "lifecycle_pair": {
+                            "registration_function": view.name,
+                            "cleanup_function": paired_cleanup.name,
+                        },
+                    },
                 )
+            )
 
     def _rule_timer_cascade_wait(
         self,
@@ -683,27 +984,92 @@ class GraphCandidateGenerator:
                 )
                 if not blocking_edge:
                     continue
+                scheduler_edge = next(
+                    (
+                        edge
+                        for edge in edges
+                        if self._locks_may_match(edge.first_lock, blocking_edge.second_lock)
+                        and self._locks_may_match(edge.second_lock, callback_lock)
+                        and edge.function != blocking_edge.function
+                    ),
+                    None,
+                )
+                description = (
+                    f"`{view.name}` can wait on `{callback_lock}` while `{blocking_edge.function}` "
+                    f"holds it before waiting on `{blocking_edge.second_lock}`."
+                )
+                positive = [
+                    f"line {line.number}: timer/callback takes `{callback_lock}`",
+                    f"{blocking_edge.function} line {blocking_edge.first_line}: another path already holds `{blocking_edge.first_lock}`",
+                    f"{blocking_edge.function} line {blocking_edge.second_line}: that path then waits on `{blocking_edge.second_lock}`",
+                ]
+                evidence: Dict[str, Any] = {
+                    "path": {
+                        "function": view.name,
+                        "source_line": line.number,
+                        "sink_line": blocking_edge.second_line,
+                        "complete_in_function": False,
+                        "path_constraints": ["callback/timer path can run concurrently with close/remove path"],
+                    },
+                    "cascade_wait": {
+                        "callback": {
+                            "function": view.name,
+                            "line": line.number,
+                            "waits_for": callback_lock,
+                        },
+                        "holder": {
+                            "function": blocking_edge.function,
+                            "holds": blocking_edge.first_lock,
+                            "holds_line": blocking_edge.first_line,
+                            "waits_for": blocking_edge.second_lock,
+                            "waits_line": blocking_edge.second_line,
+                        },
+                    },
+                }
+                confidence = 0.78
+                impact_level = "medium"
+                sink = f"{blocking_edge.function}:{blocking_edge.first_line}->{blocking_edge.second_line}"
+                if scheduler_edge:
+                    description = (
+                        f"`{view.name}` can wait on `{callback_lock}` while `{blocking_edge.function}` "
+                        f"holds it and waits on `{blocking_edge.second_lock}`; `{scheduler_edge.function}` "
+                        f"can hold `{scheduler_edge.first_lock}` while waiting on `{scheduler_edge.second_lock}`, "
+                        "forming a multi-party callback/close lock cascade."
+                    )
+                    positive.append(
+                        f"{scheduler_edge.function} lines {scheduler_edge.first_line}-{scheduler_edge.second_line}: holds `{scheduler_edge.first_lock}` before waiting on `{scheduler_edge.second_lock}`"
+                    )
+                    evidence["cascade_wait"]["scheduler_holder"] = {
+                        "function": scheduler_edge.function,
+                        "holds": scheduler_edge.first_lock,
+                        "holds_line": scheduler_edge.first_line,
+                        "waits_for": scheduler_edge.second_lock,
+                        "waits_line": scheduler_edge.second_line,
+                    }
+                    evidence["path"]["path_constraints"].append(
+                        "scheduler/dispatch path can concurrently hold the scheduler lock"
+                    )
+                    confidence = 0.82
+                    impact_level = "high"
+                    sink = (
+                        f"{blocking_edge.function}:{blocking_edge.first_line}->{blocking_edge.second_line};"
+                        f"{scheduler_edge.function}:{scheduler_edge.first_line}->{scheduler_edge.second_line}"
+                    )
                 issues.append(
                     self._issue(
                         defect_class="deadlock",
                         rule="timer_callback_cascade_wait",
                         view=view,
                         line=line,
-                        description=(
-                            f"`{view.name}` can wait on `{callback_lock}` while `{blocking_edge.function}` "
-                            f"holds it before waiting on `{blocking_edge.second_lock}`."
-                        ),
+                        description=description,
                         root_cause="Timer/callback code participates in a cascade wait through a lock held by a close/remove path.",
                         suggested_fix="Avoid blocking timer/callback paths on control locks used by close/remove, or reorder the close path to follow the scheduler/control lock protocol.",
                         source=f"{view.name}:{line.number}:{callback_lock}",
-                        sink=f"{blocking_edge.function}:{blocking_edge.first_line}->{blocking_edge.second_line}",
-                        confidence=0.78,
-                        impact_level="medium",
-                        positive=[
-                            f"line {line.number}: timer/callback takes `{callback_lock}`",
-                            f"{blocking_edge.function} line {blocking_edge.first_line}: another path already holds `{blocking_edge.first_lock}`",
-                            f"{blocking_edge.function} line {blocking_edge.second_line}: that path then waits on `{blocking_edge.second_lock}`",
-                        ],
+                        sink=sink,
+                        confidence=confidence,
+                        impact_level=impact_level,
+                        positive=positive,
+                        evidence=evidence,
                     )
                 )
                 break
@@ -778,7 +1144,7 @@ class GraphCandidateGenerator:
                             )
                     held.append((lock, line))
                     continue
-                if self._UNLOCK_CALL_RE.search(line.text) and held:
+                if self._unlock_call_re.search(line.text) and held:
                     held.pop()
         return edges
 
@@ -887,12 +1253,44 @@ class GraphCandidateGenerator:
         skip = {"if", "for", "while", "switch", "return", "sizeof"}
         return [m.group(1) for m in cls._CALL_NAME_RE.finditer(text) if m.group(1) not in skip]
 
-    @classmethod
-    def _lock_arg(cls, text: str) -> str:
-        match = cls._LOCK_CALL_RE.search(text)
+    def _call_targets_for_line(self, caller: str, line: GraphLine) -> List[str]:
+        targets = list(self._called_names(line.text))
+        for (source_func, callee), evidence in self._callee_evidence.items():
+            if source_func != caller or callee in targets:
+                continue
+            pointer_location = str(evidence.get("pointer_location") or "")
+            call_line = evidence.get("call_line")
+            if pointer_location and pointer_location in line.text:
+                targets.append(callee)
+            elif call_line and str(call_line).isdigit() and int(call_line) == line.number:
+                targets.append(callee)
+            elif evidence.get("dispatcher_name") == caller:
+                targets.append(callee)
+        return targets
+
+    @staticmethod
+    def _callee_reachability_text(callee: str, evidence: Dict[str, Any]) -> str:
+        source = str(evidence.get("source") or "lexical_call")
+        pointer_location = str(evidence.get("pointer_location") or "")
+        dispatcher_name = str(evidence.get("dispatcher_name") or "")
+        if pointer_location:
+            return f"`{callee}` is a configured target of `{pointer_location}` via {source}"
+        if dispatcher_name:
+            return f"`{callee}` is a configured handler of dispatcher `{dispatcher_name}` via {source}"
+        if source != "lexical_call":
+            return f"`{callee}` is reachable via {source} call graph evidence"
+        return f"`{callee}` appears as a direct lexical call"
+
+    @staticmethod
+    def _names_pattern(names: Iterable[str]) -> str:
+        clean = sorted({str(name).strip() for name in names if str(name).strip()}, key=len, reverse=True)
+        return "|".join(re.escape(name) for name in clean) or r"a^"
+
+    def _lock_arg(self, text: str) -> str:
+        match = self._lock_call_re.search(text)
         if not match:
             return ""
-        return cls._normalize_lock(match.group("arg"))
+        return self._normalize_lock(match.group("arg"))
 
     @staticmethod
     def _normalize_lock(value: str) -> str:
@@ -1009,3 +1407,4 @@ class GraphCandidateGenerator:
             key = str(issue.get("dedup_key") or issue.get("candidate_id") or issue.get("id"))
             deduped.setdefault(key, issue)
         return list(deduped.values())
+
