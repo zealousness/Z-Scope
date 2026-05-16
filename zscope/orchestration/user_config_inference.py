@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -243,6 +244,7 @@ def filter_user_config_rows_with_llm(
     llm_client: Any,
     *,
     batch_size: int = LLM_REVIEW_BATCH_SIZE,
+    max_workers: int = 1,
 ) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, int]]:
     """Ask an LLM to remove noisy inferred user-config candidates.
 
@@ -264,14 +266,31 @@ def filter_user_config_rows_with_llm(
         return normalized, stats
 
     decisions: Dict[str, Dict[str, Any]] = {}
-    for batch in _chunks(candidates, max(1, batch_size)):
-        try:
-            batch_decisions = _request_llm_user_config_decisions(llm_client, batch)
-        except Exception:
-            stats["errors"] += 1
-            continue
-        decisions.update(batch_decisions)
-        stats["reviewed"] += len(batch_decisions)
+    batches = list(_chunks(candidates, max(1, batch_size)))
+    worker_count = max(1, min(_coerce_positive_int(max_workers, 1), len(batches)))
+    if worker_count == 1:
+        for batch in batches:
+            try:
+                batch_decisions = _request_llm_user_config_decisions(llm_client, batch)
+            except Exception:
+                stats["errors"] += 1
+                continue
+            decisions.update(batch_decisions)
+            stats["reviewed"] += len(batch_decisions)
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_to_batch = {
+                executor.submit(_request_llm_user_config_decisions, llm_client, batch): batch
+                for batch in batches
+            }
+            for future in as_completed(future_to_batch):
+                try:
+                    batch_decisions = future.result()
+                except Exception:
+                    stats["errors"] += 1
+                    continue
+                decisions.update(batch_decisions)
+                stats["reviewed"] += len(batch_decisions)
 
     filtered = {name: [] for name in SHEET_HEADERS}
     dropped_by_sheet: Dict[str, set[str]] = {sheet: set() for sheet in SHEET_HEADERS}
@@ -517,6 +536,14 @@ def _candidate_id(sheet: str, idx: int) -> str:
 def _chunks(items: Sequence[Dict[str, Any]], size: int) -> Iterable[List[Dict[str, Any]]]:
     for start in range(0, len(items), size):
         yield list(items[start:start + size])
+
+
+def _coerce_positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
 
 
 def _row_primary_name(sheet: str, row: Dict[str, Any]) -> str:
