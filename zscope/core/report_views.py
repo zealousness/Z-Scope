@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from .issue_dedup import deduplicate_issues
+from .issue_dedup import (
+    canonical_category,
+    canonical_issue_key,
+    deduplicate_issues,
+    flatten_issue_text,
+    normalize_issue_fields,
+    parse_issue_location,
+    root_cause_token,
+)
 
 DEFAULT_REPORT_VIEW = "default"
 WITH_NEEDS_REVIEW_REPORT_VIEW = "with_needs_review"
@@ -50,19 +58,100 @@ def group_by_severity(issues: Iterable[Dict[str, Any]]) -> Dict[str, List[Dict[s
     return groups
 
 
+def _issue_location_parts(issue: Dict[str, Any]) -> Tuple[str, Optional[int]]:
+    return parse_issue_location(str(issue.get("location") or issue.get("file") or ""))
+
+
+def _issue_root_signature(issue: Dict[str, Any]) -> Tuple[str, str, str]:
+    text = flatten_issue_text(issue)
+    file_path, _line = _issue_location_parts(issue)
+    category = canonical_category(issue, text)
+    root = root_cause_token(issue, category, text)
+    return file_path, str(issue.get("function") or issue.get("func_name") or "").lower(), root
+
+
+def _same_root_cause(default_issue: Dict[str, Any], review_issue: Dict[str, Any]) -> bool:
+    default_key = canonical_issue_key(default_issue)
+    review_key = canonical_issue_key(review_issue)
+    if default_key == review_key:
+        return True
+
+    default_file, default_func, default_root = _issue_root_signature(default_issue)
+    review_file, review_func, review_root = _issue_root_signature(review_issue)
+    if default_root and default_root == review_root and (default_file or default_func):
+        if default_file and review_file and default_file == review_file:
+            return True
+        if default_func and review_func and default_func == review_func:
+            return True
+
+    return False
+
+
+def _compact_observation(issue: Dict[str, Any]) -> Dict[str, Any]:
+    keep = (
+        "id",
+        "candidate_id",
+        "candidate_source",
+        "finding_kind",
+        "function",
+        "location",
+        "category",
+        "subcategory",
+        "description",
+        "root_cause",
+        "validation_status",
+        "validation_reasoning",
+        "confidence",
+        "impact_level",
+        "dedup_key",
+    )
+    return {key: deepcopy(issue[key]) for key in keep if key in issue}
+
+
+def attach_related_needs_review(
+    default_issues: List[Dict[str, Any]],
+    review_issues: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Attach review observations that only add evidence for an existing finding."""
+    independent: List[Dict[str, Any]] = []
+    attached_count = 0
+
+    for review_issue in review_issues:
+        normalize_issue_fields(review_issue)
+        review_issue["dedup_key"] = canonical_issue_key(review_issue)
+        match = next(
+            (issue for issue in default_issues if _same_root_cause(issue, review_issue)),
+            None,
+        )
+        if match is None:
+            independent.append(review_issue)
+            continue
+
+        attached = match.setdefault("related_needs_review_observations", [])
+        compact = _compact_observation(review_issue)
+        if compact not in attached:
+            attached.append(compact)
+            attached_count += 1
+        match["attached_needs_review_count"] = len(attached)
+
+    return independent, attached_count
+
+
 def build_report_views(
     issues: Iterable[Any],
     audit_observations: Iterable[Any],
 ) -> Dict[str, Dict[str, Any]]:
     """Build default and needs-review-inclusive issue lists."""
-    default_issues = deduplicate_issues(issue_dicts(issues))
+    base_issues = deduplicate_issues(issue_dicts(issues))
+    default_issues = deepcopy(base_issues)
+    review_base_issues = deepcopy(base_issues)
     review_issues = needs_review_observations(audit_observations)
-    with_review = deduplicate_issues(default_issues + review_issues)
-    review_count = sum(
-        1
-        for issue in with_review
-        if str(issue.get("validation_status") or "").lower() in NEEDS_REVIEW_STATUSES
+    independent_review_issues, attached_review_count = attach_related_needs_review(
+        review_base_issues,
+        review_issues,
     )
+    with_review = deduplicate_issues(review_base_issues + independent_review_issues)
+    review_count = len(review_issues)
     return {
         DEFAULT_REPORT_VIEW: {
             "label": "Default",
@@ -77,6 +166,8 @@ def build_report_views(
             "description": "Default issues plus validator needs_review observations.",
             "issue_count": len(with_review),
             "included_needs_review_count": review_count,
+            "independent_needs_review_count": len(independent_review_issues),
+            "attached_needs_review_count": attached_review_count,
             "issues": with_review,
             "issues_by_severity": group_by_severity(with_review),
         },
@@ -140,20 +231,23 @@ def report_view_summary(report: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             continue
         issues = view.get("issues", [])
         issue_count = len(issues) if isinstance(issues, list) else int(view.get("issue_count") or 0)
-        needs_review_count = (
-            sum(
+        if "included_needs_review_count" in view:
+            needs_review_count = int(view.get("included_needs_review_count") or 0)
+        elif isinstance(issues, list):
+            needs_review_count = sum(
                 1
                 for issue in issues
                 if isinstance(issue, dict)
                 and str(issue.get("validation_status") or "").lower() in NEEDS_REVIEW_STATUSES
             )
-            if isinstance(issues, list)
-            else int(view.get("included_needs_review_count") or 0)
-        )
+        else:
+            needs_review_count = 0
         summary[name] = {
             "label": view.get("label", name),
             "description": view.get("description", ""),
             "issue_count": issue_count,
             "included_needs_review_count": needs_review_count,
+            "independent_needs_review_count": int(view.get("independent_needs_review_count") or 0),
+            "attached_needs_review_count": int(view.get("attached_needs_review_count") or 0),
         }
     return summary

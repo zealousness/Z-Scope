@@ -96,19 +96,7 @@ def canonical_issue_key(issue: Dict[str, Any]) -> str:
         match = re.search(r"((?:src|include|internal)/[A-Za-z0-9_./-]+\.[chp]+)", text)
         file_path = match.group(1).lower() if match else ""
     function = str(issue.get("function") or issue.get("func_name") or "")
-    category = normalize_issue_category(
-        " ".join(
-            str(part or "")
-            for part in (
-                issue.get("category"),
-                issue.get("subcategory"),
-                issue.get("defect_class"),
-                issue.get("vulnerability_type"),
-                issue.get("cwe"),
-                text,
-            )
-        )
-    )
+    category = canonical_category(issue, text)
     root = root_cause_token(issue, category, text)
     scope = file_path or function
     if root:
@@ -131,11 +119,41 @@ def canonical_issue_key(issue: Dict[str, Any]) -> str:
     )
 
 
+def canonical_category(issue: Dict[str, Any], text: str = "") -> str:
+    """Prefer structured issue category over noisy flattened validation text."""
+    current = str(issue.get("category") or "").replace("-", "_").lower().strip()
+    if current in _KNOWN_CATEGORIES and current not in {"backend_signal", "memory_safety"}:
+        return current
+    return normalize_issue_category(
+        " ".join(
+            str(part or "")
+            for part in (
+                issue.get("category"),
+                issue.get("subcategory"),
+                issue.get("defect_class"),
+                issue.get("vulnerability_type"),
+                issue.get("cwe"),
+                text,
+            )
+        )
+    )
+
+
 def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
     raw_lower = text.lower()
     lower = raw_lower.replace("_", " ").replace("-", " ")
     compact = re.sub(r"[^a-z0-9]+", "", raw_lower)
     function = str(issue.get("function") or issue.get("func_name") or "").lower()
+
+    def has_name(name: str) -> bool:
+        normalized = name.lower().strip("_")
+        return name.lower() in raw_lower or normalized.replace("_", "") in compact
+
+    if (
+        has_name("_lifecycle_customize_control_message")
+        or has_name("_lifecycle_customize_transport_cleanup")
+    ) and ("open" in lower or "customize" in lower):
+        return "control_session_open_leak"
 
     named_objects = (
         "thread_ids",
@@ -179,43 +197,43 @@ def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
         "netrecvdata" in compact and ("size_max" in raw_lower or "sizemax" in compact or "返回-1" in text)
     ):
         return "net_recv_data_negative_length"
-    if "_executor_cleanup_resources" in lower and (
+    if has_name("_executor_cleanup_resources") and (
         "sharedresources" in lower or "taskconfig" in lower or "类型混淆" in text
     ):
         return "executor_sharedresources_type_confusion"
-    if "_executor_init" in lower and (
+    if has_name("_executor_init") and (
         "sharedresources" in lower or "taskconfig" in lower or "类型混淆" in text
     ):
         return "executor_sharedresources_type_confusion"
-    if "_plugin_lookup" in lower and ("mutex" in lower or "lock" in lower or "重入" in text):
+    if has_name("_plugin_lookup") and ("mutex" in lower or "lock" in lower or "重入" in text):
         return "plugin_lookup_registry_mutex"
-    if "_lifecycle_dispatch_pipe_tick" in lower and (
+    if has_name("_lifecycle_dispatch_pipe_tick") and (
         "ctrl_lock" in lower or "sched_lock" in lower or "deadlock" in lower
     ):
         return "pipe_scheduler_control_lock_order"
-    if "_lifecycle_close_pipe" in lower and ("pipe->next = pipe" in lower or "self" in lower):
+    if has_name("_lifecycle_close_pipe") and ("pipe->next = pipe" in lower or "self" in lower):
         return "pipe_self_link"
-    if "_lifecycle_delete_os_node" in lower or "procnode" in lower:
+    if has_name("_lifecycle_delete_os_node") or "procnode" in lower:
         return "os_node_proc_list"
-    if "_lifecycle_avl_register_route" in lower or "_route_avl_insert_node" in lower:
+    if has_name("_lifecycle_avl_register_route") or has_name("_route_avl_insert_node"):
         return "route_avl_node_after_insert"
-    if "_lifecycle_unregister_guarded_subscription" in lower:
+    if has_name("_lifecycle_unregister_guarded_subscription"):
         return "guarded_subscription_mutex"
-    if "_lifecycle_mesh_authorize_init" in lower:
+    if has_name("_lifecycle_mesh_authorize_init"):
         return "mesh_session_cleanup_hook"
-    if "_control_session_detach_without_release" in lower:
+    if has_name("_control_session_detach_without_release"):
         return "control_session_detach_leak"
-    if "_lifecycle_customize_control_message" in lower and "open" in lower:
+    if has_name("_lifecycle_customize_control_message") and "open" in lower:
         return "control_session_open_leak"
-    if "_lifecycle_release_value_slice" in lower or "value+1" in compact:
+    if has_name("_lifecycle_release_value_slice") or "value+1" in compact:
         return "value_slice_invalid_free"
-    if "_lifecycle_format_topic" in lower or "topic[sizeof" in compact:
+    if has_name("_lifecycle_format_topic") or "topic[sizeof" in compact:
         return "topic_off_by_one"
-    if "_lifecycle_parse_frame" in lower or "vla" in lower:
+    if has_name("_lifecycle_parse_frame") or "vla" in lower:
         return "frame_vla_stack"
-    if "_lifecycle_wait_for_work" in lower and "pthread_cond_wait" in lower:
+    if has_name("_lifecycle_wait_for_work") and "pthread_cond_wait" in lower:
         return "lifecycle_cond_wait"
-    if "_lifecycle_resize_metrics" in lower or "g_metrics" in lower:
+    if has_name("_lifecycle_resize_metrics") or "g_metrics" in lower:
         return "g_metrics_realloc"
     if category == "command_injection" and ("system" in lower or "命令注入" in text):
         return "task_command_execution"
