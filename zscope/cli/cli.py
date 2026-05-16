@@ -121,7 +121,11 @@ def main(
 
         if infer_user_config:
             from ..config.user_config_workbook import UserConfigWorkbook
-            from ..orchestration.user_config_inference import infer_user_config_rows
+            from ..framework.llm_client import LLMClient
+            from ..orchestration.user_config_inference import (
+                filter_user_config_rows_with_llm,
+                infer_user_config_rows,
+            )
 
             click.echo("Inferring user configuration candidates...")
             code_index = CodeIndex(
@@ -132,15 +136,38 @@ def main(
                 include_paths=zscope_config.project.include_paths,
                 exclude_paths=zscope_config.project.exclude_paths,
                 wait_for_cpg=True,
+                defer_svf=True,
             )
             workbook_path = _resolve_user_config_workbook_path(zscope_config)
             generated = infer_user_config_rows(
                 code_index,
                 snapshot_dir=Path(zscope_config.analysis.snapshot_dir),
             )
+            click.echo("Screening user configuration candidates with LLM...")
+            llm_cfg = zscope_config.llms.get("default") or next(iter(zscope_config.llms.values()))
+            llm_client = LLMClient(
+                api_key=llm_cfg.api_key,
+                base_url=llm_cfg.base_url,
+                models=llm_cfg.models,
+                timeout=llm_cfg.timeout,
+                max_retries=llm_cfg.max_retries,
+                max_tokens=llm_cfg.max_tokens,
+            )
+            generated, llm_stats = filter_user_config_rows_with_llm(
+                generated,
+                code_index,
+                llm_client,
+            )
             stats = UserConfigWorkbook(workbook_path).merge_generated(generated)
             total_symbols = sum(len(items) for items in generated.values())
             click.echo(f"User config workbook: {workbook_path}")
+            click.echo(
+                "LLM screening: "
+                f"{llm_stats['reviewed']} reviewed, "
+                f"{llm_stats['kept']} kept, {llm_stats['revised']} revised, "
+                f"{llm_stats['dropped']} dropped, {llm_stats['unreviewed']} unreviewed, "
+                f"{llm_stats['errors']} batch error(s)."
+            )
             click.echo(
                 "Inference complete: "
                 f"{total_symbols} generated row(s), "
@@ -312,9 +339,13 @@ def _resolve_user_config_workbook_path(zscope_config) -> Path:
     configured = zscope_config.analysis.user_config_db
     raw_path = Path(configured) if configured else Path(zscope_config.analysis.snapshot_dir)
     if raw_path.suffix.lower() == ".xlsx":
+        if raw_path.exists() and raw_path.is_dir():
+            raise ValueError("analysis.user_config_db must point to an .xlsx workbook or a directory.")
         return raw_path
-    if raw_path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
-        return raw_path.with_suffix(".xlsx")
+    if raw_path.suffix and not raw_path.exists():
+        raise ValueError("analysis.user_config_db must point to an .xlsx workbook or a directory.")
+    if raw_path.exists() and raw_path.is_file():
+        raise ValueError("analysis.user_config_db must point to an .xlsx workbook or a directory.")
     return raw_path / "user_config.xlsx"
 
 

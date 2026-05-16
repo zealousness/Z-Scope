@@ -164,6 +164,57 @@ static void* WorkerMain(void* arg) {
     assert "thread_entry:pthread_create" in candidate.reasons
 
 
+def test_vos_task_create_discovers_third_argument_thread_entry():
+    discovery = EntryDiscovery(
+        FakeCodeIndex(
+            {
+                "StartWorkers": """
+int StartWorkers(void) {
+    VOS_UINT32 task_id = 0;
+    return VOS_TaskCreate(&task_id, "worker", (VOS_TASK_ENTRY)VosWorkerMain, 0);
+}
+""",
+                "VosWorkerMain": """
+static void VosWorkerMain(void) {
+}
+""",
+            }
+        )
+    )
+
+    result = discovery.discover()
+
+    assert [candidate.function_name for candidate in result.candidates] == ["VosWorkerMain"]
+    candidate = result.candidates[0]
+    assert candidate.exposure == "thread"
+    assert "thread_entry:VOS_TaskCreate" in candidate.reasons
+
+
+def test_osal_task_create_discovers_second_argument_thread_entry():
+    discovery = EntryDiscovery(
+        FakeCodeIndex(
+            {
+                "StartWorkers": """
+int StartWorkers(void) {
+    return OSAL_TaskCreate("worker", &OsalWorkerMain, NULL, 4096);
+}
+""",
+                "OsalWorkerMain": """
+static void OsalWorkerMain(void *arg) {
+}
+""",
+            }
+        )
+    )
+
+    result = discovery.discover()
+
+    assert [candidate.function_name for candidate in result.candidates] == ["OsalWorkerMain"]
+    candidate = result.candidates[0]
+    assert candidate.exposure == "thread"
+    assert "thread_entry:OSAL_TaskCreate" in candidate.reasons
+
+
 def test_search_root_limits_discovered_entries_to_that_directory(tmp_path):
     project_root = tmp_path
     source_root = project_root

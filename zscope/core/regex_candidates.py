@@ -1,4 +1,4 @@
-"""Deterministic C memory/concurrency candidate generation.
+"""Regex/local-pattern C memory/concurrency candidate generation.
 
 These rules are intentionally conservative enough to produce evidence-backed
 review candidates, not final findings. The validator decides whether a
@@ -27,8 +27,8 @@ class CodeLine:
 
 
 @dataclass
-class DeterministicSemantics:
-    """Project-specific C aliases and API roles used by deterministic rules."""
+class LocalPatternSemantics:
+    """Project-specific C aliases and API roles used by regex/local-pattern rules."""
 
     type_aliases: Dict[str, str] = field(default_factory=dict)
     allocators: Dict[str, List[str]] = field(default_factory=dict)
@@ -58,7 +58,7 @@ class DeterministicSemantics:
         if source and source not in sources:
             sources.append(source)
 
-    def merge(self, other: "DeterministicSemantics") -> None:
+    def merge(self, other: "LocalPatternSemantics") -> None:
         self.type_aliases.update(other.type_aliases)
         for attr in (
             "allocators",
@@ -85,7 +85,7 @@ _CATEGORY_BY_ATTR = {
 }
 
 
-class DeterministicCandidateGenerator:
+class RegexCandidateGenerator:
     """Generate structured candidates for high-signal C memory/concurrency bugs."""
 
     _LINE_RE = re.compile(r"^\s*(\d+)\s*\|\s?(.*)$")
@@ -93,7 +93,7 @@ class DeterministicCandidateGenerator:
     _DEFAULT_ALLOCATORS = {"malloc", "_safe_malloc"}
     _DEFAULT_CALLOC_ALLOCATORS = {"calloc", "_safe_calloc"}
     _DEFAULT_REALLOCATORS = {"realloc", "_safe_realloc"}
-    _DEFAULT_DEALLOCATORS = {"free", "SAFE_FREE"}
+    _DEFAULT_DEALLOCATORS = {"free"}
     _DEFAULT_COPY_SINKS = {
         "memcpy",
         "memmove",
@@ -123,8 +123,8 @@ class DeterministicCandidateGenerator:
         "char",
     }
 
-    def __init__(self, semantics: Optional[DeterministicSemantics] = None):
-        self.semantics = semantics or DeterministicSemantics()
+    def __init__(self, semantics: Optional[LocalPatternSemantics] = None):
+        self.semantics = semantics or LocalPatternSemantics()
         self._compile_patterns()
 
     def _compile_patterns(self) -> None:
@@ -309,7 +309,7 @@ class DeterministicCandidateGenerator:
             id=str(issue.get("candidate_id") or issue.get("id")),
             skill=skill,
             task=(
-                f"Verify deterministic {defect_class} candidate. Confirm concrete "
+                f"Verify regex/local-pattern {defect_class} candidate. Confirm concrete "
                 "source, sink, path feasibility, and guard sufficiency; reject if any "
                 "required proof is missing."
             ),
@@ -318,14 +318,14 @@ class DeterministicCandidateGenerator:
             context_slice=str(issue.get("code_snippet") or ""),
             priority_score=self._priority_for_issue(issue),
             priority_reasons=[
-                "deterministic_candidate",
+                str(issue.get("candidate_source") or "regex_local_rule"),
                 defect_class,
                 f"rule_confidence={issue.get('rule_confidence', issue.get('confidence', 0.5))}",
             ],
             origin=str(issue.get("source") or issue.get("location") or ""),
             sink=str(issue.get("sink") or issue.get("location") or ""),
             resource_kind=self._RESOURCE_BY_CLASS.get(defect_class, "unknown"),
-            source="deterministic_rule",
+            source=str(issue.get("candidate_source") or "regex_local_rule"),
             evidence=evidence,
         )
 
@@ -373,7 +373,7 @@ class DeterministicCandidateGenerator:
             neg = list(negative or [])
             pack = {
                 "candidate_id": candidate_id,
-                "candidate_source": "deterministic_rule",
+                "candidate_source": "regex_local_rule",
                 "defect_class": defect_class,
                 "rule": rule,
                 "rule_confidence": confidence,
@@ -428,7 +428,7 @@ class DeterministicCandidateGenerator:
                     "category": defect_class,
                     "subcategory": defect_class,
                     "defect_class": defect_class,
-                    "finding_kind": "deterministic_candidate",
+                    "finding_kind": "regex_candidate",
                     "rule": rule,
                     "cwe": self._CWE_BY_CLASS.get(defect_class, ""),
                     "description": description,
@@ -468,9 +468,9 @@ class DeterministicCandidateGenerator:
         negative_evidence: List[str],
         evidence_pack: Dict[str, Any],
     ) -> str:
-        """Build Chinese human-readable reasoning from deterministic evidence."""
+        """Build Chinese human-readable reasoning from regex/local-pattern evidence."""
 
-        cwe = DeterministicCandidateGenerator._CWE_BY_CLASS.get(defect_class, "")
+        cwe = RegexCandidateGenerator._CWE_BY_CLASS.get(defect_class, "")
         path = evidence_pack.get("path") if isinstance(evidence_pack.get("path"), dict) else {}
         guard_status = str(path.get("guard_status") or "")
         if guard_status == "insufficient_or_absent":
@@ -488,7 +488,7 @@ class DeterministicCandidateGenerator:
         flow = " -> ".join(flow_parts) if flow_parts else "规则命中的本地代码片段"
 
         lines = [
-            f"确定性规则 `{rule}` 在 `{func_name}` 的 `{file_path}:{line}` 命中了 `{defect_class}`"
+            f"Regex 本地规则 `{rule}` 在 `{func_name}` 的 `{file_path}:{line}` 命中 `{defect_class}`"
             + (f"（{cwe}）" if cwe else "")
             + " 候选。",
             f"问题判断：{description}",
@@ -768,6 +768,28 @@ class DeterministicCandidateGenerator:
                                 f"line {line.number}: `{var}` address escapes through pthread_create",
                             ],
                         )
+                continue
+            retaining_call = self._retaining_address_call(line.text)
+            if retaining_call:
+                for var, decl in locals_seen.items():
+                    if decl.index < line.index and re.search(rf"&\s*{re.escape(var)}\b", line.text):
+                        emit(
+                            defect_class="stack_escape",
+                            rule="stack_address_to_retaining_api",
+                            line=line,
+                            description=f"Address of stack local `{var}` is passed to retaining/asynchronous API `{retaining_call}`.",
+                            root_cause="The callee name indicates it may store, register, enqueue, or asynchronously use the borrowed address after this stack frame returns.",
+                            suggested_fix="Pass heap-owned storage, copy the value into callee-owned storage, or prove the API consumes the address synchronously as an out-parameter.",
+                            source=f"&{var}",
+                            sink=line.text.strip(),
+                            confidence=0.74,
+                            impact_level="high",
+                            positive=[
+                                f"line {decl.number}: local `{var}` is stack allocated",
+                                f"line {line.number}: `{var}` address is passed to retaining/asynchronous-looking API `{retaining_call}`",
+                            ],
+                            negative=["ordinary create/open/get functions with scalar out-parameters are treated as synchronous borrows unless their name indicates retention"],
+                        )
             ret = re.search(r"\breturn\s+&(?P<var>[A-Za-z_]\w*)\s*;", line.text)
             if ret and ret.group("var") in locals_seen:
                 decl = locals_seen[ret.group("var")]
@@ -787,6 +809,52 @@ class DeterministicCandidateGenerator:
                         f"line {line.number}: address returned",
                     ],
                 )
+
+    @staticmethod
+    def _retaining_address_call(text: str) -> str:
+        match = re.search(r"\b(?P<name>[A-Za-z_]\w*(?:->|\.)?[A-Za-z_]\w*)\s*\(", text)
+        if not match:
+            return ""
+        name = match.group("name").split("->")[-1].split(".")[-1]
+        lower = name.lower()
+        retaining_terms = (
+            "register",
+            "retain",
+            "store",
+            "save",
+            "cache",
+            "remember",
+            "subscribe",
+            "enqueue",
+            "queue",
+            "defer",
+            "async",
+            "thread",
+            "schedule",
+            "submit",
+            "callback",
+            "cb",
+            "context",
+            "ctx",
+        )
+        synchronous_out_param_terms = (
+            "create",
+            "open",
+            "init",
+            "get",
+            "read",
+            "write",
+            "query",
+            "find",
+            "lookup",
+            "parse",
+            "decode",
+        )
+        if any(term in lower for term in retaining_terms):
+            return name
+        if any(term in lower for term in synchronous_out_param_terms):
+            return ""
+        return ""
 
     def _rule_lock_balance_and_callbacks(self, lines: List[CodeLine], emit) -> None:
         held: List[CodeLine] = []
@@ -1317,6 +1385,8 @@ class DeterministicCandidateGenerator:
         if not match:
             return
         ret = match.group("ret")
+        if ret not in self._pointer_owner_vars(lines):
+            return
         previous = list(reversed(lines[max(0, return_line.index - 12) : return_line.index]))
         assigned = None
         saw_unlock = False
@@ -1456,6 +1526,8 @@ class DeterministicCandidateGenerator:
 
     @staticmethod
     def _classify_api_name(name: str) -> str:
+        if name.isupper() and "_" in name:
+            return ""
         lower = name.lower()
         tokens = [token for token in re.split(r"_+", lower) if token]
         if tokens:
@@ -1650,3 +1722,4 @@ class DeterministicCandidateGenerator:
         severity = str(issue.get("impact_level") or "").lower()
         bonus = {"critical": 18, "high": 12, "medium": 6, "low": 0}.get(severity, 3)
         return max(1, min(100, int(score * 80) + bonus))
+

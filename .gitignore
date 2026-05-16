@@ -102,3 +102,8 @@ test/range/report.md
 test/range/zscope_run.log
 test/range/zscope.local.yaml
 test/range/zscope.local.env
+
+# External benchmark generated data
+benchmarks/external/workspace/
+benchmarks/external/sources/
+benchmarks/external/runs/

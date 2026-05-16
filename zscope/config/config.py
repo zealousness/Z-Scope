@@ -101,7 +101,7 @@ class AnalysisConfig:
     snapshot_dir: str = ".zscope_snapshots"
     enable_snapshot_cache: bool = True
     parallel_workers: int = 5  # Number of concurrent workers for batch analysis
-    user_config_db: str = ""  # Path to user config workbook or DB dir, defaults to {snapshot_dir}/
+    user_config_db: str = ""  # Path to user config workbook or directory, defaults to {snapshot_dir}/
     max_premodel_depth: int = 3  # Callee recursive pre-modeling max depth
     max_premodel_callees: int = 20  # Max callees to expand per level
     trivial_function_max_lines: int = 5  # Skip modeling if function <= this many valid lines

@@ -16,23 +16,25 @@ logger = logging.getLogger(__name__)
 
 
 class UserConfigStore:
-    """SQLite-backed store for user-provided analysis configuration."""
+    """Workbook-backed user configuration with SQLite state for scan metadata."""
 
-    def __init__(self, db_dir: Path):
-        raw_path = Path(db_dir)
-        self.workbook: Optional[UserConfigWorkbook] = None
+    def __init__(self, user_config_path: Path):
+        raw_path = Path(user_config_path)
         if raw_path.suffix.lower() == ".xlsx":
+            if raw_path.exists() and raw_path.is_dir():
+                raise ValueError("user_config path must be an .xlsx workbook or a directory.")
             self.db_dir = raw_path.parent
-            self.db_dir.mkdir(parents=True, exist_ok=True)
-            self.db_path = raw_path.with_suffix(".state.db")
-            self.workbook = UserConfigWorkbook(raw_path)
+            workbook_path = raw_path
         else:
+            if raw_path.suffix and not raw_path.exists():
+                raise ValueError("user_config path must be an .xlsx workbook or a directory.")
+            if raw_path.exists() and raw_path.is_file():
+                raise ValueError("user_config path must be an .xlsx workbook or a directory.")
             self.db_dir = raw_path
-            self.db_dir.mkdir(parents=True, exist_ok=True)
-            self.db_path = self.db_dir / "user_config.db"
             workbook_path = self.db_dir / "user_config.xlsx"
-            if workbook_path.exists():
-                self.workbook = UserConfigWorkbook(workbook_path)
+        self.db_dir.mkdir(parents=True, exist_ok=True)
+        self.workbook = UserConfigWorkbook(workbook_path)
+        self.db_path = workbook_path.with_suffix(".state.db")
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -46,47 +48,6 @@ class UserConfigStore:
         conn = self._connect()
         try:
             conn.executescript("""
-                CREATE TABLE IF NOT EXISTS external_functions (
-                    func_name TEXT PRIMARY KEY,
-                    library TEXT DEFAULT '',
-                    description TEXT NOT NULL,
-                    memory_behavior TEXT DEFAULT '{}',
-                    concurrency_behavior TEXT DEFAULT '{}',
-                    return_semantics TEXT DEFAULT '',
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                );
-
-                CREATE TABLE IF NOT EXISTS function_pointer_targets (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    pointer_location TEXT NOT NULL,
-                    scope TEXT NOT NULL DEFAULT 'local',
-                    target_functions TEXT NOT NULL DEFAULT '[]',
-                    context TEXT DEFAULT '',
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(pointer_location, context)
-                );
-
-                CREATE TABLE IF NOT EXISTS paired_functions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    category TEXT NOT NULL,
-                    acquire_func TEXT NOT NULL,
-                    release_func TEXT NOT NULL,
-                    description TEXT DEFAULT '',
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(acquire_func, release_func)
-                );
-
-                CREATE TABLE IF NOT EXISTS function_intent (
-                    func_name TEXT NOT NULL,
-                    file_path TEXT NOT NULL DEFAULT '',
-                    caller_constraints TEXT DEFAULT '{}',
-                    concurrency_group TEXT DEFAULT '',
-                    concurrent_with TEXT DEFAULT '[]',
-                    notes TEXT DEFAULT '',
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (func_name, file_path)
-                );
-
                 CREATE TABLE IF NOT EXISTS config_warnings (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     warning_type TEXT NOT NULL,
@@ -127,249 +88,88 @@ class UserConfigStore:
                                  library: str = "", memory_behavior: Optional[Dict] = None,
                                  concurrency_behavior: Optional[Dict] = None,
                                  return_semantics: str = "") -> None:
-        if self.workbook:
-            self.workbook.upsert_external_function(
-                func_name,
-                description,
-                library=library,
-                memory_behavior=memory_behavior,
-                concurrency_behavior=concurrency_behavior,
-                return_semantics=return_semantics,
-            )
-            return
-        conn = self._connect()
-        try:
-            conn.execute(
-                """INSERT OR REPLACE INTO external_functions
-                   (func_name, library, description, memory_behavior,
-                    concurrency_behavior, return_semantics, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
-                (func_name, library, description,
-                 json.dumps(memory_behavior or {}),
-                 json.dumps(concurrency_behavior or {}),
-                 return_semantics))
-            conn.commit()
-        finally:
-            conn.close()
+        self.workbook.upsert_external_function(
+            func_name,
+            description,
+            library=library,
+            memory_behavior=memory_behavior,
+            concurrency_behavior=concurrency_behavior,
+            return_semantics=return_semantics,
+        )
 
     def get_external_function(self, func_name: str) -> Optional[Dict[str, Any]]:
-        if self.workbook:
-            for item in self.workbook.list_external_functions():
-                if item.get("func_name") == func_name:
-                    return item
-            return None
-        conn = self._connect()
-        try:
-            row = conn.execute(
-                "SELECT * FROM external_functions WHERE func_name = ?",
-                (func_name,)).fetchone()
-            return self._row_to_dict(row) if row else None
-        finally:
-            conn.close()
+        for item in self.workbook.list_external_functions():
+            if item.get("func_name") == func_name:
+                return item
+        return None
 
     def list_external_functions(self) -> List[Dict[str, Any]]:
-        if self.workbook:
-            return self.workbook.list_external_functions()
-        conn = self._connect()
-        try:
-            rows = conn.execute("SELECT * FROM external_functions ORDER BY func_name").fetchall()
-            return [self._row_to_dict(r) for r in rows]
-        finally:
-            conn.close()
+        return self.workbook.list_external_functions()
 
     def delete_external_function(self, func_name: str) -> None:
-        if self.workbook:
-            self.workbook.delete_external_function(func_name)
-            return
-        conn = self._connect()
-        try:
-            conn.execute("DELETE FROM external_functions WHERE func_name = ?", (func_name,))
-            conn.commit()
-        finally:
-            conn.close()
+        self.workbook.delete_external_function(func_name)
 
     # ── Paired Functions ──
 
     def upsert_paired_function(self, category: str, acquire_func: str,
                                release_func: str, description: str = "") -> None:
-        if self.workbook:
-            self.workbook.upsert_paired_function(category, acquire_func, release_func, description)
-            return
-        conn = self._connect()
-        try:
-            conn.execute(
-                """INSERT OR REPLACE INTO paired_functions
-                   (category, acquire_func, release_func, description, updated_at)
-                   VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)""",
-                (category, acquire_func, release_func, description))
-            conn.commit()
-        finally:
-            conn.close()
+        self.workbook.upsert_paired_function(category, acquire_func, release_func, description)
 
     def list_paired_functions(self, category: Optional[str] = None) -> List[Dict[str, Any]]:
-        if self.workbook:
-            return self.workbook.list_paired_functions(category)
-        conn = self._connect()
-        try:
-            if category:
-                rows = conn.execute(
-                    "SELECT * FROM paired_functions WHERE category = ? ORDER BY acquire_func",
-                    (category,)).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM paired_functions ORDER BY category, acquire_func").fetchall()
-            return [self._row_to_dict(r) for r in rows]
-        finally:
-            conn.close()
+        return self.workbook.list_paired_functions(category)
 
     def delete_paired_function(self, id: int) -> None:
-        if self.workbook:
-            self.workbook.delete_paired_function(id)
-            return
-        conn = self._connect()
-        try:
-            conn.execute("DELETE FROM paired_functions WHERE id = ?", (id,))
-            conn.commit()
-        finally:
-            conn.close()
+        self.workbook.delete_paired_function(id)
 
     # ── Function Pointer Targets ──
 
     def upsert_pointer_target(self, pointer_location: str, scope: str,
                               target_functions: List[str], context: str = "") -> None:
-        if self.workbook:
-            self.workbook.upsert_pointer_target(pointer_location, scope, target_functions, context)
-            return
-        conn = self._connect()
-        try:
-            conn.execute(
-                """INSERT OR REPLACE INTO function_pointer_targets
-                   (pointer_location, scope, target_functions, context, updated_at)
-                   VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)""",
-                (pointer_location, scope, json.dumps(target_functions), context))
-            conn.commit()
-        finally:
-            conn.close()
+        self.workbook.upsert_pointer_target(pointer_location, scope, target_functions, context)
 
     def get_pointer_targets(self, pointer_location: Optional[str] = None,
                             context: Optional[str] = None) -> List[Dict[str, Any]]:
-        if self.workbook:
-            rows = self.workbook.list_pointer_targets()
-            if pointer_location:
-                rows = [row for row in rows if row.get("pointer_location") == pointer_location]
-            if context:
-                rows = [row for row in rows if row.get("context") == context]
-            return rows
-        conn = self._connect()
-        try:
-            if pointer_location and context:
-                rows = conn.execute(
-                    "SELECT * FROM function_pointer_targets WHERE pointer_location = ? AND context = ?",
-                    (pointer_location, context)).fetchall()
-            elif pointer_location:
-                rows = conn.execute(
-                    "SELECT * FROM function_pointer_targets WHERE pointer_location = ?",
-                    (pointer_location,)).fetchall()
-            else:
-                rows = conn.execute("SELECT * FROM function_pointer_targets").fetchall()
-            return [self._row_to_dict(r) for r in rows]
-        finally:
-            conn.close()
+        rows = self.workbook.list_pointer_targets()
+        if pointer_location:
+            rows = [row for row in rows if row.get("pointer_location") == pointer_location]
+        if context:
+            rows = [row for row in rows if row.get("context") == context]
+        return rows
 
     def delete_pointer_target(self, id: int) -> None:
-        if self.workbook:
-            self.workbook.delete_pointer_target(id)
-            return
-        conn = self._connect()
-        try:
-            conn.execute("DELETE FROM function_pointer_targets WHERE id = ?", (id,))
-            conn.commit()
-        finally:
-            conn.close()
+        self.workbook.delete_pointer_target(id)
 
     # ── Function Intent ──
 
     def list_dispatchers(self) -> List[Dict[str, Any]]:
-        if self.workbook:
-            return self.workbook.list_dispatchers()
-        return []
+        return self.workbook.list_dispatchers()
 
     def list_module_lifecycle(self) -> List[Dict[str, Any]]:
-        if self.workbook:
-            return self.workbook.list_module_lifecycle()
-        return []
+        return self.workbook.list_module_lifecycle()
 
     def upsert_function_intent(self, func_name: str, file_path: str = "",
                                caller_constraints: Optional[Dict] = None,
                                concurrency_group: str = "",
                                concurrent_with: Optional[List[str]] = None,
                                notes: str = "") -> None:
-        if self.workbook:
-            self.workbook.upsert_function_intent(
-                func_name,
-                file_path=file_path,
-                caller_constraints=caller_constraints,
-                concurrency_group=concurrency_group,
-                concurrent_with=concurrent_with,
-                notes=notes,
-            )
-            return
-        conn = self._connect()
-        try:
-            conn.execute(
-                """INSERT OR REPLACE INTO function_intent
-                   (func_name, file_path, caller_constraints, concurrency_group,
-                    concurrent_with, notes, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
-                (func_name, file_path,
-                 json.dumps(caller_constraints or {}),
-                 concurrency_group,
-                 json.dumps(concurrent_with or []),
-                 notes))
-            conn.commit()
-        finally:
-            conn.close()
+        self.workbook.upsert_function_intent(
+            func_name,
+            file_path=file_path,
+            caller_constraints=caller_constraints,
+            concurrency_group=concurrency_group,
+            concurrent_with=concurrent_with,
+            notes=notes,
+        )
 
     def get_function_intent(self, func_name: str,
                             file_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        if self.workbook:
-            return self.workbook.get_function_intent(func_name, file_path)
-        conn = self._connect()
-        try:
-            if file_path:
-                row = conn.execute(
-                    "SELECT * FROM function_intent WHERE func_name = ? AND file_path = ?",
-                    (func_name, file_path)).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT * FROM function_intent WHERE func_name = ?",
-                    (func_name,)).fetchone()
-            return self._row_to_dict(row) if row else None
-        finally:
-            conn.close()
+        return self.workbook.get_function_intent(func_name, file_path)
 
     def list_function_intents(self) -> List[Dict[str, Any]]:
-        if self.workbook:
-            return self.workbook.list_function_intents()
-        conn = self._connect()
-        try:
-            rows = conn.execute("SELECT * FROM function_intent ORDER BY func_name").fetchall()
-            return [self._row_to_dict(r) for r in rows]
-        finally:
-            conn.close()
+        return self.workbook.list_function_intents()
 
     def delete_function_intent(self, func_name: str, file_path: str = "") -> None:
-        if self.workbook:
-            self.workbook.delete_function_intent(func_name, file_path)
-            return
-        conn = self._connect()
-        try:
-            conn.execute(
-                "DELETE FROM function_intent WHERE func_name = ? AND file_path = ?",
-                (func_name, file_path))
-            conn.commit()
-        finally:
-            conn.close()
+        self.workbook.delete_function_intent(func_name, file_path)
 
     # ── Config Warnings ──
 
@@ -399,17 +199,6 @@ class UserConfigStore:
         try:
             conn.execute("DELETE FROM config_warnings")
             conn.commit()
-            for column, decl in (
-                ("scope", "TEXT NOT NULL DEFAULT ''"),
-                ("rule", "TEXT NOT NULL DEFAULT ''"),
-                ("note", "TEXT DEFAULT ''"),
-                ("expires_at", "DATETIME DEFAULT NULL"),
-            ):
-                try:
-                    conn.execute(f"ALTER TABLE finding_suppressions ADD COLUMN {column} {decl}")
-                    conn.commit()
-                except sqlite3.OperationalError:
-                    pass
         finally:
             conn.close()
 

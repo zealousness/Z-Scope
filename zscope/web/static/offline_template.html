@@ -95,7 +95,6 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
         <div class="block-top-header">
           <div style="font-family:monospace; color:var(--muted); font-size:13px;" id="loc"></div>
           <div style="display:flex; gap:8px;">
-            <span class="badge badge-ghost" id="cat"></span>
             <span class="badge badge-ghost" id="subcat"></span>
             <span class="badge" id="sev"></span>
           </div>
@@ -189,7 +188,6 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
   const filterFieldEl = document.getElementById('filterField');
   const filterHintEl = document.getElementById('filterHint');
   const locEl = document.getElementById('loc');
-  const catEl = document.getElementById('cat');
   const subcatEl = document.getElementById('subcat');
   const sevEl = document.getElementById('sev');
   const statusEl = document.getElementById('status');
@@ -370,7 +368,6 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
     selectedViewEl.style.display = 'flex';
 
     locEl.textContent = f.location || f.function || '';
-    catEl.textContent = f.category || '';
     subcatEl.textContent = f.subcategory || '';
     sevEl.textContent = f.impact_level || '';
     sevEl.className = 'badge ' + getSeverityClass(f.impact_level);

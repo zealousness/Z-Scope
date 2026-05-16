@@ -61,6 +61,15 @@ def normalize_issue_fields(issue: Dict[str, Any]) -> None:
     }
     if current in generic_categories:
         issue["category"] = normalized_category
+    elif len(current) > 48 or re.search(r"\s", current):
+        issue["category"] = normalized_category
+    elif current not in _KNOWN_CATEGORIES:
+        issue["category"] = normalized_category
+    if normalized_category == "stack_escape":
+        issue.setdefault("cwe", "CWE-562")
+        subcategory = str(issue.get("subcategory") or "").replace("-", "_").lower()
+        if subcategory in {"", "use_after_scope"}:
+            issue["subcategory"] = "stack_escape"
     issue.setdefault("normalized_category", normalized_category)
 
 
@@ -222,6 +231,26 @@ def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
 def normalize_issue_category(value: str) -> str:
     text = value.replace("_", " ").replace("-", " ").lower()
     compact = re.sub(r"\s+", "", text)
+    stack_terms = (
+        "stack escape",
+        "stack address",
+        "stack memory escape",
+        "use after return",
+        "use after scope",
+        "useafterscope",
+        "return stack",
+        "栈地址逃逸",
+        "栈内存逃逸",
+        "栈指针",
+        "cwe-562",
+    )
+    if any(term in text or term in compact for term in stack_terms):
+        return "stack_escape"
+    if ("pthread_create" in text or "pthread create" in text) and any(
+        term in text or term in compact
+        for term in ("stack", "local address", "栈", "&job", "&ctx", "&arg")
+    ):
+        return "stack_escape"
     groups = {
         "format_string": ("format string", "格式化字符串", "cwe-134"),
         "command_injection": ("command injection", "shell injection", "命令注入", "system(", "cwe-78"),
@@ -263,6 +292,40 @@ def normalize_issue_category(value: str) -> str:
 def normalize_issue_key_part(value: Any) -> str:
     text = str(value or "").replace("\\", "/").lower().strip()
     return re.sub(r"\s+", " ", text)
+
+
+_KNOWN_CATEGORIES = {
+    "alignment",
+    "backend_signal",
+    "bounds",
+    "command_injection",
+    "deadlock",
+    "double_checked_locking",
+    "format_string",
+    "held_lock_callback",
+    "integer_overflow",
+    "invalid_free",
+    "key_truncation",
+    "log_amplification",
+    "lost_wakeup",
+    "memory_leak",
+    "memory_safety",
+    "missing_unlock",
+    "null_pointer_dereference",
+    "object_publication",
+    "off_by_one",
+    "path_traversal",
+    "race",
+    "realloc_misuse",
+    "refcount_race",
+    "signed_unsigned",
+    "stack_escape",
+    "stack_overflow",
+    "stale_fd",
+    "type_confusion",
+    "uninitialized_read",
+    "use_after_free",
+}
 
 
 def flatten_issue_text(value: Any) -> str:
