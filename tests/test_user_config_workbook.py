@@ -1,3 +1,6 @@
+import re
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -88,6 +91,7 @@ def test_infer_user_config_defers_svf(monkeypatch, tmp_path: Path) -> None:
     config_path = tmp_path / "zscope.yaml"
     config_path.write_text("project: {}\n", encoding="utf-8")
     captured = {}
+    captured_filter = {}
 
     class FakeCodeIndex:
         def __init__(self, *args, **kwargs):
@@ -109,6 +113,7 @@ def test_infer_user_config_defers_svf(monkeypatch, tmp_path: Path) -> None:
             analysis=SimpleNamespace(
                 snapshot_dir=str(tmp_path / "snapshots"),
                 user_config_db=str(tmp_path / "user_config.xlsx"),
+                parallel_workers=3,
             ),
             llms={
                 "default": SimpleNamespace(
@@ -129,17 +134,21 @@ def test_infer_user_config_defers_svf(monkeypatch, tmp_path: Path) -> None:
         "infer_user_config_rows",
         lambda *args, **kwargs: {name: [] for name in SHEET_HEADERS},
     )
-    monkeypatch.setattr(
-        inference_module,
-        "filter_user_config_rows_with_llm",
-        lambda rows, *args, **kwargs: (rows, {
+    def fake_filter_user_config_rows_with_llm(rows, *args, **kwargs):
+        captured_filter["kwargs"] = kwargs
+        return (rows, {
             "reviewed": 0,
             "kept": 0,
             "dropped": 0,
             "revised": 0,
             "unreviewed": 0,
             "errors": 0,
-        }),
+        })
+
+    monkeypatch.setattr(
+        inference_module,
+        "filter_user_config_rows_with_llm",
+        fake_filter_user_config_rows_with_llm,
     )
 
     result = CliRunner().invoke(
@@ -150,6 +159,8 @@ def test_infer_user_config_defers_svf(monkeypatch, tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert captured["kwargs"]["wait_for_cpg"] is True
     assert captured["kwargs"]["defer_svf"] is True
+    assert captured_filter["kwargs"]["max_workers"] == 3
+    assert "3 worker(s)" in result.output
     assert captured["closed"] is True
 
 
@@ -382,6 +393,68 @@ def test_llm_filter_drops_noisy_candidates_and_records_generalized_pattern(tmp_p
     assert "pattern=XXX_LOCK" in locks["DDM_LOCK"]["notes"]
     assert stats["dropped"] == 3
     assert stats["kept"] == 4
+
+
+def test_llm_filter_uses_parallel_workers_for_batches(tmp_path: Path) -> None:
+    rows = {name: [] for name in SHEET_HEADERS}
+    for idx in range(4):
+        rows["resource"].append(
+            {
+                "symbol_name": f"DDM_ALLOC_{idx}",
+                "kind": "allocator",
+                "symbol_type": "macro",
+                "pair": "",
+                "description": "Project allocator macro.",
+                "source": "inferred:macro",
+                "confidence": "0.78",
+                "notes": "",
+            }
+        )
+
+    class ParallelFakeLLM:
+        def __init__(self):
+            self.active = 0
+            self.max_active = 0
+            self.lock = threading.Lock()
+
+        def chat_completion(self, messages, **kwargs):
+            with self.lock:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            try:
+                time.sleep(0.05)
+                content = messages[1]["content"]
+                ids = list(dict.fromkeys(re.findall(r'"id":\s*"([^"]+)"', content)))
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '{"items": ['
+                                + ", ".join(
+                                    f'{{"id":"{candidate_id}","action":"keep","notes":"ok"}}'
+                                    for candidate_id in ids
+                                )
+                                + "]}"
+                            }
+                        }
+                    ]
+                }
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    llm = ParallelFakeLLM()
+    filtered, stats = filter_user_config_rows_with_llm(
+        rows,
+        FakeCodeIndex(tmp_path),
+        llm,
+        batch_size=1,
+        max_workers=3,
+    )
+
+    assert len(filtered["resource"]) == 4
+    assert stats["kept"] == 4
+    assert llm.max_active > 1
 
 
 def test_inference_moves_dispatcher_and_handler_context_into_user_config(tmp_path: Path) -> None:

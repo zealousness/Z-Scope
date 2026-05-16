@@ -143,7 +143,8 @@ def main(
                 code_index,
                 snapshot_dir=Path(zscope_config.analysis.snapshot_dir),
             )
-            click.echo("Screening user configuration candidates with LLM...")
+            llm_workers = max(1, int(getattr(zscope_config.analysis, "parallel_workers", 1) or 1))
+            click.echo(f"Screening user configuration candidates with LLM ({llm_workers} worker(s))...")
             llm_cfg = zscope_config.llms.get("default") or next(iter(zscope_config.llms.values()))
             llm_client = LLMClient(
                 api_key=llm_cfg.api_key,
@@ -157,6 +158,7 @@ def main(
                 generated,
                 code_index,
                 llm_client,
+                max_workers=llm_workers,
             )
             stats = UserConfigWorkbook(workbook_path).merge_generated(generated)
             total_symbols = sum(len(items) for items in generated.values())
