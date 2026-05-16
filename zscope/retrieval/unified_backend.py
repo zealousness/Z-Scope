@@ -205,7 +205,16 @@ class UnifiedBackend(CodeBackend):
         seen = {d["name"] for d in direct}
         for ic in indirect:
             if ic["name"] not in seen:
-                direct.append({"name": ic["name"], "source": ic.get("source", "svf")})
+                direct.append(
+                    {
+                        "name": ic["name"],
+                        "source": ic.get("source", "svf"),
+                        "confidence": ic.get("confidence"),
+                        "call_file": ic.get("call_file", ""),
+                        "call_line": ic.get("call_line", 0),
+                        "svf_group": ic.get("svf_group", ""),
+                    }
+                )
         return cast(List[Dict[str, Any]], direct[:limit])
 
     def get_data_flow(

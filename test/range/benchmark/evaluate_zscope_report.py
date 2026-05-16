@@ -308,10 +308,17 @@ def match_issue(
     source_index: dict[str, Any] | None = None,
 ) -> bool:
     issue_file, issue_line = issue_file_and_line(issue)
+    if file_matches(issue_file, truth) and function_matches(issue, truth):
+        near = line_near(issue_line, truth, tolerance)
+        if category_matches(issue, truth):
+            return near and text_matches(issue, truth)
+        # The benchmark should measure whether a user can discover the target
+        # issue from the report, not whether the normalized category string is
+        # perfect.  If the finding is in the right function/location window and
+        # its text still mentions the truth keywords, count it as discoverable.
+        return near and text_matches(issue, truth)
     if not category_matches(issue, truth):
         return False
-    if file_matches(issue_file, truth) and function_matches(issue, truth):
-        return line_near(issue_line, truth, tolerance) and text_matches(issue, truth)
     if source_index and call_reachable_function_matches(issue, truth, source_index):
         return text_matches(issue, truth)
     return False

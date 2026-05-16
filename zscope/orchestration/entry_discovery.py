@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ..config.function_entry import FunctionEntry
 from ..retrieval.code_index import CodeIndex
@@ -155,12 +155,19 @@ class EntryDiscovery:
     )
     DEFAULT_THREAD_CALLS = (
         "pthread_create",
+        "VOS_TaskCreate",
+        "OSAL_TaskCreate",
         "thrd_create",
         "CreateThread",
         "_beginthread",
         "_beginthreadex",
         "clone",
     )
+    THREAD_ENTRY_ARG_INDEXES = {
+        "pthread_create": 2,
+        "VOS_TaskCreate": 2,
+        "OSAL_TaskCreate": 1,
+    }
     DEFAULT_INPUT_CALLS = (
         "scanf",
         "fscanf",
@@ -314,7 +321,7 @@ class EntryDiscovery:
                 reasons.extend([f"shared_memory:{hit}" for hit in shm_hits])
             if thread_hits:
                 reasons.extend([f"thread:{hit}" for hit in thread_hits])
-                for target in self._find_thread_entry_targets(code, thread_hits):
+                for target, call in self._find_thread_entry_targets(code, thread_hits):
                     target_impl = self._get_function_impl(target)
                     if not target_impl:
                         continue
@@ -325,7 +332,7 @@ class EntryDiscovery:
                         EntryCandidate(
                             function_name=target,
                             exposure="thread",
-                            reasons=sorted(set([f"thread_entry:{hit}" for hit in thread_hits])),
+                            reasons=[f"thread_entry:{call}"],
                             file_path=target_file,
                             line=int(target_impl.get("start_line") or 0),
                             custom_prompt=THREAD_PROMPT,
@@ -435,18 +442,82 @@ class EntryDiscovery:
         return hits
 
     @staticmethod
-    def _find_thread_entry_targets(code: str, thread_calls: Sequence[str]) -> List[str]:
+    def _find_thread_entry_targets(code: str, thread_calls: Sequence[str]) -> List[Tuple[str, str]]:
         stripped = re.sub(r"^\s*\d+\s*\|\s*", "", code, flags=re.MULTILINE)
-        targets: List[str] = []
+        targets: List[Tuple[str, str]] = []
+        seen = set()
         for call in thread_calls:
-            if call != "pthread_create":
+            arg_index = EntryDiscovery.THREAD_ENTRY_ARG_INDEXES.get(call)
+            if arg_index is None:
                 continue
-            pattern = re.compile(
-                rf"\b{re.escape(call)}\s*\(\s*[^,]+,\s*[^,]+,\s*&?\s*([A-Za-z_]\w*)\s*,",
-                flags=re.DOTALL,
-            )
-            for match in pattern.finditer(stripped):
-                target = match.group(1)
-                if target not in targets:
-                    targets.append(target)
+            for args in EntryDiscovery._iter_call_args(stripped, call):
+                split_args = EntryDiscovery._split_c_arguments(args)
+                if len(split_args) <= arg_index:
+                    continue
+                target = EntryDiscovery._extract_function_reference(split_args[arg_index])
+                if not target:
+                    continue
+                key = (target, call)
+                if key not in seen:
+                    targets.append(key)
+                    seen.add(key)
         return targets
+
+    @staticmethod
+    def _iter_call_args(code: str, call: str) -> Iterable[str]:
+        pattern = re.compile(rf"\b{re.escape(call)}\s*\(")
+        for match in pattern.finditer(code):
+            args = EntryDiscovery._extract_call_args(code, match.end() - 1)
+            if args is not None:
+                yield args
+
+    @staticmethod
+    def _extract_call_args(text: str, open_paren_index: int) -> Optional[str]:
+        depth = 0
+        start = open_paren_index + 1
+        for idx in range(open_paren_index, len(text)):
+            char = text[idx]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    return text[start:idx]
+        return None
+
+    @staticmethod
+    def _split_c_arguments(args: str) -> List[str]:
+        result: List[str] = []
+        current: List[str] = []
+        depth = 0
+        for char in str(args or ""):
+            if char in "([{":
+                depth += 1
+            elif char in ")]}" and depth:
+                depth -= 1
+            if char == "," and depth == 0:
+                item = "".join(current).strip()
+                if item:
+                    result.append(item)
+                current = []
+                continue
+            current.append(char)
+        item = "".join(current).strip()
+        if item:
+            result.append(item)
+        return result
+
+    @staticmethod
+    def _extract_function_reference(expr: str) -> str:
+        cleaned = re.sub(r"/\*.*?\*/", " ", str(expr or ""), flags=re.DOTALL).strip()
+        while True:
+            cleaned = cleaned.lstrip("&").strip()
+            without_cast = re.sub(r"^\(\s*[^()]+\s*\)\s*", "", cleaned).strip()
+            if without_cast == cleaned:
+                break
+            cleaned = without_cast
+        cleaned = cleaned.lstrip("&").strip()
+        match = re.fullmatch(r"[A-Za-z_]\w*", cleaned)
+        if not match or cleaned in {"NULL", "nullptr"}:
+            return ""
+        return cleaned

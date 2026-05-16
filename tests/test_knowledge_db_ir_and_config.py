@@ -101,6 +101,29 @@ def test_knowledge_db_uses_thread_local_connections_for_parallel_access(tmp_path
         db.close()
 
 
+def test_knowledge_db_finds_configured_acquire_without_release(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_call_edge("api_open", "src/demo.c", "SHM_FileOpen", "src/fs.c", 12)
+        db.insert_call_edge("api_close", "src/demo.c", "SHM_FileOpen", "src/fs.c", 22)
+        db.insert_call_edge("api_close", "src/demo.c", "SHM_FileClose", "src/fs.c", 24)
+        db.commit()
+
+        rows = db.find_callers_without_callee("SHM_FileOpen", "SHM_FileClose")
+
+        assert rows == [
+            {
+                "function": "api_open",
+                "file_path": "src/demo.c",
+                "line": 12,
+                "acquire_func": "SHM_FileOpen",
+                "release_func": "SHM_FileClose",
+            }
+        ]
+    finally:
+        db.close()
+
+
 def test_user_config_suppression_and_baseline(tmp_path: Path) -> None:
     store = UserConfigStore(tmp_path)
     store.add_false_positive_suppression(

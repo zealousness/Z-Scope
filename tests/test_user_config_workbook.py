@@ -1,9 +1,19 @@
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+from click.testing import CliRunner
+
+import zscope.cli.cli as cli_module
+import zscope.orchestration.user_config_inference as inference_module
+from zscope.cli.cli import _resolve_user_config_workbook_path
 from zscope.config.user_config_store import UserConfigStore
 from zscope.config.user_config_workbook import SHEET_HEADERS, UserConfigWorkbook
 from zscope.core.analyzer import Analyzer
-from zscope.orchestration.user_config_inference import infer_user_config_rows
+from zscope.orchestration.user_config_inference import (
+    filter_user_config_rows_with_llm,
+    infer_user_config_rows,
+)
 
 
 def test_workbook_store_round_trips_many_to_many_pairs(tmp_path: Path) -> None:
@@ -39,7 +49,7 @@ def test_workbook_store_round_trips_many_to_many_pairs(tmp_path: Path) -> None:
     assert workbook_path.with_suffix(".state.db").exists()
 
 
-def test_store_uses_user_config_xlsx_inside_legacy_directory(tmp_path: Path) -> None:
+def test_store_uses_user_config_xlsx_inside_config_directory(tmp_path: Path) -> None:
     workbook = UserConfigWorkbook(tmp_path / "user_config.xlsx")
     workbook.write_rows(
         {
@@ -56,6 +66,91 @@ def test_store_uses_user_config_xlsx_inside_legacy_directory(tmp_path: Path) -> 
 
     store = UserConfigStore(tmp_path)
     assert store.get_external_function("ZIP_ALLOC")["kind"] == "allocator"
+
+
+def test_store_rejects_database_config_paths(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        UserConfigStore(tmp_path / "user_config.db")
+
+
+def test_infer_user_config_rejects_database_config_paths(tmp_path: Path) -> None:
+    config = SimpleNamespace(
+        analysis=SimpleNamespace(
+            user_config_db=str(tmp_path / "user_config.db"),
+            snapshot_dir=str(tmp_path),
+        )
+    )
+    with pytest.raises(ValueError):
+        _resolve_user_config_workbook_path(config)
+
+
+def test_infer_user_config_defers_svf(monkeypatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "zscope.yaml"
+    config_path.write_text("project: {}\n", encoding="utf-8")
+    captured = {}
+
+    class FakeCodeIndex:
+        def __init__(self, *args, **kwargs):
+            captured["kwargs"] = kwargs
+
+        def close(self):
+            captured["closed"] = True
+
+    def fake_load(_path: str):
+        return SimpleNamespace(
+            project=SimpleNamespace(
+                project_root=tmp_path,
+                compile_commands_path=None,
+                source_root=tmp_path,
+                include_paths=[],
+                exclude_paths=[],
+            ),
+            indexing=SimpleNamespace(backend="unified"),
+            analysis=SimpleNamespace(
+                snapshot_dir=str(tmp_path / "snapshots"),
+                user_config_db=str(tmp_path / "user_config.xlsx"),
+            ),
+            llms={
+                "default": SimpleNamespace(
+                    api_key="test",
+                    base_url="http://127.0.0.1:1/v1",
+                    models=["fake-model"],
+                    timeout=1,
+                    max_retries=0,
+                    max_tokens=512,
+                )
+            },
+        )
+
+    monkeypatch.setattr(cli_module, "CodeIndex", FakeCodeIndex)
+    monkeypatch.setattr(cli_module.ConfigLoader, "load", fake_load)
+    monkeypatch.setattr(
+        inference_module,
+        "infer_user_config_rows",
+        lambda *args, **kwargs: {name: [] for name in SHEET_HEADERS},
+    )
+    monkeypatch.setattr(
+        inference_module,
+        "filter_user_config_rows_with_llm",
+        lambda rows, *args, **kwargs: (rows, {
+            "reviewed": 0,
+            "kept": 0,
+            "dropped": 0,
+            "revised": 0,
+            "unreviewed": 0,
+            "errors": 0,
+        }),
+    )
+
+    result = CliRunner().invoke(
+        cli_module.main,
+        ["--config", str(config_path), "--infer-user-config"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["kwargs"]["wait_for_cpg"] is True
+    assert captured["kwargs"]["defer_svf"] is True
+    assert captured["closed"] is True
 
 
 class FakeCodeIndex:
@@ -114,9 +209,179 @@ def test_inference_detects_private_apis_macros_and_many_to_many_pairs(tmp_path: 
     assert resource["VOS_MemAlloc"]["pair"] == "VOS_MemFree, VOS_MemFree_F"
     assert resource["ZIP_ALLOC"]["pair"] == "ZIP_FREE"
     assert "size/count params: n" in resource["VOS_MemAlloc"]["description"]
+    assert "resource_output=return" in resource["VOS_MemAlloc"]["description"]
+    assert "size_arg=arg1" in resource["VOS_MemAlloc"]["description"]
+    assert "resource_input=arg1" in resource["VOS_MemFree"]["description"]
 
     locks = {item["symbol_name"]: item for item in rows["lock"]}
     assert locks["VOS_Lock"]["pair"] == "VOS_Unlock"
+    assert "lock_arg=arg1" in locks["VOS_Lock"]["description"]
+
+
+def test_inference_filters_constant_like_names_and_does_not_promote_api_callers(tmp_path: Path) -> None:
+    (tmp_path / "api.h").write_text(
+        "\n".join(
+            [
+                "#define ANYXML_MALLOC(sz) malloc(sz)",
+                "#define ANYXML_FREE(p) free(p)",
+                "#define ANYXML_LOCK(m) pthread_mutex_lock(m)",
+                "#define ANYXML_UNLOCK(m) pthread_mutex_unlock(m)",
+                "#define ALLOCATOR_ERR(err) ((err) != 0)",
+                "#define ALLOC_SIZE_MAX_1(sz) ((sz) > 1)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    code_index = FakeCodeIndex(tmp_path)
+    code_index.functions.update(
+        {
+            "ParseAnyxml": "void *ParseAnyxml(size_t n) { return ANYXML_MALLOC(n); }",
+            "CleanupAnyxml": "void CleanupAnyxml(void *p) { ANYXML_FREE(p); }",
+            "UseAnyxmlLock": "void UseAnyxmlLock(Mutex *m) { ANYXML_LOCK(m); ANYXML_UNLOCK(m); }",
+        }
+    )
+
+    rows = infer_user_config_rows(code_index)
+
+    resource = {item["symbol_name"]: item for item in rows["resource"]}
+    assert resource["ANYXML_MALLOC"]["kind"] == "allocator"
+    assert resource["ANYXML_MALLOC"]["pair"] == "ANYXML_FREE"
+    assert resource["ANYXML_FREE"]["kind"] == "deallocator"
+    assert "ParseAnyxml" not in resource
+    assert "CleanupAnyxml" not in resource
+    assert "ALLOCATOR_ERR" not in resource
+    assert "ALLOC_SIZE_MAX_1" not in resource
+
+    locks = {item["symbol_name"]: item for item in rows["lock"]}
+    assert locks["ANYXML_LOCK"]["pair"] == "ANYXML_UNLOCK"
+    assert "UseAnyxmlLock" not in locks
+
+
+def test_llm_filter_drops_noisy_candidates_and_records_generalized_pattern(tmp_path: Path) -> None:
+    rows = {name: [] for name in SHEET_HEADERS}
+    rows["resource"] = [
+        {
+            "symbol_name": "DDM_ALLOC",
+            "kind": "allocator",
+            "symbol_type": "macro",
+            "pair": "DDM_FREE, ParseAnyxml",
+            "description": "Project allocator macro.",
+            "source": "inferred:macro",
+            "confidence": "0.78",
+            "notes": "",
+        },
+        {
+            "symbol_name": "DDM_FREE",
+            "kind": "deallocator",
+            "symbol_type": "macro",
+            "pair": "",
+            "description": "Project free macro.",
+            "source": "inferred:macro",
+            "confidence": "0.78",
+            "notes": "",
+        },
+        {
+            "symbol_name": "ParseAnyxml",
+            "kind": "allocator",
+            "symbol_type": "function",
+            "pair": "",
+            "description": "Caller of DDM_ALLOC.",
+            "source": "inferred:body",
+            "confidence": "0.80",
+            "notes": "",
+        },
+        {
+            "symbol_name": "ALLOCATOR_ERR",
+            "kind": "allocator",
+            "symbol_type": "macro",
+            "pair": "",
+            "description": "Error helper.",
+            "source": "inferred:name",
+            "confidence": "0.72",
+            "notes": "",
+        },
+    ]
+    rows["lock"] = [
+        {
+            "symbol_name": "DDM_LOCK",
+            "kind": "lock",
+            "symbol_type": "macro",
+            "pair": "DDM_UNLOCK, UseAnyxmlLock",
+            "description": "Project lock macro.",
+            "source": "inferred:macro",
+            "confidence": "0.78",
+            "notes": "",
+        },
+        {
+            "symbol_name": "DDM_UNLOCK",
+            "kind": "unlock",
+            "symbol_type": "macro",
+            "pair": "",
+            "description": "Project unlock macro.",
+            "source": "inferred:macro",
+            "confidence": "0.78",
+            "notes": "",
+        },
+        {
+            "symbol_name": "UseAnyxmlLock",
+            "kind": "lock",
+            "symbol_type": "function",
+            "pair": "",
+            "description": "Caller of DDM_LOCK/DDM_UNLOCK.",
+            "source": "inferred:body",
+            "confidence": "0.80",
+            "notes": "",
+        },
+    ]
+
+    class FakeLLM:
+        def chat_completion(self, messages, **kwargs):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"items": ['
+                                '{"id":"resource:0","action":"keep","confidence":0.93,'
+                                '"description":"macro `DDM_ALLOC` allocates memory; resource_output=return; size_arg=arg1; failure_values=NULL.",'
+                                '"generalized_pattern":"XXX_ALLOC","notes":"thin allocation macro"},'
+                                '{"id":"resource:1","action":"keep","confidence":0.92,'
+                                '"description":"macro `DDM_FREE` releases memory; resource_input=arg1.",'
+                                '"generalized_pattern":"XXX_FREE","notes":"paired free macro"},'
+                                '{"id":"resource:2","action":"drop","notes":"ordinary caller"},'
+                                '{"id":"resource:3","action":"drop","notes":"constant/error helper"},'
+                                '{"id":"lock:0","action":"keep","confidence":0.91,'
+                                '"generalized_pattern":"XXX_LOCK","notes":"thin lock macro"},'
+                                '{"id":"lock:1","action":"keep","confidence":0.91,'
+                                '"generalized_pattern":"XXX_UNLOCK","notes":"thin unlock macro"},'
+                                '{"id":"lock:2","action":"drop","notes":"ordinary lock caller"}'
+                                "]}"
+                            )
+                        }
+                    }
+                ]
+            }
+
+    filtered, stats = filter_user_config_rows_with_llm(
+        rows,
+        FakeCodeIndex(tmp_path),
+        FakeLLM(),
+    )
+
+    resource = {item["symbol_name"]: item for item in filtered["resource"]}
+    assert set(resource) == {"DDM_ALLOC", "DDM_FREE"}
+    assert resource["DDM_ALLOC"]["pair"] == "DDM_FREE"
+    assert "resource_output=return" in resource["DDM_ALLOC"]["description"]
+    assert "resource_input=arg1" in resource["DDM_FREE"]["description"]
+    assert "pattern=XXX_ALLOC" in resource["DDM_ALLOC"]["notes"]
+    assert resource["DDM_ALLOC"]["source"] == "inferred:macro, llm:screened"
+
+    locks = {item["symbol_name"]: item for item in filtered["lock"]}
+    assert set(locks) == {"DDM_LOCK", "DDM_UNLOCK"}
+    assert locks["DDM_LOCK"]["pair"] == "DDM_UNLOCK"
+    assert "pattern=XXX_LOCK" in locks["DDM_LOCK"]["notes"]
+    assert stats["dropped"] == 3
+    assert stats["kept"] == 4
 
 
 def test_inference_moves_dispatcher_and_handler_context_into_user_config(tmp_path: Path) -> None:

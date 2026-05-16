@@ -645,11 +645,46 @@ class KnowledgeDB:
 
     def get_callees(self, func_name: str, limit: int = 30) -> List[Dict[str, Any]]:
         rows = self._conn.execute(
-            "SELECT DISTINCT callee_name, callee_file FROM call_edges "
+            "SELECT DISTINCT callee_name, callee_file, call_line, call_type FROM call_edges "
             "WHERE caller_name = ? LIMIT ?",
             (func_name, limit),
         ).fetchall()
-        return [{"name": r["callee_name"], "filename": r["callee_file"]} for r in rows]
+        return [{"name": r["callee_name"], "filename": r["callee_file"],
+                 "lineNumber": r["call_line"], "call_type": r["call_type"]} for r in rows]
+
+    def find_callers_without_callee(
+        self,
+        acquire_func: str,
+        release_func: str,
+        *,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT caller_name, caller_file, MIN(call_line) AS acquire_line
+            FROM call_edges
+            WHERE callee_name = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM call_edges rel
+                  WHERE rel.caller_name = call_edges.caller_name
+                    AND rel.caller_file = call_edges.caller_file
+                    AND rel.callee_name = ?
+              )
+            GROUP BY caller_name, caller_file
+            LIMIT ?
+            """,
+            (acquire_func, release_func, limit),
+        ).fetchall()
+        return [
+            {
+                "function": r["caller_name"],
+                "file_path": r["caller_file"],
+                "line": r["acquire_line"],
+                "acquire_func": acquire_func,
+                "release_func": release_func,
+            }
+            for r in rows
+        ]
 
     # ── Header functions ──
 
@@ -715,12 +750,13 @@ class KnowledgeDB:
 
     def get_indirect_callees(self, func_name: str, limit: int = 30) -> List[Dict[str, Any]]:
         rows = self._conn.execute(
-            "SELECT callee_name, source, confidence, svf_group FROM indirect_calls "
+            "SELECT callee_name, source, confidence, svf_group, call_file, call_line FROM indirect_calls "
             "WHERE caller_name = ? ORDER BY confidence DESC LIMIT ?",
             (func_name, limit),
         ).fetchall()
         return [{"name": r["callee_name"], "source": r["source"],
-                 "confidence": r["confidence"], "svf_group": r["svf_group"]} for r in rows]
+                 "confidence": r["confidence"], "svf_group": r["svf_group"],
+                 "call_file": r["call_file"], "call_line": r["call_line"]} for r in rows]
 
     def get_indirect_callers(self, func_name: str, limit: int = 20) -> List[Dict[str, Any]]:
         rows = self._conn.execute(

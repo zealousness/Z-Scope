@@ -1,4 +1,4 @@
-# Z-SCOPE Layered Optimization
+﻿# Z-SCOPE Layered Optimization
 
 Z-SCOPE uses layered analysis so each stage has a narrow job and a reusable
 artifact. This keeps prompt size down and makes benchmark results auditable.
@@ -9,7 +9,7 @@ artifact. This keeps prompt size down and makes benchmark results auditable.
 | --- | --- | --- |
 | workflow | `zscope/workflows/*.yaml`, `SpecRegistry` | choose runtime steps for default/resume/maintain |
 | backend facts | `zscope/retrieval/*`, `KnowledgeDB` | extract functions, types, calls, globals, SVF facts |
-| semantic/evidence | semantic snapshots, deterministic candidates | summarize behavior and create evidence-backed candidates |
+| semantic/evidence | semantic snapshots, regex candidates | summarize behavior and create evidence-backed candidates |
 | agent validation | vulnerability analyzer, deep worker, validator, reconciler | interpret, verify, deduplicate and persist findings |
 
 ## 2. Workflow Layer
@@ -29,7 +29,8 @@ mutually exclusive.
 ## 3. Backend Fact Layer
 
 `CodeIndex` hides backend differences behind one query surface. Unified mode is
-the preferred C backend:
+the preferred C memory/concurrency backend and means Clang + SVF/Saber, not
+Joern:
 
 ```text
 UnifiedBackend
@@ -42,9 +43,12 @@ UnifiedBackend
 SVF is an enrichment path. A missing or failing SVF installation should not
 erase Clang facts.
 
+Joern is intentionally a separate backend profile for CPG queries and
+configuration-driven data-flow checks.
+
 ## 4. Semantic And Evidence Layer
 
-Semantic modeling produces compact per-function JSON snapshots. Deterministic
+Semantic modeling produces compact per-function JSON snapshots. Regex
 candidate generation adds local, reproducible signals for high-value C bugs.
 
 A candidate should include:
@@ -120,3 +124,4 @@ Benchmark runs must separate source fixture, config, runtime output and secrets:
 
 This discipline lets recall, false-positive rate and scan speed reflect the
 analyzer rather than hidden prompts or fixture-specific shortcuts.
+
