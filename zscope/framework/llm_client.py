@@ -395,7 +395,13 @@ class LLMClient:
                 logger.info(f"Conversation complete: {iterations} iterations, final context ≈ {final_tokens:,} tokens")
                 if recorder and trace_session:
                     recorder.record_session_end(trace_session, iterations, final_tokens)
-                return {"content": content, "conversation": conversation, "iterations": iterations, "context_tokens": final_tokens}
+                return {
+                    "content": content,
+                    "conversation": conversation,
+                    "iterations": iterations,
+                    "context_tokens": final_tokens,
+                    "tool_call_count": self._count_tool_result_messages(conversation),
+                }
                 
             if finish_reason == "length":
                 logger.warning(f"Model {self.models[0] if self.models else 'unknown'} output truncated! Prompting to continue...")
@@ -441,7 +447,13 @@ class LLMClient:
                 logger.info(f"Conversation complete (no more tool calls): {iterations} iterations, final context ≈ {final_tokens:,} tokens")
                 if recorder and trace_session:
                     recorder.record_session_end(trace_session, iterations, final_tokens)
-                return {"content": content, "conversation": conversation, "iterations": iterations, "context_tokens": final_tokens}
+                return {
+                    "content": content,
+                    "conversation": conversation,
+                    "iterations": iterations,
+                    "context_tokens": final_tokens,
+                    "tool_call_count": self._count_tool_result_messages(conversation),
+                }
 
             # Execute each tool call
             for tool_call in tool_calls:
@@ -567,7 +579,12 @@ class LLMClient:
             "iterations": iterations,
             "truncated": iterations >= max_iterations,
             "context_tokens": final_tokens,
+            "tool_call_count": self._count_tool_result_messages(conversation),
         }
+
+    @staticmethod
+    def _count_tool_result_messages(conversation: List[Dict[str, Any]]) -> int:
+        return sum(1 for message in conversation if message.get("role") == "tool")
 
     @classmethod
     def _tool_call_signature(cls, tool_name: Any, arguments: Dict[str, Any]) -> str:

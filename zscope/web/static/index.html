@@ -26,7 +26,7 @@
     <nav class="glass sticky top-0 z-50 px-6 py-4 flex flex-wrap gap-4 justify-between items-center">
         <div class="flex items-center gap-3">
             <div class="w-8 h-8 bg-primary rounded-lg flex items-center justify-center font-bold text-white">Z</div>
-            <h1 class="text-xl font-bold tracking-tight">Z-SCOPE <span class="text-xs font-normal opacity-50">v0.2.0</span></h1>
+            <h1 class="text-xl font-bold tracking-tight">Z-SCOPE <span class="text-xs font-normal opacity-50" x-text="appVersion">v0.6.0</span></h1>
         </div>
         <div class="flex flex-wrap gap-2 items-center">
             <div class="tabs tabs-boxed bg-neutral-900">
@@ -442,6 +442,7 @@
                 reportViews: {},
                 reportView: 'default',
                 viewSummary: null,
+                appVersion: 'v0.6.0',
                 statusText: '就绪',
                 statusClass: 'badge-ghost',
                 statusDotClass: 'bg-ghost',
@@ -464,9 +465,19 @@
                 intentForm: { func_name:'', file_path:'', concurrency_group:'', concurrent_str:'', caller_constraints:'', notes:'' },
 
                 init() {
+                    this.loadVersion();
                     this.refreshData();
                     this.loadConfig();
                     this.pollCpgStatus();
+                },
+
+                loadVersion() {
+                    fetch('/api/version')
+                        .then(res => res.json())
+                        .then(data => {
+                            this.appVersion = data.display || (data.version ? `v${data.version}` : this.appVersion);
+                        })
+                        .catch(() => {});
                 },
 
                 refreshData() {

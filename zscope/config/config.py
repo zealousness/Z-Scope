@@ -108,6 +108,12 @@ class AnalysisConfig:
     workflow_name: str = "default"
     enable_subagent_workers: bool = False
     max_subagent_tickets: int = 4
+    subagent_max_turns: int = 20  # Per-ticket tool/LLM turn budget for focused workers.
+    subagent_ticket_timeout: float = 0.0  # Seconds per focused worker ticket; 0 disables timeout.
+    subagent_spawn_allowlist: List[str] = field(default_factory=lambda: ["deep_worker"])
+    subagent_skill_llm_refs: Dict[str, str] = field(default_factory=dict)
+    subagent_skill_efforts: Dict[str, str] = field(default_factory=dict)
+    tool_audit_log: str = ""  # Optional JSONL audit sink for tool/MCP policy events.
 
 
 @dataclass
@@ -231,6 +237,22 @@ class ConfigLoader:
         elif isinstance(value, list):
             return [ConfigLoader._expand_env_vars(item) for item in value]
         return value
+
+    @staticmethod
+    def _string_list(value: Any, default: Optional[List[str]] = None) -> List[str]:
+        if value is None:
+            return list(default or [])
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(",") if part.strip()]
+        if isinstance(value, list):
+            return [str(part).strip() for part in value if str(part).strip()]
+        return list(default or [])
+
+    @staticmethod
+    def _string_dict(value: Any) -> Dict[str, str]:
+        if not isinstance(value, dict):
+            return {}
+        return {str(key): str(val) for key, val in value.items() if str(key).strip() and str(val).strip()}
 
     @staticmethod
     def load(config_path: Optional[str] = None) -> ZScopeConfig:
@@ -373,6 +395,19 @@ class ConfigLoader:
                 workflow_name="default",
                 enable_subagent_workers=analysis_data.get("enable_subagent_workers", False),
                 max_subagent_tickets=analysis_data.get("max_subagent_tickets", 4),
+                subagent_max_turns=analysis_data.get("subagent_max_turns", 20),
+                subagent_ticket_timeout=analysis_data.get("subagent_ticket_timeout", 0.0),
+                subagent_spawn_allowlist=ConfigLoader._string_list(
+                    analysis_data.get("subagent_spawn_allowlist"),
+                    default=["deep_worker"],
+                ),
+                subagent_skill_llm_refs=ConfigLoader._string_dict(
+                    analysis_data.get("subagent_skill_llm_refs")
+                ),
+                subagent_skill_efforts=ConfigLoader._string_dict(
+                    analysis_data.get("subagent_skill_efforts")
+                ),
+                tool_audit_log=analysis_data.get("tool_audit_log", ""),
             )
 
             # Project config

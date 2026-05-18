@@ -312,6 +312,7 @@ def main(
             click.echo("\nBatch Analysis Complete.")
             click.echo(f"Functions analyzed: {session_result.functions_analyzed}")
             click.echo(f"Total issues found: {session_result.issues_count}")
+            click.echo(f"needs_review issues: {session_result.needs_review_count}")
             click.echo(f"Reports saved: {reports}")
             if export_sarif:
                 click.echo(f"SARIF saved: {export_sarif}")
@@ -323,6 +324,7 @@ def main(
                 f"\nAnalysis Complete. Verdict: {session_result.verdict}. "
                 f"Issues found: {session_result.issues_count}"
             )
+            click.echo(f"needs_review issues: {session_result.needs_review_count}")
             click.echo(f"Reports saved in: {session_result.project_root}")
             if export_sarif:
                 click.echo(f"SARIF saved: {export_sarif}")

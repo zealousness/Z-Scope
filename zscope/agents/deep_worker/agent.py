@@ -1,8 +1,9 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import logging
 import json
 
 from ..base import ToolCallingAgent
+from ...core.tool_policy import ToolPolicy
 from ...framework.base import AgentResponse
 from ...framework.llm_client import LLMClient
 
@@ -15,12 +16,18 @@ class DeepWorkerAgent(ToolCallingAgent):
     from the Manager Agent to perform deep structural vulnerability traversal.
     """
 
-    def __init__(self, llm_client: LLMClient, tools: List[Any]):
+    def __init__(
+        self,
+        llm_client: LLMClient,
+        tools: List[Any],
+        tool_policy: Optional[ToolPolicy] = None,
+    ):
         super().__init__(
             name="deep_worker",
             description="Executes a narrow investigation ticket passed by the Manager.",
             llm_client=llm_client,
             tools=tools,
+            tool_policy=tool_policy,
         )
 
     def run(self, input_data: Dict[str, Any]) -> AgentResponse:
@@ -29,6 +36,9 @@ class DeepWorkerAgent(ToolCallingAgent):
         context_slice = input_data.get("context_slice", "")
         skill_contract = input_data.get("skill_contract", "")
         max_iterations = int(input_data.get("max_iterations", 20))
+        execution_policy = input_data.get("execution_policy") or {}
+        nested_spawn_allowed = bool(input_data.get("nested_spawn_allowed", False))
+        worktree_isolation = input_data.get("worktree_isolation") or {}
 
         prompt = (
             f"Ticket ID: {ticket_id}\n"
@@ -39,7 +49,10 @@ class DeepWorkerAgent(ToolCallingAgent):
             f"Sources: {json.dumps(ticket.get('sources') or [], ensure_ascii=False)}\n"
             f"Call paths: {json.dumps(ticket.get('call_paths') or [], ensure_ascii=False)}\n"
             f"Structured evidence: {json.dumps(ticket.get('evidence') or {}, ensure_ascii=False, indent=2)}\n"
-            f"Task: {ticket.get('task')}\n\n"
+            f"Task: {ticket.get('task')}\n"
+            f"Execution policy: {json.dumps(execution_policy, ensure_ascii=False)}\n"
+            f"Worktree isolation: {json.dumps(worktree_isolation, ensure_ascii=False)}\n"
+            f"Nested subagent spawning allowed: {nested_spawn_allowed}\n\n"
             f"Skill Contract:\n{skill_contract or '[no skill contract loaded]'}\n\n"
             f"Focused Code Context:\n```c\n{context_slice}\n```"
         )
@@ -63,7 +76,17 @@ class DeepWorkerAgent(ToolCallingAgent):
                 return AgentResponse(
                     success=True,
                     data=parsed,
-                    metadata={"context_tokens": result.get("context_tokens", 0)},
+                    metadata={
+                        "context_tokens": result.get("context_tokens", 0),
+                        "iterations": result.get("iterations", 0),
+                        "tool_call_count": result.get(
+                            "tool_call_count",
+                            self._count_tool_result_messages(conversation),
+                        ),
+                        "truncated": bool(result.get("truncated", False)),
+                        "max_iterations": max_iterations,
+                        "needs_human_review": bool(parsed.get("needs_human_review")),
+                    },
                 )
 
             partial_result = self._extract_last_text(content, conversation)
@@ -77,7 +100,15 @@ class DeepWorkerAgent(ToolCallingAgent):
                 error=f"Deep worker {ticket_id} did not return a worker_report JSON.",
                 metadata={
                     "context_tokens": result.get("context_tokens", 0),
+                    "iterations": result.get("iterations", 0),
+                    "tool_call_count": result.get(
+                        "tool_call_count",
+                        self._count_tool_result_messages(conversation),
+                    ),
+                    "truncated": bool(result.get("truncated", False)),
+                    "max_iterations": max_iterations,
                     "failure_kind": failure_kind,
+                    "needs_human_review": True,
                 },
             )
         except KeyboardInterrupt:
@@ -107,3 +138,7 @@ class DeepWorkerAgent(ToolCallingAgent):
             if msg.get("role") == "assistant" and msg.get("content"):
                 return str(msg.get("content"))
         return ""
+
+    @staticmethod
+    def _count_tool_result_messages(conversation: List[Dict[str, Any]]) -> int:
+        return sum(1 for msg in conversation if msg.get("role") == "tool")

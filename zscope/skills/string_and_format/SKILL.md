@@ -12,8 +12,8 @@ allowed_tools:
   - get_data_flow
   - get_type_info
 allowed_mcp_tools:
-  - zscope.get_function_impl
-  - zscope.query_knowledge
+  - zscope.code.get_function_impl
+  - zscope.knowledge.query
 ---
 
 Check whether strings are NUL-terminated before string APIs, whether destination

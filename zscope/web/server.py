@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import parse_qs, urlparse
 
+from .._version import __version__
 from ..core.report_views import (
     DEFAULT_REPORT_VIEW,
     WITH_NEEDS_REVIEW_REPORT_VIEW,
@@ -285,6 +286,8 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
                     "views": report_view_summary(report),
                 }
             )
+        elif parsed.path == "/api/version":
+            self._send_json({"version": __version__, "display": f"v{__version__}"})
         elif parsed.path == "/api/config":
             config_path = Path(CONFIG_FILENAME)
             if config_path.exists():

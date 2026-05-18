@@ -52,7 +52,7 @@ project:                                  # 被分析项目配置
     enabled: true                          # 为 true 时，未显式提供 entry_functions_list 可自动发现入口
     max_candidates: 200                    # 自动入口发现最多保留的候选入口数量
     max_functions: 10000                   # 自动入口发现最多扫描的函数数量上限
-    header_files: []                       # 入口发现重点关注的头文件列表，常用于公共 API 暴露面
+    header_files: []                       # 自动入口发现的 public header 路径 glob/正则过滤；不影响函数体入口发现或后端建模
     # search_root: /absolute/path/to/src   # 限制入口发现范围；必须是已存在的绝对目录
     # root: /absolute/path/to/src          # search_root 的兼容别名；不建议新配置使用
     # discovery_root: /absolute/path/to/src # search_root 的兼容别名；不建议新配置使用

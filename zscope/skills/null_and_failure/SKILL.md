@@ -13,7 +13,7 @@ allowed_tools:
   - get_type_info
   - get_callers
 allowed_mcp_tools:
-  - zscope.get_function_impl
+  - zscope.code.get_function_impl
   - zscope.get_function_snapshot
 ---
 

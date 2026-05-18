@@ -1,8 +1,9 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 import json
 import logging
 
 from ..base import ToolCallingAgent
+from ...core.tool_policy import ToolPolicy
 from ...framework.base import AgentResponse
 from ...framework.llm_client import LLMClient
 
@@ -73,12 +74,13 @@ Or if it is fixed:
 class IssueReconcilerAgent(ToolCallingAgent):
     """Agent for reconciling historical issues with new code or new findings."""
 
-    def __init__(self, llm_client: LLMClient):
+    def __init__(self, llm_client: LLMClient, tool_policy: Optional[ToolPolicy] = None):
         super().__init__(
             name="issue_reconciler_agent",
             description="Reconciles historical issues with new analysis results.",
             llm_client=llm_client,
             tools=[],
+            tool_policy=tool_policy,
         )
 
     def run(self, input_data: Dict[str, Any], max_iterations: int = 2) -> AgentResponse:

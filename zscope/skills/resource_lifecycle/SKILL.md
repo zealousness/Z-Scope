@@ -15,8 +15,8 @@ allowed_tools:
   - get_type_info
   - verify_taint_reachability
 allowed_mcp_tools:
-  - zscope.get_function_impl
-  - zscope.query_knowledge
+  - zscope.code.get_function_impl
+  - zscope.knowledge.query
 allowed_mcp_resources:
   - zscope://knowledge/stats
   - zscope://snapshots/list
