@@ -3,12 +3,14 @@ Tools runtime - implements functions callable by LLM via tool/function calling.
 """
 
 import logging
+import time
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
 from ..retrieval.code_index import CodeIndex
 from .snapshot_store import SnapshotStore
 from ..config.user_config_store import UserConfigStore
+from .tool_policy import ToolPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -19,11 +21,13 @@ class ToolsRuntime:
     """
 
     def __init__(self, code_index: CodeIndex, snapshot_store: SnapshotStore,
-                 user_config: Optional['UserConfigStore'] = None):
+                 user_config: Optional['UserConfigStore'] = None,
+                 tool_policy: Optional[ToolPolicy] = None):
         """Initialize tools runtime."""
         self.code_index = code_index
         self.snapshot_store = snapshot_store
         self.user_config = user_config
+        self.tool_policy = tool_policy or ToolPolicy.allow_all()
         self._location_context: Dict[str, Any] = {
             "file_path": None,
             "line": None,
@@ -31,6 +35,7 @@ class ToolsRuntime:
             "end_line": None,
         }
         self._negative_tool_cache: Dict[tuple[str, str], Dict[str, Any]] = {}
+        self._schema_cache: Optional[Dict[str, Dict[str, Any]]] = None
 
     def _update_location_context(
         self,
@@ -204,9 +209,9 @@ class ToolsRuntime:
                     return error
         return None
 
-    def get_tools_schema(self) -> List[Dict[str, Any]]:
+    def get_tools_schema(self, *, apply_policy: bool = True) -> List[Dict[str, Any]]:
         """Get OpenAI function calling schema for available tools."""
-        return [
+        schemas = [
             {
                 "type": "function",
                 "function": {
@@ -385,8 +390,26 @@ class ToolsRuntime:
                 },
             },
         ]
+        if apply_policy:
+            return self.tool_policy.filter_tool_schemas(schemas)
+        return schemas
 
-    def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def _tool_schema_by_name(self) -> Dict[str, Dict[str, Any]]:
+        if self._schema_cache is None:
+            self._schema_cache = {
+                self.tool_policy.schema_name(schema): schema
+                for schema in self.get_tools_schema(apply_policy=False)
+            }
+        return self._schema_cache
+
+    def execute_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        *,
+        actor: str = "tools_runtime",
+        enforce_policy: bool = True,
+    ) -> Dict[str, Any]:
         """
         Execute a tool by name with given arguments.
 
@@ -401,47 +424,75 @@ class ToolsRuntime:
 
         try:
             effective_args = self._autofill_tool_args(tool_name, arguments)
+            if enforce_policy:
+                policy_error = self.tool_policy.enforce_tool(
+                    tool_name,
+                    effective_args,
+                    schema=self._tool_schema_by_name().get(tool_name),
+                    actor=actor,
+                )
+                if policy_error:
+                    return policy_error
             validation_error = self._validate_tool_args(tool_name, effective_args)
             if validation_error:
                 return validation_error
+            start = time.perf_counter()
             if tool_name == "get_type_info":
                 type_name = str(effective_args.get("type_name") or "")
                 cache_key = (tool_name, type_name)
                 if cache_key in self._negative_tool_cache:
                     cached = dict(self._negative_tool_cache[cache_key])
                     cached["cached_negative_result"] = True
+                    if enforce_policy:
+                        self.tool_policy.run_post_hooks(
+                            "tool",
+                            tool_name,
+                            effective_args,
+                            result=cached,
+                            actor=actor,
+                            duration_ms=(time.perf_counter() - start) * 1000,
+                        )
                     return cached
             if tool_name == "get_function_impl":
-                return self._get_function_impl(**effective_args)
+                result = self._get_function_impl(**effective_args)
             elif tool_name == "get_function_snapshot":
-                return self._get_function_snapshot(**effective_args)
+                result = self._get_function_snapshot(**effective_args)
             elif tool_name == "list_known_functions":
-                return self._list_known_functions(**effective_args)
+                result = self._list_known_functions(**effective_args)
             elif tool_name == "get_file_snippet":
-                return self._get_file_snippet(**effective_args)
+                result = self._get_file_snippet(**effective_args)
             elif tool_name == "get_callers":
-                return self._get_callers(**effective_args)
+                result = self._get_callers(**effective_args)
             elif tool_name == "get_type_info":
                 result = self._get_type_info(**effective_args)
                 if result.get("success") is False:
                     self._negative_tool_cache[
                         (tool_name, str(effective_args.get("type_name") or ""))
                     ] = dict(result)
-                return result
             elif tool_name == "get_call_graph":
-                return self._get_call_graph(**effective_args)
+                result = self._get_call_graph(**effective_args)
             elif tool_name == "get_data_flow":
-                return self._get_data_flow(**effective_args)
+                result = self._get_data_flow(**effective_args)
             elif tool_name == "find_function_pointers":
-                return self._find_function_pointers(**effective_args)
+                result = self._find_function_pointers(**effective_args)
             elif tool_name == "query_pointer_alias":
-                return self._query_pointer_alias(**effective_args)
+                result = self._query_pointer_alias(**effective_args)
             elif tool_name == "verify_taint_reachability":
-                return self._verify_taint_reachability(**effective_args)
+                result = self._verify_taint_reachability(**effective_args)
             elif tool_name == "get_deep_call_context":
-                return self._get_deep_call_context(**effective_args)
+                result = self._get_deep_call_context(**effective_args)
             else:
-                return {"error": f"Unknown tool: {tool_name}"}
+                result = {"error": f"Unknown tool: {tool_name}"}
+            if enforce_policy:
+                self.tool_policy.run_post_hooks(
+                    "tool",
+                    tool_name,
+                    effective_args,
+                    result=result,
+                    actor=actor,
+                    duration_ms=(time.perf_counter() - start) * 1000,
+                )
+            return result
         except Exception as e:
             logger.error(f"Tool execution error: {e}", exc_info=True)
             return {"error": str(e)}

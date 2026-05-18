@@ -27,6 +27,7 @@ from .clang_tooling_evidence import ClangToolingEvidenceProvider
 from .regex_candidates import RegexCandidateGenerator, LocalPatternSemantics
 from .graph_candidates import GraphCandidateGenerator
 from .svf_value_flow_candidates import SvfValueFlowCandidateGenerator
+from .tool_policy import ToolPolicy, deny_sensitive_paths_hook
 from .tools_runtime import ToolsRuntime
 from ..framework.llm_client import LLMClient
 from ..agents.semantic_modeler.agent import SemanticModeler
@@ -110,7 +111,15 @@ class Analyzer:
                 max_tokens=llm_cfg.max_tokens
             )
         self.report_generator = ReportGenerator(config.project.project_root)
-        self.tools_runtime = ToolsRuntime(self.code_index, self.snapshot_store, self.user_config)
+        self.tools_runtime = ToolsRuntime(
+            self.code_index,
+            self.snapshot_store,
+            self.user_config,
+            tool_policy=ToolPolicy.allow_all(
+                pre_hooks=[deny_sensitive_paths_hook],
+                audit_log_path=self._tool_audit_log_path(),
+            ),
+        )
         self.spec_registry = SpecRegistry(project_root=config.project.project_root)
         self.workflow_spec = self.spec_registry.get_workflow(config.analysis.workflow_name)
         self.force_ignore_history = force_ignore_history
@@ -557,7 +566,10 @@ class Analyzer:
 
             from ..agents.issue_reconciler.agent import IssueReconcilerAgent
 
-            reconciler_agent = IssueReconcilerAgent(recon_client)
+            reconciler_agent = IssueReconcilerAgent(
+                recon_client,
+                tool_policy=self._tool_policy_for_agent("issue_reconciler_agent"),
+            )
             verified_hist_issues = []
             for hist_issue in valid_hist_issues:
                 input_data = {
@@ -616,6 +628,7 @@ class Analyzer:
         semantic_agent = SemanticModeler(
             sm_client,
             self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
+            tool_policy=self._tool_policy_for_agent("semantic_modeler"),
         )
         agent_context = state["agent_context"]
 
@@ -650,11 +663,15 @@ class Analyzer:
         if not va_agent_cfg:
             return
 
-        tools = self._get_tools("deep_worker")
-        orchestrator = SubAgentOrchestrator(self.spec_registry, tools)
         va_llm_ref = va_agent_cfg.llm_ref if va_agent_cfg.llm_ref else "default"
         va_client = self.llm_clients.get(va_llm_ref, self.llm_clients.get("default"))
         selection = self._select_vulnerability_skills_for_config(va_agent_cfg, va_client)
+        tools = self._get_tools(
+            "deep_worker",
+            enable_on_demand_snapshots=False,
+            active_skill_names=selection.skills,
+        )
+        orchestrator = SubAgentOrchestrator(self.spec_registry, tools)
         ledger = state.get("candidate_ledger")
         if not isinstance(ledger, CandidateLedger):
             ledger = CandidateLedger()
@@ -787,10 +804,55 @@ class Analyzer:
 
         va_llm_ref = va_agent_cfg.llm_ref if va_agent_cfg.llm_ref else "default"
         va_client = self.llm_clients.get(va_llm_ref, self.llm_clients["default"])
+        va_agent_spec = self.spec_registry.get_agent("vulnerability_analyzer")
+        max_worker_cap = int(va_agent_spec.max_subagents or len(tickets)) if va_agent_spec else len(tickets)
+        max_workers = max(
+            1,
+            min(
+                len(tickets),
+                int(getattr(self.config.analysis, "parallel_workers", 1) or 1),
+                max_worker_cap,
+            ),
+        )
+        subagent_max_turns = int(getattr(self.config.analysis, "subagent_max_turns", 20) or 20)
+        max_turns = max(1, min(int(self.config.analysis.max_tool_iterations), subagent_max_turns))
+        skill_llm_refs = dict(getattr(self.config.analysis, "subagent_skill_llm_refs", {}) or {})
+        skill_efforts = dict(getattr(self.config.analysis, "subagent_skill_efforts", {}) or {})
+
+        def llm_client_for_ticket(ticket: Any) -> LLMClient:
+            ref = self._subagent_llm_ref_for_ticket(ticket, skill_llm_refs, va_llm_ref)
+            return self.llm_clients.get(ref, va_client)
+
+        def execution_policy_for_ticket(ticket: Any) -> Dict[str, Any]:
+            ref = self._subagent_llm_ref_for_ticket(ticket, skill_llm_refs, va_llm_ref)
+            client = self.llm_clients.get(ref, va_client)
+            models = getattr(client, "models", []) or []
+            return {
+                "llm_ref": ref,
+                "model": str(models[0]) if models else "",
+                "reasoning_effort": str(
+                    skill_efforts.get(getattr(ticket, "skill", ""))
+                    or skill_efforts.get("*")
+                    or ""
+                ),
+            }
+
         reports = orchestrator.run_tickets(
             va_client,
             tickets,
-            max_iterations=min(self.config.analysis.max_tool_iterations, 20),
+            max_iterations=max_turns,
+            tool_policy=self._tool_policy_for_agent(
+                "deep_worker",
+                active_skill_names=selection.skills,
+            ),
+            max_workers=max_workers,
+            ticket_timeout=float(getattr(self.config.analysis, "subagent_ticket_timeout", 0.0) or 0.0),
+            agent_type="deep_worker",
+            spawn_allowlist=list(getattr(self.config.analysis, "subagent_spawn_allowlist", ["deep_worker"]) or ["deep_worker"]),
+            nested_spawn_allowed=False,
+            llm_client_resolver=llm_client_for_ticket,
+            execution_policy_resolver=execution_policy_for_ticket,
+            worktree_isolation={"mode": "read_only", "snapshot_writes": False},
         )
         ledger.mark_reported(reports)
         report_summary = orchestrator.summarize_reports(reports)
@@ -873,11 +935,15 @@ class Analyzer:
             logger.info("Running Vulnerability Analyzer agent for task: %s", agent_cfg.task)
             va_llm_ref = agent_cfg.llm_ref if agent_cfg.llm_ref else "default"
             va_client = self.llm_clients.get(va_llm_ref, self.llm_clients["default"])
+            selection = self._select_vulnerability_skills_for_config(agent_cfg, va_client)
             analyzer_agent = VulnerabilityAnalyzer(
                 va_client,
-                self._get_tools("vulnerability_analyzer"),
+                self._get_tools("vulnerability_analyzer", active_skill_names=selection.skills),
+                tool_policy=self._tool_policy_for_agent(
+                    "vulnerability_analyzer",
+                    active_skill_names=selection.skills,
+                ),
             )
-            selection = self._select_vulnerability_skills_for_config(agent_cfg, va_client)
 
             agent_context["task"] = agent_cfg.task
             agent_context["entry_custom_prompt"] = getattr(
@@ -996,7 +1062,10 @@ class Analyzer:
 
         from ..agents.issue_reconciler.agent import IssueReconcilerAgent
 
-        reconciler_agent = IssueReconcilerAgent(recon_client)
+        reconciler_agent = IssueReconcilerAgent(
+            recon_client,
+            tool_policy=self._tool_policy_for_agent("issue_reconciler_agent"),
+        )
         user_rejected_hist_issues = state.get("user_rejected_hist_issues", [])
         new_issues = []
         for raw_issue in raw_new_issues:
@@ -3256,7 +3325,11 @@ class Analyzer:
         val_agent_cfg = next((a for a in self.config.project.agents if a.name == "validator_agent"), None)
         val_llm_ref = val_agent_cfg.llm_ref if val_agent_cfg and val_agent_cfg.llm_ref else "default"
         val_client = self.llm_clients.get(val_llm_ref, self.llm_clients["default"])
-        validator_agent = ValidatorAgent(val_client, self._get_tools("validator_agent"))
+        validator_agent = ValidatorAgent(
+            val_client,
+            self._get_tools("validator_agent"),
+            tool_policy=self._tool_policy_for_agent("validator_agent"),
+        )
 
         for raw_issue in new_issues:
             issue_func = raw_issue.get("function", state["agent_context"]["func_name"])
@@ -3786,6 +3859,11 @@ class Analyzer:
             "subagent_unassigned_count": len(state.get("subagent_unassigned_candidates", [])),
             "subagent_reports_count": len(state.get("subagent_reports", [])),
             "subagent_report_summary": dict(state.get("subagent_report_summary", {})),
+            "subagent_ticket_plan": self._compact_subagent_items(state.get("subagent_ticket_plan", [])),
+            "subagent_unassigned_candidates": self._compact_subagent_items(
+                state.get("subagent_unassigned_candidates", [])
+            ),
+            "subagent_reports": self._compact_subagent_reports(state.get("subagent_reports", [])),
             "candidate_ledger_summary": dict(state.get("candidate_ledger_summary", {})),
             "candidate_signal_summary": dict(state.get("candidate_signal_summary", {})),
             "budget_stage": state.get("budget_stage", ""),
@@ -4020,11 +4098,65 @@ class Analyzer:
         agent_spec = self.spec_registry.get_agent("vulnerability_analyzer")
         return bool(agent_spec and agent_spec.can_spawn_subagents)
 
+    @staticmethod
+    def _subagent_llm_ref_for_ticket(
+        ticket: Any,
+        skill_llm_refs: Dict[str, str],
+        fallback_ref: str,
+    ) -> str:
+        skill = str(getattr(ticket, "skill", "") or "")
+        return str(skill_llm_refs.get(skill) or skill_llm_refs.get("*") or fallback_ref)
+
+    @classmethod
+    def _compact_subagent_items(cls, items: Any, *, limit: int = 50) -> List[Dict[str, Any]]:
+        if not isinstance(items, list):
+            return []
+        return [cls._compact_subagent_item(item) for item in items[:limit]]
+
+    @staticmethod
+    def _compact_subagent_item(item: Any) -> Dict[str, Any]:
+        if not isinstance(item, dict):
+            return {"value": str(item)}
+        compact = dict(item)
+        context = compact.pop("context_slice", "")
+        if context:
+            compact["context_slice_chars"] = len(str(context))
+            compact["context_slice_preview"] = str(context)[:240]
+        return compact
+
+    @classmethod
+    def _compact_subagent_reports(cls, reports: Any, *, limit: int = 50) -> List[Dict[str, Any]]:
+        if not isinstance(reports, list):
+            return []
+        compact_reports: List[Dict[str, Any]] = []
+        for report in reports[:limit]:
+            if not isinstance(report, dict):
+                compact_reports.append({"value": str(report)})
+                continue
+            data = report.get("data") if isinstance(report.get("data"), dict) else {}
+            compact_reports.append(
+                {
+                    "ticket": cls._compact_subagent_item(report.get("ticket", {})),
+                    "status": report.get("status"),
+                    "success": report.get("success"),
+                    "error": report.get("error"),
+                    "metadata": dict(report.get("metadata") or {}),
+                    "conclusion": data.get("conclusion"),
+                    "issues_found_count": len(data.get("issues_found") or []),
+                    "needs_human_review": bool(
+                        (report.get("metadata") or {}).get("needs_human_review")
+                        or data.get("needs_human_review")
+                    ),
+                }
+            )
+        return compact_reports
+
     def _get_tools(
         self,
         agent_name: Optional[str] = None,
         *,
         enable_on_demand_snapshots: bool = True,
+        active_skill_names: Optional[List[str]] = None,
     ) -> List[Any]:
         """Initialize and return the set of tools."""
         from ..tools.code_retrieval import GetFunctionImplTool
@@ -4071,8 +4203,67 @@ class Analyzer:
             allowed = set(agent_spec.tools) if agent_spec else set()
             if allowed:
                 tools = [tool for tool in tools if tool.name in allowed]
+            tool_policy = self._tool_policy_for_agent(
+                agent_name,
+                active_skill_names=active_skill_names,
+            )
+            tools = [tool for tool in tools if tool_policy.is_tool_visible(tool.name)]
 
         return tools
+
+    def _tool_policy_for_agent(
+        self,
+        agent_name: Optional[str],
+        *,
+        active_skill_names: Optional[List[str]] = None,
+    ) -> ToolPolicy:
+        """Build the effective runtime tool policy for an agent run."""
+        if not agent_name:
+            return ToolPolicy.allow_all(
+                pre_hooks=[deny_sensitive_paths_hook],
+                audit_log_path=self._tool_audit_log_path(),
+            )
+
+        agent_spec = self.spec_registry.get_agent(agent_name)
+        agent_tools = set(agent_spec.tools) if agent_spec and agent_spec.tools else set()
+        skill_names = (
+            list(active_skill_names)
+            if active_skill_names is not None
+            else list(agent_spec.skills) if agent_spec else []
+        )
+        skill_tools: Set[str] = set()
+        for skill_name in skill_names:
+            skill = self.spec_registry.get_skill(skill_name)
+            if skill:
+                skill_tools.update(skill.allowed_tools)
+
+        if agent_tools and skill_tools:
+            allowed_tools: Optional[Set[str]] = agent_tools & skill_tools
+        elif agent_tools:
+            allowed_tools = agent_tools
+        elif skill_tools:
+            allowed_tools = skill_tools
+        else:
+            allowed_tools = None
+
+        return ToolPolicy(
+            allowed_tools=allowed_tools,
+            pre_hooks=[deny_sensitive_paths_hook],
+            audit_log_path=self._tool_audit_log_path(),
+        )
+
+    def _tool_audit_log_path(self) -> Optional[Path]:
+        config = getattr(self, "config", None)
+        analysis = getattr(config, "analysis", None)
+        configured = str(getattr(analysis, "tool_audit_log", "") or "").strip()
+        if not configured:
+            return None
+        path = Path(configured)
+        if path.is_absolute():
+            return path
+        project = getattr(config, "project", None)
+        project_root = getattr(project, "project_root", Path("."))
+        return Path(project_root) / path
 
     def _get_or_build_snapshot(
         self, func_name: str, file_path: Optional[str] = None
@@ -4220,6 +4411,7 @@ class Analyzer:
             semantic_agent = SemanticModeler(
                 sm_client,
                 self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
+                tool_policy=self._tool_policy_for_agent("semantic_modeler"),
             )
             context = {
                 "func_name": func_name,
@@ -4428,6 +4620,7 @@ class Analyzer:
         semantic_agent = SemanticModeler(
             sm_client,
             self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
+            tool_policy=self._tool_policy_for_agent("semantic_modeler"),
         )
         modeled = 0
         skipped = 0
