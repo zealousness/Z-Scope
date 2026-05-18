@@ -16,8 +16,8 @@ allowed_tools:
   - find_function_pointers
   - query_pointer_alias
 allowed_mcp_tools:
-  - zscope.query_knowledge
-  - zscope.get_function_impl
+  - zscope.knowledge.query
+  - zscope.code.get_function_impl
 ---
 
 Identify the shared object, the concurrent access paths, and the missing or

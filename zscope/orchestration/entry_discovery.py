@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ..config.function_entry import FunctionEntry
+from ..common.utils import matches_configured_path
 from ..retrieval.code_index import CodeIndex
 
 
@@ -271,11 +272,13 @@ class EntryDiscovery:
 
     def _discover_header_api(self) -> List[EntryCandidate]:
         candidates: List[EntryCandidate] = []
-        for item in self.code_index.get_header_declared_functions(self.header_files):
+        for item in self.code_index.get_header_declared_functions(None):
             name = item.get("name")
             if not name:
                 continue
             decl_file = item.get("filename") or ""
+            if self.header_files and not matches_configured_path(decl_file, self.header_files):
+                continue
             if decl_file and not self._is_in_search_root(decl_file):
                 continue
             impl = self._get_function_impl(name)

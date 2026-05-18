@@ -12,7 +12,7 @@ allowed_tools:
   - get_callers
   - get_call_graph
 allowed_mcp_tools:
-  - zscope.get_function_impl
+  - zscope.code.get_function_impl
 ---
 
 Determine whether a local variable address outlives the stack frame. Treat

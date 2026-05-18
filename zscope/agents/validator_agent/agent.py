@@ -1,7 +1,8 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import logging
 
 from ..base import ToolCallingAgent
+from ...core.tool_policy import ToolPolicy
 from ...framework.base import AgentResponse
 from ...framework.llm_client import LLMClient
 
@@ -11,12 +12,18 @@ logger = logging.getLogger(__name__)
 class ValidatorAgent(ToolCallingAgent):
     """Agent for verifying and triaging findings."""
 
-    def __init__(self, llm_client: LLMClient, tools: List[Any]):
+    def __init__(
+        self,
+        llm_client: LLMClient,
+        tools: List[Any],
+        tool_policy: Optional[ToolPolicy] = None,
+    ):
         super().__init__(
             name="validator_agent",
             description="Verifies suspect findings and attempts to find exploit paths.",
             llm_client=llm_client,
             tools=tools,
+            tool_policy=tool_policy,
         )
 
     def run(self, input_data: Dict[str, Any], max_retries: int = 2) -> AgentResponse:

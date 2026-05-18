@@ -15,6 +15,7 @@ from ..config.user_config_store import UserConfigStore
 from ..retrieval.code_index import CodeIndex
 from .alert_adapter import AlertAdapter, ExternalAlert, AlertSeverity
 from .snapshot_store import SnapshotStore
+from .tool_policy import ToolPolicy, deny_sensitive_paths_hook
 from .tools_runtime import ToolsRuntime
 from ..framework.llm_client import LLMClient
 from .report import FinalReport, Issue, ReportGenerator
@@ -43,7 +44,20 @@ class AlertVerifier:
             code_index=code_index,
             snapshot_store=self.snapshot_store,
             user_config=user_config,
+            tool_policy=ToolPolicy.allow_all(
+                pre_hooks=[deny_sensitive_paths_hook],
+                audit_log_path=self._tool_audit_log_path(),
+            ),
         )
+
+    def _tool_audit_log_path(self) -> Optional[Path]:
+        configured = str(getattr(self.config.analysis, "tool_audit_log", "") or "").strip()
+        if not configured:
+            return None
+        path = Path(configured)
+        if path.is_absolute():
+            return path
+        return self.config.project.project_root / path
 
     def verify_alerts(
         self,

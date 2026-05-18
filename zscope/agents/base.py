@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, cast
 
 from ..common.utils import extract_json_blocks
 from ..framework.base import AgentResponse, BaseAgent
 from ..framework.llm_client import LLMClient
+from ..core.tool_policy import ToolPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -27,18 +29,40 @@ class ToolCallingAgent(BaseAgent):
         description: str,
         llm_client: LLMClient,
         tools: Optional[List[Any]] = None,
+        tool_policy: Optional[ToolPolicy] = None,
     ) -> None:
         super().__init__(name=name, description=description)
         self.llm_client = llm_client
         self.tools = tools or []
-        self.tools_schema = [tool.get_schema() for tool in self.tools]
+        self.tool_policy = tool_policy or ToolPolicy.allow_all()
+        self.tools_schema = self.tool_policy.filter_tool_schemas(
+            [tool.get_schema() for tool in self.tools]
+        )
         self._tool_by_name = {tool.name: tool for tool in self.tools}
 
     def _tool_executor(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         tool = self._tool_by_name.get(name)
         if not tool:
             return {"error": f"Unknown tool: {name}"}
-        return cast(Dict[str, Any], tool.execute(args))
+        policy_error = self.tool_policy.enforce_tool(
+            name,
+            args,
+            schema=tool.get_schema(),
+            actor=self.name,
+        )
+        if policy_error:
+            return policy_error
+        start = time.perf_counter()
+        result = cast(Dict[str, Any], tool.execute(args))
+        self.tool_policy.run_post_hooks(
+            "tool",
+            name,
+            args,
+            result=result,
+            actor=self.name,
+            duration_ms=(time.perf_counter() - start) * 1000,
+        )
+        return result
 
     def _compose_system_prompt(
         self,

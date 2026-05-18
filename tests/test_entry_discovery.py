@@ -354,6 +354,104 @@ def test_public_api_prompt_requires_callee_sink_audit():
     assert "concrete vulnerable callee location" in prompt
 
 
+def test_header_file_regex_filter_is_applied_in_entry_discovery_only():
+    class HeaderCodeIndex(FakeCodeIndex):
+        def __init__(self, functions):
+            super().__init__(functions)
+            self.header_args = []
+
+        def get_header_declared_functions(self, header_files=None):
+            self.header_args.append(header_files)
+            return [
+                {"name": "PublicFacade", "filename": "include/public_api.h", "lineNumber": 1},
+                {"name": "InternalFacade", "filename": "internal/private_api.h", "lineNumber": 1},
+            ]
+
+    fake_index = HeaderCodeIndex(
+        {
+            "PublicFacade": "int PublicFacade(const char *msg) { return InternalSink(msg); }",
+            "InternalFacade": "int InternalFacade(const char *msg) { return InternalSink(msg); }",
+        }
+    )
+    discovery = EntryDiscovery(
+        fake_index,
+        header_files=[r"^include/.+_api\.h$"],
+    )
+
+    result = discovery.discover()
+
+    assert fake_index.header_args == [None]
+    assert [candidate.function_name for candidate in result.candidates] == ["PublicFacade"]
+
+
+def test_header_file_glob_filter_only_limits_public_api_discovery():
+    class HeaderCodeIndex(FakeCodeIndex):
+        def __init__(self, functions):
+            super().__init__(functions)
+            self.header_args = []
+
+        def get_header_declared_functions(self, header_files=None):
+            self.header_args.append(header_files)
+            return [
+                {"name": "PublicFacade", "filename": "aaa/include/aaa.h", "lineNumber": 1},
+                {"name": "InternalFacade", "filename": "aaa/inner/bbb.h", "lineNumber": 1},
+            ]
+
+    fake_index = HeaderCodeIndex(
+        {
+            "PublicFacade": {
+                "code": "int PublicFacade(void) { return 0; }",
+                "file": "aaa/src/public.c",
+            },
+            "InternalFacade": {
+                "code": "int InternalFacade(void) { return 0; }",
+                "file": "aaa/src/internal.c",
+            },
+            "RecvWrapper": {
+                "code": "int RecvWrapper(int fd, char *buf, size_t len) { return recv(fd, buf, len, 0); }",
+                "file": "aaa/inner/net.c",
+            },
+        }
+    )
+    discovery = EntryDiscovery(
+        fake_index,
+        header_files=["include/*.h"],
+    )
+
+    result = discovery.discover()
+
+    assert fake_index.header_args == [None]
+    assert [candidate.function_name for candidate in result.candidates] == [
+        "PublicFacade",
+        "RecvWrapper",
+    ]
+
+
+def test_header_file_extension_globs_match_h_and_ph_public_api_headers():
+    class HeaderCodeIndex(FakeCodeIndex):
+        def get_header_declared_functions(self, header_files=None):
+            return [
+                {"name": "HeaderApi", "filename": "aaa/include/header.h", "lineNumber": 1},
+                {"name": "PhApi", "filename": "aaa/internal/plugin.ph", "lineNumber": 1},
+                {"name": "IncApi", "filename": "aaa/internal/generated.inc", "lineNumber": 1},
+            ]
+
+    discovery = EntryDiscovery(
+        HeaderCodeIndex(
+            {
+                "HeaderApi": "int HeaderApi(void) { return 0; }",
+                "PhApi": "int PhApi(void) { return 0; }",
+                "IncApi": "int IncApi(void) { return 0; }",
+            }
+        ),
+        header_files=["*.h", "*.ph"],
+    )
+
+    result = discovery.discover()
+
+    assert [candidate.function_name for candidate in result.candidates] == ["HeaderApi", "PhApi"]
+
+
 def test_search_root_skips_header_declarations_before_impl_lookup(tmp_path):
     project_root = tmp_path
     source_root = project_root

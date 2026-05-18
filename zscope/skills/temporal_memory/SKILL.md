@@ -14,8 +14,8 @@ allowed_tools:
   - query_pointer_alias
   - verify_taint_reachability
 allowed_mcp_tools:
-  - zscope.get_function_impl
-  - zscope.query_knowledge
+  - zscope.code.get_function_impl
+  - zscope.knowledge.query
 ---
 
 Track the released object and aliases after the release point. Check for later

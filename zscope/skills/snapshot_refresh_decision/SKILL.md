@@ -11,7 +11,7 @@ allowed_tools:
   - get_file_snippet
   - get_callers
 allowed_mcp_tools:
-  - zscope.get_function_impl
+  - zscope.code.get_function_impl
   - zscope.get_function_snapshot
 ---
 Determine whether the semantic contract or defect-relevant behavior has changed.

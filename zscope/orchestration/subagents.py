@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ..agents.deep_worker.agent import DeepWorkerAgent
+from ..core.tool_policy import ToolPolicy
 from ..framework.llm_client import LLMClient
 from .specs import SpecRegistry
+
+
+DEFAULT_SUBAGENT_SPAWN_ALLOWLIST = ("deep_worker",)
 
 
 @dataclass
@@ -257,32 +263,322 @@ class SubAgentOrchestrator:
         llm_client: LLMClient,
         tickets: List[SubAgentTicket],
         max_iterations: int = 20,
+        tool_policy: Optional[ToolPolicy] = None,
+        max_workers: int = 1,
+        ticket_timeout: float = 0.0,
+        agent_type: str = "deep_worker",
+        spawn_allowlist: Optional[List[str]] = None,
+        nested_spawn_allowed: bool = False,
+        llm_client_resolver: Optional[Callable[[SubAgentTicket], LLMClient]] = None,
+        execution_policy_resolver: Optional[Callable[[SubAgentTicket], Dict[str, Any]]] = None,
+        worktree_isolation: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        worker = DeepWorkerAgent(llm_client, self.tools)
-        reports: List[Dict[str, Any]] = []
+        if not tickets:
+            return []
+        allowed_agents = set(spawn_allowlist or DEFAULT_SUBAGENT_SPAWN_ALLOWLIST)
+        if agent_type not in allowed_agents:
+            return [
+                self._spawn_denied_report(
+                    ticket,
+                    agent_type=agent_type,
+                    spawn_allowlist=sorted(allowed_agents),
+                )
+                for ticket in tickets
+            ]
+        workers = max(1, min(int(max_workers or 1), len(tickets)))
+        if workers == 1:
+            return [
+                self._run_one_ticket(
+                    llm_client,
+                    ticket,
+                    max_iterations=max_iterations,
+                    tool_policy=tool_policy,
+                    worker_index=0,
+                    agent_type=agent_type,
+                    nested_spawn_allowed=nested_spawn_allowed,
+                    llm_client_resolver=llm_client_resolver,
+                    execution_policy_resolver=execution_policy_resolver,
+                    worktree_isolation=worktree_isolation,
+                )
+                for ticket in tickets
+            ]
+
+        reports_by_id: Dict[str, Dict[str, Any]] = {}
+        futures = {}
+        started_at = time.perf_counter()
+        timed_out = False
+        executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="zscope-deep-worker")
+        try:
+            for idx, ticket in enumerate(tickets):
+                worker_index = idx % workers
+                future = executor.submit(
+                    self._run_one_ticket,
+                    llm_client,
+                    ticket,
+                    max_iterations=max_iterations,
+                    tool_policy=tool_policy,
+                    worker_index=worker_index,
+                    agent_type=agent_type,
+                    nested_spawn_allowed=nested_spawn_allowed,
+                    llm_client_resolver=llm_client_resolver,
+                    execution_policy_resolver=execution_policy_resolver,
+                    worktree_isolation=worktree_isolation,
+                )
+                futures[future] = (ticket, worker_index)
+
+            pending = set(futures)
+            try:
+                iterator = as_completed(
+                    pending,
+                    timeout=ticket_timeout if ticket_timeout and ticket_timeout > 0 else None,
+                )
+                for future in iterator:
+                    pending.discard(future)
+                    ticket, _worker_index = futures[future]
+                    try:
+                        reports_by_id[ticket.id] = future.result()
+                    except Exception as exc:
+                        reports_by_id[ticket.id] = self._exception_report(
+                            ticket,
+                            exc,
+                            agent_type=agent_type,
+                            worker_index=_worker_index,
+                            max_iterations=max_iterations,
+                            execution_policy=self._execution_policy_for_ticket(
+                                ticket,
+                                execution_policy_resolver,
+                            ),
+                            worktree_isolation=worktree_isolation,
+                        )
+            except TimeoutError:
+                timed_out = True
+                for future in list(pending):
+                    ticket, _worker_index = futures[future]
+                    future.cancel()
+                    reports_by_id[ticket.id] = self._timeout_report(
+                        ticket,
+                        timeout=ticket_timeout,
+                        elapsed_ms=(time.perf_counter() - started_at) * 1000,
+                        agent_type=agent_type,
+                        worker_index=_worker_index,
+                        max_iterations=max_iterations,
+                        execution_policy=self._execution_policy_for_ticket(
+                            ticket,
+                            execution_policy_resolver,
+                        ),
+                        worktree_isolation=worktree_isolation,
+                    )
+        finally:
+            executor.shutdown(wait=not timed_out, cancel_futures=True)
+
         for ticket in tickets:
-            skill = self.spec_registry.get_skill(ticket.skill)
-            agent = self.spec_registry.get_agent("deep_worker")
-            input_data = {
-                "ticket": ticket.to_dict(),
-                "context_slice": ticket.context_slice,
-                "agent_contract": agent.to_prompt_block() if agent else "",
-                "skill_contract": skill.to_prompt_block() if skill else "",
-                "max_iterations": max_iterations,
-            }
+            if ticket.id not in reports_by_id:
+                reports_by_id[ticket.id] = self._timeout_report(
+                    ticket,
+                    timeout=ticket_timeout,
+                    elapsed_ms=(time.perf_counter() - started_at) * 1000,
+                    agent_type=agent_type,
+                    max_iterations=max_iterations,
+                    execution_policy=self._execution_policy_for_ticket(
+                        ticket,
+                        execution_policy_resolver,
+                    ),
+                    worktree_isolation=worktree_isolation,
+                )
+        return [reports_by_id[ticket.id] for ticket in tickets]
+
+    def _run_one_ticket(
+        self,
+        llm_client: LLMClient,
+        ticket: SubAgentTicket,
+        *,
+        max_iterations: int,
+        tool_policy: Optional[ToolPolicy],
+        worker_index: int,
+        agent_type: str = "deep_worker",
+        nested_spawn_allowed: bool = False,
+        llm_client_resolver: Optional[Callable[[SubAgentTicket], LLMClient]] = None,
+        execution_policy_resolver: Optional[Callable[[SubAgentTicket], Dict[str, Any]]] = None,
+        worktree_isolation: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        started = time.perf_counter()
+        selected_llm_client = (
+            llm_client_resolver(ticket) if llm_client_resolver is not None else llm_client
+        )
+        execution_policy = self._execution_policy_for_ticket(ticket, execution_policy_resolver)
+        if "model" not in execution_policy:
+            model = getattr(selected_llm_client, "models", []) or []
+            if model:
+                execution_policy["model"] = str(model[0])
+        isolation = dict(worktree_isolation or {"mode": "read_only", "snapshot_writes": False})
+        worker = DeepWorkerAgent(selected_llm_client, self.tools, tool_policy=tool_policy)
+        skill = self.spec_registry.get_skill(ticket.skill)
+        agent = self.spec_registry.get_agent(agent_type)
+        input_data = {
+            "ticket": ticket.to_dict(),
+            "context_slice": ticket.context_slice,
+            "agent_contract": agent.to_prompt_block() if agent else "",
+            "skill_contract": skill.to_prompt_block() if skill else "",
+            "max_iterations": max_iterations,
+            "agent_type": agent_type,
+            "nested_spawn_allowed": nested_spawn_allowed,
+            "execution_policy": execution_policy,
+            "worktree_isolation": isolation,
+        }
+        try:
             response = worker.run(input_data)
             status = self._report_status(response)
-            reports.append(
+            metadata = dict(response.metadata or {})
+            metadata.update(
                 {
-                    "ticket": ticket.to_dict(),
-                    "status": status,
-                    "success": status == "completed",
-                    "data": response.data,
-                    "error": response.error,
-                    "metadata": response.metadata,
+                    "ticket_id": ticket.id,
+                    "worker_index": worker_index,
+                    "duration_ms": (time.perf_counter() - started) * 1000,
+                    "max_iterations": max_iterations,
+                    "max_turns": max_iterations,
+                    "stop_reason": status,
+                    "agent_type": agent_type,
+                    "spawn_allowed": True,
+                    "nested_spawn_allowed": nested_spawn_allowed,
+                    "subagent_can_spawn": False,
+                    "ticket_skill": ticket.skill,
+                    "ticket_priority_score": ticket.priority_score,
+                    "ticket_source": ticket.source,
+                    "ticket_sources": ticket.sources or ([ticket.source] if ticket.source else []),
+                    "execution_policy": execution_policy,
+                    "worktree_isolation": isolation,
+                    "needs_human_review": self._needs_human_review(response, status),
                 }
             )
-        return reports
+            return {
+                "ticket": ticket.to_dict(),
+                "status": status,
+                "success": status == "completed",
+                "data": response.data,
+                "error": response.error,
+                "metadata": metadata,
+            }
+        except Exception as exc:
+            return self._exception_report(
+                ticket,
+                exc,
+                worker_index=worker_index,
+                elapsed_ms=(time.perf_counter() - started) * 1000,
+                agent_type=agent_type,
+                max_iterations=max_iterations,
+                execution_policy=execution_policy,
+                worktree_isolation=isolation,
+            )
+
+    @staticmethod
+    def _exception_report(
+        ticket: SubAgentTicket,
+        exc: Exception,
+        *,
+        agent_type: str = "deep_worker",
+        worker_index: int = -1,
+        elapsed_ms: float = 0.0,
+        max_iterations: int = 0,
+        execution_policy: Optional[Dict[str, Any]] = None,
+        worktree_isolation: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "ticket": ticket.to_dict(),
+            "status": "failed",
+            "success": False,
+            "data": {},
+            "error": str(exc),
+            "metadata": {
+                "ticket_id": ticket.id,
+                "worker_index": worker_index,
+                "duration_ms": elapsed_ms,
+                "failure_kind": "exception",
+                "stop_reason": "failed",
+                "agent_type": agent_type,
+                "max_iterations": max_iterations,
+                "max_turns": max_iterations,
+                "execution_policy": dict(execution_policy or {}),
+                "worktree_isolation": dict(worktree_isolation or {}),
+                "needs_human_review": True,
+            },
+        }
+
+    @staticmethod
+    def _timeout_report(
+        ticket: SubAgentTicket,
+        *,
+        timeout: float,
+        elapsed_ms: float,
+        agent_type: str = "deep_worker",
+        worker_index: int = -1,
+        max_iterations: int = 0,
+        execution_policy: Optional[Dict[str, Any]] = None,
+        worktree_isolation: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "ticket": ticket.to_dict(),
+            "status": "killed",
+            "success": False,
+            "data": {},
+            "error": f"Subagent ticket timed out after {timeout:.2f}s",
+            "metadata": {
+                "ticket_id": ticket.id,
+                "worker_index": worker_index,
+                "duration_ms": elapsed_ms,
+                "timeout_seconds": timeout,
+                "failure_kind": "timeout",
+                "stop_reason": "timeout",
+                "agent_type": agent_type,
+                "max_iterations": max_iterations,
+                "max_turns": max_iterations,
+                "execution_policy": dict(execution_policy or {}),
+                "worktree_isolation": dict(worktree_isolation or {}),
+                "needs_human_review": True,
+            },
+        }
+
+    @staticmethod
+    def _spawn_denied_report(
+        ticket: SubAgentTicket,
+        *,
+        agent_type: str,
+        spawn_allowlist: List[str],
+    ) -> Dict[str, Any]:
+        return {
+            "ticket": ticket.to_dict(),
+            "status": "failed",
+            "success": False,
+            "data": {},
+            "error": f"Subagent type {agent_type!r} is not in spawn allowlist.",
+            "metadata": {
+                "ticket_id": ticket.id,
+                "agent_type": agent_type,
+                "spawn_allowlist": spawn_allowlist,
+                "failure_kind": "spawn_denied",
+                "stop_reason": "spawn_denied",
+                "needs_human_review": True,
+            },
+        }
+
+    @staticmethod
+    def _execution_policy_for_ticket(
+        ticket: SubAgentTicket,
+        execution_policy_resolver: Optional[Callable[[SubAgentTicket], Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        if execution_policy_resolver is None:
+            return {}
+        policy = execution_policy_resolver(ticket)
+        return dict(policy or {})
+
+    @staticmethod
+    def _needs_human_review(response: Any, status: str) -> bool:
+        if status != "completed":
+            return True
+        data = response.data if hasattr(response, "data") else {}
+        if isinstance(data, dict) and data.get("needs_human_review"):
+            return True
+        metadata = response.metadata if hasattr(response, "metadata") else {}
+        return bool(isinstance(metadata, dict) and metadata.get("needs_human_review"))
 
     @staticmethod
     def summarize_reports(reports: List[Dict[str, Any]]) -> Dict[str, Any]:

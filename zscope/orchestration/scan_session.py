@@ -31,6 +31,7 @@ class ScanSessionResult:
     exit_code: int
     reports: List[Path] = field(default_factory=list)
     issues_count: int = 0
+    needs_review_count: int = 0
     functions_analyzed: int = 0
     verdict: str = "unknown"
     interrupted: bool = False
@@ -371,6 +372,7 @@ class ScanSessionRunner:
             exit_code=1 if total_issues > 0 else 0,
             reports=[json_report_path, md_report_path],
             issues_count=total_issues,
+            needs_review_count=self._needs_review_count_from_report(combined_report),
             functions_analyzed=functions_analyzed,
             interrupted=bool(getattr(parallel_analyzer, "_interrupted", False)),
             project_root=self.config.project.project_root,
@@ -396,10 +398,24 @@ class ScanSessionRunner:
             is_batch=False,
             exit_code=1 if issues_count > 0 else 0,
             issues_count=issues_count,
+            needs_review_count=self._needs_review_count_from_report(result),
             verdict=verdict,
             reports=[self.config.project.project_root],
             project_root=self.config.project.project_root,
         )
+
+    @staticmethod
+    def _needs_review_count_from_report(report: Dict[str, Any]) -> int:
+        summary = report.get("summary")
+        if isinstance(summary, dict) and "needs_review_issues" in summary:
+            return int(summary.get("needs_review_issues") or 0)
+
+        views = report.get("report_views")
+        if isinstance(views, dict):
+            with_review = views.get("with_needs_review")
+            if isinstance(with_review, dict):
+                return int(with_review.get("included_needs_review_count") or 0)
+        return 0
 
     def _backup_existing_batch_report(self, json_report_path: Path) -> None:
         if not json_report_path.exists():

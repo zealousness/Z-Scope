@@ -14,7 +14,7 @@ allowed_tools:
   - get_type_info
 allowed_mcp_tools:
   - zscope.get_function_snapshot
-  - zscope.query_knowledge
+  - zscope.knowledge.query
 ---
 
 Model who owns each object before and after the call. Check whether callers free

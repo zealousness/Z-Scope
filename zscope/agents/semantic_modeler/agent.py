@@ -1,8 +1,9 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import json
 import logging
 
 from ..base import JsonToolAgent
+from ...core.tool_policy import ToolPolicy
 from ...common.utils import is_valid_snapshot
 from ...framework.base import AgentResponse
 from ...framework.llm_client import LLMClient
@@ -20,12 +21,18 @@ def _schema_json(schema: Any) -> str:
 class SemanticModeler(JsonToolAgent):
     """Agent for generating function snapshots."""
 
-    def __init__(self, llm_client: LLMClient, tools: List[Any]):
+    def __init__(
+        self,
+        llm_client: LLMClient,
+        tools: List[Any],
+        tool_policy: Optional[ToolPolicy] = None,
+    ):
         super().__init__(
             name="semantic_modeler",
             description="Generates semantic snapshots of C functions.",
             llm_client=llm_client,
             tools=tools,
+            tool_policy=tool_policy,
         )
 
     def run(self, input_data: Dict[str, Any]) -> AgentResponse:

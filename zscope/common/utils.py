@@ -6,7 +6,7 @@ import hashlib
 import logging
 import re
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Sequence, Union
 
 
 C_NON_CALL_IDENTIFIERS = {
@@ -172,6 +172,64 @@ def normalize_path(path: Union[str, Path], project_root: Optional[Path] = None) 
         except ValueError:
             return str(p)
     return str(p)
+
+
+def matches_configured_path(path: str, patterns: Optional[Sequence[str]]) -> bool:
+    """Match a normalized path against configured literal, glob, or regex patterns."""
+    if not patterns:
+        return True
+
+    normalized = str(path or "").replace("\\", "/")
+    for raw_pattern in patterns:
+        pattern = str(raw_pattern or "").strip()
+        if not pattern:
+            continue
+        literal_pattern = pattern.replace("\\", "/")
+        if normalized == literal_pattern or normalized.endswith(f"/{literal_pattern}"):
+            return True
+        if _matches_path_glob(normalized, literal_pattern):
+            return True
+        try:
+            if re.search(pattern, normalized):
+                return True
+        except re.error:
+            if literal_pattern in normalized:
+                return True
+    return False
+
+
+def _matches_path_glob(path: str, pattern: str) -> bool:
+    if not any(ch in pattern for ch in "*?["):
+        return False
+    translated = _path_glob_to_regex(pattern)
+    return bool(re.search(rf"(?:^|/){translated}$", path))
+
+
+def _path_glob_to_regex(pattern: str) -> str:
+    parts = []
+    i = 0
+    while i < len(pattern):
+        char = pattern[i]
+        if char == "*":
+            parts.append("[^/]*")
+        elif char == "?":
+            parts.append("[^/]")
+        elif char == "[":
+            end = pattern.find("]", i + 1)
+            if end == -1:
+                parts.append(re.escape(char))
+            else:
+                body = pattern[i + 1 : end]
+                if body.startswith("!"):
+                    body = "^" + re.escape(body[1:])
+                else:
+                    body = re.escape(body)
+                parts.append(f"[{body}]")
+                i = end
+        else:
+            parts.append(re.escape(char))
+        i += 1
+    return "".join(parts)
 
 
 def extract_function_calls(code: str) -> list[str]:
