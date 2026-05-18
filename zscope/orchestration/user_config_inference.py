@@ -24,6 +24,8 @@ DEFAULT_API_NAMES = (
     | RegexCandidateGenerator._DEFAULT_LOCK_APIS
     | RegexCandidateGenerator._DEFAULT_UNLOCK_APIS
 )
+PROJECT_DEFAULT_WRAPPERS = {"_safe_malloc", "_safe_calloc", "_safe_realloc", "_net_recv_data", "_net_send_data"}
+SKIPPED_DEFAULT_API_NAMES = DEFAULT_API_NAMES - PROJECT_DEFAULT_WRAPPERS
 WRAPPER_NAME_HINT_RE = re.compile(
     r"alloc|free|dealloc|lock|unlock|copy|cpy|move|create|destroy|"
     r"open|close|acquire|release|get|put|ref|unref",
@@ -466,10 +468,14 @@ def _llm_user_config_system_prompt() -> str:
 
 def _apply_llm_decision(sheet: str, row: Dict[str, Any], decision: Dict[str, Any]) -> Dict[str, Any]:
     updated = dict(row)
+    action = str(decision.get("action") or "keep").strip().lower()
     for field in ("kind", "pair", "description"):
         value = str(decision.get(field) or "").strip()
+        if field == "kind" and action != "revise":
+            continue
         if value and field in SHEET_HEADERS.get(sheet, []):
             updated[field] = value
+    _ensure_location_markers(sheet, row, updated)
     confidence = decision.get("confidence")
     if confidence not in (None, "") and "confidence" in SHEET_HEADERS.get(sheet, []):
         updated["confidence"] = f"{_coerce_confidence(confidence):.2f}"
@@ -484,6 +490,53 @@ def _apply_llm_decision(sheet: str, row: Dict[str, Any], decision: Dict[str, Any
     if "source" in SHEET_HEADERS.get(sheet, []):
         updated["source"] = _merge_csv(updated.get("source", ""), "llm:screened")
     return updated
+
+
+def _ensure_location_markers(sheet: str, original: Dict[str, Any], updated: Dict[str, Any]) -> None:
+    if "description" not in SHEET_HEADERS.get(sheet, []):
+        return
+    kind = str(updated.get("kind") or original.get("kind") or "").strip().lower()
+    marker_names: List[str] = []
+    if sheet == "lock" and kind in {"lock", "unlock"}:
+        marker_names.append("lock_arg")
+    elif sheet == "resource":
+        if kind in {"allocator", "calloc", "resource_acquire", "reallocator"}:
+            marker_names.append("resource_output")
+            if _extract_marker(original.get("description", ""), "size_arg"):
+                marker_names.append("size_arg")
+            if _extract_marker(original.get("description", ""), "failure_values"):
+                marker_names.append("failure_values")
+        if kind == "reallocator":
+            marker_names.append("old_resource")
+        if kind in {"deallocator", "resource_release"}:
+            marker_names.append("resource_input")
+        if kind == "copy":
+            for marker in ("resource_output", "resource_input", "size_arg"):
+                if _extract_marker(original.get("description", ""), marker):
+                    marker_names.append(marker)
+
+    description = str(updated.get("description") or "")
+    for marker in marker_names:
+        if re.search(rf"\b{re.escape(marker)}\s*=", description):
+            continue
+        fallback = _extract_marker(original.get("description", ""), marker) or f"{marker}=review"
+        description = _append_description_marker(description, fallback)
+    updated["description"] = description
+
+
+def _extract_marker(text: Any, marker: str) -> str:
+    match = re.search(rf"\b{re.escape(marker)}\s*=\s*([^;.]+)", str(text or ""))
+    if not match:
+        return ""
+    return f"{marker}={match.group(1).strip()}"
+
+
+def _append_description_marker(description: str, marker_text: str) -> str:
+    base = str(description or "").strip()
+    if not base:
+        return marker_text
+    separator = " " if base.endswith((".", ";")) else "; "
+    return f"{base}{separator}{marker_text}."
 
 
 def _remove_pairs_to_dropped_symbols(
@@ -615,7 +668,7 @@ def _add_symbol(
     body: str = "",
     signature: str = "",
 ) -> None:
-    if not name or name in DEFAULT_API_NAMES:
+    if not name or name in SKIPPED_DEFAULT_API_NAMES:
         return
     existing = symbols.get(name)
     if existing:

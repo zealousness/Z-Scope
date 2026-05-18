@@ -80,16 +80,20 @@ Magma, metadata-only or with a fetched target source:
 python scripts/external_benchmark.py prepare-magma \
   --magma-root /path/to/magma \
   --target libpng \
+  --target-source /mnt/c/tmp/zscope_external_sources/magma_full/libpng/repo \
   --max-bugs 5 \
-  --name magma_libpng_sample
+  --name magma_libpng_sample \
+  --copy-full-source
 ```
 
 Use `--max-bugs 0` for all bug patches for the selected Magma target.
 
 When `--target-source` points to a fetched/patched target checkout, the script
-also copies changed source files, infers affected functions, and emits entries.
-Without it, Magma preparation records patch metadata and marks the suite as not
-materialized.
+infers affected functions and emits entries. With `--copy-full-source`, it also
+copies the complete target source tree into the generated suite project. The
+full Magma source checkout should live under `C:\tmp`, for example
+`/mnt/c/tmp/zscope_external_sources/magma_full`, matching the Juliet and
+SV-COMP raw corpus layout.
 
 ## API Key And Model Env
 
