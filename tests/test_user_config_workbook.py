@@ -268,6 +268,25 @@ def test_inference_filters_constant_like_names_and_does_not_promote_api_callers(
     assert "UseAnyxmlLock" not in locks
 
 
+def test_inference_keeps_project_default_wrappers_with_specific_roles(tmp_path: Path) -> None:
+    code_index = FakeCodeIndex(tmp_path)
+    code_index.functions.update(
+        {
+            "_safe_malloc": "void *_safe_malloc(size_t size) { return malloc(size); }",
+            "_safe_calloc": "void *_safe_calloc(size_t nmemb, size_t size) { return calloc(nmemb, size); }",
+            "_safe_realloc": "void *_safe_realloc(void *ptr, size_t size) { return realloc(ptr, size); }",
+        }
+    )
+
+    rows = infer_user_config_rows(code_index)
+    resource = {item["symbol_name"]: item for item in rows["resource"]}
+
+    assert resource["_safe_malloc"]["kind"] == "allocator"
+    assert resource["_safe_calloc"]["kind"] == "calloc"
+    assert resource["_safe_realloc"]["kind"] == "reallocator"
+    assert "old_resource=arg1" in resource["_safe_realloc"]["description"]
+
+
 def test_llm_filter_drops_noisy_candidates_and_records_generalized_pattern(tmp_path: Path) -> None:
     rows = {name: [] for name in SHEET_HEADERS}
     rows["resource"] = [
@@ -390,6 +409,7 @@ def test_llm_filter_drops_noisy_candidates_and_records_generalized_pattern(tmp_p
     locks = {item["symbol_name"]: item for item in filtered["lock"]}
     assert set(locks) == {"DDM_LOCK", "DDM_UNLOCK"}
     assert locks["DDM_LOCK"]["pair"] == "DDM_UNLOCK"
+    assert "lock_arg=review" in locks["DDM_LOCK"]["description"]
     assert "pattern=XXX_LOCK" in locks["DDM_LOCK"]["notes"]
     assert stats["dropped"] == 3
     assert stats["kept"] == 4
@@ -455,6 +475,51 @@ def test_llm_filter_uses_parallel_workers_for_batches(tmp_path: Path) -> None:
     assert len(filtered["resource"]) == 4
     assert stats["kept"] == 4
     assert llm.max_active > 1
+
+
+def test_llm_keep_decision_cannot_change_kind(tmp_path: Path) -> None:
+    rows = {name: [] for name in SHEET_HEADERS}
+    rows["resource"] = [
+        {
+            "symbol_name": "_safe_realloc",
+            "kind": "reallocator",
+            "symbol_type": "function",
+            "pair": "SAFE_FREE",
+            "description": "function `_safe_realloc` resizes memory. old_resource=arg1; resource_output=return; size_arg=arg2.",
+            "source": "inferred:name",
+            "confidence": "0.72",
+            "notes": "",
+        }
+    ]
+
+    class FakeLLM:
+        def chat_completion(self, messages, **kwargs):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"items": ['
+                                '{"id":"resource:0","action":"keep","kind":"allocator",'
+                                '"description":"Safe realloc wrapper. resource_output=return; old_resource=arg1; size_arg=arg2; failure_values=NULL."}'
+                                "]}"
+                            )
+                        }
+                    }
+                ]
+            }
+
+    filtered, stats = filter_user_config_rows_with_llm(
+        rows,
+        FakeCodeIndex(tmp_path),
+        FakeLLM(),
+        batch_size=1,
+        max_workers=1,
+    )
+
+    assert filtered["resource"][0]["kind"] == "reallocator"
+    assert "old_resource=arg1" in filtered["resource"][0]["description"]
+    assert stats["kept"] == 1
 
 
 def test_inference_moves_dispatcher_and_handler_context_into_user_config(tmp_path: Path) -> None:
