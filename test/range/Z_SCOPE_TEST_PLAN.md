@@ -9,9 +9,24 @@ Measure whether Z-SCOPE can find intentionally planted C defects in a compact
 task dispatcher project. The benchmark should report recall, precision, F1, and
 per-CWE coverage against `benchmark/ground_truth.json`.
 
-Current scorer truth is benchmark v3 with 33 scored vulnerabilities. Older
-observed-run notes below refer to previous 12-item and 14-item truths and are
-retained as historical context only.
+Current scorer truth is benchmark v8 with 87 scored vulnerabilities. The
+`REAL-*` items are a higher-priority tier derived from GitHub issue #40 real
+project models, and `ISSUE41-*` is a separate high-priority tier derived from
+GitHub issue #41 distributed C/S messaging and task-creation models. Both tiers
+are weighted above the original `RANGE-*` findings. Older observed-run notes
+below refer to previous 12-item, 14-item, and 33-item truths and are retained
+as historical context only.
+
+Protocol-oriented `REAL-*` findings should be exercised through the realistic
+message path `td_handle_real_protocol_message` ->
+`_real_model_process_protocol_task` whenever possible. The helper entries are
+kept as direct scan targets, but the intended project-level behavior is a
+receive/decode/dispatch/handler flow.
+
+The `ISSUE41-*` tier should be exercised through the distributed C/S path
+`td_handle_distributed_cs_message` -> `_issue41_process_cs_message`. This path
+models receive-frame handling, task creation, task-array indexing, enqueue, and
+dispatch before reaching the specific issue #41 handlers.
 
 ## Mandatory Execution Rule
 
@@ -28,6 +43,16 @@ cd /mnt/c/Users/10273/home/work/Z-Scope
 If clangd, gcc, make, or Python dependencies are missing inside WSL, install or
 fix them in WSL, then rerun. Do not paper over WSL failures by switching to a
 Windows-only run.
+
+For automatic entry discovery, use the WSL-only runner:
+
+```bash
+test/range/benchmark/run_auto_unified_wsl.sh
+```
+
+The runner hard-fails outside WSL and hard-fails when `gclang`, `get-bc`,
+`wpa`, or `saber` are unavailable. A benchmark run that logs SVF/Saber as
+unavailable is not a valid unified range benchmark.
 
 ## One-Time Configuration
 
@@ -57,6 +82,9 @@ ignored copy such as `test/range/zscope.local.yaml`.
 - `benchmark/PATTERN_COVERAGE.md`: maintenance matrix for the C
   memory/concurrency pattern catalog.
 - `benchmark/evaluate_zscope_report.py`: scorer for Z-SCOPE JSON reports.
+  It reports both aggregate metrics and per-tier recall; `real_project_issue40`
+  and `real_project_issue41` are intentionally separated from the legacy range
+  tier.
 
 Do not include `GROUND_TRUTH.md`, `DELIVERY.md`, or
 `benchmark/ground_truth.json` in the analysis prompt/context given to Z-SCOPE.
@@ -67,6 +95,13 @@ project context is source code, headers, `README.md`, build files, and
 ## Baseline Commands
 
 From the repository root in WSL:
+
+```bash
+cd /mnt/c/Users/10273/home/work/Z-Scope
+test/range/benchmark/run_auto_unified_wsl.sh
+```
+
+For the older fixed-entry protocol, use:
 
 ```bash
 cd /mnt/c/Users/10273/home/work/Z-Scope

@@ -971,3 +971,1012 @@ uint32_t _lifecycle_macro_guarded_counter_update(uint32_t delta) {
     MACRO_GUARDED_UNLOCK();
     return g_macro_guarded_counter;
 }
+
+typedef struct RealModelChild {
+    char* name;
+    int fd;
+    struct RealModelChild* next;
+} RealModelChild;
+
+typedef struct RealModelNode {
+    char key[64];
+    char* name;
+    char* payload;
+    int state;
+    int role;
+    int ref_count;
+    pthread_mutex_t mutex;
+    RealModelChild* children;
+    struct RealModelNode* next;
+    struct RealModelNode* left;
+    struct RealModelNode* right;
+} RealModelNode;
+
+typedef struct {
+    RealModelNode* head;
+    pthread_mutex_t lock;
+    int state;
+} RealModelRegistry;
+
+typedef struct {
+    char path[MAX_PATH_LEN];
+    RealModelNode* node;
+} RealModelAsyncJob;
+
+#define REAL_PROTOCOL_HEADER_LEN 24
+#define REAL_PROTOCOL_PAYLOAD_CAP 512
+#define REAL_PROTOCOL_MSG_DATA 1
+#define REAL_PROTOCOL_MSG_TLS_PROBE 2
+#define REAL_PROTOCOL_MSG_POLICY 3
+#define REAL_PROTOCOL_MSG_CLOSE 4
+#define REAL_PROTOCOL_MSG_SIGNED_BODY 5
+
+typedef struct {
+    int fd;
+    unsigned char header[REAL_PROTOCOL_HEADER_LEN];
+    unsigned char payload[REAL_PROTOCOL_PAYLOAD_CAP];
+    size_t header_len;
+    size_t payload_len;
+    size_t declared_payload_len;
+    uint32_t session_id;
+    int msg_type;
+    int role;
+    int ssl_accept_times;
+    char route_key[64];
+} RealProtocolFrame;
+
+#define ISSUE41_CS_MAGIC 0x5a53u
+#define ISSUE41_CS_HEADER_LEN 12
+#define ISSUE41_CS_BODY_CAP 1024
+#define ISSUE41_LABEL_CACHE_LIMIT (16u * 1024u)
+#define ISSUE41_SPEC_MAX_ELEMENTS 500u
+#define ISSUE41_ELEMENT_INFO_SIZE 48u
+#define ISSUE41_PROTOCOL_MESH 1
+#define ISSUE41_PROTOCOL_RPC 2
+#define ISSUE41_AUTH_STRICT 2
+#define ISSUE41_RESOURCE_LIMIT 2
+#define ISSUE41_FD_CHECK_VALUE 0x5a5au
+#define ISSUE41_ENCODE_FD(index, check) \
+    ((((index) & 0xffffu)) | (((check) & 0xffffu) << 16))
+#define ISSUE41_RAW_FD(encoded) ((int)((encoded) & 0xffffu))
+
+typedef struct {
+    uint16_t magic;
+    uint16_t length;
+    uint8_t protocol;
+    uint8_t type;
+    uint8_t version;
+    uint8_t flags;
+    uint32_t request_id;
+} Issue41CsHeader;
+
+typedef struct Issue41CsTask {
+    int task_id;
+    int listen_fd;
+    int work_fd;
+    int encoded_fd;
+    int protocol_id;
+    int auth_level;
+    int ref_count;
+    size_t body_len;
+    char route_key[64];
+    unsigned char body[ISSUE41_CS_BODY_CAP];
+    struct Issue41CsTask* next;
+} Issue41CsTask;
+
+typedef struct Issue41Resource {
+    int resource_id;
+    int ref_count;
+    char* tag;
+    struct Issue41Resource* next;
+} Issue41Resource;
+
+typedef struct {
+    Issue41CsHeader header;
+    unsigned char body[ISSUE41_CS_BODY_CAP];
+    size_t wire_len;
+} Issue41CsFrame;
+
+typedef struct {
+    Issue41CsTask* tasks;
+    Issue41Resource* resources;
+    pthread_mutex_t lock;
+    size_t count;
+} Issue41Broker;
+
+static RealModelRegistry g_real_registry = {
+    .head = NULL,
+    .lock = PTHREAD_MUTEX_INITIALIZER,
+    .state = 0
+};
+static pthread_mutex_t g_real_aux_lock = PTHREAD_MUTEX_INITIALIZER;
+static RealModelNode* g_real_avl_root = NULL;
+static RealModelNode* g_real_callback_node = NULL;
+static plugin_callback_t g_real_callback = NULL;
+static size_t* g_real_metrics = NULL;
+static int g_real_watched_fd = -1;
+static int g_real_ready_flag = 0;
+static uint32_t g_real_counter = 0;
+static Issue41Broker g_issue41_broker = {
+    .tasks = NULL,
+    .resources = NULL,
+    .lock = PTHREAD_MUTEX_INITIALIZER,
+    .count = 0
+};
+static Issue41CsTask** g_issue41_task_array = NULL;
+static size_t g_issue41_task_array_cap = 4;
+static unsigned int g_issue41_partition_count = 0;
+
+static RealModelNode* _real_model_alloc_node(const char* key, const char* payload) {
+    RealModelNode* node = (RealModelNode*)_safe_calloc(1, sizeof(RealModelNode));
+    if (!node) {
+        return NULL;
+    }
+    STR_COPY(node->key, key ? key : "real");
+    node->name = _str_dup(key ? key : "real");
+    node->payload = _str_dup(payload ? payload : "payload");
+    node->ref_count = 1;
+    pthread_mutex_init(&node->mutex, NULL);
+    return node;
+}
+
+static RealModelChild* _real_model_alloc_child(const char* name, int fd) {
+    RealModelChild* child = (RealModelChild*)_safe_calloc(1, sizeof(RealModelChild));
+    if (!child) {
+        return NULL;
+    }
+    child->name = _str_dup(name ? name : "child");
+    child->fd = fd;
+    return child;
+}
+
+static void _real_model_insert_locked(RealModelNode* node) {
+    node->next = g_real_registry.head;
+    g_real_registry.head = node;
+}
+
+static RealModelNode* _real_model_find_locked(const char* key) {
+    for (RealModelNode* node = g_real_registry.head; node; node = node->next) {
+        if (strcmp(node->key, key) == 0) {
+            return node;
+        }
+    }
+    return NULL;
+}
+
+static int _real_model_fake_avl_insert(RealModelNode* node, int fail_after_link) {
+    RealModelNode** cursor = &g_real_avl_root;
+    while (*cursor) {
+        cursor = (strcmp(node->key, (*cursor)->key) < 0) ? &(*cursor)->left : &(*cursor)->right;
+    }
+    *cursor = node;
+    return fail_after_link ? -1 : 0;
+}
+
+static int _real_model_server_release_by_role(RealModelNode* node, int is_member) {
+    if (!node) {
+        return -1;
+    }
+    if (is_member) {
+        SAFE_FREE(node->payload);
+    } else {
+        SAFE_FREE(node->name);
+    }
+    return 0;
+}
+
+static void* _real_model_async_worker(void* arg) {
+    RealModelAsyncJob* job = (RealModelAsyncJob*)arg;
+    if (job && job->node) {
+        LOG_INFO("real model async flush %s", job->path);
+    }
+    return NULL;
+}
+
+int _real_model_module_cleanup_race(const char* key) {
+    RealModelNode* node = _real_model_alloc_node(key, "module");
+    if (!node) {
+        return -1;
+    }
+
+    LOCK(&g_real_registry.lock);
+    _real_model_insert_locked(node);
+    g_real_registry.head = node->next;
+    UNLOCK(&g_real_registry.lock);
+
+    SAFE_FREE(node->payload);
+    SAFE_FREE(node->name);
+    SAFE_FREE(node);
+    return 0;
+}
+
+int _real_model_osnode_remove_race(const char* key) {
+    RealModelNode* node = _real_model_alloc_node(key, "os");
+    if (!node) {
+        return -1;
+    }
+    node->children = _real_model_alloc_child("proc", 0);
+
+    LOCK(&g_real_registry.lock);
+    _real_model_insert_locked(node);
+    g_real_registry.head = node->next;
+    UNLOCK(&g_real_registry.lock);
+
+    SAFE_FREE(node->name);
+    SAFE_FREE(node);
+    return 0;
+}
+
+int _real_model_error_branch_double_cleanup(const char* key, int fail_second_step) {
+    RealModelNode* node = _real_model_alloc_node(key, "rollback");
+    if (!node) {
+        return -1;
+    }
+
+    if (fail_second_step) {
+        free(node->payload);
+        free(node->payload);
+        SAFE_FREE(node->name);
+        SAFE_FREE(node);
+        return -1;
+    }
+    SAFE_FREE(node->payload);
+    SAFE_FREE(node->name);
+    SAFE_FREE(node);
+    return 0;
+}
+
+int _real_model_comp_destroy_detach_leak(const char* key, int config_remove_rc) {
+    RealModelNode* node = _real_model_alloc_node(key, "component");
+    if (!node) {
+        return -1;
+    }
+
+    LOCK(&g_real_registry.lock);
+    _real_model_insert_locked(node);
+    g_real_registry.head = node->next;
+    UNLOCK(&g_real_registry.lock);
+
+    if (config_remove_rc != 0) {
+        return -1;
+    }
+    SAFE_FREE(node->payload);
+    SAFE_FREE(node->name);
+    SAFE_FREE(node);
+    return 0;
+}
+
+int _real_model_unregister_file_leak(const char* name) {
+    RealModelNode* node = _real_model_alloc_node(name, "/virtual/fs/node");
+    if (!node) {
+        return -1;
+    }
+    SAFE_FREE(node->name);
+    SAFE_FREE(node);
+    return 0;
+}
+
+int _real_model_activation_rollback_gap(const char* key, int activation_rc) {
+    RealModelNode* node = _real_model_alloc_node(key, "dfi");
+    if (!node) {
+        return -1;
+    }
+    node->children = _real_model_alloc_child("session", 1);
+
+    LOCK(&g_real_registry.lock);
+    _real_model_insert_locked(node);
+    UNLOCK(&g_real_registry.lock);
+
+    if (activation_rc != 0) {
+        LOCK(&g_real_registry.lock);
+        g_real_registry.head = node->next;
+        UNLOCK(&g_real_registry.lock);
+        SAFE_FREE(node);
+        return -1;
+    }
+    return 0;
+}
+
+int _real_model_reader_channel_role_leak(const char* key, int role) {
+    RealModelNode* node = _real_model_alloc_node(key, "reader");
+    if (!node) {
+        return -1;
+    }
+    node->role = role;
+    if (node->role == 1) {
+        _real_model_server_release_by_role(node, 0);
+        SAFE_FREE(node);
+        return 0;
+    }
+    _real_model_server_release_by_role(node, 0);
+    SAFE_FREE(node);
+    return 0;
+}
+
+int _real_model_log_buffer_leak(const char* message, int emit_error) {
+    char* log_copy = _str_dup(message ? message : "log");
+    if (!log_copy) {
+        return -1;
+    }
+    if (emit_error) {
+        LOG_ERROR(log_copy);
+        return -1;
+    }
+    SAFE_FREE(log_copy);
+    return 0;
+}
+
+int _real_model_init_sequence_publication(const char* key, const char* value) {
+    RealModelNode* node = (RealModelNode*)_safe_calloc(1, sizeof(RealModelNode));
+    if (!node) {
+        return -1;
+    }
+    STR_COPY(node->key, key ? key : "init");
+
+    LOCK(&g_real_registry.lock);
+    _real_model_insert_locked(node);
+    UNLOCK(&g_real_registry.lock);
+
+    node->payload = _str_dup(value ? value : "late");
+    pthread_mutex_init(&node->mutex, NULL);
+    return 0;
+}
+
+uint32_t _real_model_message_alignment_overread(const unsigned char* packet, size_t len) {
+    if (!packet || len < 2) {
+        return 0;
+    }
+    const uint32_t* value = (const uint32_t*)(packet + 1);
+    return *value;
+}
+
+int _real_model_patch_unload_member_leak(const char* key) {
+    RealModelNode* root = _real_model_alloc_node(key, "patch");
+    if (!root) {
+        return -1;
+    }
+    root->children = _real_model_alloc_child("table-node", 2);
+    SAFE_FREE(root->payload);
+    SAFE_FREE(root->name);
+    SAFE_FREE(root);
+    return 0;
+}
+
+int _real_model_avl_insert_unchecked_return(const char* key) {
+    RealModelNode* node = _real_model_alloc_node(key, "avl");
+    if (!node) {
+        return -1;
+    }
+    _real_model_fake_avl_insert(node, 1);
+    return 0;
+}
+
+int _real_model_protocol_length_miscalc(const unsigned char* packet, size_t packet_len,
+                                        unsigned char* out, size_t out_len) {
+    if (!packet || !out || packet_len < 4) {
+        return -1;
+    }
+    uint32_t units = packet[0];
+    size_t copy_len = (size_t)(units * 8);
+    if (copy_len <= out_len) {
+        memcpy(out, packet + 4, copy_len);
+    }
+    return (int)copy_len;
+}
+
+uint64_t _real_model_magic64_missing_check(const unsigned char* blob, size_t len) {
+    if (!blob || len < 16) {
+        return 0;
+    }
+    uint64_t count = 0;
+    memcpy(&count, blob + 8, sizeof(count));
+    return count;
+}
+
+int _real_model_resource_table_unload_leak(const char* key, int unload_now) {
+    RealModelNode* table = _real_model_alloc_node(key, "table");
+    if (!table) {
+        return -1;
+    }
+    table->children = _real_model_alloc_child("bucket", 3);
+    if (unload_now) {
+        SAFE_FREE(table);
+        return 0;
+    }
+    return 0;
+}
+
+int _real_model_atomic_order_flag_race(const char* payload) {
+    RealModelNode* node = _real_model_alloc_node("atomic", payload);
+    if (!node) {
+        return -1;
+    }
+    g_real_callback_node = node;
+    g_real_ready_flag = 1;
+    node->state = TASK_STATUS_RUNNING;
+    return 0;
+}
+
+int _real_model_patch_tree_child_leak(const char* key) {
+    RealModelNode* node = _real_model_alloc_node(key, "tree");
+    if (!node) {
+        return -1;
+    }
+    node->left = _real_model_alloc_node("left", "child");
+    node->right = _real_model_alloc_node("right", "child");
+    SAFE_FREE(node->payload);
+    SAFE_FREE(node->name);
+    SAFE_FREE(node);
+    return 0;
+}
+
+int _real_model_peak_stats_leak(uint32_t area, uint32_t* out_count) {
+    uint32_t* pid_list = (uint32_t*)_safe_calloc(area + 1, sizeof(uint32_t));
+    if (!pid_list) {
+        return -1;
+    }
+    pid_list[0] = area;
+    if (out_count) {
+        *out_count = pid_list[0];
+    }
+    return 0;
+}
+
+int _real_model_recv_busy_loop(int fd, unsigned char* header, size_t header_len) {
+    size_t received = 0;
+    while (received < header_len) {
+        int rc = _net_recv_data(fd, header + received, header_len - received);
+        if (rc <= 0) {
+            continue;
+        }
+        received += (size_t)rc;
+    }
+    return 0;
+}
+
+int _real_model_ssl_error_returns_ok(int fd, int ssl_accept_times) {
+    int is_rpc_msg = 0;
+    int ret = 0;
+    if (ssl_accept_times == 0) {
+        ret = _net_recv_data(fd, &is_rpc_msg, sizeof(is_rpc_msg));
+        if (ret != 0 || is_rpc_msg) {
+            LOG_ERROR("secure channel probe failed");
+            return ret;
+        }
+    }
+    return 0;
+}
+
+int _real_model_hardcoded_role_release(const char* key, int role) {
+    RealModelNode* node = _real_model_alloc_node(key, "member");
+    if (!node) {
+        return -1;
+    }
+    node->role = role;
+    _real_model_server_release_by_role(node, 0);
+    SAFE_FREE(node);
+    return 0;
+}
+
+int _real_model_syscall_state_not_restored(int fd) {
+    int previous = g_real_registry.state;
+    g_real_registry.state = fd;
+    if (fcntl(fd, F_GETFD) < 0) {
+        return -1;
+    }
+    previous = g_real_registry.state;
+    return previous;
+}
+
+int _real_model_missing_unlock_after_alloc(const char* key) {
+    LOCK(&g_real_aux_lock);
+    RealModelNode* node = _real_model_alloc_node(key, "unlock");
+    if (!node) {
+        return -1;
+    }
+    UNLOCK(&g_real_aux_lock);
+    SAFE_FREE(node->payload);
+    SAFE_FREE(node->name);
+    SAFE_FREE(node);
+    return 0;
+}
+
+int _real_model_refcount_after_unlock(const char* key) {
+    LOCK(&g_real_registry.lock);
+    RealModelNode* node = _real_model_find_locked(key);
+    UNLOCK(&g_real_registry.lock);
+    if (!node) {
+        return -1;
+    }
+    node->ref_count++;
+    return node->ref_count;
+}
+
+int _real_model_callback_under_lock(const char* key, plugin_callback_t cb) {
+    LOCK(&g_real_registry.lock);
+    g_real_callback_node = _real_model_find_locked(key);
+    g_real_callback = cb;
+    if (g_real_callback) {
+        g_real_callback(g_real_callback_node);
+    }
+    UNLOCK(&g_real_registry.lock);
+    return 0;
+}
+
+int _real_model_detached_stack_job(const char* path) {
+    RealModelAsyncJob job;
+    memset(&job, 0, sizeof(job));
+    STR_COPY(job.path, path ? path : "real");
+    job.node = g_real_callback_node;
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, _real_model_async_worker, &job) != 0) {
+        return -1;
+    }
+    pthread_detach(tid);
+    return 0;
+}
+
+int _real_model_realloc_lost_pointer(size_t count) {
+    g_real_metrics = (size_t*)_safe_realloc(g_real_metrics, count * sizeof(size_t));
+    if (!g_real_metrics) {
+        return -1;
+    }
+    g_real_metrics[0] = count;
+    return 0;
+}
+
+int _real_model_signed_recv_to_size(int fd, unsigned char* dst, size_t dst_len) {
+    unsigned char temp[128];
+    int rc = _net_recv_data(fd, temp, sizeof(temp));
+    size_t copy_len = (size_t)rc;
+    if (copy_len > dst_len) {
+        LOG_WARN("real model packet truncated");
+    }
+    memcpy(dst, temp, copy_len);
+    return rc;
+}
+
+int _real_model_stale_fd_after_close(int fd, unsigned char* dst, size_t dst_len) {
+    g_real_watched_fd = fd;
+    close(fd);
+    return _net_recv_data(g_real_watched_fd, dst, dst_len);
+}
+
+int _real_model_key_truncation_route(const char* full_key, int policy_id) {
+    RealModelNode* existing = _real_model_find_locked(full_key);
+    if (existing) {
+        existing->state = policy_id;
+        return 0;
+    }
+    RealModelNode* node = _real_model_alloc_node(full_key, "policy");
+    if (!node) {
+        return -1;
+    }
+    strncpy(node->key, full_key, 31);
+    node->key[31] = '\0';
+    return _real_model_fake_avl_insert(node, 0);
+}
+
+static int _real_model_receive_protocol_frame(int fd, RealProtocolFrame* frame) {
+    if (!frame) {
+        return -1;
+    }
+
+    memset(frame, 0, sizeof(*frame));
+    frame->fd = fd;
+    frame->header_len = REAL_PROTOCOL_HEADER_LEN;
+
+    if (_real_model_recv_busy_loop(fd, frame->header, frame->header_len) != 0) {
+        return -1;
+    }
+
+    frame->msg_type = frame->header[0];
+    frame->role = frame->header[1];
+    frame->ssl_accept_times = frame->header[2];
+    frame->declared_payload_len = (size_t)frame->header[3] * 8u;
+
+    size_t want = frame->declared_payload_len;
+    if (want > sizeof(frame->payload)) {
+        want = sizeof(frame->payload);
+    }
+
+    int received = _net_recv_data(fd, frame->payload, want);
+    if (received < 0) {
+        return received;
+    }
+    frame->payload_len = (size_t)received;
+    return 0;
+}
+
+static int _real_model_decode_protocol_header(RealProtocolFrame* frame,
+                                              const char* fallback_key) {
+    if (!frame) {
+        return -1;
+    }
+
+    uint64_t declared_count = _real_model_magic64_missing_check(
+        frame->header, frame->header_len);
+    uint32_t unaligned_id = _real_model_message_alignment_overread(
+        frame->header, frame->header_len);
+    frame->session_id = (uint32_t)(declared_count ^ unaligned_id);
+
+    if (fallback_key && fallback_key[0]) {
+        STR_COPY(frame->route_key, fallback_key);
+    } else {
+        snprintf(frame->route_key, sizeof(frame->route_key), "route-%u",
+                 frame->session_id);
+    }
+    return 0;
+}
+
+static int _real_model_dispatch_protocol_message(RealProtocolFrame* frame,
+                                                 unsigned char* out,
+                                                 size_t out_len) {
+    if (!frame || !out || out_len == 0) {
+        return -1;
+    }
+
+    switch (frame->msg_type) {
+        case REAL_PROTOCOL_MSG_TLS_PROBE:
+            return _real_model_ssl_error_returns_ok(frame->fd,
+                                                    frame->ssl_accept_times);
+        case REAL_PROTOCOL_MSG_POLICY:
+            _real_model_key_truncation_route(frame->route_key,
+                                             (int)frame->session_id);
+            return _real_model_hardcoded_role_release(frame->route_key,
+                                                      frame->role);
+        case REAL_PROTOCOL_MSG_CLOSE:
+            return _real_model_stale_fd_after_close(frame->fd, out, out_len);
+        case REAL_PROTOCOL_MSG_SIGNED_BODY:
+            return _real_model_signed_recv_to_size(frame->fd, out, out_len);
+        case REAL_PROTOCOL_MSG_DATA:
+        default:
+            return _real_model_protocol_length_miscalc(
+                frame->payload, frame->payload_len, out, out_len);
+    }
+}
+
+int _real_model_process_protocol_task(int fd, const char* fallback_key,
+                                      unsigned char* out, size_t out_len) {
+    unsigned char local_out[256];
+    unsigned char* response = out ? out : local_out;
+    size_t response_len = out ? out_len : sizeof(local_out);
+    RealProtocolFrame frame;
+
+    if (_real_model_receive_protocol_frame(fd, &frame) != 0) {
+        return -1;
+    }
+    if (_real_model_decode_protocol_header(&frame, fallback_key) != 0) {
+        return -1;
+    }
+    return _real_model_dispatch_protocol_message(&frame, response, response_len);
+}
+
+static Issue41Resource* _issue41_find_resource(int resource_id) {
+    for (Issue41Resource* res = g_issue41_broker.resources; res; res = res->next) {
+        if (res->resource_id == resource_id) {
+            return res;
+        }
+    }
+    return NULL;
+}
+
+static int _issue41_validate_encoded_fd(int encoded_fd) {
+    unsigned int check = ((unsigned int)encoded_fd >> 16) & 0xffffu;
+    if (check != ISSUE41_FD_CHECK_VALUE) {
+        return -1;
+    }
+    return ISSUE41_RAW_FD((unsigned int)encoded_fd);
+}
+
+static int _issue41_is_inter_fd(int actual_fd) {
+    return actual_fd >= 0 && actual_fd < 1024;
+}
+
+int _issue41_label_cache_size_miscalc(unsigned int element_count) {
+    size_t label_len = (size_t)element_count * ISSUE41_ELEMENT_INFO_SIZE;
+    if (label_len > ISSUE41_LABEL_CACHE_LIMIT) {
+        return -1;
+    }
+
+    char* label_cache = (char*)_safe_calloc(label_len + 1, 1);
+    if (!label_cache) {
+        return -1;
+    }
+    snprintf(label_cache, label_len + 1, "collection-elements=%u", element_count);
+    SAFE_FREE(label_cache);
+    return (element_count <= ISSUE41_SPEC_MAX_ELEMENTS) ? 0 : -1;
+}
+
+int _issue41_header_length_not_validated(const unsigned char* wire, size_t wire_len,
+                                         unsigned char* out, size_t out_len) {
+    if (!wire || !out || wire_len < sizeof(Issue41CsHeader)) {
+        return -1;
+    }
+
+    Issue41CsHeader header;
+    memcpy(&header, wire, sizeof(header));
+    if (header.magic != ISSUE41_CS_MAGIC) {
+        return -1;
+    }
+
+    size_t body_len = (size_t)header.length - sizeof(Issue41CsHeader);
+    if (out_len > 0) {
+        out[0] = '\0';
+    }
+    memcpy(out, wire + sizeof(Issue41CsHeader), body_len);
+    return (int)body_len;
+}
+
+int _issue41_recv_retry_without_timeout(int fd, unsigned char* dst, size_t want) {
+    size_t received = 0;
+    while (received < want) {
+        int rc;
+        do {
+            rc = _net_recv_data(fd, dst + received, want - received);
+        } while (rc == -1 && (errno == EAGAIN || errno == EINTR));
+
+        if (rc <= 0) {
+            continue;
+        }
+        received += (size_t)rc;
+    }
+    return 0;
+}
+
+int _issue41_reliable_fd_to_raw_interface(int reliable_fd) {
+    return _issue41_is_inter_fd(reliable_fd);
+}
+
+int _issue41_lax_protocol_mismatch(int detected_protocol, int auth_level) {
+    if (detected_protocol != ISSUE41_PROTOCOL_RPC) {
+        if (auth_level != ISSUE41_AUTH_STRICT) {
+            return 0;
+        }
+        return -1;
+    }
+    return 0;
+}
+
+int _issue41_partial_resource_leak_on_retry(int fail_step) {
+    Issue41Resource* partition = (Issue41Resource*)_safe_calloc(1, sizeof(Issue41Resource));
+    char* tag;
+    if (!partition) {
+        return -1;
+    }
+
+    if (g_issue41_partition_count >= ISSUE41_RESOURCE_LIMIT) {
+        return tag[0];
+    }
+    g_issue41_partition_count++;
+    partition->resource_id = (int)g_issue41_partition_count;
+    partition->tag = _str_dup("cs-shm-partition");
+
+    if (fail_step) {
+        return -1;
+    }
+
+    tag = partition->tag;
+    int rc = tag ? (int)tag[0] : 0;
+    SAFE_FREE(partition->tag);
+    SAFE_FREE(partition);
+    return rc;
+}
+
+int _issue41_dynamic_array_expand_race(size_t task_index) {
+    if (task_index >= g_issue41_task_array_cap) {
+        size_t new_cap = ((task_index / 16u) + 1u) * 16u;
+        Issue41CsTask** new_array = (Issue41CsTask**)_safe_calloc(
+            new_cap, sizeof(Issue41CsTask*));
+        if (!new_array) {
+            return -1;
+        }
+        if (g_issue41_task_array) {
+            memcpy(new_array, g_issue41_task_array,
+                   g_issue41_task_array_cap * sizeof(Issue41CsTask*));
+        }
+        Issue41CsTask** old_array = g_issue41_task_array;
+        g_issue41_task_array = new_array;
+        g_issue41_task_array_cap = new_cap;
+        SAFE_FREE(old_array);
+    }
+
+    if (g_issue41_task_array) {
+        g_issue41_task_array[task_index] = g_issue41_broker.tasks;
+    }
+    return 0;
+}
+
+int _issue41_missing_version_filter(const unsigned char* report, size_t len) {
+    if (!report || len < 2) {
+        return -1;
+    }
+
+    uint8_t version = report[0];
+    uint8_t state = report[1];
+    (void)version;
+    if (state == TASK_STATUS_FAILED) {
+        return -1;
+    }
+    return 0;
+}
+
+int _issue41_missing_reference_count(int resource_id, int close_now) {
+    LOCK(&g_issue41_broker.lock);
+    Issue41Resource* res = _issue41_find_resource(resource_id);
+    if (!res) {
+        res = (Issue41Resource*)_safe_calloc(1, sizeof(Issue41Resource));
+        if (!res) {
+            UNLOCK(&g_issue41_broker.lock);
+            return -1;
+        }
+        res->resource_id = resource_id;
+        res->ref_count = 2;
+        res->tag = _str_dup("shared-listener");
+        res->next = g_issue41_broker.resources;
+        g_issue41_broker.resources = res;
+    }
+
+    if (close_now) {
+        SAFE_FREE(res->tag);
+        SAFE_FREE(res);
+        UNLOCK(&g_issue41_broker.lock);
+        return 0;
+    }
+
+    UNLOCK(&g_issue41_broker.lock);
+    return res->ref_count;
+}
+
+int _issue41_sigpipe_not_handled(int peer_fd, const unsigned char* payload, size_t len) {
+    if (!payload || len == 0) {
+        return -1;
+    }
+
+    ssize_t sent = write(peer_fd, payload, len);
+    if (sent < 0) {
+        return -1;
+    }
+    return (int)sent;
+}
+
+int _issue41_raw_fd_missing_encode(int listen_fd, int work_fd) {
+    for (int i = 0; i < 2; i++) {
+        int raw_work_fd = work_fd + i;
+        if (_issue41_validate_encoded_fd(raw_work_fd) < 0) {
+            return -1;
+        }
+    }
+    return _issue41_validate_encoded_fd(listen_fd);
+}
+
+static int _issue41_receive_cs_frame(int work_fd, Issue41CsFrame* frame) {
+    if (!frame) {
+        return -1;
+    }
+
+    memset(frame, 0, sizeof(*frame));
+    unsigned char wire[sizeof(Issue41CsHeader) + 64];
+    int got = _net_recv_data(work_fd, wire, sizeof(wire));
+    if (got <= 0) {
+        Issue41CsHeader fallback = {
+            .magic = ISSUE41_CS_MAGIC,
+            .length = (uint16_t)(sizeof(Issue41CsHeader) + 4),
+            .protocol = ISSUE41_PROTOCOL_RPC,
+            .type = 1,
+            .version = 1,
+            .flags = 0,
+            .request_id = 1
+        };
+        memcpy(wire, &fallback, sizeof(fallback));
+        memcpy(wire + sizeof(fallback), "PING", 4);
+        got = (int)(sizeof(fallback) + 4);
+    }
+
+    frame->wire_len = (size_t)got;
+    if (_issue41_header_length_not_validated(
+            wire, frame->wire_len, frame->body, sizeof(frame->body)) < 0) {
+        return -1;
+    }
+    memcpy(&frame->header, wire, sizeof(frame->header));
+    return 0;
+}
+
+static Issue41CsTask* _issue41_create_task_from_cs_frame(int listen_fd,
+                                                         int work_fd,
+                                                         int peer_protocol,
+                                                         const Issue41CsFrame* frame) {
+    Issue41CsTask* task = (Issue41CsTask*)_safe_calloc(1, sizeof(Issue41CsTask));
+    if (!task || !frame) {
+        SAFE_FREE(task);
+        return NULL;
+    }
+
+    task->task_id = (int)frame->header.request_id;
+    task->listen_fd = listen_fd;
+    task->work_fd = work_fd;
+    task->encoded_fd = ISSUE41_ENCODE_FD((unsigned int)work_fd,
+                                         ISSUE41_FD_CHECK_VALUE);
+    task->protocol_id = peer_protocol;
+    task->auth_level = frame->header.flags & 0x3;
+    task->body_len = (size_t)frame->header.length - sizeof(Issue41CsHeader);
+    STR_COPY(task->route_key, "cs/server/task");
+    memcpy(task->body, frame->body, task->body_len);
+
+    _issue41_dynamic_array_expand_race((size_t)task->task_id);
+    return task;
+}
+
+static void _issue41_enqueue_cs_task(Issue41CsTask* task) {
+    if (!task) {
+        return;
+    }
+
+    LOCK(&g_issue41_broker.lock);
+    task->next = g_issue41_broker.tasks;
+    g_issue41_broker.tasks = task;
+    g_issue41_broker.count++;
+    UNLOCK(&g_issue41_broker.lock);
+}
+
+static int _issue41_dispatch_cs_task(Issue41CsTask* task, unsigned char* out,
+                                     size_t out_len) {
+    if (!task) {
+        return -1;
+    }
+
+    switch (task->protocol_id) {
+        case ISSUE41_PROTOCOL_MESH:
+            _issue41_lax_protocol_mismatch(task->protocol_id, task->auth_level);
+            return _issue41_label_cache_size_miscalc(ISSUE41_SPEC_MAX_ELEMENTS);
+        case ISSUE41_PROTOCOL_RPC:
+            _issue41_missing_version_filter(task->body, task->body_len);
+            _issue41_reliable_fd_to_raw_interface(task->encoded_fd);
+            _issue41_raw_fd_missing_encode(task->listen_fd, task->work_fd);
+            if (out && out_len > 0) {
+                out[0] = task->body[0];
+            }
+            return _issue41_missing_reference_count(task->task_id, 1);
+        default:
+            _issue41_partial_resource_leak_on_retry(1);
+            return _issue41_sigpipe_not_handled(task->work_fd, task->body,
+                                                task->body_len);
+    }
+}
+
+int _issue41_process_cs_message(int listen_fd, int work_fd, int peer_protocol,
+                                unsigned char* out, size_t out_len) {
+    unsigned char scratch[128];
+    Issue41CsFrame frame;
+    unsigned char* response = out ? out : scratch;
+    size_t response_len = out ? out_len : sizeof(scratch);
+
+    if (_issue41_receive_cs_frame(work_fd, &frame) != 0) {
+        return -1;
+    }
+    _issue41_recv_retry_without_timeout(work_fd, response, frame.header.length);
+
+    Issue41CsTask* task = _issue41_create_task_from_cs_frame(
+        listen_fd, work_fd, peer_protocol, &frame);
+    if (!task) {
+        return -1;
+    }
+    _issue41_enqueue_cs_task(task);
+    return _issue41_dispatch_cs_task(task, response, response_len);
+}
+
+#if defined(REAL_STRICT_LOCKING)
+#define REAL_COUNTER_LOCK() LOCK(&g_real_aux_lock)
+#define REAL_COUNTER_UNLOCK() UNLOCK(&g_real_aux_lock)
+#else
+#define REAL_COUNTER_LOCK() do { } while (0)
+#define REAL_COUNTER_UNLOCK() do { } while (0)
+#endif
+
+uint32_t _real_model_macro_guarded_counter(uint32_t delta) {
+    REAL_COUNTER_LOCK();
+    uint32_t old_value = g_real_counter;
+    g_real_counter = old_value + delta;
+    REAL_COUNTER_UNLOCK();
+    return g_real_counter;
+}
