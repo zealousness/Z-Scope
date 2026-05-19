@@ -28,7 +28,8 @@ Run the cheap candidate layer first:
 ```bash
 python scripts/external_benchmark.py run-prepared \
   --suite-root benchmarks/external/workspace/juliet_memory_sample \
-  --mode candidates
+  --condition candidate_layer \
+  --run-kind smoke
 ```
 
 Then run the full LLM-backed pipeline when API credentials and backend tools are
@@ -40,8 +41,29 @@ export Z_SCOPE_MODEL="gpt-5.2"
 export Z_SCOPE_API_KEY="..."
 python scripts/external_benchmark.py run-prepared \
   --suite-root benchmarks/external/workspace/juliet_memory_sample \
-  --mode zscope
+  --condition full_zscope_pipeline \
+  --run-kind sample
 ```
+
+Each run writes `summary.json`, `evaluation.json`, and `evaluation_views.json`.
+`summary.json` uses schema `zscope.benchmark.v2` and includes environment
+metadata, default and `with_needs_review` metrics, trajectory references,
+cost metrics, final-answer/final-outcome separation, and a deterministic grader
+rubric.
+
+For a multi-condition comparison over the same generated ground truth:
+
+```bash
+python scripts/external_benchmark.py run-matrix \
+  --suite-root benchmarks/external/workspace/juliet_memory_sample \
+  --conditions pure_llm_entry_source pure_llm_repo_context full_zscope_pipeline \
+  --trials 3 \
+  --run-kind sample
+```
+
+The matrix writes `matrix_summary.json` with per-condition precision/recall/F1
+mean/stdev and stability metrics: issue Jaccard, true-positive overlap, and
+false-positive overlap.
 
 ## Prepare Examples
 
@@ -109,11 +131,51 @@ benchmark config defaults to:
 
 Use the same generated `ground_truth.json` for three comparable runs:
 
-1. pure model over the entry function source only
-2. pure model with repo context but without Z-SCOPE candidates
-3. full Z-SCOPE with regex candidates, graph candidates, backend signals,
+1. `pure_llm_entry_source`: pure model over the entry function source only
+2. `pure_llm_repo_context`: pure model with repo context but without Z-SCOPE candidates
+3. `full_zscope_pipeline`: full Z-SCOPE with regex candidates, graph candidates, backend signals,
    Deep Worker, and Validator
 
 This keeps the base model constant and measures the value of Z-SCOPE's evidence
 and verification layers rather than model choice.
+
+## Formal Run Commands
+
+Juliet formal selection:
+
+```bash
+python scripts/external_benchmark.py prepare-juliet \
+  --source /path/to/Juliet/C \
+  --workspace benchmarks/external/workspace \
+  --name juliet_memory_formal \
+  --max-cases 0
+```
+
+SV-COMP formal selection:
+
+```bash
+python scripts/external_benchmark.py prepare-svcomp \
+  --source /path/to/sv-benchmarks/c \
+  --workspace benchmarks/external/workspace \
+  --name svcomp_memsafety_formal \
+  --max-cases 0 \
+  --properties valid-memtrack valid-free valid-deref valid-memsafety data-race
+```
+
+Magma target formal selection:
+
+```bash
+python scripts/external_benchmark.py prepare-magma \
+  --magma-root /path/to/magma \
+  --target libpng \
+  --target-source /mnt/c/tmp/zscope_external_sources/magma_full/libpng/repo \
+  --workspace benchmarks/external/workspace \
+  --name magma_libpng_formal \
+  --max-bugs 0 \
+  --copy-full-source
+```
+
+In all three prepare commands, `0` means "all matched cases/bugs", not zero
+cases. Pair formal suites with `run-prepared --run-kind formal` or
+`run-matrix --run-kind formal`.
 

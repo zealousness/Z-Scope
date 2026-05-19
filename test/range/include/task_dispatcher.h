@@ -121,6 +121,10 @@ int td_configure_rules(const char* path, size_t len, size_t offset);
 int td_handle_mesh_message(const char* msg, int transport_id);
 int td_update_subscription(const char* topic);
 int td_control_pipe(int pipe_id);
+int td_handle_real_protocol_message(int fd, const char* fallback_key,
+                                    unsigned char* out, size_t out_size);
+int td_handle_distributed_cs_message(int listen_fd, int work_fd, int peer_protocol,
+                                     unsigned char* out, size_t out_size);
 int td_update_os_policy(const char* os_name, int pid, const char* proc_name,
                         const char* policy_key, int route_key, uint32_t delta);
 

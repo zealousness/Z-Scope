@@ -177,7 +177,12 @@ class LLMClient:
         tool_calls_map: Dict[Any, Dict[str, Any]] = {}
         finish_reason = "stop"
 
-        for chunk in self._iter_chat_chunks(response):
+        stream_deadline = max(float(self.timeout) * 3.0, 300.0)
+        for chunk in self._iter_chat_chunks(
+            response,
+            max_stream_seconds=stream_deadline,
+            max_idle_valid_chunk_seconds=float(self.timeout),
+        ):
             choices = chunk.get("choices", [])
             if not choices:
                 continue
@@ -225,13 +230,45 @@ class LLMClient:
         return assembled_message, finish_reason
 
     @staticmethod
-    def _iter_chat_chunks(response: requests.Response) -> Iterable[Dict[str, Any]]:
+    def _iter_chat_chunks(
+        response: requests.Response,
+        *,
+        max_stream_seconds: Optional[float] = None,
+        max_idle_valid_chunk_seconds: Optional[float] = None,
+    ) -> Iterable[Dict[str, Any]]:
+        stream_started_at = time.monotonic()
+        last_valid_chunk_at = stream_started_at
         for line in response.iter_lines():
+            now = time.monotonic()
+            if (
+                max_stream_seconds is not None
+                and now - stream_started_at > max_stream_seconds
+            ):
+                raise TimeoutError(
+                    f"Chat completion stream exceeded {max_stream_seconds:.0f}s"
+                )
+
             if not line:
+                if (
+                    max_idle_valid_chunk_seconds is not None
+                    and now - last_valid_chunk_at > max_idle_valid_chunk_seconds
+                ):
+                    raise TimeoutError(
+                        "Chat completion stream did not yield a valid JSON chunk "
+                        f"for {max_idle_valid_chunk_seconds:.0f}s"
+                    )
                 continue
             decoded_line = line.decode("utf-8") if isinstance(line, bytes) else str(line)
             decoded_line = decoded_line.strip()
             if not decoded_line:
+                if (
+                    max_idle_valid_chunk_seconds is not None
+                    and now - last_valid_chunk_at > max_idle_valid_chunk_seconds
+                ):
+                    raise TimeoutError(
+                        "Chat completion stream did not yield a valid JSON chunk "
+                        f"for {max_idle_valid_chunk_seconds:.0f}s"
+                    )
                 continue
             if decoded_line.startswith("data:"):
                 decoded_line = decoded_line[len("data:"):].strip()
@@ -245,6 +282,7 @@ class LLMClient:
                 logger.debug("Ignoring malformed chat completion line: %s", decoded_line[:200])
                 continue
             if isinstance(chunk, dict):
+                last_valid_chunk_at = time.monotonic()
                 yield chunk
 
     @staticmethod

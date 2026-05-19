@@ -1,8 +1,8 @@
 {
   "benchmark": "zscope-range-task-dispatcher",
-  "version": 6,
-  "total_vulnerabilities": 45,
-  "notes": "Canonical scorer truth. Do not expose to Z-SCOPE analysis context. Version 6 adds nested child-list cleanup leaks, AVL full-key/truncated-key mismatch, stale AVL node after failure cleanup, and macro-gated locking races.",
+  "version": 8,
+  "total_vulnerabilities": 87,
+  "notes": "Canonical scorer truth. Do not expose to Z-SCOPE analysis context. Version 8 adds a high-tier ISSUE41-* suite derived from GitHub issue #41 distributed C/S messaging and task-creation models.",
   "vulnerabilities": [
     {
       "id": "RANGE-001",
@@ -14,7 +14,13 @@
       "line": 57,
       "end_line": 58,
       "severity": "high",
-      "keywords": ["payload_length", "memcpy", "len", "out-of-bounds", "task buffer"]
+      "keywords": [
+        "payload_length",
+        "memcpy",
+        "len",
+        "out-of-bounds",
+        "task buffer"
+      ]
     },
     {
       "id": "RANGE-002",
@@ -28,7 +34,13 @@
       "severity": "high",
       "scope": "internal_contract",
       "notes": "Valid when the internal Task object is treated as untrusted at this entry. Through the current parser path payload_length is capped by MAX_TASK_SIZE, so reports should ideally mention the entry-scope assumption.",
-      "keywords": ["size * 2", "integer overflow", "response_buffer", "memcpy", "Task"]
+      "keywords": [
+        "size * 2",
+        "integer overflow",
+        "response_buffer",
+        "memcpy",
+        "Task"
+      ]
     },
     {
       "id": "RANGE-004",
@@ -40,7 +52,12 @@
       "line": 192,
       "end_line": 192,
       "severity": "high",
-      "keywords": ["printf", "g_log_buffer", "format string", "message"]
+      "keywords": [
+        "printf",
+        "g_log_buffer",
+        "format string",
+        "message"
+      ]
     },
     {
       "id": "RANGE-005",
@@ -52,7 +69,13 @@
       "line": 97,
       "end_line": 99,
       "severity": "high",
-      "keywords": ["LOCK", "_plugin_lookup", "registry->mutex", "deadlock", "recursive"]
+      "keywords": [
+        "LOCK",
+        "_plugin_lookup",
+        "registry->mutex",
+        "deadlock",
+        "recursive"
+      ]
     },
     {
       "id": "RANGE-006",
@@ -64,7 +87,12 @@
       "line": 156,
       "end_line": 162,
       "severity": "high",
-      "keywords": ["free", "temp_buffer", "resource_a", "double free"]
+      "keywords": [
+        "free",
+        "temp_buffer",
+        "resource_a",
+        "double free"
+      ]
     },
     {
       "id": "RANGE-007",
@@ -76,7 +104,12 @@
       "line": 191,
       "end_line": 206,
       "severity": "medium",
-      "keywords": ["error_msg", "recovery_buffer", "leak", "free"]
+      "keywords": [
+        "error_msg",
+        "recovery_buffer",
+        "leak",
+        "free"
+      ]
     },
     {
       "id": "RANGE-009",
@@ -88,7 +121,12 @@
       "line": 82,
       "end_line": 82,
       "severity": "medium",
-      "keywords": ["g_shared_counter", "++", "race", "worker"]
+      "keywords": [
+        "g_shared_counter",
+        "++",
+        "race",
+        "worker"
+      ]
     },
     {
       "id": "RANGE-011",
@@ -100,7 +138,12 @@
       "line": 356,
       "end_line": 361,
       "severity": "medium",
-      "keywords": ["_check_file_permission", "fopen", "TOCTOU", "path"]
+      "keywords": [
+        "_check_file_permission",
+        "fopen",
+        "TOCTOU",
+        "path"
+      ]
     },
     {
       "id": "RANGE-012",
@@ -116,7 +159,13 @@
       "secondary_line": 220,
       "secondary_end_line": 236,
       "severity": "critical",
-      "keywords": ["system", "TASK_ENV", "strcat", "shell", "command injection"]
+      "keywords": [
+        "system",
+        "TASK_ENV",
+        "strcat",
+        "shell",
+        "command injection"
+      ]
     },
     {
       "id": "RANGE-013",
@@ -128,7 +177,13 @@
       "line": 149,
       "end_line": 157,
       "severity": "medium",
-      "keywords": ["thread_ids", "_safe_calloc", "pthread_create", "memory leak", "never freed"]
+      "keywords": [
+        "thread_ids",
+        "_safe_calloc",
+        "pthread_create",
+        "memory leak",
+        "never freed"
+      ]
     },
     {
       "id": "RANGE-014",
@@ -144,7 +199,14 @@
       "secondary_line": 151,
       "secondary_end_line": 166,
       "severity": "high",
-      "keywords": ["_executor_cleanup_resources", "g_dispatcher.config", "SharedResources", "pthread_mutex_destroy", "type confusion", "invalid mutex"]
+      "keywords": [
+        "_executor_cleanup_resources",
+        "g_dispatcher.config",
+        "SharedResources",
+        "pthread_mutex_destroy",
+        "type confusion",
+        "invalid mutex"
+      ]
     },
     {
       "id": "RANGE-015",
@@ -156,7 +218,13 @@
       "line": 175,
       "end_line": 186,
       "severity": "high",
-      "keywords": ["max_len + 1", "integer overflow", "_net_recv_data", "buffer", "heap overflow"]
+      "keywords": [
+        "max_len + 1",
+        "integer overflow",
+        "_net_recv_data",
+        "buffer",
+        "heap overflow"
+      ]
     },
     {
       "id": "RANGE-016",
@@ -172,7 +240,13 @@
       "secondary_line": 276,
       "secondary_end_line": 280,
       "severity": "medium",
-      "keywords": ["g_running", "volatile", "td_cleanup", "data race", "pthread_cond_broadcast"]
+      "keywords": [
+        "g_running",
+        "volatile",
+        "td_cleanup",
+        "data race",
+        "pthread_cond_broadcast"
+      ]
     },
     {
       "id": "RANGE-017",
@@ -184,7 +258,14 @@
       "line": 223,
       "end_line": 240,
       "severity": "high",
-      "keywords": ["total_len", "sizeof(TaskHeader)", "payload_len", "memcpy", "integer overflow", "uint32_t"]
+      "keywords": [
+        "total_len",
+        "sizeof(TaskHeader)",
+        "payload_len",
+        "memcpy",
+        "integer overflow",
+        "uint32_t"
+      ]
     },
     {
       "id": "RANGE-018",
@@ -196,7 +277,13 @@
       "line": 95,
       "end_line": 104,
       "severity": "high",
-      "keywords": ["strchr", "sep", "NULL", "sep[1]", "control message"]
+      "keywords": [
+        "strchr",
+        "sep",
+        "NULL",
+        "sep[1]",
+        "control message"
+      ]
     },
     {
       "id": "RANGE-019",
@@ -208,7 +295,13 @@
       "line": 121,
       "end_line": 130,
       "severity": "high",
-      "keywords": ["g_lifecycle.entries", "entry->value", "published", "half-initialized", "object publication"]
+      "keywords": [
+        "g_lifecycle.entries",
+        "entry->value",
+        "published",
+        "half-initialized",
+        "object publication"
+      ]
     },
     {
       "id": "RANGE-020",
@@ -224,7 +317,13 @@
       "secondary_line": 152,
       "secondary_end_line": 159,
       "severity": "high",
-      "keywords": ["borrowed", "value", "UNLOCK", "remove", "use-after-free"]
+      "keywords": [
+        "borrowed",
+        "value",
+        "UNLOCK",
+        "remove",
+        "use-after-free"
+      ]
     },
     {
       "id": "RANGE-021",
@@ -240,7 +339,14 @@
       "secondary_line": 190,
       "secondary_end_line": 199,
       "severity": "high",
-      "keywords": ["ref_count", "++", "--", "UNLOCK", "race", "use-after-free"]
+      "keywords": [
+        "ref_count",
+        "++",
+        "--",
+        "UNLOCK",
+        "race",
+        "use-after-free"
+      ]
     },
     {
       "id": "RANGE-022",
@@ -256,7 +362,13 @@
       "secondary_line": 152,
       "secondary_end_line": 159,
       "severity": "high",
-      "keywords": ["callback", "g_callback_entry", "g_entry_callback", "remove", "use-after-free"]
+      "keywords": [
+        "callback",
+        "g_callback_entry",
+        "g_entry_callback",
+        "remove",
+        "use-after-free"
+      ]
     },
     {
       "id": "RANGE-023",
@@ -268,7 +380,13 @@
       "line": 225,
       "end_line": 230,
       "severity": "medium",
-      "keywords": ["LOCK", "g_entry_callback", "callback", "under lock", "deadlock"]
+      "keywords": [
+        "LOCK",
+        "g_entry_callback",
+        "callback",
+        "under lock",
+        "deadlock"
+      ]
     },
     {
       "id": "RANGE-024",
@@ -284,7 +402,13 @@
       "secondary_line": 234,
       "secondary_end_line": 238,
       "severity": "high",
-      "keywords": ["FlushJob job", "pthread_create", "&job", "pthread_detach", "stack escape"]
+      "keywords": [
+        "FlushJob job",
+        "pthread_create",
+        "&job",
+        "pthread_detach",
+        "stack escape"
+      ]
     },
     {
       "id": "RANGE-025",
@@ -296,7 +420,13 @@
       "line": 263,
       "end_line": 267,
       "severity": "high",
-      "keywords": ["LOCK", "g_config_lock", "return -1", "missing unlock", "error path"]
+      "keywords": [
+        "LOCK",
+        "g_config_lock",
+        "return -1",
+        "missing unlock",
+        "error path"
+      ]
     },
     {
       "id": "RANGE-026",
@@ -308,7 +438,13 @@
       "line": 277,
       "end_line": 285,
       "severity": "medium",
-      "keywords": ["g_active_config", "double checked", "LOCK", "lazy", "race"]
+      "keywords": [
+        "g_active_config",
+        "double checked",
+        "LOCK",
+        "lazy",
+        "race"
+      ]
     },
     {
       "id": "RANGE-027",
@@ -320,7 +456,13 @@
       "line": 288,
       "end_line": 294,
       "severity": "medium",
-      "keywords": ["pthread_cond_wait", "if", "pending_jobs", "lost wakeup", "while"]
+      "keywords": [
+        "pthread_cond_wait",
+        "if",
+        "pending_jobs",
+        "lost wakeup",
+        "while"
+      ]
     },
     {
       "id": "RANGE-028",
@@ -332,7 +474,13 @@
       "line": 299,
       "end_line": 306,
       "severity": "high",
-      "keywords": ["_safe_realloc", "g_metrics", "old pointer", "leak", "count * sizeof"]
+      "keywords": [
+        "_safe_realloc",
+        "g_metrics",
+        "old pointer",
+        "leak",
+        "count * sizeof"
+      ]
     },
     {
       "id": "RANGE-029",
@@ -344,7 +492,13 @@
       "line": 317,
       "end_line": 322,
       "severity": "high",
-      "keywords": ["received", "size_t", "copy_len", "memcpy", "signed"]
+      "keywords": [
+        "received",
+        "size_t",
+        "copy_len",
+        "memcpy",
+        "signed"
+      ]
     },
     {
       "id": "RANGE-030",
@@ -356,7 +510,13 @@
       "line": 331,
       "end_line": 333,
       "severity": "high",
-      "keywords": ["topic", "sizeof(topic)", "off-by-one", "stack buffer", "NUL"]
+      "keywords": [
+        "topic",
+        "sizeof(topic)",
+        "off-by-one",
+        "stack buffer",
+        "NUL"
+      ]
     },
     {
       "id": "RANGE-031",
@@ -368,7 +528,13 @@
       "line": 338,
       "end_line": 342,
       "severity": "medium",
-      "keywords": ["StatusReply", "reply", "_net_send_data", "uninitialized", "padding"]
+      "keywords": [
+        "StatusReply",
+        "reply",
+        "_net_send_data",
+        "uninitialized",
+        "padding"
+      ]
     },
     {
       "id": "RANGE-032",
@@ -380,7 +546,13 @@
       "line": 350,
       "end_line": 354,
       "severity": "high",
-      "keywords": ["strchr", "free", "value + 1", "invalid free", "non-heap"]
+      "keywords": [
+        "strchr",
+        "free",
+        "value + 1",
+        "invalid free",
+        "non-heap"
+      ]
     },
     {
       "id": "RANGE-033",
@@ -392,7 +564,13 @@
       "line": 358,
       "end_line": 361,
       "severity": "high",
-      "keywords": ["field_count", "VLA", "stack", "field_count * 128", "stack overflow"]
+      "keywords": [
+        "field_count",
+        "VLA",
+        "stack",
+        "field_count * 128",
+        "stack overflow"
+      ]
     },
     {
       "id": "RANGE-034",
@@ -404,7 +582,13 @@
       "line": 364,
       "end_line": 370,
       "severity": "medium",
-      "keywords": ["packet + 1", "uint32_t", "cast", "unaligned", "strict alias"]
+      "keywords": [
+        "packet + 1",
+        "uint32_t",
+        "cast",
+        "unaligned",
+        "strict alias"
+      ]
     },
     {
       "id": "RANGE-035",
@@ -420,7 +604,13 @@
       "secondary_line": 388,
       "secondary_end_line": 392,
       "severity": "medium",
-      "keywords": ["g_watched_fd", "close", "_net_recv_data", "stale fd", "event"]
+      "keywords": [
+        "g_watched_fd",
+        "close",
+        "_net_recv_data",
+        "stale fd",
+        "event"
+      ]
     },
     {
       "id": "RANGE-036",
@@ -436,7 +626,13 @@
       "secondary_line": 422,
       "secondary_end_line": 428,
       "severity": "high",
-      "keywords": ["munmap", "g_rules_map", "g_rules_len", "use-after-free", "mmap"]
+      "keywords": [
+        "munmap",
+        "g_rules_map",
+        "g_rules_len",
+        "use-after-free",
+        "mmap"
+      ]
     },
     {
       "id": "RANGE-037",
@@ -453,7 +649,13 @@
       "secondary_end_line": 550,
       "severity": "high",
       "subtype": "GCR-A",
-      "keywords": ["pfnDropSession", "NULL", "pfnAddSession", "global container", "missing hook"]
+      "keywords": [
+        "pfnDropSession",
+        "NULL",
+        "pfnAddSession",
+        "global container",
+        "missing hook"
+      ]
     },
     {
       "id": "RANGE-038",
@@ -470,7 +672,13 @@
       "secondary_end_line": 607,
       "severity": "high",
       "subtype": "GCR-B",
-      "keywords": ["OPEN", "_control_session_add_to_global", "customize", "global container", "missing cleanup"]
+      "keywords": [
+        "OPEN",
+        "_control_session_add_to_global",
+        "customize",
+        "global container",
+        "missing cleanup"
+      ]
     },
     {
       "id": "RANGE-039",
@@ -486,7 +694,13 @@
       "secondary_line": 526,
       "secondary_end_line": 541,
       "severity": "high",
-      "keywords": ["DETACH", "_control_session_detach_without_release", "UNLOCK", "owner", "leak"]
+      "keywords": [
+        "DETACH",
+        "_control_session_detach_without_release",
+        "UNLOCK",
+        "owner",
+        "leak"
+      ]
     },
     {
       "id": "RANGE-040",
@@ -502,7 +716,13 @@
       "secondary_line": 609,
       "secondary_end_line": 626,
       "severity": "medium",
-      "keywords": ["GuardedSubscription", "pthread_mutex_init", "SAFE_FREE", "pthread_mutex_destroy", "leak"]
+      "keywords": [
+        "GuardedSubscription",
+        "pthread_mutex_init",
+        "SAFE_FREE",
+        "pthread_mutex_destroy",
+        "leak"
+      ]
     },
     {
       "id": "RANGE-041",
@@ -518,7 +738,13 @@
       "secondary_line": 721,
       "secondary_end_line": 723,
       "severity": "high",
-      "keywords": ["g_pipe_scheduler.sched_lock", "ctrl_lock", "LOCK", "opposite order", "deadlock"]
+      "keywords": [
+        "g_pipe_scheduler.sched_lock",
+        "ctrl_lock",
+        "LOCK",
+        "opposite order",
+        "deadlock"
+      ]
     },
     {
       "id": "RANGE-042",
@@ -534,7 +760,13 @@
       "secondary_line": 685,
       "secondary_end_line": 706,
       "severity": "high",
-      "keywords": ["pipe->next = pipe", "self", "while", "pipe = pipe->next", "infinite loop"]
+      "keywords": [
+        "pipe->next = pipe",
+        "self",
+        "while",
+        "pipe = pipe->next",
+        "infinite loop"
+      ]
     },
     {
       "id": "RANGE-043",
@@ -546,7 +778,13 @@
       "line": 695,
       "end_line": 700,
       "severity": "medium",
-      "keywords": ["LOG_ERROR", "poison_marker", "pipe = pipe->next", "self", "resource exhaustion"]
+      "keywords": [
+        "LOG_ERROR",
+        "poison_marker",
+        "pipe = pipe->next",
+        "self",
+        "resource exhaustion"
+      ]
     },
     {
       "id": "RANGE-044",
@@ -562,7 +800,13 @@
       "secondary_line": 721,
       "secondary_end_line": 723,
       "severity": "medium",
-      "keywords": ["timer", "ctrl_lock", "g_pipe_scheduler.sched_lock", "wait", "deadlock"]
+      "keywords": [
+        "timer",
+        "ctrl_lock",
+        "g_pipe_scheduler.sched_lock",
+        "wait",
+        "deadlock"
+      ]
     },
     {
       "id": "RANGE-045",
@@ -578,7 +822,13 @@
       "secondary_line": 794,
       "secondary_end_line": 820,
       "severity": "high",
-      "keywords": ["OSNode", "ProcNode", "proc_head", "SAFE_FREE(os)", "child list leak"]
+      "keywords": [
+        "OSNode",
+        "ProcNode",
+        "proc_head",
+        "SAFE_FREE(os)",
+        "child list leak"
+      ]
     },
     {
       "id": "RANGE-046",
@@ -594,7 +844,13 @@
       "secondary_line": 857,
       "secondary_end_line": 867,
       "severity": "medium",
-      "keywords": ["strcmp", "full_key", "strncpy", "POLICY_AVL_KEY_LIMIT", "truncated"]
+      "keywords": [
+        "strcmp",
+        "full_key",
+        "strncpy",
+        "POLICY_AVL_KEY_LIMIT",
+        "truncated"
+      ]
     },
     {
       "id": "RANGE-047",
@@ -610,7 +866,13 @@
       "secondary_line": 945,
       "secondary_end_line": 953,
       "severity": "high",
-      "keywords": ["_route_avl_insert_node", "fail_after_insert", "free(node)", "duplicate_next", "use-after-free"]
+      "keywords": [
+        "_route_avl_insert_node",
+        "fail_after_insert",
+        "free(node)",
+        "duplicate_next",
+        "use-after-free"
+      ]
     },
     {
       "id": "RANGE-048",
@@ -622,7 +884,1113 @@
       "line": 960,
       "end_line": 972,
       "severity": "medium",
-      "keywords": ["MACRO_GUARDED_LOCK", "__x86_64__", "do { } while", "g_macro_guarded_counter", "race"]
+      "keywords": [
+        "MACRO_GUARDED_LOCK",
+        "__x86_64__",
+        "do { } while",
+        "g_macro_guarded_counter",
+        "race"
+      ]
+    },
+    {
+      "id": "REAL-001",
+      "cwe": "CWE-662",
+      "category": "race",
+      "title": "Module cleanup unlinks a node under the registry lock then frees members after releasing the lock",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_module_cleanup_race",
+      "line": 1,
+      "end_line": 1,
+      "severity": "critical",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-001",
+      "keywords": [
+        "issue-40",
+        "VM-001",
+        "unlink",
+        "unlock",
+        "free",
+        "registry",
+        "race",
+        "use-after-free"
+      ]
+    },
+    {
+      "id": "REAL-002",
+      "cwe": "CWE-772",
+      "category": "memory_leak",
+      "title": "OS node removal frees the parent while child ProcNode-style records remain linked and uncollected",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_osnode_remove_race",
+      "line": 1,
+      "end_line": 1,
+      "severity": "critical",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-002",
+      "keywords": [
+        "issue-40",
+        "VM-002",
+        "OS node",
+        "child list",
+        "unlink",
+        "SAFE_FREE",
+        "resource leak"
+      ]
+    },
+    {
+      "id": "REAL-003",
+      "cwe": "CWE-415",
+      "category": "double_free",
+      "title": "Shared rollback path frees the same payload twice when the second initialization stage fails",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_error_branch_double_cleanup",
+      "line": 1,
+      "end_line": 1,
+      "severity": "critical",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-003",
+      "keywords": [
+        "issue-40",
+        "VM-003",
+        "rollback",
+        "free",
+        "payload",
+        "double free"
+      ]
+    },
+    {
+      "id": "REAL-004",
+      "cwe": "CWE-772",
+      "category": "memory_leak",
+      "title": "Component destroy detaches a node but returns on configuration removal failure before releasing it",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_comp_destroy_detach_leak",
+      "line": 1,
+      "end_line": 1,
+      "severity": "critical",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-004",
+      "keywords": [
+        "issue-40",
+        "VM-004",
+        "component destroy",
+        "detach",
+        "config remove",
+        "leak"
+      ]
+    },
+    {
+      "id": "REAL-005",
+      "cwe": "CWE-772",
+      "category": "memory_leak",
+      "title": "System file unregister frees the wrapper node while leaking its dynamically allocated path payload",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_unregister_file_leak",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-005",
+      "keywords": [
+        "issue-40",
+        "VM-005",
+        "unregister",
+        "file node",
+        "payload",
+        "leak"
+      ]
+    },
+    {
+      "id": "REAL-006",
+      "cwe": "CWE-772",
+      "category": "memory_leak",
+      "title": "Activation failure rollback unlinks a globally registered node but drops nested session resources",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_activation_rollback_gap",
+      "line": 1,
+      "end_line": 1,
+      "severity": "critical",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-006",
+      "keywords": [
+        "issue-40",
+        "VM-006",
+        "activation",
+        "rollback",
+        "global registry",
+        "child resource",
+        "leak"
+      ]
+    },
+    {
+      "id": "REAL-007",
+      "cwe": "CWE-772",
+      "category": "memory_leak",
+      "title": "Reader-channel cleanup ignores the stored role and invokes the creator-only release path",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_reader_channel_role_leak",
+      "line": 1,
+      "end_line": 1,
+      "severity": "critical",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-007",
+      "keywords": [
+        "issue-40",
+        "VM-007",
+        "reader channel",
+        "role",
+        "hardcoded",
+        "release path",
+        "leak"
+      ]
+    },
+    {
+      "id": "REAL-008",
+      "cwe": "CWE-401",
+      "category": "memory_leak",
+      "title": "Error logging path allocates a formatted message copy and returns without releasing it",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_log_buffer_leak",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-013",
+      "keywords": [
+        "issue-40",
+        "VM-013",
+        "log",
+        "LOG_ERROR",
+        "allocated message",
+        "leak"
+      ]
+    },
+    {
+      "id": "REAL-009",
+      "cwe": "CWE-362",
+      "category": "object_publication",
+      "title": "Initialization publishes a registry node before mutex and payload initialization complete",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_init_sequence_publication",
+      "line": 1,
+      "end_line": 1,
+      "severity": "critical",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-014",
+      "keywords": [
+        "issue-40",
+        "VM-014",
+        "initialization",
+        "published",
+        "payload",
+        "mutex",
+        "race"
+      ]
+    },
+    {
+      "id": "REAL-010",
+      "cwe": "CWE-704",
+      "category": "alignment",
+      "title": "Message decoder casts an unaligned packet offset to uint32_t after only a two-byte length check",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_message_alignment_overread",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-010",
+      "keywords": [
+        "issue-40",
+        "VM-010",
+        "alignment",
+        "packet + 1",
+        "uint32_t",
+        "overread",
+        "td_handle_real_protocol_message",
+        "_real_model_process_protocol_task",
+        "protocol dispatch"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_real_model_decode_protocol_header",
+      "secondary_line": 1,
+      "secondary_end_line": 1,
+      "flow": "real_protocol_message_flow"
+    },
+    {
+      "id": "REAL-011",
+      "cwe": "CWE-772",
+      "category": "memory_leak",
+      "title": "Patch unload frees the primary patch node but misses the table-node child allocation",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_patch_unload_member_leak",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-011",
+      "keywords": [
+        "issue-40",
+        "VM-011",
+        "patch unload",
+        "table-node",
+        "child",
+        "leak"
+      ]
+    },
+    {
+      "id": "REAL-012",
+      "cwe": "CWE-252",
+      "category": "memory_leak",
+      "title": "AVL insertion failure is ignored after linking the node, losing ownership and cleanup state",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_avl_insert_unchecked_return",
+      "line": 1,
+      "end_line": 1,
+      "severity": "critical",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-012",
+      "keywords": [
+        "issue-40",
+        "VM-012",
+        "AVL",
+        "insert return",
+        "unchecked",
+        "linked node",
+        "leak"
+      ]
+    },
+    {
+      "id": "REAL-013",
+      "cwe": "CWE-682",
+      "category": "bounds",
+      "title": "Protocol length calculation trusts a packet unit count and can copy beyond the supplied frame",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_protocol_length_miscalc",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-013B",
+      "keywords": [
+        "issue-40",
+        "VM-013",
+        "protocol",
+        "length calculation",
+        "units * 8",
+        "memcpy",
+        "bounds",
+        "td_handle_real_protocol_message",
+        "_real_model_process_protocol_task",
+        "protocol dispatch"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_real_model_dispatch_protocol_message",
+      "secondary_line": 1,
+      "secondary_end_line": 1,
+      "flow": "real_protocol_message_flow"
+    },
+    {
+      "id": "REAL-014",
+      "cwe": "CWE-20",
+      "category": "bounds",
+      "title": "Offline parser reads record count before validating the expected 64-bit magic value",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_magic64_missing_check",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-014B",
+      "keywords": [
+        "issue-40",
+        "VM-014",
+        "magic",
+        "64-bit",
+        "parser",
+        "count",
+        "validation",
+        "td_handle_real_protocol_message",
+        "_real_model_process_protocol_task",
+        "protocol dispatch"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_real_model_decode_protocol_header",
+      "secondary_line": 1,
+      "secondary_end_line": 1,
+      "flow": "real_protocol_message_flow"
+    },
+    {
+      "id": "REAL-015",
+      "cwe": "CWE-772",
+      "category": "memory_leak",
+      "title": "Resource-table unload releases the table shell without walking nested bucket records",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_resource_table_unload_leak",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-015",
+      "keywords": [
+        "issue-40",
+        "VM-015",
+        "resource table",
+        "nested bucket",
+        "unload",
+        "leak"
+      ]
+    },
+    {
+      "id": "REAL-016",
+      "cwe": "CWE-662",
+      "category": "object_publication",
+      "title": "Ready flag is set before the shared node reaches its final initialized state",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_atomic_order_flag_race",
+      "line": 1,
+      "end_line": 1,
+      "severity": "critical",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-016",
+      "keywords": [
+        "issue-40",
+        "VM-016",
+        "ready flag",
+        "memory order",
+        "publication",
+        "race"
+      ]
+    },
+    {
+      "id": "REAL-017",
+      "cwe": "CWE-772",
+      "category": "memory_leak",
+      "title": "Patch tree cleanup frees the root record while leaking left and right child records",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_patch_tree_child_leak",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-017",
+      "keywords": [
+        "issue-40",
+        "VM-017",
+        "patch tree",
+        "child nodes",
+        "cleanup",
+        "leak"
+      ]
+    },
+    {
+      "id": "REAL-018",
+      "cwe": "CWE-772",
+      "category": "memory_leak",
+      "title": "Peak-stat query allocates a PID statistics buffer and returns copied data without releasing it",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_peak_stats_leak",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-018",
+      "keywords": [
+        "issue-40",
+        "VM-018",
+        "peak stats",
+        "pid list",
+        "query",
+        "leak"
+      ]
+    },
+    {
+      "id": "REAL-019",
+      "cwe": "CWE-400",
+      "category": "busy_loop",
+      "title": "Network header receive loop spins on repeated receive failures with no delay or exit path",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_recv_busy_loop",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-NDC",
+      "keywords": [
+        "issue-40",
+        "network receive",
+        "while",
+        "continue",
+        "no delay",
+        "CPU DoS",
+        "td_handle_real_protocol_message",
+        "_real_model_process_protocol_task",
+        "protocol dispatch"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_real_model_receive_protocol_frame",
+      "secondary_line": 1,
+      "secondary_end_line": 1,
+      "flow": "real_protocol_message_flow"
+    },
+    {
+      "id": "REAL-020",
+      "cwe": "CWE-252",
+      "category": "unchecked_return",
+      "title": "Secure-channel probe returns a successful status when the receive-based classifier fails",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_ssl_error_returns_ok",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-SSL",
+      "keywords": [
+        "issue-40",
+        "ssl",
+        "receive failure",
+        "return OK",
+        "error handling",
+        "td_handle_real_protocol_message",
+        "_real_model_process_protocol_task",
+        "protocol dispatch"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_real_model_dispatch_protocol_message",
+      "secondary_line": 1,
+      "secondary_end_line": 1,
+      "flow": "real_protocol_message_flow"
+    },
+    {
+      "id": "REAL-021",
+      "cwe": "CWE-772",
+      "category": "memory_leak",
+      "title": "Client cleanup sends a hardcoded role parameter even though the channel role is available",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_hardcoded_role_release",
+      "line": 1,
+      "end_line": 1,
+      "severity": "critical",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-RCRP",
+      "keywords": [
+        "issue-40",
+        "RCRP",
+        "hardcoded role",
+        "member",
+        "server release",
+        "leak",
+        "td_handle_real_protocol_message",
+        "_real_model_process_protocol_task",
+        "protocol dispatch"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_real_model_dispatch_protocol_message",
+      "secondary_line": 1,
+      "secondary_end_line": 1,
+      "flow": "real_protocol_message_flow"
+    },
+    {
+      "id": "REAL-022",
+      "cwe": "CWE-672",
+      "category": "state_inconsistency",
+      "title": "System-call failure leaves local registry state changed instead of restoring the previous value",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_syscall_state_not_restored",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-SII",
+      "keywords": [
+        "issue-40",
+        "system call",
+        "fcntl",
+        "state not restored",
+        "failure path"
+      ]
+    },
+    {
+      "id": "REAL-023",
+      "cwe": "CWE-667",
+      "category": "missing_unlock",
+      "title": "Allocation failure path returns while still holding the auxiliary lifecycle lock",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_missing_unlock_after_alloc",
+      "line": 1,
+      "end_line": 1,
+      "severity": "critical",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-LOCK",
+      "keywords": [
+        "issue-40",
+        "LOCK",
+        "allocation failure",
+        "return -1",
+        "missing unlock"
+      ]
+    },
+    {
+      "id": "REAL-024",
+      "cwe": "CWE-362",
+      "category": "refcount_race",
+      "title": "Reference count is incremented after the lookup lock has been dropped",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_refcount_after_unlock",
+      "line": 1,
+      "end_line": 1,
+      "severity": "critical",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-REF",
+      "keywords": [
+        "issue-40",
+        "refcount",
+        "unlock",
+        "increment",
+        "race",
+        "use-after-free"
+      ]
+    },
+    {
+      "id": "REAL-025",
+      "cwe": "CWE-667",
+      "category": "held_lock_callback",
+      "title": "External callback is invoked while the global registry lock is held",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_callback_under_lock",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-CALLBACK",
+      "keywords": [
+        "issue-40",
+        "callback",
+        "under lock",
+        "registry lock",
+        "deadlock"
+      ]
+    },
+    {
+      "id": "REAL-026",
+      "cwe": "CWE-562",
+      "category": "stack_escape",
+      "title": "Detached async worker receives the address of a stack-allocated job descriptor",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_detached_stack_job",
+      "line": 1,
+      "end_line": 1,
+      "severity": "critical",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-ASYNC",
+      "keywords": [
+        "issue-40",
+        "pthread_create",
+        "pthread_detach",
+        "stack job",
+        "stack escape"
+      ]
+    },
+    {
+      "id": "REAL-027",
+      "cwe": "CWE-401",
+      "category": "realloc_misuse",
+      "title": "Metrics resize overwrites the only global pointer with the realloc result",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_realloc_lost_pointer",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-REALLOC",
+      "keywords": [
+        "issue-40",
+        "realloc",
+        "old pointer",
+        "metrics",
+        "leak"
+      ]
+    },
+    {
+      "id": "REAL-028",
+      "cwe": "CWE-195",
+      "category": "signed_unsigned",
+      "title": "Negative receive result is cast to size_t and used as a memcpy length",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_signed_recv_to_size",
+      "line": 1,
+      "end_line": 1,
+      "severity": "critical",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-SIGNED",
+      "keywords": [
+        "issue-40",
+        "negative",
+        "size_t",
+        "memcpy",
+        "signed unsigned",
+        "td_handle_real_protocol_message",
+        "_real_model_process_protocol_task",
+        "protocol dispatch"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_real_model_dispatch_protocol_message",
+      "secondary_line": 1,
+      "secondary_end_line": 1,
+      "flow": "real_protocol_message_flow"
+    },
+    {
+      "id": "REAL-029",
+      "cwe": "CWE-672",
+      "category": "stale_fd",
+      "title": "Closed descriptor remains globally watched and is reused for later receive dispatch",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_stale_fd_after_close",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-FD",
+      "keywords": [
+        "issue-40",
+        "close",
+        "stale fd",
+        "watched fd",
+        "recv",
+        "td_handle_real_protocol_message",
+        "_real_model_process_protocol_task",
+        "protocol dispatch"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_real_model_dispatch_protocol_message",
+      "secondary_line": 1,
+      "secondary_end_line": 1,
+      "flow": "real_protocol_message_flow"
+    },
+    {
+      "id": "REAL-030",
+      "cwe": "CWE-187",
+      "category": "key_truncation",
+      "title": "Policy route lookup uses the full key while insertion stores a truncated key",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_key_truncation_route",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-KEY",
+      "keywords": [
+        "issue-40",
+        "full key",
+        "truncated key",
+        "strncpy",
+        "lookup insert mismatch",
+        "td_handle_real_protocol_message",
+        "_real_model_process_protocol_task",
+        "protocol dispatch"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_real_model_dispatch_protocol_message",
+      "secondary_line": 1,
+      "secondary_end_line": 1,
+      "flow": "real_protocol_message_flow"
+    },
+    {
+      "id": "REAL-031",
+      "cwe": "CWE-362",
+      "category": "race",
+      "title": "Macro-guarded shared counter update compiles to a no-op lock outside strict builds",
+      "file": "src/lifecycle.c",
+      "function": "_real_model_macro_guarded_counter",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue40",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
+      "source_model": "VM-MACRO",
+      "keywords": [
+        "issue-40",
+        "macro guarded",
+        "no-op lock",
+        "shared counter",
+        "race"
+      ]
+    },
+    {
+      "id": "ISSUE41-001",
+      "cwe": "CWE-190/CWE-131",
+      "category": "size_limit_mismatch",
+      "title": "Collection label cache uses a fixed byte limit smaller than the stated element-count specification",
+      "file": "src/lifecycle.c",
+      "function": "_issue41_label_cache_size_miscalc",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue41",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/41",
+      "source_model": "VM-001 DSBL-SizeMiscalc",
+      "keywords": [
+        "issue-41",
+        "label cache",
+        "fixed limit",
+        "spec max elements",
+        "size miscalculation",
+        "td_handle_distributed_cs_message",
+        "_issue41_process_cs_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue41_dispatch_cs_task",
+      "secondary_line": 1,
+      "secondary_end_line": 1,
+      "flow": "distributed_cs_message_flow"
+    },
+    {
+      "id": "ISSUE41-002",
+      "cwe": "CWE-120/CWE-129",
+      "category": "bounds",
+      "title": "C/S protocol receive path trusts the message length after checking only the magic field",
+      "file": "src/lifecycle.c",
+      "function": "_issue41_header_length_not_validated",
+      "line": 1,
+      "end_line": 1,
+      "severity": "critical",
+      "tier": "real_project_issue41",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/41",
+      "source_model": "VM-002 MPCW-HeaderValidation",
+      "keywords": [
+        "issue-41",
+        "message header",
+        "magic",
+        "length",
+        "buffer overflow",
+        "receive frame",
+        "_issue41_receive_cs_frame"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue41_receive_cs_frame",
+      "secondary_line": 1,
+      "secondary_end_line": 1,
+      "flow": "distributed_cs_message_flow"
+    },
+    {
+      "id": "ISSUE41-003",
+      "cwe": "CWE-835",
+      "category": "busy_loop",
+      "title": "Receive retry loop repeats EAGAIN and EINTR forever without timeout or retry budget",
+      "file": "src/lifecycle.c",
+      "function": "_issue41_recv_retry_without_timeout",
+      "line": 1,
+      "end_line": 1,
+      "severity": "critical",
+      "tier": "real_project_issue41",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/41",
+      "source_model": "VM-003 RRT-TimeoutMitigation",
+      "keywords": [
+        "issue-41",
+        "EAGAIN",
+        "EINTR",
+        "retry",
+        "timeout",
+        "busy loop",
+        "_issue41_process_cs_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue41_process_cs_message",
+      "secondary_line": 1,
+      "secondary_end_line": 1,
+      "flow": "distributed_cs_message_flow"
+    },
+    {
+      "id": "ISSUE41-004",
+      "cwe": "CWE-628",
+      "category": "fd_type_mismatch",
+      "title": "Reliable fd with high check bits is passed to a lower-layer interface that expects a raw fd",
+      "file": "src/lifecycle.c",
+      "function": "_issue41_reliable_fd_to_raw_interface",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue41",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/41",
+      "source_model": "VM-004 FDTC-MismatchedParameterType",
+      "keywords": [
+        "issue-41",
+        "reliable fd",
+        "raw fd",
+        "high check bits",
+        "mismatched parameter type",
+        "_issue41_dispatch_cs_task"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue41_dispatch_cs_task",
+      "secondary_line": 1,
+      "secondary_end_line": 1,
+      "flow": "distributed_cs_message_flow"
+    },
+    {
+      "id": "ISSUE41-005",
+      "cwe": "CWE-346",
+      "category": "protocol_mixup",
+      "title": "Protocol mismatch is detected but accepted under default non-strict authentication mode",
+      "file": "src/lifecycle.c",
+      "function": "_issue41_lax_protocol_mismatch",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue41",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/41",
+      "source_model": "VM-005 PMMP-LaxProtocolMismatchProtection",
+      "keywords": [
+        "issue-41",
+        "protocol mismatch",
+        "auth level",
+        "strict mode",
+        "returns success",
+        "CS protocol"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue41_dispatch_cs_task",
+      "secondary_line": 1,
+      "secondary_end_line": 1,
+      "flow": "distributed_cs_message_flow"
+    },
+    {
+      "id": "ISSUE41-006",
+      "cwe": "CWE-401/CWE-457",
+      "category": "partial_resource_leak",
+      "title": "Multi-step C/S initialization leaks a partition on failure and retry can use an uninitialized tag",
+      "file": "src/lifecycle.c",
+      "function": "_issue41_partial_resource_leak_on_retry",
+      "line": 1,
+      "end_line": 1,
+      "severity": "critical",
+      "tier": "real_project_issue41",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/41",
+      "source_model": "VM-006 PRL-PartialResourceLeakOnRetry",
+      "keywords": [
+        "issue-41",
+        "partial resource leak",
+        "retry",
+        "partition",
+        "uninitialized",
+        "tag",
+        "_issue41_process_cs_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue41_dispatch_cs_task",
+      "secondary_line": 1,
+      "secondary_end_line": 1,
+      "flow": "distributed_cs_message_flow"
+    },
+    {
+      "id": "ISSUE41-007",
+      "cwe": "CWE-362/CWE-415",
+      "category": "dynamic_array_race",
+      "title": "Task array expansion updates a global pointer and frees the old array without synchronization",
+      "file": "src/lifecycle.c",
+      "function": "_issue41_dynamic_array_expand_race",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue41",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/41",
+      "source_model": "VM-007 DAE-RiskDynamicArrayExpansion",
+      "keywords": [
+        "issue-41",
+        "dynamic array",
+        "realloc",
+        "global pointer",
+        "race",
+        "double free",
+        "task creation"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue41_create_task_from_cs_frame",
+      "secondary_line": 1,
+      "secondary_end_line": 1,
+      "flow": "distributed_cs_message_flow"
+    },
+    {
+      "id": "ISSUE41-008",
+      "cwe": "CWE-20",
+      "category": "version_filtering",
+      "title": "High-version subscriber processes low-version state reports without filtering version zero",
+      "file": "src/lifecycle.c",
+      "function": "_issue41_missing_version_filter",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue41",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/41",
+      "source_model": "VM-008 VIC-MissingVersionFiltering",
+      "keywords": [
+        "issue-41",
+        "version",
+        "version zero",
+        "low version",
+        "state report",
+        "missing filter",
+        "_issue41_dispatch_cs_task"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue41_dispatch_cs_task",
+      "secondary_line": 1,
+      "secondary_end_line": 1,
+      "flow": "distributed_cs_message_flow"
+    },
+    {
+      "id": "ISSUE41-009",
+      "cwe": "CWE-772",
+      "category": "missing_refcount",
+      "title": "Shared listener resource is closed and freed without checking outstanding references",
+      "file": "src/lifecycle.c",
+      "function": "_issue41_missing_reference_count",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue41",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/41",
+      "source_model": "VM-009 RCR-MissingReferenceCount",
+      "keywords": [
+        "issue-41",
+        "reference count",
+        "shared resource",
+        "close",
+        "cleanup notification",
+        "resource residual"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue41_dispatch_cs_task",
+      "secondary_line": 1,
+      "secondary_end_line": 1,
+      "flow": "distributed_cs_message_flow"
+    },
+    {
+      "id": "ISSUE41-010",
+      "cwe": "CWE-404",
+      "category": "sigpipe_unhandled",
+      "title": "Client write to a closed peer can raise SIGPIPE because the C/S send path never masks the signal",
+      "file": "src/lifecycle.c",
+      "function": "_issue41_sigpipe_not_handled",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue41",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/41",
+      "source_model": "VM-010 SSP-SIGPipeNotHandled",
+      "keywords": [
+        "issue-41",
+        "SIGPIPE",
+        "write",
+        "closed peer",
+        "signal",
+        "not handled",
+        "CS send"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue41_dispatch_cs_task",
+      "secondary_line": 1,
+      "secondary_end_line": 1,
+      "flow": "distributed_cs_message_flow"
+    },
+    {
+      "id": "ISSUE41-011",
+      "cwe": "CWE-587",
+      "category": "fd_encoding_mismatch",
+      "title": "Work fd attribute setup passes raw fd indexes to validation code that expects encoded fds",
+      "file": "src/lifecycle.c",
+      "function": "_issue41_raw_fd_missing_encode",
+      "line": 1,
+      "end_line": 1,
+      "severity": "high",
+      "tier": "real_project_issue41",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/41",
+      "source_model": "VM-011 FEM-FdEndiannessMismatch",
+      "keywords": [
+        "issue-41",
+        "encoded fd",
+        "raw fd",
+        "check value",
+        "fd validation",
+        "missing encode",
+        "_issue41_dispatch_cs_task"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue41_dispatch_cs_task",
+      "secondary_line": 1,
+      "secondary_end_line": 1,
+      "flow": "distributed_cs_message_flow"
     }
   ],
   "excluded_vulnerabilities": [
@@ -641,5 +2009,19 @@
       "former_title": "Plugin dispatch and executor task path acquire lock_a/lock_b in opposite order",
       "reason": "_plugin_dispatch locks g_shared_resources.lock_b then lock_a, while _executor_execute_task locks g_exec_resources.lock_a then lock_b. These are different mutex objects, so the original lock-order deadlock claim is not concrete in the current fixture."
     }
-  ]
+  ],
+  "tiers": {
+    "legacy_range": {
+      "weight": 1,
+      "description": "Original synthetic range benchmark findings."
+    },
+    "real_project_issue40": {
+      "weight": 3,
+      "description": "Higher-priority real-project abstract models imported from GitHub issue #40."
+    },
+    "real_project_issue41": {
+      "weight": 3,
+      "description": "Higher-priority distributed C/S messaging and task-creation models imported from GitHub issue #41."
+    }
+  }
 }

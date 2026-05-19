@@ -1,5 +1,5 @@
 {
-  "description": "Fixed Z-SCOPE benchmark entry list for the task dispatcher fixture. Entries intentionally omit custom prompts so the benchmark measures generic analysis behavior.",
+  "description": "Fixed Z-SCOPE benchmark entry list for the task dispatcher fixture. Entries intentionally omit custom prompts so the benchmark measures generic analysis behavior. Includes high-tier REAL-* and ISSUE41-* entries derived from real-project abstract models.",
   "functions": [
     {
       "function_name": "td_init",
@@ -239,6 +239,190 @@
     },
     {
       "function_name": "_lifecycle_macro_guarded_counter_update",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_module_cleanup_race",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_osnode_remove_race",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_error_branch_double_cleanup",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_comp_destroy_detach_leak",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_unregister_file_leak",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_activation_rollback_gap",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_reader_channel_role_leak",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_log_buffer_leak",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_init_sequence_publication",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_message_alignment_overread",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_patch_unload_member_leak",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_avl_insert_unchecked_return",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_protocol_length_miscalc",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_magic64_missing_check",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_resource_table_unload_leak",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_atomic_order_flag_race",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_patch_tree_child_leak",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_peak_stats_leak",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_recv_busy_loop",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_ssl_error_returns_ok",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_hardcoded_role_release",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_syscall_state_not_restored",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_missing_unlock_after_alloc",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_refcount_after_unlock",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_callback_under_lock",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_detached_stack_job",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_realloc_lost_pointer",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_signed_recv_to_size",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_stale_fd_after_close",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_key_truncation_route",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_real_model_macro_guarded_counter",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "td_handle_real_protocol_message",
+      "file_path": "src/main.c"
+    },
+    {
+      "function_name": "_real_model_process_protocol_task",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "td_handle_distributed_cs_message",
+      "file_path": "src/main.c"
+    },
+    {
+      "function_name": "_issue41_process_cs_message",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue41_label_cache_size_miscalc",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue41_header_length_not_validated",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue41_recv_retry_without_timeout",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue41_reliable_fd_to_raw_interface",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue41_lax_protocol_mismatch",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue41_partial_resource_leak_on_retry",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue41_dynamic_array_expand_race",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue41_missing_version_filter",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue41_missing_reference_count",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue41_sigpipe_not_handled",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue41_raw_fd_missing_encode",
       "file_path": "src/lifecycle.c"
     }
   ]
