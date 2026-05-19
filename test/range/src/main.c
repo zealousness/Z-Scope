@@ -406,6 +406,17 @@ int td_control_pipe(int pipe_id) {
     return _lifecycle_dispatch_pipe_tick(pipe_id);
 }
 
+int td_handle_real_protocol_message(int fd, const char* fallback_key,
+                                    unsigned char* out, size_t out_size) {
+    return _real_model_process_protocol_task(fd, fallback_key, out, out_size);
+}
+
+int td_handle_distributed_cs_message(int listen_fd, int work_fd, int peer_protocol,
+                                     unsigned char* out, size_t out_size) {
+    return _issue41_process_cs_message(listen_fd, work_fd, peer_protocol,
+                                       out, out_size);
+}
+
 int td_update_os_policy(const char* os_name, int pid, const char* proc_name,
                         const char* policy_key, int route_key, uint32_t delta) {
     _lifecycle_register_os_node(os_name);

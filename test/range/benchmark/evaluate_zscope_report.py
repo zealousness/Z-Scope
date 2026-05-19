@@ -288,6 +288,18 @@ def category_matches(issue: dict[str, Any], truth: dict[str, Any]) -> bool:
         "stack overflow": ("stack overflow", "vla", "stack buffer", "cwe-121"),
         "alignment": ("unaligned", "alignment", "strict alias", "cwe-704"),
         "stale fd": ("stale fd", "file descriptor", "closed fd", "cwe-672"),
+        "state inconsistency": ("state not restored", "state inconsistency", "system call", "rollback", "cwe-672"),
+        "unchecked return": ("unchecked return", "unchecked result", "return ok", "return success", "error handling", "cwe-252"),
+        "busy loop": ("busy loop", "spin", "no delay", "resource exhaustion", "cwe-400"),
+        "size limit mismatch": ("size limit", "fixed limit", "buffer limit", "spec", "cwe-131", "cwe-190"),
+        "fd type mismatch": ("fd type", "reliable fd", "raw fd", "mismatched parameter", "cwe-628"),
+        "protocol mixup": ("protocol mismatch", "protocol mixup", "auth level", "origin validation", "cwe-346"),
+        "partial resource leak": ("partial resource leak", "resource leak", "retry", "uninitialized", "cwe-401", "cwe-457"),
+        "dynamic array race": ("dynamic array", "array expansion", "race", "double free", "cwe-362", "cwe-415"),
+        "version filtering": ("version", "missing version", "low version", "filter", "cwe-20"),
+        "missing refcount": ("refcount", "reference count", "shared resource", "cleanup", "cwe-772"),
+        "sigpipe unhandled": ("sigpipe", "signal", "closed peer", "not handled", "cwe-404"),
+        "fd encoding mismatch": ("encoded fd", "fd encoding", "check value", "raw fd", "cwe-587"),
         "type confusion": (
             "type confusion",
             "wrong type",
@@ -355,6 +367,37 @@ def score(
 
     missed = [v["id"] for v in vulns if v["id"] not in matched_truth]
     matched = sorted(matched_truth)
+    tier_metrics: dict[str, dict[str, Any]] = {}
+    weighted_total = 0
+    weighted_matched = 0
+    for vuln in vulns:
+        tier = str(vuln.get("tier") or "legacy_range")
+        weight = int(vuln.get("weight") or truth.get("tiers", {}).get(tier, {}).get("weight") or 1)
+        weighted_total += weight
+        bucket = tier_metrics.setdefault(
+            tier,
+            {
+                "ground_truth_count": 0,
+                "true_positives": 0,
+                "false_negatives": 0,
+                "weight": weight,
+                "matched": [],
+                "missed": [],
+            },
+        )
+        bucket["ground_truth_count"] += 1
+        if vuln["id"] in matched_truth:
+            bucket["true_positives"] += 1
+            bucket["matched"].append(vuln["id"])
+            weighted_matched += weight
+        else:
+            bucket["false_negatives"] += 1
+            bucket["missed"].append(vuln["id"])
+
+    for bucket in tier_metrics.values():
+        count = int(bucket["ground_truth_count"])
+        bucket["recall"] = round(bucket["true_positives"] / count, 4) if count else 0.0
+
     return {
         "benchmark": truth.get("benchmark", "unknown"),
         "report_issue_count": len(issues),
@@ -366,6 +409,8 @@ def score(
         "false_positive_rate": round(false_positive_rate, 4),
         "recall": round(recall, 4),
         "f1": round(f1, 4),
+        "weighted_recall": round(weighted_matched / weighted_total, 4) if weighted_total else 0.0,
+        "tier_metrics": tier_metrics,
         "matched": matched,
         "missed": missed,
     }

@@ -53,6 +53,8 @@ project:
     - .zscope_knowledge
     - .zscope_snapshots
     - benchmark/ground_truth.json
+    - benchmark/ISSUE40_REAL_MODEL_MAPPING.md
+    - benchmark/ISSUE41_CS_MODEL_MAPPING.md
     - GROUND_TRUTH.md
     - DELIVERY.md
 

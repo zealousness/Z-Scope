@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ ! -r /proc/version ]] || ! grep -qiE 'microsoft|wsl' /proc/version; then
+  echo "[range] ERROR: range benchmark must run inside WSL/Linux for SVF/Saber." >&2
+  echo "[range]        Launch with: wsl bash -lc 'cd /mnt/c/Users/10273/home/work/Z-Scope && test/range/benchmark/run_zscope_scan.sh'" >&2
+  exit 2
+fi
+
 cd /mnt/c/Users/10273/home/work/Z-Scope
 
 if [[ -f test/range/zscope.local.env ]]; then
@@ -39,8 +45,8 @@ for tool in gclang get-bc llvm-link wpa saber; do
   fi
 done
 if ((${#missing_svf[@]})); then
-  echo "[range] WARNING: SVF/gllvm tools missing: ${missing_svf[*]}" >&2
-  echo "[range]          unified backend will continue with clang evidence only." >&2
+  echo "[range] ERROR: missing required WSL SVF/gllvm tools: ${missing_svf[*]}" >&2
+  exit 2
 fi
 
 echo "[range] configure CMake"

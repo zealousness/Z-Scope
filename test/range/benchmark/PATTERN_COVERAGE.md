@@ -3,7 +3,12 @@
 Source document: `docs/c_memory_concurrency_patterns.md`.
 
 This matrix records how the `test/range` benchmark maps the pattern catalog to
-realistic task-dispatcher code. Version 6 extends `src/lifecycle.c`, a lifecycle
+realistic task-dispatcher code. Version 8 adds a high-priority `ISSUE41-*` tier
+from GitHub issue #41 distributed C/S messaging and task-creation models.
+Version 7 adds a high-priority `REAL-*` tier from GitHub issue #40 real-project
+abstract vulnerability models; those entries are weighted above the original
+`RANGE-*` findings by the scorer. Version 6
+extends `src/lifecycle.c`, a lifecycle
 and cache subsystem that exercises the missing patterns through normal project
 surfaces: control messages, cache entries, callbacks, async flush workers,
 config reload, condition variables, fd events, mmap-backed rule tables,
@@ -17,7 +22,7 @@ normalization, stale tree-node, and macro-gated lock coverage.
 | --- | --- | --- |
 | Null pointer dereference | RANGE-018 | Missing delimiter in control-message parsing. |
 | Out-of-bounds read/write | RANGE-001, RANGE-030 | Parser length trust and fixed stack buffer off-by-one. |
-| Integer overflow in allocation/copy size | RANGE-002, RANGE-015, RANGE-017 | Binary payload, network receive, and serialization paths. |
+| Integer overflow in allocation/copy size | RANGE-002, RANGE-015, RANGE-017, ISSUE41-001 | Binary payload, network receive, serialization paths, and issue #41 spec-vs-fixed-label-limit mismatch. |
 | Signed/unsigned conversion | RANGE-029 | Negative receive result converted to `size_t`. |
 | Use-after-free / stale lifetime | RANGE-020, RANGE-022, RANGE-036, RANGE-047 | Cache borrowed pointer, callback context, unmapped rule table, and stale AVL node after failure cleanup. |
 | Double free | RANGE-006 | Cleanup path frees the same local allocation twice. |
@@ -29,14 +34,14 @@ normalization, stale tree-node, and macro-gated lock coverage.
 | Type confusion / wrong cleanup type | RANGE-014 | `TaskConfig*` passed to a cleanup routine expecting `SharedResources*`. |
 | Alignment / strict-aliasing-sensitive cast | RANGE-034 | Wire bytes cast from `packet + 1` to `uint32_t*`. |
 | Format string | RANGE-004 | Global log buffer used as the `printf` format string. |
-| Infinite loop / algorithmic DoS | RANGE-042, RANGE-043 | Self-referential list node traps traversal and repeats error logging. |
+| Infinite loop / algorithmic DoS | RANGE-042, RANGE-043, ISSUE41-003 | Self-referential list node traps traversal, repeated error logging, and receive retry with no timeout. |
 | Key truncation / lookup-insert mismatch | RANGE-046 | AVL lookup compares full strings while insertion stores only a truncated key. |
 
 ## Concurrency Patterns
 
 | Pattern family | Covered by | Notes |
 | --- | --- | --- |
-| Data race on shared state | RANGE-009, RANGE-016, RANGE-048 | Unsynchronized counter, shutdown flag, and architecture-specific no-op locking. |
+| Data race on shared state | RANGE-009, RANGE-016, RANGE-048, ISSUE41-007 | Unsynchronized counter, shutdown flag, architecture-specific no-op locking, and task-array expansion without synchronization. |
 | Non-atomic read-modify-write | RANGE-009, RANGE-021 | Counter increment and refcount changes. |
 | Check-then-act / TOCTOU | RANGE-011, RANGE-020, RANGE-026, RANGE-035, RANGE-036 | File permission check, borrowed cache value, lazy config, stale fd, and stale mmap pointer. |
 | Deadlock / recursive locking | RANGE-005, RANGE-041, RANGE-044 | Registry recursive lock, scheduler/control ABBA lock inversion, and timer callback cascade waiting. |
@@ -46,7 +51,7 @@ normalization, stale tree-node, and macro-gated lock coverage.
 | Double-checked locking / unsafe publication | RANGE-019, RANGE-026 | Half-initialized cache entry publication and lazy config read. |
 | Thread lifecycle / detached async work | RANGE-013, RANGE-024 | Thread argument ownership and detached worker argument lifetime. |
 | Concurrent container modification | RANGE-019, RANGE-020, RANGE-021, RANGE-022 | Cache list mutation, borrowed values, and refcount races. |
-| Refcount lifetime errors | RANGE-021 | Refcount updates happen after dropping the container lock. |
+| Refcount lifetime errors | RANGE-021, ISSUE41-009 | Refcount updates happen after dropping the container lock, and shared listener cleanup ignores outstanding references. |
 | Event and fd reuse lifetime | RANGE-035 | Closed fd remains globally watched. |
 | Flag-controlled lifetime | RANGE-016 | Shutdown flag read/write lacks synchronization. |
 | Global-container registration lifecycle | RANGE-037, RANGE-038, RANGE-039, RANGE-040, RANGE-045 | Message actions allocate and register sessions/subscriptions into global containers, while cleanup is missing, unreachable, incomplete, or ignores nested child nodes. |
@@ -57,7 +62,7 @@ normalization, stale tree-node, and macro-gated lock coverage.
 | Trigger surface from the pattern doc | Covered by | Implementation surface |
 | --- | --- | --- |
 | Public API and init/deinit | RANGE-013, RANGE-014, RANGE-016 | `td_init`, `td_cleanup`, worker startup/shutdown. |
-| Message or serialized input | RANGE-001, RANGE-017, RANGE-018, RANGE-029, RANGE-031, RANGE-034, RANGE-037, RANGE-038, RANGE-039 | Task parser, serializer, lifecycle control message, packet/status wire paths, and message action fields that drive registration or release. |
+| Message or serialized input | RANGE-001, RANGE-017, RANGE-018, RANGE-029, RANGE-031, RANGE-034, RANGE-037, RANGE-038, RANGE-039, ISSUE41-002, ISSUE41-008 | Task parser, serializer, lifecycle control message, packet/status wire paths, and message action fields that drive registration, version-dependent state handling, or release. |
 | Callback/function pointer/plugin | RANGE-005, RANGE-022, RANGE-023 | Plugin registry and lifecycle callback storage/firing. |
 | Event loop/fd dispatch | RANGE-035 | Watched connection close and later dispatch. |
 | Scheduler/pipe dispatch | RANGE-041, RANGE-042, RANGE-043, RANGE-044 | Pipe dispatch, close, and timer callbacks interact through scheduler and control-block locks. |
@@ -96,6 +101,25 @@ normalization, stale tree-node, and macro-gated lock coverage.
 | Full-key lookup vs truncated-key insert | RANGE-046 | `_policy_avl_find_full_key` compares caller full keys against stored keys, while upsert inserts only `POLICY_AVL_KEY_LIMIT` bytes. |
 | AVL insert failure leaves stale freed node | RANGE-047 | `_lifecycle_avl_register_route` inserts before later failure cleanup, then frees the node without removing AVL or duplicate-list links. |
 | Macro-gated locking | RANGE-048 | `MACRO_GUARDED_LOCK` protects shared state only on selected 64-bit build macros and is a no-op otherwise. |
+
+## Real Project Issue #40 Tier Added In v7
+
+| Variant family | Covered by | Notes |
+| --- | --- | --- |
+| Global registry lifecycle and cleanup races | REAL-001, REAL-002, REAL-004, REAL-006, REAL-011, REAL-015, REAL-017, REAL-018 | Issue-derived node/list/tree cleanup cases with unlink-before-free, nested member leaks, rollback gaps, and query-time allocation leaks. |
+| Role/path/state-sensitive release mistakes | REAL-007, REAL-021, REAL-022 | Models client/server role-parameter mismatches and system-call failure paths that leave local state changed. |
+| Initialization, publication, and memory-order failures | REAL-009, REAL-016, REAL-024, REAL-025, REAL-026, REAL-031 | Covers premature publication, refcount-after-unlock, callback-under-lock, stack async jobs, and macro-gated synchronization. |
+| Parser, protocol, and wire-format defects | REAL-010, REAL-013, REAL-014, REAL-019, REAL-020, REAL-028, REAL-029, REAL-030 | Routed through `td_handle_real_protocol_message` and `_real_model_process_protocol_task`: receive frame, decode header, dispatch by message type, then hit alignment, length miscalculation, missing magic checks, busy receive loops, wrong success returns, signed length casts, stale fd reuse, and key truncation. |
+| Error-path resource ownership mistakes | REAL-003, REAL-005, REAL-008, REAL-012, REAL-023, REAL-027 | Covers double cleanup, unregister leaks, log-path leaks, unchecked insert results, missing unlocks, and realloc pointer loss. |
+
+## Distributed C/S Issue #41 Tier Added In v8
+
+| Variant family | Covered by | Notes |
+| --- | --- | --- |
+| C/S receive and protocol validation | ISSUE41-002, ISSUE41-003, ISSUE41-005, ISSUE41-010 | Routed through `td_handle_distributed_cs_message` and `_issue41_process_cs_message`: receive a peer frame, trust an unchecked length after magic validation, retry EAGAIN/EINTR without timeout, accept protocol mismatch in non-strict auth mode, and write to closed peers without SIGPIPE mitigation. |
+| Task creation and task-index lifecycle | ISSUE41-006, ISSUE41-007, ISSUE41-009 | Task creation and retry paths exercise partial initialization leaks, dynamic global task-array expansion races, and resource cleanup without reference-count checks. |
+| Wire compatibility and fd conversion | ISSUE41-004, ISSUE41-008, ISSUE41-011 | Models reliable-fd/raw-fd type confusion, missing cross-version filtering, and raw work-fd values passed to validators expecting encoded fds. |
+| Spec-vs-runtime capacity mismatch | ISSUE41-001 | Collection registration and label-cache replacement model a hidden fixed byte cap that is lower than the declared element-count specification. |
 
 ## Deliberately Not Scored In v3
 
