@@ -63,6 +63,9 @@ venv.bak/
 *.swp
 *.swo
 *~
+*.bak
+*.out
+*.err
 
 # Dependencies (local installs)
 dependency/
@@ -74,6 +77,7 @@ zscope.local.yaml
 .zscope_conversations*/
 .zscope_knowledge/
 workspace/
+tmp/
 *.log
 report.json
 report.md

@@ -6,6 +6,7 @@ import json
 import sys
 from typing import Any, Dict, Optional, cast
 
+from .._version import __version__
 from ..config.config import ConfigLoader
 from .provider import ZScopeMcpProvider
 
@@ -27,7 +28,7 @@ def handle_jsonrpc_request(
                 "protocolVersion": "2024-11-05",
                 "serverInfo": {
                     "name": "zscope-mcp",
-                    "version": "0.1.0",
+                    "version": __version__,
                 },
                 "capabilities": {
                     "resources": {},

@@ -1,0 +1,319 @@
+from pathlib import Path
+
+import pytest
+
+from zscope.config.user_config_store import UserConfigStore
+from zscope.config.user_config_workbook import SHEET_HEADERS
+from zscope.web.services import (
+    CpgService,
+    ConfigService,
+    ReportFeedbackService,
+    SourceSnippetService,
+    UserConfigService,
+    WorkbookService,
+)
+
+
+def test_workbook_payload_includes_all_user_config_sheets(tmp_path: Path) -> None:
+    store = UserConfigStore(tmp_path / "user_config.xlsx")
+
+    payload = WorkbookService(store).payload()
+    service_payload = WorkbookService(store).payload()
+
+    assert payload["headers"] == SHEET_HEADERS
+    assert service_payload["headers"] == SHEET_HEADERS
+    assert set(payload["rows"]) == set(SHEET_HEADERS)
+    assert [sheet["name"] for sheet in payload["sheets"]] == list(SHEET_HEADERS)
+    for sheet in payload["sheets"]:
+        assert sheet["headers"] == SHEET_HEADERS[sheet["name"]]
+        assert sheet["rows"] == []
+
+
+def test_workbook_rows_payload_round_trips_through_store(tmp_path: Path) -> None:
+    store = UserConfigStore(tmp_path / "user_config.xlsx")
+    rows = {name: [] for name in SHEET_HEADERS}
+    rows["dispatcher"] = [
+        {
+            "dispatcher_name": "ZipDispatch",
+            "file_path": "src/zip.c",
+            "message_type": "ZIP_OPEN",
+            "handler_name": "handle_zip_open",
+            "handler_kind": "callback",
+            "resource": "zip_handle",
+            "pair": "handle_zip_close",
+            "description": "zip dispatcher branch",
+            "source": "user",
+            "confidence": "0.90",
+            "notes": "added from dashboard",
+        }
+    ]
+
+    parsed_rows = WorkbookService.rows_from_payload({"rows": rows})
+    store.workbook.write_rows(parsed_rows)
+    payload = WorkbookService(store).payload()
+
+    assert payload["rows"]["dispatcher"] == rows["dispatcher"]
+
+
+def test_workbook_rows_payload_accepts_sheet_list_shape() -> None:
+    payload = {
+        "sheets": [
+            {
+                "name": "module_lifecycle",
+                "rows": [
+                    {
+                        "symbol_name": "ZipInit",
+                        "file_path": "src/zip.c",
+                        "kind": "init",
+                        "pair": "ZipFinit",
+                    }
+                ],
+            }
+        ]
+    }
+
+    rows = WorkbookService.rows_from_payload(payload)
+
+    assert rows["module_lifecycle"][0]["symbol_name"] == "ZipInit"
+    assert rows["resource"] == []
+
+
+def test_workbook_rows_payload_rejects_unknown_shape() -> None:
+    with pytest.raises(ValueError, match="Expected workbook rows or sheets"):
+        WorkbookService.rows_from_payload({"items": []})
+
+
+def test_structured_config_round_trips_yaml_document(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    config = {
+        "project": {
+            "root": ".",
+            "source_root": ".",
+            "entry_function": "main",
+            "include_paths": ["include"],
+            "exclude_paths": ["build"],
+        },
+        "indexing": {"backend": "regex", "batch_size": 12},
+        "analysis": {"snapshot_dir": ".zscope_snapshots", "parallel_workers": 2},
+    }
+
+    service = ConfigService()
+    service.save_document(config)
+    payload = service.structured_payload()
+
+    assert payload["config"]["project"]["entry_function"] == "main"
+    assert payload["config"]["indexing"]["backend"] == "regex"
+    assert "Web UI 结构化配置编辑器" in (tmp_path / "zscope.yaml").read_text(encoding="utf-8")
+
+
+def test_workbook_import_normalizes_uploaded_xlsx(tmp_path: Path) -> None:
+    source = UserConfigStore(tmp_path / "source.xlsx")
+    rows = {name: [] for name in SHEET_HEADERS}
+    rows["resource"] = [
+        {
+            "symbol_name": "zip_alloc",
+            "kind": "alloc",
+            "symbol_type": "function",
+            "pair": "zip_free",
+            "description": "zip allocator",
+            "source": "user",
+            "confidence": "0.95",
+            "notes": "",
+        }
+    ]
+    source.workbook.write_rows(rows)
+
+    target = UserConfigStore(tmp_path / "target.xlsx")
+    upload = tmp_path / "target.upload.tmp.xlsx"
+    upload.write_bytes((tmp_path / "source.xlsx").read_bytes())
+    imported = type(target.workbook)(upload).read_rows()
+    target.workbook.write_rows(imported)
+
+    assert target.workbook.read_rows()["resource"][0]["symbol_name"] == "zip_alloc"
+
+
+def test_workbook_service_download_creates_empty_workbook(tmp_path: Path) -> None:
+    workbook_path = tmp_path / "download.xlsx"
+    store = UserConfigStore(workbook_path)
+    workbook_path.unlink(missing_ok=True)
+    service = WorkbookService(store)
+
+    data = service.download_bytes()
+
+    assert data
+    assert workbook_path.exists()
+    assert store.workbook.read_rows()["resource"] == []
+
+
+def test_config_service_uses_explicit_path(tmp_path: Path) -> None:
+    config_path = tmp_path / "custom.yaml"
+    service = ConfigService(config_path)
+
+    service.save_document({"project": {"entry_function": "main"}})
+
+    assert service.structured_payload()["config"]["project"]["entry_function"] == "main"
+    assert config_path.exists()
+
+
+def test_report_feedback_service_saves_validation_feedback(tmp_path: Path) -> None:
+    report_path = tmp_path / "report.json"
+    report_path.write_text(
+        """
+        {
+          "issues": [
+            {
+              "id": "ISSUE_1",
+              "function": "entry",
+              "location": "src/demo.c:42",
+              "defect_class": "double_free",
+              "validation_status": "pending",
+              "dedup_key": "double_free|entry|src/demo.c:42"
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+    store = UserConfigStore(tmp_path / "user_config.xlsx")
+    service = ReportFeedbackService(store, report_filename=str(report_path))
+
+    payload = service.save_validation_feedback(
+        [
+            {
+                "id": "ISSUE_1",
+                "function": "entry",
+                "location": "src/demo.c:42",
+                "defect_class": "double_free",
+                "validation_status": "rejected",
+                "validation_reasoning": "manual review",
+                "dedup_key": "double_free|entry|src/demo.c:42",
+            }
+        ]
+    )
+    saved = service.load_report()
+
+    assert payload["success"] is True
+    assert payload["db_persisted"] is True
+    assert saved["issues"][0]["validation_status"] == "rejected"
+    assert store.is_false_positive("entry", "src/demo.c:42", "double_free")
+    assert store.get_finding_baseline("double_free|entry|src/demo.c:42")["status"] == "false_positive"
+
+
+def test_source_snippet_service_resolves_only_configured_roots(tmp_path: Path) -> None:
+    source_root = tmp_path / "src"
+    source_root.mkdir()
+    source_file = source_root / "demo.c"
+    source_file.write_text("int a;\nint b;\nint c;\n", encoding="utf-8")
+    project_config = type(
+        "ProjectConfig",
+        (),
+        {"project_root": tmp_path, "source_root": source_root, "include_paths": []},
+    )()
+    service = SourceSnippetService(project_config)
+
+    status, payload = service.snippet_payload("path=demo.c&start=2&end=2&context=0")
+
+    assert status == 200
+    assert payload["lines"] == [{"no": 2, "text": "int b;"}]
+
+
+def test_user_config_service_crud_round_trips_external_function(tmp_path: Path) -> None:
+    store = UserConfigStore(tmp_path / "user_config.xlsx")
+    service = UserConfigService(store)
+
+    status, payload = service.upsert_resource(
+        "external_functions",
+        {
+            "func_name": "ZipAlloc",
+            "description": "zip allocator",
+            "library": "zip",
+            "return_semantics": "returns owned memory",
+        },
+    )
+
+    assert status == 200
+    assert payload == {"success": True}
+    status, listed = service.list_resource("external_functions")
+    assert status == 200
+    assert listed["items"][0]["func_name"] == "ZipAlloc"
+
+    status, payload = service.delete_resource("external_functions", {"func_name": "ZipAlloc"})
+
+    assert status == 200
+    assert payload == {"success": True}
+    assert service.list_resource("external_functions")[1]["items"] == []
+
+
+def test_user_config_service_reports_missing_fields_and_unknown_resources(tmp_path: Path) -> None:
+    service = UserConfigService(UserConfigStore(tmp_path / "user_config.xlsx"))
+
+    status, payload = service.upsert_resource("external_functions", {"description": "missing name"})
+    assert status == 400
+    assert "Missing field" in payload["error"]
+
+    status, payload = service.list_resource("unknown")
+    assert status == 404
+    assert payload["success"] is False
+
+
+def test_user_config_service_warning_helpers(tmp_path: Path) -> None:
+    store = UserConfigStore(tmp_path / "user_config.xlsx")
+    store.add_config_warning("test_warning", "ctx", "message")
+    service = UserConfigService(store)
+
+    assert service.warnings_payload()["items"][0]["warning_type"] == "test_warning"
+
+    status, payload = service.clear_warnings()
+
+    assert status == 200
+    assert payload == {"success": True}
+    assert service.warnings_payload()["items"] == []
+
+
+def test_cpg_service_reports_unavailable_backend() -> None:
+    service = CpgService()
+
+    assert service.status_payload() == {"status": "unavailable", "error": None}
+    status, payload = service.build()
+    assert status == 400
+    assert payload["error"] == "Backend not available"
+
+
+def test_cpg_service_starts_async_build_when_backend_supports_it(tmp_path: Path) -> None:
+    calls = {}
+
+    class FakeJoernClient:
+        cpg_error = "last warning"
+
+        def import_cpg_async(self, source_path, project_root, compile_commands_path):
+            calls["args"] = (source_path, project_root, compile_commands_path)
+
+    class FakeBackend:
+        joern_client = FakeJoernClient()
+
+        def status(self):
+            return "ready"
+
+    code_index = type("CodeIndex", (), {"backend": FakeBackend()})()
+    project_config = type(
+        "ProjectConfig",
+        (),
+        {
+            "source_root": tmp_path / "src",
+            "project_root": tmp_path,
+            "compile_commands_path": tmp_path / "compile_commands.json",
+        },
+    )()
+    service = CpgService(code_index, project_config)
+
+    assert service.status_payload() == {"status": "ready", "error": "last warning"}
+
+    status, payload = service.build()
+
+    assert status == 200
+    assert payload == {"success": True, "status": "building"}
+    assert calls["args"] == (
+        str(tmp_path / "src"),
+        str(tmp_path),
+        str(tmp_path / "compile_commands.json"),
+    )

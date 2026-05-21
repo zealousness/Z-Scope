@@ -4,6 +4,7 @@ from pathlib import Path
 from zscope.config.user_config_store import UserConfigStore
 from zscope.retrieval.knowledge_db import KnowledgeDB
 from zscope.web import server as web_server
+from zscope.web.services import ReportFeedbackService
 
 
 def test_knowledge_db_ir_tables_round_trip(tmp_path: Path) -> None:
@@ -140,10 +141,45 @@ def test_user_config_suppression_and_baseline(tmp_path: Path) -> None:
     assert store.get_finding_baseline("dedup-1")["status"] == "false_positive"
 
 
+def test_finding_baseline_matches_after_line_shift(tmp_path: Path) -> None:
+    store = UserConfigStore(tmp_path)
+    store.upsert_finding_baseline(
+        "double_free|entry|src/demo.c:42",
+        "false_positive",
+        {
+            "id": "ISSUE_1",
+            "function": "entry",
+            "location": "src/demo.c:42",
+            "defect_class": "double_free",
+            "rule": "resource_automaton",
+            "validation_status": "rejected",
+            "validation_reasoning": "ownership transferred before this free",
+        },
+    )
+
+    shifted_issue = {
+        "id": "ISSUE_2",
+        "function": "entry",
+        "location": "src/demo.c:57",
+        "defect_class": "double_free",
+        "rule": "resource_automaton",
+        "dedup_key": "double_free|entry|src/demo.c:57",
+    }
+
+    baseline = store.get_finding_baseline_for_issue(
+        shifted_issue,
+        shifted_issue["dedup_key"],
+    )
+
+    assert baseline is not None
+    assert baseline["status"] == "false_positive"
+    assert baseline["match_strategy"] == "stable_fingerprint"
+
+
 def test_web_validation_feedback_persists_suppression_and_baseline(tmp_path: Path) -> None:
     store = UserConfigStore(tmp_path)
-    original_store = web_server._user_config_store
-    web_server._user_config_store = store
+    original_service = web_server._report_feedback_service
+    web_server._report_feedback_service = ReportFeedbackService(store)
     try:
         web_server.persist_validation_feedback([
             {
@@ -158,7 +194,7 @@ def test_web_validation_feedback_persists_suppression_and_baseline(tmp_path: Pat
             }
         ])
     finally:
-        web_server._user_config_store = original_store
+        web_server._report_feedback_service = original_service
 
     assert store.is_false_positive("entry", "src/demo.c:42", "double_free")
     baseline = store.get_finding_baseline("double_free|entry|src/demo.c:42")

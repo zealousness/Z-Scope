@@ -12,7 +12,8 @@ import zscope.orchestration.user_config_inference as inference_module
 from zscope.cli.cli import _resolve_user_config_workbook_path
 from zscope.config.user_config_store import UserConfigStore
 from zscope.config.user_config_workbook import SHEET_HEADERS, UserConfigWorkbook
-from zscope.core.analyzer import Analyzer
+from zscope.core.analysis.analyzer import Analyzer
+from zscope.semantics.user_config_context import relevant_user_config_context
 from zscope.orchestration.user_config_inference import (
     filter_user_config_rows_with_llm,
     infer_user_config_rows,
@@ -661,8 +662,8 @@ def test_relevant_context_filters_user_config_before_llm_context(tmp_path: Path)
     ]
     workbook.write_rows(rows)
 
-    context = Analyzer._relevant_user_config_context(
-        dummy,
+    context = relevant_user_config_context(
+        dummy.user_config,
         "entry",
         "void entry(void) { void *p = VOS_MemAlloc(16); }",
         "src/zip/compress.c",

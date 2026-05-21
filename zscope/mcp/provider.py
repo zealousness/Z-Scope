@@ -11,9 +11,9 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlsplit
 
 from ..config.config import ZScopeConfig
-from ..core.snapshot_store import SnapshotStore
-from ..core.tool_policy import ToolPolicy, deny_sensitive_paths_hook
-from ..core.tools_runtime import ToolsRuntime
+from ..snapshots.store import SnapshotStore
+from ..tools.policy import ToolPolicy, deny_sensitive_paths_hook
+from ..tools.runtime import ToolsRuntime
 from ..orchestration.entry_discovery import EntryDiscovery
 from ..retrieval.code_index import CodeIndex
 

@@ -1,6 +1,6 @@
 from typing import Callable, Dict, Any, Optional
 from ..framework.base import BaseTool
-from ..core.snapshot_store import SnapshotStore
+from ..snapshots.store import SnapshotStore
 
 class GetFunctionSnapshotTool(BaseTool):
     """Tool to retrieve function semantic snapshot."""

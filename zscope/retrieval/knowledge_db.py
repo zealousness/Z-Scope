@@ -373,23 +373,57 @@ class KnowledgeDB:
         ).fetchone()
         if row:
             fp = row["file_path"]
-            self._conn.execute("DELETE FROM call_edges WHERE caller_file = ?", (fp,))
-            self._conn.execute("DELETE FROM include_edges WHERE source_file = ?", (fp,))
-            self._conn.execute("DELETE FROM global_variables WHERE file_path = ?", (fp,))
-            self._conn.execute("DELETE FROM macro_definitions WHERE file_path = ?", (fp,))
+            path_variants = self._path_variants(fp)
+            placeholders = ",".join("?" for _ in path_variants)
+            self._conn.execute(
+                f"DELETE FROM call_edges WHERE caller_file IN ({placeholders})",
+                path_variants,
+            )
+            self._conn.execute(
+                f"DELETE FROM include_edges WHERE source_file IN ({placeholders})",
+                path_variants,
+            )
+            self._conn.execute(
+                f"DELETE FROM global_variables WHERE file_path IN ({placeholders})",
+                path_variants,
+            )
+            self._conn.execute(
+                f"DELETE FROM macro_definitions WHERE file_path IN ({placeholders})",
+                path_variants,
+            )
             for table in (
                 "ir_statements",
                 "ir_resource_events",
                 "ir_lock_events",
                 "ir_shared_accesses",
             ):
-                self._conn.execute(f"DELETE FROM {table} WHERE file_path = ?", (fp,))
+                self._conn.execute(
+                    f"DELETE FROM {table} WHERE file_path IN ({placeholders})",
+                    path_variants,
+                )
         self._conn.execute(
             "DELETE FROM type_members WHERE type_id IN "
             "(SELECT id FROM type_definitions WHERE tu_id = ?)", (tu_id,),
         )
         self._conn.execute("DELETE FROM type_definitions WHERE tu_id = ?", (tu_id,))
         self._conn.commit()
+
+    @staticmethod
+    def _path_variants(file_path: str) -> tuple[str, ...]:
+        """Return canonical variants used by older and current extractor rows."""
+        raw = str(file_path or "").replace("\\", "/")
+        variants = {raw, raw.lstrip("/")}
+        try:
+            resolved = Path(file_path).resolve()
+            variants.add(str(resolved))
+            variants.add(resolved.as_posix())
+            parts = list(resolved.parts)
+            for marker in ("src", "include", "internal", "test", "zscope"):
+                if marker in parts:
+                    variants.add(Path(*parts[parts.index(marker):]).as_posix())
+        except OSError:
+            pass
+        return tuple(sorted(item for item in variants if item))
 
     def mark_tu_indexed(self, tu_id: int):
         self._conn.execute(

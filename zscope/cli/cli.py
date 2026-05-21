@@ -23,6 +23,8 @@ from ..orchestration.scan_session import ScanSessionRunner
 )
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging.")
 @click.option("--dashboard", "-d", is_flag=True, help="Launch the web dashboard to view results.")
+@click.option("--dashboard-host", default="0.0.0.0", show_default=True, help="Host/IP to bind for --dashboard.")
+@click.option("--dashboard-port", default=8000, show_default=True, type=int, help="Port to bind for --dashboard.")
 @click.option("--build-cpg", is_flag=True, help="Only build CPG and index, then exit.")
 @click.option("--mode", type=click.Choice(["default", "ruledriven", "alert-verify"]), default="default", help="Analysis mode.")
 @click.option("--sarif", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None, help="SARIF file for alert-verify mode.")
@@ -35,11 +37,15 @@ from ..orchestration.scan_session import ScanSessionRunner
 @click.option("--mcp-host", default="127.0.0.1", show_default=True, help="Host/IP to bind for --mcp-http.")
 @click.option("--mcp-port", default=8765, show_default=True, type=int, help="Port to bind for --mcp-http.")
 @click.option("--mcp-endpoint", default="/mcp", show_default=True, help="HTTP path for --mcp-http.")
+@click.option("--mcp-auth-token-env", default="", help="Environment variable containing the bearer token for --mcp-http.")
+@click.option("--mcp-client-allowlist", multiple=True, help="Client IP allowed to call --mcp-http. Repeat for multiple IPs.")
 @click.option("--export-sarif", type=click.Path(dir_okay=False, path_type=Path), default=None, help="Export the completed Z-SCOPE report to SARIF v2.1.0.")
 def main(
     config: Path,
     verbose: bool,
     dashboard: bool,
+    dashboard_host: str,
+    dashboard_port: int,
     build_cpg: bool,
     mode: str,
     sarif: Path,
@@ -52,6 +58,8 @@ def main(
     mcp_host: str,
     mcp_port: int,
     mcp_endpoint: str,
+    mcp_auth_token_env: str,
+    mcp_client_allowlist: tuple[str, ...],
     export_sarif: Optional[Path],
 ):
     """
@@ -64,7 +72,7 @@ def main(
         logger.info("Launching dashboard...")
         from ..web.server import run_server
         from ..config.user_config_store import UserConfigStore
-        from ..core.snapshot_store import SnapshotStore
+        from ..snapshots.store import SnapshotStore
 
         if not config:
             config = Path("zscope.yaml")
@@ -90,10 +98,13 @@ def main(
                 user_config_store=ucs,
                 project_config=zscope_config.project,
                 snapshot_store=snapshot_store,
+                config_path=config,
+                host=dashboard_host,
+                port=dashboard_port,
             )
         else:
             click.echo("Warning: No config file found, dashboard running without backend/config support")
-            run_server()
+            run_server(config_path=config, host=dashboard_host, port=dashboard_port)
         sys.exit(0)
 
     if not config:
@@ -135,14 +146,20 @@ def main(
 
             click.echo(
                 "Warning: remote MCP Streamable HTTP support is experimental and has no "
-                "built-in authentication. Bind only to trusted IPs/networks."
+                "TLS termination. Bind only to trusted IPs/networks."
             )
-            run_http_server(
-                str(config),
-                host=mcp_host,
-                port=mcp_port,
-                endpoint=mcp_endpoint,
-            )
+            try:
+                run_http_server(
+                    str(config),
+                    host=mcp_host,
+                    port=mcp_port,
+                    endpoint=mcp_endpoint,
+                    auth_token_env=mcp_auth_token_env,
+                    client_allowlist=mcp_client_allowlist,
+                )
+            except ValueError as exc:
+                click.echo(f"Error: {exc}")
+                sys.exit(1)
             sys.exit(0)
 
         if infer_user_config:
@@ -223,7 +240,7 @@ def main(
 
         if mode == "ruledriven":
             logger.info("Rule-driven mode: running Joern rules + validation")
-            from ..core.rule_driven_analyzer import RuleDrivenAnalyzer
+            from ..rules.analyzer import RuleDrivenAnalyzer
             code_index = CodeIndex(
                 zscope_config.project.project_root,
                 zscope_config.project.compile_commands_path,
@@ -243,8 +260,8 @@ def main(
                 click.echo("Error: --sarif is required for alert-verify mode")
                 sys.exit(1)
             logger.info("Alert verification mode: validating SARIF alerts")
-            from ..core.sarif_adapter import SarifAdapter
-            from ..core.alert_verifier import AlertVerifier
+            from ..alerts.sarif_adapter import SarifAdapter
+            from ..alerts.verifier import AlertVerifier
             from ..framework.llm_client import LLMClient
             from ..config.user_config_store import UserConfigStore
 
@@ -318,7 +335,7 @@ def main(
         )
         session_result = session_runner.run()
         if export_sarif:
-            from ..core.sarif_exporter import save_sarif_report
+            from ..reporting.sarif_exporter import save_sarif_report
 
             json_reports = [
                 path for path in session_result.reports

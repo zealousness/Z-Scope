@@ -42,7 +42,9 @@ zscope = [
     "agents/*/AGENT.md",
     "skills/*/SKILL.md",
     "skills/*/references/*.md",
+    "semantics/*.yaml",
     "workflows/*.yaml",
+    "web/static/*.html",
 ]
 
 [tool.setuptools.dynamic]
@@ -57,3 +59,6 @@ python_version = "3.9"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

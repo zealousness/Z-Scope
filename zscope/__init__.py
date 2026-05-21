@@ -14,11 +14,11 @@ __all__ = [
 def __getattr__(name):
     """Lazy-load heavy runtime classes so importing zscope does not require all deps."""
     if name == "Analyzer":
-        from .core.analyzer import Analyzer
+        from .core.analysis.analyzer import Analyzer
 
         return Analyzer
     if name == "ParallelAnalyzer":
-        from .core.parallel_analyzer import ParallelAnalyzer
+        from .orchestration.parallel_analyzer import ParallelAnalyzer
 
         return ParallelAnalyzer
     if name in {"ZScopeConfig", "ConfigLoader"}:

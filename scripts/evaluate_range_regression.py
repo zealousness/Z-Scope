@@ -9,10 +9,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from zscope.config.config import IndexingConfig
-from zscope.core.analyzer import Analyzer
-from zscope.core.regex_candidates import LocalPatternSemantics, RegexCandidateGenerator
-from zscope.core.graph_candidates import GraphCandidateGenerator
+from zscope.core.analysis.analyzer import Analyzer
+from zscope.core.candidates.graph import GraphCandidateGenerator
+from zscope.core.candidates.regex import RegexCandidateGenerator
 from zscope.retrieval.code_index import CodeIndex
+from zscope.semantics.models import LocalPatternSemantics
 
 
 class _EmptyUserConfig:
