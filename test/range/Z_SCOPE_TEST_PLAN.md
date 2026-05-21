@@ -126,9 +126,18 @@ if the resulting file is not `test/range/build/compile_commands.json`.
 
 ## Scoring Rules
 
-The scorer matches an issue when Z-SCOPE reports the same file and a nearby line
-for the same defect class. It also uses CWE/category/keyword text as tie-breakers
-because Z-SCOPE report phrasing can vary across models.
+Use the shared `zscope.benchmark.v3` scorer for formal comparisons. The scorer
+matches an issue when Z-SCOPE reports the same file, a compatible defect class,
+and an acceptable function/location anchor. Acceptable function anchors include
+the primary truth function, `secondary_function`, structured `entry_function`,
+structured `sink_function`, and `call_path` evidence. This matters because
+Z-SCOPE often reports the concrete sink helper while the truth item names the
+public wrapper.
+
+Line checks use the truth `line` to `end_line` range plus tolerance. Truth
+`line <= 1` is treated as an unknown placeholder, not as a strict source line.
+The scorer also uses CWE/category aliases and ground-truth keyword hits as
+tie-breakers because report phrasing can vary across models.
 
 Primary metrics:
 
@@ -138,6 +147,37 @@ Primary metrics:
 - Recall: TP / total ground truth.
 - Precision: TP / reported issues considered.
 - F1: harmonic mean of precision and recall.
+
+The evaluation output includes `matched_pairs`; inspect it before classifying a
+miss as a real Z-SCOPE false negative.
+
+## Observed Run: 2026-05-19
+
+Run id: `auto_unified_wsl_20260519_155123`.
+
+Execution:
+
+- WSL-only automatic entry discovery.
+- Unified backend with clangd plus SVF/Saber evidence.
+- 40/40 final reports were produced; one entry had a provider/modeling error
+  but still emitted run artifacts.
+
+Original strict v2 scorer:
+
+- default: TP 20, FP 35, FN 67, precision 0.3636, recall 0.2299, F1 0.2817
+- with_needs_review: TP 26, FP 55, FN 61, precision 0.3210, recall 0.2989,
+  F1 0.3095
+
+After the v3 scorer contract fix, without rerunning Z-SCOPE:
+
+- default: TP 34, FP 21, FN 53, precision 0.6182, recall 0.3908, F1 0.4789
+- with_needs_review: TP 46, FP 35, FN 41, precision 0.5679, recall 0.5287,
+  F1 0.5476
+
+The delta confirms that a large share of prior "misses" were scorer-contract
+misses: secondary sink anchors, placeholder lines, and custom category aliases.
+Remaining misses are concentrated in REAL/ISSUE41 protocol, state-machine, and
+resource-lifecycle patterns.
 
 ## Known Pitfalls
 

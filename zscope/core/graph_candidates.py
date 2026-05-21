@@ -224,7 +224,12 @@ class GraphCandidateGenerator:
             if not view:
                 continue
             views.append(view)
-            if depth >= max_depth:
+            expand_dispatcher_siblings = (
+                depth >= max_depth
+                and depth < max_depth + 1
+                and self._looks_like_dispatcher_view(view)
+            )
+            if depth >= max_depth and not expand_dispatcher_siblings:
                 continue
             for callee in view.callees:
                 if callee in seen:
@@ -1364,6 +1369,16 @@ class GraphCandidateGenerator:
         type_terms = set(re.findall(r"\b[A-Z][A-Za-z0-9_]*(?:Node|Subscription|Session|Entry|Pipe)\b", left_text))
         type_terms &= set(re.findall(r"\b[A-Z][A-Za-z0-9_]*(?:Node|Subscription|Session|Entry|Pipe)\b", right_text))
         return bool(type_terms)
+
+    @staticmethod
+    def _looks_like_dispatcher_view(view: FunctionView) -> bool:
+        if len(view.callees) < 3:
+            return False
+        text = "\n".join(line.text for line in view.lines)
+        name_hint = re.search(r"(?:dispatch|handle|process|message|protocol|router|route)", view.name, re.I)
+        switch_hint = "switch" in text or len(re.findall(r"\bcase\b|\bdefault\s*:", text)) >= 2
+        branch_hint = len(re.findall(r"\b(?:if|else\s+if)\s*\(", text)) >= 3
+        return bool(switch_hint or (name_hint and branch_hint))
 
     @staticmethod
     def _first_line_containing(view: FunctionView, needle: str) -> Optional[GraphLine]:

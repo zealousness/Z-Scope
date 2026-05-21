@@ -31,6 +31,10 @@ from ..orchestration.scan_session import ScanSessionRunner
 @click.option("--discover-entries", is_flag=True, default=False, help="Discover public API, communication, thread, and other input entries before scanning.")
 @click.option("--infer-user-config", is_flag=True, default=False, help="Infer/update the human-editable user_config.xlsx and exit.")
 @click.option("--mcp-stdio", is_flag=True, default=False, help="Run Z-SCOPE local MCP server over stdio.")
+@click.option("--mcp-http", is_flag=True, default=False, help="Run experimental remote MCP server over Streamable HTTP.")
+@click.option("--mcp-host", default="127.0.0.1", show_default=True, help="Host/IP to bind for --mcp-http.")
+@click.option("--mcp-port", default=8765, show_default=True, type=int, help="Port to bind for --mcp-http.")
+@click.option("--mcp-endpoint", default="/mcp", show_default=True, help="HTTP path for --mcp-http.")
 @click.option("--export-sarif", type=click.Path(dir_okay=False, path_type=Path), default=None, help="Export the completed Z-SCOPE report to SARIF v2.1.0.")
 def main(
     config: Path,
@@ -44,6 +48,10 @@ def main(
     discover_entries: bool,
     infer_user_config: bool,
     mcp_stdio: bool,
+    mcp_http: bool,
+    mcp_host: str,
+    mcp_port: int,
+    mcp_endpoint: str,
     export_sarif: Optional[Path],
 ):
     """
@@ -107,6 +115,9 @@ def main(
         if resume and maintain:
             click.echo("Error: --resume and --maintain cannot be used together.")
             sys.exit(1)
+        if mcp_stdio and mcp_http:
+            click.echo("Error: --mcp-stdio and --mcp-http cannot be used together.")
+            sys.exit(1)
 
         if maintain:
             zscope_config.analysis.workflow_name = "maintain"
@@ -117,6 +128,21 @@ def main(
             from ..mcp.server import run_stdio_server
 
             run_stdio_server(str(config))
+            sys.exit(0)
+
+        if mcp_http:
+            from ..mcp.http_server import run_http_server
+
+            click.echo(
+                "Warning: remote MCP Streamable HTTP support is experimental and has no "
+                "built-in authentication. Bind only to trusted IPs/networks."
+            )
+            run_http_server(
+                str(config),
+                host=mcp_host,
+                port=mcp_port,
+                endpoint=mcp_endpoint,
+            )
             sys.exit(0)
 
         if infer_user_config:

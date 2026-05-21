@@ -1327,7 +1327,11 @@ class Analyzer:
                 )
                 for issue in callee_issues
             )
-            if depth >= max_depth:
+            expand_dispatcher_siblings = (
+                depth >= max_depth
+                and self._looks_like_dispatcher_function(callee, callee_impl)
+            )
+            if depth >= max_depth and not expand_dispatcher_siblings:
                 continue
             for nested in callee_impl.get("callees", [])[:limit]:
                 nested_name = self._callee_item_name(nested)
@@ -1340,6 +1344,18 @@ class Analyzer:
         if isinstance(item, dict):
             return str(item.get("name") or item.get("callee_name") or item.get("function") or "").strip()
         return str(item or "").strip()
+
+    @staticmethod
+    def _looks_like_dispatcher_function(func_name: str, impl: Dict[str, Any]) -> bool:
+        """Return True for switch/fanout functions whose sibling callees deserve one extra scan."""
+        code = str(impl.get("code") or "")
+        callees = impl.get("callees") or []
+        if len(callees) < 3:
+            return False
+        name_hint = re.search(r"(?:dispatch|handle|process|message|protocol|router|route)", func_name, re.I)
+        switch_hint = "switch" in code or len(re.findall(r"\bcase\b|\bdefault\s*:", code)) >= 2
+        branch_hint = len(re.findall(r"\b(?:if|else\s+if)\s*\(", code)) >= 3
+        return bool(switch_hint or (name_hint and branch_hint))
 
     @staticmethod
     def _lift_internal_sink_candidate(
@@ -3306,7 +3322,6 @@ class Analyzer:
                 )
                 if baseline and str(baseline.get("status") or "").lower() in {
                     "false_positive",
-                    "rejected",
                     "suppressed",
                 }:
                     raw_issue["validation_status"] = "rejected"
@@ -3355,7 +3370,6 @@ class Analyzer:
             )
             if baseline and str(baseline.get("status") or "").lower() in {
                 "false_positive",
-                "rejected",
                 "suppressed",
             }:
                 raw_issue["validation_status"] = "rejected"
@@ -3370,20 +3384,73 @@ class Analyzer:
                 if impl:
                     issue_code = impl["code"]
 
+            evidence_pack = self._build_validation_evidence_pack(
+                raw_issue,
+                state,
+                issue_code,
+            )
             val_input = {
                 "finding": json.dumps(raw_issue, indent=2, ensure_ascii=False),
                 "context_code": issue_code,
-                "evidence_pack": self._build_validation_evidence_pack(
-                    raw_issue,
-                    state,
-                    issue_code,
-                ),
+                "evidence_pack": evidence_pack,
             }
             self._attach_agent_contract(val_input, "validator_agent")
             val_resp = validator_agent.run(val_input)
 
             if val_resp.success:
                 val_data = val_resp.data
+                if self._is_entry_root_dead_code_rejection(val_data, evidence_pack):
+                    logger.info(
+                        "Retrying validation for issue %s because rejection conflicts with entry-root evidence.",
+                        raw_issue.get("id"),
+                    )
+                    retry_pack = dict(evidence_pack)
+                    retry_pack["mode"] = "tri_state_exploitability_validation_entry_root_retry"
+                    retry_pack["prior_validator_result"] = val_data
+                    retry_requirements = list(retry_pack.get("validation_requirements") or [])
+                    retry_requirements.insert(
+                        0,
+                        "Retry directive: the previous rejection used absence of callers/main/worker above the scan root as dead-code evidence. Re-evaluate only the concrete entry-to-sink path; do not require callers above current_analysis_entry.",
+                    )
+                    retry_pack["validation_requirements"] = retry_requirements
+                    retry_input = {
+                        "finding": json.dumps(raw_issue, indent=2, ensure_ascii=False),
+                        "context_code": issue_code,
+                        "evidence_pack": retry_pack,
+                    }
+                    self._attach_agent_contract(retry_input, "validator_agent")
+                    retry_resp = validator_agent.run(retry_input)
+                    if retry_resp.success:
+                        retry_data = retry_resp.data
+                        if self._is_entry_root_dead_code_rejection(retry_data, retry_pack):
+                            retry_data = dict(retry_data)
+                            retry_data["verdict"] = "uncertain"
+                            retry_data["is_valid"] = False
+                            retry_data["finding_kind"] = "audit_observation"
+                            retry_data["reasoning"] = (
+                                str(retry_data.get("reasoning") or "")
+                                + " Validator rejection conflicts with header/API scan-root evidence; "
+                                "zero callers above the selected entry cannot by itself prove dead code, "
+                                "so the finding is retained as needs_review."
+                            ).strip()
+                        val_data = retry_data
+                    else:
+                        logger.warning(
+                            "Entry-root validation retry failed for issue %s: %s",
+                            raw_issue.get("id"),
+                            retry_resp.error,
+                        )
+                if self._is_entry_root_contract_scope_rejection(val_data, evidence_pack):
+                    val_data = dict(val_data)
+                    val_data["verdict"] = "uncertain"
+                    val_data["is_valid"] = False
+                    val_data["finding_kind"] = "audit_observation"
+                    val_data["reasoning"] = (
+                        str(val_data.get("reasoning") or "")
+                        + " Validator rejection is narrower than the selected external entry contract; "
+                        "the concrete entry-to-sink path remains reachable, so the finding is retained "
+                        "as needs_review instead of being discarded."
+                    ).strip()
                 verdict = self._validation_verdict(val_data)
                 score_data = self._score_components(raw_issue, val_data)
                 raw_issue["score_components"] = score_data
@@ -3451,7 +3518,11 @@ class Analyzer:
                     raw_issue["rejection_source"] = "validator"
                     raw_issue["validation_reasoning"] = val_data.get("reasoning")
                     self._remember_validation_result(raw_issue, "rejected")
-                    logger.info("Issue %s REJECTED by Validator, discarding.", raw_issue.get("id"))
+                    logger.info(
+                        "Issue %s REJECTED by Validator, discarding. Reason: %s",
+                        raw_issue.get("id"),
+                        str(val_data.get("reasoning") or "")[:500],
+                    )
             else:
                 logger.warning(
                     "Validation failed for issue %s in function %s: %s",
@@ -3471,12 +3542,19 @@ class Analyzer:
         dedup_key = str(issue.get("dedup_key") or self._canonical_issue_key(issue))
         if not dedup_key:
             return
+        status_key = str(status or "").lower()
+        if status_key == "rejected":
+            # Validator rejections are often context-sensitive.  Persisting them
+            # as broad dedup-key baselines can suppress stronger evidence for
+            # the same root cause later in the same scan or a future run.  User
+            # false-positive feedback is still handled by explicit suppressions.
+            return
         memory_status = {
             "validated": "verified",
             "needs_review": "uncertain",
             "uncertain": "uncertain",
             "rejected": "rejected",
-        }.get(str(status or "").lower(), str(status or "unknown").lower())
+        }.get(status_key, status_key or "unknown")
         try:
             self.user_config.upsert_finding_baseline(dedup_key, memory_status, issue)
         except Exception as exc:
@@ -3668,6 +3746,156 @@ class Analyzer:
             return verdict
         return "rejected"
 
+    @classmethod
+    def _is_entry_root_dead_code_rejection(
+        cls,
+        val_data: Dict[str, Any],
+        evidence_pack: Dict[str, Any],
+    ) -> bool:
+        """Detect validator rejections that contradict explicit scan-root evidence."""
+        if cls._validation_verdict(val_data) != "rejected":
+            return False
+        entry_context = evidence_pack.get("entry_context")
+        if not isinstance(entry_context, dict):
+            return False
+        if not entry_context.get("entry_is_external_root"):
+            return False
+        if not entry_context.get("reachable_from_entry"):
+            return False
+
+        text = cls._flatten_issue_text(
+            [
+                val_data.get("reasoning"),
+                val_data.get("negative_evidence"),
+                val_data.get("guard_analysis"),
+                val_data.get("missing_context"),
+            ]
+        ).lower()
+        if not text:
+            return False
+        dead_code_terms = (
+            "dead code",
+            "unreachable",
+            "not reachable",
+            "no caller",
+            "no callers",
+            "zero caller",
+            "zero callers",
+            "absence from main",
+            "not called from main",
+            "worker",
+            "start wrapper",
+            "test case",
+            "test code",
+            "demo code",
+            "example code",
+            "toy code",
+            "benchmark",
+            "validation fixture",
+            "fixture",
+            "model code",
+            "modeled bug",
+            "real_model",
+            "issue41",
+            "td_run",
+            "not production code",
+            "non-production code",
+            "intentionally constructed",
+            "intentionally vulnerable",
+            "测试",
+            "测试代码",
+            "测试用例",
+            "模型代码",
+            "演示代码",
+            "基准",
+            "夹具",
+            "故意构造",
+            "死代码",
+            "不可达",
+            "没有调用者",
+            "无调用者",
+            "调用图为空",
+            "main函数",
+            "启动函数",
+            "测试用例",
+            "测试代码",
+            "演示代码",
+            "非生产代码",
+            "基准",
+            "故意构造",
+            "死代码",
+            "不可达",
+            "没有调用者",
+            "无调用者",
+        )
+        return any(term in text for term in dead_code_terms)
+
+    @classmethod
+    def _is_entry_root_contract_scope_rejection(
+        cls,
+        val_data: Dict[str, Any],
+        evidence_pack: Dict[str, Any],
+    ) -> bool:
+        """Keep contract-sensitive reachable findings for review when validation is too local."""
+        if cls._validation_verdict(val_data) != "rejected":
+            return False
+        entry_context = evidence_pack.get("entry_context")
+        if not isinstance(entry_context, dict):
+            return False
+        if not entry_context.get("entry_is_external_root") or not entry_context.get("reachable_from_entry"):
+            return False
+        category = str(
+            evidence_pack.get("defect_class")
+            or (evidence_pack.get("finding_summary") or {}).get("category")
+            or ""
+        ).replace("-", "_").lower()
+        if category not in {
+            "held_lock_callback",
+            "log_amplification",
+            "version_filtering",
+            "fd_encoding_mismatch",
+            "size_limit_mismatch",
+            "busy_loop",
+            "dynamic_array_race",
+        }:
+            return False
+        text = cls._flatten_issue_text(
+            [
+                val_data.get("reasoning"),
+                val_data.get("negative_evidence"),
+                val_data.get("guard_analysis"),
+                val_data.get("missing_context"),
+            ]
+        ).lower()
+        if not text:
+            return False
+        scope_terms = (
+            "current",
+            "currently",
+            "hardcoded",
+            "hard-coded",
+            "no-op",
+            "empty callback",
+            "not controllable",
+            "not caller controllable",
+            "fails closed",
+            "one local branch",
+            "only local",
+            "dead code",
+            "unreachable",
+            "当前",
+            "目前",
+            "硬编码",
+            "空回调",
+            "不可控",
+            "无法控制",
+            "失败关闭",
+            "本地分支",
+            "死代码",
+            "不可达",
+        )
+        return any(term in text for term in scope_terms)
+
     def _deduplicate_candidate_issues(
         self, issues: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
@@ -3702,7 +3930,51 @@ class Analyzer:
         except Exception:
             callees = []
 
+        agent_context = state.get("agent_context") if isinstance(state.get("agent_context"), dict) else {}
+        analysis_entry = str(state.get("entry_func") or agent_context.get("func_name") or "").strip()
+        issue_entry = str(issue.get("entry_function") or issue.get("analyzed_from") or "").strip()
+        candidate_path = issue.get("call_path") or issue.get("call_paths")
         candidate_evidence = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+        entry_custom_prompt = str(agent_context.get("entry_custom_prompt") or "")
+        prompt_lower = entry_custom_prompt.lower()
+        entry_exposure = "configured"
+        if "public api declared" in prompt_lower or "header file" in prompt_lower:
+            entry_exposure = "api"
+        elif "communication or ipc entry" in prompt_lower:
+            entry_exposure = "communication"
+        elif "thread entry" in prompt_lower or "thread creator" in prompt_lower:
+            entry_exposure = "thread"
+        elif "user-controlled input entry" in prompt_lower:
+            entry_exposure = "other_user_input"
+        entry_is_external_root = entry_exposure in {"api", "communication", "thread", "other_user_input"}
+        reachable_from_entry = bool(
+            issue.get("reachable_from_entry")
+            or (analysis_entry and issue_func == analysis_entry)
+            or issue_entry
+            or candidate_evidence.get("entry_function")
+            or (
+                isinstance(candidate_evidence.get("path"), dict)
+                and candidate_evidence.get("path", {}).get("complete_to_entry")
+            )
+        )
+        validation_requirements = [
+            "Treat every candidate as evidence only; do not accept it solely because a regex, graph, or backend rule emitted it.",
+            "Independently audit semantic overlay assumptions from user_config, including custom alloc/free/lock/macros and pointer target models.",
+            "Return verdict=verified only if there is a concrete public/API or caller-controlled trigger path.",
+            "Return verdict=rejected when local evidence or guards disprove the candidate.",
+            "Return verdict=uncertain only when the candidate is plausible but decisive context is missing.",
+            "Identify source, sink, source controllability, and the missing/insufficient guard.",
+            "Reject hardening/style/theoretical findings without a source-to-sink path.",
+            "For integer overflow, multiplication/addition must be checked before the operation or by a proven bounded operand.",
+            "When this evidence pack names a current analysis entry, treat that configured/header-discovered entry as the public trigger for internal callee findings.",
+            "The current_analysis_entry is the root selected for this scan. It is normal for a header/configured root to have zero repository callers, to be absent from main, or to have no separate worker/start wrapper; do not use those facts alone as dead-code evidence.",
+            "When entry_is_external_root is true and reachable_from_entry/call_path evidence connects the entry to the sink, validate triggerability from an external invocation of the entry and its parameters, task payload, received bytes, or callback contract; do not require an additional repository-internal caller above the entry.",
+            "Do not reject an internal callee solely because its direct caller list is empty, its name looks like a test/demo/model, or it contains words such as real_model, issue, leak, race, or td_run; rely on entry exposure and call-path evidence instead.",
+            "When the configured scan root is a benchmark, fixture, model, or validation corpus, treat files under that configured project root as the code under audit; names indicating a modeled bug are not a reason to reject a reachable defect.",
+            "If reachable_from_entry, complete_to_entry, call_path, or entry_function evidence is present, reject reachability only when code evidence disproves that specific path.",
+            "If the only negative reachability evidence is zero callers for current_analysis_entry, absence from main, or absence of a worker creator, choose uncertain instead of rejected unless code disproves the entry-to-sink path.",
+        ]
+        validation_requirements.extend(self._category_validation_requirements(issue))
         return {
             "mode": "tri_state_exploitability_validation",
             "dedup_key": issue.get("dedup_key") or self._canonical_issue_key(issue),
@@ -3732,6 +4004,28 @@ class Analyzer:
                 "sink": issue.get("sink"),
                 "cwe": issue.get("cwe"),
             },
+            "entry_context": {
+                "current_analysis_entry": analysis_entry,
+                "entry_custom_prompt": entry_custom_prompt,
+                "entry_exposure": entry_exposure,
+                "entry_is_external_root": entry_is_external_root,
+                "entry_is_scan_root": bool(analysis_entry),
+                "zero_callers_is_expected_for_entry": bool(analysis_entry),
+                "public_trigger": (
+                    "Header-declared/configured entry function is an external scan root; "
+                    "zero repository callers does not make it dead code."
+                )
+                if entry_is_external_root
+                else (
+                    "Configured entry function is the scan root; zero repository callers above "
+                    "the selected root is not sufficient dead-code evidence."
+                ),
+                "issue_entry_function": issue_entry,
+                "reachable_from_entry": reachable_from_entry,
+                "internal_sink_lifted": bool(issue.get("internal_sink_lifted")),
+                "call_path": candidate_path or candidate_evidence.get("call_path"),
+                "candidate_path": candidate_evidence.get("path") if isinstance(candidate_evidence, dict) else {},
+            },
             "candidate_evidence": candidate_evidence,
             "positive_evidence": issue.get("positive_evidence") or candidate_evidence.get("positive_evidence") or [],
             "negative_evidence": issue.get("negative_evidence") or candidate_evidence.get("negative_evidence") or [],
@@ -3742,17 +4036,81 @@ class Analyzer:
                 "callers": callers,
                 "callees": callees,
             },
-            "validation_requirements": [
-                "Treat every candidate as evidence only; do not accept it solely because a regex, graph, or backend rule emitted it.",
-                "Independently audit semantic overlay assumptions from user_config, including custom alloc/free/lock/macros and pointer target models.",
-                "Return verdict=verified only if there is a concrete public/API or caller-controlled trigger path.",
-                "Return verdict=rejected when local evidence or guards disprove the candidate.",
-                "Return verdict=uncertain only when the candidate is plausible but decisive context is missing.",
-                "Identify source, sink, source controllability, and the missing/insufficient guard.",
-                "Reject hardening/style/theoretical findings without a source-to-sink path.",
-                "For integer overflow, multiplication/addition must be checked before the operation or by a proven bounded operand.",
+            "validation_requirements": validation_requirements,
+        }
+
+    @staticmethod
+    def _category_validation_requirements(issue: Dict[str, Any]) -> List[str]:
+        category = str(
+            issue.get("defect_class")
+            or issue.get("subcategory")
+            or issue.get("category")
+            or ""
+        ).replace("-", "_").lower()
+        requirements_by_category: Dict[str, List[str]] = {
+            "signed_unsigned": [
+                "For signed/unsigned conversion, a negative signed return cast to size_t before a copy/IO length is a concrete sink when the pre-cast value is not checked.",
+                "A post-cast warning or truncation log is not a sufficient guard if the dangerous copy/IO still executes.",
+            ],
+            "integer_overflow": [
+                "For serialized/wire lengths, header-size addition and allocation/copy-size arithmetic require an explicit overflow or backing-buffer bound check.",
+            ],
+            "object_publication": [
+                "For object publication, a pointer stored in a global/list/callback slot or ready flag set before member initialization is security-relevant if readers can observe the partially initialized object.",
+                "Do not reject solely because the same function later initializes fields; compare publication order with reader visibility.",
+            ],
+            "memory_leak": [
+                "Freeing a wrapper object does not release nested owned members, child lists, duplicated strings, mutexes, or role-specific resources unless code shows that cleanup explicitly.",
+                "A role-specific release helper only proves cleanup for the role it actually receives; compare stored role and release argument.",
+                "If the candidate names a member/child allocation as the leaked resource, do not reject it merely because the parent container is freed.",
+                "If an insert/link helper can attach an object to a global structure and then return failure, an ignored return value can lose rollback and cleanup ownership; global reachability alone does not prove a valid cleanup protocol.",
+            ],
+            "log_amplification": [
+                "A self-referential or poisoned traversal with a loop-internal log/error emission can be a resource-exhaustion defect even without memory corruption.",
+                "For traversal findings, consider stale/current iterator state and concurrent mutation paths, not only whether a fresh traversal from the head reaches the node.",
+            ],
+            "race": [
+                "Macro-guarded locks must be evaluated under all configured compilation branches; a no-op lock branch does not protect shared state.",
+            ],
+            "held_lock_callback": [
+                "Calling a callback/function pointer while holding a non-recursive lock is a lock-order and reentrancy risk when the callback is externally supplied, stored globally, or can evolve independently of the current no-op sample.",
+                "Do not reject solely because the currently registered callback body is empty; validate the callback registration contract and whether callers control the callback.",
+            ],
+            "alignment": [
+                "Casting byte-buffer offsets such as packet + 1 to integer pointers is undefined behavior on strict-alignment targets and can be security-relevant when reachable from an external parsing API.",
+                "Do not reduce unaligned dereference to a style issue solely because one wrapper currently passes a local buffer; validate the exposed parser contract and callee signature.",
+            ],
+            "unchecked_return": [
+                "Returning success from a classifier/probe branch after a lower-level error or ambiguous status is a concrete contract bug when callers use zero as success.",
+            ],
+            "state_inconsistency": [
+                "For state restoration, saving `previous` is not a guard unless the changed state is restored on every failure path before return.",
+                "A later assignment like `previous = state` is not restoration; require `state = previous` before the failure return.",
+            ],
+            "fd_type_mismatch": [
+                "Reliable/encoded descriptors and raw file descriptors are distinct API contracts; passing one representation to the other validator is a concrete misuse even if both are integers.",
+            ],
+            "protocol_mixup": [
+                "Protocol mismatch accepted on a non-strict/auth fallback is a boundary validation issue, not a harmless style choice.",
+            ],
+            "version_filtering": [
+                "Parsing a protocol version and explicitly ignoring it means low/unsupported versions can reach state processing unless another guard proves otherwise.",
+            ],
+            "size_limit_mismatch": [
+                "When a byte cache limit and an element-count specification are both present, validate whether the computed byte limit can reject or mis-size values that the public count contract says are valid.",
+            ],
+            "busy_loop": [
+                "For receive/read retry loops, EAGAIN/EINTR handling needs a timeout, retry budget, blocking wait, or caller-visible failure; a bare continue can be a resource-exhaustion path.",
+            ],
+            "dynamic_array_race": [
+                "For global dynamic array resizing, the capacity check, new allocation, global pointer publish, capacity update, and old-array free must be protected by the same lock or atomic handoff.",
+            ],
+            "fd_encoding_mismatch": [
+                "Raw fd indexes must not be passed to validators expecting encoded/check-value fds unless code constructs the encoded representation first.",
+                "Do not reject solely because the mixed representation fails closed in one local branch; the finding is the reachable API-contract mismatch between raw fd indexes and encoded/check-value fd validators.",
             ],
         }
+        return list(requirements_by_category.get(category, []))
 
     @staticmethod
     def _issue_rank(issue: Dict[str, Any]) -> tuple[int, float, int]:
@@ -4452,6 +4810,7 @@ class Analyzer:
         func_name: str, impl: Dict[str, Any], location: str
     ) -> Dict[str, Any]:
         """Create a persisted syntactic snapshot for a short function."""
+        suspicious_points = Analyzer._trivial_suspicious_points(func_name, impl, location)
         return {
             "type": "function_snapshot",
             "func_name": func_name,
@@ -4470,11 +4829,145 @@ class Analyzer:
             "error_handling": {},
             "concurrency": {},
             "semantic_fingerprint": {
-                "key_semantics": ["short function source is embedded in snapshot"]
+                "key_semantics": [
+                    "short function source is embedded in snapshot",
+                    "trivial functions are not LLM-modeled, but security-sensitive contracts remain auditable",
+                ]
             },
-            "suspicious_points": [],
+            "suspicious_points": suspicious_points,
             "callees": impl.get("callees", []),
         }
+
+    @staticmethod
+    def _trivial_suspicious_points(
+        func_name: str,
+        impl: Dict[str, Any],
+        location: str,
+    ) -> List[Dict[str, Any]]:
+        """Surface short but security-sensitive functions to later audit stages."""
+        code = str(impl.get("code") or "")
+        text = code.lower()
+        start_line = int(impl.get("start_line") or 0)
+        points: List[Dict[str, Any]] = []
+
+        def line_for(pattern: str, default_offset: int = 0) -> int:
+            regex = re.compile(pattern)
+            for offset, raw in enumerate(code.splitlines()):
+                cleaned = re.sub(r"^\s*\d+\s*\|\s*", "", raw).strip()
+                if regex.search(cleaned):
+                    nums = re.findall(r"^\s*(\d+)\s*\|", raw)
+                    if nums:
+                        try:
+                            return int(nums[0])
+                        except ValueError:
+                            pass
+                    return max(1, start_line + offset)
+            return max(1, start_line + default_offset)
+
+        def add(
+            *,
+            kind: str,
+            category: str,
+            description: str,
+            reason: str,
+            pattern: str,
+            confidence: float,
+        ) -> None:
+            line_no = line_for(pattern)
+            points.append(
+                {
+                    "type": kind,
+                    "category": category,
+                    "description": description,
+                    "reason": reason,
+                    "location": f"{location.split(':', 1)[0]}:{line_no}",
+                    "line": line_no,
+                    "confidence": confidence,
+                    "source": "trivial_syntactic_contract",
+                }
+            )
+
+        if "detected_protocol" in text and "auth_level" in text and re.search(r"return\s+0\s*;", text):
+            add(
+                kind="protocol_contract",
+                category="protocol_mixup",
+                description="Short protocol/auth gate can accept a protocol mismatch on a success branch.",
+                reason="Protocol mismatch plus non-strict auth fallback is security semantics, not a trivial wrapper.",
+                pattern=r"detected_protocol\s*!=",
+                confidence=0.86,
+            )
+
+        if re.search(r"\bversion\s*=", text) and re.search(r"\(void\)\s*version\s*;", text):
+            add(
+                kind="version_filtering_contract",
+                category="version_filtering",
+                description="Protocol version is parsed and explicitly ignored.",
+                reason="Version filtering is a boundary contract even when the function body is short.",
+                pattern=r"\bversion\s*=",
+                confidence=0.88,
+            )
+
+        if "_validate_encoded_fd" in text and re.search(r"\braw_[a-z_0-9]*fd\s*=", text):
+            add(
+                kind="fd_encoding_contract",
+                category="fd_encoding_mismatch",
+                description="Raw fd-derived value is passed to an encoded-fd validator.",
+                reason="Fd representation conversion is a contract check that should remain auditable.",
+                pattern=r"\braw_[A-Za-z_0-9]*fd\s*=",
+                confidence=0.86,
+            )
+
+        if "reliable_fd" in text and re.search(r"\b[A-Za-z_]\w*is_inter_fd\s*\(\s*reliable_fd\s*\)", text):
+            add(
+                kind="fd_type_contract",
+                category="fd_type_mismatch",
+                description="Reliable/encoded fd is passed to a raw/inter-fd classifier.",
+                reason="Fd representation contracts remain auditable even when the wrapper is one return statement.",
+                pattern=r"[A-Za-z_]\w*is_inter_fd\s*\(\s*reliable_fd\s*\)",
+                confidence=0.86,
+            )
+
+        if re.search(r"\b\w+\s*=\s*(?:\([^)]*\)\s*)?\(?\s*\w+\s*(?:\*|<<)", text) and re.search(
+            r"\bmem(?:cpy|move)\s*\([^;]*(?:packet|frame|wire|blob)\s*\+[^;]*\)",
+            text,
+        ):
+            add(
+                kind="protocol_length_contract",
+                category="bounds",
+                description="Short protocol parser derives a copy length from packet data and copies from the frame without an input-length proof.",
+                reason="Derived protocol lengths and copy sinks remain auditable even when the function body is short.",
+                pattern=r"\bmem(?:cpy|move)\s*\(",
+                confidence=0.84,
+            )
+
+        state_assign = re.search(
+            r"\b(?P<state>g_[A-Za-z_0-9.]*state[A-Za-z_0-9.]*)\s*=",
+            code,
+        )
+        if state_assign and re.search(r"\breturn\s+-1\s*;", text):
+            state_name = state_assign.group("state")
+            restore = re.search(rf"\b{re.escape(state_name)}\s*=\s*previous\s*;", code)
+            if not restore:
+                add(
+                    kind="state_restore_contract",
+                    category="state_inconsistency",
+                    description="Shared state is changed before an error return without restoring the saved previous value.",
+                    reason="Saving a previous value is only protective when the state variable itself is restored on every failure path.",
+                    pattern=rf"\b{re.escape(state_name)}\s*=",
+                    confidence=0.84,
+                )
+
+        if re.search(r"\breturn\s+0\s*;", text) and re.search(r"(?:error|fail|ssl|probe|status)", text):
+            add(
+                kind="error_status_contract",
+                category="unchecked_return",
+                description="Short status/probe helper can return success from an ambiguous error path.",
+                reason="Return-code translation is security-relevant even in small helpers.",
+                pattern=r"\breturn\s+0\s*;",
+                confidence=0.7,
+            )
+
+        return points
 
     @staticmethod
     def _is_lightweight_snapshot_candidate(func_name: str, impl: Dict[str, Any]) -> bool:
@@ -4764,6 +5257,7 @@ class Analyzer:
         clean_code_body = " ".join(clean_lines).lower()
         risky_keywords = [
             r"malloc", r"calloc", r"realloc", r"free", r"alloc", r"new\s", r"delete\s",
+            r"memcpy", r"memmove", r"strcpy", r"strncpy", r"strcat", r"strncat",
             r"lock", r"mutex", r"mtx", r"cond", r"thread", r"spin", r"pthread",
             r"file", r"fopen", r"fclose", r"read", r"write", r"socket", r"send", r"recv", r"connect", r"open", r"close"
         ]

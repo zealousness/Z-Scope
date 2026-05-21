@@ -56,15 +56,25 @@ import yaml
 path = Path(sys.argv[1])
 cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
 backend = ((cfg.get("indexing") or {}).get("backend") or "").lower()
-entry_discovery = bool(((cfg.get("project") or {}).get("entry_discovery") or {}).get("enabled"))
+entry_cfg = (cfg.get("project") or {}).get("entry_discovery") or {}
+entry_discovery = bool(entry_cfg.get("enabled"))
+header_files = entry_cfg.get("header_files") or []
+max_candidates = int(entry_cfg.get("max_candidates") or 0)
+max_functions = int(entry_cfg.get("max_functions") or 0)
 clangd_path = (cfg.get("indexing") or {}).get("clangd_path")
 if backend != "unified":
     raise SystemExit(f"[range] ERROR: expected indexing.backend=unified, got {backend!r}")
 if not entry_discovery:
     raise SystemExit("[range] ERROR: expected project.entry_discovery.enabled=true")
+if header_files != ["*.h"]:
+    raise SystemExit(f"[range] ERROR: expected project.entry_discovery.header_files=['*.h'], got {header_files!r}")
+if max_candidates < 200:
+    raise SystemExit(f"[range] ERROR: expected project.entry_discovery.max_candidates>=200, got {max_candidates!r}")
+if max_functions < 1000:
+    raise SystemExit(f"[range] ERROR: expected project.entry_discovery.max_functions>=1000, got {max_functions!r}")
 if clangd_path != "clangd":
     raise SystemExit(f"[range] ERROR: WSL config must use clangd_path=clangd, got {clangd_path!r}")
-print("[range] config preflight passed: unified backend + automatic entry discovery")
+print("[range] config preflight passed: unified backend + automatic entry discovery + *.h headers")
 PY
 
 echo "[range] clean generated WSL benchmark state"
@@ -141,6 +151,7 @@ review_eval = load_json(run_dir / "evaluation.with_needs_review.json")
 build_log = (run_dir / "build_cpg.log").read_text(encoding="utf-8", errors="replace") if (run_dir / "build_cpg.log").exists() else ""
 scan_log = (run_dir / "zscope_run.log").read_text(encoding="utf-8", errors="replace") if (run_dir / "zscope_run.log").exists() else ""
 combined_log = build_log + "\n" + scan_log
+scan_completed = bool(report) and "Batch Analysis Complete." in scan_log
 
 metric_keys = [
     "report_issue_count",
@@ -155,6 +166,12 @@ metric_keys = [
 summary = {
     "run_id": run_dir.name,
     "scan_return_code": scan_rc,
+    "scan_completed": scan_completed,
+    "scan_exit_semantics": (
+        "zscope_cli_returns_1_when_findings_present"
+        if scan_completed and scan_rc == 1
+        else "process_exit_code"
+    ),
     "scan_wall_seconds": wall_seconds,
     "mode": "wsl_auto_discover_entries_unified_backend_with_svf_required",
     "config": str((run_dir / "zscope.auto_unified.yaml").resolve()),
@@ -192,8 +209,8 @@ summary = {
 print(json.dumps(summary, ensure_ascii=False, indent=2))
 PY
 
-if [[ "${scan_rc}" -ne 0 ]]; then
-  echo "[range] ERROR: scan failed with rc=${scan_rc}; see ${run_dir}/zscope_run.log" >&2
+if [[ "${scan_rc}" -ne 0 && ! -f "${run_dir}/zscope_batch_report.json" ]]; then
+  echo "[range] ERROR: scan failed with rc=${scan_rc} before writing a batch report; see ${run_dir}/zscope_run.log" >&2
   exit "${scan_rc}"
 fi
 
