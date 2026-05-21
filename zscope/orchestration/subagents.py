@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from ..agents.deep_worker.agent import DeepWorkerAgent
-from ..core.tool_policy import ToolPolicy
+from ..tools.policy import ToolPolicy
 from ..framework.llm_client import LLMClient
 from .specs import SpecRegistry
 

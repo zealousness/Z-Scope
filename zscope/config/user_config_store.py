@@ -10,6 +10,11 @@ import sqlite3
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+from ..common.issue_identity import (
+    ensure_source_context_fingerprint,
+    source_context_fingerprints_compatible,
+    stable_issue_fingerprint,
+)
 from .user_config_workbook import UserConfigWorkbook
 
 logger = logging.getLogger(__name__)
@@ -73,11 +78,17 @@ class UserConfigStore:
                 CREATE TABLE IF NOT EXISTS finding_baselines (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     dedup_key TEXT NOT NULL UNIQUE,
+                    stable_fingerprint TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL DEFAULT 'accepted',
                     issue_json TEXT NOT NULL DEFAULT '{}',
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            self._ensure_column(conn, "finding_baselines", "stable_fingerprint", "TEXT NOT NULL DEFAULT ''")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_finding_baselines_stable_fingerprint "
+                "ON finding_baselines(stable_fingerprint)"
+            )
             conn.commit()
         finally:
             conn.close()
@@ -259,13 +270,23 @@ class UserConfigStore:
 
     def upsert_finding_baseline(self, dedup_key: str, status: str,
                                 issue: Optional[Dict[str, Any]] = None) -> None:
+        issue_payload = dict(issue or {})
+        fingerprint = stable_issue_fingerprint(issue_payload)
+        if fingerprint:
+            issue_payload.setdefault("stable_fingerprint", fingerprint)
+        ensure_source_context_fingerprint(issue_payload)
         conn = self._connect()
         try:
             conn.execute(
                 """INSERT OR REPLACE INTO finding_baselines
-                   (dedup_key, status, issue_json, updated_at)
-                   VALUES (?, ?, ?, CURRENT_TIMESTAMP)""",
-                (self._normalize_key(dedup_key), status, json.dumps(issue or {}, ensure_ascii=False)),
+                   (dedup_key, stable_fingerprint, status, issue_json, updated_at)
+                   VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                (
+                    self._normalize_key(dedup_key),
+                    fingerprint,
+                    status,
+                    json.dumps(issue_payload, ensure_ascii=False),
+                ),
             )
             conn.commit()
         finally:
@@ -279,6 +300,63 @@ class UserConfigStore:
                 (self._normalize_key(dedup_key),),
             ).fetchone()
             return self._row_to_dict(row) if row else None
+        finally:
+            conn.close()
+
+    def get_finding_baseline_for_issue(
+        self,
+        issue: Dict[str, Any],
+        dedup_key: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """Find a baseline by exact key first, then by line-insensitive fingerprint."""
+        exact_key = dedup_key or str((issue or {}).get("dedup_key") or "")
+        if exact_key:
+            exact = self.get_finding_baseline(exact_key)
+            if exact:
+                exact["match_strategy"] = "dedup_key"
+                return exact
+
+        fingerprint = stable_issue_fingerprint(issue or {})
+        if not fingerprint:
+            return None
+
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """SELECT * FROM finding_baselines
+                   WHERE stable_fingerprint = ?
+                   ORDER BY updated_at DESC, id DESC
+                   """,
+                (fingerprint,),
+            ).fetchall()
+            for row in rows:
+                result = self._row_to_dict(row)
+                baseline_issue = self._parse_json_value(str(result.get("issue_json") or ""), {})
+                if source_context_fingerprints_compatible(issue or {}, baseline_issue):
+                    result["match_strategy"] = "stable_fingerprint"
+                    return result
+
+            rows = conn.execute(
+                "SELECT * FROM finding_baselines ORDER BY updated_at DESC, id DESC"
+            ).fetchall()
+            for old_row in rows:
+                old_issue = self._parse_json_value(old_row["issue_json"], {})
+                old_fingerprint = stable_issue_fingerprint(old_issue)
+                if (
+                    old_fingerprint
+                    and old_fingerprint == fingerprint
+                    and source_context_fingerprints_compatible(issue or {}, old_issue)
+                ):
+                    conn.execute(
+                        "UPDATE finding_baselines SET stable_fingerprint = ? WHERE id = ?",
+                        (fingerprint, old_row["id"]),
+                    )
+                    conn.commit()
+                    result = self._row_to_dict(old_row)
+                    result["stable_fingerprint"] = fingerprint
+                    result["match_strategy"] = "backfilled_stable_fingerprint"
+                    return result
+            return None
         finally:
             conn.close()
 
@@ -351,6 +429,12 @@ class UserConfigStore:
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
         return dict(row)
+
+    @staticmethod
+    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     @staticmethod
     def _normalize_key(value: str) -> str:

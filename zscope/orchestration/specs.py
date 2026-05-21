@@ -133,7 +133,7 @@ class AgentSpec:
             tools=_as_list(meta.get("tools")),
             mcp_servers=_as_list(meta.get("mcp_servers") or meta.get("mcpServers")),
             context_policy=str(meta.get("context_policy") or ""),
-            can_spawn_subagents=bool(meta.get("can_spawn_subagents", False)),
+            can_spawn_subagents=_as_bool(meta.get("can_spawn_subagents"), False),
             max_subagents=int(meta.get("max_subagents") or 0),
             path=path,
             body=body.strip(),

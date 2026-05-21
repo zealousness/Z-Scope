@@ -11,19 +11,30 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ..common.utils import extract_json_blocks
 from ..config.user_config_workbook import SHEET_HEADERS
-from ..core.regex_candidates import RegexCandidateGenerator
+from ..core.candidates.regex import RegexCandidateGenerator
+from ..semantics.defaults import default_local_pattern_semantics
 
 
 SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".inc", ".inl", ".ph"}
-DEFAULT_API_NAMES = (
-    RegexCandidateGenerator._DEFAULT_ALLOCATORS
-    | RegexCandidateGenerator._DEFAULT_CALLOC_ALLOCATORS
-    | RegexCandidateGenerator._DEFAULT_REALLOCATORS
-    | RegexCandidateGenerator._DEFAULT_DEALLOCATORS
-    | RegexCandidateGenerator._DEFAULT_COPY_SINKS
-    | RegexCandidateGenerator._DEFAULT_LOCK_APIS
-    | RegexCandidateGenerator._DEFAULT_UNLOCK_APIS
-)
+
+
+def _default_api_names() -> set[str]:
+    semantics = default_local_pattern_semantics()
+    names: set[str] = set()
+    for attr in (
+        "allocators",
+        "calloc_allocators",
+        "reallocators",
+        "deallocators",
+        "copy_sinks",
+        "lock_apis",
+        "unlock_apis",
+    ):
+        names.update(str(name) for name in getattr(semantics, attr, {}))
+    return names
+
+
+DEFAULT_API_NAMES = _default_api_names()
 PROJECT_DEFAULT_WRAPPERS = {"_safe_malloc", "_safe_calloc", "_safe_realloc", "_net_recv_data", "_net_send_data"}
 SKIPPED_DEFAULT_API_NAMES = DEFAULT_API_NAMES - PROJECT_DEFAULT_WRAPPERS
 WRAPPER_NAME_HINT_RE = re.compile(

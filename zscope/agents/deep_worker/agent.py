@@ -3,7 +3,7 @@ import logging
 import json
 
 from ..base import ToolCallingAgent
-from ...core.tool_policy import ToolPolicy
+from ...tools.policy import ToolPolicy
 from ...framework.base import AgentResponse
 from ...framework.llm_client import LLMClient
 

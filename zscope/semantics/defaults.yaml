@@ -1,0 +1,68 @@
+api_roles:
+  allocators:
+    - malloc
+    - _safe_malloc
+  calloc_allocators:
+    - calloc
+    - _safe_calloc
+  reallocators:
+    - realloc
+    - _safe_realloc
+  deallocators:
+    - free
+    - SAFE_FREE
+  copy_sinks:
+    - memcpy
+    - memmove
+    - read
+    - recv
+    - fread
+    - send
+    - write
+    - _net_recv_data
+    - _net_send_data
+  lock_apis:
+    - LOCK
+    - LOCK_READ
+    - LOCK_WRITE
+    - pthread_mutex_lock
+  unlock_apis:
+    - UNLOCK
+    - pthread_mutex_unlock
+    - pthread_rwlock_unlock
+
+type_aliases:
+  size_t: size_t
+  uint8_t: uint8_t
+  uint16_t: uint16_t
+  uint32_t: uint32_t
+  uint64_t: uint64_t
+  int16_t: int16_t
+  int32_t: int32_t
+  int64_t: int64_t
+  unsigned_int: unsigned int
+  unsigned_long: unsigned long
+
+checker_roles:
+  extended_allocators:
+    - strdup
+    - strndup
+  string_copy_sinks:
+    - bcopy
+    - strcat
+    - strncat
+    - strcpy
+    - strncpy
+  extended_lock_apis:
+    - pthread_rwlock_rdlock
+    - pthread_rwlock_wrlock
+    - spin_lock
+    - mtx_lock
+  extended_unlock_apis:
+    - spin_unlock
+    - mtx_unlock
+  graph_release_apis:
+    - free
+    - destroy
+    - release
+    - delete
