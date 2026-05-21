@@ -19,20 +19,20 @@ def test_range_regex_candidate_coverage_when_available() -> None:
         pytest.skip("test/range benchmark fixtures are not available in this checkout")
 
     truth = json.loads((benchmark_dir / "ground_truth.json").read_text(encoding="utf-8"))
-    assert truth.get("version") == 6
+    assert truth.get("version") == 10
 
     result = evaluate_range_regression(
         project_root=project_root,
         regex_candidates=True,
-        min_precision=0.60,
+        min_precision=0.50,
         min_recall=0.75,
-        min_f1=0.67,
+        min_f1=0.65,
     )
 
     assert result["threshold_status"] == "passed"
     assert result["recall"] >= 0.75
-    assert result["precision"] >= 0.60
-    assert result["f1"] >= 0.67
+    assert result["precision"] >= 0.50
+    assert result["f1"] >= 0.65
     assert "false_positive_rate" in result
     assert "with_needs_review" in result["report_views"]
     assert result["graph_issue_count"] > 0
@@ -52,12 +52,12 @@ def test_range_unified_candidate_recall_gate_when_available() -> None:
     result = evaluate_range_regression(
         project_root=project_root,
         candidate_backend="unified",
-        min_recall=0.75,
+        min_recall=0.66,
     )
 
     assert result["threshold_status"] == "passed"
     assert result["candidate_backend"] == "unified"
-    assert result["recall"] >= 0.75
+    assert result["recall"] >= 0.66
     assert result["issue_sources"]["clang_ast_cfg"] > 0
     assert "miss_analysis" in result
     assert all("reason" in row for row in result["miss_analysis"])

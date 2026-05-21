@@ -76,15 +76,62 @@ def _same_root_cause(default_issue: Dict[str, Any], review_issue: Dict[str, Any]
     if default_key == review_key:
         return True
 
+    if not _same_category(default_issue, review_issue):
+        return False
+
+    if _same_path_attribution(default_issue, review_issue):
+        return True
+
     default_file, default_func, default_root = _issue_root_signature(default_issue)
     review_file, review_func, review_root = _issue_root_signature(review_issue)
     if default_root and default_root == review_root and (default_file or default_func):
-        if default_file and review_file and default_file == review_file:
-            return True
-        if default_func and review_func and default_func == review_func:
+        if default_func and review_func:
+            return default_func == review_func
+        default_line = _issue_location_parts(default_issue)[1]
+        review_line = _issue_location_parts(review_issue)[1]
+        if (
+            default_file
+            and review_file
+            and default_file == review_file
+            and default_line is not None
+            and review_line is not None
+            and abs(default_line - review_line) <= 8
+        ):
             return True
 
     return False
+
+
+def _same_category(default_issue: Dict[str, Any], review_issue: Dict[str, Any]) -> bool:
+    default_text = flatten_issue_text(default_issue)
+    review_text = flatten_issue_text(review_issue)
+    default_category = canonical_category(default_issue, default_text)
+    review_category = canonical_category(review_issue, review_text)
+    return bool(default_category and default_category == review_category)
+
+
+def _same_path_attribution(default_issue: Dict[str, Any], review_issue: Dict[str, Any]) -> bool:
+    def value(issue: Dict[str, Any], key: str) -> str:
+        direct = issue.get(key)
+        if direct:
+            return str(direct).lower()
+        pack = issue.get("evidence_pack")
+        if isinstance(pack, dict):
+            packed = pack.get(key)
+            if packed:
+                return str(packed).lower()
+        return ""
+
+    default_entry = value(default_issue, "entry_function")
+    review_entry = value(review_issue, "entry_function")
+    default_sink = value(default_issue, "sink_function") or str(default_issue.get("function") or "").lower()
+    review_sink = value(review_issue, "sink_function") or str(review_issue.get("function") or "").lower()
+    if default_entry and default_entry == review_entry and default_sink and default_sink == review_sink:
+        return True
+
+    default_path = default_issue.get("call_path")
+    review_path = review_issue.get("call_path")
+    return bool(default_path and default_path == review_path)
 
 
 def _compact_observation(issue: Dict[str, Any]) -> Dict[str, Any]:
@@ -104,6 +151,20 @@ def _compact_observation(issue: Dict[str, Any]) -> Dict[str, Any]:
         "confidence",
         "impact_level",
         "dedup_key",
+        "entry_function",
+        "sink_function",
+        "target_function",
+        "analyzed_from",
+        "reachable_from_entry",
+        "internal_sink_lifted",
+        "call_path",
+        "call_paths",
+        "evidence_pack",
+        "file",
+        "line",
+        "start_line",
+        "end_line",
+        "normalized_category",
     )
     return {key: deepcopy(issue[key]) for key in keep if key in issue}
 
@@ -127,7 +188,10 @@ def attach_related_needs_review(
             independent.append(review_issue)
             continue
 
-        attached = match.setdefault("related_needs_review_observations", [])
+        attached = match.get("related_needs_review_observations")
+        if not isinstance(attached, list):
+            attached = []
+            match["related_needs_review_observations"] = attached
         compact = _compact_observation(review_issue)
         if compact not in attached:
             attached.append(compact)

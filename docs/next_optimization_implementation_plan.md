@@ -19,7 +19,7 @@ Z-SCOPE 的路线是正确的：先由 Clang/SVF/Saber/Joern/规则候选生成�
 需要修正报告中的一个现状判断：当前仓库已经具备 MCP 和 SARIF 的初步实现，不再是纯预留字段。
 
 - MCP stdio server/client 已在 `zscope/mcp/` 下起步。
-- CLI 已支持 `--mcp-stdio`。
+- CLI 已支持 `--mcp-stdio`，并新增实验性 `--mcp-http` Streamable HTTP 入口用于 IP+端口远程访问。
 - SARIF adapter/exporter 已在 `zscope/core/sarif_adapter.py` 和 `zscope/core/sarif_exporter.py` 中起步。
 - 仍缺少 production-grade MCP scoping、approval、policy enforcement、审计日志和生态集成模板。
 
@@ -164,8 +164,8 @@ python -m pytest tests/test_parallel_custom_prompt.py
 当前证据：
 
 - `docs/external_benchmark_first_run.md` 已记录 Juliet/SV-COMP/Magma smoke。
-- `scripts/external_benchmark.py` 已作为三层外部 benchmark harness 起步，并接入统一 `zscope.benchmark.v2` summary schema。
-- `zscope/benchmarking/protocol.py` 已提供三条件评测、双视图评分、cost、trajectory、grader 和 multi-trial stability 聚合。
+- `scripts/external_benchmark.py` 已作为三层外部 benchmark harness 起步，并接入统一 `zscope.benchmark.v3` summary schema。
+- `zscope/benchmarking/protocol.py` 已提供三条件评测、双视图评分、cost、trajectory、grader 和 multi-trial stability 聚合；v3 评分已支持 secondary/sink/call_path 归因、custom category alias、placeholder line，并输出 `matched_pairs` 解释匹配原因。
 - `docs/c_memory_concurrency_optimization_plan.md` 已定义 range benchmark discipline 和 no-custom-prompt 结果。
 
 任务清单：
@@ -392,7 +392,7 @@ python -m compileall -q zscope tests scripts
 | OPT-005 | Parallel Deep Worker tickets | P1 | DONE | ThreadPool 并行 + 稳定顺序汇总 + spawn allowlist 已落地；`zscope/orchestration/subagents.py`; `tests/test_subagents_parallel.py` |
 | OPT-006 | Per-ticket trace/cost/evidence | P1 | DONE | ticket_id/skill/priority/source/context_tokens/tool_call_count/iterations/duration/stop_reason/needs_human_review 已写入 metadata |
 | OPT-007 | Ticket timeout and partial failure | P1 | DONE | `subagent_ticket_timeout` 超时标记 + 部分失败隔离已落地；单 ticket timeout 不阻塞主流程 |
-| OPT-008 | Three-condition benchmark schema | P2 | DONE | `zscope.benchmark.v2` summary schema covers pure entry LLM, pure repo-context LLM, full Z-SCOPE, plus candidate-layer smoke; `zscope/benchmarking/protocol.py`; `scripts/external_benchmark.py` |
+| OPT-008 | Three-condition benchmark schema | P2 | DONE | `zscope.benchmark.v3` summary schema covers pure entry LLM, pure repo-context LLM, full Z-SCOPE, plus candidate-layer smoke; scorer accepts secondary/sink/call_path attribution and records `matched_pairs`; `zscope/benchmarking/protocol.py`; `scripts/external_benchmark.py` |
 | OPT-009 | External benchmark formal commands | P2 | DONE | Juliet/SV-COMP/Magma `prepare-* --max-cases 0/--max-bugs 0` formal commands documented in `docs/external_benchmark_protocol.md` |
 | OPT-010 | Run-to-run stability metric | P2 | DONE | `run-matrix`/`aggregate-trials` report issue Jaccard、TP overlap、FP overlap、mean/stdev |
 | OPT-011 | GitHub Actions SARIF template | P3 | TODO | code scanning artifact |
@@ -407,11 +407,16 @@ python -m compileall -q zscope tests scripts
 | OPT-020 | Tool strict schema and namespace | P0 | DONE | strict schema opt-in + `zscope.code.*`/`zscope.graph.*`/`zscope.knowledge.*`/`zscope.entries.*` MCP aliases + skill metadata migration 已落地；`tests/test_tool_policy.py`; `tests/test_mcp_policy.py` |
 | OPT-021 | Tool hooks and ask/deny modes | P0 | DONE | ask/deny + Pre/Post hook runtime + sensitive path deny hook 已落地；`tests/test_tool_policy.py`; `tests/test_mcp_policy.py` |
 | OPT-022 | MCP output limit and pagination | P0 | DONE | resource pagination + hard result limit + `_meta["anthropic/maxResultSizeChars"]` 已落地；`tests/test_mcp_policy.py` |
-| OPT-023 | Remote MCP auth hardening | P0 | DONE | 当前 repo 尚无 remote HTTP MCP runtime；已预留 HTTPS/OAuth audience/resource/scope validation 和 token redaction 基础：`zscope/mcp/security.py`; `tests/test_mcp_policy.py` |
+| OPT-023 | Remote MCP auth hardening | P0 | DONE | 已有实验性 Streamable HTTP runtime（无内置认证，仅可信网络早期集成）；HTTPS/OAuth audience/resource/scope validation 和 token redaction 基础保留在 `zscope/mcp/security.py`; `tests/test_mcp_policy.py`; `tests/test_mcp_http_server.py` |
 | OPT-024 | Subagent maxTurns/model/isolation | P1 | DONE | `subagent_max_turns`、`subagent_skill_llm_refs`、`subagent_skill_efforts`、read-only worker isolation 已接入 |
 | OPT-025 | Eval trajectory recording | P2 | DONE | `summary.json` stores trajectory references, workflow progress, worker reports, validator presence, final_answer/final_outcome |
 | OPT-026 | Multi-trial agent stability eval | P2 | DONE | `run-matrix --trials N` and `aggregate-trials` produce per-condition stability summaries |
-| OPT-027 | Skill trigger evals | P4 | TODO | action-oriented descriptions |
+| OPT-027 | Range public API/task entry modeling | P2 | DONE | `test/range/include/task_dispatcher.h` now exposes real-model/Issue41 public `td_*` wrappers and `VOS_TaskCreate`; `test/range/src/main.c` routes wrappers to internal sinks and models task workers discoverable from `*.h` + thread discovery |
+| OPT-028 | Range miss-reduction rules and scorer fixes | P2 | DONE | Dispatcher sibling-branch expansion, protocol/system contract regex candidates, narrower `needs_review` attachment, and best-match benchmark scoring landed in `zscope/core/analyzer.py`, `zscope/core/graph_candidates.py`, `zscope/core/regex_candidates.py`, `zscope/core/report_views.py`, `zscope/benchmarking/protocol.py` |
+| OPT-029 | Range unified FN closure 2026-05-20 | P2 | DONE | WSL/unified/auto-discovery/`*.h` run `test/range/benchmark_runs/auto_unified_wsl_fix_20260520_3` exposed residual FNs. Landed clang/unified candidates for heap thread arg owner leaks, log-error allocation leaks, unchecked insert handoff, protocol-derived copy lengths, probe branches returning success, and refcount-free protocol gaps; updated scorer multi-anchor support and RANGE-001/RANGE-013/RANGE-016 anchors. Old report rescored from default recall 0.7586 to 0.7931, with-needs-review recall 0.9080 to 0.9425 before rerun. Tests: `tests/test_clang_ast_cfg_candidates.py`, `tests/test_analyzer_semantics.py`, `tests/test_benchmark_protocol.py`, `tests/test_range_benchmark_regression.py`, `tests/test_regex_candidates.py`, `tests/test_graph_candidates.py`, `tests/test_issue_dedup.py` |
+| OPT-031 | Range structured FN closure after 2026-05-20 rerun | P2 | IN_PROGRESS | User decision: do not use regex rules as the unified optimization path. WSL/unified/auto-discovery/`*.h` run `test/range/benchmark_runs/auto_unified_wsl_structured_20260520_2` completed with SVF/Saber imported: default TP/FP/FN 69/68/18, recall 0.7931; with-needs-review TP/FP/FN 78/124/9, recall 0.8966. Landed clang/CFG candidates for unchecked `strchr`, registry unlink/free-after-unlock races, role-specific release literal mismatch, raw-fd-to-encoded-validator mismatch, global state not restored on syscall/validation failure, parsed protocol version ignored, wide count read without magic guard, fixed byte-limit/spec-count mismatch, recv retry without timeout/budget, and global dynamic-array resize without lock; fixed CFG member-release/allocation identity so `node->payload`/`node->name`/`node->children` stay distinct from parent `node`; stopped persisting validator `rejected` as a broad future baseline; structured candidates now win dedup ties over long free-form duplicates; validator over-narrow entry-root/model-name/current-callback rejections are retained as needs_review instead of discarded; narrowed pipe lock-order dedup by sink function; refreshed all REAL-* and ISSUE41-* source/secondary line anchors after public-header and wrapper entry refactors. Tests: `python -m pytest -q` -> 232 passed. Pending: WSL unified + auto-discovery + `*.h` benchmark rerun after these non-regex structured fixes. |
+| OPT-032 | Range duplicate-report collapse | P2 | DONE | Targeted the 32 default FP bucket where one GT already matched and duplicate reports remained. Added semantic root-cause keys for Issue41 refcount/resource protocol, partial retry cleanup, ignored protocol version, raw-fd/encoded-fd validation, unchecked control-message `strchr`, real-model stack job, protocol length, alignment, signed recv, busy loop, rule-map globals, lifecycle locks, and dispatcher queue resources. Rebuilt prior run issue lists with the new dedup: default issues 137 -> 104, with-needs-review issues 202 -> 163; v9-like same-function/same-category duplicate bucket 32 -> 1. The remaining item is `td_init` `g_dispatcher.queue.tasks` failure-path leak, intentionally kept distinct from `RANGE-013` `thread_ids`. Tests: `python -m pytest -q` -> 236 passed. |
+| OPT-030 | Skill trigger evals | P4 | TODO | action-oriented descriptions |
 
 ## 7. P0 落地自查（2026-05-18）
 

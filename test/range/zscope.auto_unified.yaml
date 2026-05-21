@@ -40,7 +40,7 @@ project:
     max_candidates: 200
     max_functions: 1000
     header_files:
-      - include/task_dispatcher.h
+      - "*.h"
 
   compile_commands_path: build/compile_commands.json
 

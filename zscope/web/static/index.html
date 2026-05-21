@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN" data-theme="light">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -12,28 +12,389 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-c.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@400;600;700&display=swap');
-        body { font-family: 'Inter', sans-serif; }
+        body { font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
         .code-font { font-family: 'Fira Code', monospace; }
         .glass {
-            background: rgba(23, 23, 23, 0.7);
-            backdrop-filter: blur(12px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: #ffffff;
+            border: 1px solid #e5e7eb;
+            box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+        }
+        .work-surface { background: #f6f7fb; color: #0f172a; }
+        .soft-panel { background: #f9fafb; border: 1px solid #e5e7eb; }
+        .audit-card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; }
+        .audit-card-active { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12); }
+        .subtle-text { color: #64748b; }
+        .code-panel { background: #0f172a; color: #d1d5db; }
+        .finding-workspace {
+            height: 100%;
+            min-height: 0;
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr) 470px;
+            overflow: hidden;
+        }
+        .finding-summary-bar {
+            padding: 1rem;
+            border-bottom: 1px solid #e5e7eb;
+            background: #ffffff;
+        }
+        .code-evidence-panel {
+            min-height: 0;
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+            overflow: hidden;
+            border-bottom: 1px solid #e5e7eb;
+            background: #ffffff;
+        }
+        .code-and-evidence {
+            min-height: 0;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 248px;
+            overflow: hidden;
+        }
+        .code-evidence-body {
+            min-height: 0;
+            overflow: auto;
+        }
+        .code-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-family: 'Fira Code', monospace;
+            font-size: 0.78rem;
+        }
+        .code-table td {
+            border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+            vertical-align: top;
+        }
+        .code-line-no {
+            width: 3.5rem;
+            padding: 0.18rem 0.75rem;
+            text-align: right;
+            color: #64748b;
+            user-select: none;
+            background: rgba(15, 23, 42, 0.55);
+        }
+        .code-line-text {
+            padding: 0.18rem 1rem;
+            color: #d1d5db;
+            white-space: pre;
+        }
+        .code-line-active .code-line-no,
+        .code-line-active .code-line-text {
+            background: rgba(37, 99, 235, 0.22);
+            color: #f8fafc;
+        }
+        .evidence-panel {
+            min-height: 0;
+            border-left: 1px solid #e5e7eb;
+            background: #f8fafc;
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+            overflow: hidden;
+        }
+        .evidence-panel-head {
+            padding: 0.75rem 0.875rem;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        .evidence-list {
+            min-height: 0;
+            overflow: auto;
+            padding: 0.625rem;
+            display: grid;
+            gap: 0.5rem;
+            align-content: start;
+        }
+        .evidence-item {
+            border: 1px solid #e5e7eb;
+            background: #ffffff;
+            border-radius: 8px;
+            padding: 0.625rem;
+            text-align: left;
+            cursor: pointer;
+            user-select: text;
+        }
+        .evidence-item.active {
+            border-color: #2563eb;
+            background: #eff6ff;
+            box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.10);
+        }
+        .evidence-item strong {
+            display: block;
+            margin: 0.35rem 0 0.2rem;
+            font-size: 0.75rem;
+            line-height: 1.35;
+            color: #0f172a;
+        }
+        .evidence-item small {
+            display: block;
+            color: #64748b;
+            line-height: 1.35;
+        }
+        .copy-chip {
+            border: 1px solid #dbeafe;
+            border-radius: 6px;
+            background: #eff6ff;
+            color: #1d4ed8;
+            padding: 0.1rem 0.35rem;
+            font-size: 0.68rem;
+            font-weight: 700;
+        }
+        .line-ref {
+            display: inline-flex;
+            align-items: center;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 0.08rem 0.38rem;
+            color: #334155;
+            background: #f8fafc;
+            font-size: 0.68rem;
+            white-space: nowrap;
+        }
+        .path-strip {
+            margin-top: 0.75rem;
+            border: 1px solid #dbeafe;
+            background: #eff6ff;
+            color: #1e40af;
+            border-radius: 8px;
+            padding: 0.5rem 0.625rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            font-size: 0.75rem;
+        }
+        .rail-card {
+            padding: 0.875rem;
+            display: grid;
+            gap: 0.75rem;
+        }
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.5rem;
+        }
+        .metric {
+            border: 1px solid #e5e7eb;
+            background: #f8fafc;
+            border-radius: 8px;
+            padding: 0.625rem;
+        }
+        .metric b {
+            display: block;
+            font-size: 1.2rem;
+            color: #0f172a;
+        }
+        .metric span {
+            color: #64748b;
+            font-size: 0.68rem;
+        }
+        .confidence-row {
+            display: grid;
+            gap: 0.35rem;
+            font-size: 0.75rem;
+        }
+        .confidence-row-head {
+            display: grid;
+            grid-template-columns: 6.5rem 1fr 2.6rem;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .confidence-bar {
+            height: 0.5rem;
+            background: #e2e8f0;
+            border-radius: 999px;
+            overflow: hidden;
+        }
+        .confidence-bar i {
+            display: block;
+            height: 100%;
+            background: #2563eb;
+        }
+        .file-chip {
+            border: 1px solid #e5e7eb;
+            background: #f8fafc;
+            border-radius: 8px;
+            padding: 0.5rem;
+            display: flex;
+            justify-content: space-between;
+            gap: 0.5rem;
+            min-width: 0;
+        }
+        .file-chip span:first-child {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .status-dashboard-grid {
+            display: grid;
+            grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.4fr);
+            gap: 1rem;
+        }
+        .status-pie {
+            width: 220px;
+            height: 220px;
+            border-radius: 50%;
+            margin: 0 auto;
+            position: relative;
+            background: conic-gradient(#e2e8f0 0 100%);
+            box-shadow: inset 0 0 0 1px #e5e7eb;
+        }
+        .status-pie::after {
+            content: "";
+            position: absolute;
+            inset: 54px;
+            border-radius: 50%;
+            background: white;
+            box-shadow: 0 0 0 1px #e5e7eb;
+        }
+        .status-pie-center {
+            position: absolute;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            z-index: 1;
+            text-align: center;
+        }
+        .status-dot {
+            width: 0.65rem;
+            height: 0.65rem;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .dashboard-stat-card {
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            background: #ffffff;
+            padding: 0.875rem;
+        }
+        .audit-review-dock {
+            min-height: 0;
+            display: grid;
+            grid-template-rows: 220px minmax(0, 1fr);
+            overflow: hidden;
+            background: #fbfdff;
+        }
+        .audit-claim-row {
+            min-height: 0;
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+            overflow: hidden;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        .audit-claim-head {
+            padding: 0.75rem 0.875rem;
+            border-bottom: 1px solid #e5e7eb;
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.5rem;
+        }
+        .audit-claim-track {
+            min-width: 0;
+            padding: 0.625rem 0.875rem;
+            display: grid;
+            grid-template-columns: repeat(3, minmax(170px, 1fr));
+            gap: 0.625rem;
+            overflow-x: hidden;
+            overflow-y: auto;
+            align-content: start;
+        }
+        .audit-claim-card {
+            min-width: 0;
+            overflow: visible;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            background: #ffffff;
+            padding: 0.625rem;
+            display: grid;
+            align-content: start;
+            gap: 0.45rem;
+        }
+        .audit-claim-card p {
+            max-height: none;
+            overflow: visible;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+        .audit-decision-panel {
+            min-height: 0;
+            padding: 0.875rem;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 220px;
+            grid-template-rows: auto minmax(0, 1fr);
+            gap: 0.75rem;
+            background: #ffffff;
+        }
+        .audit-decision-title {
+            grid-column: 1 / -1;
+            min-width: 0;
+        }
+        .audit-decision-textarea {
+            grid-column: 1;
+            grid-row: 2;
+            width: 100%;
+            height: 100%;
+            min-height: 0;
+            resize: none;
+        }
+        .audit-decision-controls {
+            grid-column: 2;
+            grid-row: 2;
+            min-height: 0;
+            display: grid;
+            grid-template-rows: auto auto;
+            gap: 0.625rem;
+            align-content: space-between;
+        }
+        .audit-decision-controls > div:nth-child(2) { display: none; }
+        .audit-status-stack {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.375rem;
+        }
+        .audit-status-stack .btn {
+            min-height: 1.875rem;
+            height: 1.875rem;
+            padding-left: 0.375rem;
+            padding-right: 0.375rem;
+            font-size: 0.68rem;
+        }
+        .audit-decision-footer {
+            display: grid;
+            gap: 0.625rem;
+            align-content: end;
+        }
+        @media (max-width: 1180px) {
+            .finding-workspace { grid-template-rows: auto minmax(0, 1fr) 470px; }
+            .code-and-evidence { grid-template-columns: 1fr; }
+            .evidence-panel { border-left: 0; border-top: 1px solid #e5e7eb; max-height: 220px; }
+            .audit-claim-row { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+            .audit-claim-track { grid-template-columns: repeat(2, minmax(170px, 1fr)); }
+            .status-dashboard-grid { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 860px) {
+            .audit-decision-panel { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr) auto; }
+            .audit-decision-controls { grid-column: 1; grid-row: 3; grid-template-rows: auto auto; }
+            .audit-status-stack { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
     </style>
 </head>
-<body class="bg-neutral-950 text-neutral-200 min-h-screen" x-data="zscopeApp()">
+<body class="work-surface min-h-screen" x-data="zscopeApp()">
 
-    <nav class="glass sticky top-0 z-50 px-6 py-4 flex flex-wrap gap-4 justify-between items-center">
+    <nav class="bg-white border-b border-slate-200 sticky top-0 z-50 px-6 py-3 flex flex-wrap gap-4 justify-between items-center shadow-sm">
         <div class="flex items-center gap-3">
-            <div class="w-8 h-8 bg-primary rounded-lg flex items-center justify-center font-bold text-white">Z</div>
-            <h1 class="text-xl font-bold tracking-tight">Z-SCOPE <span class="text-xs font-normal opacity-50" x-text="appVersion">v0.6.0</span></h1>
+            <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center font-bold text-white">Z</div>
+            <div>
+                <h1 class="text-lg font-bold tracking-tight text-slate-950">Z-SCOPE <span class="text-xs font-normal text-slate-500" x-text="appVersion">v0.7.0</span></h1>
+                <p class="text-xs text-slate-500">AI 代码审计工作台</p>
+            </div>
         </div>
         <div class="flex flex-wrap gap-2 items-center">
-            <div class="tabs tabs-boxed bg-neutral-900">
+            <div class="tabs tabs-boxed bg-slate-100">
                 <a class="tab tab-sm" :class="activeTab==='findings' && 'tab-active'" @click="activeTab='findings'">审计发现</a>
-                <a class="tab tab-sm" :class="activeTab==='project' && 'tab-active'" @click="activeTab='project'">项目配置</a>
-                <a class="tab tab-sm" :class="activeTab==='config' && 'tab-active'" @click="activeTab='config';loadAllConfigs()">用户配置</a>
-                <a class="tab tab-sm" :class="activeTab==='warnings' && 'tab-active'" @click="activeTab='warnings';loadWarnings()">告警</a>
+                <a class="tab tab-sm" :class="activeTab==='project' && 'tab-active'" @click="activeTab='project';loadStructuredConfig()">项目配置</a>
+                <a class="tab tab-sm" :class="activeTab==='config' && 'tab-active'" @click="activeTab='config';configSubTab='workbook';loadWorkbookConfig()">用户配置</a>
+                <a class="tab tab-sm" :class="activeTab==='warnings' && 'tab-active'" @click="openDashboard()">看板</a>
             </div>
             <div class="badge badge-outline gap-2" :class="cpgStatusClass">
                 <span class="w-2 h-2 rounded-full" :class="cpgDotClass"></span>
@@ -43,23 +404,34 @@
                 <span class="w-2 h-2 rounded-full" :class="statusDotClass"></span>
                 <span x-text="statusText">正在加载...</span>
             </div>
-            <button @click="refreshData()" class="btn btn-ghost btn-sm">刷新</button>
+            <button @click="refreshData()" class="btn btn-outline btn-sm">刷新</button>
             <button @click="exportOfflinePage()" class="btn btn-ghost btn-sm">离线导出</button>
             <button @click="triggerOfflineImport()" class="btn btn-ghost btn-sm">导入</button>
-            <button @click="saveFindings()" class="btn btn-primary btn-sm">回写验证结果</button>
+            <button @click="saveFindings()" class="btn btn-primary btn-sm" :disabled="savingFindings" x-text="savingFindings ? '保存中...' : '回写验证结果'">回写验证结果</button>
             <input type="file" x-ref="offlineImportInput" @change="importOfflinePage($event)" class="hidden" accept=".html,text/html">
         </div>
     </nav>
 
-    <main class="p-6 h-[calc(100vh-96px)]">
+    <div
+        x-show="toastMessage"
+        x-transition
+        class="fixed top-20 right-6 z-[60] alert max-w-md shadow-lg"
+        :class="toastClass">
+        <span x-text="toastMessage"></span>
+    </div>
+
+    <main class="p-5 h-[calc(100vh-84px)]">
 
     <!-- ── Findings Tab ── -->
-    <div x-show="activeTab==='findings'" class="grid grid-cols-12 gap-6 h-full">
+    <div x-show="activeTab==='findings'" class="grid grid-cols-12 gap-4 h-full">
         <div class="col-span-4 xl:col-span-3 flex flex-col gap-4 overflow-hidden h-full">
-            <div class="glass rounded-2xl p-4 space-y-3 flex flex-col h-full">
+            <div class="glass rounded-lg p-4 space-y-3 flex flex-col h-full">
                 <div class="flex items-center justify-between">
-                    <h2 class="text-sm font-semibold uppercase tracking-wider opacity-60">审计发现</h2>
-                    <span class="text-xs opacity-60"><span x-text="filteredFindings().length"></span> / <span x-text="findings.length"></span></span>
+                    <div>
+                        <h2 class="text-sm font-semibold text-slate-950">发现队列</h2>
+                        <p class="text-xs subtle-text">按风险、状态、模块定位复核项</p>
+                    </div>
+                    <span class="text-xs subtle-text"><span x-text="sortedFindings().length"></span> / <span x-text="findings.length"></span></span>
                 </div>
                 <div class="join w-full">
                     <button
@@ -75,361 +447,604 @@
                         With needs_review
                     </button>
                 </div>
-                <div class="text-[11px] opacity-60" x-show="viewSummary">
+                <div class="text-[11px] subtle-text" x-show="viewSummary">
                     <span x-text="viewSummary?.[reportView]?.issue_count ?? findings.length"></span>
                     findings,
                     <span x-text="viewSummary?.[reportView]?.included_needs_review_count ?? 0"></span>
                     needs_review included
                 </div>
-                <div class="flex flex-col gap-2">
-                    <input
-                        type="text"
-                        class="input input-bordered input-sm"
-                        placeholder="模糊匹配筛选"
-                        x-model="filterQuery">
-                    <select class="select select-bordered select-sm" x-model="filterField">
-                        <option value="all">全部字段</option>
-                        <option value="function">函数名</option>
-                        <option value="location">位置</option>
-                        <option value="category">类别</option>
-                        <option value="subcategory">子类</option>
-                        <option value="description">描述</option>
-                        <option value="impact_level">影响等级</option>
-                        <option value="validation_status">验证状态</option>
-                    </select>
+                <div class="space-y-2 rounded-lg bg-slate-50 border border-slate-200 p-3">
+                    <div class="flex items-center justify-between gap-2">
+                        <span class="text-[11px] font-semibold uppercase tracking-wider subtle-text">高级检索</span>
+                        <button class="btn btn-ghost btn-xs" @click="addFindingFilter()">添加条件</button>
+                    </div>
+                    <template x-for="rule in findingFilters" :key="rule.id">
+                        <div class="rounded-lg border border-slate-200 bg-white p-2 space-y-2">
+                            <div class="flex gap-2">
+                                <select class="select select-bordered select-xs flex-1" x-model="rule.field" @change="normalizeFindingFilter(rule)">
+                                    <option value="module_path">模块路径</option>
+                                    <option value="validation_status">问题状态</option>
+                                    <option value="impact_level">风险等级</option>
+                                    <option value="category">类别/子类</option>
+                                    <option value="function">函数名</option>
+                                    <option value="description">描述</option>
+                                    <option value="confidence">置信度分数</option>
+                                </select>
+                                <select class="select select-bordered select-xs w-24" x-model="rule.operator">
+                                    <option value="contains" x-show="rule.field !== 'confidence'">包含</option>
+                                    <option value="equals" x-show="rule.field !== 'confidence'">等于</option>
+                                    <option value="gte" x-show="rule.field === 'confidence'">大于等于</option>
+                                    <option value="lte" x-show="rule.field === 'confidence'">小于等于</option>
+                                    <option value="eq" x-show="rule.field === 'confidence'">等于</option>
+                                </select>
+                                <button class="btn btn-ghost btn-xs" @click="removeFindingFilter(rule.id)">删除</button>
+                            </div>
+                            <div x-show="rule.field === 'validation_status'" class="grid grid-cols-2 gap-1 text-[11px]">
+                                <template x-for="status in validationStatusOptions" :key="status">
+                                    <label class="flex items-center gap-1">
+                                        <input type="checkbox" class="checkbox checkbox-xs" :value="status" x-model="rule.values">
+                                        <span x-text="status"></span>
+                                    </label>
+                                </template>
+                            </div>
+                            <select x-show="rule.field === 'impact_level'" class="select select-bordered select-xs w-full" x-model="rule.value">
+                                <option value="">全部风险</option>
+                                <option value="critical">critical</option>
+                                <option value="high">high</option>
+                                <option value="medium">medium</option>
+                                <option value="low">low</option>
+                            </select>
+                            <input
+                                x-show="rule.field !== 'validation_status' && rule.field !== 'impact_level'"
+                                class="input input-bordered input-xs w-full"
+                                :type="rule.field === 'confidence' ? 'number' : 'text'"
+                                :step="rule.field === 'confidence' ? '0.01' : null"
+                                :placeholder="findingFilterPlaceholder(rule)"
+                                x-model="rule.value">
+                        </div>
+                    </template>
+                    <div class="flex gap-2">
+                        <select class="select select-bordered select-xs flex-1" x-model="sortMode">
+                            <option value="priority">审计优先级</option>
+                            <option value="confidence_desc">置信度从高到低</option>
+                            <option value="confidence_asc">置信度从低到高</option>
+                        </select>
+                        <button class="btn btn-ghost btn-xs" @click="resetFindingFilters()">重置</button>
+                    </div>
                 </div>
                 <div class="flex-1 overflow-y-auto pr-2 space-y-2 min-h-0">
-                    <template x-for="finding in filteredFindings()" :key="finding.uid">
+                    <template x-for="finding in sortedFindings()" :key="finding.uid">
                         <div
                             @click="selectFinding(finding)"
-                            class="p-4 rounded-xl cursor-pointer transition-all border border-transparent hover:glass"
-                            :class="selectedFinding?.uid === finding.uid ? 'glass border-primary/50' : 'bg-neutral-900'">
+                            class="audit-card p-4 cursor-pointer transition-all hover:border-blue-300"
+                            :class="selectedFinding?.uid === finding.uid ? 'audit-card-active' : ''">
                             <div class="flex justify-between items-start mb-2">
                                 <span class="badge badge-xs" :class="getSeverityClass(finding.impact_level)" x-text="finding.impact_level"></span>
                                 <span class="badge badge-xs" :class="getValidationClass(finding.validation_status)" x-text="finding.validation_status || 'pending'"></span>
                             </div>
                             <h3 class="font-semibold text-sm truncate" x-text="finding.function"></h3>
-                            <p class="text-xs opacity-60 line-clamp-2 mt-1" x-text="finding.description"></p>
+                            <div class="text-[11px] subtle-text mt-1">
+                                <span x-text="findingModulePath(finding) || finding.location || 'unknown module'"></span>
+                                <span> · score </span>
+                                <span x-text="findingConfidenceScore(finding).toFixed(2)"></span>
+                            </div>
+                            <p class="text-xs subtle-text line-clamp-2 mt-1" x-text="finding.description"></p>
                         </div>
                     </template>
                 </div>
             </div>
         </div>
 
-        <div class="col-span-8 xl:col-span-9 flex flex-col gap-6 overflow-hidden">
+        <div class="col-span-5 xl:col-span-6 h-full min-h-0 overflow-hidden">
             <template x-if="selectedFinding">
-                <div class="contents">
-                    <div class="flex-1 glass rounded-2xl overflow-hidden flex flex-col">
-                        <div class="p-4 border-b border-white/10 flex flex-wrap gap-3 justify-between items-center bg-white/5">
-                            <div class="flex items-center gap-2">
-                                <span class="text-sm code-font opacity-80" x-text="selectedFinding.location || selectedFinding.function"></span>
+                <div class="finding-workspace glass rounded-lg">
+                    <section class="finding-summary-bar">
+                        <div class="flex flex-wrap gap-3 justify-between items-start">
+                            <div>
+                                <h2 class="text-xl font-semibold text-slate-950" x-text="selectedFinding.function || 'Unknown function'"></h2>
+                                <p class="text-sm subtle-text code-font mt-1" x-text="selectedFinding.location || findingModulePath(selectedFinding) || 'unknown location'"></p>
                             </div>
                             <div class="flex flex-wrap gap-2">
                                 <div class="badge badge-outline" x-text="selectedFinding.subcategory"></div>
                                 <div class="badge" :class="getSeverityClass(selectedFinding.impact_level)" x-text="selectedFinding.impact_level"></div>
+                                <div class="badge badge-info badge-outline" x-text="'score '+findingConfidenceScore(selectedFinding).toFixed(2)"></div>
                             </div>
                         </div>
-                        <div class="flex-1 overflow-auto bg-[#1e1e1e] relative">
-                            <pre class="m-0 p-6 text-sm"><code class="language-c" x-text="selectedFinding.code_snippet"></code></pre>
+                        <div class="path-strip">
+                            <span x-text="findingTraceSummary(selectedFinding)"></span>
+                            <span class="code-font truncate" x-text="activeEvidenceBreadcrumb(selectedFinding)"></span>
                         </div>
-                    </div>
+                    </section>
 
-                    <div class="grid grid-cols-2 gap-6 h-1/3">
-                        <div class="glass rounded-2xl p-6 overflow-y-auto">
-                            <h3 class="text-sm font-bold mb-3 flex items-center gap-2 text-primary">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                                AI 推理链 (Reasoning)
-                            </h3>
-                            <div class="text-sm leading-relaxed opacity-80 whitespace-pre-wrap" x-text="selectedFinding.reasoning || selectedFinding.reasoning_process || '暂无推理过程'"></div>
-                            <div class="mt-4 pt-4 border-t border-white/10" x-show="formatFindingEvidence(selectedFinding)">
-                                <h4 class="text-[10px] uppercase opacity-40 font-bold mb-2">规则 / 验证证据</h4>
-                                <div class="text-xs leading-relaxed opacity-75 whitespace-pre-wrap" x-text="formatFindingEvidence(selectedFinding)"></div>
-                            </div>
+                    <section class="code-evidence-panel">
+                        <div class="px-4 py-3 border-b border-slate-200 flex justify-between items-center">
+                            <h3 class="text-sm font-semibold text-slate-950">代码证据</h3>
+                            <span class="text-xs subtle-text code-font" x-text="activeCodeLabel(selectedFinding)"></span>
                         </div>
-                        <div class="glass rounded-2xl p-6 overflow-y-auto border-l-4" :class="getBorderClass(selectedFinding.impact_level)">
-                            <h3 class="text-sm font-bold mb-3 text-white">漏洞详情</h3>
-                            <div class="space-y-4">
-                                <div>
-                                    <h4 class="text-[10px] uppercase opacity-40 font-bold">根本原因</h4>
-                                    <p class="text-sm mt-1" x-text="selectedFinding.root_cause"></p>
-                                </div>
-                                <div>
-                                    <h4 class="text-[10px] uppercase opacity-40 font-bold">修复建议</h4>
-                                    <p class="text-sm mt-1 text-success" x-text="selectedFinding.suggested_fix"></p>
-                                </div>
+                        <div class="code-and-evidence">
+                            <div class="code-evidence-body code-panel">
+                                <table class="code-table">
+                                    <tbody>
+                                        <template x-for="line in findingCodeLines(selectedFinding)" :key="line.key">
+                                            <tr :class="isActiveCodeLine(line.no) ? 'code-line-active' : ''">
+                                                <td class="code-line-no" x-text="line.no"></td>
+                                                <td class="code-line-text" x-text="line.text || ' '"></td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
                             </div>
+                            <aside class="evidence-panel">
+                                <div class="evidence-panel-head">
+                                    <h3 class="text-sm font-semibold text-slate-950">Evidence Timeline</h3>
+                                    <p class="text-xs subtle-text mt-1">source、sink、正反向证据按可点击事件组织。</p>
+                                </div>
+                                <div class="evidence-list" @click="selectEvidenceById($event.target.closest('.evidence-item')?.dataset.evidenceId)">
+                                    <template x-for="item in findingEvidenceItems(selectedFinding)" :key="item.id">
+                                        <article class="evidence-item" :data-evidence-id="item.id" :class="activeEvidenceId === item.id ? 'active' : ''">
+                                            <div class="flex items-center justify-between gap-2">
+                                                <span class="line-ref" x-text="item.refLabel"></span>
+                                                <button type="button" class="copy-chip" @click.stop="copyText(item.copyText)">复制</button>
+                                            </div>
+                                            <strong x-text="item.title"></strong>
+                                            <small x-text="item.detail"></small>
+                                        </article>
+                                    </template>
+                                </div>
+                            </aside>
                         </div>
-                    </div>
+                    </section>
 
-                    <div class="glass rounded-2xl p-6 space-y-4">
-                        <div class="flex flex-wrap items-center gap-4">
-                            <h3 class="text-sm font-bold">验证结果</h3>
-                            <select class="select select-bordered select-sm" x-model="selectedFinding.validation_status">
-                                <option value="validated">validated</option>
-                                <option value="needs_review">needs_review</option>
-                                <option value="uncertain">uncertain</option>
-                                <option value="unvalidated">unvalidated</option>
-                                <option value="pending">pending</option>
-                                <option value="rejected">rejected</option>
-                            </select>
-                            <span class="text-xs opacity-60">validated / needs_review / uncertain / unvalidated / pending / rejected</span>
+                    <section class="audit-review-dock">
+                        <div class="audit-claim-row">
+                            <div class="audit-claim-head">
+                                <div>
+                                    <h3 class="text-sm font-semibold text-slate-950">Reasoning With Citations</h3>
+                                    <p class="text-xs subtle-text mt-1">推理、规则和修复建议保持在验证输入旁边，便于边读边录入。</p>
+                                </div>
+                                <div class="flex flex-wrap gap-1">
+                                    <template x-for="ref in findingEvidenceRefs(selectedFinding).slice(0, 3)" :key="ref">
+                                        <span class="badge badge-outline badge-xs code-font" x-text="ref"></span>
+                                    </template>
+                                    <span class="badge badge-ghost badge-xs" x-show="!findingEvidenceRefs(selectedFinding).length">no refs</span>
+                                </div>
+                            </div>
+                            <div class="audit-claim-track">
+                                <article class="audit-claim-card">
+                                    <div class="text-[11px] font-semibold uppercase tracking-wider text-blue-700 mb-1">Claim 1 · AI 推理链</div>
+                                    <p class="text-xs leading-relaxed text-slate-700 whitespace-pre-wrap" x-text="selectedFinding.reasoning || selectedFinding.reasoning_process || '暂无推理过程'"></p>
+                                </article>
+                                <article class="audit-claim-card">
+                                    <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Claim 2 · 规则 / 证据摘要</div>
+                                    <p class="text-xs leading-relaxed text-slate-700 whitespace-pre-wrap" x-text="formatFindingEvidence(selectedFinding) || '暂无规则证据'"></p>
+                                </article>
+                                <article class="audit-claim-card border-l-4" :class="getBorderClass(selectedFinding.impact_level)">
+                                    <div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Claim 3 · 根因 / 修复</div>
+                                    <p class="text-xs leading-relaxed text-slate-700">
+                                        <span class="font-semibold">根因：</span><span x-text="selectedFinding.root_cause || '暂无根因说明'"></span>
+                                        <br>
+                                        <span class="font-semibold text-emerald-700">修复：</span><span x-text="selectedFinding.suggested_fix || '暂无修复建议'"></span>
+                                    </p>
+                                </article>
+                            </div>
                         </div>
-                        <textarea
-                            class="textarea textarea-bordered w-full min-h-[140px]"
-                            placeholder="填写 validation_reasoning（支持多行文本）"
-                            x-model="selectedFinding.validation_reasoning"></textarea>
-                    </div>
+
+                        <div class="audit-decision-panel">
+                            <div class="audit-decision-title">
+                                <h3 class="text-sm font-semibold text-slate-950">验证决策</h3>
+                                <p class="text-xs subtle-text">在主工作区完成录入；可直接引用 evidence ref、文件路径和行号。</p>
+                            </div>
+                            <textarea
+                                class="textarea textarea-bordered audit-decision-textarea"
+                                placeholder="填写人工验证依据，例如：为什么确认为真阳性 / 为什么拒绝 / 还需要检查哪些路径。"
+                                x-model="selectedFinding.validation_reasoning"></textarea>
+                            <div class="audit-decision-controls">
+                                <div class="audit-status-stack">
+                                    <template x-for="status in validationStatusOptions" :key="status">
+                                        <button
+                                            type="button"
+                                            class="btn btn-xs"
+                                            :class="selectedFinding.validation_status === status ? 'btn-primary' : 'btn-outline'"
+                                            @click="selectedFinding.validation_status = status"
+                                            x-text="status"></button>
+                                    </template>
+                                </div>
+                                <div></div>
+                                <div class="audit-decision-footer">
+                                    <div class="text-[11px] subtle-text leading-relaxed">
+                                        当前引用：
+                                        <span x-text="findingEvidenceRefs(selectedFinding).slice(0, 5).join(', ') || '暂无 evidence refs'"></span>
+                                    </div>
+                                    <p class="text-[11px] leading-snug" x-show="saveFeedbackStatus" :class="saveFeedbackType === 'success' ? 'text-emerald-700' : (saveFeedbackType === 'warning' ? 'text-amber-700' : 'text-error')" x-text="saveFeedbackStatus"></p>
+                                    <button type="button" class="btn btn-outline btn-xs" @click="saveFindings()" :disabled="savingFindings" x-text="savingFindings ? '保存中...' : '保存验证结果'">保存验证结果</button>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
                 </div>
             </template>
             <template x-if="!selectedFinding">
-                <div class="flex-1 glass rounded-3xl flex flex-center items-center justify-center opacity-30 flex-col gap-4">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                    <p class="text-lg">请从左侧选择一条审计发现进行分析</p>
+                <div class="flex-1 glass rounded-lg flex items-center justify-center opacity-70 flex-col gap-4">
+                    <p class="text-lg text-slate-600">请从左侧选择一条审计发现进行分析</p>
                 </div>
             </template>
         </div>
+
+        <aside class="col-span-3 xl:col-span-3 flex flex-col gap-4 overflow-y-auto min-h-0">
+            <section class="glass rounded-lg rail-card">
+                <h3 class="text-sm font-semibold text-slate-950">Evidence Map</h3>
+                <div class="metric-grid">
+                    <template x-for="item in evidenceMetrics(selectedFinding)" :key="item.label">
+                        <div class="metric">
+                            <b x-text="item.value"></b>
+                            <span x-text="item.label"></span>
+                        </div>
+                    </template>
+                </div>
+            </section>
+
+            <section class="glass rounded-lg rail-card">
+                <h3 class="text-sm font-semibold text-slate-950">File Coverage</h3>
+                <template x-for="item in fileCoverageItems(selectedFinding)" :key="item.path">
+                    <div class="file-chip">
+                        <span class="text-xs code-font" x-text="item.path"></span>
+                        <span class="badge badge-sm" x-text="item.refs"></span>
+                    </div>
+                </template>
+            </section>
+
+            <section class="glass rounded-lg rail-card">
+                <h3 class="text-sm font-semibold text-slate-950">Confidence Breakdown</h3>
+                <template x-for="item in confidenceBreakdown(selectedFinding)" :key="item.label">
+                    <div class="confidence-row">
+                        <div class="confidence-row-head">
+                            <span x-text="item.label"></span>
+                            <div class="confidence-bar"><i :style="`width:${item.percent}%`"></i></div>
+                            <b x-text="item.value"></b>
+                        </div>
+                        <p class="text-[11px] subtle-text leading-snug" x-text="item.description"></p>
+                    </div>
+                </template>
+            </section>
+
+            <section class="glass rounded-lg rail-card">
+                <h3 class="text-sm font-semibold text-slate-950">复核 Checklist</h3>
+                <label class="flex gap-2 text-xs text-slate-600"><input type="checkbox" class="checkbox checkbox-xs" checked>source 是否可被外部输入或调用者控制</label>
+                <label class="flex gap-2 text-xs text-slate-600"><input type="checkbox" class="checkbox checkbox-xs" checked>sink 是否确实危险且参数到达</label>
+                <label class="flex gap-2 text-xs text-slate-600"><input type="checkbox" class="checkbox checkbox-xs">是否存在锁、生命周期或边界检查反证</label>
+                <label class="flex gap-2 text-xs text-slate-600"><input type="checkbox" class="checkbox checkbox-xs">验证结论是否引用了具体 evidence ref</label>
+            </section>
+
+            <section class="glass rounded-lg rail-card">
+                <h3 class="text-sm font-semibold text-slate-950">当前证据引用</h3>
+                <div class="flex flex-wrap gap-1">
+                    <template x-for="ref in findingEvidenceRefs(selectedFinding).slice(0, 8)" :key="ref">
+                        <span class="badge badge-outline badge-sm code-font" x-text="ref"></span>
+                    </template>
+                    <span class="text-xs subtle-text" x-show="!findingEvidenceRefs(selectedFinding).length">暂无 evidence refs</span>
+                </div>
+            </section>
+        </aside>
     </div><!-- end findings tab -->
 
     <!-- ── Project Config Tab ── -->
     <div x-show="activeTab==='project'" class="h-full overflow-auto">
-        <div class="glass rounded-2xl p-6 space-y-4 max-w-5xl mx-auto flex flex-col h-[calc(100vh-140px)]">
+        <div class="glass rounded-lg p-6 space-y-5 max-w-6xl mx-auto">
             <div class="flex items-center justify-between">
-                <h2 class="text-lg font-semibold uppercase tracking-wider opacity-80">配置 zscope.yaml</h2>
-                <button @click="loadConfig()" class="btn btn-ghost btn-sm">重新载入</button>
+                <div>
+                    <h2 class="text-lg font-semibold text-slate-950">项目配置</h2>
+                    <p class="text-xs subtle-text">以表单方式编辑 zscope.yaml，保存时由系统生成 YAML，避免缩进导致解析失败。</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="text-sm subtle-text">
+                        <span x-text="structuredConfigStatus"></span>
+                        <span x-show="configDirty" class="text-warning"> · 未保存</span>
+                    </span>
+                    <button @click="reloadStructuredConfig()" class="btn btn-ghost btn-sm">重新载入</button>
+                    <button @click="saveStructuredConfig()" class="btn btn-primary btn-sm">保存项目配置</button>
+                </div>
             </div>
-            <textarea
-                class="textarea textarea-bordered w-full flex-1 text-sm code-font"
-                placeholder="在此编辑 zscope.yaml 内容"
-                x-model="configContent"></textarea>
-            <div class="flex items-center justify-between">
-                <span class="text-sm opacity-60" x-text="configStatus"></span>
-                <button @click="saveConfig()" class="btn btn-secondary">保存配置</button>
+
+            <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                <section class="soft-panel rounded-lg p-4 space-y-3">
+                    <h3 class="font-semibold text-slate-950">项目范围</h3>
+                    <p class="text-xs subtle-text">路径字段说明来自根目录 zscope.yaml 注释：相对路径基于 project.root 或 source_root 解析。</p>
+                    <label class="form-control">
+                        <span class="label-text">项目根目录 root</span>
+                        <input class="input input-bordered input-sm" x-model="configForm.project.root" @input="markConfigDirty()">
+                        <span class="label-text-alt subtle-text">被分析项目根目录；相对路径基于当前工作目录解析。</span>
+                    </label>
+                    <label class="form-control">
+                        <span class="label-text">源码根目录 source_root</span>
+                        <input class="input input-bordered input-sm" x-model="configForm.project.source_root" @input="markConfigDirty()">
+                        <span class="label-text-alt subtle-text">源码根目录；相对路径基于 project.root 解析。</span>
+                    </label>
+                    <label class="form-control">
+                        <span class="label-text">单入口函数 entry_function</span>
+                        <input class="input input-bordered input-sm" x-model="configForm.project.entry_function" @input="markConfigDirty()">
+                        <span class="label-text-alt subtle-text">单入口扫描的入口函数名；批量模式可留空。</span>
+                    </label>
+                    <label class="form-control">
+                        <span class="label-text">批量入口文件 entry_functions_list</span>
+                        <input class="input input-bordered input-sm" x-model="configForm.project.entry_functions_list" @input="markConfigDirty()">
+                        <span class="label-text-alt subtle-text">批量入口 JSON 文件；相对路径基于 project.root 解析。</span>
+                    </label>
+                    <label class="form-control">
+                        <span class="label-text">编译数据库 compile_commands_path</span>
+                        <input class="input input-bordered input-sm" x-model="configForm.project.compile_commands_path" @input="markConfigDirty()">
+                        <span class="label-text-alt subtle-text">Clang/unified/SVF 后端使用的 compile_commands.json。</span>
+                    </label>
+                    <label class="form-control">
+                        <span class="label-text">include_paths</span>
+                        <textarea class="textarea textarea-bordered textarea-sm" rows="3" x-model="configForm.project.include_paths" @input="markConfigDirty()"></textarea>
+                        <span class="label-text-alt subtle-text">每行一个路径；为空表示扫描 source_root 下全部支持源码文件。</span>
+                    </label>
+                    <label class="form-control">
+                        <span class="label-text">exclude_paths</span>
+                        <textarea class="textarea textarea-bordered textarea-sm" rows="3" x-model="configForm.project.exclude_paths" @input="markConfigDirty()"></textarea>
+                        <span class="label-text-alt subtle-text">每行一个排除路径；相对路径基于 source_root 解析。</span>
+                    </label>
+                </section>
+
+                <section class="soft-panel rounded-lg p-4 space-y-3">
+                    <h3 class="font-semibold text-slate-950">入口发现</h3>
+                    <label class="label cursor-pointer justify-start gap-3">
+                        <input type="checkbox" class="toggle toggle-primary" x-model="configForm.entryDiscovery.enabled" @change="markConfigDirty()">
+                        <span>启用自动入口发现</span>
+                    </label>
+                    <label class="form-control">
+                        <span class="label-text">max_candidates</span>
+                        <input type="number" class="input input-bordered input-sm" x-model.number="configForm.entryDiscovery.max_candidates" @input="markConfigDirty()">
+                        <span class="label-text-alt subtle-text">自动入口发现最多保留的候选入口数量。</span>
+                    </label>
+                    <label class="form-control">
+                        <span class="label-text">max_functions</span>
+                        <input type="number" class="input input-bordered input-sm" x-model.number="configForm.entryDiscovery.max_functions" @input="markConfigDirty()">
+                        <span class="label-text-alt subtle-text">自动入口发现最多扫描的函数数量上限。</span>
+                    </label>
+                    <label class="form-control">
+                        <span class="label-text">header_files</span>
+                        <textarea class="textarea textarea-bordered textarea-sm" rows="3" x-model="configForm.entryDiscovery.header_files" @input="markConfigDirty()"></textarea>
+                        <span class="label-text-alt subtle-text">每行一个 public header 路径 glob/正则过滤。</span>
+                    </label>
+
+                    <div class="divider my-2"></div>
+                    <h3 class="font-semibold text-slate-950">代码索引</h3>
+                    <label class="form-control">
+                        <span class="label-text">backend</span>
+                        <select class="select select-bordered select-sm" x-model="configForm.indexing.backend" @change="markConfigDirty()">
+                            <option value="regex">regex</option>
+                            <option value="clang">clang</option>
+                            <option value="joern">joern</option>
+                            <option value="unified">unified</option>
+                        </select>
+                        <span class="label-text-alt subtle-text">后端类型：joern | clang | unified | regex。</span>
+                    </label>
+                    <label class="form-control">
+                        <span class="label-text">knowledge_db_path</span>
+                        <input class="input input-bordered input-sm" x-model="configForm.indexing.knowledge_db_path" @input="markConfigDirty()">
+                    </label>
+                    <div class="grid grid-cols-2 gap-3">
+                        <label class="form-control">
+                            <span class="label-text">batch_size</span>
+                            <input type="number" class="input input-bordered input-sm" x-model.number="configForm.indexing.batch_size" @input="markConfigDirty()">
+                        </label>
+                        <label class="form-control">
+                            <span class="label-text">max_clangd_threads</span>
+                            <input type="number" class="input input-bordered input-sm" x-model.number="configForm.indexing.max_clangd_threads" @input="markConfigDirty()">
+                        </label>
+                    </div>
+                </section>
+
+                <section class="soft-panel rounded-lg p-4 space-y-3">
+                    <h3 class="font-semibold text-slate-950">工具路径</h3>
+                    <p class="text-xs subtle-text">仅在对应后端启用时使用；为空时通常从 PATH 查找。</p>
+                    <label class="form-control"><span class="label-text">joern_path</span><input class="input input-bordered input-sm" x-model="configForm.indexing.joern_path" @input="markConfigDirty()"></label>
+                    <label class="form-control"><span class="label-text">clangd_path</span><input class="input input-bordered input-sm" x-model="configForm.indexing.clangd_path" @input="markConfigDirty()"></label>
+                    <label class="form-control"><span class="label-text">svf_bin_dir</span><input class="input input-bordered input-sm" x-model="configForm.indexing.svf_bin_dir" @input="markConfigDirty()"></label>
+                    <div class="grid grid-cols-3 gap-3">
+                        <label class="form-control"><span class="label-text">gclang_path</span><input class="input input-bordered input-sm" x-model="configForm.indexing.gclang_path" @input="markConfigDirty()"></label>
+                        <label class="form-control"><span class="label-text">get_bc_path</span><input class="input input-bordered input-sm" x-model="configForm.indexing.get_bc_path" @input="markConfigDirty()"></label>
+                        <label class="form-control"><span class="label-text">llvm_link_path</span><input class="input input-bordered input-sm" x-model="configForm.indexing.llvm_link_path" @input="markConfigDirty()"></label>
+                    </div>
+                </section>
+
+                <section class="soft-panel rounded-lg p-4 space-y-3">
+                    <h3 class="font-semibold text-slate-950">分析行为</h3>
+                    <div class="grid grid-cols-2 gap-3">
+                        <label class="form-control"><span class="label-text">max_recursion_depth</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.max_recursion_depth" @input="markConfigDirty()"></label>
+                        <label class="form-control"><span class="label-text">max_function_lines</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.max_function_lines" @input="markConfigDirty()"></label>
+                        <label class="form-control"><span class="label-text">max_tool_iterations</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.max_tool_iterations" @input="markConfigDirty()"></label>
+                        <label class="form-control"><span class="label-text">parallel_workers</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.parallel_workers" @input="markConfigDirty()"></label>
+                    </div>
+                    <label class="form-control"><span class="label-text">snapshot_dir</span><input class="input input-bordered input-sm" x-model="configForm.analysis.snapshot_dir" @input="markConfigDirty()"></label>
+                    <label class="form-control"><span class="label-text">user_config_db</span><input class="input input-bordered input-sm" x-model="configForm.analysis.user_config_db" @input="markConfigDirty()"><span class="label-text-alt subtle-text">用户配置 workbook 或目录；为空时使用 snapshot_dir/user_config.xlsx。</span></label>
+                    <div class="grid grid-cols-2 gap-3">
+                        <label class="label cursor-pointer justify-start gap-3"><input type="checkbox" class="checkbox checkbox-primary" x-model="configForm.analysis.enable_snapshot_cache" @change="markConfigDirty()"><span>启用快照缓存</span></label>
+                        <label class="label cursor-pointer justify-start gap-3"><input type="checkbox" class="checkbox checkbox-primary" x-model="configForm.analysis.enable_subagent_workers" @change="markConfigDirty()"><span>启用 Deep Worker</span></label>
+                    </div>
+                </section>
             </div>
         </div>
     </div><!-- end project config tab -->
 
     <!-- ── Config Tab ── -->
     <div x-show="activeTab==='config'" class="h-full overflow-auto">
-        <div class="glass rounded-2xl p-6 space-y-4">
-            <div class="tabs tabs-bordered">
-                <a class="tab" :class="configSubTab==='external' && 'tab-active'" @click="configSubTab='external'">外部函数</a>
-                <a class="tab" :class="configSubTab==='paired' && 'tab-active'" @click="configSubTab='paired'">配对函数</a>
-                <a class="tab" :class="configSubTab==='pointers' && 'tab-active'" @click="configSubTab='pointers'">函数指针</a>
-                <a class="tab" :class="configSubTab==='intents' && 'tab-active'" @click="configSubTab='intents'">函数意图</a>
-                <a class="tab" :class="configSubTab==='cpg' && 'tab-active'" @click="configSubTab='cpg'">CPG 管理</a>
+        <div class="glass rounded-lg p-6 space-y-4">
+            <div class="soft-panel rounded-lg p-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                    <h2 class="text-lg font-semibold text-slate-950">用户配置 user_config.xlsx</h2>
+                    <p class="text-sm subtle-text">当前用户配置以工作簿为唯一入口，按 sheet 维护资源、锁、dispatcher、模块生命周期、函数指针和函数意图。</p>
+                </div>
+                <div class="grid grid-cols-3 gap-4 text-center text-xs">
+                    <div><b x-text="workbookSheetNames.length"></b><span class="block subtle-text">sheets</span></div>
+                    <div><b x-text="totalWorkbookRows()"></b><span class="block subtle-text">rows</span></div>
+                    <div><b x-text="workbookDirty ? '未保存' : '已同步'"></b><span class="block subtle-text">状态</span></div>
+                </div>
             </div>
-
-            <!-- External Functions -->
-            <div x-show="configSubTab==='external'" class="space-y-3">
-                <div class="collapse collapse-arrow bg-neutral-900 rounded-xl">
-                    <input type="checkbox" />
-                    <div class="collapse-title text-sm font-medium opacity-70">填写说明（点击展开）</div>
-                    <div class="collapse-content text-xs opacity-60 space-y-2">
-                        <p>当项目依赖的外部库函数无法获取源码实现时，需要在此手动描述其内存和并发行为，帮助 AI 理解函数语义。</p>
-                        <ul class="list-disc list-inside space-y-1">
-                            <li><b>函数名</b> — 外部函数的完整名称，如 <code class="code-font text-primary">malloc</code>、<code class="code-font text-primary">pthread_mutex_lock</code></li>
-                            <li><b>库名</b> — 所属库，如 <code class="code-font text-primary">libc</code>、<code class="code-font text-primary">pthread</code>、<code class="code-font text-primary">openssl</code></li>
-                            <li><b>描述</b> — 函数功能及其内存/并发行为，重点说明：是否分配/释放内存、是否返回指针、是否线程安全、对参数的约束等</li>
-                            <li><b>返回语义</b> — 返回值含义，如 <code class="code-font text-primary">成功返回 0，失败返回 -1</code> 或 <code class="code-font text-primary">返回分配的内存指针，失败返回 NULL</code></li>
-                        </ul>
-                        <p class="text-warning">提示：告警页面会显示分析过程中遇到的未知外部函数，可据此补充配置。</p>
+            <!-- Workbook Editor -->
+            <div class="space-y-3">
+                <div class="soft-panel rounded-lg p-4 space-y-2">
+                    <div class="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                            <h3 class="font-semibold">user_config.xlsx 结构化编辑</h3>
+                            <p class="text-xs subtle-text">按工作簿 sheet 编辑固定表头数据，保存后写回当前项目的 user_config.xlsx。</p>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <span class="text-xs subtle-text" x-text="workbookStatus"></span>
+                            <span class="badge badge-warning badge-sm" x-show="workbookDirty">未保存</span>
+                            <button class="btn btn-outline btn-sm" @click="downloadWorkbook()">导出 Excel</button>
+                            <button class="btn btn-outline btn-sm" @click="triggerWorkbookImport()">导入 Excel</button>
+                            <button class="btn btn-ghost btn-sm" @click="loadWorkbookConfig()">重新载入</button>
+                            <button class="btn btn-primary btn-sm" @click="saveWorkbookConfig()" :disabled="!workbookDirty">保存工作簿</button>
+                            <input type="file" x-ref="workbookImportInput" class="hidden" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" @change="importWorkbook($event)">
+                        </div>
                     </div>
                 </div>
-                <div class="flex gap-2 flex-wrap">
-                    <input class="input input-bordered input-sm" placeholder="函数名" x-model="extForm.func_name">
-                    <input class="input input-bordered input-sm" placeholder="库名" x-model="extForm.library">
-                    <input class="input input-bordered input-sm flex-1" placeholder="描述" x-model="extForm.description">
-                    <input class="input input-bordered input-sm" placeholder="返回语义" x-model="extForm.return_semantics">
+                <div class="tabs tabs-boxed bg-slate-100">
+                    <template x-for="sheet in workbookSheetNames" :key="sheet">
+                        <a class="tab tab-sm" :class="workbookSheet === sheet && 'tab-active'" @click="workbookSheet = sheet" x-text="sheet"></a>
+                    </template>
                 </div>
-                <div class="flex gap-2 flex-wrap">
-                    <textarea class="textarea textarea-bordered textarea-sm flex-1" rows="2" placeholder="内存行为 (JSON)，如 {&quot;allocates&quot;:true,&quot;returns_allocated&quot;:true}" x-model="extForm.memory_behavior"></textarea>
-                    <textarea class="textarea textarea-bordered textarea-sm flex-1" rows="2" placeholder="并发行为 (JSON)，如 {&quot;thread_safe&quot;:false,&quot;acquires_lock&quot;:false}" x-model="extForm.concurrency_behavior"></textarea>
-                    <button class="btn btn-primary btn-sm self-end" @click="saveExtFunc()">保存</button>
+                <div class="flex justify-between items-center">
+                    <div class="text-xs subtle-text">
+                        <span x-text="workbookSheet"></span>
+                        <span> · </span>
+                        <span x-text="workbookRowsForActiveSheet().length"></span>
+                        <span> rows</span>
+                    </div>
+                    <button class="btn btn-secondary btn-sm" @click="addWorkbookRow()">新增行</button>
                 </div>
-                <table class="table table-sm">
-                    <thead><tr><th>函数名</th><th>库</th><th>描述</th><th>操作</th></tr></thead>
-                    <tbody>
-                        <template x-for="item in configData.external_functions" :key="item.func_name">
+                <div class="overflow-auto rounded-lg border border-slate-200 max-h-[60vh]">
+                    <table class="table table-xs">
+                        <thead>
                             <tr>
-                                <td x-text="item.func_name"></td>
-                                <td x-text="item.library"></td>
-                                <td class="max-w-xs truncate" x-text="item.description"></td>
-                                <td><button class="btn btn-error btn-xs" @click="deleteConfig('external_functions',{func_name:item.func_name})">删除</button></td>
+                                <template x-for="header in workbookHeadersForActiveSheet()" :key="header">
+                                    <th class="whitespace-nowrap" x-text="header"></th>
+                                </template>
+                                <th>操作</th>
                             </tr>
-                        </template>
-                    </tbody>
-                </table>
+                        </thead>
+                        <tbody>
+                            <template x-for="(row, rowIndex) in workbookRowsForActiveSheet()" :key="`${workbookSheet}-${rowIndex}`">
+                                <tr>
+                                    <template x-for="header in workbookHeadersForActiveSheet()" :key="header">
+                                        <td class="min-w-[180px]">
+                                            <input class="input input-bordered input-xs w-full" x-model="row[header]" @input="workbookDirty = true">
+                                        </td>
+                                    </template>
+                                    <td>
+                                        <button class="btn btn-error btn-xs" @click="deleteWorkbookRow(rowIndex)">删除</button>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
             </div>
 
-            <!-- Paired Functions -->
-            <div x-show="configSubTab==='paired'" class="space-y-3">
-                <div class="collapse collapse-arrow bg-neutral-900 rounded-xl">
-                    <input type="checkbox" />
-                    <div class="collapse-title text-sm font-medium opacity-70">填写说明（点击展开）</div>
-                    <div class="collapse-content text-xs opacity-60 space-y-2">
-                        <p>定义成对的资源获取/释放函数，用于检测资源泄漏、重复释放等问题。标准库函数（如 malloc/free）已内置，此处用于补充项目自定义的配对函数。</p>
-                        <ul class="list-disc list-inside space-y-1">
-                            <li><b>类别</b> — 配对类型：<code class="code-font text-primary">memory</code>（内存分配/释放）、<code class="code-font text-primary">lock</code>（加锁/解锁）、<code class="code-font text-primary">refcount</code>（引用计数增/减）、<code class="code-font text-primary">fd</code>（文件描述符打开/关闭）</li>
-                            <li><b>获取函数</b> — 资源获取方，如 <code class="code-font text-primary">my_malloc</code>、<code class="code-font text-primary">spin_lock</code>、<code class="code-font text-primary">open_device</code></li>
-                            <li><b>释放函数</b> — 资源释放方，如 <code class="code-font text-primary">my_free</code>、<code class="code-font text-primary">spin_unlock</code>、<code class="code-font text-primary">close_device</code></li>
-                            <li><b>描述</b> — 简要说明配对关系，如 <code class="code-font text-primary">自定义内存池分配与释放</code></li>
-                        </ul>
-                    </div>
-                </div>
-                <div class="flex gap-2 flex-wrap">
-                    <select class="select select-bordered select-sm" x-model="pairedForm.category">
-                        <option value="memory">memory</option><option value="lock">lock</option>
-                        <option value="refcount">refcount</option><option value="fd">fd</option>
-                    </select>
-                    <input class="input input-bordered input-sm" placeholder="获取函数" x-model="pairedForm.acquire_func">
-                    <input class="input input-bordered input-sm" placeholder="释放函数" x-model="pairedForm.release_func">
-                    <input class="input input-bordered input-sm flex-1" placeholder="描述" x-model="pairedForm.description">
-                    <button class="btn btn-primary btn-sm" @click="savePairedFunc()">保存</button>
-                </div>
-                <table class="table table-sm">
-                    <thead><tr><th>类别</th><th>获取</th><th>释放</th><th>描述</th><th>操作</th></tr></thead>
-                    <tbody>
-                        <template x-for="item in configData.paired_functions" :key="item.id">
-                            <tr>
-                                <td x-text="item.category"></td>
-                                <td x-text="item.acquire_func"></td>
-                                <td x-text="item.release_func"></td>
-                                <td x-text="item.description"></td>
-                                <td><button class="btn btn-error btn-xs" @click="deleteConfig('paired_functions',{id:item.id})">删除</button></td>
-                            </tr>
-                        </template>
-                    </tbody>
-                </table>
-            </div>
-
-            <!-- Pointer Targets -->
-            <div x-show="configSubTab==='pointers'" class="space-y-3">
-                <div class="collapse collapse-arrow bg-neutral-900 rounded-xl">
-                    <input type="checkbox" />
-                    <div class="collapse-title text-sm font-medium opacity-70">填写说明（点击展开）</div>
-                    <div class="collapse-content text-xs opacity-60 space-y-2">
-                        <p>当 Joern 无法静态推断函数指针的指向时，需要用户手动指定。分析过程中遇到的未解析指针会在告警页面提示。</p>
-                        <ul class="list-disc list-inside space-y-1">
-                            <li><b>指针位置</b> — 函数指针的声明位置，如 <code class="code-font text-primary">device_ops.read</code>（结构体成员）、<code class="code-font text-primary">g_callback</code>（全局变量）、<code class="code-font text-primary">handler_fn</code>（局部变量）</li>
-                            <li><b>范围</b> — <code class="code-font text-primary">local</code>（函数内局部指向）、<code class="code-font text-primary">global</code>（全局变量指向）、<code class="code-font text-primary">ignore</code>（标记为可忽略，不影响分析结果）</li>
-                            <li><b>目标函数</b> — 该指针可能指向的具体函数名，多个用英文逗号分隔，如 <code class="code-font text-primary">read_impl_v1, read_impl_v2</code></li>
-                        </ul>
-                        <p class="text-warning">提示：选择 ignore 表示该指针指向不影响缺陷检测，分析时将跳过相关路径。</p>
-                    </div>
-                </div>
-                <div class="flex gap-2 flex-wrap">
-                    <input class="input input-bordered input-sm" placeholder="指针位置" x-model="ptrForm.pointer_location">
-                    <select class="select select-bordered select-sm" x-model="ptrForm.scope">
-                        <option value="local">local</option><option value="global">global</option><option value="ignore">ignore</option>
-                    </select>
-                    <input class="input input-bordered input-sm flex-1" placeholder="目标函数(逗号分隔)" x-model="ptrForm.targets_str">
-                    <button class="btn btn-primary btn-sm" @click="savePtrTarget()">保存</button>
-                </div>
-                <table class="table table-sm">
-                    <thead><tr><th>位置</th><th>范围</th><th>目标</th><th>操作</th></tr></thead>
-                    <tbody>
-                        <template x-for="item in configData.pointer_targets" :key="item.id">
-                            <tr>
-                                <td x-text="item.pointer_location"></td>
-                                <td x-text="item.scope"></td>
-                                <td x-text="formatJsonList(item.target_functions)"></td>
-                                <td><button class="btn btn-error btn-xs" @click="deleteConfig('pointer_targets',{id:item.id})">删除</button></td>
-                            </tr>
-                        </template>
-                    </tbody>
-                </table>
-            </div>
-
-            <!-- Function Intents -->
-            <div x-show="configSubTab==='intents'" class="space-y-3">
-                <div class="collapse collapse-arrow bg-neutral-900 rounded-xl">
-                    <input type="checkbox" />
-                    <div class="collapse-title text-sm font-medium opacity-70">填写说明（点击展开）</div>
-                    <div class="collapse-content text-xs opacity-60 space-y-2">
-                        <p>描述函数的设计意图和并发关系，帮助 AI 判断是否存在数据竞争等并发问题。</p>
-                        <ul class="list-disc list-inside space-y-1">
-                            <li><b>函数名</b> — 需要标注意图的函数名，如 <code class="code-font text-primary">process_request</code></li>
-                            <li><b>并发组</b> — 该函数所属的并发分组标识，同组函数不会并发执行。如 <code class="code-font text-primary">io_thread</code>、<code class="code-font text-primary">timer_task</code>、<code class="code-font text-primary">main_loop</code></li>
-                            <li><b>并发对象</b> — 与本函数存在并发执行关系的其他并发组名，多个用英文逗号分隔，如 <code class="code-font text-primary">network_layer, cache_layer</code></li>
-                            <li><b>备注</b> — 补充说明函数对调用者的约束，如 <code class="code-font text-primary">调用前必须持有 g_mutex 锁</code>、<code class="code-font text-primary">传入指针保证非 NULL</code></li>
-                        </ul>
-                        <p class="text-warning">提示：并发组用于建模任务/线程间的并发关系。同一并发组内的函数被视为串行执行，不同组之间根据"并发对象"字段判断是否存在并发。</p>
-                    </div>
-                </div>
-                <div class="flex gap-2 flex-wrap">
-                    <input class="input input-bordered input-sm" placeholder="函数名" x-model="intentForm.func_name">
-                    <input class="input input-bordered input-sm" placeholder="文件路径(可选，区分同名函数)" x-model="intentForm.file_path">
-                    <input class="input input-bordered input-sm" placeholder="并发组" x-model="intentForm.concurrency_group">
-                    <input class="input input-bordered input-sm" placeholder="并发对象(逗号分隔)" x-model="intentForm.concurrent_str">
-                </div>
-                <div class="flex gap-2 flex-wrap">
-                    <textarea class="textarea textarea-bordered textarea-sm flex-1" rows="2" placeholder="调用者约束 (JSON)，如 {&quot;pointer_valid&quot;:true,&quot;no_concurrent_call&quot;:true}" x-model="intentForm.caller_constraints"></textarea>
-                    <input class="input input-bordered input-sm flex-1" placeholder="备注" x-model="intentForm.notes">
-                    <button class="btn btn-primary btn-sm self-end" @click="saveIntent()">保存</button>
-                </div>
-                <table class="table table-sm">
-                    <thead><tr><th>函数</th><th>并发组</th><th>备注</th><th>操作</th></tr></thead>
-                    <tbody>
-                        <template x-for="item in configData.function_intents" :key="item.func_name">
-                            <tr>
-                                <td x-text="item.func_name"></td>
-                                <td x-text="item.concurrency_group"></td>
-                                <td class="max-w-xs truncate" x-text="item.notes"></td>
-                                <td><button class="btn btn-error btn-xs" @click="deleteConfig('function_intents',{func_name:item.func_name,file_path:item.file_path||''})">删除</button></td>
-                            </tr>
-                        </template>
-                    </tbody>
-                </table>
-            </div>
-
-            <!-- CPG Management -->
-            <div x-show="configSubTab==='cpg'" class="space-y-3">
-                <div class="collapse collapse-arrow bg-neutral-900 rounded-xl">
-                    <input type="checkbox" />
-                    <div class="collapse-title text-sm font-medium opacity-70">填写说明（点击展开）</div>
-                    <div class="collapse-content text-xs opacity-60 space-y-2">
-                        <p>CPG（Code Property Graph）是 Joern 生成的代码属性图，是所有代码分析的基础。构建 CPG 后才能执行函数查询、调用图分析、数据流追踪等操作。</p>
-                        <ul class="list-disc list-inside space-y-1">
-                            <li><b>源码路径</b> — 待分析项目的源码根目录绝对路径，如 <code class="code-font text-primary">/home/user/project/src</code></li>
-                        </ul>
-                        <p class="text-warning">提示：CPG 构建为异步操作，大型项目可能耗时较长。构建期间可正常使用其他功能，状态栏会实时显示构建进度。</p>
-                    </div>
-                </div>
-                <div class="flex items-center gap-4">
-                    <span class="badge badge-lg" :class="cpgStatusClass" x-text="'CPG: '+cpgStatus"></span>
-                    <span class="text-sm text-error" x-show="cpgError" x-text="cpgError"></span>
-                    <span class="text-xs opacity-60">源码路径由 zscope.yaml 配置决定</span>
-                    <button class="btn btn-primary btn-sm" @click="buildCpg()" :disabled="cpgStatus==='building'">构建 CPG</button>
-                    <button class="btn btn-ghost btn-sm" @click="pollCpgStatus()">刷新状态</button>
-                </div>
-            </div>
         </div>
     </div><!-- end config tab -->
 
-    <!-- ── Warnings Tab ── -->
+    <!-- ── Dashboard Tab ── -->
     <div x-show="activeTab==='warnings'" class="h-full overflow-auto">
-        <div class="glass rounded-2xl p-6 space-y-3">
-            <div class="flex items-center justify-between">
-                <h2 class="text-sm font-semibold uppercase tracking-wider opacity-60">缺失配置告警</h2>
-                <button class="btn btn-warning btn-xs" x-show="warnings.length>0" @click="clearWarnings()">清除全部告警</button>
-            </div>
-            <template x-if="warnings.length===0">
-                <p class="opacity-40">暂无告警</p>
-            </template>
-            <table class="table table-sm" x-show="warnings.length>0">
-                <thead><tr><th>类型</th><th>上下文</th><th>消息</th></tr></thead>
-                <tbody>
-                    <template x-for="w in warnings" :key="w.id">
-                        <tr>
-                            <td><span class="badge badge-warning badge-sm" x-text="w.warning_type"></span></td>
-                            <td x-text="w.context"></td>
-                            <td x-text="w.message"></td>
-                        </tr>
+        <div class="space-y-4">
+            <section class="glass rounded-lg p-6 space-y-5">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                        <h2 class="text-lg font-semibold text-slate-950">问题状态看板</h2>
+                        <p class="text-xs subtle-text">展示当前审计发现的验证状态分布；rejected 视为已纳入 baseline 的误报。</p>
+                    </div>
+                    <div class="flex gap-2">
+                        <button class="btn btn-outline btn-sm" @click="refreshDashboardData()">刷新发现</button>
+                        <button class="btn btn-warning btn-sm" x-show="warnings.length>0" @click="clearWarnings()">清除配置告警</button>
+                    </div>
+                </div>
+
+                <div class="status-dashboard-grid">
+                    <div class="dashboard-stat-card grid gap-4 content-start">
+                        <div class="status-pie" :style="validationPieStyle()">
+                            <div class="status-pie-center">
+                                <div>
+                                    <div class="text-3xl font-bold text-slate-950" x-text="validationStatusTotal()"></div>
+                                    <div class="text-xs subtle-text">total findings</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">
+                            <template x-for="item in validationStatusItems()" :key="item.status">
+                                <div class="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                                    <div class="flex items-center gap-2 min-w-0">
+                                        <span class="status-dot" :style="`background:${item.color}`"></span>
+                                        <span class="text-xs truncate" x-text="item.label"></span>
+                                    </div>
+                                    <b class="text-sm" x-text="item.count"></b>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-3 content-start">
+                        <div class="dashboard-stat-card">
+                            <p class="text-xs subtle-text">待人工验证问题</p>
+                            <b class="text-3xl text-blue-700" x-text="validationCounts().needs_review"></b>
+                        </div>
+                        <div class="dashboard-stat-card">
+                            <p class="text-xs subtle-text">AI已验证问题</p>
+                            <b class="text-3xl text-emerald-700" x-text="validationCounts().validated"></b>
+                        </div>
+                        <div class="dashboard-stat-card">
+                            <p class="text-xs subtle-text">已纳入 baseline</p>
+                            <b class="text-3xl text-slate-700" x-text="validationCounts().rejected"></b>
+                        </div>
+                        <div class="dashboard-stat-card">
+                            <p class="text-xs subtle-text">未处理 / 不确定</p>
+                            <b class="text-3xl text-amber-700" x-text="validationCounts().pending + validationCounts().uncertain + validationCounts().unvalidated"></b>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="glass rounded-lg p-6 space-y-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="text-lg font-semibold text-slate-950">配置告警</h2>
+                        <p class="text-xs subtle-text">保留原运行期配置缺口日志，用于定位 user_config.xlsx 中需要补充的语义。</p>
+                    </div>
+                    <span class="badge badge-warning badge-outline" x-text="warnings.length + ' 条'"></span>
+                </div>
+                <template x-if="warnings.length===0">
+                    <p class="soft-panel rounded-lg p-4 text-sm text-slate-600">暂无配置告警。</p>
+                </template>
+                <div class="grid grid-cols-1 xl:grid-cols-2 gap-4" x-show="warnings.length>0">
+                    <template x-for="group in groupedWarnings()" :key="group.type">
+                        <section class="soft-panel rounded-lg overflow-hidden">
+                            <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
+                                <div class="flex items-center gap-2">
+                                    <span class="badge badge-warning badge-sm" x-text="group.type"></span>
+                                    <span class="text-xs subtle-text" x-text="group.items.length + ' 条'"></span>
+                                </div>
+                                <button class="btn btn-outline btn-xs" @click="switchToWorkbookSheet(warningTargetSheet(group.type))">去补充配置</button>
+                            </div>
+                            <div class="max-h-64 overflow-auto">
+                                <table class="table table-sm">
+                                    <thead><tr><th>上下文</th><th>消息</th></tr></thead>
+                                    <tbody>
+                                        <template x-for="w in group.items" :key="w.id">
+                                            <tr>
+                                                <td class="code-font text-xs" x-text="w.context"></td>
+                                                <td x-text="w.message"></td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </section>
                     </template>
-                </tbody>
-            </table>
+                </div>
+            </section>
         </div>
-    </div><!-- end warnings tab -->
+    </div><!-- end dashboard tab -->
 
     </main>
 
@@ -438,27 +1053,87 @@
             return {
                 findings: [],
                 selectedFinding: null,
+                activeEvidenceId: '',
+                activeCodeSnippet: null,
                 reportSummary: null,
                 reportViews: {},
                 reportView: 'default',
                 viewSummary: null,
-                appVersion: 'v0.6.0',
+                appVersion: 'v0.7.0',
                 statusText: '就绪',
                 statusClass: 'badge-ghost',
                 statusDotClass: 'bg-ghost',
+                toastMessage: '',
+                toastType: 'info',
                 filterQuery: '',
                 filterField: 'all',
+                findingFilters: [],
+                nextFindingFilterId: 1,
+                sortMode: 'priority',
+                validationStatusOptions: ['pending', 'needs_review', 'validated', 'rejected', 'uncertain', 'unvalidated'],
                 configContent: '',
+                originalConfigContent: '',
+                configDirty: false,
                 configStatus: '',
+                structuredConfig: {},
+                structuredConfigStatus: '',
+                configForm: {
+                    project: {
+                        root: '',
+                        source_root: '',
+                        entry_function: '',
+                        entry_functions_list: '',
+                        compile_commands_path: '',
+                        include_paths: '',
+                        exclude_paths: '',
+                    },
+                    entryDiscovery: {
+                        enabled: false,
+                        max_candidates: 200,
+                        max_functions: 10000,
+                        header_files: '',
+                    },
+                    indexing: {
+                        backend: 'regex',
+                        knowledge_db_path: '',
+                        batch_size: 50,
+                        max_clangd_threads: 8,
+                        joern_path: 'joern',
+                        clangd_path: 'clangd',
+                        svf_bin_dir: '',
+                        gclang_path: 'gclang',
+                        get_bc_path: 'get-bc',
+                        llvm_link_path: 'llvm-link',
+                    },
+                    analysis: {
+                        max_recursion_depth: 3,
+                        max_function_lines: 500,
+                        max_tool_iterations: 50,
+                        parallel_workers: 5,
+                        snapshot_dir: '.zscope_snapshots',
+                        user_config_db: '',
+                        enable_snapshot_cache: true,
+                        enable_subagent_workers: true,
+                    },
+                },
                 offlineTemplateCache: null,
                 activeTab: 'findings',
-                configSubTab: 'external',
+                configSubTab: 'workbook',
                 cpgStatus: 'unknown',
                 cpgError: '',
                 cpgStatusClass: 'badge-ghost',
                 cpgDotClass: 'bg-ghost',
                 warnings: [],
                 configData: { external_functions:[], paired_functions:[], pointer_targets:[], function_intents:[] },
+                workbookHeaders: {},
+                workbookRows: {},
+                workbookSheetNames: [],
+                workbookSheet: 'resource',
+                workbookStatus: '',
+                workbookDirty: false,
+                savingFindings: false,
+                saveFeedbackStatus: '',
+                saveFeedbackType: 'info',
                 extForm: { func_name:'', library:'', description:'', return_semantics:'', memory_behavior:'', concurrency_behavior:'' },
                 pairedForm: { category:'memory', acquire_func:'', release_func:'', description:'' },
                 ptrForm: { pointer_location:'', scope:'local', targets_str:'' },
@@ -467,8 +1142,28 @@
                 init() {
                     this.loadVersion();
                     this.refreshData();
-                    this.loadConfig();
+                    this.loadStructuredConfig();
+                    this.loadWorkbookConfig();
                     this.pollCpgStatus();
+                },
+
+                get toastClass() {
+                    const classes = {
+                        success: 'alert-success',
+                        error: 'alert-error',
+                        warning: 'alert-warning',
+                        info: 'alert-info',
+                    };
+                    return classes[this.toastType] || 'alert-info';
+                },
+
+                showToast(message, type = 'info') {
+                    this.toastMessage = message;
+                    this.toastType = type;
+                    clearTimeout(this.toastTimer);
+                    this.toastTimer = setTimeout(() => {
+                        this.toastMessage = '';
+                    }, 3200);
                 },
 
                 loadVersion() {
@@ -524,16 +1219,192 @@
                     this.refreshData();
                 },
 
+                openDashboard() {
+                    this.activeTab = 'warnings';
+                    if (this.reportView !== 'with_needs_review') {
+                        this.reportView = 'with_needs_review';
+                        this.selectedFinding = null;
+                        this.refreshData();
+                    }
+                    this.loadWarnings();
+                },
+
+                refreshDashboardData() {
+                    this.reportView = 'with_needs_review';
+                    this.selectedFinding = null;
+                    this.refreshData();
+                    this.loadWarnings();
+                },
+
                 loadConfig() {
                     this.configStatus = '加载中...';
                     fetch('/api/config')
                         .then(res => res.json())
                         .then(data => {
                             this.configContent = data.content || '';
+                            this.originalConfigContent = this.configContent;
+                            this.configDirty = false;
                             this.configStatus = data.content ? '配置已载入' : '未找到配置文件';
                         })
                         .catch(() => {
                             this.configStatus = '配置加载失败';
+                            this.showToast('配置加载失败', 'error');
+                        });
+                },
+
+                reloadConfig() {
+                    if (this.configDirty && !confirm('当前 zscope.yaml 有未保存修改，确定重新载入并丢弃这些修改？')) {
+                        return;
+                    }
+                    this.loadConfig();
+                },
+
+                markConfigDirty() {
+                    this.configDirty = true;
+                },
+
+                listToText(value) {
+                    return Array.isArray(value) ? value.join('\n') : String(value || '');
+                },
+
+                textToList(value) {
+                    return String(value || '')
+                        .split(/\r?\n|,/)
+                        .map(item => item.trim())
+                        .filter(Boolean);
+                },
+
+                loadStructuredConfig() {
+                    this.structuredConfigStatus = '加载中...';
+                    fetch('/api/config/structured')
+                        .then(res => res.json())
+                        .then(data => {
+                            const cfg = data.config || {};
+                            this.structuredConfig = cfg;
+                            this.populateConfigForm(cfg);
+                            this.configDirty = false;
+                            this.structuredConfigStatus = Object.keys(cfg).length ? '配置已载入' : '未找到配置文件';
+                        })
+                        .catch(() => {
+                            this.structuredConfigStatus = '配置加载失败';
+                            this.showToast('项目配置加载失败', 'error');
+                        });
+                },
+
+                reloadStructuredConfig() {
+                    if (this.configDirty && !confirm('当前项目配置有未保存修改，确定重新载入并丢弃这些修改？')) {
+                        return;
+                    }
+                    this.loadStructuredConfig();
+                },
+
+                populateConfigForm(cfg) {
+                    const project = cfg.project || {};
+                    const discovery = project.entry_discovery || {};
+                    const indexing = cfg.indexing || {};
+                    const analysis = cfg.analysis || {};
+                    this.configForm.project = {
+                        root: project.root || '',
+                        source_root: project.source_root || '',
+                        entry_function: project.entry_function || '',
+                        entry_functions_list: project.entry_functions_list || '',
+                        compile_commands_path: project.compile_commands_path || project.compile_commands || '',
+                        include_paths: this.listToText(project.include_paths),
+                        exclude_paths: this.listToText(project.exclude_paths),
+                    };
+                    this.configForm.entryDiscovery = {
+                        enabled: Boolean(discovery.enabled),
+                        max_candidates: discovery.max_candidates ?? 200,
+                        max_functions: discovery.max_functions ?? 10000,
+                        header_files: this.listToText(discovery.header_files),
+                    };
+                    this.configForm.indexing = {
+                        backend: indexing.backend || 'regex',
+                        knowledge_db_path: indexing.knowledge_db_path || '',
+                        batch_size: indexing.batch_size ?? 50,
+                        max_clangd_threads: indexing.max_clangd_threads ?? 8,
+                        joern_path: indexing.joern_path || 'joern',
+                        clangd_path: indexing.clangd_path || 'clangd',
+                        svf_bin_dir: indexing.svf_bin_dir || '',
+                        gclang_path: indexing.gclang_path || 'gclang',
+                        get_bc_path: indexing.get_bc_path || 'get-bc',
+                        llvm_link_path: indexing.llvm_link_path || 'llvm-link',
+                    };
+                    this.configForm.analysis = {
+                        max_recursion_depth: analysis.max_recursion_depth ?? 3,
+                        max_function_lines: analysis.max_function_lines ?? 500,
+                        max_tool_iterations: analysis.max_tool_iterations ?? 50,
+                        parallel_workers: analysis.parallel_workers ?? 5,
+                        snapshot_dir: analysis.snapshot_dir || '.zscope_snapshots',
+                        user_config_db: analysis.user_config_db || '',
+                        enable_snapshot_cache: analysis.enable_snapshot_cache ?? true,
+                        enable_subagent_workers: analysis.enable_subagent_workers ?? true,
+                    };
+                },
+
+                buildStructuredConfig() {
+                    const cfg = JSON.parse(JSON.stringify(this.structuredConfig || {}));
+                    cfg.project = cfg.project || {};
+                    cfg.indexing = cfg.indexing || {};
+                    cfg.analysis = cfg.analysis || {};
+                    cfg.project.root = this.configForm.project.root || '.';
+                    cfg.project.source_root = this.configForm.project.source_root || '.';
+                    cfg.project.entry_function = this.configForm.project.entry_function || null;
+                    cfg.project.entry_functions_list = this.configForm.project.entry_functions_list || null;
+                    cfg.project.compile_commands_path = this.configForm.project.compile_commands_path || null;
+                    delete cfg.project.compile_commands;
+                    cfg.project.include_paths = this.textToList(this.configForm.project.include_paths);
+                    cfg.project.exclude_paths = this.textToList(this.configForm.project.exclude_paths);
+                    cfg.project.entry_discovery = cfg.project.entry_discovery || {};
+                    cfg.project.entry_discovery.enabled = Boolean(this.configForm.entryDiscovery.enabled);
+                    cfg.project.entry_discovery.max_candidates = Number(this.configForm.entryDiscovery.max_candidates) || 200;
+                    cfg.project.entry_discovery.max_functions = Number(this.configForm.entryDiscovery.max_functions) || 10000;
+                    cfg.project.entry_discovery.header_files = this.textToList(this.configForm.entryDiscovery.header_files);
+                    cfg.indexing.backend = this.configForm.indexing.backend || 'regex';
+                    cfg.indexing.knowledge_db_path = this.configForm.indexing.knowledge_db_path || '';
+                    cfg.indexing.batch_size = Number(this.configForm.indexing.batch_size) || 50;
+                    cfg.indexing.max_clangd_threads = Number(this.configForm.indexing.max_clangd_threads) || 8;
+                    cfg.indexing.joern_path = this.configForm.indexing.joern_path || 'joern';
+                    cfg.indexing.clangd_path = this.configForm.indexing.clangd_path || 'clangd';
+                    cfg.indexing.svf_bin_dir = this.configForm.indexing.svf_bin_dir || '';
+                    cfg.indexing.gclang_path = this.configForm.indexing.gclang_path || 'gclang';
+                    cfg.indexing.get_bc_path = this.configForm.indexing.get_bc_path || 'get-bc';
+                    cfg.indexing.llvm_link_path = this.configForm.indexing.llvm_link_path || 'llvm-link';
+                    cfg.analysis.max_recursion_depth = Number(this.configForm.analysis.max_recursion_depth) || 3;
+                    cfg.analysis.max_function_lines = Number(this.configForm.analysis.max_function_lines) || 500;
+                    cfg.analysis.max_tool_iterations = Number(this.configForm.analysis.max_tool_iterations) || 50;
+                    cfg.analysis.parallel_workers = Number(this.configForm.analysis.parallel_workers) || 5;
+                    cfg.analysis.snapshot_dir = this.configForm.analysis.snapshot_dir || '.zscope_snapshots';
+                    cfg.analysis.user_config_db = this.configForm.analysis.user_config_db || '';
+                    cfg.analysis.enable_snapshot_cache = Boolean(this.configForm.analysis.enable_snapshot_cache);
+                    cfg.analysis.enable_subagent_workers = Boolean(this.configForm.analysis.enable_subagent_workers);
+                    return cfg;
+                },
+
+                saveStructuredConfig() {
+                    this.structuredConfigStatus = '保存中...';
+                    const config = this.buildStructuredConfig();
+                    fetch('/api/config/structured', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ config }),
+                    })
+                        .then(res => res.json())
+                        .then(data => {
+                            if (!data.success) {
+                                this.structuredConfigStatus = data.error || '保存失败';
+                                this.showToast(this.structuredConfigStatus, 'error');
+                                return;
+                            }
+                            this.structuredConfig = data.config || config;
+                            this.populateConfigForm(this.structuredConfig);
+                            this.configDirty = false;
+                            this.structuredConfigStatus = '项目配置已保存';
+                            this.showToast('项目配置已保存', 'success');
+                        })
+                        .catch(() => {
+                            this.structuredConfigStatus = '保存失败';
+                            this.showToast('项目配置保存失败', 'error');
                         });
                 },
 
@@ -661,13 +1532,27 @@
                         .then(res => res.json())
                         .then(data => {
                             this.configStatus = data.success ? '配置已保存' : (data.error || '保存失败');
+                            if (data.success) {
+                                this.originalConfigContent = this.configContent;
+                                this.configDirty = false;
+                                this.showToast('zscope.yaml 已保存', 'success');
+                            } else {
+                                this.showToast(this.configStatus, 'error');
+                            }
                         })
                         .catch(() => {
                             this.configStatus = '保存失败';
+                            this.showToast('zscope.yaml 保存失败', 'error');
                         });
                 },
 
                 saveFindings() {
+                    if (this.savingFindings) {
+                        return;
+                    }
+                    this.savingFindings = true;
+                    this.saveFeedbackStatus = '正在保存验证结果...';
+                    this.saveFeedbackType = 'info';
                     fetch('/api/save_findings', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -675,39 +1560,580 @@
                     })
                         .then(res => res.json())
                         .then(data => {
-                            alert(data.success ? '已回写验证结果' : (data.error || '回写失败'));
+                            if (data.success) {
+                                const persistence = data.feedback_persistence || {};
+                                const snapshotPersistence = data.snapshot_persistence || {};
+                                if (data.db_persisted) {
+                                    const count = persistence.baseline_upserts ?? 0;
+                                    const suppressions = persistence.suppression_upserts ?? 0;
+                                    const finalReports = snapshotPersistence.final_reports_updated ?? 0;
+                                    const dbPath = persistence.db_path ? `；DB: ${persistence.db_path}` : '';
+                                    this.saveFeedbackStatus = `已保存：报告文件 + snapshot final reports ${finalReports} 个 + snapshot 状态数据库（baseline ${count} 条，suppression ${suppressions} 条）${dbPath}`;
+                                    this.saveFeedbackType = 'success';
+                                    this.showToast('已保存到报告、snapshot final reports 和状态数据库', 'success');
+                                } else {
+                                    const finalReports = snapshotPersistence.final_reports_updated ?? 0;
+                                    this.saveFeedbackStatus = `已保存到报告文件和 snapshot final reports ${finalReports} 个；当前服务未连接 snapshot 状态数据库，未写入 baseline DB`;
+                                    this.saveFeedbackType = 'warning';
+                                    this.showToast('已保存到报告；未连接 snapshot 状态数据库', 'warning');
+                                }
+                            } else {
+                                this.saveFeedbackStatus = data.error || '回写失败';
+                                this.saveFeedbackType = 'error';
+                                this.showToast(this.saveFeedbackStatus, 'error');
+                            }
                         })
                         .catch(() => {
-                            alert('回写失败');
+                            this.saveFeedbackStatus = '回写失败';
+                            this.saveFeedbackType = 'error';
+                            this.showToast('回写失败', 'error');
+                        })
+                        .finally(() => {
+                            this.savingFindings = false;
                         });
                 },
 
-                filteredFindings() {
-                    const query = this.filterQuery.trim().toLowerCase();
-                    if (!query) {
-                        return this.findings;
+                addFindingFilter() {
+                    this.findingFilters.push({
+                        id: this.nextFindingFilterId++,
+                        field: 'module_path',
+                        operator: 'contains',
+                        value: '',
+                        values: [],
+                    });
+                },
+
+                removeFindingFilter(id) {
+                    this.findingFilters = this.findingFilters.filter(rule => rule.id !== id);
+                },
+
+                resetFindingFilters() {
+                    this.findingFilters = [];
+                    this.sortMode = 'priority';
+                },
+
+                normalizeFindingFilter(rule) {
+                    if (rule.field === 'confidence') {
+                        rule.operator = 'gte';
+                        rule.value = rule.value || '';
+                        return;
                     }
-                    const fields = {
-                        all: ['function', 'location', 'category', 'subcategory', 'description', 'impact_level', 'validation_status'],
-                        function: ['function'],
-                        location: ['location'],
-                        category: ['category'],
-                        subcategory: ['subcategory'],
-                        description: ['description'],
-                        impact_level: ['impact_level'],
-                        validation_status: ['validation_status']
+                    if (rule.field === 'validation_status') {
+                        rule.operator = 'equals';
+                        rule.values = Array.isArray(rule.values) ? rule.values : [];
+                        return;
+                    }
+                    rule.operator = rule.operator === 'equals' ? 'equals' : 'contains';
+                },
+
+                findingFilterPlaceholder(rule) {
+                    const placeholders = {
+                        module_path: '例如 src/net 或 packet.c',
+                        category: '类别或子类',
+                        function: '函数名',
+                        description: '描述关键词',
+                        confidence: '例如 0.75',
                     };
-                    const keys = fields[this.filterField] || fields.all;
+                    return placeholders[rule.field] || '检索值';
+                },
+
+                findingModulePath(finding) {
+                    const candidates = [finding.location, finding.file_path];
+                    const evidencePack = finding.evidence_pack || {};
+                    const refs = Array.isArray(finding.evidence_refs)
+                        ? finding.evidence_refs
+                        : (Array.isArray(evidencePack.evidence_refs) ? evidencePack.evidence_refs : []);
+                    refs.forEach(ref => candidates.push(ref));
+                    const match = candidates
+                        .map(value => String(value || '').trim())
+                        .find(value => value.includes('/') || value.includes('\\') || value.includes(':'));
+                    if (!match) {
+                        return '';
+                    }
+                    return match.split(':')[0];
+                },
+
+                findingConfidenceScore(finding) {
+                    const evidencePack = finding.evidence_pack || {};
+                    const score = finding.final_score ?? evidencePack.final_score ?? finding.confidence ?? 0;
+                    const numeric = Number(score);
+                    return Number.isFinite(numeric) ? numeric : 0;
+                },
+
+                findingFieldText(finding, field) {
+                    const values = {
+                        module_path: this.findingModulePath(finding),
+                        validation_status: finding.validation_status || 'pending',
+                        impact_level: finding.impact_level || '',
+                        category: [finding.category, finding.subcategory, finding.defect_class].filter(Boolean).join(' '),
+                        function: finding.function || '',
+                        description: finding.description || '',
+                    };
+                    return String(values[field] || '').toLowerCase();
+                },
+
+                matchesFindingRule(finding, rule) {
+                    if (!rule || !rule.field) {
+                        return true;
+                    }
+                    if (rule.field === 'validation_status') {
+                        const values = Array.isArray(rule.values) ? rule.values : [];
+                        return !values.length || values.includes(finding.validation_status || 'pending');
+                    }
+                    if (rule.field === 'confidence') {
+                        if (rule.value === '' || rule.value === null || rule.value === undefined) {
+                            return true;
+                        }
+                        const expected = Number(rule.value);
+                        if (!Number.isFinite(expected)) {
+                            return true;
+                        }
+                        const actual = this.findingConfidenceScore(finding);
+                        if (rule.operator === 'lte') return actual <= expected;
+                        if (rule.operator === 'eq') return actual === expected;
+                        return actual >= expected;
+                    }
+                    const query = String(rule.value || '').trim().toLowerCase();
+                    if (!query) {
+                        return true;
+                    }
+                    const actual = this.findingFieldText(finding, rule.field);
+                    return rule.operator === 'equals' ? actual === query : actual.includes(query);
+                },
+
+                filteredFindings() {
                     return this.findings.filter(finding =>
-                        keys.some(key => (finding[key] || '').toString().toLowerCase().includes(query))
+                        this.findingFilters.every(rule => this.matchesFindingRule(finding, rule))
                     );
+                },
+
+                severityWeight(level) {
+                    const weights = { critical: 4, high: 3, medium: 2, low: 1 };
+                    return weights[String(level || '').toLowerCase()] || 0;
+                },
+
+                validationWeight(status) {
+                    const weights = {
+                        needs_review: 5,
+                        pending: 4,
+                        uncertain: 3,
+                        unvalidated: 2,
+                        validated: 1,
+                        rejected: 0,
+                    };
+                    return weights[String(status || '').toLowerCase()] ?? 0;
+                },
+
+                sortedFindings() {
+                    return [...this.filteredFindings()].sort((a, b) => {
+                        const scoreDelta = this.findingConfidenceScore(b) - this.findingConfidenceScore(a);
+                        if (this.sortMode === 'confidence_desc') {
+                            return scoreDelta;
+                        }
+                        if (this.sortMode === 'confidence_asc') {
+                            return this.findingConfidenceScore(a) - this.findingConfidenceScore(b);
+                        }
+                        return (
+                            this.severityWeight(b.impact_level) - this.severityWeight(a.impact_level) ||
+                            this.validationWeight(b.validation_status) - this.validationWeight(a.validation_status) ||
+                            scoreDelta
+                        );
+                    });
+                },
+
+                countBy(field, value) {
+                    return this.findings.filter(item =>
+                        String(item[field] || '').toLowerCase() === value
+                    ).length;
+                },
+
+                severityCounts() {
+                    return {
+                        critical: this.countBy('impact_level', 'critical'),
+                        high: this.countBy('impact_level', 'high'),
+                        medium: this.countBy('impact_level', 'medium'),
+                        low: this.countBy('impact_level', 'low'),
+                    };
+                },
+
+                validationCounts() {
+                    return {
+                        needs_review: this.countBy('validation_status', 'needs_review'),
+                        pending: this.countBy('validation_status', 'pending'),
+                        validated: this.countBy('validation_status', 'validated'),
+                        rejected: this.countBy('validation_status', 'rejected'),
+                        uncertain: this.countBy('validation_status', 'uncertain'),
+                        unvalidated: this.countBy('validation_status', 'unvalidated'),
+                    };
+                },
+
+                validationStatusItems() {
+                    const counts = this.validationCounts();
+                    return [
+                        { status: 'validated', label: 'validated', count: counts.validated, color: '#10b981' },
+                        { status: 'needs_review', label: 'needs_review', count: counts.needs_review, color: '#3b82f6' },
+                        { status: 'pending', label: 'pending', count: counts.pending, color: '#f59e0b' },
+                        { status: 'uncertain', label: 'uncertain', count: counts.uncertain, color: '#8b5cf6' },
+                        { status: 'unvalidated', label: 'unvalidated', count: counts.unvalidated, color: '#64748b' },
+                        { status: 'rejected', label: 'rejected / baseline', count: counts.rejected, color: '#0f172a' },
+                    ];
+                },
+
+                validationStatusTotal() {
+                    return this.validationStatusItems().reduce((sum, item) => sum + item.count, 0);
+                },
+
+                validationPieStyle() {
+                    const items = this.validationStatusItems();
+                    const total = Math.max(this.validationStatusTotal(), 1);
+                    let cursor = 0;
+                    const stops = [];
+                    items.forEach(item => {
+                        const next = cursor + (item.count / total) * 100;
+                        if (item.count > 0) {
+                            stops.push(`${item.color} ${cursor.toFixed(2)}% ${next.toFixed(2)}%`);
+                        }
+                        cursor = next;
+                    });
+                    return `background: conic-gradient(${stops.length ? stops.join(', ') : '#e2e8f0 0 100%'});`;
+                },
+
+                riskDistribution() {
+                    const severity = this.severityCounts();
+                    const validation = this.validationCounts();
+                    return [
+                        { label: 'Critical', count: severity.critical },
+                        { label: 'High', count: severity.high },
+                        { label: 'Medium', count: severity.medium },
+                        { label: 'Low', count: severity.low },
+                        { label: 'Needs review', count: validation.needs_review },
+                        { label: 'Pending', count: validation.pending },
+                        { label: 'Validated', count: validation.validated },
+                        { label: 'Rejected', count: validation.rejected },
+                    ];
+                },
+
+                configHealthItems() {
+                    const labels = {
+                        resource: 'resource',
+                        lock: 'lock',
+                        dispatcher: 'dispatcher',
+                        module_lifecycle: 'module_lifecycle',
+                        pointer_targets: 'pointer_targets',
+                        function_intents: 'function_intents',
+                    };
+                    const names = this.workbookSheetNames.length ? this.workbookSheetNames : Object.keys(labels);
+                    return names.map(sheet => ({
+                        label: labels[sheet] || sheet,
+                        sheet,
+                        count: Array.isArray(this.workbookRows[sheet]) ? this.workbookRows[sheet].length : 0,
+                    }));
+                },
+
+                switchToWorkbookSheet(sheet) {
+                    this.activeTab = 'config';
+                    this.configSubTab = 'workbook';
+                    if (!this.workbookSheetNames.length) {
+                        this.loadWorkbookConfig();
+                    }
+                    this.workbookSheet = sheet || this.workbookSheet || 'resource';
                 },
 
                 selectFinding(finding) {
                     this.selectedFinding = finding;
+                    this.activeCodeSnippet = this.defaultCodeSnippet(finding);
+                    const firstEvidence = this.findingEvidenceItems(finding)[0];
+                    this.activeEvidenceId = firstEvidence ? firstEvidence.id : '';
+                    if (firstEvidence) {
+                        this.loadEvidenceSnippet(firstEvidence);
+                    }
                     this.$nextTick(() => {
                         Prism.highlightAll();
                     });
+                },
+
+                findingEvidenceRefs(finding) {
+                    if (!finding) {
+                        return [];
+                    }
+                    const evidencePack = finding.evidence_pack || {};
+                    const refs = Array.isArray(finding.evidence_refs)
+                        ? finding.evidence_refs
+                        : (Array.isArray(evidencePack.evidence_refs) ? evidencePack.evidence_refs : []);
+                    return [...new Set(refs
+                        .map(ref => String(ref || '').trim())
+                        .filter(Boolean))];
+                },
+
+                extractLineNumber(value) {
+                    const match = String(value || '').match(/:(\d+)(?:-\d+)?(?::\d+)?/);
+                    return match ? Number(match[1]) : null;
+                },
+
+                parseEvidenceLocation(value) {
+                    const text = String(value || '');
+                    const match = text.match(/((?:[A-Za-z]:)?[A-Za-z0-9_./\\-]+\.(?:c|h|cc|cpp|cxx|hh|hpp|hxx|php|ph|py|java|go|rs|js|ts)):(\d+)(?:-(\d+))?/);
+                    if (!match) {
+                        return null;
+                    }
+                    const start = Number(match[2]);
+                    const end = Number(match[3] || match[2]);
+                    return {
+                        path: match[1].replace(/\\/g, '/'),
+                        start,
+                        end: Math.max(start, end),
+                    };
+                },
+
+                findingBaseLine(finding) {
+                    return this.extractLineNumber(finding?.location) || this.extractLineNumber(finding?.file_path) || 1;
+                },
+
+                defaultCodeSnippet(finding) {
+                    const snippet = String(finding?.code_snippet || '').replace(/\r\n/g, '\n');
+                    const lines = (snippet ? snippet.split('\n') : ['// 暂无代码片段']).map((text, index) => ({
+                        key: `default-${this.findingBaseLine(finding) + index}-${index}`,
+                        no: this.findingBaseLine(finding) + index,
+                        text,
+                    }));
+                    const loc = this.parseEvidenceLocation(finding?.location) || {
+                        path: this.findingModulePath(finding) || finding?.location || 'inline snippet',
+                        start: this.findingBaseLine(finding),
+                        end: this.findingBaseLine(finding) + Math.max(lines.length - 1, 0),
+                    };
+                    return { ...loc, lines, source: 'report' };
+                },
+
+                activeCodeLabel(finding) {
+                    const snippet = this.activeCodeSnippet || this.defaultCodeSnippet(finding);
+                    if (!snippet) {
+                        return finding?.location || '';
+                    }
+                    return `${snippet.path}:${snippet.start}${snippet.end && snippet.end !== snippet.start ? '-' + snippet.end : ''}`;
+                },
+
+                findingCodeLines(finding) {
+                    const snippet = this.activeCodeSnippet || this.defaultCodeSnippet(finding);
+                    return snippet?.lines?.length ? snippet.lines : this.defaultCodeSnippet(finding).lines;
+                },
+
+                selectEvidence(item) {
+                    this.activeEvidenceId = item?.id || '';
+                    this.loadEvidenceSnippet(item);
+                },
+
+                selectEvidenceById(id) {
+                    if (!id) return;
+                    const item = this.findingEvidenceItems(this.selectedFinding).find(candidate => candidate.id === id);
+                    if (item) {
+                        this.selectEvidence(item);
+                    }
+                },
+
+                loadEvidenceSnippet(item) {
+                    if (!item?.location?.path) {
+                        this.activeCodeSnippet = this.defaultCodeSnippet(this.selectedFinding);
+                        return;
+                    }
+                    const params = new URLSearchParams({
+                        path: item.location.path,
+                        start: String(item.location.start),
+                        end: String(item.location.end),
+                        context: '6',
+                    });
+                    fetch(`/api/source_snippet?${params.toString()}`)
+                        .then(response => response.json())
+                        .then(data => {
+                            if (!data.success || !Array.isArray(data.lines)) {
+                                this.activeCodeSnippet = this.defaultCodeSnippet(this.selectedFinding);
+                                return;
+                            }
+                            this.activeCodeSnippet = {
+                                path: data.path || item.location.path,
+                                start: data.start || item.location.start,
+                                end: data.end || item.location.end,
+                                lines: data.lines.map(line => ({
+                                    key: `${data.path || item.location.path}-${line.no}`,
+                                    no: line.no,
+                                    text: line.text,
+                                })),
+                                source: 'file',
+                            };
+                        })
+                        .catch(() => {
+                            this.activeCodeSnippet = this.defaultCodeSnippet(this.selectedFinding);
+                        });
+                },
+
+                copyText(value) {
+                    const text = String(value || '');
+                    if (!text) return;
+                    if (navigator.clipboard?.writeText) {
+                        navigator.clipboard.writeText(text).then(() => {
+                            this.showToast('已复制证据内容', 'success');
+                        }).catch(() => {});
+                    }
+                },
+
+                activeEvidenceItem(finding) {
+                    const items = this.findingEvidenceItems(finding);
+                    return items.find(item => item.id === this.activeEvidenceId) || items[0] || null;
+                },
+
+                activeEvidenceBreadcrumb(finding) {
+                    const item = this.activeEvidenceItem(finding);
+                    const path = item?.location?.path || this.findingModulePath(finding) || finding?.location || 'unknown module';
+                    if (!item) {
+                        return path;
+                    }
+                    const range = item.location ? `:${item.location.start}${item.location.end !== item.location.start ? '-' + item.location.end : ''}` : '';
+                    return `${path}${range} > ${item.type} > ${item.refLabel}`;
+                },
+
+                findingTraceSummary(finding) {
+                    if (!finding) {
+                        return '请选择一条发现';
+                    }
+                    const source = finding.source || 'source unknown';
+                    const sink = finding.sink || 'sink unknown';
+                    return `${source} -> ${sink}`;
+                },
+
+                isActiveCodeLine(lineNo) {
+                    const item = this.activeEvidenceItem(this.selectedFinding);
+                    const start = item?.location?.start || item?.line;
+                    const end = item?.location?.end || item?.line;
+                    if (!start) {
+                        return false;
+                    }
+                    return Number(lineNo) >= Number(start) && Number(lineNo) <= Number(end);
+                },
+
+                findingEvidenceItems(finding) {
+                    if (!finding) {
+                        return [];
+                    }
+                    const evidencePack = finding.evidence_pack || {};
+                    const refs = this.findingEvidenceRefs(finding);
+                    const baseLine = this.findingBaseLine(finding);
+                    const path = this.findingModulePath(finding) || finding.location || finding.file_path || 'unknown module';
+                    const items = [];
+                    const addItem = (type, title, detail, index, ref) => {
+                        const cleanTitle = String(title || '').trim();
+                        if (!cleanTitle) {
+                            return;
+                        }
+                        const id = `${type}-${index}`;
+                        const location =
+                            this.parseEvidenceLocation(cleanTitle) ||
+                            this.parseEvidenceLocation(detail) ||
+                            this.parseEvidenceLocation(ref) ||
+                            (type === 'source' ? this.parseEvidenceLocation(finding.source_loc) : null) ||
+                            (type === 'sink' ? this.parseEvidenceLocation(finding.sink_loc) : null) ||
+                            this.parseEvidenceLocation(finding.location);
+                        const line = location?.start || this.extractLineNumber(cleanTitle) || this.extractLineNumber(detail) || baseLine + Math.min(items.length, 6);
+                        items.push({
+                            id,
+                            type,
+                            title: cleanTitle.length > 96 ? `${cleanTitle.slice(0, 93)}...` : cleanTitle,
+                            detail: detail || path,
+                            line,
+                            location,
+                            refLabel: ref || refs[items.length] || `ev-${items.length + 1}`,
+                            copyText: `${ref || refs[items.length] || `ev-${items.length + 1}`}\n${cleanTitle}\n${detail || path}`,
+                        });
+                    };
+                    addItem('source', finding.source, 'Source endpoint / 输入来源', 0, refs[0] || 'source');
+                    addItem('sink', finding.sink, 'Sink endpoint / 风险汇聚点', 0, refs[1] || 'sink');
+                    const positives = Array.isArray(finding.positive_evidence)
+                        ? finding.positive_evidence
+                        : (Array.isArray(evidencePack.positive_evidence) ? evidencePack.positive_evidence : []);
+                    const negatives = Array.isArray(finding.negative_evidence)
+                        ? finding.negative_evidence
+                        : (Array.isArray(evidencePack.negative_evidence) ? evidencePack.negative_evidence : []);
+                    positives.slice(0, 5).forEach((item, index) => addItem('positive', item, '正向证据', index, refs[index + 2]));
+                    negatives.slice(0, 4).forEach((item, index) => addItem('counter', item, '反向证据 / 待复核点', index, refs[index + positives.length + 2]));
+                    refs.forEach((ref, index) => {
+                        if (!items.some(item => item.refLabel === ref)) {
+                            addItem('ref', ref, 'Evidence reference', index, ref);
+                        }
+                    });
+                    if (!items.length) {
+                        addItem('summary', finding.description || finding.rule || finding.defect_class || 'Finding summary', '摘要证据', 0, 'summary');
+                    }
+                    return items.slice(0, 10);
+                },
+
+                evidenceMetrics(finding) {
+                    const items = this.findingEvidenceItems(finding);
+                    const refs = this.findingEvidenceRefs(finding);
+                    return [
+                        { label: 'events', value: items.length },
+                        { label: 'refs', value: refs.length },
+                        { label: 'score', value: this.findingConfidenceScore(finding || {}).toFixed(2) },
+                        { label: 'status', value: finding?.validation_status || 'pending' },
+                    ];
+                },
+
+                fileCoverageItems(finding) {
+                    if (!finding) {
+                        return [{ path: 'unknown module', refs: 0 }];
+                    }
+                    const path = this.findingModulePath(finding) || finding.location || finding.file_path || 'unknown module';
+                    const refs = Math.max(this.findingEvidenceRefs(finding).length, this.findingEvidenceItems(finding).length);
+                    return [{ path, refs }];
+                },
+
+                confidenceBreakdown(finding) {
+                    const scoreComponents = finding?.score_components || finding?.evidence_pack?.score_components || {};
+                    const descriptions = {
+                        rule_confidence: '规则或候选生成器对该问题模式的基础置信度。',
+                        path_completeness: 'source 到 sink、关键传播路径和触发上下文是否完整。',
+                        contract_consistency: '是否符合 user_config.xlsx 中的资源、锁、生命周期与函数语义约束。',
+                        validation_confidence: '验证器基于证据链、反证和推理一致性给出的可信度。',
+                        history_feedback: '历史人工反馈、baseline 和重复问题经验对分数的影响。',
+                        final_score: '综合各子项后的最终排序分数。',
+                    };
+                    const labels = {
+                        rule_confidence: 'rule',
+                        path_completeness: 'path',
+                        contract_consistency: 'contract',
+                        validation_confidence: 'validator',
+                        history_feedback: 'history',
+                        final_score: 'final',
+                    };
+                    let rows = Object.entries(scoreComponents)
+                        .filter(([, value]) => typeof value === 'number' || !Number.isNaN(Number(value)))
+                        .map(([key, value]) => ({
+                            key,
+                            label: labels[key] || key,
+                            raw: Number(value),
+                            description: descriptions[key] || '该子项来自报告中的 score_components。',
+                        }));
+                    if (!rows.some(row => row.key === 'final_score')) {
+                        rows.push({
+                            key: 'final_score',
+                            label: 'final',
+                            raw: this.findingConfidenceScore(finding || {}),
+                            description: descriptions.final_score,
+                        });
+                    }
+                    if (rows.length === 1) {
+                        rows = [
+                            {
+                                key: 'final_score',
+                                label: 'final',
+                                raw: this.findingConfidenceScore(finding || {}),
+                                description: descriptions.final_score,
+                            },
+                        ];
+                    }
+                    return rows.map(row => ({
+                        label: row.label,
+                        value: Number(row.raw || 0).toFixed(2),
+                        percent: Math.max(0, Math.min(100, Number(row.raw || 0) * 100)),
+                        description: row.description,
+                    }));
                 },
 
                 formatFindingEvidence(finding) {
@@ -814,6 +2240,24 @@
                         this.warnings = d.items || [];
                     }).catch(()=>{});
                 },
+                groupedWarnings() {
+                    const groups = {};
+                    this.warnings.forEach(warning => {
+                        const type = warning.warning_type || 'unknown';
+                        groups[type] = groups[type] || [];
+                        groups[type].push(warning);
+                    });
+                    return Object.entries(groups).map(([type, items]) => ({ type, items }));
+                },
+                warningTargetSheet(type) {
+                    const value = String(type || '').toLowerCase();
+                    if (value.includes('pointer')) return 'pointer_targets';
+                    if (value.includes('lock')) return 'lock';
+                    if (value.includes('dispatcher')) return 'dispatcher';
+                    if (value.includes('lifecycle')) return 'module_lifecycle';
+                    if (value.includes('intent')) return 'function_intents';
+                    return 'resource';
+                },
                 clearWarnings() {
                     if(!confirm('确定清除全部告警？')) return;
                     fetch('/api/clear_warnings',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -824,6 +2268,143 @@
                 },
 
                 // ── Config CRUD ──
+                loadWorkbookConfig() {
+                    if (this.workbookDirty && !confirm('当前 user_config.xlsx 有未保存修改，确定重新载入并丢弃这些修改？')) {
+                        return;
+                    }
+                    this.workbookStatus = '加载中...';
+                    fetch('/api/user_config/workbook')
+                        .then(r => r.json())
+                        .then(d => {
+                            this.workbookHeaders = d.headers || {};
+                            this.workbookRows = d.rows || {};
+                            this.workbookSheetNames = (d.sheets || []).map(sheet => sheet.name);
+                            if (!this.workbookSheetNames.length) {
+                                this.workbookSheetNames = Object.keys(this.workbookHeaders);
+                            }
+                            this.workbookSheet = this.workbookSheetNames.includes(this.workbookSheet)
+                                ? this.workbookSheet
+                                : (this.workbookSheetNames[0] || 'resource');
+                            this.workbookSheetNames.forEach(sheet => {
+                                if (!Array.isArray(this.workbookRows[sheet])) {
+                                    this.workbookRows[sheet] = [];
+                                }
+                            });
+                            this.workbookDirty = false;
+                            this.workbookStatus = '工作簿已载入';
+                        })
+                        .catch(() => {
+                            this.workbookStatus = '工作簿加载失败';
+                            this.showToast('user_config.xlsx 加载失败', 'error');
+                        });
+                },
+
+                workbookHeadersForActiveSheet() {
+                    return this.workbookHeaders[this.workbookSheet] || [];
+                },
+
+                workbookRowsForActiveSheet() {
+                    if (!Array.isArray(this.workbookRows[this.workbookSheet])) {
+                        this.workbookRows[this.workbookSheet] = [];
+                    }
+                    return this.workbookRows[this.workbookSheet];
+                },
+
+                totalWorkbookRows() {
+                    return Object.values(this.workbookRows).reduce((total, rows) => {
+                        return total + (Array.isArray(rows) ? rows.length : 0);
+                    }, 0);
+                },
+
+                addWorkbookRow() {
+                    const row = {};
+                    this.workbookHeadersForActiveSheet().forEach(header => {
+                        row[header] = '';
+                    });
+                    this.workbookRowsForActiveSheet().push(row);
+                    this.workbookDirty = true;
+                },
+
+                deleteWorkbookRow(rowIndex) {
+                    this.workbookRowsForActiveSheet().splice(rowIndex, 1);
+                    this.workbookDirty = true;
+                },
+
+                downloadWorkbook() {
+                    window.location.href = '/api/user_config/workbook/download';
+                },
+
+                triggerWorkbookImport() {
+                    if (this.workbookDirty && !confirm('当前工作簿有未保存修改，导入 Excel 会覆盖这些修改。确定继续？')) {
+                        return;
+                    }
+                    this.$refs.workbookImportInput.value = '';
+                    this.$refs.workbookImportInput.click();
+                },
+
+                importWorkbook(event) {
+                    const file = event.target.files && event.target.files[0];
+                    if (!file) {
+                        return;
+                    }
+                    this.workbookStatus = '导入中...';
+                    file.arrayBuffer()
+                        .then(buffer => fetch('/api/user_config/workbook/import', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                            },
+                            body: buffer,
+                        }))
+                        .then(res => res.json())
+                        .then(data => {
+                            if (!data.success) {
+                                this.workbookStatus = data.error || '导入失败';
+                                this.showToast(this.workbookStatus, 'error');
+                                return;
+                            }
+                            this.workbookHeaders = data.headers || {};
+                            this.workbookRows = data.rows || {};
+                            this.workbookSheetNames = (data.sheets || []).map(sheet => sheet.name);
+                            this.workbookSheet = this.workbookSheetNames.includes(this.workbookSheet)
+                                ? this.workbookSheet
+                                : (this.workbookSheetNames[0] || 'resource');
+                            this.workbookDirty = false;
+                            this.workbookStatus = 'Excel 已导入';
+                            this.showToast('user_config.xlsx 已导入', 'success');
+                        })
+                        .catch(() => {
+                            this.workbookStatus = '导入失败';
+                            this.showToast('Excel 导入失败', 'error');
+                        });
+                },
+
+                saveWorkbookConfig() {
+                    this.workbookStatus = '保存中...';
+                    fetch('/api/user_config/workbook', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ rows: this.workbookRows }),
+                    })
+                        .then(r => r.json())
+                        .then(d => {
+                            if (!d.success) {
+                                this.workbookStatus = d.error || '保存失败';
+                                this.showToast(this.workbookStatus, 'error');
+                                return;
+                            }
+                            this.workbookHeaders = d.headers || this.workbookHeaders;
+                            this.workbookRows = d.rows || this.workbookRows;
+                            this.workbookDirty = false;
+                            this.workbookStatus = '工作簿已保存';
+                            this.showToast('user_config.xlsx 已保存', 'success');
+                        })
+                        .catch(() => {
+                            this.workbookStatus = '保存失败';
+                            this.showToast('user_config.xlsx 保存失败', 'error');
+                        });
+                },
+
                 loadAllConfigs() {
                     ['external_functions','paired_functions','pointer_targets','function_intents'].forEach(r=>{
                         fetch('/api/user_config/'+r).then(res=>res.json()).then(d=>{

@@ -36,6 +36,18 @@ Validation bar:
   missing callee, caller, type, or thread contract.
 - Reject dead code, generic robustness advice, policy disagreement, and
   "could be safer" candidates without a concrete source-to-sink path.
+- The current analysis entry in the evidence pack is the selected scan root.
+  For header-declared/public API entries, zero repository callers, absence from
+  `main`, or absence of a worker/start wrapper is expected and must not be used
+  alone to reject a reachable internal callee as dead code.
+- If `entry_context.call_path`, `reachable_from_entry`, or `entry_function`
+  connects the scan root to the sink, reject reachability only when code
+  evidence disproves that specific entry-to-sink path.
+- When the configured scan root is a benchmark, fixture, model, or validation
+  corpus, treat that project root as the code under audit. Names that look like
+  `real_model`, `issue41`, `leak`, `race`, `td_run`, `test`, or `demo` are not
+  by themselves grounds for rejection when the finding is reachable from the
+  selected entry.
 - For integer overflow, a guard is sufficient only if it proves operands are
   bounded before the overflowing multiplication/addition/cast, or uses a
   mathematically safe precondition such as `a <= SIZE_MAX / b` before `a * b`.

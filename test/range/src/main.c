@@ -429,6 +429,186 @@ int td_update_os_policy(const char* os_name, int pid, const char* proc_name,
     return 0;
 }
 
+typedef struct TdRangeWorkerArgs {
+    int fd;
+    int listen_fd;
+    int work_fd;
+    int peer_protocol;
+    char key[64];
+    unsigned char report[128];
+    size_t report_len;
+    unsigned char out[256];
+} TdRangeWorkerArgs;
+
+int VOS_TaskCreate(const char* name, int priority, td_task_entry_t entry, void* arg) {
+    pthread_t tid;
+
+    (void)name;
+    (void)priority;
+    if (!entry) {
+        return -1;
+    }
+    if (pthread_create(&tid, NULL, entry, arg) != 0) {
+        return -1;
+    }
+    pthread_detach(tid);
+    return 0;
+}
+
+static TdRangeWorkerArgs* _td_alloc_worker_args(const char* key) {
+    TdRangeWorkerArgs* args = (TdRangeWorkerArgs*)_safe_calloc(1, sizeof(TdRangeWorkerArgs));
+    if (!args) {
+        return NULL;
+    }
+    STR_COPY(args->key, key ? key : "range-task");
+    return args;
+}
+
+static void* _td_real_protocol_worker(void* arg) {
+    TdRangeWorkerArgs* args = (TdRangeWorkerArgs*)arg;
+    if (!args) {
+        return NULL;
+    }
+    td_run_real_protocol_cases(args->fd, args->key, args->out, sizeof(args->out));
+    SAFE_FREE(args);
+    return NULL;
+}
+
+static void* _td_issue41_worker(void* arg) {
+    TdRangeWorkerArgs* args = (TdRangeWorkerArgs*)arg;
+    if (!args) {
+        return NULL;
+    }
+    td_run_issue41_cases(args->listen_fd, args->work_fd, args->peer_protocol,
+                         args->report, args->report_len, args->out,
+                         sizeof(args->out));
+    SAFE_FREE(args);
+    return NULL;
+}
+
+int td_run_real_cleanup_cases(const char* key, int mode) {
+    const char* stable_key = key ? key : "range-real";
+    int rc = 0;
+
+    rc |= _real_model_module_cleanup_race(stable_key);
+    rc |= _real_model_osnode_remove_race(stable_key);
+    rc |= _real_model_error_branch_double_cleanup(stable_key, mode);
+    rc |= _real_model_comp_destroy_detach_leak(stable_key, mode);
+    rc |= _real_model_unregister_file_leak(stable_key);
+    rc |= _real_model_activation_rollback_gap(stable_key, mode);
+    rc |= _real_model_reader_channel_role_leak(stable_key, mode);
+    rc |= _real_model_log_buffer_leak(stable_key, mode);
+    return rc;
+}
+
+int td_run_real_resource_cases(const char* key, int mode, uint32_t* out_count) {
+    const char* stable_key = key ? key : "range-real";
+    uint32_t local_count = 0;
+    int rc = 0;
+
+    rc |= _real_model_init_sequence_publication(stable_key, "payload");
+    rc |= _real_model_patch_unload_member_leak(stable_key);
+    rc |= _real_model_avl_insert_unchecked_return(stable_key);
+    rc |= _real_model_resource_table_unload_leak(stable_key, mode);
+    rc |= _real_model_patch_tree_child_leak(stable_key);
+    rc |= _real_model_peak_stats_leak((uint32_t)(mode + 1), out_count ? out_count : &local_count);
+    rc |= (int)_real_model_macro_guarded_counter((uint32_t)(mode + 1));
+    return rc;
+}
+
+int td_run_real_concurrency_cases(const char* key, plugin_callback_t cb,
+                                  int fd, size_t count) {
+    const char* stable_key = key ? key : "range-real";
+    int rc = 0;
+
+    rc |= _real_model_atomic_order_flag_race(stable_key);
+    rc |= _real_model_syscall_state_not_restored(fd);
+    rc |= _real_model_missing_unlock_after_alloc(stable_key);
+    rc |= _real_model_refcount_after_unlock(stable_key);
+    rc |= _real_model_callback_under_lock(stable_key, cb);
+    rc |= _real_model_detached_stack_job(stable_key);
+    rc |= _real_model_realloc_lost_pointer(count);
+    return rc;
+}
+
+int td_run_real_protocol_cases(int fd, const char* fallback_key,
+                               unsigned char* out, size_t out_size) {
+    unsigned char packet[32] = {0};
+    unsigned char local_out[256] = {0};
+    unsigned char* response = out ? out : local_out;
+    size_t response_len = out ? out_size : sizeof(local_out);
+    int rc = 0;
+
+    rc |= (int)_real_model_message_alignment_overread(packet, sizeof(packet));
+    rc |= _real_model_protocol_length_miscalc(packet, sizeof(packet),
+                                              response, response_len);
+    rc |= (int)_real_model_magic64_missing_check(packet, sizeof(packet));
+    rc |= _real_model_recv_busy_loop(fd, packet, sizeof(packet));
+    rc |= _real_model_ssl_error_returns_ok(fd, 0);
+    rc |= _real_model_hardcoded_role_release(fallback_key ? fallback_key : "route", 0);
+    rc |= _real_model_signed_recv_to_size(fd, response, response_len);
+    rc |= _real_model_stale_fd_after_close(fd, response, response_len);
+    rc |= _real_model_key_truncation_route(fallback_key ? fallback_key : "route", 1);
+    rc |= _real_model_process_protocol_task(fd, fallback_key, response, response_len);
+    return rc;
+}
+
+int td_start_real_protocol_worker(int fd, const char* fallback_key) {
+    TdRangeWorkerArgs* args = _td_alloc_worker_args(fallback_key);
+    if (!args) {
+        return -1;
+    }
+    args->fd = fd;
+    if (VOS_TaskCreate("range-real-protocol", 0, _td_real_protocol_worker, args) != 0) {
+        SAFE_FREE(args);
+        return -1;
+    }
+    return 0;
+}
+
+int td_run_issue41_cases(int listen_fd, int work_fd, int peer_protocol,
+                         const unsigned char* report, size_t report_len,
+                         unsigned char* out, size_t out_size) {
+    unsigned char local_report[128] = {0};
+    unsigned char local_out[256] = {0};
+    const unsigned char* wire = report ? report : local_report;
+    size_t wire_len = report ? report_len : sizeof(local_report);
+    unsigned char* response = out ? out : local_out;
+    size_t response_len = out ? out_size : sizeof(local_out);
+    int rc = 0;
+
+    rc |= _issue41_label_cache_size_miscalc((unsigned int)wire_len);
+    rc |= _issue41_header_length_not_validated(wire, wire_len, response, response_len);
+    rc |= _issue41_recv_retry_without_timeout(work_fd, response, response_len);
+    rc |= _issue41_reliable_fd_to_raw_interface(work_fd);
+    rc |= _issue41_lax_protocol_mismatch(peer_protocol, 0);
+    rc |= _issue41_partial_resource_leak_on_retry(peer_protocol);
+    rc |= _issue41_dynamic_array_expand_race(wire_len);
+    rc |= _issue41_missing_version_filter(wire, wire_len);
+    rc |= _issue41_missing_reference_count(work_fd, peer_protocol);
+    rc |= _issue41_sigpipe_not_handled(work_fd, wire, wire_len);
+    rc |= _issue41_raw_fd_missing_encode(listen_fd, work_fd);
+    rc |= _issue41_process_cs_message(listen_fd, work_fd, peer_protocol,
+                                      response, response_len);
+    return rc;
+}
+
+int td_start_issue41_worker(int listen_fd, int work_fd, int peer_protocol) {
+    TdRangeWorkerArgs* args = _td_alloc_worker_args("issue41");
+    if (!args) {
+        return -1;
+    }
+    args->listen_fd = listen_fd;
+    args->work_fd = work_fd;
+    args->peer_protocol = peer_protocol;
+    args->report_len = sizeof(args->report);
+    if (VOS_TaskCreate("range-issue41", 0, _td_issue41_worker, args) != 0) {
+        SAFE_FREE(args);
+        return -1;
+    }
+    return 0;
+}
+
 int td_query_status(task_id_t task_id) {
     return TASK_STATUS_PENDING;
 }
