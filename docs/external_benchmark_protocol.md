@@ -46,10 +46,17 @@ python scripts/external_benchmark.py run-prepared \
 ```
 
 Each run writes `summary.json`, `evaluation.json`, and `evaluation_views.json`.
-`summary.json` uses schema `zscope.benchmark.v2` and includes environment
+`summary.json` uses schema `zscope.benchmark.v3` and includes environment
 metadata, default and `with_needs_review` metrics, trajectory references,
 cost metrics, final-answer/final-outcome separation, and a deterministic grader
 rubric.
+
+`zscope.benchmark.v3` also records `matched_pairs` with the truth id, matched
+issue index, issue identity, and the reason each issue matched. The scorer
+accepts primary or secondary function anchors, structured `entry_function` /
+`sink_function` / `call_path` attribution, category/CWE aliases for custom
+range classes, and treats truth `line <= 1` as an unknown placeholder rather
+than a strict line requirement.
 
 For a multi-condition comparison over the same generated ground truth:
 

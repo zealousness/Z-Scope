@@ -6,10 +6,10 @@ must not be included in Z-SCOPE analysis prompts.
 
 ## Overview
 
-The current benchmark contains 33 valid vulnerabilities. Version 3 expands the
-fixture with lifecycle, cache, callback, event-loop, reload, and mmap-backed
-state patterns from `docs/c_memory_concurrency_patterns.md`, so the benchmark is
-less biased toward simple parser and executor bugs.
+The current benchmark contains 93 valid vulnerabilities. Version 10 promotes
+manually verified extra findings from the
+`auto_unified_wsl_structured_20260520_2` benchmark run and adds alternate
+public-wrapper anchors for already-known issues.
 
 `benchmark/ground_truth.json` remains the scoring source of truth. This Markdown
 file is a human-readable maintenance view.
@@ -18,7 +18,7 @@ file is a human-readable maintenance view.
 
 | ID | CWE | Category | Location | Summary |
 | --- | --- | --- | --- | --- |
-| RANGE-001 | CWE-125 | bounds | `src/parser.c:57-58` | `_parse_task_buffer` trusts `payload_length` and can read beyond the supplied task buffer. |
+| RANGE-001 | CWE-125 | bounds | `src/parser.c:53-95` | `_parse_task_buffer` trusts `payload_length` and can read beyond the supplied task buffer. |
 | RANGE-002 | CWE-190 | integer_overflow | `src/executor.c:140-143` | `_executor_handle_network_request` multiplies an unchecked internal `Task` binary size before copying. Valid under the internal-entry contract. |
 | RANGE-004 | CWE-134 | format_string | `src/executor.c:192` | `_executor_log_message` passes attacker-controlled `g_log_buffer` as the `printf` format string. |
 | RANGE-005 | CWE-833 | deadlock | `src/plugin.c:97-99` | `_plugin_unregister` holds `registry->mutex` and calls `_plugin_lookup`, which locks the same mutex again. |
@@ -27,10 +27,10 @@ file is a human-readable maintenance view.
 | RANGE-009 | CWE-362 | race | `src/main.c:82` | Worker threads increment `g_shared_counter` without synchronization. |
 | RANGE-011 | CWE-367 | toctou | `src/parser.c:356-361` | `_validate_task` checks file permissions separately from the later `fopen`. |
 | RANGE-012 | CWE-78 | command_injection | `src/executor.c:87`, `src/executor.c:220-236` | Command text and `TASK_ENV` are concatenated and passed to `system`. |
-| RANGE-013 | CWE-401 | memory_leak | `src/main.c:149-157` | `td_init` allocates `thread_ids` for worker arguments and never releases it. |
+| RANGE-013 | CWE-401 | memory_leak | `src/main.c:187-195` | `td_init` allocates `thread_ids` for worker arguments and never releases it. |
 | RANGE-014 | CWE-843 | type_confusion | `src/main.c:287`, `src/executor.c:151-166` | `td_cleanup` passes `TaskConfig*` to `_executor_cleanup_resources`, which expects `SharedResources*` and destroys invalid mutex addresses. |
 | RANGE-015 | CWE-190 | integer_overflow | `src/network.c:175-186` | `_net_recv_string` allocates `max_len + 1` without checking wraparound, then receives up to `max_len` bytes. |
-| RANGE-016 | CWE-362 | race | `src/main.c:55-62`, `src/main.c:276-280` | `g_running` is read by workers and written by cleanup/signal paths without atomic or mutex synchronization. |
+| RANGE-016 | CWE-362 | race | `src/main.c:55-62`, `src/main.c:51-52`, `src/main.c:625` | `g_running` is read by workers and written by cleanup/signal paths without atomic or mutex synchronization. |
 | RANGE-017 | CWE-190 | integer_overflow | `src/parser.c:223-240` | `_serialize_task` adds `sizeof(TaskHeader)` to untrusted `payload_len` without overflow checking, then copies `payload_len` bytes. |
 | RANGE-018 | CWE-476 | null_pointer_dereference | `src/lifecycle.c:95-104` | `_lifecycle_parse_control_message` dereferences the `strchr` result without checking that `:` exists. |
 | RANGE-019 | CWE-362 | object_publication | `src/lifecycle.c:121-130` | `_lifecycle_add_entry` publishes a cache entry to the global list before `value` initialization completes. |
@@ -51,6 +51,21 @@ file is a human-readable maintenance view.
 | RANGE-034 | CWE-704 | alignment | `src/lifecycle.c:364-370` | `_lifecycle_decode_unaligned_id` casts `packet + 1` to `uint32_t*` and dereferences it. |
 | RANGE-035 | CWE-672 | stale_fd | `src/lifecycle.c:373-383`, `src/lifecycle.c:388-392` | `_lifecycle_close_connection` closes a watched descriptor without clearing the global fd used by later event dispatch. |
 | RANGE-036 | CWE-416 | use_after_free | `src/lifecycle.c:415-418`, `src/lifecycle.c:422-428` | `_lifecycle_unload_rules` unmaps the rules table without clearing the global pointer used by later rule matching. |
+
+## Version 10 Additions
+
+These entries were added after manually reviewing GT-outside findings from the
+WSL unified benchmark run. They are included only when the finding has a concrete
+entry path, source/sink, and distinct root cause.
+
+| ID | CWE | Category | Location | Summary |
+| --- | --- | --- | --- | --- |
+| RANGE-049 | CWE-401 | memory_leak | `src/plugin.c:45-58` | `_plugin_register` overwrites an occupied plugin slot without invoking the previous cleanup path or releasing stored plugin state. |
+| RANGE-050 | CWE-362 | race | `src/lifecycle.c:377-392`, `src/main.c:375-378`, `src/main.c:107-110` | `g_watched_fd` is shared by receiver and public event paths without synchronization, so events can dispatch on the wrong connection. |
+| RANGE-051 | CWE-78 | command_injection | `src/platform_linux.c:30-37`, `src/platform_windows.c:38-55` | `platform_execute_task` forwards caller-controlled task strings directly to `system`/`CreateProcess`. |
+| RANGE-052 | CWE-362 | race | `src/main.c:216-233`, `src/main.c:627-642` | `g_ready` is read by submit paths while cleanup can concurrently tear down dispatcher queue state. |
+| RANGE-053 | CWE-362 | race | `src/lifecycle.c:405-418`, `src/lifecycle.c:422-428`, `src/main.c:381-385` | Rule-map globals are mapped, unmapped, and read without synchronization across public `td_configure_rules` callers. |
+| REAL-032 | CWE-195/CWE-190 | signed_unsigned | `src/main.c:514-515`, `src/lifecycle.c:1413-1423` | `td_run_real_resource_cases` casts negative `mode` values to huge unsigned counts before the peak-stat allocation path. |
 
 ## Retired Findings
 

@@ -128,6 +128,21 @@ int td_handle_distributed_cs_message(int listen_fd, int work_fd, int peer_protoc
 int td_update_os_policy(const char* os_name, int pid, const char* proc_name,
                         const char* policy_key, int route_key, uint32_t delta);
 
+typedef void* (*td_task_entry_t)(void* arg);
+
+int VOS_TaskCreate(const char* name, int priority, td_task_entry_t entry, void* arg);
+
+int td_run_real_cleanup_cases(const char* key, int mode);
+int td_run_real_resource_cases(const char* key, int mode, uint32_t* out_count);
+int td_run_real_concurrency_cases(const char* key, plugin_callback_t cb,
+                                  int fd, size_t count);
+int td_run_real_protocol_cases(int fd, const char* fallback_key,
+                               unsigned char* out, size_t out_size);
+int td_start_real_protocol_worker(int fd, const char* fallback_key);
+
+int td_run_issue41_cases(int listen_fd, int work_fd, int peer_protocol, const unsigned char* report, size_t report_len, unsigned char* out, size_t out_size);
+int td_start_issue41_worker(int listen_fd, int work_fd, int peer_protocol);
+
 /**
  * Query the status of a previously submitted task
  * 

@@ -14,6 +14,8 @@ from ..retrieval.code_index import CodeIndex
 
 API_PROMPT = (
     "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. "
+    "This header API is an external scan root: zero repository callers, absence from main, or absence "
+    "of a separate worker/start wrapper is expected and must not be treated as dead code by itself. "
     "Treat this as an externally reachable facade: follow its callees and callback/worker paths to the "
     "actual internal source/sink operations, and report the concrete vulnerable callee location rather "
     "than stopping at the wrapper call site."

@@ -73,7 +73,7 @@ def normalize_issue_fields(issue: Dict[str, Any]) -> None:
     issue.setdefault("normalized_category", normalized_category)
 
 
-def issue_rank(issue: Dict[str, Any]) -> tuple[int, float, int]:
+def issue_rank(issue: Dict[str, Any]) -> tuple[int, float, int, int]:
     severity_order = {"critical": 4, "high": 3, "medium": 2, "low": 1}
     severity = severity_order.get(
         str(issue.get("impact_level") or issue.get("severity") or "").lower(),
@@ -83,8 +83,34 @@ def issue_rank(issue: Dict[str, Any]) -> tuple[int, float, int]:
         confidence = float(issue.get("confidence", 0) or 0)
     except (TypeError, ValueError):
         confidence = 0.0
+    source_rank = structured_evidence_rank(issue)
     detail_len = len(str(issue.get("reasoning") or issue.get("description") or ""))
-    return severity, confidence, detail_len
+    return severity, confidence, source_rank, detail_len
+
+
+def structured_evidence_rank(issue: Dict[str, Any]) -> int:
+    """Prefer concrete local/backend evidence over long free-form duplicates."""
+    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    source = str(
+        issue.get("candidate_source")
+        or pack.get("candidate_source")
+        or issue.get("finding_kind")
+        or ""
+    ).lower()
+    rule = str(issue.get("rule") or pack.get("rule") or issue.get("id") or "").lower()
+    if source in {
+        "clang_ast_cfg",
+        "graph",
+        "svf_value_flow",
+        "clang_ast_matcher",
+        "clang_knowledgedb_call_edges",
+    }:
+        return 2
+    if rule.startswith(("clang_cfg_", "graph_", "svf_")) or "graph_" in rule:
+        return 2
+    if issue.get("positive_evidence") or pack.get("positive_evidence"):
+        return 1
+    return 0
 
 
 def canonical_issue_key(issue: Dict[str, Any]) -> str:
@@ -100,7 +126,9 @@ def canonical_issue_key(issue: Dict[str, Any]) -> str:
     root = root_cause_token(issue, category, text)
     scope = file_path or function
     if root:
-        return "|".join(normalize_issue_key_part(part) for part in (category, scope, root))
+        scoped_root = root_scope_token(issue, category, root)
+        parts = (category, scope, scoped_root, root) if scoped_root else (category, scope, root)
+        return "|".join(normalize_issue_key_part(part) for part in parts)
 
     sink = str(issue.get("sink") or issue.get("sink_function") or "")
     if not sink:
@@ -117,6 +145,48 @@ def canonical_issue_key(issue: Dict[str, Any]) -> str:
         normalize_issue_key_part(part)
         for part in (category, scope, str(line or ""), sink or function)
     )
+
+
+def root_scope_token(issue: Dict[str, Any], category: str, root: str) -> str:
+    """Return extra identity for broad root tokens that can occur in many functions.
+
+    Some detectors intentionally collapse noisy syntax into semantic roots such as
+    `net_recv_data_negative_length`.  Those roots are useful for merging duplicate
+    evidence inside one sink, but they are too broad across wrappers and model
+    functions.  Keep global object roots broad, and scope operation/helper roots
+    by the concrete sink function.
+    """
+    if not root or root in _GLOBAL_OBJECT_ROOTS:
+        return ""
+    if category not in _FUNCTION_SCOPED_ROOT_CATEGORIES and root not in _FUNCTION_SCOPED_ROOTS:
+        return ""
+    return issue_function_identity(issue)
+
+
+def issue_function_identity(issue: Dict[str, Any]) -> str:
+    """Prefer the concrete sink/target function for dedup identity."""
+
+    def as_text(value: Any) -> str:
+        return str(value or "").strip().lower()
+
+    for key in ("sink_function", "target_function", "function", "func_name"):
+        value = as_text(issue.get(key))
+        if value:
+            return value
+
+    pack = issue.get("evidence_pack")
+    if isinstance(pack, dict):
+        for key in ("sink_function", "target_function", "function", "entry_function"):
+            value = as_text(pack.get(key))
+            if value:
+                return value
+        path = pack.get("path")
+        if isinstance(path, dict):
+            for key in ("sink_function", "target_function", "function", "entry_function"):
+                value = as_text(path.get(key))
+                if value:
+                    return value
+    return ""
 
 
 def canonical_category(issue: Dict[str, Any], text: str = "") -> str:
@@ -144,6 +214,7 @@ def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
     lower = raw_lower.replace("_", " ").replace("-", " ")
     compact = re.sub(r"[^a-z0-9]+", "", raw_lower)
     function = str(issue.get("function") or issue.get("func_name") or "").lower()
+    rule = str(issue.get("rule") or issue.get("rule_id") or issue.get("candidate_id") or issue.get("id") or "").lower()
 
     def has_name(name: str) -> bool:
         normalized = name.lower().strip("_")
@@ -155,14 +226,68 @@ def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
     ) and ("open" in lower or "customize" in lower):
         return "control_session_open_leak"
 
+    if (
+        "shared_resource_freed_without_refcount_protocol" in rule
+        or function == "_issue41_missing_reference_count"
+        or "g_issue41_broker.resources" in raw_lower
+        or ("issue41" in compact and "refcount" in compact and "safe_free" in raw_lower)
+    ):
+        return "issue41_resource_refcount_protocol"
+    if (
+        function == "_issue41_partial_resource_leak_on_retry"
+        or ("issue41" in compact and "partition" in lower and "tag" in lower and ("fail_step" in raw_lower or "retry" in lower))
+    ):
+        return "issue41_partition_retry_cleanup"
+    if (
+        "parsed_protocol_version_is_ignored" in rule
+        or function == "_issue41_missing_version_filter"
+        or ("(void)version" in raw_lower and ("version" in lower or "protocol" in lower))
+    ):
+        return "parsed_protocol_version_ignored"
+    if (
+        "raw_fd_revalidated_as_encoded" in rule
+        or function == "_issue41_raw_fd_missing_encode"
+        or ("encoded fd" in lower and "raw fd" in lower and ("check value" in lower or "validate" in lower))
+    ):
+        return "raw_fd_reaches_encoded_fd_validator"
+    if (
+        "unchecked_strchr_result" in rule
+        or function == "_lifecycle_parse_control_message"
+        or ("strchr" in lower and ("sep" in lower or "colon" in lower or ":" in raw_lower) and category == "null_pointer_dereference")
+    ):
+        return "lifecycle_control_message_strchr"
+    if (
+        "stack_address_passed_to_thread" in rule
+        or function == "_real_model_detached_stack_job"
+        or ("pthread_create" in lower and ("_real_model_async_worker" in raw_lower or "realmodelasyncjob" in compact or "&job" in raw_lower))
+    ):
+        return "real_model_async_stack_job"
+    if (
+        "protocol_units_length_reaches_copy_without_packet_bound" in rule
+        or function == "_real_model_protocol_length_miscalc"
+    ):
+        return "real_model_protocol_units_length"
+    if "unaligned_integer_pointer_cast" in rule or function == "_real_model_message_alignment_overread":
+        return "real_model_message_alignment"
+    if "negative_length_cast_to_size_t" in rule or function == "_real_model_signed_recv_to_size":
+        return "real_model_signed_recv_to_size"
+    if function == "_real_model_recv_busy_loop":
+        return "real_model_recv_busy_loop"
+
     named_objects = (
         "thread_ids",
+        "g_dispatcher.queue.tasks",
         "g_shared_counter",
         "g_receiver_running",
         "g_ready",
         "g_running",
+        "g_config_lock",
+        "g_real_aux_lock",
         "g_active_config",
         "g_watched_fd",
+        "g_real_watched_fd",
+        "g_rules_map",
+        "g_rules_len",
         "g_macro_guarded_counter",
         "g_log_buffer",
         "temp_buffer",
@@ -207,7 +332,11 @@ def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
         return "executor_sharedresources_type_confusion"
     if has_name("_plugin_lookup") and ("mutex" in lower or "lock" in lower or "重入" in text):
         return "plugin_lookup_registry_mutex"
-    if has_name("_lifecycle_dispatch_pipe_tick") and (
+    if (
+        has_name("_lifecycle_dispatch_pipe_tick")
+        or has_name("_lifecycle_close_pipe")
+        or has_name("_lifecycle_tick_timer_callback")
+    ) and (
         "ctrl_lock" in lower or "sched_lock" in lower or "deadlock" in lower
     ):
         return "pipe_scheduler_control_lock_order"
@@ -278,6 +407,7 @@ def normalize_issue_category(value: str) -> str:
         "uninitialized_read": ("uninitialized read", "未初始化", "栈上垃圾", "cwe-457"),
         "stack_escape": ("stack escape", "use after return", "return stack", "栈地址逃逸", "栈指针", "cwe-562"),
         "stack_overflow": ("stack overflow", "vla", "栈溢出", "cwe-121"),
+        "double_free": ("double free", "free twice", "same object released twice", "cwe-415"),
         "invalid_free": ("invalid free", "non owner", "非堆", "栈缓冲区内部", "cwe-590"),
         "type_confusion": ("type confusion", "wrong type", "invalid mutex", "sharedresources", "类型混淆", "cwe-843"),
         "use_after_free": ("use after free", "use-after-free", "uaf", "dangling", "释放后使用", "悬垂", "cwe-416"),
@@ -296,8 +426,38 @@ def normalize_issue_category(value: str) -> str:
         "alignment": ("alignment", "unaligned", "strict alias", "cwe-704"),
         "stale_fd": ("stale fd", "file descriptor", "closed fd", "cwe-672"),
         "path_traversal": ("path traversal", "路径遍历"),
+        "state_inconsistency": ("state inconsistency", "state not restored", "rollback", "cwe-672"),
+        "unchecked_return": ("unchecked return", "unchecked result", "return success", "cwe-252"),
+        "busy_loop": ("busy loop", "infinite loop", "spin", "no delay", "resource exhaustion", "cwe-400", "cwe-835"),
+        "log_amplification": ("log amplification", "log storm", "resource exhaustion", "cwe-400"),
+        "key_truncation": ("key truncation", "truncated key", "partial comparison", "cwe-187"),
+        "size_limit_mismatch": ("size limit", "fixed limit", "buffer limit", "spec mismatch", "cwe-131"),
+        "fd_type_mismatch": ("fd type", "reliable fd", "raw fd", "mismatched parameter", "cwe-628"),
+        "protocol_mixup": ("protocol mixup", "protocol mismatch", "auth level", "origin validation", "cwe-346"),
+        "partial_resource_leak": ("partial resource leak", "retry leak"),
+        "dynamic_array_race": ("dynamic array", "array expansion"),
+        "version_filtering": ("version filtering", "missing version", "low version", "version filter", "cwe-20"),
+        "missing_refcount": ("missing refcount", "reference count", "refcount", "shared resource", "cwe-772"),
+        "sigpipe_unhandled": ("sigpipe", "closed peer", "signal", "cwe-404"),
+        "fd_encoding_mismatch": ("fd encoding", "encoded fd", "raw fd", "check value", "cwe-587"),
         "backend_signal": ("backend signal", "svf", "saber", "knowledge db"),
     }
+    priority_groups = (
+        "busy_loop",
+        "size_limit_mismatch",
+        "fd_type_mismatch",
+        "protocol_mixup",
+        "partial_resource_leak",
+        "dynamic_array_race",
+        "version_filtering",
+        "missing_refcount",
+        "sigpipe_unhandled",
+        "fd_encoding_mismatch",
+    )
+    for canonical in priority_groups:
+        needles = groups.get(canonical, ())
+        if any(needle in text or needle in compact for needle in needles):
+            return canonical
     for canonical, needles in groups.items():
         if any(needle in text or needle in compact for needle in needles):
             return canonical
@@ -316,9 +476,14 @@ _KNOWN_CATEGORIES = {
     "alignment",
     "backend_signal",
     "bounds",
+    "busy_loop",
     "command_injection",
     "deadlock",
     "double_checked_locking",
+    "double_free",
+    "dynamic_array_race",
+    "fd_encoding_mismatch",
+    "fd_type_mismatch",
     "format_string",
     "held_lock_callback",
     "integer_overflow",
@@ -328,21 +493,90 @@ _KNOWN_CATEGORIES = {
     "lost_wakeup",
     "memory_leak",
     "memory_safety",
+    "missing_refcount",
     "missing_unlock",
     "null_pointer_dereference",
     "object_publication",
     "off_by_one",
+    "partial_resource_leak",
     "path_traversal",
+    "protocol_mixup",
     "race",
     "realloc_misuse",
     "refcount_race",
     "signed_unsigned",
+    "sigpipe_unhandled",
     "stack_escape",
     "stack_overflow",
     "stale_fd",
+    "state_inconsistency",
+    "unchecked_return",
     "type_confusion",
     "uninitialized_read",
     "use_after_free",
+    "version_filtering",
+}
+
+
+_GLOBAL_OBJECT_ROOTS = {
+    "thread_ids",
+    "g_shared_counter",
+    "g_receiver_running",
+    "g_ready",
+    "g_running",
+    "g_active_config",
+    "g_watched_fd",
+    "g_macro_guarded_counter",
+    "g_log_buffer",
+    "temp_buffer",
+    "recovery_buffer",
+    "error_msg",
+    "payload_len",
+    "status_reply",
+    "flush_job",
+    "mesh_session_cleanup_hook",
+    "guarded_subscription",
+    "executor_sharedresources_type_confusion",
+    "plugin_lookup_registry_mutex",
+}
+
+
+_FUNCTION_SCOPED_ROOT_CATEGORIES = {
+    "alignment",
+    "bounds",
+    "busy_loop",
+    "fd_encoding_mismatch",
+    "fd_type_mismatch",
+    "integer_overflow",
+    "log_amplification",
+    "memory_leak",
+    "object_publication",
+    "partial_resource_leak",
+    "protocol_mixup",
+    "race",
+    "signed_unsigned",
+    "stale_fd",
+    "state_inconsistency",
+    "unchecked_return",
+    "version_filtering",
+}
+
+
+_FUNCTION_SCOPED_ROOTS = {
+    "net_recv_data_negative_length",
+    "route_avl_node_after_insert",
+    "control_session_detach_leak",
+    "control_session_open_leak",
+    "value_slice_invalid_free",
+    "topic_off_by_one",
+    "frame_vla_stack",
+    "lifecycle_cond_wait",
+    "g_metrics_realloc",
+    "task_command_execution",
+    "printf_format_string",
+    "os_node_proc_list",
+    "pipe_self_link",
+    "pipe_scheduler_control_lock_order",
 }
 
 

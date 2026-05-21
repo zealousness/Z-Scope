@@ -48,9 +48,23 @@ class Issue:
     evidence_refs: Optional[List[str]] = None
     run_id: Optional[str] = None
     rule_id: Optional[str] = None
+    file: Optional[str] = None
+    line: Optional[int] = None
+    start_line: Optional[int] = None
+    end_line: Optional[int] = None
+    entry_function: Optional[str] = None
+    sink_function: Optional[str] = None
+    target_function: Optional[str] = None
+    analyzed_from: Optional[str] = None
+    reachable_from_entry: Optional[bool] = None
+    internal_sink_lifted: Optional[bool] = None
+    normalized_category: Optional[str] = None
     source_loc: Optional[str] = None
     sink_loc: Optional[str] = None
     call_path: Optional[List[str]] = None
+    call_paths: Optional[List[List[str]]] = None
+    duplicate_sources: Optional[List[Dict[str, Any]]] = None
+    related_needs_review_observations: Optional[List[Dict[str, Any]]] = None
     path_constraints: Optional[List[str]] = None
     allocator_kind: Optional[str] = None
     owner_object: Optional[str] = None
@@ -84,7 +98,7 @@ class Issue:
         for k, v in data.items():
             if k in valid_fields:
                 filtered_data[k] = v
-            elif k in mapping and mapping[k] in valid_fields and mapping[k] not in filtered_data:
+            if k in mapping and mapping[k] in valid_fields and mapping[k] not in filtered_data:
                 # If we have a mapping and the target field isn't already filled
                 filtered_data[mapping[k]] = v
         

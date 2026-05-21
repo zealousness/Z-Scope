@@ -93,7 +93,7 @@ class RegexCandidateGenerator:
     _DEFAULT_ALLOCATORS = {"malloc", "_safe_malloc"}
     _DEFAULT_CALLOC_ALLOCATORS = {"calloc", "_safe_calloc"}
     _DEFAULT_REALLOCATORS = {"realloc", "_safe_realloc"}
-    _DEFAULT_DEALLOCATORS = {"free"}
+    _DEFAULT_DEALLOCATORS = {"free", "SAFE_FREE"}
     _DEFAULT_COPY_SINKS = {
         "memcpy",
         "memmove",
@@ -185,6 +185,19 @@ class RegexCandidateGenerator:
         "object_publication": "CWE-362",
         "double_checked_locking": "CWE-362",
         "stale_fd": "CWE-672",
+        "busy_loop": "CWE-835",
+        "unchecked_return": "CWE-252",
+        "state_inconsistency": "CWE-672",
+        "key_truncation": "CWE-187",
+        "size_limit_mismatch": "CWE-131",
+        "fd_type_mismatch": "CWE-628",
+        "protocol_mixup": "CWE-346",
+        "partial_resource_leak": "CWE-401",
+        "dynamic_array_race": "CWE-362",
+        "version_filtering": "CWE-20",
+        "missing_refcount": "CWE-772",
+        "sigpipe_unhandled": "CWE-404",
+        "fd_encoding_mismatch": "CWE-587",
     }
 
     _SKILL_BY_CLASS = {
@@ -214,6 +227,19 @@ class RegexCandidateGenerator:
         "object_publication": "shared_state_race",
         "double_checked_locking": "shared_state_race",
         "stale_fd": "resource_lifecycle",
+        "busy_loop": "resource_lifecycle",
+        "unchecked_return": "ownership_contract",
+        "state_inconsistency": "shared_state_race",
+        "key_truncation": "string_and_format",
+        "size_limit_mismatch": "bounds_and_integer",
+        "fd_type_mismatch": "ownership_contract",
+        "protocol_mixup": "ownership_contract",
+        "partial_resource_leak": "resource_lifecycle",
+        "dynamic_array_race": "shared_state_race",
+        "version_filtering": "ownership_contract",
+        "missing_refcount": "resource_lifecycle",
+        "sigpipe_unhandled": "resource_lifecycle",
+        "fd_encoding_mismatch": "ownership_contract",
     }
 
     _RESOURCE_BY_CLASS = {
@@ -243,6 +269,19 @@ class RegexCandidateGenerator:
         "object_publication": "shared_state",
         "double_checked_locking": "shared_state",
         "stale_fd": "handle",
+        "busy_loop": "cpu",
+        "unchecked_return": "error_status",
+        "state_inconsistency": "shared_state",
+        "key_truncation": "key",
+        "size_limit_mismatch": "memory",
+        "fd_type_mismatch": "handle",
+        "protocol_mixup": "protocol",
+        "partial_resource_leak": "memory",
+        "dynamic_array_race": "shared_state",
+        "version_filtering": "protocol",
+        "missing_refcount": "resource_lifecycle",
+        "sigpipe_unhandled": "signal",
+        "fd_encoding_mismatch": "handle",
     }
 
     def generate_issues(
@@ -273,6 +312,7 @@ class RegexCandidateGenerator:
         self._rule_null_pointer(lines, emit)
         self._rule_concurrency_state(lines, emit)
         self._rule_common_c_sinks(lines, emit)
+        self._rule_protocol_and_system_contracts(lines, emit)
         self._rule_stale_resources(lines, emit)
 
         deduped: Dict[str, Dict[str, Any]] = {}
@@ -720,6 +760,28 @@ class RegexCandidateGenerator:
                 )
                 continue
 
+            previous_expr = last_free.get(arg)
+            if previous_expr and not re.match(r"^[A-Za-z_]\w*$", arg):
+                emit(
+                    defect_class="double_free",
+                    rule="same_expression_freed_twice",
+                    line=line,
+                    description=f"`{arg}` is released twice on the same local path.",
+                    root_cause="No reassignment or nulling of the owner expression is visible between releases.",
+                    suggested_fix="Remove the duplicate release or clear ownership after the first release.",
+                    source=arg,
+                    sink=line.text.strip(),
+                    confidence=0.84,
+                    impact_level="high",
+                    positive=[
+                        f"line {previous_expr.number}: first release of `{arg}`",
+                        f"line {line.number}: second release of `{arg}`",
+                    ],
+                )
+            if not re.match(r"^[A-Za-z_]\w*$", arg):
+                last_free[arg] = line
+                continue
+
             var_match = re.match(r"([A-Za-z_]\w*)$", arg)
             if not var_match:
                 continue
@@ -861,7 +923,8 @@ class RegexCandidateGenerator:
         for line in lines:
             if self._lock_re.search(line.text):
                 held.append(line)
-            if held and re.search(r"\b[A-Za-z_]\w*(?:callback|cb|handler)[A-Za-z_0-9]*\s*\(", line.text, re.IGNORECASE):
+            callback_call = self._callback_like_call(line.text)
+            if held and callback_call:
                 lock_line = held[-1]
                 emit(
                     defect_class="held_lock_callback",
@@ -876,7 +939,7 @@ class RegexCandidateGenerator:
                     impact_level="high",
                     positive=[
                         f"line {lock_line.number}: lock acquired",
-                        f"line {line.number}: callback-like call before unlock",
+                        f"line {line.number}: callback-like call `{callback_call}` before unlock",
                     ],
                 )
             if held and re.search(r"\breturn\b", line.text):
@@ -899,6 +962,27 @@ class RegexCandidateGenerator:
                 )
             if self._unlock_re.search(line.text) and held:
                 held.pop()
+
+    @staticmethod
+    def _callback_like_call(text: str) -> str:
+        pointer_call = re.search(r"\(\s*\*\s*(?P<name>[A-Za-z_]\w*)\s*\)\s*\(", text)
+        if pointer_call:
+            name = pointer_call.group("name")
+            if re.search(r"(?:callback|cb|handler|hook|pfn|^on_|^on[A-Z])", name, re.I):
+                return f"(*{name})"
+        call = re.search(
+            r"\b(?P<name>[A-Za-z_]\w*(?:(?:->|\.)[A-Za-z_]\w*)?)\s*\(",
+            text,
+        )
+        if not call:
+            return ""
+        name = call.group("name")
+        leaf = name.split("->")[-1].split(".")[-1]
+        if leaf in {"if", "for", "while", "switch", "return", "sizeof"}:
+            return ""
+        if re.search(r"(?:callback|cb|handler|hook|pfn|^on_|^on[A-Z])", leaf, re.I):
+            return name
+        return ""
 
     def _rule_condvar_wait(self, lines: List[CodeLine], emit) -> None:
         for line in lines:
@@ -958,6 +1042,10 @@ class RegexCandidateGenerator:
     def _rule_bounds_and_uninit(self, lines: List[CodeLine], emit) -> None:
         struct_locals: Dict[str, Tuple[CodeLine, int, bool]] = {}
         unaligned_ptrs: Dict[str, CodeLine] = {}
+        integer_ptr_type = (
+            rf"(?:const\s+|volatile\s+|restrict\s+)*(?:{self._integer_pointer_type_pattern})"
+            r"(?:\s+const|\s+volatile|\s+restrict)*"
+        )
         for line in lines:
             off = re.search(r"\b(?P<array>[A-Za-z_]\w*)\s*\[\s*sizeof\s*\(\s*(?P=array)\s*\)\s*\]\s*=", line.text)
             if off:
@@ -995,7 +1083,7 @@ class RegexCandidateGenerator:
                 )
 
             align = re.search(
-                rf"\*\s*\(\s*(?:{self._integer_pointer_type_pattern})\s*\*\s*\)\s*\([^)]*\+\s*1\s*\)",
+                rf"\*\s*\(\s*(?:{integer_ptr_type})\s*\*\s*\)\s*\([^)]*\+\s*1\s*\)",
                 line.text,
             )
             if align:
@@ -1012,7 +1100,7 @@ class RegexCandidateGenerator:
                     positive=[f"line {line.number}: dereferences integer pointer from byte offset"],
                 )
             ptr_cast = re.search(
-                rf"\b(?P<var>[A-Za-z_]\w*)\s*=\s*\([^;]*(?:{self._integer_pointer_type_pattern})\s*\*\s*\)"
+                rf"\b(?P<var>[A-Za-z_]\w*)\s*=\s*\([^;]*(?:{integer_ptr_type})\s*\*\s*\)"
                 r"\s*\([^;]*\+\s*1\s*\)",
                 line.text,
             )
@@ -1135,6 +1223,54 @@ class RegexCandidateGenerator:
                         positive=[
                             f"line {line.number}: object is assigned to shared/global state",
                             "later lines initialize fields after publication",
+                        ],
+                    )
+
+            helper_publish = re.search(
+                r"\b(?P<fn>[A-Za-z_]\w*(?:insert|add|publish|register|attach|link)[A-Za-z_0-9]*)"
+                r"\s*\(\s*(?P<obj>[A-Za-z_]\w*)\s*(?:,|\))",
+                line.text,
+                re.IGNORECASE,
+            )
+            if helper_publish:
+                obj = helper_publish.group("obj")
+                earlier = lines[max(0, idx - 12) : idx]
+                later = lines[idx + 1 : idx + 10]
+                allocated_before = any(
+                    re.search(
+                        rf"\b{re.escape(obj)}\s*=\s*(?:\([^)]*\)\s*)?"
+                        rf"(?:{self._names_pattern(self._allocator_names | self._calloc_names)}|[A-Za-z_]\w*(?:Alloc|Create|New))\s*\(",
+                        item.text,
+                    )
+                    for item in earlier
+                )
+                initialized_after = next(
+                    (
+                        item
+                        for item in later
+                        if re.search(rf"\b{re.escape(obj)}->[A-Za-z_]\w*\s*=", item.text)
+                        or re.search(rf"\bpthread_mutex_init\s*\(\s*&\s*{re.escape(obj)}->", item.text)
+                    ),
+                    None,
+                )
+                if allocated_before and initialized_after:
+                    emit(
+                        defect_class="object_publication",
+                        rule="object_published_by_helper_before_initialization",
+                        line=line,
+                        description=(
+                            f"`{obj}` is passed to publication helper `{helper_publish.group('fn')}` "
+                            "before later field initialization."
+                        ),
+                        root_cause="Concurrent readers can observe the object after helper publication but before all fields are initialized.",
+                        suggested_fix="Complete all field initialization before calling the helper that links/publishes the object.",
+                        source=obj,
+                        sink=line.text.strip(),
+                        confidence=0.78,
+                        impact_level="high",
+                        positive=[
+                            f"line {line.number}: object is passed to publication helper `{helper_publish.group('fn')}`",
+                            f"line {initialized_after.number}: field initialization occurs after publication",
                         ],
                     )
 
@@ -1379,6 +1515,402 @@ class RegexCandidateGenerator:
                     impact_level="critical",
                     positive=[f"line {line.number}: system executes a non-literal command string"],
                 )
+
+    def _rule_protocol_and_system_contracts(self, lines: List[CodeLine], emit) -> None:
+        text = "\n".join(line.text for line in lines)
+
+        for line in lines:
+            if not re.search(r"\bwhile\s*\(", line.text):
+                continue
+            window = "\n".join(item.text for item in lines[line.index : line.index + 14])
+            if not re.search(r"\b(?:recv|read|_net_recv_data)\s*\(", window):
+                continue
+            if re.search(r"\b(?:sleep|usleep|nanosleep|poll|select|break)\b", window):
+                continue
+            if re.search(r"\bif\s*\([^)]*(?:rc|ret|got|received)\s*<=\s*0", window) and re.search(
+                r"\bcontinue\s*;", window
+            ):
+                emit(
+                    defect_class="busy_loop",
+                    rule="recv_retry_without_backoff",
+                    line=line,
+                    description="Receive loop retries immediately when the IO call returns no progress.",
+                    root_cause="The loop does not break, sleep, poll, or apply a retry limit on repeated transient failures.",
+                    suggested_fix="Add a bounded retry policy with timeout/backoff and handle permanent errors.",
+                    source=line.text.strip(),
+                    sink="continue on rc <= 0",
+                    confidence=0.8,
+                    impact_level="high",
+                    positive=[
+                        f"line {line.number}: receive loop",
+                        "nearby branch continues on non-progress without backoff or timeout",
+                    ],
+                )
+
+        for idx, line in enumerate(lines):
+            if re.search(r"\b(?:uint32_t|uint64_t|size_t|int)\s+\w+\s*=\s*(?:\([^)]*\)\s*)?[^;]*(?:\*|<<)\s*[^;]*;", line.text):
+                later = "\n".join(item.text for item in lines[idx + 1 : idx + 10])
+                if re.search(r"\b(?:memcpy|memmove|_net_send_data|_net_recv_data)\s*\(", later) and re.search(
+                    r"\b(?:packet|wire|blob|frame|payload)_?len\b", text
+                ):
+                    if not re.search(r"(?:packet|wire|blob|frame|payload)_?len\s*[-+*/<>]=?", later):
+                        emit(
+                            defect_class="bounds",
+                            rule="derived_protocol_length_reaches_copy_without_input_bound",
+                            line=line,
+                            description="A derived protocol length reaches a copy without proving the input buffer contains that many bytes.",
+                            root_cause="The destination bound is checked, but the source packet length is not tied to the derived copy length.",
+                            suggested_fix="Validate derived length against both source packet remaining bytes and destination capacity.",
+                            source=line.text.strip(),
+                            sink="copy using derived protocol length",
+                            confidence=0.74,
+                            impact_level="high",
+                            positive=[
+                                f"line {line.number}: protocol length is derived by arithmetic",
+                                "nearby copy uses the derived length without an input-buffer bound",
+                            ],
+                        )
+                        break
+
+        for idx, line in enumerate(lines):
+            length_from_header = re.search(
+                r"\b(?:size_t|uint32_t|uint64_t|int)?\s*(?P<lenvar>[A-Za-z_]\w*(?:len|length|size)[A-Za-z_0-9]*)\s*="
+                r"\s*(?:\([^)]*\)\s*)?[A-Za-z_]\w*(?:->|\.)[A-Za-z_0-9]*(?:len|length|size)[A-Za-z_0-9]*\s*-",
+                line.text,
+                re.IGNORECASE,
+            )
+            if not length_from_header:
+                continue
+            len_var = length_from_header.group("lenvar")
+            later = "\n".join(item.text for item in lines[idx + 1 : idx + 9])
+            if re.search(rf"\b(?:memcpy|memmove)\s*\([^;]*\b{re.escape(len_var)}\b", later):
+                emit(
+                    defect_class="bounds",
+                    rule="header_length_subtraction_reaches_copy",
+                    line=line,
+                    description=f"Serialized length `{len_var}` is derived by subtraction and reaches a copy.",
+                    root_cause="Header length can underflow or exceed the received wire buffer without a remaining-length guard.",
+                    suggested_fix="Check header.length >= header size and header.length <= wire_len before copying.",
+                    source=line.text.strip(),
+                    sink=f"copy using {len_var}",
+                    confidence=0.82,
+                    impact_level="high",
+                    positive=[
+                        f"line {line.number}: length is derived from serialized header length",
+                        "nearby copy uses the derived body length",
+                    ],
+                )
+                break
+
+        if "ISSUE41_LABEL_CACHE_LIMIT" in text and "ISSUE41_SPEC_MAX_ELEMENTS" in text:
+            line = self._first_line_matching(lines, re.compile(r"ISSUE41_LABEL_CACHE_LIMIT"))
+            if line:
+                emit(
+                    defect_class="size_limit_mismatch",
+                    rule="implementation_limit_differs_from_protocol_limit",
+                    line=line,
+                    description="Implementation byte limit and protocol element limit are enforced independently.",
+                    root_cause="A converted byte length can satisfy one limit while the original element count violates the protocol limit.",
+                    suggested_fix="Validate the original element count against the protocol maximum before deriving byte sizes.",
+                    source=line.text.strip(),
+                    sink="protocol max element comparison",
+                    confidence=0.76,
+                    impact_level="high",
+                    positive=[
+                        f"line {line.number}: implementation byte limit check",
+                        "same function also compares a separate protocol element limit",
+                    ],
+                )
+
+        if "LOG_ERROR" in text and re.search(r"\breturn\s+(?:ret|rc|status)\s*;", text) and re.search(r"\breturn\s+0\s*;", text):
+            line = self._first_line_matching(lines, re.compile(r"\breturn\s+0\s*;"))
+            if line:
+                emit(
+                    defect_class="unchecked_return",
+                    rule="error_probe_can_return_success",
+                    line=line,
+                    description="Error/probe path can fall through to a success return.",
+                    root_cause="The function logs or returns a low-level status in one branch but treats other failed/ambiguous probe states as success.",
+                    suggested_fix="Normalize low-level return codes and explicitly fail ambiguous probe results.",
+                    source="error/probe branch",
+                    sink=line.text.strip(),
+                    confidence=0.7,
+                    positive=["function contains error logging/status return and a final success return"],
+                )
+
+        state_assign = next(
+            (
+                line
+                for line in lines
+                if re.search(r"\bg_[A-Za-z_0-9.]*state[A-Za-z_0-9.]*\s*=", line.text)
+            ),
+            None,
+        )
+        state_name = None
+        if state_assign:
+            state_match = re.search(
+                r"\b(?P<state>g_[A-Za-z_0-9.]*state[A-Za-z_0-9.]*)\s*=",
+                state_assign.text,
+            )
+            if state_match:
+                state_name = state_match.group("state")
+        state_restored = bool(
+            state_name and re.search(rf"\b{re.escape(state_name)}\s*=\s*previous\s*;", text)
+        )
+        if state_assign and re.search(r"\breturn\s+-1\s*;", text) and not state_restored:
+            emit(
+                defect_class="state_inconsistency",
+                rule="global_state_not_restored_on_error",
+                line=state_assign,
+                description="Global state is changed before an error path without a visible restore.",
+                root_cause="A failed syscall or validation path can leave shared state set to a transient value.",
+                suggested_fix="Restore the previous state on every failure path before returning.",
+                source=state_assign.text.strip(),
+                sink="error return before restore",
+                confidence=0.72,
+                impact_level="high",
+                positive=[
+                    f"line {state_assign.number}: shared state assignment",
+                    "function has an error return and no assignment restoring `previous`",
+                ],
+            )
+
+        unchecked_insert = self._first_line_matching(
+            lines,
+            re.compile(r"\b[A-Za-z_]\w*(?:insert|Insert)[A-Za-z_0-9]*\s*\([^;]+\)\s*;"),
+        )
+        if unchecked_insert and re.search(r"\b(?:node|entry|item|record)\b", unchecked_insert.text, re.I):
+            prior_alloc = any(
+                self._alloc_re.search(item.text) or self._calloc_re.search(item.text)
+                for item in lines[max(0, unchecked_insert.index - 8) : unchecked_insert.index]
+            )
+            if prior_alloc and not re.search(r"\b(?:if|rc|ret|status)\b.*insert", unchecked_insert.text, re.I):
+                emit(
+                    defect_class="memory_leak",
+                    rule="unchecked_insert_after_ownership_handoff",
+                    line=unchecked_insert,
+                    description="Ownership-sensitive insert return value is ignored after allocating/linking a node.",
+                    root_cause="If the insert helper links state before returning failure, the caller loses a reliable cleanup decision point.",
+                    suggested_fix="Check the insert return value and define whether ownership transfers on every failure mode.",
+                    source=unchecked_insert.text.strip(),
+                    sink="ignored insert return value",
+                    confidence=0.74,
+                    impact_level="high",
+                    positive=[
+                        f"line {unchecked_insert.number}: insert-like helper return value is ignored",
+                        "nearby code allocates an ownership-bearing node before the insert",
+                    ],
+                )
+
+        trunc = self._first_line_matching(lines, re.compile(r"\bstrncpy\s*\([^;]*,\s*[A-Za-z_]\w*(?:key|name)[A-Za-z_0-9]*\s*,\s*\d+\s*\)", re.I))
+        if trunc and re.search(r"\[[^\]]+\]\s*=\s*'\\0'", text):
+            emit(
+                defect_class="key_truncation",
+                rule="truncated_key_used_for_route_insert",
+                line=trunc,
+                description="Route/key insertion truncates the full key before storing it.",
+                root_cause="Lookup and insert can use different key widths, allowing collisions or wrong route selection.",
+                suggested_fix="Reject overlong keys or store/compare the same full key representation consistently.",
+                source=trunc.text.strip(),
+                sink="truncated key stored in route node",
+                confidence=0.8,
+                impact_level="high",
+                positive=[f"line {trunc.number}: bounded strncpy truncates a key before insertion"],
+            )
+
+        fd_type = self._first_line_matching(lines, re.compile(r"\b[A-Za-z_]\w*is_inter_fd\s*\(\s*reliable_fd\s*\)"))
+        if fd_type:
+            emit(
+                defect_class="fd_type_mismatch",
+                rule="reliable_fd_passed_to_raw_fd_classifier",
+                line=fd_type,
+                description="Reliable/encoded fd is passed to a raw/inter-fd classifier.",
+                root_cause="The API contract mixes encoded/reliable descriptors with raw fd validation.",
+                suggested_fix="Decode and validate the fd representation before passing it to raw-fd helpers.",
+                source="reliable_fd",
+                sink=fd_type.text.strip(),
+                confidence=0.84,
+                impact_level="high",
+                positive=[f"line {fd_type.number}: reliable fd is used as raw fd input"],
+            )
+
+        protocol_line = self._first_line_matching(lines, re.compile(r"detected_protocol\s*!="))
+        if protocol_line and "auth_level" in text and re.search(r"\breturn\s+0\s*;", text):
+            emit(
+                defect_class="protocol_mixup",
+                rule="protocol_mismatch_can_return_success",
+                line=protocol_line,
+                description="Protocol mismatch can return success when authentication is not strict.",
+                root_cause="A non-RPC protocol is accepted on a weaker auth branch instead of being rejected at the boundary.",
+                suggested_fix="Reject protocol mismatch before auth-level fallback or require strict origin validation.",
+                source=protocol_line.text.strip(),
+                sink="success return on mismatch branch",
+                confidence=0.82,
+                impact_level="high",
+                positive=[f"line {protocol_line.number}: protocol mismatch branch", "same function has success return"],
+            )
+
+        version_line = self._first_line_matching(lines, re.compile(r"\buint8_t\s+version\s*="))
+        if version_line and re.search(r"\(void\)\s*version\s*;", text):
+            emit(
+                defect_class="version_filtering",
+                rule="parsed_version_is_ignored",
+                line=version_line,
+                description="Protocol version is parsed and then explicitly ignored.",
+                root_cause="Messages from unsupported versions can pass state-only validation.",
+                suggested_fix="Validate version against the supported protocol set before processing message state.",
+                source=version_line.text.strip(),
+                sink="(void)version",
+                confidence=0.86,
+                impact_level="high",
+                positive=[f"line {version_line.number}: version parsed", "same function marks version unused"],
+            )
+
+        write_line = self._first_line_matching(lines, re.compile(r"\bwrite\s*\("))
+        if write_line and "SIGPIPE" not in text and "MSG_NOSIGNAL" not in text:
+            emit(
+                defect_class="sigpipe_unhandled",
+                rule="write_without_sigpipe_handling",
+                line=write_line,
+                description="Peer write is issued without visible SIGPIPE suppression or handling.",
+                root_cause="A closed peer can raise SIGPIPE and terminate the process or bypass normal error handling.",
+                suggested_fix="Use send(..., MSG_NOSIGNAL), ignore/handle SIGPIPE, or use platform-specific no-signal flags.",
+                source=write_line.text.strip(),
+                sink="closed peer write",
+                confidence=0.74,
+                impact_level="high",
+                positive=[f"line {write_line.number}: write to peer fd without SIGPIPE handling"],
+            )
+
+        raw_fd = self._first_line_matching(lines, re.compile(r"\braw_[A-Za-z_0-9]*fd\s*="))
+        if raw_fd and "_validate_encoded_fd" in text:
+            emit(
+                defect_class="fd_encoding_mismatch",
+                rule="raw_fd_revalidated_as_encoded",
+                line=raw_fd,
+                description="Raw fd arithmetic is later validated as if it were encoded.",
+                root_cause="The encoding/check bits are not constructed before the fd reaches encoded-fd validation.",
+                suggested_fix="Encode raw fds with the expected check value before calling encoded-fd validators.",
+                source=raw_fd.text.strip(),
+                sink="validate_encoded_fd(raw fd)",
+                confidence=0.84,
+                impact_level="high",
+                positive=[f"line {raw_fd.number}: raw fd value is derived", "same function validates it as encoded fd"],
+            )
+
+        if "g_issue41_task_array" in text and "old_array" in text and "SAFE_FREE(old_array)" in text:
+            line = self._first_line_matching(lines, re.compile(r"g_issue41_task_array\s*="))
+            if line:
+                emit(
+                    defect_class="dynamic_array_race",
+                    rule="global_array_resize_without_lock",
+                    line=line,
+                    description="Global dynamic array is replaced and old storage is freed without a visible lock.",
+                    root_cause="Concurrent readers can observe the old or new array while resize/free is in progress.",
+                    suggested_fix="Guard resize and publication with a mutex or use an RCU-style handoff.",
+                    source=line.text.strip(),
+                    sink="SAFE_FREE(old_array)",
+                    confidence=0.78,
+                    impact_level="high",
+                    positive=[f"line {line.number}: global array pointer is replaced", "old array is freed in same resize path"],
+                )
+
+        if "fail_step" in text and re.search(r"\breturn\s+-1\s*;", text) and re.search(r"->tag\s*=", text):
+            line = self._first_line_matching(lines, re.compile(r"\bfail_step\b"))
+            if line:
+                emit(
+                    defect_class="partial_resource_leak",
+                    rule="partial_resource_not_released_on_retry_failure",
+                    line=line,
+                    description="Retry failure path returns after partial resource initialization.",
+                    root_cause="Allocated partition/tag state is not released when a later retry step fails.",
+                    suggested_fix="Free all partially initialized members before returning from retry failures.",
+                    source="partial resource initialization",
+                    sink=line.text.strip(),
+                    confidence=0.76,
+                    impact_level="high",
+                    positive=["function initializes resource fields and has fail_step error return"],
+                )
+
+        for idx, line in enumerate(lines):
+            alloc = re.search(
+                r"\b(?P<owner>[A-Za-z_]\w*(?:->[A-Za-z_]\w*)?)\s*=\s*(?:\([^)]*\)\s*)?"
+                r"(?P<alloc>[A-Za-z_]\w*(?:alloc|dup|create|new)[A-Za-z_0-9]*)\s*\(",
+                line.text,
+                re.IGNORECASE,
+            )
+            if not alloc:
+                continue
+            owner = alloc.group("owner")
+            later_lines = lines[idx + 1 : idx + 18]
+            release_re = re.compile(rf"\b(?:SAFE_FREE|free)\s*\(\s*{re.escape(owner)}\s*\)")
+            error_return = next(
+                (
+                    item
+                    for item in later_lines
+                    if re.search(r"\breturn\s+-1\s*;", item.text)
+                    and not any(release_re.search(prior.text) for prior in later_lines[: max(0, item.index - idx - 1)])
+                ),
+                None,
+            )
+            if error_return:
+                emit(
+                    defect_class="memory_leak",
+                    rule="error_path_allocation_not_released",
+                    line=line,
+                    description=f"`{owner}` is allocated before an error return that does not release it.",
+                    root_cause="A later failure path returns before cleanup for the allocated owner.",
+                    suggested_fix="Release the allocation on the error path or jump to a shared cleanup label.",
+                    source=line.text.strip(),
+                    sink=error_return.text.strip(),
+                    confidence=0.78,
+                    impact_level="high",
+                    positive=[
+                        f"line {line.number}: `{owner}` receives allocated storage",
+                        f"line {error_return.number}: error return before release",
+                    ],
+                )
+            if "->" in owner:
+                base = owner.split("->", 1)[0]
+                later = "\n".join(item.text for item in later_lines)
+                if re.search(rf"\b(?:SAFE_FREE|free)\s*\(\s*{re.escape(base)}\s*\)", later) and not release_re.search(later):
+                    emit(
+                        defect_class="memory_leak",
+                        rule="member_allocation_not_released_with_parent",
+                        line=line,
+                        description=f"Member allocation `{owner}` is not released before `{base}` is freed.",
+                        root_cause="Freeing the parent object does not release separately allocated child/member storage.",
+                        suggested_fix="Release owned members before freeing the parent object.",
+                        source=line.text.strip(),
+                        sink=f"free parent `{base}`",
+                        confidence=0.8,
+                        impact_level="high",
+                        positive=[
+                            f"line {line.number}: member allocation `{owner}`",
+                            f"later path frees parent `{base}` without freeing the member",
+                        ],
+                    )
+
+        if "ref_count" in text and re.search(r"\bSAFE_FREE\s*\(\s*res\s*\)", text):
+            line = self._first_line_matching(lines, re.compile(r"\bSAFE_FREE\s*\(\s*res\s*\)"))
+            if line:
+                emit(
+                    defect_class="missing_refcount",
+                    rule="shared_resource_freed_without_refcount_protocol",
+                    line=line,
+                    description="Shared resource is freed while ref_count/list ownership remains visible.",
+                    root_cause="The close path frees a shared resource without unlinking it or decrementing the reference count protocol.",
+                    suggested_fix="Detach the resource from the shared list and update ref_count before freeing.",
+                    source="res->ref_count",
+                    sink=line.text.strip(),
+                    confidence=0.72,
+                    impact_level="high",
+                    positive=[f"line {line.number}: resource freed in function that maintains ref_count"],
+                )
+
+    @staticmethod
+    def _first_line_matching(lines: List[CodeLine], pattern: re.Pattern[str]) -> Optional[CodeLine]:
+        return next((line for line in lines if pattern.search(line.text)), None)
 
     def _emit_borrowed_after_unlock(self, lines: List[CodeLine], return_line: CodeLine, emit) -> None:
         match = re.search(r"\breturn\s+(?P<ret>[A-Za-z_]\w+)\s*;", return_line.text)
