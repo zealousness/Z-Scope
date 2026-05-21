@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, cast
 from ..common.utils import extract_json_blocks
 from ..framework.base import AgentResponse, BaseAgent
 from ..framework.llm_client import LLMClient
-from ..core.tool_policy import ToolPolicy
+from ..tools.policy import ToolPolicy
 
 logger = logging.getLogger(__name__)
 

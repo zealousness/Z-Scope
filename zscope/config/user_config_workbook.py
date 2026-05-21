@@ -63,12 +63,16 @@ SHEET_HEADERS: Dict[str, List[str]] = {
         "pointer_location",
         "scope",
         "target_functions",
+        "context",
         "source",
         "notes",
     ],
     "function_intents": [
         "symbol_name",
         "file_path",
+        "caller_constraints",
+        "concurrency_group",
+        "concurrent_with",
         "intents",
     ],
 }
@@ -265,7 +269,7 @@ class UserConfigWorkbook:
                     "pointer_location": row.get("pointer_location", ""),
                     "scope": row.get("scope", "*") or "*",
                     "target_functions": row.get("target_functions", "[]") or "[]",
-                    "context": "",
+                    "context": row.get("context", ""),
                 }
             )
         return rows
@@ -294,8 +298,9 @@ class UserConfigWorkbook:
             {
                 "scope": scope or "*",
                 "target_functions": json.dumps(target_functions, ensure_ascii=False),
+                "context": context,
                 "source": row.get("source") or "user",
-                "notes": _merge_notes(row.get("notes", ""), "", context),
+                "notes": row.get("notes", ""),
             }
         )
         self.write_rows(rows)

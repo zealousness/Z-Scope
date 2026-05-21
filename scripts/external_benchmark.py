@@ -1196,8 +1196,8 @@ def run_pure_llm(args: argparse.Namespace, *, repo_context: bool) -> dict[str, A
 
 
 def run_candidates(args: argparse.Namespace) -> dict[str, Any]:
-    from zscope.core.regex_candidates import RegexCandidateGenerator
-    from zscope.core.graph_candidates import GraphCandidateGenerator
+    from zscope.core.candidates.graph import GraphCandidateGenerator
+    from zscope.core.candidates.regex import RegexCandidateGenerator
     from zscope.config.config import IndexingConfig
     from zscope.retrieval.code_index import CodeIndex
 

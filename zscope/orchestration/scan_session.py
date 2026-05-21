@@ -12,9 +12,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ..config.config import ZScopeConfig
 from ..config.function_entry import FunctionEntry, FunctionListLoader
-from ..core.analyzer import Analyzer
-from ..core.parallel_analyzer import ParallelAnalysisResult, ParallelAnalyzer
-from ..core.snapshot_store import SnapshotStore
+from ..core.analysis.analyzer import Analyzer
+from .parallel_analyzer import ParallelAnalysisResult, ParallelAnalyzer
+from ..snapshots.store import SnapshotStore
 from ..retrieval.code_index import CodeIndex
 from .entry_discovery import EntryDiscovery
 from .specs import SpecRegistry, WorkflowStep

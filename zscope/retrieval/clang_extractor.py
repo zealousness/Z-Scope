@@ -729,10 +729,9 @@ class ClangExtractor:
                     uri = defs[0].get("targetUri") or defs[0].get("uri", "")
                     callee_file = self._uri_to_project_path(uri)
 
-                if callee_file:
-                    call_rows.append(
-                        (caller_name, caller_file, callee, callee_file, call_line, "direct")
-                    )
+                call_rows.append(
+                    (caller_name, caller_file, callee, callee_file, call_line, "direct")
+                )
         except Exception as e:
             logger.debug("Failed to extract calls in %s: %s", caller_name, e)
 
