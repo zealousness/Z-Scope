@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, cast
 
+from ..core.validation.pipeline import preserve_issue_location
 from ..reporting.report import FinalReport, Issue, ReportGenerator
 from ..reporting.views import build_report_views, report_view_summary
 from ..snapshots.store import SnapshotStore
@@ -37,6 +38,8 @@ class ReportAssembler:
         self.resolve_issue_locations(all_issues)
         observations = state.get("observations", [])
         self.resolve_issue_locations(observations)
+        for observation in observations:
+            preserve_issue_location(observation)
         if observations:
             state["observations"] = self.deduplicate_observations(observations)
         if state.get("observations"):

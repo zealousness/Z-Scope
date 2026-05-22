@@ -105,6 +105,7 @@ def is_entry_root_contract_scope_rejection(
         or ""
     ).replace("-", "_").lower()
     if category not in {
+        "alignment",
         "held_lock_callback",
         "log_amplification",
         "version_filtering",
@@ -112,7 +113,10 @@ def is_entry_root_contract_scope_rejection(
         "size_limit_mismatch",
         "busy_loop",
         "dynamic_array_race",
+        "memory_leak",
     }:
+        return False
+    if not _has_strong_structured_evidence(evidence_pack):
         return False
     text = flatten_issue_text(
         [
@@ -125,8 +129,12 @@ def is_entry_root_contract_scope_rejection(
     if not text:
         return False
     scope_terms = (
-        "current",
-        "currently",
+        "current callback",
+        "current caller",
+        "current direct caller",
+        "current branch",
+        "current path",
+        "currently registered",
         "当前",
         "目前",
         "hardcoded",
@@ -137,11 +145,19 @@ def is_entry_root_contract_scope_rejection(
         "空回调",
         "not controllable",
         "not caller controllable",
+        "not externally controllable",
+        "not controlled by caller",
+        "caller cannot control",
         "不可控",
         "无法控制",
         "fails closed",
         "one local branch",
         "only local",
+        "design semantics",
+        "designed semantics",
+        "by design",
+        "intended design",
+        "current design",
         "本地分支",
         "dead code",
         "unreachable",
@@ -149,6 +165,53 @@ def is_entry_root_contract_scope_rejection(
         "不可达",
     )
     return any(term in text for term in scope_terms)
+
+
+def _has_strong_structured_evidence(evidence_pack: Dict[str, Any]) -> bool:
+    """Return whether a reachable candidate has concrete non-free-form evidence."""
+    candidate_evidence = (
+        evidence_pack.get("candidate_evidence")
+        if isinstance(evidence_pack.get("candidate_evidence"), dict)
+        else {}
+    )
+    source = str(
+        evidence_pack.get("evidence_checker")
+        or candidate_evidence.get("checker")
+        or candidate_evidence.get("candidate_source")
+        or ""
+    ).lower()
+    backend_profile = str(
+        evidence_pack.get("backend_profile")
+        or candidate_evidence.get("backend_profile")
+        or ""
+    ).lower()
+    structured_sources = (
+        "clang",
+        "ast",
+        "cfg",
+        "graph",
+        "svf",
+        "knowledge",
+        "backend",
+        "rule",
+    )
+    if any(token in source or token in backend_profile for token in structured_sources):
+        return True
+
+    refs = evidence_pack.get("evidence_refs") or candidate_evidence.get("evidence_refs") or []
+    if refs:
+        return True
+
+    path = candidate_evidence.get("path") if isinstance(candidate_evidence.get("path"), dict) else {}
+    positive = evidence_pack.get("positive_evidence") or candidate_evidence.get("positive_evidence") or []
+    entry_context = evidence_pack.get("entry_context")
+    if positive and (
+        path.get("complete") is True
+        or path.get("complete_to_entry") is True
+        or (isinstance(entry_context, dict) and bool(entry_context.get("call_path")))
+    ):
+        return True
+    return False
 
 
 def build_validation_evidence_pack(

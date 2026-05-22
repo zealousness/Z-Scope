@@ -151,9 +151,9 @@ def test_validation_runner_retries_entry_root_dead_code_rejection_as_observation
     assert agent.inputs[1]["evidence_pack"]["mode"] == "tri_state_exploitability_validation_entry_root_retry"
     assert state["issues"] == []
     assert len(state["observations"]) == 1
-    assert state["observations"][0]["validation_status"] == "uncertain"
-    assert state["observations"][0]["finding_kind"] == "audit_observation"
-    assert memory == [("ISSUE_2", "uncertain")]
+    assert state["observations"][0]["validation_status"] == "needs_review"
+    assert state["observations"][0]["finding_kind"] == "needs_review"
+    assert memory == [("ISSUE_2", "needs_review")]
 
 
 def test_validation_runner_rewrites_contract_scope_rejection_as_observation() -> None:
@@ -169,14 +169,99 @@ def test_validation_runner_rewrites_contract_scope_rejection_as_observation() ->
             )
         ]
     )
-    state = _state(_issue(id="ISSUE_3", defect_class="held_lock_callback"))
+    state = _state(
+        _issue(
+            id="ISSUE_3",
+            defect_class="held_lock_callback",
+            evidence_refs=["src/demo.c:10: callback invoked under lock"],
+        )
+    )
 
     _runner(agent, memory=memory).run(state)
 
     assert state["issues"] == []
     assert len(state["observations"]) == 1
     observation = state["observations"][0]
-    assert observation["validation_status"] == "uncertain"
-    assert observation["finding_kind"] == "audit_observation"
+    assert observation["validation_status"] == "needs_review"
+    assert observation["finding_kind"] == "needs_review"
     assert "external entry contract" in observation["validation_reasoning"]
-    assert memory == [("ISSUE_3", "uncertain")]
+    assert memory == [("ISSUE_3", "needs_review")]
+
+
+def test_validation_runner_keeps_structured_reachable_caller_control_rejection() -> None:
+    memory = []
+    agent = FakeValidatorAgent(
+        [
+            AgentResponse(
+                success=True,
+                data={
+                    "verdict": "rejected",
+                    "reasoning": (
+                        "The current direct caller uses a local buffer, so the input is not "
+                        "caller controllable and this is only by design."
+                    ),
+                },
+            )
+        ]
+    )
+    state = _state(
+        _issue(
+            id="ISSUE_5",
+            category="alignment",
+            defect_class="alignment",
+            evidence_checker="clang_ast_cfg",
+            positive_evidence=["packet + 1 is cast to uint32_t *"],
+            source="public packet bytes",
+            sink="unaligned uint32_t load",
+        )
+    )
+
+    _runner(agent, memory=memory).run(state)
+
+    assert state["issues"] == []
+    assert len(state["observations"]) == 1
+    observation = state["observations"][0]
+    assert observation["validation_status"] == "needs_review"
+    assert observation["finding_kind"] == "needs_review"
+    assert observation["validator_verdict"] == "uncertain"
+    assert memory == [("ISSUE_5", "needs_review")]
+
+
+def test_validation_runner_recovers_uncertain_observation_location_from_evidence_pack() -> None:
+    agent = FakeValidatorAgent(
+        [
+            AgentResponse(
+                success=True,
+                data={"verdict": "uncertain", "reasoning": "Plausible, needs source review."},
+            )
+        ]
+    )
+    issue = _issue(
+        id="ISSUE_4",
+        location="",
+        file="",
+        line=None,
+        start_line=None,
+        evidence_pack={
+            "path": {"complete": True, "complete_to_entry": True},
+            "finding_summary": {
+                "function": "sink_func",
+                "location": "src/recovered.c:77-79",
+            },
+            "source_loc": "src/recovered.c:70",
+        },
+    )
+    state = _state(issue)
+
+    _runner(agent).run(state)
+
+    assert state["issues"] == []
+    assert len(state["observations"]) == 1
+    observation = state["observations"][0]
+    assert observation["validation_status"] == "uncertain"
+    assert observation["location"] == "src/recovered.c:77-79"
+    assert observation["file"] == "src/recovered.c"
+    assert observation["line"] == 77
+    assert observation["start_line"] == 77
+    assert observation["end_line"] == 79
+    assert observation["source_loc"] == "src/recovered.c:70"

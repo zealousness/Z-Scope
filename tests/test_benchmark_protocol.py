@@ -202,6 +202,36 @@ def test_issue_matches_additional_function_and_location_anchor() -> None:
     assert issue_matches(issue, truth, line_tolerance=3)
 
 
+def test_issue_matches_sibling_role_release_location_anchor() -> None:
+    truth = {
+        "id": "REAL-021",
+        "category": "memory_leak",
+        "function": "_real_model_destroy_role_gt",
+        "sibling_function": "_real_model_server_release_by_role",
+        "file": "src/lifecycle.c",
+        "line": 1285,
+        "end_line": 1290,
+        "additional_locations": [
+            {
+                "file": "src/lifecycle.c",
+                "function": "_real_model_server_release_by_role",
+                "line": 1271,
+                "end_line": 1276,
+            }
+        ],
+        "keywords": ["role", "release_by_role", "literal"],
+    }
+    issue = {
+        "category": "memory_leak",
+        "function": "_real_model_server_release_by_role",
+        "location": "src/lifecycle.c:1274",
+        "description": "Hardcoded role release_by_role frees the literal role and skips the stored-role payload.",
+        "sink": "_real_model_server_release_by_role(node, 0)",
+    }
+
+    assert issue_matches(issue, truth, line_tolerance=3)
+
+
 def test_issue_matches_ignores_placeholder_truth_line() -> None:
     truth = {
         "id": "REAL-013",

@@ -191,6 +191,9 @@ class GraphCandidateGenerator:
             self._rule_tree_and_liveness_protocols(view, issues)
 
         self._rule_paired_lifecycle_protocols(views, issues)
+        self._rule_paired_member_cleanup_protocols(views, issues)
+        self._rule_paired_key_normalization_protocols(views, issues)
+        self._rule_paired_self_link_log_traversal(views, issues)
         self._rule_paired_global_registration_cleanup(views, issues)
         self._rule_timer_cascade_wait(views, issues)
         self._rule_lock_order_inversion(views, issues)
@@ -262,10 +265,14 @@ class GraphCandidateGenerator:
 
     def _impl_for(self, func_name: str) -> Optional[Dict[str, Any]]:
         if func_name not in self._impl_cache:
-            self._impl_cache[func_name] = self.code_index.get_function_impl(
-                func_name,
-                warn_missing=False,
-            )
+            getter = getattr(self.code_index, "get_function_impl", None)
+            if not callable(getter):
+                self._impl_cache[func_name] = None
+            else:
+                self._impl_cache[func_name] = getter(
+                    func_name,
+                    warn_missing=False,
+                )
         return self._impl_cache[func_name]
 
     def _merged_callee_names(
@@ -793,6 +800,326 @@ class GraphCandidateGenerator:
                 )
             )
 
+    def _rule_paired_member_cleanup_protocols(
+        self,
+        views: Sequence[FunctionView],
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        for view in views:
+            self._rule_same_function_helper_alloc_member_cleanup_gap(view, issues)
+
+        member_allocs: List[Dict[str, Any]] = []
+        for view in views:
+            if not re.search(r"(?:alloc|create|init|new|register|add)", view.name, re.I):
+                continue
+            for line in view.lines:
+                match = re.search(
+                    r"\b(?P<obj>[A-Za-z_]\w*)->(?P<field>[A-Za-z_]\w*)\s*=\s*"
+                    r"(?:\([^)]*\)\s*)?"
+                    r"(?P<api>[A-Za-z_]\w*(?:alloc|calloc|malloc|dup|new|create)[A-Za-z_0-9]*)\s*\(",
+                    line.text,
+                    re.I,
+                )
+                if not match:
+                    continue
+                field = match.group("field")
+                if not re.search(r"(?:payload|data|buf|buffer|key|name|str|child|children|list)", field, re.I):
+                    continue
+                member_allocs.append(
+                    {
+                        "view": view,
+                        "line": line,
+                        "object": match.group("obj"),
+                        "field": field,
+                        "api": match.group("api"),
+                    }
+                )
+        if not member_allocs:
+            return
+
+        for view in views:
+            if not re.search(r"(?:free|release|destroy|cleanup|delete|deinit)", view.name, re.I):
+                continue
+            text = "\n".join(line.text for line in view.lines)
+            free_line = self._first_line_matching(view, self._free_re)
+            if not free_line:
+                continue
+            free_arg = ""
+            free_match = self._free_re.search(free_line.text)
+            if free_match:
+                free_arg = self._resource_arg(free_match.group("arg")) or free_match.group("arg").strip()
+            if not free_arg:
+                continue
+            for alloc in member_allocs:
+                field = str(alloc["field"])
+                creator = alloc["view"]
+                if creator.name == view.name:
+                    continue
+                if not self._cleanup_pair_matches(creator, view, field, text):
+                    continue
+                if self._member_release_visible(text, free_arg, field):
+                    continue
+                alloc_line = alloc["line"]
+                issues.append(
+                    self._issue(
+                        defect_class="memory_leak",
+                        rule="paired_free_wrapper_omits_dynamic_member",
+                        view=view,
+                        line=free_line,
+                        description=(
+                            f"`{view.name}` releases `{free_arg}` but omits dynamically owned "
+                            f"member `{field}` allocated by `{creator.name}`."
+                        ),
+                        root_cause=(
+                            "The free wrapper releases the enclosing object without releasing an "
+                            "owned dynamic payload initialized by the paired constructor."
+                        ),
+                        suggested_fix=f"Release `{free_arg}->{field}` before releasing `{free_arg}`, or call the member's cleanup helper.",
+                        source=f"{creator.name}:{alloc_line.number}:{alloc_line.text.strip()}",
+                        sink=free_line.text.strip(),
+                        confidence=0.82,
+                        impact_level="high",
+                        positive=[
+                            f"{creator.name} line {alloc_line.number}: `{field}` receives dynamic storage via `{alloc['api']}`",
+                            f"{view.name} line {free_line.number}: wrapper releases `{free_arg}`",
+                            f"`{view.name}` has no visible release of `{free_arg}->{field}`",
+                        ],
+                        negative=["Validator must confirm the member is not intentionally transferred before wrapper cleanup."],
+                        evidence={
+                            "path": {
+                                "allocator_function": creator.name,
+                                "cleanup_function": view.name,
+                                "source_line": alloc_line.number,
+                                "sink_line": free_line.number,
+                                "complete_in_function": False,
+                                "path_constraints": ["paired constructor/free-wrapper ownership contract"],
+                            }
+                        },
+                    )
+                )
+                break
+
+    def _rule_same_function_helper_alloc_member_cleanup_gap(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        text = "\n".join(line.text for line in view.lines)
+        if not re.search(r"(?:unregister|remove|delete|release|free|cleanup|destroy)", view.name, re.I):
+            return
+        alloc_match = re.search(
+            r"\b(?P<var>[A-Za-z_]\w*)\s*=\s*"
+            r"(?P<api>[A-Za-z_]\w*(?:alloc|create|new)[A-Za-z_0-9]*(?:node|file|entry)[A-Za-z_0-9]*)\s*\(",
+            text,
+            re.I,
+        )
+        if not alloc_match:
+            return
+        alloc_context = alloc_match.group(0)
+        alloc_line_for_context = self._first_line_matching(
+            view,
+            re.compile(rf"\b{re.escape(alloc_match.group('var'))}\s*=\s*{re.escape(alloc_match.group('api'))}\s*\(", re.I),
+        )
+        if alloc_line_for_context:
+            alloc_context = alloc_line_for_context.text
+        if not re.search(r"(?:file|path|fs|unlink|unregister)", f"{view.name} {alloc_context}", re.I):
+            return
+        var_name = alloc_match.group("var")
+        if not re.search(rf"\b(?:SAFE_FREE|free)\s*\(\s*{re.escape(var_name)}\s*\)", text):
+            return
+        released_members = {
+            match.group(1).lower()
+            for match in re.finditer(
+                rf"\b(?:SAFE_FREE|free)\s*\(\s*{re.escape(var_name)}\s*->\s*([A-Za-z_]\w*)\s*\)",
+                text,
+                re.I,
+            )
+        }
+        if not released_members:
+            return
+        likely_owned_members = ("payload", "path", "data", "buffer")
+        missing_member = next((member for member in likely_owned_members if member not in released_members), "")
+        if not missing_member:
+            return
+        free_line = self._first_line_matching(
+            view,
+            re.compile(rf"\b(?:SAFE_FREE|free)\s*\(\s*{re.escape(var_name)}\s*\)", re.I),
+        )
+        alloc_line = self._first_line_matching(
+            view,
+            re.compile(rf"\b{re.escape(var_name)}\s*=\s*{re.escape(alloc_match.group('api'))}\s*\(", re.I),
+        )
+        if not free_line:
+            return
+        issues.append(
+            self._issue(
+                defect_class="memory_leak",
+                rule="same_function_helper_alloc_wrapper_member_leak",
+                view=view,
+                line=free_line,
+                description=(
+                    f"`{view.name}` unregisters a file node wrapper allocated by `{alloc_match.group('api')}` "
+                    f"and frees `{var_name}`, but omits the owned `{missing_member}` payload/path member, "
+                    "causing a payload leak."
+                ),
+                root_cause=(
+                    "The unregister cleanup frees the wrapper node while a dynamically allocated "
+                    "file-node payload/path member remains owned by that wrapper and leaks."
+                ),
+                suggested_fix=f"Release `{var_name}->{missing_member}` before freeing `{var_name}` or delegate to the full node destructor.",
+                source=alloc_line.text.strip() if alloc_line else alloc_match.group(0),
+                sink=free_line.text.strip(),
+                confidence=0.83,
+                impact_level="high",
+                positive=[
+                    f"line {alloc_line.number if alloc_line else free_line.number}: wrapper node is allocated via `{alloc_match.group('api')}`",
+                    f"cleanup releases member(s) {sorted(released_members)} and then frees `{var_name}`",
+                    f"no release of likely owned `{var_name}->{missing_member}` payload/path is visible",
+                ],
+                negative=["Validator must confirm the allocation helper does not transfer or omit this member by contract."],
+                evidence={
+                    "path": {
+                        "allocation_function": alloc_match.group("api"),
+                        "cleanup_function": view.name,
+                        "source_line": alloc_line.number if alloc_line else free_line.number,
+                        "sink_line": free_line.number,
+                        "complete_in_function": True,
+                        "path_constraints": ["same-function helper allocation cleanup contract"],
+                    }
+                },
+            )
+        )
+
+    def _rule_paired_key_normalization_protocols(
+        self,
+        views: Sequence[FunctionView],
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        lookup_views = [
+            view
+            for view in views
+            if re.search(r"(?:lookup|find|get|search)", view.name, re.I)
+            and re.search(r"\b(?:strcmp|strncmp|memcmp)\s*\(", "\n".join(line.text for line in view.lines))
+            and re.search(r"(?:full[_-]?key|\bkey\b)", "\n".join(line.text for line in view.lines), re.I)
+        ]
+        if not lookup_views:
+            return
+        for view in views:
+            if not re.search(r"(?:insert|add|register|create|store|set)", view.name, re.I):
+                continue
+            for line in view.lines:
+                bounded_copy = re.search(
+                    r"\b(?P<api>strncpy|strlcpy|snprintf|memcpy)\s*\([^;]*"
+                    r"(?P<limit>[A-Z][A-Z0-9_]*(?:KEY|KEYS)[A-Z0-9_]*(?:LIMIT|MAX|LEN|SIZE)|"
+                    r"[A-Z][A-Z0-9_]*(?:LIMIT|MAX|LEN|SIZE)[A-Z0-9_]*KEY[A-Z0-9_]*)",
+                    line.text,
+                )
+                if not bounded_copy:
+                    continue
+                if not re.search(r"\bkey\b|->key|\.key", line.text, re.I):
+                    continue
+                lookup = lookup_views[0]
+                if lookup.file_path != view.file_path and not self._views_share_protocol_terms(lookup, view):
+                    continue
+                lookup_line = self._first_line_matching(lookup, re.compile(r"\b(?:strcmp|strncmp|memcmp)\s*\(")) or lookup.lines[0]
+                issues.append(
+                    self._issue(
+                        defect_class="key_truncation",
+                        rule="paired_full_key_lookup_truncated_insert",
+                        view=view,
+                        line=line,
+                        description="A full-key lookup path is paired with an insertion path that stores a bounded/truncated key.",
+                        root_cause="Lookup and insertion use different key canonicalization, allowing overlong keys to collide or evade lookup.",
+                        suggested_fix="Canonicalize keys once, reject overlong keys, and use the same stored representation for lookup and insert.",
+                        source=f"{lookup.name}:{lookup_line.number}:{lookup_line.text.strip()}",
+                        sink=line.text.strip(),
+                        confidence=0.84,
+                        impact_level="high",
+                        positive=[
+                            f"{lookup.name} line {lookup_line.number}: lookup compares the full key",
+                            f"{view.name} line {line.number}: `{bounded_copy.group('api')}` stores a key using `{bounded_copy.group('limit')}`",
+                        ],
+                        negative=["Validator must confirm the bounded copy truncates rather than rejecting overlong input."],
+                        evidence={
+                            "path": {
+                                "lookup_function": lookup.name,
+                                "insert_function": view.name,
+                                "source_line": lookup_line.number,
+                                "sink_line": line.number,
+                                "complete_in_function": False,
+                                "path_constraints": ["paired lookup/insert key normalization contract"],
+                            }
+                        },
+                    )
+                )
+                break
+
+    def _rule_paired_self_link_log_traversal(
+        self,
+        views: Sequence[FunctionView],
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        self_links: List[Tuple[FunctionView, GraphLine, str, str]] = []
+        for view in views:
+            for line in view.lines:
+                match = re.search(r"\b(?P<obj>[A-Za-z_]\w*)->(?P<field>next)\s*=\s*(?P=obj)\s*;", line.text)
+                if match:
+                    self_links.append((view, line, match.group("obj"), match.group("field")))
+        if not self_links:
+            return
+
+        for view in views:
+            text = "\n".join(line.text for line in view.lines)
+            if not re.search(r"\b(?:while|for)\s*\(", text):
+                continue
+            if not re.search(r"\bLOG_(?:ERROR|WARN|INFO|DEBUG)\s*\(", text):
+                continue
+            if not re.search(r"=\s*[A-Za-z_]\w*->next\b", text):
+                continue
+            log_line = self._first_line_matching(view, re.compile(r"\bLOG_(?:ERROR|WARN|INFO|DEBUG)\s*\("))
+            if not log_line:
+                continue
+            for link_view, link_line, obj, field in self_links:
+                if link_view.name == view.name:
+                    continue
+                stem_terms = set(self._identifier_terms(link_view.name)) | set(self._identifier_terms(view.name)) | set(
+                    self._identifier_terms(text)
+                )
+                if obj.lower() not in stem_terms and "pipe" not in stem_terms and not re.search(r"\bpipe\b", text, re.I):
+                    continue
+                issues.append(
+                    self._issue(
+                        defect_class="log_amplification",
+                        rule="paired_self_referential_traversal_log_amplification",
+                        view=view,
+                        line=log_line,
+                        description="A traversal that logs inside the loop can revisit a self-referential node produced by a sibling path.",
+                        root_cause="Self-linking a node keeps traversal progress on the same element, and loop-internal logging amplifies the liveness failure.",
+                        suggested_fix="Use a non-traversable poison marker or NULL, break on poisoned/self-linked nodes, and rate-limit loop logs.",
+                        source=f"{link_view.name}:{link_line.number}:{link_line.text.strip()}",
+                        sink=log_line.text.strip(),
+                        confidence=0.82,
+                        impact_level="high",
+                        positive=[
+                            f"{link_view.name} line {link_line.number}: `{obj}->{field}` is assigned to itself",
+                            f"{view.name}: traversal follows `next` pointers",
+                            f"{view.name} line {log_line.number}: traversal emits a log inside the loop",
+                        ],
+                        negative=["Validator must confirm the traversal can reach nodes handled by the self-linking path."],
+                        evidence={
+                            "path": {
+                                "self_link_function": link_view.name,
+                                "traversal_function": view.name,
+                                "source_line": link_line.number,
+                                "sink_line": log_line.number,
+                                "complete_in_function": False,
+                                "path_constraints": ["sibling lifecycle/traversal relationship"],
+                            }
+                        },
+                    )
+                )
+                break
+
     def _rule_paired_lifecycle_protocols(
         self,
         views: Sequence[FunctionView],
@@ -880,8 +1207,65 @@ class GraphCandidateGenerator:
                             f"line {free_line.number}: cleanup frees the parent object",
                             "no child/list cleanup loop is visible in the delete path",
                         ],
-                        )
                     )
+                )
+
+    @staticmethod
+    def _cleanup_pair_matches(creator: FunctionView, cleanup: FunctionView, field: str, cleanup_text: str) -> bool:
+        creator_terms = set(GraphCandidateGenerator._identifier_terms(creator.name))
+        cleanup_terms = set(GraphCandidateGenerator._identifier_terms(cleanup.name))
+        shared_terms = creator_terms & cleanup_terms - {
+            "alloc",
+            "create",
+            "init",
+            "new",
+            "register",
+            "add",
+            "free",
+            "release",
+            "destroy",
+            "cleanup",
+            "delete",
+            "deinit",
+            "real",
+            "model",
+            "lifecycle",
+            "issue",
+            "range",
+        }
+        if shared_terms:
+            return True
+        if field.lower() in cleanup_text.lower():
+            return True
+        creator_type = GraphCandidateGenerator._first_param_type(creator.signature)
+        cleanup_type = GraphCandidateGenerator._first_param_type(cleanup.signature)
+        if GraphCandidateGenerator._is_primitive_pointer_type(creator_type) or GraphCandidateGenerator._is_primitive_pointer_type(cleanup_type):
+            return False
+        return bool(creator_type and cleanup_type and creator_type == cleanup_type)
+
+    @staticmethod
+    def _is_primitive_pointer_type(type_name: str) -> bool:
+        normalized = re.sub(r"\s+", " ", str(type_name or "").replace("const", "").strip())
+        return normalized in {"char*", "unsigned char*", "void*", "int*", "size_t*", "uint8_t*"}
+
+    @staticmethod
+    def _member_release_visible(text: str, owner: str, field: str) -> bool:
+        owner_re = re.escape(owner)
+        field_re = re.escape(field)
+        direct_member = rf"\b{owner_re}\s*->\s*{field_re}\b"
+        if re.search(rf"\b(?:free|SAFE_FREE|destroy|release|cleanup|delete)[A-Za-z_0-9]*\s*\([^;]*{direct_member}", text, re.I):
+            return True
+        if re.search(rf"\b(?:free|SAFE_FREE|destroy|release|cleanup|delete)[A-Za-z_0-9]*\s*\([^;]*\b{field_re}\b", text, re.I):
+            return True
+        return False
+
+    @staticmethod
+    def _resource_arg(value: str) -> str:
+        text = str(value or "").strip()
+        text = re.sub(r"^[(&*\s]+", "", text)
+        text = re.sub(r"[)\]\s]+$", "", text)
+        match = re.match(r"([A-Za-z_]\w*(?:\s*->\s*[A-Za-z_]\w*|\s*\.\s*[A-Za-z_]\w*)?)", text)
+        return re.sub(r"\s+", "", match.group(1)) if match else ""
 
     def _rule_paired_global_registration_cleanup(
         self,
