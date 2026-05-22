@@ -160,10 +160,15 @@ def _compact_observation(issue: Dict[str, Any]) -> Dict[str, Any]:
         "call_path",
         "call_paths",
         "evidence_pack",
+        "evidence_refs",
         "file",
         "line",
         "start_line",
         "end_line",
+        "source_loc",
+        "sink_loc",
+        "source_location",
+        "sink_location",
         "normalized_category",
     )
     return {key: deepcopy(issue[key]) for key in keep if key in issue}

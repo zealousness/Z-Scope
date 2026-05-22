@@ -143,7 +143,7 @@ class ValidationRunner:
             val_data = dict(val_data)
             val_data["verdict"] = "uncertain"
             val_data["is_valid"] = False
-            val_data["finding_kind"] = "audit_observation"
+            val_data["finding_kind"] = "needs_review"
             val_data["reasoning"] = (
                 str(val_data.get("reasoning") or "")
                 + " Validator rejection is narrower than the selected external entry contract; "
@@ -187,7 +187,7 @@ class ValidationRunner:
             retry_data = dict(retry_data)
             retry_data["verdict"] = "uncertain"
             retry_data["is_valid"] = False
-            retry_data["finding_kind"] = "audit_observation"
+            retry_data["finding_kind"] = "needs_review"
             retry_data["reasoning"] = (
                 str(retry_data.get("reasoning") or "")
                 + " Validator rejection conflicts with header/API scan-root evidence; "

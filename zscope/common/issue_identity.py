@@ -37,7 +37,7 @@ def deduplicate_issues(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def normalize_issue_fields(issue: Dict[str, Any]) -> None:
     """Fill stable report fields derived from free-form finding text."""
     text = flatten_issue_text(issue)
-    normalized_category = normalize_issue_category(
+    inferred_category = normalize_issue_category(
         " ".join(
             str(part or "")
             for part in (
@@ -50,6 +50,8 @@ def normalize_issue_fields(issue: Dict[str, Any]) -> None:
             )
         )
     )
+    structured_category = structured_issue_category(issue)
+    normalized_category = semantic_category_override(structured_category, inferred_category) or structured_category or inferred_category
     current = str(issue.get("category") or "").replace("-", "_").lower()
     generic_categories = {
         "",
@@ -71,7 +73,43 @@ def normalize_issue_fields(issue: Dict[str, Any]) -> None:
         subcategory = str(issue.get("subcategory") or "").replace("-", "_").lower()
         if subcategory in {"", "use_after_scope"}:
             issue["subcategory"] = "stack_escape"
-    issue.setdefault("normalized_category", normalized_category)
+    issue["normalized_category"] = normalized_category
+
+
+def structured_issue_category(issue: Dict[str, Any]) -> str:
+    """Return an explicit category-like field before scanning noisy prose."""
+    generic_categories = {
+        "",
+        "logic",
+        "concurrency",
+        "api_contract",
+        "memory_safety",
+        "resource_leak",
+        "backend_signal",
+    }
+    for key in ("category", "subcategory", "defect_class", "vulnerability_type"):
+        value = str(issue.get(key) or "").replace("-", "_").lower().strip()
+        if value in _KNOWN_CATEGORIES and value not in generic_categories:
+            return value
+    return ""
+
+
+def semantic_category_override(structured_category: str, inferred_category: str) -> str:
+    """Let narrow root-cause categories outrank broad buckets when prose is explicit."""
+    structured = str(structured_category or "").replace("-", "_").lower()
+    inferred = str(inferred_category or "").replace("-", "_").lower()
+    if inferred in {"key_truncation", "log_amplification"} and structured in {
+        "race",
+        "memory_leak",
+        "busy_loop",
+        "deadlock",
+        "concurrency",
+        "resource_leak",
+        "memory_safety",
+        "",
+    }:
+        return inferred
+    return ""
 
 
 def issue_rank(issue: Dict[str, Any]) -> tuple[int, float, int, int]:
@@ -425,10 +463,8 @@ def _source_span_identity(issue: Dict[str, Any]) -> str:
 
 def canonical_category(issue: Dict[str, Any], text: str = "") -> str:
     """Prefer structured issue category over noisy flattened validation text."""
-    current = str(issue.get("category") or "").replace("-", "_").lower().strip()
-    if current in _KNOWN_CATEGORIES and current not in {"backend_signal", "memory_safety"}:
-        return current
-    return normalize_issue_category(
+    structured = structured_issue_category(issue)
+    inferred = normalize_issue_category(
         " ".join(
             str(part or "")
             for part in (
@@ -441,6 +477,7 @@ def canonical_category(issue: Dict[str, Any], text: str = "") -> str:
             )
         )
     )
+    return semantic_category_override(structured, inferred) or structured or inferred
 
 
 def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
@@ -567,6 +604,21 @@ def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
     if has_name("_plugin_lookup") and ("mutex" in lower or "lock" in lower or "重入" in text):
         return "plugin_lookup_registry_mutex"
     if (
+        "paired_self_referential_traversal_log_amplification" in rule
+        or "self_referential_list_link" in rule
+        or "pipe->next = pipe" in raw_lower
+        or "pipe->next=pipe" in compact
+    ) and ("pipe" in lower or "pipe" in compact) and ("self" in lower or "next" in lower or "log" in lower):
+        return "pipe_self_link"
+    if (
+        "paired_full_key_lookup_truncated_insert" in rule
+        or "full_key_lookup_truncated_insert" in rule
+        or "key truncation" in lower
+        or "truncated key" in lower
+        or ("full key" in lower and ("strncpy" in lower or "bounded" in lower))
+    ):
+        return "full_key_lookup_truncated_insert"
+    if (
         has_name("_lifecycle_dispatch_pipe_tick")
         or has_name("_lifecycle_close_pipe")
         or has_name("_lifecycle_tick_timer_callback")
@@ -677,6 +729,8 @@ def normalize_issue_category(value: str) -> str:
         "backend_signal": ("backend signal", "svf", "saber", "knowledge db"),
     }
     priority_groups = (
+        "key_truncation",
+        "log_amplification",
         "busy_loop",
         "size_limit_mismatch",
         "fd_type_mismatch",
@@ -740,6 +794,7 @@ _KNOWN_CATEGORIES = {
     "refcount_race",
     "signed_unsigned",
     "sigpipe_unhandled",
+    "size_limit_mismatch",
     "stack_escape",
     "stack_overflow",
     "stale_fd",
