@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from zscope.config.config import IndexingConfig
+from zscope.common.issue_identity import deduplicate_issues
 from zscope.core.analysis.analyzer import Analyzer
 from zscope.core.candidates.graph import GraphCandidateGenerator
 from zscope.core.candidates.regex import RegexCandidateGenerator
@@ -103,6 +104,7 @@ def _candidate_report(project_root: Path, entries_path: Path, *, backend: str = 
         )
     graph_issues.extend(graph_generator.generate_for_functions(entry_names))
     issues.extend(graph_issues)
+    issues = deduplicate_issues(issues)
     issue_sources: Dict[str, int] = {}
     for issue in issues:
         source = str(issue.get("candidate_source") or issue.get("finding_kind") or "unknown")
@@ -150,6 +152,7 @@ def _legacy_regex_candidate_report(project_root: Path, entries_path: Path) -> Di
         issues.extend(generator.generate_issues(func, impl["code"], impl["file"]))
     graph_issues.extend(graph_generator.generate_for_functions(entry_names))
     issues.extend(graph_issues)
+    issues = deduplicate_issues(issues)
     return {
         "entry_function": "range_regex_candidates",
         "overall_verdict": "issues_found" if issues else "no_issue_found",

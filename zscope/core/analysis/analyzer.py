@@ -66,7 +66,7 @@ from ...orchestration.history_reconciler import HistoryReconciler
 from ..candidates.svf_value_flow import SvfValueFlowCandidateGenerator
 from ...tools.policy import ToolPolicy, deny_sensitive_paths_hook
 from ...tools.runtime import ToolsRuntime
-from ..validation.pipeline import ValidationPipeline
+from ..validation.pipeline import ValidationPipeline, preserve_issue_location
 from ..validation.runner import ValidationRunner
 from ..validation.evidence import (
     build_validation_evidence_pack,
@@ -3389,10 +3389,21 @@ Output a JSON of type 'snapshot_refresh_decision'.
             if not isinstance(issue, dict):
                 continue
 
+            preserve_issue_location(issue)
             raw_location = str(issue.get("location", ""))
             file_path, parsed_line = parse_issue_location(raw_location)
             if file_path and parsed_line:
-                issue["location"] = f"{file_path}:{parsed_line}"
+                if not issue.get("file"):
+                    issue["file"] = file_path
+                if not issue.get("line"):
+                    issue["line"] = parsed_line
+                if not issue.get("start_line"):
+                    issue["start_line"] = parsed_line
+                end_line = issue.get("end_line")
+                if isinstance(end_line, int) and end_line != parsed_line:
+                    issue["location"] = f"{file_path}:{parsed_line}-{end_line}"
+                else:
+                    issue["location"] = f"{file_path}:{parsed_line}"
                 continue
 
             func_name = issue.get("function")
@@ -3411,19 +3422,43 @@ Output a JSON of type 'snapshot_refresh_decision'.
             # Extract line number/range from LLM output (e.g., "142" or "142-145" or "cache_get:142")
             nums = re.findall(r"\d+", raw_location)
             line_suffix = "unknown"
+            start_line: Optional[int] = None
+            end_line: Optional[int] = None
             if len(nums) >= 2:
                 line_suffix = f"{nums[0]}-{nums[1]}"
+                start_line = int(nums[0])
+                end_line = int(nums[1])
             elif len(nums) == 1:
                 line_suffix = f"{nums[0]}"
+                start_line = int(nums[0])
             elif func_info and func_info.get("start_line"):
                 line_suffix = str(func_info["start_line"])
+                start_line = int(func_info["start_line"])
 
             if not func_info:
                 issue["location"] = f"unknown_file:{line_suffix}"
+                if start_line is not None:
+                    if not issue.get("line"):
+                        issue["line"] = start_line
+                    if not issue.get("start_line"):
+                        issue["start_line"] = start_line
+                if end_line is not None:
+                    if not issue.get("end_line"):
+                        issue["end_line"] = end_line
                 continue
 
             relative_file = func_info["file"]
             issue["location"] = f"{relative_file}:{line_suffix}"
+            if not issue.get("file"):
+                issue["file"] = relative_file
+            if start_line is not None:
+                if not issue.get("line"):
+                    issue["line"] = start_line
+                if not issue.get("start_line"):
+                    issue["start_line"] = start_line
+            if end_line is not None:
+                if not issue.get("end_line"):
+                    issue["end_line"] = end_line
 
 
 

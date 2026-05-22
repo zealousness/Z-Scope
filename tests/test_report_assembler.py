@@ -87,3 +87,50 @@ def test_report_assembler_preserves_returned_report_metadata(tmp_path: Path) -> 
     )
 
     assert report["metadata"] == {"existing": True, "run_id": "NEW"}
+
+
+def test_report_assembler_includes_needs_review_observation_with_recovered_location_in_review_view(
+    tmp_path: Path,
+) -> None:
+    assembler = ReportAssembler(
+        ReportGenerator(tmp_path),
+        None,
+        resolve_issue_locations=lambda items: None,
+        deduplicate_observations=lambda items: items,
+        metadata_factory=lambda state: {"run_id": state["run_id"], "version": "test"},
+    )
+    state = {
+        "run_id": "RUN2",
+        "entry_func": "entry",
+        "agent_context": {"location": "src/demo.c:1"},
+        "issues": [],
+        "verified_hist_issues": [],
+        "observations": [
+            {
+                "id": "OBS_1",
+                "function": "sink_func",
+                "location": "",
+                "category": "memory_leak",
+                "subcategory": "memory_leak",
+                "validation_status": "needs_review",
+                "finding_kind": "needs_review",
+                "description": "candidate retained for review",
+                "root_cause": "missing cleanup",
+                "confidence": 0.7,
+                "impact_level": "medium",
+                "evidence_pack": {
+                    "finding_summary": {"location": "src/recovered.c:88"},
+                },
+            }
+        ],
+        "notes": [],
+        "any_failure": False,
+    }
+
+    report = assembler.build(state)
+
+    with_review = report.report_views["with_needs_review"]["issues"]
+    assert len(with_review) == 1
+    assert with_review[0]["validation_status"] == "needs_review"
+    assert with_review[0]["location"] == "src/recovered.c:88"
+    assert with_review[0]["line"] == 88

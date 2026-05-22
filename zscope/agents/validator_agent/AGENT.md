@@ -43,6 +43,17 @@ Validation bar:
 - If `entry_context.call_path`, `reachable_from_entry`, or `entry_function`
   connects the scan root to the sink, reject reachability only when code
   evidence disproves that specific entry-to-sink path.
+- When a finding has structured evidence from clang/CFG/graph/SVF/rule signals
+  and an external entry-to-sink path, do not return `rejected` solely because
+  the current direct caller, currently registered callback, or one local branch
+  is not attacker/caller controllable. If the exposed entry contract or callback
+  contract remains plausible but not fully proven, return `uncertain` with
+  `finding_kind: "audit_observation"`.
+- For categories such as `alignment`, `held_lock_callback`,
+  `size_limit_mismatch`, and `memory_leak`, distinguish code evidence that
+  disproves the sink/guard/lifetime from narrower design-semantics claims about
+  the current caller. The latter should be `uncertain` when external reachability
+  and structured positive evidence remain intact.
 - When the configured scan root is a benchmark, fixture, model, or validation
   corpus, treat that project root as the code under audit. Names that look like
   `real_model`, `issue41`, `leak`, `race`, `td_run`, `test`, or `demo` are not

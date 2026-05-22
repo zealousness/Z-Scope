@@ -3,13 +3,36 @@ from zscope.core.candidates.regex import (
     RegexCandidateGenerator,
     LocalPatternSemantics,
 )
+from zscope.core.candidates.graph import FunctionView, GraphCandidateGenerator
 from zscope.core.candidates.adapters import dedupe_rule_candidates
 from zscope.core.candidates.backend_signals import (
     class_from_joern_category,
     split_config_pair_names,
 )
+from zscope.common.issue_identity import normalize_issue_category, normalize_issue_fields
 from zscope.semantics.inference import add_api_from_semantic_text
 from zscope.rules.engine import RuleMatch
+
+
+def _graph_view(
+    generator: GraphCandidateGenerator,
+    name: str,
+    code: str,
+    *,
+    signature: str | None = None,
+) -> FunctionView:
+    return FunctionView(
+        name=name,
+        file_path="src/lifecycle.c",
+        signature=signature or f"int {name}(RealModelNode *node)",
+        lines=tuple(generator._parse_lines(code)),
+        callees=(),
+    )
+
+
+class NullCodeIndex:
+    def get_function_impl(self, name: str, warn_missing: bool = False):
+        return None
 
 
 def test_snapshot_semantic_text_does_not_reclassify_described_function_as_api() -> None:
@@ -116,6 +139,164 @@ def test_facade_callee_candidates_expand_dispatcher_siblings_at_depth_cap() -> N
     )
 
     assert any(issue.get("function") == "handle_b" for issue in issues)
+
+
+def test_graph_candidates_detect_free_wrapper_omitted_dynamic_payload() -> None:
+    semantics = LocalPatternSemantics()
+    semantics.add_api("deallocator", "SAFE_FREE", "user_config")
+    generator = GraphCandidateGenerator(object(), semantics)
+    creator = _graph_view(
+        generator,
+        "_real_model_alloc_node",
+        """
+10 | RealModelNode* _real_model_alloc_node(const char* key) {
+11 |     RealModelNode* node = SAFE_CALLOC(1, sizeof(*node));
+12 |     node->payload = _str_dup(key);
+13 |     return node;
+14 | }
+""",
+    )
+    cleanup = _graph_view(
+        generator,
+        "_real_model_free_node",
+        """
+20 | void _real_model_free_node(RealModelNode* node) {
+21 |     if (!node) return;
+22 |     SAFE_FREE(node);
+23 | }
+""",
+    )
+
+    issues = generator.generate_for_views([creator, cleanup])
+    leak = next(issue for issue in issues if issue["rule"] == "paired_free_wrapper_omits_dynamic_member")
+
+    assert leak["category"] == "memory_leak"
+    assert leak["function"] == "_real_model_free_node"
+    assert leak["location"] == "src/lifecycle.c:22"
+    assert "node->payload" in "\n".join(leak["positive_evidence"])
+
+
+def test_graph_candidates_detect_helper_alloc_wrapper_member_leak_without_primitive_pair_fp() -> None:
+    semantics = LocalPatternSemantics()
+    semantics.add_api("deallocator", "SAFE_FREE", "user_config")
+    generator = GraphCandidateGenerator(NullCodeIndex(), semantics)
+    unregister = _graph_view(
+        generator,
+        "_real_model_unregister_file_leak",
+        """
+100 | int _real_model_unregister_file_leak(const char* name) {
+101 |     RealModelNode* node = _real_model_alloc_node(name, "/virtual/fs/node");
+102 |     SAFE_FREE(node->name);
+103 |     SAFE_FREE(node);
+104 |     return 0;
+105 | }
+""",
+        signature="int _real_model_unregister_file_leak(const char* name)",
+    )
+    primitive_release = _graph_view(
+        generator,
+        "_lifecycle_release_value_slice",
+        """
+110 | int _lifecycle_release_value_slice(char* line) {
+111 |     char* value = strchr(line, '=');
+112 |     free(value + 1);
+113 |     return 0;
+114 | }
+""",
+        signature="int _lifecycle_release_value_slice(char* line)",
+    )
+
+    issues = generator.generate_for_views([unregister, primitive_release])
+
+    leak = next(
+        issue
+        for issue in issues
+        if issue["rule"] == "same_function_helper_alloc_wrapper_member_leak"
+    )
+    assert leak["category"] == "memory_leak"
+    assert leak["function"] == "_real_model_unregister_file_leak"
+    assert "payload/path" in leak["description"]
+    assert not any(
+        issue.get("rule") == "paired_free_wrapper_omits_dynamic_member"
+        and issue.get("function") == "_lifecycle_release_value_slice"
+        for issue in issues
+    )
+
+
+def test_graph_candidates_detect_paired_key_truncation_before_generic_race_terms() -> None:
+    generator = GraphCandidateGenerator(object(), LocalPatternSemantics())
+    lookup = _graph_view(
+        generator,
+        "_real_model_lookup_full_key",
+        """
+30 | RealModelNode* _real_model_lookup_full_key(const char* full_key) {
+31 |     return strcmp(g_rules_map[i].full_key, full_key) == 0 ? g_rules_map[i].node : NULL;
+32 | }
+""",
+    )
+    insert = _graph_view(
+        generator,
+        "_real_model_insert_key",
+        """
+40 | int _real_model_insert_key(RealModelNode* node, const char* key) {
+41 |     strncpy(node->key, key, REAL_KEY_LIMIT);
+42 |     g_rules_map[g_rules_len++] = node;
+43 |     return 0;
+44 | }
+""",
+    )
+
+    issues = generator.generate_for_views([lookup, insert])
+    truncation = next(issue for issue in issues if issue["rule"] == "paired_full_key_lookup_truncated_insert")
+
+    assert truncation["category"] == "key_truncation"
+    assert truncation["function"] == "_real_model_insert_key"
+    assert normalize_issue_category("race in rules map caused by key truncation") == "key_truncation"
+    drifted = {"category": "race", "description": "full key lookup uses a truncated key after strncpy"}
+    normalize_issue_fields(drifted)
+    assert drifted["normalized_category"] == "key_truncation"
+
+
+def test_graph_candidates_detect_self_referential_pipe_log_amplification() -> None:
+    generator = GraphCandidateGenerator(object(), LocalPatternSemantics())
+    close_pipe = _graph_view(
+        generator,
+        "_lifecycle_close_pipe",
+        """
+50 | int _lifecycle_close_pipe(Pipe* pipe) {
+51 |     pipe->next = pipe;
+52 |     return 0;
+53 | }
+""",
+    )
+    traversal = _graph_view(
+        generator,
+        "_lifecycle_dump_pipe_chain",
+        """
+60 | int _lifecycle_dump_pipe_chain(Pipe* pipe) {
+61 |     while (pipe) {
+62 |         LOG_ERROR("pipe state %d", pipe->state);
+63 |         pipe = pipe->next;
+64 |     }
+65 |     return 0;
+66 | }
+""",
+    )
+
+    issues = generator.generate_for_views([close_pipe, traversal])
+    amplification = next(
+        issue
+        for issue in issues
+        if issue["rule"] == "paired_self_referential_traversal_log_amplification"
+    )
+
+    assert amplification["category"] == "log_amplification"
+    assert amplification["function"] == "_lifecycle_dump_pipe_chain"
+    assert amplification["location"] == "src/lifecycle.c:62"
+    assert normalize_issue_category("busy loop from log amplification resource exhaustion") == "log_amplification"
+    drifted = {"category": "busy_loop", "description": "self-referential traversal causes log amplification"}
+    normalize_issue_fields(drifted)
+    assert drifted["normalized_category"] == "log_amplification"
 
 
 def test_lifted_internal_sink_dedup_merges_entry_paths() -> None:
@@ -380,6 +561,7 @@ def test_entry_root_dead_code_rejection_is_detected() -> None:
 def test_entry_root_contract_scope_rejection_is_parked_for_review() -> None:
     evidence_pack = {
         "defect_class": "held_lock_callback",
+        "evidence_checker": "clang_ast_cfg",
         "entry_context": {
             "current_analysis_entry": "td_process_control_message",
             "entry_exposure": "api",
@@ -387,6 +569,7 @@ def test_entry_root_contract_scope_rejection_is_parked_for_review() -> None:
             "reachable_from_entry": True,
             "call_path": ["td_process_control_message", "_lifecycle_fire_callback_under_lock"],
         },
+        "evidence_refs": ["src/lifecycle.c:247: callback invoked while lock is held"],
     }
     rejected = {
         "verdict": "rejected",
@@ -467,6 +650,38 @@ def test_resolve_issue_locations_fills_observation_line_only_locations() -> None
     analyzer._resolve_issue_locations(issues)
 
     assert issues[0]["location"] == "src/lifecycle.c:318-322"
+    assert issues[0]["file"] == "src/lifecycle.c"
+    assert issues[0]["line"] == 318
+    assert issues[0]["start_line"] == 318
+    assert issues[0]["end_line"] == 322
+
+
+def test_resolve_issue_locations_recovers_observation_location_from_evidence_refs() -> None:
+    class FakeIndex:
+        def get_function_impl(self, name: str, warn_missing: bool = False):
+            raise AssertionError("location should be recovered before function fallback")
+
+    analyzer = object.__new__(Analyzer)
+    analyzer.code_index = FakeIndex()
+    issues = [
+        {
+            "function": "_issue41_missing_reference_count",
+            "location": "",
+            "category": "memory_safety",
+            "validation_status": "uncertain",
+            "evidence_pack": {
+                "finding_summary": {"location": ""},
+                "evidence_refs": ["candidate source at src/issue41.c:641"],
+            },
+        }
+    ]
+
+    analyzer._resolve_issue_locations(issues)
+
+    assert issues[0]["location"] == "src/issue41.c:641"
+    assert issues[0]["file"] == "src/issue41.c"
+    assert issues[0]["line"] == 641
+    assert issues[0]["start_line"] == 641
 
 
 def test_validator_source_sink_contribute_to_score_components() -> None:

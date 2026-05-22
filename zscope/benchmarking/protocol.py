@@ -218,6 +218,7 @@ def score_report(
             "function_anchors": [
                 "function",
                 "secondary_function",
+                "sibling_function",
                 "entry_function",
                 "sink_function",
                 "call_path",
@@ -735,7 +736,9 @@ def _truth_function_anchors(truth: Dict[str, Any]) -> List[tuple[str, str]]:
     add("primary", truth.get("function"))
     add("secondary", truth.get("secondary_function"))
 
-    for field in ("related_functions", "additional_functions"):
+    add("sibling", truth.get("sibling_function"))
+
+    for field in ("related_functions", "additional_functions", "sibling_functions"):
         values = truth.get(field)
         if not isinstance(values, list):
             continue

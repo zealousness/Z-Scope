@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+import re
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from ...common.issue_identity import canonical_issue_key
+from ...common.issue_identity import canonical_issue_key, parse_issue_location
 from ...memory import ReviewMemory
 
 
@@ -19,6 +20,18 @@ VALIDATOR_DETAIL_FIELDS = (
     "guard_analysis",
     "positive_evidence",
     "negative_evidence",
+)
+LOCATION_FILE_FIELDS = ("file", "file_path", "module_path")
+LOCATION_LINE_FIELDS = ("line", "start_line")
+LOCATION_END_LINE_FIELDS = ("end_line",)
+LOCATION_STRING_FIELDS = (
+    "location",
+    "source_location",
+    "sink_location",
+    "source_loc",
+    "sink_loc",
+    "origin_location",
+    "target_location",
 )
 
 
@@ -165,6 +178,7 @@ class ValidationPipeline:
         score_data: Dict[str, float],
     ) -> ValidationOutcome:
         """Mark a candidate when the Validator agent is disabled."""
+        preserve_issue_location(issue)
         issue["validation_status"] = "unvalidated"
         issue.setdefault("finding_kind", "unvalidated_candidate")
         issue["score_components"] = score_data
@@ -185,6 +199,7 @@ class ValidationPipeline:
         score_data: Dict[str, float],
     ) -> ValidationOutcome:
         """Apply the normalized Validator result and return its report bucket."""
+        preserve_issue_location(issue)
         issue["score_components"] = score_data
         final_score = self._final_score(score_data)
         issue["final_score"] = final_score
@@ -206,6 +221,7 @@ class ValidationPipeline:
                 issue.get("confidence", 0.5),
             )
             self._copy_validator_detail_fields(issue, val_data)
+            preserve_issue_location(issue, val_data)
             return ValidationOutcome(
                 report_bucket=report_bucket,
                 memory_status=str(issue["validation_status"]),
@@ -217,6 +233,7 @@ class ValidationPipeline:
             issue["validation_status"] = "uncertain"
             issue["finding_kind"] = "audit_observation"
             issue["validation_reasoning"] = val_data.get("reasoning")
+            preserve_issue_location(issue, val_data)
             return ValidationOutcome(
                 report_bucket="observations",
                 memory_status="uncertain",
@@ -225,12 +242,20 @@ class ValidationPipeline:
             )
 
         if verdict == "uncertain":
-            issue["validation_status"] = "uncertain"
-            issue["finding_kind"] = val_data.get("finding_kind") or "audit_observation"
+            requested_kind = str(val_data.get("finding_kind") or "").strip().lower()
+            if requested_kind == "needs_review":
+                issue["validation_status"] = "needs_review"
+                issue["finding_kind"] = "needs_review"
+                memory_status = "needs_review"
+            else:
+                issue["validation_status"] = "uncertain"
+                issue["finding_kind"] = val_data.get("finding_kind") or "audit_observation"
+                memory_status = "uncertain"
             issue["validation_reasoning"] = val_data.get("reasoning")
+            preserve_issue_location(issue, val_data)
             return ValidationOutcome(
                 report_bucket="observations",
-                memory_status="uncertain",
+                memory_status=memory_status,
                 verdict=verdict,
                 final_score=final_score,
             )
@@ -239,6 +264,7 @@ class ValidationPipeline:
         issue["finding_kind"] = "rejected"
         issue["rejection_source"] = "validator"
         issue["validation_reasoning"] = val_data.get("reasoning")
+        preserve_issue_location(issue, val_data)
         return ValidationOutcome(
             report_bucket=None,
             memory_status="rejected",
@@ -252,6 +278,7 @@ class ValidationPipeline:
         error: Any,
     ) -> ValidationOutcome:
         """Keep failed Validator calls visible as pending observations."""
+        preserve_issue_location(issue)
         issue["validation_status"] = "pending"
         issue.setdefault("finding_kind", "validation_pending")
         issue["validation_error"] = error
@@ -309,3 +336,220 @@ class ValidationPipeline:
         for field in VALIDATOR_DETAIL_FIELDS:
             if field in val_data and val_data.get(field) not in (None, ""):
                 issue[field] = val_data.get(field)
+
+
+def preserve_issue_location(
+    issue: Dict[str, Any],
+    *extra_sources: Any,
+) -> None:
+    """Keep candidate source coordinates on observations after validation.
+
+    Validator responses often only carry a verdict/reasoning.  The reportable
+    object remains the original candidate, so recover missing top-level
+    coordinates from its structured evidence before it is bucketed.
+    """
+    if not isinstance(issue, dict):
+        return
+
+    current = _location_from_issue(issue)
+    sources: List[Any] = [issue]
+    pack = issue.get("evidence_pack")
+    if isinstance(pack, dict):
+        sources.append(pack)
+        candidate_evidence = pack.get("candidate_evidence")
+        if isinstance(candidate_evidence, dict):
+            sources.append(candidate_evidence)
+    sources.extend(source for source in extra_sources if source)
+    _preserve_location_detail_fields(issue, sources)
+
+    recovered = current
+    for candidate in _iter_location_candidates(sources):
+        recovered = _merge_location(recovered, candidate)
+        if recovered.file_path and recovered.start_line is not None:
+            break
+
+    if not recovered.file_path and current.file_path:
+        recovered.file_path = current.file_path
+    if recovered.start_line is None and current.start_line is not None:
+        recovered.start_line = current.start_line
+    if recovered.end_line is None and current.end_line is not None:
+        recovered.end_line = current.end_line
+
+    if recovered.file_path:
+        if not issue.get("file"):
+            issue["file"] = recovered.file_path
+        if not issue.get("file_path"):
+            issue["file_path"] = recovered.file_path
+        if not issue.get("location") and recovered.start_line is not None:
+            issue["location"] = _format_location(recovered)
+    if recovered.start_line is not None:
+        if not issue.get("line"):
+            issue["line"] = recovered.start_line
+        if not issue.get("start_line"):
+            issue["start_line"] = recovered.start_line
+    if recovered.end_line is not None:
+        if not issue.get("end_line"):
+            issue["end_line"] = recovered.end_line
+
+    if issue.get("location"):
+        parsed_file, parsed_line = parse_issue_location(str(issue.get("location") or ""))
+        if parsed_file and parsed_line:
+            if not issue.get("file"):
+                issue["file"] = parsed_file
+            if not issue.get("file_path"):
+                issue["file_path"] = parsed_file
+            if not issue.get("line"):
+                issue["line"] = parsed_line
+            if not issue.get("start_line"):
+                issue["start_line"] = parsed_line
+
+
+def _preserve_location_detail_fields(issue: Dict[str, Any], sources: Iterable[Any]) -> None:
+    for field in LOCATION_STRING_FIELDS:
+        if issue.get(field):
+            continue
+        value = _find_first_field(sources, field)
+        if value not in (None, ""):
+            issue[field] = value
+
+
+def _find_first_field(values: Iterable[Any], field: str, *, depth: int = 0) -> Any:
+    if depth > 5:
+        return None
+    for value in values:
+        if isinstance(value, dict):
+            if field in value and value.get(field) not in (None, ""):
+                return value.get(field)
+            found = _find_first_field(value.values(), field, depth=depth + 1)
+            if found not in (None, ""):
+                return found
+        elif isinstance(value, list):
+            found = _find_first_field(value[:40], field, depth=depth + 1)
+            if found not in (None, ""):
+                return found
+    return None
+
+
+@dataclass
+class _LocationCandidate:
+    file_path: str = ""
+    start_line: Optional[int] = None
+    end_line: Optional[int] = None
+
+
+def _location_from_issue(issue: Dict[str, Any]) -> _LocationCandidate:
+    location = _parse_location_text(str(issue.get("location") or ""))
+    for key in LOCATION_FILE_FIELDS:
+        file_value = _coerce_file(issue.get(key))
+        if file_value and not location.file_path:
+            location.file_path = file_value
+    for key in LOCATION_LINE_FIELDS:
+        line_value = _coerce_int(issue.get(key))
+        if line_value is not None and location.start_line is None:
+            location.start_line = line_value
+    for key in LOCATION_END_LINE_FIELDS:
+        line_value = _coerce_int(issue.get(key))
+        if line_value is not None and location.end_line is None:
+            location.end_line = line_value
+    return location
+
+
+def _iter_location_candidates(values: Iterable[Any], *, depth: int = 0) -> Iterable[_LocationCandidate]:
+    if depth > 5:
+        return
+    for value in values:
+        if isinstance(value, dict):
+            candidate = _location_from_mapping(value)
+            if candidate.file_path or candidate.start_line is not None:
+                yield candidate
+            yield from _iter_location_candidates(value.values(), depth=depth + 1)
+        elif isinstance(value, list):
+            yield from _iter_location_candidates(value[:40], depth=depth + 1)
+        elif isinstance(value, str):
+            candidate = _parse_location_text(value)
+            if candidate.file_path or candidate.start_line is not None:
+                yield candidate
+
+
+def _location_from_mapping(value: Dict[str, Any]) -> _LocationCandidate:
+    candidate = _LocationCandidate()
+    for key in LOCATION_STRING_FIELDS:
+        if key in value:
+            candidate = _merge_location(candidate, _parse_location_text(str(value.get(key) or "")))
+    for key in LOCATION_FILE_FIELDS:
+        file_value = _coerce_file(value.get(key))
+        if file_value and not candidate.file_path:
+            candidate.file_path = file_value
+    for key in LOCATION_LINE_FIELDS:
+        line_value = _coerce_int(value.get(key))
+        if line_value is not None and candidate.start_line is None:
+            candidate.start_line = line_value
+    for key in LOCATION_END_LINE_FIELDS:
+        line_value = _coerce_int(value.get(key))
+        if line_value is not None and candidate.end_line is None:
+            candidate.end_line = line_value
+    return candidate
+
+
+def _parse_location_text(value: str) -> _LocationCandidate:
+    text = value.replace("\\", "/").strip()
+    if not text:
+        return _LocationCandidate()
+    file_path, line = parse_issue_location(text)
+    end_line = None
+    if file_path and line is not None:
+        match = re.search(r":\s*\d+\s*-\s*(\d+)", text)
+        if match:
+            end_line = _coerce_int(match.group(1))
+        return _LocationCandidate(file_path=file_path, start_line=line, end_line=end_line)
+    if line is not None:
+        match = re.search(r"^\s*\d+\s*-\s*(\d+)\s*$", text)
+        return _LocationCandidate(start_line=line, end_line=_coerce_int(match.group(1)) if match else None)
+
+    match = re.search(
+        r"((?:src|include|internal)/[A-Za-z0-9_./-]+\.[chp]+|[A-Za-z0-9_./-]+\.[chp]+)"
+        r"(?:[^\d\n\r]{0,24})(\d+)(?:\s*-\s*(\d+))?",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return _LocationCandidate(
+            file_path=match.group(1).lower(),
+            start_line=_coerce_int(match.group(2)),
+            end_line=_coerce_int(match.group(3)),
+        )
+    return _LocationCandidate()
+
+
+def _merge_location(base: _LocationCandidate, incoming: _LocationCandidate) -> _LocationCandidate:
+    return _LocationCandidate(
+        file_path=base.file_path or incoming.file_path,
+        start_line=base.start_line if base.start_line is not None else incoming.start_line,
+        end_line=base.end_line if base.end_line is not None else incoming.end_line,
+    )
+
+
+def _format_location(location: _LocationCandidate) -> str:
+    if location.start_line is None:
+        return location.file_path
+    if location.end_line is not None and location.end_line != location.start_line:
+        return f"{location.file_path}:{location.start_line}-{location.end_line}"
+    return f"{location.file_path}:{location.start_line}"
+
+
+def _coerce_file(value: Any) -> str:
+    text = str(value or "").replace("\\", "/").strip()
+    if re.search(r"\.[chp]+$", text, flags=re.IGNORECASE):
+        return text.lower()
+    parsed_file, _line = parse_issue_location(text)
+    return parsed_file
+
+
+def _coerce_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None

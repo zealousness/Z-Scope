@@ -1,4 +1,9 @@
-from zscope.common.issue_identity import canonical_issue_key, deduplicate_issues, normalize_issue_category
+from zscope.common.issue_identity import (
+    canonical_issue_key,
+    deduplicate_issues,
+    normalize_issue_category,
+    normalize_issue_fields,
+)
 
 
 def test_dedup_merges_chinese_needs_review_with_rule_finding() -> None:
@@ -188,6 +193,28 @@ def test_range_custom_categories_are_preserved_and_normalized() -> None:
 
     assert deduped[0]["category"] == "busy_loop"
     assert deduped[0]["normalized_category"] == "busy_loop"
+
+
+def test_structured_categories_are_not_polluted_by_unrelated_sigpipe_text() -> None:
+    for category in (
+        "alignment",
+        "held_lock_callback",
+        "size_limit_mismatch",
+        "memory_leak",
+    ):
+        issue = {
+            "function": "api_entry",
+            "location": "src/demo.c:10",
+            "category": category,
+            "normalized_category": "sigpipe_unhandled",
+            "description": f"Structured {category} finding from clang observation.",
+            "validation_reasoning": "Unrelated notes mention SIGPIPE, closed peer, and signal handling.",
+        }
+
+        normalize_issue_fields(issue)
+
+        assert issue["category"] == category
+        assert issue["normalized_category"] == category
 
 
 def test_dynamic_array_category_does_not_capture_generic_race_or_double_free() -> None:
