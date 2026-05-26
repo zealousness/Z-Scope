@@ -381,13 +381,17 @@ def build_cost_metrics(
 ) -> Dict[str, Any]:
     metadata = _collect_metadata(report)
     context_tokens = _sum_numeric(metadata, ("context_tokens",))
+    cumulative_tokens = _sum_numeric(metadata, ("cumulative_total_tokens",))
     tool_calls = _sum_numeric(metadata, ("tool_call_count", "tool_calls"))
+    billable_tokens = cumulative_tokens or context_tokens
     verified = max(1, int(evaluation.get("true_positives") or 0))
     return {
         "context_tokens": context_tokens,
+        "cumulative_total_tokens": cumulative_tokens,
+        "billable_tokens": billable_tokens,
         "tool_calls": tool_calls,
         "wall_time_seconds": round(wall_time_seconds, 4),
-        "tokens_per_verified_issue": round(context_tokens / verified, 4) if context_tokens else 0.0,
+        "tokens_per_verified_issue": round(billable_tokens / verified, 4) if billable_tokens else 0.0,
         "tool_calls_per_verified_issue": round(tool_calls / verified, 4) if tool_calls else 0.0,
     }
 

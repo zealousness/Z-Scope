@@ -237,6 +237,7 @@ class EntryDiscovery:
         self.shared_memory_calls = tuple(shared_memory_calls or self.DEFAULT_SHARED_MEMORY_CALLS)
         self.thread_calls = tuple(thread_calls or self.DEFAULT_THREAD_CALLS)
         self.input_calls = tuple(input_calls or self.DEFAULT_INPUT_CALLS)
+        self._function_impl_cache: Dict[str, Optional[Dict[str, Any]]] = {}
 
     def discover(self, max_candidates: int = 200) -> EntryDiscoveryResult:
         header_candidates = self._discover_header_api()
@@ -312,13 +313,14 @@ class EntryDiscovery:
             if not self._is_in_search_root(file_path):
                 continue
             code = impl.get("code") or ""
+            call_search_code = self._strip_code_for_call_search(code)
             reasons: List[str] = []
             exposure_parts: List[str] = []
 
-            comm_hits = self._find_calls(code, self.communication_calls)
-            shm_hits = self._find_calls(code, self.shared_memory_calls)
-            thread_hits = self._find_calls(code, self.thread_calls)
-            input_hits = self._find_calls(code, self.input_calls)
+            comm_hits = self._find_calls(call_search_code, self.communication_calls, code_is_stripped=True)
+            shm_hits = self._find_calls(call_search_code, self.shared_memory_calls, code_is_stripped=True)
+            thread_hits = self._find_calls(call_search_code, self.thread_calls, code_is_stripped=True)
+            input_hits = self._find_calls(call_search_code, self.input_calls, code_is_stripped=True)
 
             if comm_hits or shm_hits:
                 exposure_parts.append("communication")
@@ -326,7 +328,11 @@ class EntryDiscovery:
                 reasons.extend([f"shared_memory:{hit}" for hit in shm_hits])
             if thread_hits:
                 reasons.extend([f"thread:{hit}" for hit in thread_hits])
-                for target, call in self._find_thread_entry_targets(code, thread_hits):
+                for target, call in self._find_thread_entry_targets(
+                    call_search_code,
+                    thread_hits,
+                    code_is_stripped=True,
+                ):
                     target_impl = self._get_function_impl(target)
                     if not target_impl:
                         continue
@@ -385,10 +391,14 @@ class EntryDiscovery:
         return self.code_index.list_functions(limit=self.max_functions)
 
     def _get_function_impl(self, name: str) -> Optional[Dict[str, Any]]:
+        if name in self._function_impl_cache:
+            return self._function_impl_cache[name]
         try:
-            return self.code_index.get_function_impl(name, include_context=False)
+            impl = self.code_index.get_function_impl(name, include_context=False)
         except TypeError:
-            return self.code_index.get_function_impl(name)
+            impl = self.code_index.get_function_impl(name)
+        self._function_impl_cache[name] = impl
+        return impl
 
     def _merge_candidates(self, candidates: Iterable[EntryCandidate]) -> List[EntryCandidate]:
         by_name: Dict[str, EntryCandidate] = {}
@@ -433,8 +443,12 @@ class EntryDiscovery:
         return path.resolve()
 
     @staticmethod
-    def _find_calls(code: str, names: Sequence[str]) -> List[str]:
-        stripped = re.sub(r"^\s*\d+\s*\|\s*", "", code, flags=re.MULTILINE)
+    def _strip_code_for_call_search(code: str) -> str:
+        return re.sub(r"^\s*\d+\s*\|\s*", "", code, flags=re.MULTILINE)
+
+    @staticmethod
+    def _find_calls(code: str, names: Sequence[str], *, code_is_stripped: bool = False) -> List[str]:
+        stripped = code if code_is_stripped else EntryDiscovery._strip_code_for_call_search(code)
         hits = []
         symbol_names = {"argv", "stdin", "environ", "optarg"}
         for name in names:
@@ -447,8 +461,13 @@ class EntryDiscovery:
         return hits
 
     @staticmethod
-    def _find_thread_entry_targets(code: str, thread_calls: Sequence[str]) -> List[Tuple[str, str]]:
-        stripped = re.sub(r"^\s*\d+\s*\|\s*", "", code, flags=re.MULTILINE)
+    def _find_thread_entry_targets(
+        code: str,
+        thread_calls: Sequence[str],
+        *,
+        code_is_stripped: bool = False,
+    ) -> List[Tuple[str, str]]:
+        stripped = code if code_is_stripped else EntryDiscovery._strip_code_for_call_search(code)
         targets: List[Tuple[str, str]] = []
         seen = set()
         for call in thread_calls:

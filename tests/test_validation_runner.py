@@ -129,6 +129,49 @@ def test_validation_runner_validates_issue_and_remembers_outcome() -> None:
     assert agent.inputs[0]["agent_contract"] == "validator_agent"
 
 
+def test_validation_runner_compacts_large_validator_payloads() -> None:
+    agent = FakeValidatorAgent(
+        [
+            AgentResponse(
+                success=True,
+                data={
+                    "verdict": "verified",
+                    "reasoning": "reachable public API path",
+                    "confidence_score": 1.0,
+                },
+            )
+        ]
+    )
+    large_payload = "RAW_PAYLOAD_SHOULD_NOT_SURVIVE" * 200
+    state = _state(
+        _issue(
+            raw_metadata={"huge": large_payload},
+            irrelevant_large_blob=large_payload,
+            evidence_pack={
+                "path": {"complete": True, "complete_to_entry": True},
+                "raw_evidence": large_payload,
+                "raw_reports": [{"dump": large_payload}],
+                "positive_evidence": ["entry reaches sink"],
+            },
+        )
+    )
+
+    _runner(agent).run(state)
+
+    validator_input = agent.inputs[0]
+    assert "RAW_PAYLOAD_SHOULD_NOT_SURVIVE" not in validator_input["finding"]
+    assert "irrelevant_large_blob" not in validator_input["finding"]
+    candidate_evidence = validator_input["evidence_pack"]["candidate_evidence"]
+    assert "raw_evidence" not in candidate_evidence
+    assert "raw_reports" not in candidate_evidence
+    assert candidate_evidence["path"]["complete_to_entry"] is True
+    assert candidate_evidence["positive_evidence"] == ["entry reaches sink"]
+    assert candidate_evidence["compaction_metadata"]["omitted_large_payload_keys"] == [
+        "raw_evidence",
+        "raw_reports",
+    ]
+
+
 def test_validation_runner_retries_entry_root_dead_code_rejection_as_observation() -> None:
     memory = []
     agent = FakeValidatorAgent(
