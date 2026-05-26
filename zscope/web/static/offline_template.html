@@ -172,14 +172,127 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
     return JSON.parse(trimmed);
   }
 
-  const stateScript = document.getElementById('zscope-offline-state');
-  const state = parseOfflineState(stateScript ? stateScript.textContent : '{}');
-  state.reportViews = state.reportViews || {};
-  state.reportView = state.reportView || 'default';
-  if (state.reportViews[state.reportView] && Array.isArray(state.reportViews[state.reportView].issues)) {
-    state.findings = state.reportViews[state.reportView].issues;
+  function offlineIssueKey(issue, fallback = '') {
+    if (!issue || typeof issue !== 'object') {
+      return `issue:${fallback}`;
+    }
+    const stable = issue.dedup_key || issue.stable_fingerprint || issue.fingerprint;
+    if (stable) {
+      return String(stable);
+    }
+    const identity = [
+      issue.id || '',
+      issue.function || issue.func_name || '',
+      issue.location || issue.file || issue.file_path || '',
+      issue.subcategory || issue.defect_class || issue.category || '',
+    ].map(part => String(part).replace(/\s+/g, ' ').trim());
+    const key = identity.join('|');
+    return identity.some(Boolean) ? key : `issue:${fallback}`;
   }
-  state.findings = Array.isArray(state.findings) ? state.findings : [];
+
+  function stripRuntimeFields(issue) {
+    if (!issue || typeof issue !== 'object') {
+      return issue;
+    }
+    const { uid, _offline_id, ...rest } = issue;
+    return { ...rest };
+  }
+
+  function hydrateOfflineState(rawState) {
+    const hydrated = rawState && typeof rawState === 'object' ? rawState : {};
+    hydrated.reportViews = hydrated.reportViews || {};
+    hydrated.reportView = hydrated.reportView || 'default';
+    const store = hydrated.issueStore && typeof hydrated.issueStore === 'object' ? hydrated.issueStore : null;
+    if (store) {
+      Object.entries(hydrated.reportViews).forEach(([, view]) => {
+        if (!view || typeof view !== 'object' || !Array.isArray(view.issueRefs)) {
+          return;
+        }
+        view.issues = view.issueRefs
+          .map(ref => store[ref])
+          .filter(issue => issue && typeof issue === 'object');
+      });
+      if (!Array.isArray(hydrated.findings) || !hydrated.findings.length) {
+        const selectedView = hydrated.reportViews[hydrated.reportView] || {};
+        const refs = Array.isArray(hydrated.currentIssueRefs)
+          ? hydrated.currentIssueRefs
+          : (Array.isArray(selectedView.issueRefs) ? selectedView.issueRefs : []);
+        hydrated.findings = refs
+          .map(ref => store[ref])
+          .filter(issue => issue && typeof issue === 'object');
+      }
+    }
+    if (!Array.isArray(hydrated.findings) || !hydrated.findings.length) {
+      const selectedView = hydrated.reportViews[hydrated.reportView] || {};
+      if (Array.isArray(selectedView.issues)) {
+        hydrated.findings = selectedView.issues;
+      }
+    }
+    hydrated.findings = Array.isArray(hydrated.findings) ? hydrated.findings : [];
+    return hydrated;
+  }
+
+  function dehydrateOfflineState(source) {
+    const store = {};
+    const addIssue = (issue, fallback) => {
+      if (!issue || typeof issue !== 'object') {
+        return null;
+      }
+      const key = issue._offline_id || offlineIssueKey(issue, fallback);
+      issue._offline_id = key;
+      store[key] = stripRuntimeFields(issue);
+      store[key]._offline_id = key;
+      return key;
+    };
+    const reportViews = {};
+    Object.entries(source.reportViews || {}).forEach(([name, view]) => {
+      if (!view || typeof view !== 'object') {
+        return;
+      }
+      const refs = Array.isArray(view.issues)
+        ? view.issues.map((issue, index) => addIssue(issue, `${name}:${index}`)).filter(Boolean)
+        : (Array.isArray(view.issueRefs) ? view.issueRefs : []);
+      reportViews[name] = {
+        label: view.label || name,
+        description: view.description || '',
+        issue_count: view.issue_count ?? refs.length,
+        included_needs_review_count: view.included_needs_review_count || 0,
+        independent_needs_review_count: view.independent_needs_review_count || 0,
+        attached_needs_review_count: view.attached_needs_review_count || 0,
+        issueRefs: refs,
+      };
+    });
+    const currentIssueRefs = (Array.isArray(source.findings) ? source.findings : [])
+      .map((issue, index) => addIssue(issue, `${source.reportView || 'current'}:${index}`))
+      .filter(Boolean);
+    if (!reportViews[source.reportView]) {
+      reportViews[source.reportView] = {
+        label: source.reportView || 'Current',
+        description: 'Current offline view.',
+        issue_count: currentIssueRefs.length,
+        included_needs_review_count: 0,
+        independent_needs_review_count: 0,
+        attached_needs_review_count: 0,
+        issueRefs: currentIssueRefs,
+      };
+    } else if (!Array.isArray(reportViews[source.reportView].issueRefs) || !reportViews[source.reportView].issueRefs.length) {
+      reportViews[source.reportView].issueRefs = currentIssueRefs;
+      reportViews[source.reportView].issue_count = currentIssueRefs.length;
+    }
+    return {
+      schemaVersion: 2,
+      reportSummary: source.reportSummary || {},
+      reportViews,
+      reportView: source.reportView || 'default',
+      viewSummary: source.viewSummary || {},
+      currentIssueRefs,
+      issueStore: store,
+      exportedAt: new Date().toISOString(),
+    };
+  }
+
+  const stateScript = document.getElementById('zscope-offline-state');
+  const state = hydrateOfflineState(parseOfflineState(stateScript ? stateScript.textContent : '{}'));
   let currentIndex = -1;
   let filteredIndexes = state.findings.map((_, i) => i);
 
@@ -207,19 +320,41 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
     if (!defaultViewBtn || !needsReviewViewBtn) return;
     defaultViewBtn.style.background = state.reportView === 'default' ? '#0284c7' : '#334155';
     needsReviewViewBtn.style.background = state.reportView === 'with_needs_review' ? '#0284c7' : '#334155';
-    defaultViewBtn.disabled = !(state.reportViews.default && Array.isArray(state.reportViews.default.issues));
-    needsReviewViewBtn.disabled = !(
-      state.reportViews.with_needs_review && Array.isArray(state.reportViews.with_needs_review.issues)
+    defaultViewBtn.disabled = !(
+      state.reportViews.default &&
+      (Array.isArray(state.reportViews.default.issues) || Array.isArray(state.reportViews.default.issueRefs))
     );
+    needsReviewViewBtn.disabled = !(
+      state.reportViews.with_needs_review &&
+      (Array.isArray(state.reportViews.with_needs_review.issues) || Array.isArray(state.reportViews.with_needs_review.issueRefs))
+    );
+  }
+
+  function issuesForReportView(viewName) {
+    const selected = state.reportViews[viewName];
+    if (!selected || typeof selected !== 'object') {
+      return [];
+    }
+    if (Array.isArray(selected.issues)) {
+      return selected.issues;
+    }
+    const store = state.issueStore && typeof state.issueStore === 'object' ? state.issueStore : {};
+    if (Array.isArray(selected.issueRefs)) {
+      selected.issues = selected.issueRefs
+        .map(ref => store[ref])
+        .filter(issue => issue && typeof issue === 'object');
+      return selected.issues;
+    }
+    return [];
   }
 
   function activateReportView(view) {
     const selected = state.reportViews[view];
-    if (!selected || !Array.isArray(selected.issues)) {
+    if (!selected) {
       return;
     }
     state.reportView = view;
-    state.findings = selected.issues;
+    state.findings = issuesForReportView(view);
     currentIndex = -1;
     filteredIndexes = state.findings.map((_, i) => i);
     renderList();
@@ -422,7 +557,7 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
   });
 
   document.getElementById('savePageBtn').addEventListener('click', () => {
-    const json = JSON.stringify(state).replace(/<\/script>/gi, '<\\/script>');
+    const json = JSON.stringify(dehydrateOfflineState(state)).replace(/<\/script>/gi, '<\\/script>');
     const root = document.documentElement.cloneNode(true);
     const stateScript = root.querySelector('#zscope-offline-state');
     if (stateScript) {
