@@ -574,9 +574,11 @@ class ClangExtractor:
         db: KnowledgeDB,
         batch_size: int = 50,
         progress_cb: Optional[Callable] = None,
+        prescanned_tus: Optional[Dict[str, Tuple[int, bool]]] = None,
     ) -> Dict[str, int]:
         """滑动窗口批量提取（增量模式：哈希未变的文件自动跳过）。"""
         stats = {"total": len(file_list), "success": 0, "failed": 0, "skipped": 0}
+        prescanned_tus = prescanned_tus or {}
 
         for i in range(0, len(file_list), batch_size):
             batch = file_list[i : i + batch_size]
@@ -589,8 +591,12 @@ class ClangExtractor:
 
             for fp in batch:
                 fp = Path(fp).resolve()
-                file_hash = self._compute_file_hash(fp)
-                tu_id, changed = db.register_tu_hash(str(fp), file_hash)
+                tu_scan = prescanned_tus.get(str(fp))
+                if tu_scan is None:
+                    file_hash = self._compute_file_hash(fp)
+                    tu_id, changed = db.register_tu_hash(str(fp), file_hash)
+                else:
+                    tu_id, changed = tu_scan
                 if not changed:
                     stats["skipped"] += 1
                     continue

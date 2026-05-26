@@ -43,6 +43,14 @@ class ValidatorAgent(ToolCallingAgent):
             f"\n\nRelevant Code Context:\n{context_code}"
         )
         last_error = ""
+        token_metadata = {
+            "context_tokens": 0,
+            "cumulative_prompt_tokens": 0,
+            "cumulative_completion_tokens": 0,
+            "cumulative_total_tokens": 0,
+            "iterations": 0,
+            "tool_call_count": 0,
+        }
 
         for attempt in range(1, max_retries + 1):
             messages = self._messages(input_data, prompt)
@@ -69,6 +77,8 @@ class ValidatorAgent(ToolCallingAgent):
                     messages,
                     trace_label=f"attempt={attempt}; finding={str(finding)[:120]}",
                 )
+                for key in token_metadata:
+                    token_metadata[key] += int(result.get(key, 0) or 0)
                 parsed = self._extract_valid_payload(
                     str(result.get("content") or ""),
                     result,
@@ -76,7 +86,11 @@ class ValidatorAgent(ToolCallingAgent):
                     validator=self._is_validation_result,
                 )
                 if parsed:
-                    return AgentResponse(success=True, data=parsed)
+                    return AgentResponse(
+                        success=True,
+                        data=parsed,
+                        metadata=dict(token_metadata),
+                    )
 
                 candidates = self._extract_first_json(
                     str(result.get("content") or ""),

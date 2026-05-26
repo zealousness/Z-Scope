@@ -9,6 +9,7 @@ import time
 import datetime
 import re
 import uuid
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, cast
 
@@ -134,7 +135,9 @@ class Analyzer:
                  user_config: Optional[UserConfigStore] = None,
                  force_ignore_history: bool = False,
                  maintain_mode: bool = False,
-                 candidate_ledger: Optional[CandidateLedger] = None):
+                 candidate_ledger: Optional[CandidateLedger] = None,
+                 shared_local_pattern_semantics: Optional[LocalPatternSemantics] = None,
+                 shared_semantic_overlay: Optional[Dict[str, Any]] = None):
         self.config = config
         self.code_index = code_index or CodeIndex(
             config.project.project_root,
@@ -197,8 +200,16 @@ class Analyzer:
         self.candidate_ledger = candidate_ledger or CandidateLedger()
         self.budget_planner = RiskBudgetPlanner(config.analysis)
         self._skill_selection_cache: Dict[str, SkillSelection] = {}
-        self._local_pattern_semantics: Optional[LocalPatternSemantics] = None
-        self._semantic_overlay: Optional[Dict[str, Any]] = None
+        self._local_pattern_semantics: Optional[LocalPatternSemantics] = (
+            deepcopy(shared_local_pattern_semantics)
+            if shared_local_pattern_semantics is not None
+            else None
+        )
+        self._semantic_overlay: Optional[Dict[str, Any]] = (
+            deepcopy(shared_semantic_overlay)
+            if shared_semantic_overlay is not None
+            else None
+        )
         self._clang_tooling_provider: Optional[ClangToolingEvidenceProvider] = None
         self._clang_tooling_evidence_cache: Dict[tuple[str, str, int, int], Dict[str, Any]] = {}
         self.workflow_progress: List[Dict[str, Any]] = []
@@ -287,6 +298,9 @@ class Analyzer:
             "candidate_ledger_context": [],
             "candidate_ledger_summary": {},
             "total_context_tokens": 0,
+            "total_cumulative_prompt_tokens": 0,
+            "total_cumulative_completion_tokens": 0,
+            "total_cumulative_total_tokens": 0,
             "any_failure": False,
             "failure_msg": "",
             "final_report": None,
@@ -528,6 +542,7 @@ class Analyzer:
             )
             return
         state["total_context_tokens"] += tokens
+        state["total_cumulative_total_tokens"] += tokens
         state["notes"].append(
             f"Premodeled {modeled} reachable callee(s), reused {skipped} snapshot(s)."
         )
@@ -548,6 +563,7 @@ class Analyzer:
         response = semantic_agent.run(agent_context)
         sm_tokens = response.metadata.get("context_tokens", 0) if response.metadata else 0
         state["total_context_tokens"] += sm_tokens
+        self._accumulate_cumulative_token_metadata(state, response.metadata if response.metadata else {})
 
         if response.success:
             self.snapshot_store.save_snapshot(
@@ -779,6 +795,11 @@ class Analyzer:
             int(report.get("metadata", {}).get("context_tokens", 0) or 0)
             for report in reports
         )
+        for report in reports:
+            self._accumulate_cumulative_token_metadata(
+                state,
+                report.get("metadata", {}) if isinstance(report.get("metadata"), dict) else {},
+            )
         state["notes"].append(
             "Executed focused subagent ticket(s): "
             + ", ".join(f"{key}={value}" for key, value in report_summary.items())
@@ -889,6 +910,7 @@ class Analyzer:
                     state["notes"].append(candidate_batch.note())
                 va_ctx_tokens = response.metadata.get("context_tokens", 0) if response.metadata else 0
                 state["total_context_tokens"] += va_ctx_tokens
+                self._accumulate_cumulative_token_metadata(state, response.metadata if response.metadata else {})
                 logger.info(
                     "Vulnerability Analyzer found %d issue(s) for task: %s (ctx 鈮?%s tokens)",
                     len(raw_new_issues),
@@ -2585,6 +2607,10 @@ class Analyzer:
             "knowledge_db_version": self._knowledge_db_version(),
             "snapshot_schema_version": "semantic_snapshot_v1",
             "context_tokens": state.get("total_context_tokens", 0),
+            "cumulative_prompt_tokens": state.get("total_cumulative_prompt_tokens", 0),
+            "cumulative_completion_tokens": state.get("total_cumulative_completion_tokens", 0),
+            "cumulative_total_tokens": state.get("total_cumulative_total_tokens", 0)
+            or state.get("total_context_tokens", 0),
             "workflow": self.workflow_spec.name if self.workflow_spec else self.config.analysis.workflow_name,
             "workflow_mode": self.workflow_spec.mode if self.workflow_spec else self.config.analysis.workflow_name,
             "workflow_progress": list(self.workflow_progress),
@@ -2609,6 +2635,33 @@ class Analyzer:
             "audit_observation_count": len(state.get("observations", [])),
             "audit_observations": list(state.get("observations", [])),
         }
+
+    @staticmethod
+    def _accumulate_cumulative_token_metadata(
+        state: Dict[str, Any],
+        metadata: Dict[str, Any],
+    ) -> None:
+        if not isinstance(metadata, dict):
+            return
+
+        def token_value(key: str, fallback_key: Optional[str] = None) -> int:
+            value = metadata.get(key)
+            if value is None and fallback_key:
+                value = metadata.get(fallback_key)
+            try:
+                return int(value or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        state["total_cumulative_prompt_tokens"] = int(
+            state.get("total_cumulative_prompt_tokens", 0) or 0
+        ) + token_value("cumulative_prompt_tokens")
+        state["total_cumulative_completion_tokens"] = int(
+            state.get("total_cumulative_completion_tokens", 0) or 0
+        ) + token_value("cumulative_completion_tokens")
+        state["total_cumulative_total_tokens"] = int(
+            state.get("total_cumulative_total_tokens", 0) or 0
+        ) + token_value("cumulative_total_tokens", "context_tokens")
 
     @staticmethod
     def _git_commit_sha(project_root: Path) -> str:

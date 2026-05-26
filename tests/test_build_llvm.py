@@ -1,5 +1,6 @@
 import json
 import subprocess
+from collections import Counter
 from pathlib import Path
 
 from zscope.retrieval.build_llvm import BitcodeBuilder
@@ -20,6 +21,25 @@ def _write_compile_commands(tmp_path: Path) -> tuple[Path, Path]:
         ]),
         encoding="utf-8",
     )
+    return source_root, compile_commands
+
+
+def _write_multi_compile_commands(tmp_path: Path, count: int) -> tuple[Path, Path]:
+    source_root = tmp_path / "project"
+    source_root.mkdir()
+    commands = []
+    for idx in range(count):
+        source = source_root / f"file_{idx}.c"
+        source.write_text(f"int f_{idx}(void) {{ return {idx}; }}\n", encoding="utf-8")
+        commands.append(
+            {
+                "directory": str(source_root),
+                "command": f"cc -c {source.name}",
+                "file": source.name,
+            }
+        )
+    compile_commands = tmp_path / "compile_commands.json"
+    compile_commands.write_text(json.dumps(commands), encoding="utf-8")
     return source_root, compile_commands
 
 
@@ -108,6 +128,19 @@ def test_bitcode_build_rebuilds_when_source_changes(tmp_path: Path, monkeypatch)
     _build_once(source_root, compile_commands, output_dir)
 
     assert calls == ["gclang", "get-bc", "llvm-link"]
+
+
+def test_bitcode_build_compiles_multiple_tus_before_single_link(tmp_path: Path, monkeypatch) -> None:
+    source_root, compile_commands = _write_multi_compile_commands(tmp_path, 6)
+    output_dir = tmp_path / ".zscope_bc"
+    calls: list[str] = []
+    _fake_bitcode_tools(monkeypatch, calls)
+
+    result = _build_once(source_root, compile_commands, output_dir)
+
+    assert result["default"].exists()
+    assert Counter(calls) == Counter({"gclang": 6, "get-bc": 6, "llvm-link": 1})
+    assert BitcodeBuilder._build_worker_count(100) <= 8
 
 
 def test_sanitize_rewrites_filename_define_fragments_from_whitespace_split() -> None:

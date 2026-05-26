@@ -23,6 +23,54 @@ class LLMClient:
     OpenAI-compatible LLM client with model fallback support.
     """
 
+    MODEL_CONTEXT_KEEP_RECENT_TOOL_ROUNDS = 1
+    MODEL_CONTEXT_INLINE_OLD_TOOL_CHARS = 900
+    MODEL_CONTEXT_TOOL_RESULT_SUMMARY_CHARS = 1800
+    MODEL_CONTEXT_SUMMARY_STRING_CHARS = 500
+    MODEL_CONTEXT_SUMMARY_HEAVY_STRING_CHARS = 900
+    MODEL_CONTEXT_SUMMARY_MAX_ITEMS = 8
+    MODEL_CONTEXT_SUMMARY_MAX_KEYS = 18
+    _SUMMARY_PRIORITY_KEYS = (
+        "success",
+        "error",
+        "function_name",
+        "func_name",
+        "name",
+        "file",
+        "file_path",
+        "filename",
+        "location",
+        "line",
+        "line_range",
+        "start_line",
+        "end_line",
+        "signature",
+        "summary",
+        "truncated",
+        "callee",
+        "callees",
+        "caller",
+        "callers",
+        "category",
+        "severity",
+        "confidence",
+        "verdict",
+    )
+    _SUMMARY_HEAVY_KEYS = {
+        "code",
+        "text",
+        "content",
+        "body",
+        "source",
+        "raw",
+        "implementation",
+        "conversation",
+        "messages",
+        "tool_calls",
+        "tool_results",
+        "data",
+    }
+
     def __init__(
         self,
         api_key: str,
@@ -139,7 +187,13 @@ class LLMClient:
                             "choices": [{
                                 "message": assembled_message,
                                 "finish_reason": finish_reason
-                            }]
+                            }],
+                            "usage": {
+                                "prompt_tokens": prompt_tokens,
+                                "completion_tokens": completion_tokens,
+                                "total_tokens": prompt_tokens + completion_tokens,
+                                "estimated": True,
+                            },
                         }
                     
                     error_msg = f"HTTP {response.status_code}: {response.text}"
@@ -341,6 +395,172 @@ class LLMClient:
         # Heuristic: average 3.8 chars per token for mixed CJK/ASCII codebases
         return int(total_chars / 3.8)
 
+    def _prepare_messages_for_model(
+        self,
+        conversation: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Build the model-facing context without mutating the full transcript.
+
+        Tool results are the main source of context growth in long agent loops.
+        Keep the most recent tool round verbatim so the model can finish the
+        active reasoning step, and compact older large tool results into
+        structured summaries that preserve lookup provenance and key facts.
+        """
+        keep_tool_ids = self._recent_tool_result_ids_to_keep(conversation)
+        projected: List[Dict[str, Any]] = []
+        compacted_count = 0
+        original_chars = 0
+        compacted_chars = 0
+
+        for message in conversation:
+            role = message.get("role")
+            projected_message = self._copy_message_for_model(message)
+            if role == "assistant":
+                # reasoning_content is provider-specific scratchpad text. It is
+                # useful for local diagnostics but very expensive to replay.
+                projected_message.pop("reasoning_content", None)
+            elif role == "tool":
+                tool_id = str(message.get("tool_call_id") or "")
+                content = projected_message.get("content")
+                content_text = content if isinstance(content, str) else str(content or "")
+                if (
+                    tool_id not in keep_tool_ids
+                    and len(content_text) > self.MODEL_CONTEXT_INLINE_OLD_TOOL_CHARS
+                ):
+                    replacement = self._compact_tool_result_content(content_text, tool_id)
+                    projected_message["content"] = replacement
+                    compacted_count += 1
+                    original_chars += len(content_text)
+                    compacted_chars += len(replacement)
+            projected.append(projected_message)
+
+        if compacted_count:
+            logger.info(
+                "Compacted %d old tool results for model context (%d -> %d chars)",
+                compacted_count,
+                original_chars,
+                compacted_chars,
+            )
+        return projected
+
+    def _recent_tool_result_ids_to_keep(
+        self,
+        conversation: List[Dict[str, Any]],
+    ) -> set[str]:
+        keep_ids: set[str] = set()
+        rounds_seen = 0
+        for message in reversed(conversation):
+            tool_calls = message.get("tool_calls") or []
+            if message.get("role") != "assistant" or not isinstance(tool_calls, list):
+                continue
+            ids = [
+                str(tool_call.get("id"))
+                for tool_call in tool_calls
+                if isinstance(tool_call, dict) and tool_call.get("id")
+            ]
+            if not ids:
+                continue
+            keep_ids.update(ids)
+            rounds_seen += 1
+            if rounds_seen >= self.MODEL_CONTEXT_KEEP_RECENT_TOOL_ROUNDS:
+                break
+        return keep_ids
+
+    @staticmethod
+    def _copy_message_for_model(message: Dict[str, Any]) -> Dict[str, Any]:
+        copied = dict(message)
+        if isinstance(message.get("tool_calls"), list):
+            copied["tool_calls"] = [
+                {
+                    **tool_call,
+                    "function": dict(tool_call.get("function") or {}),
+                }
+                if isinstance(tool_call, dict)
+                else tool_call
+                for tool_call in message.get("tool_calls", [])
+            ]
+        return copied
+
+    def _compact_tool_result_content(self, content: str, tool_call_id: str) -> str:
+        parsed: Any
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            parsed = content
+
+        summary = {
+            "compacted_tool_result": True,
+            "tool_call_id": tool_call_id,
+            "original_chars": len(content),
+            "summary": self._summarize_value(parsed),
+            "instruction": (
+                "The full previous tool output was compacted before this model "
+                "turn. Use the summary unless exact omitted bytes are essential."
+            ),
+        }
+        rendered = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+        return self._truncate_text(
+            rendered,
+            self.MODEL_CONTEXT_TOOL_RESULT_SUMMARY_CHARS,
+        )
+
+    def _summarize_value(self, value: Any, depth: int = 0, key: str = "") -> Any:
+        if depth >= 4:
+            return self._summarize_leaf(value, key)
+        if isinstance(value, dict):
+            return self._summarize_dict(value, depth)
+        if isinstance(value, list):
+            items = [
+                self._summarize_value(item, depth + 1, key)
+                for item in value[: self.MODEL_CONTEXT_SUMMARY_MAX_ITEMS]
+            ]
+            if len(value) > self.MODEL_CONTEXT_SUMMARY_MAX_ITEMS:
+                items.append({"omitted_items": len(value) - len(items)})
+            return items
+        return self._summarize_leaf(value, key)
+
+    def _summarize_dict(self, value: Dict[Any, Any], depth: int) -> Dict[str, Any]:
+        result: Dict[str, Any] = {}
+        selected_keys: List[Any] = []
+        for priority_key in self._SUMMARY_PRIORITY_KEYS:
+            if priority_key in value:
+                selected_keys.append(priority_key)
+        for key in value:
+            if key not in selected_keys:
+                selected_keys.append(key)
+            if len(selected_keys) >= self.MODEL_CONTEXT_SUMMARY_MAX_KEYS:
+                break
+
+        for raw_key in selected_keys[: self.MODEL_CONTEXT_SUMMARY_MAX_KEYS]:
+            str_key = str(raw_key)
+            result[str_key] = self._summarize_value(value[raw_key], depth + 1, str_key)
+
+        omitted = len(value) - len(selected_keys[: self.MODEL_CONTEXT_SUMMARY_MAX_KEYS])
+        if omitted > 0:
+            result["omitted_keys"] = omitted
+        return result
+
+    def _summarize_leaf(self, value: Any, key: str = "") -> Any:
+        if isinstance(value, str):
+            limit = (
+                self.MODEL_CONTEXT_SUMMARY_HEAVY_STRING_CHARS
+                if key in self._SUMMARY_HEAVY_KEYS
+                else self.MODEL_CONTEXT_SUMMARY_STRING_CHARS
+            )
+            return self._truncate_text(value, limit)
+        if isinstance(value, (int, float, bool)) or value is None:
+            return value
+        return self._truncate_text(str(value), self.MODEL_CONTEXT_SUMMARY_STRING_CHARS)
+
+    @staticmethod
+    def _truncate_text(value: str, limit: int) -> str:
+        if len(value) <= limit:
+            return value
+        omitted = len(value) - limit
+        head = max(0, limit - 48)
+        return f"{value[:head]}...[truncated {omitted} chars]"
+
     def run_conversation_with_tools(
         self,
         messages: List[Dict[str, Any]],
@@ -357,6 +577,8 @@ class LLMClient:
         conversation = messages.copy()
         iterations = 0
         tool_call_history: Dict[str, List[Dict[str, Any]]] = {}
+        cumulative_prompt_tokens = 0
+        cumulative_completion_tokens = 0
         warned_low_iterations = False
         low_iteration_threshold = max(3, min(10, max_iterations // 10 or 1))
         recorder = get_conversation_recorder()
@@ -368,9 +590,6 @@ class LLMClient:
 
         while iterations < max_iterations:
             iterations += 1
-            ctx_tokens = self.estimate_tokens(conversation)
-            logger.info(f"Conversation iteration {iterations}/{max_iterations} | context ≈ {ctx_tokens:,} tokens")
-
             remaining_after_this = max_iterations - iterations
             final_iteration = iterations >= max_iterations
             if final_iteration:
@@ -402,9 +621,20 @@ class LLMClient:
                     }
                 )
 
+            model_conversation = self._prepare_messages_for_model(conversation)
+            ctx_tokens = self.estimate_tokens(model_conversation)
+            raw_ctx_tokens = self.estimate_tokens(conversation)
+            logger.info(
+                "Conversation iteration %s/%s | model context ≈%s tokens (raw ≈%s)",
+                iterations,
+                max_iterations,
+                f"{ctx_tokens:,}",
+                f"{raw_ctx_tokens:,}",
+            )
+
             # Call LLM
             response = self.chat_completion(
-                conversation,
+                model_conversation,
                 tools=None if final_iteration else tools_schema,
                 trace_agent=trace_agent,
                 trace_label=trace_label,
@@ -416,6 +646,13 @@ class LLMClient:
             choice = response.get("choices", [{}])[0]
             message = choice.get("message", {})
             finish_reason = choice.get("finish_reason")
+            prompt_tokens, completion_tokens = self._response_token_usage(
+                response,
+                model_conversation,
+                message,
+            )
+            cumulative_prompt_tokens += prompt_tokens
+            cumulative_completion_tokens += completion_tokens
 
             # Add assistant message to conversation
             conversation.append(message)
@@ -429,7 +666,9 @@ class LLMClient:
                 and "<invoke name=" not in str(message.get("content", ""))
             ):
                 content = self._get_combined_content(conversation)
-                final_tokens = self.estimate_tokens(conversation)
+                final_tokens = self.estimate_tokens(
+                    self._prepare_messages_for_model(conversation)
+                )
                 logger.info(f"Conversation complete: {iterations} iterations, final context ≈ {final_tokens:,} tokens")
                 if recorder and trace_session:
                     recorder.record_session_end(trace_session, iterations, final_tokens)
@@ -438,6 +677,9 @@ class LLMClient:
                     "conversation": conversation,
                     "iterations": iterations,
                     "context_tokens": final_tokens,
+                    "cumulative_prompt_tokens": cumulative_prompt_tokens,
+                    "cumulative_completion_tokens": cumulative_completion_tokens,
+                    "cumulative_total_tokens": cumulative_prompt_tokens + cumulative_completion_tokens,
                     "tool_call_count": self._count_tool_result_messages(conversation),
                 }
                 
@@ -481,7 +723,9 @@ class LLMClient:
 
             if not tool_calls:
                 content = self._get_combined_content(conversation)
-                final_tokens = self.estimate_tokens(conversation)
+                final_tokens = self.estimate_tokens(
+                    self._prepare_messages_for_model(conversation)
+                )
                 logger.info(f"Conversation complete (no more tool calls): {iterations} iterations, final context ≈ {final_tokens:,} tokens")
                 if recorder and trace_session:
                     recorder.record_session_end(trace_session, iterations, final_tokens)
@@ -490,6 +734,9 @@ class LLMClient:
                     "conversation": conversation,
                     "iterations": iterations,
                     "context_tokens": final_tokens,
+                    "cumulative_prompt_tokens": cumulative_prompt_tokens,
+                    "cumulative_completion_tokens": cumulative_completion_tokens,
+                    "cumulative_total_tokens": cumulative_prompt_tokens + cumulative_completion_tokens,
                     "tool_call_count": self._count_tool_result_messages(conversation),
                 }
 
@@ -602,7 +849,9 @@ class LLMClient:
                     history_summary.append(f"Tool Result: {content_preview[:100]}...")
             logger.debug(f"Last steps: {history_summary}")
 
-        final_tokens = self.estimate_tokens(conversation)
+        final_tokens = self.estimate_tokens(
+            self._prepare_messages_for_model(conversation)
+        )
         logger.info(f"Conversation ended (truncated={iterations >= max_iterations}): {iterations} iterations, final context ≈ {final_tokens:,} tokens")
         if recorder and trace_session:
             recorder.record_session_end(
@@ -617,12 +866,31 @@ class LLMClient:
             "iterations": iterations,
             "truncated": iterations >= max_iterations,
             "context_tokens": final_tokens,
+            "cumulative_prompt_tokens": cumulative_prompt_tokens,
+            "cumulative_completion_tokens": cumulative_completion_tokens,
+            "cumulative_total_tokens": cumulative_prompt_tokens + cumulative_completion_tokens,
             "tool_call_count": self._count_tool_result_messages(conversation),
         }
 
     @staticmethod
     def _count_tool_result_messages(conversation: List[Dict[str, Any]]) -> int:
         return sum(1 for message in conversation if message.get("role") == "tool")
+
+    @classmethod
+    def _response_token_usage(
+        cls,
+        response: Dict[str, Any],
+        prompt_messages: List[Dict[str, Any]],
+        assistant_message: Dict[str, Any],
+    ) -> tuple[int, int]:
+        usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+        prompt_tokens = usage.get("prompt_tokens")
+        completion_tokens = usage.get("completion_tokens")
+        if not isinstance(prompt_tokens, int):
+            prompt_tokens = cls.estimate_tokens(prompt_messages)
+        if not isinstance(completion_tokens, int):
+            completion_tokens = cls.estimate_tokens([assistant_message])
+        return max(0, prompt_tokens), max(0, completion_tokens)
 
     @classmethod
     def _tool_call_signature(cls, tool_name: Any, arguments: Dict[str, Any]) -> str:

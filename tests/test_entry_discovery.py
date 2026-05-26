@@ -215,6 +215,48 @@ static void OsalWorkerMain(void *arg) {
     assert "thread_entry:OSAL_TaskCreate" in candidate.reasons
 
 
+def test_function_impl_cache_reuses_header_body_and_thread_target_lookups():
+    class HeaderCodeIndex(FakeCodeIndex):
+        def get_header_declared_functions(self, header_files=None):
+            return [{"name": "WorkerMain", "filename": "include/worker.h", "lineNumber": 12}]
+
+    fake_index = HeaderCodeIndex(
+        {
+            "StartWorkers": """
+int StartWorkers(void) {
+    pthread_t tid;
+    return pthread_create(&tid, NULL, WorkerMain, NULL);
+}
+""",
+            "WorkerMain": """
+static void* WorkerMain(void* arg) {
+    char buf[16];
+    recv(0, buf, sizeof(buf), 0);
+    return arg;
+}
+""",
+        }
+    )
+    discovery = EntryDiscovery(fake_index)
+
+    result = discovery.discover()
+
+    impl_names = [call["name"] for call in fake_index.impl_calls]
+    assert impl_names.count("WorkerMain") == 1
+    assert impl_names.count("StartWorkers") == 1
+    assert impl_names == ["WorkerMain", "StartWorkers"]
+
+    assert len(result.candidates) == 1
+    candidate = result.candidates[0]
+    assert candidate.function_name == "WorkerMain"
+    assert candidate.exposure == "api+thread+communication"
+    assert candidate.confidence == 0.9
+    assert candidate.reasons == ["calls:recv", "declared_in_header", "thread_entry:pthread_create"]
+    assert "Public API declared in a header file" in candidate.custom_prompt
+    assert "Thread entry or thread creator" in candidate.custom_prompt
+    assert "Communication or IPC entry" in candidate.custom_prompt
+
+
 def test_search_root_limits_discovered_entries_to_that_directory(tmp_path):
     project_root = tmp_path
     source_root = project_root
@@ -493,7 +535,7 @@ def test_search_root_skips_header_declarations_before_impl_lookup(tmp_path):
     result = discovery.discover()
 
     assert [candidate.function_name for candidate in result.candidates] == ["PublicFacade"]
-    assert [call["name"] for call in fake_index.impl_calls] == ["PublicFacade", "PublicFacade"]
+    assert [call["name"] for call in fake_index.impl_calls] == ["PublicFacade"]
     assert all(call["warn_missing"] is True for call in fake_index.impl_calls)
 
 

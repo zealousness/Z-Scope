@@ -26,11 +26,11 @@
         .subtle-text { color: #64748b; }
         .code-panel { background: #0f172a; color: #d1d5db; }
         .finding-workspace {
-            height: 100%;
-            min-height: 0;
+            height: auto;
+            min-height: calc(100vh - 124px);
             display: grid;
-            grid-template-rows: auto minmax(0, 1fr) 470px;
-            overflow: hidden;
+            grid-template-rows: auto minmax(320px, 1fr) auto;
+            overflow: visible;
         }
         .finding-summary-bar {
             padding: 1rem;
@@ -38,7 +38,7 @@
             background: #ffffff;
         }
         .code-evidence-panel {
-            min-height: 0;
+            min-height: 320px;
             display: grid;
             grid-template-rows: auto minmax(0, 1fr);
             overflow: hidden;
@@ -269,16 +269,18 @@
         .audit-review-dock {
             min-height: 0;
             display: grid;
-            grid-template-rows: 220px minmax(0, 1fr);
-            overflow: hidden;
+            grid-template-rows: auto auto;
+            overflow: visible;
             background: #fbfdff;
         }
         .audit-claim-row {
-            min-height: 0;
+            height: 220px;
+            min-height: 160px;
             display: grid;
             grid-template-rows: auto minmax(0, 1fr);
             overflow: hidden;
             border-bottom: 1px solid #e5e7eb;
+            position: relative;
         }
         .audit-claim-head {
             padding: 0.75rem 0.875rem;
@@ -317,13 +319,44 @@
             word-break: break-word;
         }
         .audit-decision-panel {
-            min-height: 0;
+            height: 250px;
+            min-height: 210px;
             padding: 0.875rem;
             display: grid;
             grid-template-columns: minmax(0, 1fr) 220px;
             grid-template-rows: auto minmax(0, 1fr);
             gap: 0.75rem;
             background: #ffffff;
+            overflow: auto;
+            position: relative;
+        }
+        .audit-resize-handle {
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            height: 12px;
+            cursor: ns-resize;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            touch-action: none;
+            background: linear-gradient(to bottom, rgba(248, 250, 252, 0), rgba(226, 232, 240, 0.92));
+        }
+        .audit-resize-handle::before {
+            content: "";
+            width: 44px;
+            height: 3px;
+            border-radius: 999px;
+            background: #cbd5e1;
+        }
+        .audit-resize-handle:hover::before,
+        .audit-resize-handle:focus-visible::before {
+            background: #2563eb;
+        }
+        body.audit-resizing {
+            cursor: ns-resize;
+            user-select: none;
         }
         .audit-decision-title {
             grid-column: 1 / -1;
@@ -365,7 +398,7 @@
             align-content: end;
         }
         @media (max-width: 1180px) {
-            .finding-workspace { grid-template-rows: auto minmax(0, 1fr) 470px; }
+            .finding-workspace { grid-template-rows: auto minmax(320px, 1fr) auto; }
             .code-and-evidence { grid-template-columns: 1fr; }
             .evidence-panel { border-left: 0; border-top: 1px solid #e5e7eb; max-height: 220px; }
             .audit-claim-row { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
@@ -420,10 +453,10 @@
         <span x-text="toastMessage"></span>
     </div>
 
-    <main class="p-5 h-[calc(100vh-84px)]">
+    <main class="p-5 min-h-[calc(100vh-84px)]">
 
     <!-- ── Findings Tab ── -->
-    <div x-show="activeTab==='findings'" class="grid grid-cols-12 gap-4 h-full">
+    <div x-show="activeTab==='findings'" class="grid grid-cols-12 gap-4 min-h-[calc(100vh-124px)]">
         <div class="col-span-4 xl:col-span-3 flex flex-col gap-4 overflow-hidden h-full">
             <div class="glass rounded-lg p-4 space-y-3 flex flex-col h-full">
                 <div class="flex items-center justify-between">
@@ -535,7 +568,7 @@
             </div>
         </div>
 
-        <div class="col-span-5 xl:col-span-6 h-full min-h-0 overflow-hidden">
+        <div class="col-span-5 xl:col-span-6 min-h-0 overflow-visible">
             <template x-if="selectedFinding">
                 <div class="finding-workspace glass rounded-lg">
                     <section class="finding-summary-bar">
@@ -596,7 +629,7 @@
                     </section>
 
                     <section class="audit-review-dock">
-                        <div class="audit-claim-row">
+                        <div class="audit-claim-row" :style="{ height: auditClaimHeight + 'px' }">
                             <div class="audit-claim-head">
                                 <div>
                                     <h3 class="text-sm font-semibold text-slate-950">Reasoning With Citations</h3>
@@ -627,9 +660,15 @@
                                     </p>
                                 </article>
                             </div>
+                            <div
+                                class="audit-resize-handle"
+                                role="separator"
+                                aria-label="Resize reasoning panel"
+                                tabindex="0"
+                                @pointerdown.prevent="startAuditResize($event, 'claim')"></div>
                         </div>
 
-                        <div class="audit-decision-panel">
+                        <div class="audit-decision-panel" :style="{ height: auditDecisionHeight + 'px' }">
                             <div class="audit-decision-title">
                                 <h3 class="text-sm font-semibold text-slate-950">验证决策</h3>
                                 <p class="text-xs subtle-text">在主工作区完成录入；可直接引用 evidence ref、文件路径和行号。</p>
@@ -659,6 +698,12 @@
                                     <button type="button" class="btn btn-outline btn-xs" @click="saveFindings()" :disabled="savingFindings" x-text="savingFindings ? '保存中...' : '保存验证结果'">保存验证结果</button>
                                 </div>
                             </div>
+                            <div
+                                class="audit-resize-handle"
+                                role="separator"
+                                aria-label="Resize validation panel"
+                                tabindex="0"
+                                @pointerdown.prevent="startAuditResize($event, 'decision')"></div>
                         </div>
                     </section>
                 </div>
@@ -1055,6 +1100,8 @@
                 selectedFinding: null,
                 activeEvidenceId: '',
                 activeCodeSnippet: null,
+                auditClaimHeight: 220,
+                auditDecisionHeight: 250,
                 reportSummary: null,
                 reportViews: {},
                 reportView: 'default',
@@ -1644,13 +1691,23 @@
                         ? finding.evidence_refs
                         : (Array.isArray(evidencePack.evidence_refs) ? evidencePack.evidence_refs : []);
                     refs.forEach(ref => candidates.push(ref));
-                    const match = candidates
-                        .map(value => String(value || '').trim())
-                        .find(value => value.includes('/') || value.includes('\\') || value.includes(':'));
+                    const values = candidates.map(value => String(value || '').trim()).filter(Boolean);
+                    for (const value of values) {
+                        const location = this.parseEvidenceLocation(value);
+                        if (location?.path) {
+                            return location.path;
+                        }
+                        const normalized = value.replace(/\\/g, '/');
+                        const fileMatch = normalized.match(/((?:[A-Za-z]:)?[A-Za-z0-9_./-]+\.(?:c|h|cc|cpp|cxx|hh|hpp|hxx|php|ph|py|java|go|rs|js|ts))(?:$|:(?=\d))/);
+                        if (fileMatch) {
+                            return fileMatch[1];
+                        }
+                    }
+                    const match = values.find(value => value.includes('/') || value.includes('\\') || value.includes(':'));
                     if (!match) {
                         return '';
                     }
-                    return match.split(':')[0];
+                    return match.replace(/\\/g, '/').split(/:(?=\d)/)[0];
                 },
 
                 findingConfidenceScore(finding) {
@@ -1852,6 +1909,78 @@
                     });
                 },
 
+                startAuditResize(event, section) {
+                    const point = event.touches?.[0] || event;
+                    if (!point) return;
+                    const isClaim = section === 'claim';
+                    const minHeight = isClaim ? 160 : 210;
+                    const startHeight = isClaim ? this.auditClaimHeight : this.auditDecisionHeight;
+                    const startPageY = point.clientY + window.scrollY;
+                    const dragSensitivity = 0.6;
+                    let lastClientY = point.clientY;
+                    let lastPageY = startPageY;
+                    let autoScrollFrame = null;
+                    let active = true;
+                    const applyResize = (pageY) => {
+                        const dragged = (pageY - startPageY) * dragSensitivity;
+                        const nextHeight = Math.max(minHeight, Math.round(startHeight + dragged));
+                        if (isClaim) {
+                            this.auditClaimHeight = nextHeight;
+                        } else {
+                            this.auditDecisionHeight = nextHeight;
+                        }
+                    };
+                    const autoScroll = () => {
+                        if (!active) return;
+                        const edge = 56;
+                        const maxStep = 8;
+                        let delta = 0;
+                        if (lastClientY > window.innerHeight - edge) {
+                            delta = Math.ceil(((lastClientY - (window.innerHeight - edge)) / edge) * maxStep);
+                        } else if (lastClientY < edge) {
+                            delta = -Math.ceil(((edge - lastClientY) / edge) * maxStep);
+                        }
+                        if (delta) {
+                            const before = window.scrollY;
+                            window.scrollBy(0, delta);
+                            const scrolled = window.scrollY - before;
+                            const syntheticDrag = Math.sign(delta) * Math.min(Math.abs(delta), 3);
+                            lastPageY += scrolled || syntheticDrag;
+                            applyResize(lastPageY);
+                        }
+                        autoScrollFrame = window.requestAnimationFrame(autoScroll);
+                    };
+                    const resize = (moveEvent) => {
+                        const movePoint = moveEvent.touches?.[0] || moveEvent;
+                        if (!movePoint) return;
+                        moveEvent.preventDefault?.();
+                        lastClientY = movePoint.clientY;
+                        lastPageY = movePoint.clientY + window.scrollY;
+                        applyResize(lastPageY);
+                    };
+                    const stop = () => {
+                        active = false;
+                        if (autoScrollFrame) {
+                            window.cancelAnimationFrame(autoScrollFrame);
+                        }
+                        try {
+                            event.currentTarget?.releasePointerCapture?.(event.pointerId);
+                        } catch (_) {}
+                        document.body.classList.remove('audit-resizing');
+                        window.removeEventListener('pointermove', resize);
+                        window.removeEventListener('pointerup', stop);
+                        window.removeEventListener('pointercancel', stop);
+                    };
+                    try {
+                        event.currentTarget?.setPointerCapture?.(event.pointerId);
+                    } catch (_) {}
+                    document.body.classList.add('audit-resizing');
+                    window.addEventListener('pointermove', resize, { passive: false });
+                    window.addEventListener('pointerup', stop);
+                    window.addEventListener('pointercancel', stop);
+                    autoScrollFrame = window.requestAnimationFrame(autoScroll);
+                },
+
                 findingEvidenceRefs(finding) {
                     if (!finding) {
                         return [];
@@ -1866,8 +1995,17 @@
                 },
 
                 extractLineNumber(value) {
-                    const match = String(value || '').match(/:(\d+)(?:-\d+)?(?::\d+)?/);
-                    return match ? Number(match[1]) : null;
+                    const text = String(value || '');
+                    const locationMatch = text.match(/:(\d+)(?:-\d+)?(?::\d+)?/);
+                    if (locationMatch) {
+                        return Number(locationMatch[1]);
+                    }
+                    const englishMatch = text.match(/\b(?:line|lines|ln)\s*#?\s*(\d+)\b/i);
+                    if (englishMatch) {
+                        return Number(englishMatch[1]);
+                    }
+                    const chineseMatch = text.match(/(?:\u7b2c\s*)?(\d+)\s*\u884c/);
+                    return chineseMatch ? Number(chineseMatch[1]) : null;
                 },
 
                 parseEvidenceLocation(value) {
@@ -1882,6 +2020,56 @@
                         path: match[1].replace(/\\/g, '/'),
                         start,
                         end: Math.max(start, end),
+                    };
+                },
+
+                structuredEvidenceLocation(value) {
+                    if (!value || typeof value !== 'object') {
+                        return null;
+                    }
+                    const path = value.path || value.file || value.file_path || value.filename || value.source_file || value.sink_file || value.call_file;
+                    const startValue = value.start_line ?? value.line ?? value.lineNumber ?? value.call_line;
+                    const start = Number(startValue);
+                    if (!path || !Number.isFinite(start) || start < 1) {
+                        return null;
+                    }
+                    const endValue = value.end_line ?? value.end ?? start;
+                    const end = Number(endValue);
+                    return {
+                        path: String(path).replace(/\\/g, '/'),
+                        start,
+                        end: Number.isFinite(end) && end >= start ? end : start,
+                    };
+                },
+
+                findingEndpointLocation(finding, type) {
+                    const evidencePack = finding?.evidence_pack || {};
+                    const candidates = type === 'source'
+                        ? [finding?.source_loc, evidencePack.source, evidencePack.source_loc, evidencePack.source_location]
+                        : [finding?.sink_loc, evidencePack.sink, evidencePack.sink_loc, evidencePack.sink_location, evidencePack.reported_location];
+                    for (const candidate of candidates) {
+                        const location = this.structuredEvidenceLocation(candidate) || this.parseEvidenceLocation(candidate);
+                        if (location) {
+                            return location;
+                        }
+                    }
+                    return null;
+                },
+
+                locationFromLine(finding, line) {
+                    const number = Number(line);
+                    if (!Number.isFinite(number) || number < 1) {
+                        return null;
+                    }
+                    const findingLocation = this.parseEvidenceLocation(finding?.location);
+                    const path = this.findingModulePath(finding) || findingLocation?.path || String(finding?.file_path || '').split(/:(?=\d)/)[0];
+                    if (!path || path === 'unknown module') {
+                        return null;
+                    }
+                    return {
+                        path: String(path).replace(/\\/g, '/'),
+                        start: number,
+                        end: number,
                     };
                 },
 
@@ -2024,14 +2212,27 @@
                             return;
                         }
                         const id = `${type}-${index}`;
-                        const location =
+                        const directLocation =
                             this.parseEvidenceLocation(cleanTitle) ||
                             this.parseEvidenceLocation(detail) ||
-                            this.parseEvidenceLocation(ref) ||
-                            (type === 'source' ? this.parseEvidenceLocation(finding.source_loc) : null) ||
-                            (type === 'sink' ? this.parseEvidenceLocation(finding.sink_loc) : null) ||
-                            this.parseEvidenceLocation(finding.location);
-                        const line = location?.start || this.extractLineNumber(cleanTitle) || this.extractLineNumber(detail) || baseLine + Math.min(items.length, 6);
+                            this.parseEvidenceLocation(ref);
+                        const endpointText = type === 'source'
+                            ? finding.source_loc
+                            : (type === 'sink' ? finding.sink_loc : '');
+                        const explicitLine =
+                            this.extractLineNumber(cleanTitle) ||
+                            this.extractLineNumber(detail) ||
+                            this.extractLineNumber(ref) ||
+                            this.extractLineNumber(endpointText);
+                        const endpointLocation = (type === 'source' || type === 'sink')
+                            ? this.findingEndpointLocation(finding, type)
+                            : null;
+                        const lineLocation = explicitLine ? this.locationFromLine(finding, explicitLine) : null;
+                        const findingLocation = (type === 'source' || type === 'sink' || type === 'summary' || type === 'ref')
+                            ? this.parseEvidenceLocation(finding.location)
+                            : null;
+                        const location = directLocation || endpointLocation || lineLocation || findingLocation;
+                        const line = location?.start || explicitLine || baseLine + Math.min(items.length, 6);
                         items.push({
                             id,
                             type,
