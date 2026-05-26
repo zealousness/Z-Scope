@@ -1106,6 +1106,9 @@
                 reportViews: {},
                 reportView: 'default',
                 viewSummary: null,
+                reportViewCache: {},
+                reportViewRequests: {},
+                findingsRequestSeq: 0,
                 appVersion: 'v1.0',
                 statusText: '就绪',
                 statusClass: 'badge-ghost',
@@ -1222,56 +1225,187 @@
                         .catch(() => {});
                 },
 
-                refreshData() {
-                    this.statusText = '同步中...';
-                    fetch(`/api/findings?view=${encodeURIComponent(this.reportView)}`)
+                findingIdentity(issue) {
+                    if (!issue) {
+                        return '';
+                    }
+                    return String(issue.dedup_key || issue.stable_fingerprint || [
+                        issue.id || '',
+                        issue.function || '',
+                        issue.location || '',
+                        issue.subcategory || issue.defect_class || issue.category || '',
+                    ].join('|'));
+                },
+
+                normalizeFindings(issues, view) {
+                    return (Array.isArray(issues) ? issues : []).map((issue, index) => ({
+                        ...issue,
+                        validation_status: issue.validation_status || 'pending',
+                        validation_reasoning: issue.validation_reasoning || '',
+                        uid: `${view || 'view'}-${issue.id || 'issue'}-${issue.function || 'fn'}-${issue.location || 'loc'}-${index}`
+                    }));
+                },
+
+                mergeReportViewMetadata(reportViews) {
+                    if (!reportViews || typeof reportViews !== 'object') {
+                        return;
+                    }
+                    Object.entries(reportViews).forEach(([name, view]) => {
+                        if (!view || typeof view !== 'object') {
+                            return;
+                        }
+                        const { issues, issues_by_severity, ...metadata } = view;
+                        this.reportViews[name] = {
+                            ...(this.reportViews[name] || {}),
+                            ...metadata,
+                        };
+                        if (this.reportViewCache[name]) {
+                            this.reportViews[name].issues = this.reportViewCache[name];
+                        }
+                    });
+                },
+
+                applyViewFindings(view, findings, previousFinding = null) {
+                    this.reportView = view;
+                    this.findings = findings;
+                    this.reportViews[view] = {
+                        ...(this.reportViews[view] || {}),
+                        issues: findings,
+                        issue_count: this.viewSummary?.[view]?.issue_count ?? this.reportViews[view]?.issue_count ?? findings.length,
+                    };
+                    if (findings.length > 0) {
+                        const previousKey = this.findingIdentity(previousFinding || this.selectedFinding);
+                        const current = previousKey
+                            ? findings.find(item => this.findingIdentity(item) === previousKey)
+                            : null;
+                        this.selectFinding(current || findings[0]);
+                    } else {
+                        this.selectedFinding = null;
+                        this.activeCodeSnippet = null;
+                        this.activeEvidenceId = '';
+                    }
+                },
+
+                ingestFindingsPayload(data, requestedView) {
+                    this.reportSummary = data.report?.summary || this.reportSummary;
+                    this.mergeReportViewMetadata(data.report?.report_views || {});
+                    this.viewSummary = data.views || data.report?.metadata?.report_view_summary || this.viewSummary;
+                    const view = data.view || requestedView || this.reportView;
+                    const normalized = this.normalizeFindings(data.findings || [], view);
+                    this.reportViewCache[view] = normalized;
+                    this.reportViews[view] = {
+                        ...(this.reportViews[view] || {}),
+                        issues: normalized,
+                        issue_count: this.viewSummary?.[view]?.issue_count ?? normalized.length,
+                    };
+                    return { view, findings: normalized };
+                },
+
+                fetchFindingsForView(view, { activate = true, force = false, previousFinding = null } = {}) {
+                    if (!force && this.reportViewRequests[view]) {
+                        if (activate) {
+                            this.statusText = '同步中...';
+                        }
+                        return this.reportViewRequests[view].then(result => {
+                            if (activate) {
+                                this.applyViewFindings(result.view, result.findings, previousFinding);
+                            }
+                            return result;
+                        });
+                    }
+                    if (activate) {
+                        this.statusText = '同步中...';
+                    }
+                    const requestSeq = ++this.findingsRequestSeq;
+                    const promise = fetch(`/api/findings?view=${encodeURIComponent(view)}`)
                         .then(res => res.json())
                         .then(data => {
-                            this.reportSummary = data.report?.summary || null;
-                            this.reportViews = data.report?.report_views || {};
-                            this.viewSummary = data.views || data.report?.metadata?.report_view_summary || null;
-                            this.reportView = data.view || this.reportView;
-                            const issues = data.findings || [];
-                            this.findings = issues.map((issue, index) => ({
-                                ...issue,
-                                validation_status: issue.validation_status || 'pending',
-                                validation_reasoning: issue.validation_reasoning || '',
-                                uid: `${issue.id || 'issue'}-${issue.function || 'fn'}-${issue.location || 'loc'}-${index}`
-                            }));
-                            if (this.findings.length > 0) {
-                                const current = this.selectedFinding
-                                    ? this.findings.find(item => item.uid === this.selectedFinding.uid)
-                                    : null;
-                                this.selectFinding(current || this.findings[0]);
-                            } else {
-                                this.selectedFinding = null;
+                            const result = this.ingestFindingsPayload(data, view);
+                            if (activate && requestSeq === this.findingsRequestSeq) {
+                                this.applyViewFindings(result.view, result.findings, previousFinding);
                             }
                             this.statusText = '在线';
                             this.statusClass = 'badge-success/20 text-success';
                             this.statusDotClass = 'bg-success';
+                            if (activate) {
+                                this.prefetchSiblingReportView(result.view);
+                            }
+                            return result;
                         })
                         .catch(() => {
-                            this.statusText = '离线';
-                            this.statusClass = 'badge-error/20 text-error';
-                            this.statusDotClass = 'bg-error';
+                            if (activate) {
+                                this.statusText = '离线';
+                                this.statusClass = 'badge-error/20 text-error';
+                                this.statusDotClass = 'bg-error';
+                            }
+                            return { view, findings: this.reportViewCache[view] || [] };
+                        })
+                        .finally(() => {
+                            delete this.reportViewRequests[view];
                         });
+                    this.reportViewRequests[view] = promise;
+                    return promise;
+                },
+
+                prefetchSiblingReportView(view) {
+                    const sibling = view === 'default' ? 'with_needs_review' : 'default';
+                    if (this.reportViewCache[sibling] || this.reportViewRequests[sibling]) {
+                        return;
+                    }
+                    if (this.viewSummary && !this.viewSummary[sibling] && !this.reportViews[sibling]) {
+                        return;
+                    }
+                    this.fetchFindingsForView(sibling, { activate: false }).catch(() => {});
+                },
+
+                async ensureReportViewsCached() {
+                    const viewNames = new Set([
+                        ...Object.keys(this.viewSummary || {}),
+                        ...Object.keys(this.reportViews || {}),
+                        this.reportView,
+                    ]);
+                    await Promise.all([...viewNames]
+                        .filter(Boolean)
+                        .map(view => {
+                            if (this.reportViewCache[view]) {
+                                return Promise.resolve();
+                            }
+                            return this.fetchFindingsForView(view, { activate: false }).catch(() => null);
+                        }));
+                },
+
+                refreshData() {
+                    const view = this.reportView;
+                    delete this.reportViewCache[view];
+                    return this.fetchFindingsForView(view, {
+                        activate: true,
+                        force: true,
+                        previousFinding: this.selectedFinding,
+                    });
                 },
 
                 setReportView(view) {
                     if (this.reportView === view) {
                         return;
                     }
+                    const previousFinding = this.selectedFinding;
+                    if (this.reportViewCache[view]) {
+                        this.applyViewFindings(view, this.reportViewCache[view], previousFinding);
+                        this.prefetchSiblingReportView(view);
+                        return;
+                    }
                     this.reportView = view;
+                    this.findings = [];
                     this.selectedFinding = null;
-                    this.refreshData();
+                    this.activeCodeSnippet = null;
+                    this.activeEvidenceId = '';
+                    this.fetchFindingsForView(view, { activate: true, previousFinding });
                 },
 
                 openDashboard() {
                     this.activeTab = 'warnings';
                     if (this.reportView !== 'with_needs_review') {
-                        this.reportView = 'with_needs_review';
-                        this.selectedFinding = null;
-                        this.refreshData();
+                        this.setReportView('with_needs_review');
                     }
                     this.loadWarnings();
                 },
@@ -1279,7 +1413,8 @@
                 refreshDashboardData() {
                     this.reportView = 'with_needs_review';
                     this.selectedFinding = null;
-                    this.refreshData();
+                    delete this.reportViewCache.with_needs_review;
+                    this.fetchFindingsForView('with_needs_review', { activate: true, force: true });
                     this.loadWarnings();
                 },
 
@@ -1931,6 +2066,7 @@
 
                 async exportOfflinePage() {
                     try {
+                        await this.ensureReportViewsCached();
                         const payload = await this.buildOfflinePayload();
                         const offlineHtml = await this.createOfflineHtml(payload);
                         const blob = new Blob([offlineHtml], { type: 'text/html;charset=utf-8' });

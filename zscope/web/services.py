@@ -451,11 +451,44 @@ class ReportFeedbackService:
         with Path(self.report_filename).open("w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
 
+    @staticmethod
+    def _lightweight_report(report: Dict[str, Any]) -> Dict[str, Any]:
+        report_views = report.get("report_views")
+        compact_views: Dict[str, Any] = {}
+        if isinstance(report_views, dict):
+            for name, view in report_views.items():
+                if not isinstance(view, dict):
+                    continue
+                compact_views[name] = {
+                    key: value
+                    for key, value in view.items()
+                    if key not in {"issues", "issues_by_severity"}
+                }
+
+        metadata = report.get("metadata") if isinstance(report.get("metadata"), dict) else {}
+        return {
+            "entry_function": report.get("entry_function"),
+            "overall_verdict": report.get("overall_verdict"),
+            "summary": report.get("summary"),
+            "report_views": compact_views,
+            "metadata": {
+                "report_view_summary": metadata.get("report_view_summary"),
+            },
+        }
+
     def selected_view_payload(self, path: str) -> Dict[str, Any]:
+        from urllib.parse import urlparse
+
         report = self.load_report()
         view = selected_report_view(path)
+        query = parse_qs(urlparse(path).query)
+        full_report = str((query.get("full_report") or [""])[0]).lower() in {
+            "1",
+            "true",
+            "yes",
+        }
         return {
-            "report": report,
+            "report": report if full_report else self._lightweight_report(report),
             "findings": findings_for_view(report, view),
             "view": view,
             "views": report_view_summary(report),
