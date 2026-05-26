@@ -9,7 +9,7 @@ v1.0 是 Z-SCOPE 的首个正式发布版本。发布边界不再只是“能扫
 - **多智能体分治与声明式编排**：采用 `AGENT.md` 与 `SKILL.md` 契约定义各智能体与技能。支持 `语义建模 Agent`、`漏洞扫描 Agent`、`Issue Reconciler Agent`、`验证 Agent` 以及隔离上下文的聚焦型 `Deep Worker` 独立协作。分析流程由 `zscope/workflows/*.yaml` 与 `WorkflowRunner` 驱动实际执行步骤，而不是仅作为提示词上下文注入。
 - **Task 驱动的漏洞 Skill 选择**：`vulnerability_analyzer.task` 不只是提示词描述。系统会结合本地关键词规则与可选 LLM 语义路由选择 `resource_lifecycle`、`bounds_and_integer`、`null_and_failure`、`concurrency_lock_order` 等漏洞挖掘 Skill；低置信或冲突判断会保守回退到全量 Skill，避免漏扫。
 - **三种运行模式**：全新扫描（默认）、断点续扫（`--resume`）、增量维护（`--maintain`）。Workflow 选择由 CLI 运行模式控制，不允许在 `zscope.yaml` 中配置。另支持规则驱动模式和告警验证模式。
-- **自动入口发现**：支持基于启发式的智能扫描入口发现（`--discover-entries`），自动识别头文件暴露的公共 API、网络收发、线程入口及用户输入点，并把候选写入项目根目录的 `entry_functions_list.json` 供后续复用和人工调整。
+- **自动入口发现**：支持基于启发式的智能扫描入口发现（`--discover-entries` 或 `project.entry_discovery.enabled`），自动识别头文件暴露的公共 API、网络收发、线程入口及用户输入点，并把候选写入项目根目录的 `entry_functions_list.json`。若未显式配置 `entry_functions_list`，发现结果会作为本轮批量入口。
 - **可审阅用户配置工作簿**：新增 `user_config.xlsx` 人工配置格式与 `--infer-user-config` 推断命令，可从源码、宏、语义快照中生成 resource/lock/dispatcher/module lifecycle/pointer target/function intent 候选。运行时只注入当前函数真正引用到的用户配置，降低上下文噪声。
 - **证据优先的候选流水线**：`CandidatePipeline` 汇总本地规则、Clang AST/CFG、SVF/Saber、跨函数图候选与 KnowledgeDB/Joern 后端信号。`SemanticOverlayCompiler` 与 `LocalPatternSemanticBuilder` 会吸收内置默认语义、用户配置、历史快照、函数命名和 typedef alias 形成项目级候选语义；候选携带 source/sink、对象或锁、正反证据、`dedup_key` 与 `evidence_refs`，再交给 Deep Worker、Validator 和报告层收敛。
 - **风险自适应预算**：`RiskBudgetPlanner` 会把 `max_recursion_depth`、`max_premodel_depth`、`max_premodel_callees` 与 `max_subagent_tickets` 视为硬上限，再按入口复杂度、调用扇出、后端/图候选和历史缺陷生成每个入口的 `effective_budget`，把预算原因写入报告 metadata，降低低风险函数的无效 token 消耗。
@@ -17,7 +17,7 @@ v1.0 是 Z-SCOPE 的首个正式发布版本。发布边界不再只是“能扫
 - **本地与实验性远程 MCP Server**：原生内置 Model Context Protocol (MCP) stdio Server；同时提供实验性的 Streamable HTTP 传输。远程绑定必须显式配置 bearer token 环境变量与客户端 allowlist，避免把代码索引和工具总线无保护暴露到网络。
 - **多模型配置与路由**：支持在 `zscope.yaml` 中定义多个大模型配置（如 `fast_model` / `smart_model`），不同 Agent 可按需绑定最佳模型。
 - **可插拔后端架构**：支持 Joern CPG、Clang（clangd LSP）、Unified（Clang + SVF）、Regex 四种后端，按需选择分析深度。
-- **12 个分析工具与工具策略**：函数源码获取、调用图分析、结构体查询、污点追踪、指针别名查询、深度调用上下文聚合等工具由 `ToolsRuntime` 提供，并由 `ToolPolicy` 做参数校验、敏感路径拦截和审计日志记录。
+- **最多 12 个分析工具与工具策略**：函数源码获取、调用图分析、结构体查询、污点追踪、指针别名查询、深度调用上下文聚合等工具由运行时提供；实际对 Agent 暴露的集合由 `AGENT.md`、后端能力和 `ToolPolicy` 共同决定，并支持参数校验、敏感路径拦截和审计日志记录。
 - **用户辅助配置系统**：通过 WebUI 或 `user_config.xlsx` 管理外部函数描述、配对函数、函数指针指向、dispatcher 分支、模块生命周期和函数意图等信息；手工验证反馈会写入误报抑制与 finding baseline，后续扫描自动复用。
 - **智能增量分析与稳定缺陷身份**：支持断点续扫（`--resume`）和基于语义哈希的增量维护扫描（`--maintain`）。`zscope/common/issue_identity.py` 统一提供 `canonical_issue_key`、`stable_issue_fingerprint` 与 source context fingerprint，让去重、baseline、SARIF partial fingerprints 和 benchmark 匹配使用同一套身份逻辑。
 - **报告视图与标准导出**：`ReportAssembler` 同时生成默认漏洞视图和包含 `needs_review` 的复核视图；CLI 支持 `--export-sarif` 把 Z-SCOPE 结果导出为 SARIF v2.1.0，并保留稳定 fingerprint 与 Z-SCOPE 私有证据属性，便于接入代码扫描平台。
@@ -78,6 +78,8 @@ Z-Scope 内置了多层防丢失和可追溯机制：
 
 ### Python 依赖
 
+Z-SCOPE 需要 Python 3.9 或更高版本；运行时依赖以 `pyproject.toml` 为准。
+
 | 包名 | 用途 |
 |------|------|
 | `openai>=1.0.0` | LLM 客户端（OpenAI 兼容 API） |
@@ -87,9 +89,9 @@ Z-Scope 内置了多层防丢失和可追溯机制：
 | `tqdm>=4.66.0` | 进度条 |
 | `pyyaml>=6.0` | YAML 配置解析 |
 
-开发依赖（可选）：`pytest`、`pytest-cov`、`black`、`mypy`。
+开发依赖（可选）：`pytest`、`pytest-cov`、`black`、`mypy`、`types-PyYAML`、`types-requests`。
 
-类型检查依赖包含 `mypy>=1.5,<2.0`、`types-PyYAML` 和 `types-requests`；`mypy<2.0` 是为了兼容当前 `pyproject.toml` 中的 Python 3.9 类型检查目标。
+类型检查依赖固定为 `mypy>=1.5,<2.0`，以兼容当前 `pyproject.toml` 中的 Python 3.9 类型检查目标。
 
 ### 外部工具依赖（按后端）
 
@@ -98,7 +100,7 @@ Z-Scope 内置了多层防丢失和可追溯机制：
 | `regex` | 无 | 纯正则，零外部依赖 |
 | `joern` | Joern CLI + JDK 21 | 从 [Joern Releases](https://github.com/joernio/joern/releases) 下载 |
 | `clang` | clangd >= 20.1 + compile_commands.json | clangd LSP 符号提取，无需 `pip install libclang` |
-| `unified` | clangd >= 20.1 + (可选) clang-18 + gllvm + SVF 3.2 + LLVM/llvm-nm | Clang AST + SVF 深度分析，SVF 不可用时优雅降级；clang-18 仅用于 SVF/gllvm bitcode 链路，llvm-nm 用于入口裁剪后的符号闭包 |
+| `unified` | clangd >= 20.1 + (可选) clang-18 + Go/gllvm + binutils/objcopy + SVF 3.2 + LLVM/llvm-link/llvm-nm | Clang AST + SVF 深度分析，SVF 不可用时优雅降级；clang-18 仅用于 SVF/gllvm bitcode 链路，llvm-nm 用于入口裁剪后的符号闭包 |
 
 ## 安装指南
 
@@ -246,13 +248,14 @@ llms:
 project:
   root: .                    # 被扫描项目根目录
   source_root: .             # 源码搜索根目录
-  entry_function: main       # 单函数入口模式
+  entry_function: main       # 单入口模式或入口发现为空时的回退入口
   # entry_functions_list: functions.json  # 批量模式配置
 
   entry_discovery:           # 自动入口发现机制
-    enabled: true            # 为 true 时，如果未提供 entry_functions_list 则自动发现
+    enabled: true            # 为 true 时每次运行都会发现入口；未提供 entry_functions_list 时发现结果作为批量入口
     max_candidates: 200
     max_functions: 10000
+    header_files: []         # 可选：限制 public header 入口发现；不影响函数体入口发现
     # search_root: /absolute/path/to/module  # 可选：限制入口发现范围，必须是绝对目录
 
   # compile_commands_path: build/compile_commands.json
@@ -294,13 +297,21 @@ project:
 
 indexing:
   backend: unified             # joern | clang | unified | regex
+  # joern_path: dependency/joern/joern
+  # joern_server_host: 127.0.0.1
+  # joern_server_port: 8080
+  # joern_heap_size: 8g
   clangd_path: clangd
   knowledge_db_path: .zscope_knowledge/code_knowledge.db
-  # joern_path: dependency/joern/joern
+  batch_size: 50
+  max_clangd_threads: 8
   # svf_bin_dir: /path/to/svf/bin
   # gclang_path: gclang
   # get_bc_path: get-bc
   # llvm_link_path: llvm-link
+  # svf_heap_limit_mb: 32768
+  # svf_timeout: 1800
+  # svf_groups_config: svf_groups.json
   svf_scope: auto              # full | auto | entry；按入口裁剪 SVF bitcode
   svf_entry_depth: 4
   svf_max_selected_tus: 300
@@ -391,11 +402,13 @@ Workflow 选择是运行时行为，不是 YAML 配置项。普通 `zscope -c zs
 
 ### Step 2：执行分析
 
+运行入口由配置决定：未配置 `entry_functions_list` 且未启用 `project.entry_discovery.enabled` 时走单入口；配置了 `entry_functions_list`，或入口发现产生了候选时走批量入口。
+
 ```bash
-# 默认模式：从 entry_function 开始分析
+# 单入口模式：从 entry_function 开始分析
 zscope -c zscope.yaml --verbose
 
-# 批量扫描模式 (从 functions_list JSON 开始)：
+# 批量扫描模式：从 entry_functions_list JSON 开始
 zscope -c zscope.yaml
 
 # 断点续扫：跳过已完成的函数，继续中断的批量扫描
@@ -405,7 +418,7 @@ zscope -c zscope.yaml --resume
 # CLI 会自动选择 zscope/workflows/maintain.yaml
 zscope -c zscope.yaml --maintain
 
-# 自动发现入口点并扫描：基于启发式扫描项目网络收发、线程与 API 暴露点
+# 强制自动发现入口点并扫描：基于启发式扫描项目网络收发、线程与 API 暴露点
 # 发现结果会写入项目根目录 entry_functions_list.json
 zscope -c zscope.yaml --discover-entries
 
@@ -435,19 +448,22 @@ zscope --build-cpg -c zscope.yaml
 
 ### Step 3：查看分析结果
 
-分析完成后在项目根目录生成：
+分析完成后会按运行模式在项目根目录生成：
 
-| 文件 | 说明 |
+| 文件 / 目录 | 说明 |
 |------|------|
-| `zscope_batch_report.md` | 人类可读的审计汇总报告 |
-| `zscope_batch_report.json` | 结构化缺陷数据（可供 CI 集成），包含 `issues[]`、`report_views`、严重度分组和批量统计 |
+| `report.md` | 单入口模式的人类可读报告 |
+| `report.json` | 单入口模式的结构化缺陷数据，包含 `issues[]`、`report_views` 与 metadata |
+| `zscope_batch_report.md` | 批量模式的人类可读审计汇总报告 |
+| `zscope_batch_report.json` | 批量模式的结构化缺陷数据（可供 CI 集成），包含 `issues[]`、`report_views`、严重度分组和批量统计；覆盖前会把旧 JSON 备份到 `.zscope_knowledge/backups/` |
 | `zscope_alert_verify_report.json` | 告警验证模式的验证结果 |
 | `zscope-results.sarif` | `--export-sarif` 指定路径上的 SARIF v2.1.0 导出结果 |
-| `entry_functions_list.json` | `--discover-entries` 生成的候选入口列表（仅启用入口发现时） |
+| `entry_functions_list.json` | `--discover-entries` 或 `project.entry_discovery.enabled` 生成的候选入口列表 |
 | `.zscope_snapshots/` | 语义快照缓存（加速重复扫描） |
 | `.zscope_snapshots/user_config.xlsx` | `--infer-user-config` 生成的人工可审阅用户配置工作簿 |
+| `.zscope_snapshots/user_config.state.db` | 配置告警、finding suppression 与 baseline 的旁路状态库（若 `analysis.user_config_db` 指向其他 workbook，则与该 workbook 同名） |
 | `.zscope_knowledge/code_knowledge.db` | 代码索引、SVF/Saber 信号和候选证据 IR |
-| `.zscope_bc/bitcode_scope_<group>.json` | SVF 入口裁剪计划，记录选中的源码、bitcode、可达函数和回退原因 |
+| `.zscope_bc/bitcode_scope_<group>.json` | SVF 入口裁剪计划，记录选中的源码、bitcode、可达函数和回退原因；WSL/NTFS 场景可能重定向到 Linux 原生临时目录 |
 
 单函数最终报告的 `metadata` 会记录 `candidate_signal_summary`、`candidate_ledger_summary`、`effective_budget`、`budget_scores`、`budget_reasons`、`report_view_summary`、`audit_observation_count` 和 `audit_observations`。`report_views.default` 只包含默认可报告问题，`report_views.with_needs_review` 会额外包含需要人工复核的观察项。`issues[]` 中的缺陷会带 `finding_kind`、`final_score`、`score_components`、`source`、`sink`、`positive_evidence`、`negative_evidence` 等字段。
 
@@ -457,6 +473,7 @@ zscope --build-cpg -c zscope.yaml
 
 ```bash
 zscope --dashboard -c zscope.yaml
+# 可选：zscope --dashboard -c zscope.yaml --dashboard-host 127.0.0.1 --dashboard-port 8000
 ```
 
 仪表盘提供四个主要页面：
@@ -465,24 +482,24 @@ zscope --dashboard -c zscope.yaml
 - **用户配置**：以 `user_config.xlsx` 为入口维护 resource、lock、dispatcher、module lifecycle、pointer targets 和 function intents，支持保存、导入与下载
 - **看板**：展示验证状态分布、风险概览、配置告警和审计进度
 
-## 分析工具清单（12 个内置 Agent 工具）
+## 分析工具清单（最多 12 个内置 Agent 工具）
 
-| # | 工具名 | 用途 | 后端要求 |
+| # | 工具名 | 用途 | 有效数据来源 |
 |---|--------|------|---------|
 | 1 | `get_function_impl` | 获取函数完整源码 | 全部 |
 | 2 | `get_function_snapshot` | 语义缓存复用 | 全部 |
 | 3 | `list_known_functions` | 函数发现（正则搜索） | 全部 |
 | 4 | `get_file_snippet` | 读取指定行范围的上下文代码 | 全部 |
-| 5 | `get_callers` | 调用者查询（漏洞可达性分析） | joern/clang/unified |
-| 6 | `get_type_info` | 结构体/类型定义查询 | joern/clang/unified |
-| 7 | `get_call_graph` | 精确调用图（直接+间接） | joern/clang/unified |
+| 5 | `get_callers` | 调用者查询（漏洞可达性分析） | joern/clang/unified；regex 返回空结果 |
+| 6 | `get_type_info` | 结构体/类型定义查询 | joern/clang/unified；regex 返回空结果 |
+| 7 | `get_call_graph` | 调用图聚合（直接调用；unified 可合并 SVF 间接调用） | joern/unified |
 | 8 | `get_data_flow` | 污点追踪 | joern/unified |
-| 9 | `find_function_pointers` | 回调/钩子发现 | joern/clang/unified |
+| 9 | `find_function_pointers` | 回调/钩子发现 | joern/unified |
 | 10 | `query_pointer_alias` | 指针别名查询 | unified |
-| 11 | `verify_taint_reachability` | 污点可达性验证 | unified |
+| 11 | `verify_taint_reachability` | SVF/Saber 内存缺陷查询 | unified |
 | 12 | `get_deep_call_context` | 高聚合查询（调用者+被调用者+间接调用+污点缺陷） | unified |
 
-MCP Server 会额外暴露 `query_knowledge`（只读查询 `code_knowledge.db`）与 `discover_entries`（入口发现）两个工具，供外部 MCP 客户端交互式审计使用。MCP 侧还提供 `zscope.code.*`、`zscope.graph.*`、`zscope.knowledge.query`、`zscope.entries.discover` 等 namespaced aliases；无论 stdio 还是 HTTP 传输，工具调用都会经过 `ToolPolicy`。
+Agent 工具可见性由 `AGENT.md` 与后端 gate 共同决定：`semantic_modeler` 主要使用前 6 个工具；`vulnerability_analyzer` 在 joern/unified 后端下再开放第 7-12 个高级查询，其中 SVF 特有结果只有 unified 后端会返回有效数据。MCP Server 会额外暴露 `query_knowledge`（只读查询 `code_knowledge.db`）与 `discover_entries`（入口发现）两个工具，供外部 MCP 客户端交互式审计使用。MCP 侧还提供 `zscope.code.*`、`zscope.graph.*`、`zscope.knowledge.query`、`zscope.entries.discover` 等 namespaced aliases；无论 stdio 还是 HTTP 传输，工具调用都会经过 `ToolPolicy`。
 
 ## 用户辅助配置
 
@@ -505,14 +522,14 @@ MCP Server 会额外暴露 `query_knowledge`（只读查询 `code_knowledge.db`�
 
 | 特性 | regex | joern | clang | unified |
 |------|-------|-------|-------|---------|
-| 外部依赖 | 无 | JDK 21 + Joern | clangd >= 20.1 | clangd >= 20.1 + gllvm + SVF + LLVM/llvm-nm |
+| 外部依赖 | 无 | JDK 21 + Joern | clangd >= 20.1 | clangd >= 20.1 + Go/gllvm + binutils/objcopy + SVF + LLVM/llvm-link/llvm-nm |
 | 函数源码提取 | 正则匹配 | CPGQL 精确 | AST 精确 | AST 精确 |
 | 调用图 | 不支持 | 完整 CPG | 直接调用 | 直接 + 间接（SVF 指针分析） |
 | 类型查询 | 不支持 | 完整 | AST 精确 | AST 精确 |
 | 污点分析 | 不支持 | 数据流追踪 | 不支持 | SVF saber（内存泄漏/UAF/双重释放） |
 | 间接调用解析 | 不支持 | 有限 | 不支持 | SVF Andersen 指针分析 |
 | SVF bitcode 裁剪 | 不适用 | 不适用 | 不适用 | 支持按入口调用图、always include 和符号闭包裁剪，必要时回退 full/skip |
-| 后端信号入报告链路 | 不支持 | Joern rule match 可归一化为候选；规则驱动模式可直接验证 | Clang KnowledgeDB call_edges / AST matcher fact 可归一化为候选 | SVF/Saber、Clang 和 KnowledgeDB 信号归一化为候选并进入证据 IR |
+| 候选/信号入报告链路 | regex 本地候选进入 `CandidatePipeline` | Joern rule match 可归一化为候选；规则驱动模式可直接验证 | Clang KnowledgeDB call_edges / AST matcher fact 可归一化为候选 | SVF/Saber、Clang 和 KnowledgeDB 信号归一化为候选并进入证据 IR |
 | 规则驱动模式 | 不支持 | 支持 | 不支持 | 不支持 |
 | 内存占用 | 极低 | 高（JVM） | 中 | 中高 |
 
@@ -535,7 +552,7 @@ python -m compileall -f -q zscope scripts test tests
 python -m pytest
 
 # v1.0 关键面回归
-python -m pytest -q tests/test_candidate_pipeline.py tests/test_validation_runner.py tests/test_report_assembler.py tests/test_review_memory.py tests/test_mcp_security.py tests/test_mcp_http_server.py tests/test_web_dashboard_server.py
+python -m pytest -q tests/test_candidate_pipeline.py tests/test_validation_runner.py tests/test_report_assembler.py tests/test_review_memory.py tests/test_entry_discovery.py tests/test_user_config_workbook.py tests/test_web_user_config_workbook_api.py tests/test_mcp_security.py tests/test_mcp_http_server.py tests/test_mcp_policy.py tests/test_tool_policy.py tests/test_sarif_exporter.py tests/test_web_dashboard_server.py
 
 # 仅评估确定性候选在 range benchmark 上的覆盖率
 python scripts/evaluate_range_regression.py --deterministic-candidates

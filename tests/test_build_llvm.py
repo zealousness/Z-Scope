@@ -1,5 +1,6 @@
 import json
 import subprocess
+import hashlib
 from collections import Counter
 from pathlib import Path
 
@@ -48,9 +49,21 @@ def _fake_bitcode_tools(monkeypatch, calls: list[str]) -> None:
         calls.append(Path(cmd[0]).name)
         if Path(cmd[0]).name == "gclang":
             out_path = Path(cmd[cmd.index("-o") + 1])
-            out_path.write_text("object\n", encoding="utf-8")
+            cwd = Path(kwargs.get("cwd") or ".")
+            source_text = ""
+            for arg in cmd:
+                candidate = Path(str(arg))
+                if candidate.suffix.lower() not in {".c", ".cc", ".cpp", ".cxx"}:
+                    continue
+                candidate_path = candidate if candidate.is_absolute() else cwd / candidate
+                if candidate_path.exists():
+                    source_text = candidate_path.read_text(encoding="utf-8")
+                    break
+            digest = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+            out_path.write_text(f"object {digest}\n", encoding="utf-8")
         elif Path(cmd[0]).name == "get-bc":
-            Path(str(cmd[1]) + ".bc").write_text("bitcode\n", encoding="utf-8")
+            object_text = Path(cmd[1]).read_text(encoding="utf-8")
+            Path(str(cmd[1]) + ".bc").write_text(f"bitcode {object_text}", encoding="utf-8")
         elif Path(cmd[0]).name == "llvm-link":
             out_path = Path(cmd[cmd.index("-o") + 1])
             out_path.write_text("merged\n", encoding="utf-8")
@@ -86,7 +99,10 @@ def test_sanitize_rewrites_make_filename_define_from_shell_command() -> None:
     assert not any("patsubst" in arg for arg in cleaned)
 
 
-def test_bitcode_build_reuses_unchanged_tu_bitcode_but_relinks(tmp_path: Path, monkeypatch) -> None:
+def test_bitcode_build_reuses_unchanged_tu_and_merged_bitcode(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     source_root, compile_commands = _write_compile_commands(tmp_path)
     output_dir = tmp_path / ".zscope_bc"
     calls: list[str] = []
@@ -100,7 +116,7 @@ def test_bitcode_build_reuses_unchanged_tu_bitcode_but_relinks(tmp_path: Path, m
     second = _build_once(source_root, compile_commands, output_dir)
 
     assert second == first
-    assert calls == ["llvm-link"]
+    assert calls == []
 
 
 def test_bitcode_build_reuses_outputs_when_only_timeout_changes(tmp_path: Path, monkeypatch) -> None:
@@ -113,7 +129,7 @@ def test_bitcode_build_reuses_outputs_when_only_timeout_changes(tmp_path: Path, 
     calls.clear()
     _build_once(source_root, compile_commands, output_dir, timeout=99)
 
-    assert calls == ["llvm-link"]
+    assert calls == []
 
 
 def test_bitcode_build_rebuilds_when_source_changes(tmp_path: Path, monkeypatch) -> None:
@@ -128,6 +144,40 @@ def test_bitcode_build_rebuilds_when_source_changes(tmp_path: Path, monkeypatch)
     _build_once(source_root, compile_commands, output_dir)
 
     assert calls == ["gclang", "get-bc", "llvm-link"]
+
+
+def test_link_reuses_existing_merged_bitcode_from_previous_scope_plan(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root, compile_commands = _write_compile_commands(tmp_path)
+    output_dir = tmp_path / ".zscope_bc"
+    output_dir.mkdir()
+    bc_path = output_dir / "tu_0_main.o.bc"
+    merged_path = output_dir / "merged_default.bc"
+    bc_path.write_text("bitcode\n", encoding="utf-8")
+    merged_path.write_text("merged\n", encoding="utf-8")
+    calls: list[str] = []
+    _fake_bitcode_tools(monkeypatch, calls)
+
+    builder = BitcodeBuilder(
+        source_root=source_root,
+        compile_commands_path=compile_commands,
+        output_dir=output_dir,
+        gclang_path="gclang",
+        get_bc_path="get-bc",
+        llvm_link_path="llvm-link",
+    )
+
+    result = builder._link_all(
+        [bc_path],
+        "default",
+        previous_selected_bcs={str(bc_path.resolve())},
+    )
+
+    assert result == merged_path
+    assert calls == []
+    assert builder.reused_linked_groups == {"default"}
 
 
 def test_bitcode_build_compiles_multiple_tus_before_single_link(tmp_path: Path, monkeypatch) -> None:

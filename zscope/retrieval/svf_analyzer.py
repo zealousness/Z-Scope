@@ -76,10 +76,33 @@ class SvfAnalyzer:
                 self._cache_config(),
                 normalized_entries,
             )
+            legacy_cache_fingerprint = self._compute_aggregate_hash(
+                compile_commands_path,
+                groups,
+                self._cache_config(),
+                normalized_entries,
+                sort_entry_functions=False,
+            )
             old_hash = self._db.get_svf_hash()
-            if cache_fingerprint and cache_fingerprint == old_hash:
+            if cache_fingerprint and old_hash in {
+                cache_fingerprint,
+                legacy_cache_fingerprint,
+            }:
+                if old_hash == legacy_cache_fingerprint and old_hash != cache_fingerprint:
+                    self._db.set_svf_hash(cache_fingerprint)
                 logger.info("SVF incremental: cache fingerprint unchanged; reusing cached data")
                 return True
+            if old_hash:
+                logger.info(
+                    "SVF incremental: cache miss (old=%s, new=%s, entries=%d)",
+                    old_hash[:12],
+                    (cache_fingerprint or "")[:12],
+                    len(normalized_entries),
+                )
+            else:
+                logger.info(
+                    "SVF incremental: no previous cache fingerprint; building SVF data"
+                )
 
             builder = BitcodeBuilder(
                 source_root=source_path,
@@ -102,6 +125,33 @@ class SvfAnalyzer:
 
             if not bc_paths:
                 logger.warning("Bitcode build failed or no bitcode generated; SVF skipped")
+                return True
+
+            artifact_fingerprint = self._compute_artifact_hash(
+                bc_paths,
+                groups,
+                self._cache_config(),
+                normalized_entries,
+            )
+            old_artifact_hash = self._db.get_metadata("svf_artifact_hash")
+            if artifact_fingerprint and artifact_fingerprint == old_artifact_hash:
+                logger.info(
+                    "SVF incremental: merged bitcode fingerprint unchanged; "
+                    "reusing cached SVF data"
+                )
+                if cache_fingerprint:
+                    self._db.set_svf_hash(cache_fingerprint)
+                return True
+            reused_linked_groups = set(getattr(builder, "reused_linked_groups", set()))
+            if old_hash and bc_paths and set(bc_paths.keys()) == reused_linked_groups:
+                logger.info(
+                    "SVF incremental: merged bitcode reused for all groups; "
+                    "refreshing cache fingerprint without rerunning SVF"
+                )
+                if cache_fingerprint:
+                    self._db.set_svf_hash(cache_fingerprint)
+                if artifact_fingerprint:
+                    self._db.set_metadata("svf_artifact_hash", artifact_fingerprint)
                 return True
 
             runner = SvfRunner(
@@ -135,6 +185,8 @@ class SvfAnalyzer:
 
             if cache_fingerprint:
                 self._db.set_svf_hash(cache_fingerprint)
+            if artifact_fingerprint:
+                self._db.set_metadata("svf_artifact_hash", artifact_fingerprint)
             return True
         except Exception as exc:
             logger.error("SVF analysis failed: %s", exc)
@@ -200,6 +252,8 @@ class SvfAnalyzer:
         groups_config: Optional[Dict] = None,
         execution_config: Optional[Dict[str, Any]] = None,
         entry_functions: Optional[Sequence[str]] = None,
+        *,
+        sort_entry_functions: bool = True,
     ) -> str:
         try:
             with open(compile_commands_path, "r", encoding="utf-8") as f:
@@ -224,12 +278,40 @@ class SvfAnalyzer:
         if execution_config:
             agg.update(json.dumps(execution_config, sort_keys=True).encode("utf-8"))
         if entry_functions:
-            agg.update(json.dumps(list(entry_functions), sort_keys=True).encode("utf-8"))
+            entries = list(entry_functions)
+            if sort_entry_functions:
+                entries = sorted(entries)
+            agg.update(json.dumps(entries, sort_keys=True).encode("utf-8"))
 
         for fp in source_files:
             agg.update(str(fp).encode("utf-8"))
             try:
                 with open(fp, "rb") as f:
+                    for chunk in iter(lambda: f.read(8192), b""):
+                        agg.update(chunk)
+            except OSError:
+                agg.update(b"__missing__")
+        return agg.hexdigest()[:32]
+
+    @staticmethod
+    def _compute_artifact_hash(
+        bc_paths: Dict[str, Path],
+        groups_config: Optional[Dict] = None,
+        execution_config: Optional[Dict[str, Any]] = None,
+        entry_functions: Optional[Sequence[str]] = None,
+    ) -> str:
+        agg = hashlib.sha256()
+        if groups_config:
+            agg.update(json.dumps(groups_config, sort_keys=True).encode("utf-8"))
+        if execution_config:
+            agg.update(json.dumps(execution_config, sort_keys=True).encode("utf-8"))
+        if entry_functions:
+            agg.update(json.dumps(sorted(entry_functions), sort_keys=True).encode("utf-8"))
+        for group_name, path in sorted(bc_paths.items()):
+            agg.update(str(group_name).encode("utf-8"))
+            agg.update(str(Path(path).resolve()).encode("utf-8"))
+            try:
+                with open(path, "rb") as f:
                     for chunk in iter(lambda: f.read(8192), b""):
                         agg.update(chunk)
             except OSError:

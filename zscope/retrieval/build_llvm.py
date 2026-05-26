@@ -34,6 +34,7 @@ class BitcodeBuilder:
         "__VOSFILENAME__",
     }
     _MANIFEST_VERSION = 1
+    _LINK_MANIFEST_VERSION = 1
 
     def __init__(
         self,
@@ -67,6 +68,7 @@ class BitcodeBuilder:
         self._manifest: Dict[str, Any] = {}
         self._manifest_dirty = False
         self._state_lock = threading.Lock()
+        self.reused_linked_groups: set[str] = set()
 
     @staticmethod
     def _make_gllvm_env() -> dict:
@@ -109,6 +111,7 @@ class BitcodeBuilder:
         self._manifest_dirty = False
         self._bc_to_src.clear()
         self._bc_compile_index.clear()
+        self.reused_linked_groups.clear()
 
         commands = self._load_compile_commands()
         if not commands:
@@ -156,6 +159,10 @@ class BitcodeBuilder:
         # 为每组过滤并合并 bc 文件
         for group_name, exclude_list in groups.items():
             logger.info("Linking group '%s' (excluding %d pattern(s))", group_name, len(exclude_list))
+            previous_selected_bcs = self._load_previous_scope_plan_bcs(
+                group_name,
+                Path(project_root or self.source_root),
+            )
             
             group_bcs = []
             bc_items = sorted(
@@ -193,7 +200,11 @@ class BitcodeBuilder:
                 logger.warning("No .bc files selected for group '%s'", group_name)
                 continue
 
-            merged = self._link_all(group_bcs, group_name)
+            merged = self._link_all(
+                group_bcs,
+                group_name,
+                previous_selected_bcs=previous_selected_bcs,
+            )
             if merged:
                 results[group_name] = merged
 
@@ -214,7 +225,14 @@ class BitcodeBuilder:
         bitcode = data.get("bitcode", {})
         if not isinstance(bitcode, dict):
             bitcode = {}
-        return {"version": self._MANIFEST_VERSION, "bitcode": bitcode}
+        linked = data.get("linked", {})
+        if not isinstance(linked, dict):
+            linked = {}
+        return {
+            "version": self._MANIFEST_VERSION,
+            "bitcode": bitcode,
+            "linked": linked,
+        }
 
     def _save_manifest(self) -> None:
         if not self._manifest_dirty:
@@ -226,6 +244,99 @@ class BitcodeBuilder:
             )
         except OSError as exc:
             logger.debug("Failed to write bitcode manifest %s: %s", self._manifest_path, exc)
+
+    def _linked_group_fingerprint(self, bc_files: Sequence[Path]) -> str:
+        payload = {
+            "version": self._LINK_MANIFEST_VERSION,
+            "llvm_link": self.llvm_link,
+            "inputs": [
+                {
+                    "path": str(Path(path).resolve()),
+                    "hash": self._file_hash(path),
+                }
+                for path in bc_files
+            ],
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+    def _reuse_linked_bitcode_if_current(
+        self,
+        merged_path: Path,
+        group_name: str,
+        fingerprint: str,
+        bc_files: Sequence[Path],
+        previous_selected_bcs: Optional[set[str]] = None,
+    ) -> bool:
+        resolved_merged = merged_path.resolve()
+        with self._state_lock:
+            entry = dict(self._manifest.get("linked", {}).get(group_name, {}))
+        if (
+            entry.get("fingerprint") == fingerprint
+            and resolved_merged.exists()
+            and entry.get("bitcode_hash") == self._file_hash(resolved_merged)
+        ):
+            self.reused_linked_groups.add(group_name)
+            logger.info("Reusing unchanged merged bitcode %s", resolved_merged)
+            return True
+
+        current_bcs = {str(Path(path).resolve()) for path in bc_files}
+        previous_bcs = previous_selected_bcs or set()
+        if not previous_bcs or previous_bcs != current_bcs or not resolved_merged.exists():
+            return False
+        try:
+            merged_mtime = resolved_merged.stat().st_mtime
+            newest_input_mtime = max(Path(path).resolve().stat().st_mtime for path in bc_files)
+        except OSError:
+            return False
+        if merged_mtime < newest_input_mtime:
+            return False
+        self._record_linked_bitcode_manifest(resolved_merged, group_name, fingerprint)
+        self.reused_linked_groups.add(group_name)
+        logger.info(
+            "Reusing existing merged bitcode %s from unchanged scope plan",
+            resolved_merged,
+        )
+        return True
+
+    def _record_linked_bitcode_manifest(
+        self,
+        merged_path: Path,
+        group_name: str,
+        fingerprint: str,
+    ) -> None:
+        resolved_merged = merged_path.resolve()
+        with self._state_lock:
+            linked = self._manifest.setdefault("linked", {})
+            linked[group_name] = {
+                "fingerprint": fingerprint,
+                "bitcode_hash": self._file_hash(resolved_merged),
+                "path": str(resolved_merged),
+            }
+            self._manifest_dirty = True
+
+    def _load_previous_scope_plan_bcs(self, group_name: str, base_dir: Path) -> set[str]:
+        plan_path = self.output_dir / f"bitcode_scope_{group_name}.json"
+        if not plan_path.exists():
+            return set()
+        try:
+            with open(plan_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError, TypeError):
+            return set()
+        selected = data.get("selected_bcs") if isinstance(data, dict) else None
+        if not isinstance(selected, list):
+            return set()
+        paths: set[str] = set()
+        for raw in selected:
+            if not raw:
+                continue
+            path = Path(str(raw))
+            if not path.is_absolute():
+                path = Path(base_dir).resolve() / path
+            paths.add(str(path.resolve()))
+        return paths
 
     def _load_compile_commands(self) -> List[dict]:
         """加载并过滤 compile_commands.json。"""
@@ -389,11 +500,26 @@ class BitcodeBuilder:
         cpu_count = os.cpu_count() or 4
         return max(1, min(command_count, cpu_count, 8))
 
-    def _link_all(self, bc_files: List[Path], group_name: str) -> Optional[Path]:
+    def _link_all(
+        self,
+        bc_files: List[Path],
+        group_name: str,
+        *,
+        previous_selected_bcs: Optional[set[str]] = None,
+    ) -> Optional[Path]:
         """llvm-link 合并所有给定的 .bc 为单一文件（支持分批以避免参数过长）。"""
         merged_path = self.output_dir / f"merged_{group_name}.bc"
         if not bc_files:
             return None
+        link_fingerprint = self._linked_group_fingerprint(bc_files)
+        if self._reuse_linked_bitcode_if_current(
+            merged_path,
+            group_name,
+            link_fingerprint,
+            bc_files,
+            previous_selected_bcs,
+        ):
+            return merged_path
         # 尝试一次性链接
         try:
             cmd = [self.llvm_link, "-o", str(merged_path)] + [str(p) for p in bc_files]
@@ -401,13 +527,19 @@ class BitcodeBuilder:
                 cmd, timeout=self.timeout, capture_output=True, text=True, check=True,
             )
             logger.info("Merged %d .bc files → %s", len(bc_files), merged_path)
+            self._record_linked_bitcode_manifest(merged_path, group_name, link_fingerprint)
             return merged_path
         except subprocess.CalledProcessError as e:
             # 命令太长或链接冲突
             stderr = e.stderr or ""
             if "Argument list too long" in str(e) or "Argument list too long" in stderr or e.returncode == 7: # 7 on windows
                 logger.warning("llvm-link args too long, falling back to chunked linking...")
-                return self._link_in_chunks(bc_files, merged_path, group_name)
+                return self._link_in_chunks(
+                    bc_files,
+                    merged_path,
+                    group_name,
+                    link_fingerprint,
+                )
             
             # 其他链接错误（可能存在多重定义或 IR 版本不兼容）
             logger.error("llvm-link failed (exit code %d).", e.returncode)
@@ -417,7 +549,13 @@ class BitcodeBuilder:
             logger.error("llvm-link unexpected error: %s", e)
             return None
 
-    def _link_in_chunks(self, bc_files: List[Path], final_output: Path, group_name: str) -> Optional[Path]:
+    def _link_in_chunks(
+        self,
+        bc_files: List[Path],
+        final_output: Path,
+        group_name: str,
+        link_fingerprint: Optional[str] = None,
+    ) -> Optional[Path]:
         """分批合并 bitcode 文件。"""
         chunk_size = 500
         intermediate_bcs = []
@@ -441,6 +579,11 @@ class BitcodeBuilder:
                 cmd, timeout=self.timeout, capture_output=True, text=True, check=True
             )
             logger.info("Successfully merged via chunks → %s", final_output)
+            self._record_linked_bitcode_manifest(
+                final_output,
+                group_name,
+                link_fingerprint or self._linked_group_fingerprint(bc_files),
+            )
             return final_output
         except subprocess.CalledProcessError as e:
             logger.error("Final chunk linking failed: %s\n%s", e, (e.stderr or "")[:1000])
