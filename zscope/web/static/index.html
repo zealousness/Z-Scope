@@ -1471,6 +1471,50 @@
                     return btoa(binary);
                 },
 
+                bytesToBase64(bytes) {
+                    let binary = '';
+                    const chunkSize = 0x8000;
+                    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+                        const chunk = bytes.subarray(offset, offset + chunkSize);
+                        binary += String.fromCharCode(...chunk);
+                    }
+                    return btoa(binary);
+                },
+
+                base64ToBytes(base64Text) {
+                    const binary = atob(base64Text);
+                    const bytes = new Uint8Array(binary.length);
+                    for (let i = 0; i < binary.length; i += 1) {
+                        bytes[i] = binary.charCodeAt(i);
+                    }
+                    return bytes;
+                },
+
+                async compressOfflineText(plainText) {
+                    if (typeof CompressionStream !== 'undefined') {
+                        const stream = new Blob([plainText]).stream().pipeThrough(new CompressionStream('gzip'));
+                        const buffer = await new Response(stream).arrayBuffer();
+                        return `gzip-base64:${this.bytesToBase64(new Uint8Array(buffer))}`;
+                    }
+                    return `base64:${this.encodeBase64Utf8(plainText)}`;
+                },
+
+                async decompressOfflineText(encodedText) {
+                    const text = String(encodedText || '');
+                    if (text.startsWith('gzip-base64:')) {
+                        const bytes = this.base64ToBytes(text.slice('gzip-base64:'.length));
+                        if (typeof DecompressionStream === 'undefined') {
+                            throw new Error('当前浏览器不支持 gzip 离线数据解压');
+                        }
+                        const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+                        return new Response(stream).text();
+                    }
+                    if (text.startsWith('base64:')) {
+                        return this.decodeBase64Utf8(text.slice('base64:'.length));
+                    }
+                    return text;
+                },
+
                 parseOfflineState(rawText) {
                     const trimmed = String(rawText || '').trim();
                     if (!trimmed) {
@@ -1623,6 +1667,34 @@
                     return compact;
                 },
 
+                compactOfflineIssueSummary(issue, fallback = '') {
+                    if (!issue || typeof issue !== 'object') {
+                        return {};
+                    }
+                    const summary = {};
+                    [
+                        'id', 'candidate_id', 'candidate_source', 'finding_kind', 'function', 'location',
+                        'category', 'subcategory', 'validation_status', 'validation_reasoning',
+                        'confidence', 'impact_level', 'dedup_key', 'stable_fingerprint',
+                        'defect_class', 'rule', 'rule_id', 'cwe', 'final_score',
+                        'file', 'line', 'start_line', 'end_line', 'entry_function', 'sink_function',
+                        'target_function', 'analyzed_from', 'reachable_from_entry',
+                        'internal_sink_lifted', 'normalized_category', 'source_loc', 'sink_loc',
+                    ].forEach(key => {
+                        if (issue[key] !== undefined) {
+                            summary[key] = issue[key];
+                        }
+                    });
+                    ['description', 'root_cause', 'suggested_fix', 'source', 'sink'].forEach(key => {
+                        if (issue[key] !== undefined) {
+                            summary[key] = this.limitOfflineText(issue[key], 600);
+                        }
+                    });
+                    summary._offline_id = this.offlineIssueKey(issue, fallback);
+                    summary._detail_lazy = true;
+                    return summary;
+                },
+
                 compactOfflineReportView(view) {
                     const compact = {};
                     if (!view || typeof view !== 'object') {
@@ -1651,6 +1723,28 @@
                     const state = rawState && typeof rawState === 'object' ? rawState : {};
                     state.reportViews = state.reportViews || {};
                     state.reportView = state.reportView || 'default';
+                    const summaries = state.issueSummaries && typeof state.issueSummaries === 'object'
+                        ? state.issueSummaries
+                        : null;
+                    if (summaries) {
+                        Object.entries(state.reportViews).forEach(([, view]) => {
+                            if (!view || typeof view !== 'object' || !Array.isArray(view.issueRefs)) {
+                                return;
+                            }
+                            view.issues = view.issueRefs
+                                .map(ref => summaries[ref])
+                                .filter(issue => issue && typeof issue === 'object');
+                        });
+                        if (!Array.isArray(state.findings) || !state.findings.length) {
+                            const selectedView = state.reportViews[state.reportView] || {};
+                            const refs = Array.isArray(state.currentIssueRefs)
+                                ? state.currentIssueRefs
+                                : (Array.isArray(selectedView.issueRefs) ? selectedView.issueRefs : []);
+                            state.findings = refs
+                                .map(ref => summaries[ref])
+                                .filter(issue => issue && typeof issue === 'object');
+                        }
+                    }
                     const store = state.issueStore && typeof state.issueStore === 'object' ? state.issueStore : null;
                     if (store) {
                         Object.entries(state.reportViews).forEach(([, view]) => {
@@ -1691,6 +1785,9 @@
                     if (state.issueStore && typeof state.issueStore === 'object') {
                         Object.values(state.issueStore).forEach(add);
                     }
+                    if (state.issueSummaries && typeof state.issueSummaries === 'object') {
+                        Object.values(state.issueSummaries).forEach(add);
+                    }
                     Object.values(state.reportViews || {}).forEach(view => {
                         if (view && Array.isArray(view.issues)) {
                             view.issues.forEach(add);
@@ -1706,31 +1803,41 @@
                     return Array.from(unique.values());
                 },
 
-                buildOfflinePayload() {
-                    const issueStore = {};
-                    const addIssue = (issue, fallback) => {
-                        const compact = this.compactOfflineIssue(issue, fallback);
-                        const key = compact._offline_id || this.offlineIssueKey(issue, fallback);
-                        compact._offline_id = key;
-                        issueStore[key] = { ...(issueStore[key] || {}), ...compact };
+                async buildOfflinePayload() {
+                    const issueSummaries = {};
+                    const issueChunks = {};
+                    const addIssue = async (issue, fallback) => {
+                        const key = this.offlineIssueKey(issue, fallback);
+                        const summary = this.compactOfflineIssueSummary(issue, fallback);
+                        summary._offline_id = key;
+                        issueSummaries[key] = { ...(issueSummaries[key] || {}), ...summary };
+                        if (!issueChunks[key]) {
+                            const compact = this.compactOfflineIssue(issue, fallback);
+                            compact._offline_id = key;
+                            issueChunks[key] = await this.compressOfflineText(JSON.stringify(compact));
+                        }
                         return key;
                     };
 
                     const reportViews = {};
-                    Object.entries(this.reportViews || {}).forEach(([name, view]) => {
+                    for (const [name, view] of Object.entries(this.reportViews || {})) {
                         if (!view || typeof view !== 'object') {
-                            return;
+                            continue;
                         }
                         const compactView = this.compactOfflineReportView(view);
                         const issues = Array.isArray(view.issues) ? view.issues : [];
-                        compactView.issueRefs = issues.map((issue, index) => addIssue(issue, `${name}:${index}`));
+                        compactView.issueRefs = [];
+                        for (let index = 0; index < issues.length; index += 1) {
+                            compactView.issueRefs.push(await addIssue(issues[index], `${name}:${index}`));
+                        }
                         compactView.issue_count = compactView.issue_count ?? compactView.issueRefs.length;
                         reportViews[name] = compactView;
-                    });
+                    }
 
-                    const currentIssueRefs = (this.findings || []).map((issue, index) => (
-                        addIssue(issue, `${this.reportView || 'current'}:${index}`)
-                    ));
+                    const currentIssueRefs = [];
+                    for (let index = 0; index < (this.findings || []).length; index += 1) {
+                        currentIssueRefs.push(await addIssue(this.findings[index], `${this.reportView || 'current'}:${index}`));
+                    }
                     if (!reportViews[this.reportView]) {
                         reportViews[this.reportView] = {
                             label: this.reportView || 'Current',
@@ -1745,13 +1852,14 @@
                     }
 
                     return {
-                        schemaVersion: 2,
+                        schemaVersion: 3,
                         reportSummary: this.compactOfflineValue(this.reportSummary || {}),
                         reportViews,
                         reportView: this.reportView,
                         viewSummary: this.compactOfflineValue(this.viewSummary || {}),
                         currentIssueRefs,
-                        issueStore,
+                        issueSummaries,
+                        issueChunks,
                         exportedAt: new Date().toISOString(),
                     };
                 },
@@ -1823,7 +1931,7 @@
 
                 async exportOfflinePage() {
                     try {
-                        const payload = this.buildOfflinePayload();
+                        const payload = await this.buildOfflinePayload();
                         const offlineHtml = await this.createOfflineHtml(payload);
                         const blob = new Blob([offlineHtml], { type: 'text/html;charset=utf-8' });
                         const link = document.createElement('a');

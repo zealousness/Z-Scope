@@ -160,6 +160,50 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
     return btoa(binary);
   }
 
+  function bytesToBase64(bytes) {
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      const chunk = bytes.subarray(offset, offset + chunkSize);
+      binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
+  }
+
+  function base64ToBytes(base64Text) {
+    const binary = atob(base64Text);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  }
+
+  async function compressOfflineText(plainText) {
+    if (typeof CompressionStream !== 'undefined') {
+      const stream = new Blob([plainText]).stream().pipeThrough(new CompressionStream('gzip'));
+      const buffer = await new Response(stream).arrayBuffer();
+      return `gzip-base64:${bytesToBase64(new Uint8Array(buffer))}`;
+    }
+    return `base64:${encodeBase64Utf8(plainText)}`;
+  }
+
+  async function decompressOfflineText(encodedText) {
+    const text = String(encodedText || '');
+    if (text.startsWith('gzip-base64:')) {
+      const bytes = base64ToBytes(text.slice('gzip-base64:'.length));
+      if (typeof DecompressionStream === 'undefined') {
+        throw new Error('当前浏览器不支持 gzip 离线数据解压');
+      }
+      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+      return new Response(stream).text();
+    }
+    if (text.startsWith('base64:')) {
+      return decodeBase64Utf8(text.slice('base64:'.length));
+    }
+    return text;
+  }
+
   function parseOfflineState(rawText) {
     const trimmed = String(rawText || '').trim();
     if (!trimmed) {
@@ -202,6 +246,31 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
     const hydrated = rawState && typeof rawState === 'object' ? rawState : {};
     hydrated.reportViews = hydrated.reportViews || {};
     hydrated.reportView = hydrated.reportView || 'default';
+    hydrated.issueSummaries = hydrated.issueSummaries && typeof hydrated.issueSummaries === 'object'
+      ? hydrated.issueSummaries
+      : {};
+    hydrated.issueChunks = hydrated.issueChunks && typeof hydrated.issueChunks === 'object'
+      ? hydrated.issueChunks
+      : {};
+    if (Object.keys(hydrated.issueSummaries).length) {
+      Object.entries(hydrated.reportViews).forEach(([, view]) => {
+        if (!view || typeof view !== 'object' || !Array.isArray(view.issueRefs)) {
+          return;
+        }
+        view.issues = view.issueRefs
+          .map(ref => hydrated.issueSummaries[ref])
+          .filter(issue => issue && typeof issue === 'object');
+      });
+      if (!Array.isArray(hydrated.findings) || !hydrated.findings.length) {
+        const selectedView = hydrated.reportViews[hydrated.reportView] || {};
+        const refs = Array.isArray(hydrated.currentIssueRefs)
+          ? hydrated.currentIssueRefs
+          : (Array.isArray(selectedView.issueRefs) ? selectedView.issueRefs : []);
+        hydrated.findings = refs
+          .map(ref => hydrated.issueSummaries[ref])
+          .filter(issue => issue && typeof issue === 'object');
+      }
+    }
     const store = hydrated.issueStore && typeof hydrated.issueStore === 'object' ? hydrated.issueStore : null;
     if (store) {
       Object.entries(hydrated.reportViews).forEach(([, view]) => {
@@ -229,29 +298,64 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
       }
     }
     hydrated.findings = Array.isArray(hydrated.findings) ? hydrated.findings : [];
+    hydrated.findings.forEach((issue, index) => {
+      if (!issue || typeof issue !== 'object') {
+        return;
+      }
+      const key = issue._offline_id || offlineIssueKey(issue, `current:${index}`);
+      issue._offline_id = key;
+      hydrated.issueSummaries[key] = hydrated.issueSummaries[key] || issue;
+    });
     return hydrated;
   }
 
-  function dehydrateOfflineState(source) {
-    const store = {};
-    const addIssue = (issue, fallback) => {
+  async function dehydrateOfflineState(source) {
+    const issueSummaries = {};
+    const issueChunks = { ...(source.issueChunks || {}) };
+    const addIssue = async (issue, fallback) => {
       if (!issue || typeof issue !== 'object') {
         return null;
       }
       const key = issue._offline_id || offlineIssueKey(issue, fallback);
       issue._offline_id = key;
-      store[key] = stripRuntimeFields(issue);
-      store[key]._offline_id = key;
+      const summary = stripRuntimeFields(issue);
+      summary._offline_id = key;
+      summary._detail_lazy = true;
+      delete summary.code_snippet;
+      delete summary.reasoning;
+      delete summary.reasoning_process;
+      delete summary.evidence_pack;
+      delete summary.positive_evidence;
+      delete summary.negative_evidence;
+      delete summary.related_needs_review_observations;
+      issueSummaries[key] = { ...(source.issueSummaries ? source.issueSummaries[key] : {}), ...summary };
+      if (!issueChunks[key] && Object.keys(issue).length > Object.keys(summary).length) {
+        const detail = stripRuntimeFields(issue);
+        detail._offline_id = key;
+        issueChunks[key] = await compressOfflineText(JSON.stringify(detail));
+      }
       return key;
     };
     const reportViews = {};
-    Object.entries(source.reportViews || {}).forEach(([name, view]) => {
+    for (const [name, view] of Object.entries(source.reportViews || {})) {
       if (!view || typeof view !== 'object') {
-        return;
+        continue;
       }
-      const refs = Array.isArray(view.issues)
-        ? view.issues.map((issue, index) => addIssue(issue, `${name}:${index}`)).filter(Boolean)
-        : (Array.isArray(view.issueRefs) ? view.issueRefs : []);
+      const refs = [];
+      if (Array.isArray(view.issues)) {
+        for (let index = 0; index < view.issues.length; index += 1) {
+          const ref = await addIssue(view.issues[index], `${name}:${index}`);
+          if (ref) refs.push(ref);
+        }
+      } else if (Array.isArray(view.issueRefs)) {
+        refs.push(...view.issueRefs);
+        view.issueRefs.forEach(ref => {
+          const summary = source.issueSummaries && source.issueSummaries[ref];
+          if (summary) {
+            issueSummaries[ref] = summary;
+          }
+        });
+      }
       reportViews[name] = {
         label: view.label || name,
         description: view.description || '',
@@ -261,10 +365,13 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
         attached_needs_review_count: view.attached_needs_review_count || 0,
         issueRefs: refs,
       };
-    });
-    const currentIssueRefs = (Array.isArray(source.findings) ? source.findings : [])
-      .map((issue, index) => addIssue(issue, `${source.reportView || 'current'}:${index}`))
-      .filter(Boolean);
+    }
+    const currentIssueRefs = [];
+    const currentFindings = Array.isArray(source.findings) ? source.findings : [];
+    for (let index = 0; index < currentFindings.length; index += 1) {
+      const ref = await addIssue(currentFindings[index], `${source.reportView || 'current'}:${index}`);
+      if (ref) currentIssueRefs.push(ref);
+    }
     if (!reportViews[source.reportView]) {
       reportViews[source.reportView] = {
         label: source.reportView || 'Current',
@@ -280,13 +387,14 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
       reportViews[source.reportView].issue_count = currentIssueRefs.length;
     }
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       reportSummary: source.reportSummary || {},
       reportViews,
       reportView: source.reportView || 'default',
       viewSummary: source.viewSummary || {},
       currentIssueRefs,
-      issueStore: store,
+      issueSummaries,
+      issueChunks,
       exportedAt: new Date().toISOString(),
     };
   }
@@ -315,6 +423,60 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
   const emptyViewEl = document.getElementById('emptyView');
   const defaultViewBtn = document.getElementById('defaultViewBtn');
   const needsReviewViewBtn = document.getElementById('needsReviewViewBtn');
+  const detailCache = state.issueStore && typeof state.issueStore === 'object' ? state.issueStore : {};
+
+  function updateIssueSummary(issue) {
+    if (!issue || typeof issue !== 'object') {
+      return;
+    }
+    const key = issue._offline_id || offlineIssueKey(issue);
+    issue._offline_id = key;
+    const summary = stripRuntimeFields(issue);
+    delete summary.code_snippet;
+    delete summary.reasoning;
+    delete summary.reasoning_process;
+    delete summary.evidence_pack;
+    delete summary.positive_evidence;
+    delete summary.negative_evidence;
+    delete summary.related_needs_review_observations;
+    state.issueSummaries[key] = {
+      ...(state.issueSummaries[key] || {}),
+      ...summary,
+      _offline_id: key,
+      _detail_lazy: true,
+    };
+  }
+
+  function mergeSummaryState(detail, summary) {
+    if (!summary || typeof summary !== 'object') {
+      return detail;
+    }
+    const merged = { ...(detail || {}), ...summary };
+    merged._offline_id = summary._offline_id || (detail && detail._offline_id);
+    return merged;
+  }
+
+  async function loadIssueDetail(summary) {
+    if (!summary || typeof summary !== 'object') {
+      return null;
+    }
+    const key = summary._offline_id || offlineIssueKey(summary);
+    summary._offline_id = key;
+    if (detailCache[key]) {
+      const merged = mergeSummaryState(detailCache[key], summary);
+      detailCache[key] = merged;
+      return merged;
+    }
+    const chunk = state.issueChunks ? state.issueChunks[key] : null;
+    if (!chunk) {
+      return summary;
+    }
+    const json = await decompressOfflineText(chunk);
+    const detail = JSON.parse(json);
+    const merged = mergeSummaryState(detail, summary);
+    detailCache[key] = merged;
+    return merged;
+  }
 
   function updateViewButtons() {
     if (!defaultViewBtn || !needsReviewViewBtn) return;
@@ -338,10 +500,11 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
     if (Array.isArray(selected.issues)) {
       return selected.issues;
     }
+    const summaries = state.issueSummaries && typeof state.issueSummaries === 'object' ? state.issueSummaries : {};
     const store = state.issueStore && typeof state.issueStore === 'object' ? state.issueStore : {};
     if (Array.isArray(selected.issueRefs)) {
       selected.issues = selected.issueRefs
-        .map(ref => store[ref])
+        .map(ref => summaries[ref] || store[ref])
         .filter(issue => issue && typeof issue === 'object');
       return selected.issues;
     }
@@ -502,16 +665,19 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
     }
   }
 
-  function select(i) {
+  async function select(i) {
     currentIndex = i;
-    const f = state.findings[i];
-    if (!f) {
+    const summary = state.findings[i];
+    if (!summary) {
       emptyViewEl.style.display = 'flex';
       selectedViewEl.style.display = 'none';
       return;
     }
     emptyViewEl.style.display = 'none';
     selectedViewEl.style.display = 'flex';
+    const selectedKey = summary._offline_id || offlineIssueKey(summary, i);
+    summary._offline_id = selectedKey;
+    let f = summary;
 
     locEl.textContent = f.location || f.function || '';
     subcatEl.textContent = f.subcategory || '';
@@ -528,18 +694,48 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
     rootCauseEl.textContent = f.root_cause || f.description || '暂无根本原因分析';
     fixEl.textContent = f.suggested_fix || '暂无修复建议';
     
+    snippetEl.textContent = state.issueChunks && state.issueChunks[selectedKey] ? '正在加载离线详情...' : snippetEl.textContent;
+    reasoningEl.textContent = state.issueChunks && state.issueChunks[selectedKey] ? '正在加载离线详情...' : reasoningEl.textContent;
+    try {
+      const detail = await loadIssueDetail(summary);
+      if (currentIndex !== i || !detail) {
+        return;
+      }
+      f = mergeSummaryState(detail, summary);
+      state.findings[i] = f;
+      locEl.textContent = f.location || f.function || '';
+      subcatEl.textContent = f.subcategory || '';
+      sevEl.textContent = f.impact_level || '';
+      sevEl.className = 'badge ' + getSeverityClass(f.impact_level);
+      detailsCardEl.style.borderLeftColor = getBorderColor(f.impact_level);
+      statusEl.value = f.validation_status || 'pending';
+      reasonEl.value = f.validation_reasoning || '';
+      snippetEl.textContent = f.code_snippet || '暂无代码片段';
+      reasoningEl.textContent = f.reasoning || f.reasoning_process || '暂无推理过程';
+      evidenceDetailsEl.textContent = formatFindingEvidence(f) || '暂无结构化证据';
+      rootCauseEl.textContent = f.root_cause || f.description || '暂无根本原因分析';
+      fixEl.textContent = f.suggested_fix || '暂无修复建议';
+    } catch (error) {
+      if (currentIndex === i) {
+        snippetEl.textContent = `离线详情加载失败：${error.message || error}`;
+        reasoningEl.textContent = summary.reasoning || summary.reasoning_process || '暂无推理过程';
+        evidenceDetailsEl.textContent = formatFindingEvidence(summary) || '暂无结构化证据';
+      }
+    }
     renderList(); // update active class
   }
 
   statusEl.addEventListener('change', () => {
     if (currentIndex < 0) return;
     state.findings[currentIndex].validation_status = statusEl.value;
+    updateIssueSummary(state.findings[currentIndex]);
     renderList();
   });
 
   reasonEl.addEventListener('input', () => {
     if (currentIndex < 0) return;
     state.findings[currentIndex].validation_reasoning = reasonEl.value;
+    updateIssueSummary(state.findings[currentIndex]);
   });
 
   filterInputEl.addEventListener('input', () => {
@@ -556,8 +752,8 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
     }
   });
 
-  document.getElementById('savePageBtn').addEventListener('click', () => {
-    const json = JSON.stringify(dehydrateOfflineState(state)).replace(/<\/script>/gi, '<\\/script>');
+  document.getElementById('savePageBtn').addEventListener('click', async () => {
+    const json = JSON.stringify(await dehydrateOfflineState(state)).replace(/<\/script>/gi, '<\\/script>');
     const root = document.documentElement.cloneNode(true);
     const stateScript = root.querySelector('#zscope-offline-state');
     if (stateScript) {
