@@ -758,6 +758,8 @@ class LLMClient:
 
                     signature = self._tool_call_signature(func_name, func_args)
                     previous_calls = tool_call_history.get(signature, [])
+                    cached_replayed = any(call.get("cached_replay") for call in previous_calls)
+                    cached_previous_result = self._last_replayable_tool_result(previous_calls)
                     repeat_notice = self._build_repeat_tool_notice(
                         func_name,
                         func_args,
@@ -768,23 +770,44 @@ class LLMClient:
                         max_identical_tool_calls > 0
                         and len(previous_calls) >= max_identical_tool_calls
                     ):
-                        result = {
-                            "success": False,
-                            "error": (
-                                "Repeated identical tool call blocked by the loop guard. "
-                                "Use the earlier tool result already present in the conversation, "
-                                "or call a different tool/argument only if new evidence is required."
-                            ),
-                            "repeat_call_guard": True,
-                            **repeat_notice,
-                        }
-                        logger.warning(
-                            "Blocked repeated identical tool call: %s %s (repeat #%d)",
-                            func_name,
-                            func_args,
-                            len(previous_calls) + 1,
-                        )
+                        repeated_call_count = len(previous_calls) + 1
+                        if cached_previous_result is not None and not cached_replayed:
+                            result = dict(cached_previous_result)
+                            result["cached_tool_result"] = True
+                            result["repeat_call_warning"] = {
+                                **repeat_notice,
+                                "instruction": (
+                                    "This is a cached replay of the previous successful "
+                                    "tool result for the identical call. Use this content "
+                                    "now; do not request the same tool arguments again."
+                                ),
+                            }
+                            logger.warning(
+                                "Replayed cached result for repeated identical tool call: "
+                                "%s %s (repeat #%d)",
+                                func_name,
+                                func_args,
+                                repeated_call_count,
+                            )
+                        else:
+                            result = {
+                                "success": False,
+                                "error": (
+                                    "Repeated identical tool call blocked by the loop guard. "
+                                    "The previous result was already replayed or unavailable; "
+                                    "produce the best final answer from available evidence."
+                                ),
+                                "repeat_call_guard": True,
+                                **repeat_notice,
+                            }
+                            logger.warning(
+                                "Blocked repeated identical tool call: %s %s (repeat #%d)",
+                                func_name,
+                                func_args,
+                                repeated_call_count,
+                            )
                     else:
+                        repeated_call_count = 0
                         result = tool_executor(func_name, func_args)
                         if previous_calls and isinstance(result, dict):
                             result = dict(result)
@@ -807,6 +830,11 @@ class LLMClient:
                                 isinstance(result, dict)
                                 and result.get("repeat_call_guard")
                             ),
+                            "cached_replay": bool(
+                                isinstance(result, dict)
+                                and result.get("cached_tool_result")
+                            ),
+                            "result": result if isinstance(result, dict) else None,
                         }
                     )
                     if recorder and trace_session:
@@ -817,6 +845,60 @@ class LLMClient:
                             func_args,
                             result,
                         )
+
+                    if isinstance(result, dict) and result.get("repeat_call_guard"):
+                        final_tokens = self.estimate_tokens(
+                            self._prepare_messages_for_model(conversation)
+                        )
+                        logger.error(
+                            "Conversation stopped early after repeated identical tool call: "
+                            "%s %s (repeat #%d)",
+                            func_name,
+                            func_args,
+                            repeated_call_count,
+                        )
+                        if recorder and trace_session:
+                            recorder.record_session_end(
+                                trace_session,
+                                iterations,
+                                final_tokens,
+                                truncated=True,
+                            )
+                        error_content = json.dumps(
+                            {
+                                "success": False,
+                                "error": (
+                                    "Conversation stopped because the model repeatedly "
+                                    "requested the same tool call."
+                                ),
+                                "loop_guard_triggered": True,
+                                "repeated_tool_call": {
+                                    "tool": func_name,
+                                    "arguments": func_args,
+                                    "repeat_count": repeated_call_count,
+                                },
+                            },
+                            ensure_ascii=False,
+                        )
+                        return {
+                            "content": error_content,
+                            "conversation": conversation,
+                            "iterations": iterations,
+                            "truncated": True,
+                            "loop_guard_triggered": True,
+                            "repeated_tool_call": {
+                                "tool": func_name,
+                                "arguments": func_args,
+                                "repeat_count": repeated_call_count,
+                            },
+                            "context_tokens": final_tokens,
+                            "cumulative_prompt_tokens": cumulative_prompt_tokens,
+                            "cumulative_completion_tokens": cumulative_completion_tokens,
+                            "cumulative_total_tokens": (
+                                cumulative_prompt_tokens + cumulative_completion_tokens
+                            ),
+                            "tool_call_count": self._count_tool_result_messages(conversation),
+                        }
 
                 except Exception as e:
                     logger.error(f"Tool execution failed: {e}")
@@ -961,6 +1043,20 @@ class LLMClient:
                 "tool_result_message_index": latest.get("tool_result_message_index"),
             }
         return notice
+
+    @staticmethod
+    def _last_replayable_tool_result(previous_calls: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Return the latest successful previous tool result that can be replayed."""
+        for call in reversed(previous_calls):
+            result = call.get("result")
+            if not isinstance(result, dict):
+                continue
+            if result.get("repeat_call_guard") or result.get("cached_tool_result"):
+                continue
+            if result.get("success") is False:
+                continue
+            return result
+        return None
 
     def _parse_tool_args(self, func_args_str: Any) -> Dict[str, Any]:
         """Parse tool arguments, with fallbacks for slightly malformed JSON."""

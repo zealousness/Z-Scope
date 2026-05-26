@@ -210,6 +210,19 @@ class JsonToolAgent(ToolCallingAgent):
                     metadata=metadata,
                 )
 
+            if result.get("loop_guard_triggered"):
+                metadata = self._conversation_token_metadata(result)
+                repeated = result.get("repeated_tool_call")
+                if isinstance(repeated, dict):
+                    metadata["repeated_tool_call"] = repeated
+                metadata["loop_guard_triggered"] = True
+                return AgentResponse(
+                    success=False,
+                    data={},
+                    error="Stopped after repeated identical tool calls.",
+                    metadata=metadata,
+                )
+
             if fail_on_truncated and result.get("truncated"):
                 return AgentResponse(success=False, data={}, error=truncated_error)
 
