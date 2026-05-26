@@ -1483,6 +1483,279 @@
                     return JSON.parse(trimmed);
                 },
 
+                limitOfflineText(value, limit = 4000) {
+                    if (value === undefined || value === null) {
+                        return value;
+                    }
+                    const text = String(value);
+                    if (text.length <= limit) {
+                        return text;
+                    }
+                    return `${text.slice(0, limit)}\n... [truncated ${text.length - limit} chars]`;
+                },
+
+                compactOfflineValue(value, depth = 0) {
+                    if (value === undefined || value === null) {
+                        return value;
+                    }
+                    if (typeof value === 'string') {
+                        return this.limitOfflineText(value, depth > 0 ? 1200 : 4000);
+                    }
+                    if (typeof value === 'number' || typeof value === 'boolean') {
+                        return value;
+                    }
+                    if (Array.isArray(value)) {
+                        const maxItems = depth > 0 ? 8 : 16;
+                        const result = value.slice(0, maxItems).map(item => this.compactOfflineValue(item, depth + 1));
+                        if (value.length > maxItems) {
+                            result.push(`... [truncated ${value.length - maxItems} items]`);
+                        }
+                        return result;
+                    }
+                    if (typeof value === 'object') {
+                        if (depth >= 3) {
+                            return this.limitOfflineText(JSON.stringify(value), 1200);
+                        }
+                        const result = {};
+                        const entries = Object.entries(value).slice(0, 40);
+                        entries.forEach(([key, item]) => {
+                            result[key] = this.compactOfflineValue(item, depth + 1);
+                        });
+                        const omitted = Object.keys(value).length - entries.length;
+                        if (omitted > 0) {
+                            result._truncated_keys = omitted;
+                        }
+                        return result;
+                    }
+                    return String(value);
+                },
+
+                offlineIssueKey(issue, fallback = '') {
+                    if (!issue || typeof issue !== 'object') {
+                        return `issue:${fallback}`;
+                    }
+                    const stable = issue.dedup_key || issue.stable_fingerprint || issue.fingerprint;
+                    if (stable) {
+                        return String(stable);
+                    }
+                    const identity = [
+                        issue.id || '',
+                        issue.function || issue.func_name || '',
+                        issue.location || issue.file || issue.file_path || '',
+                        issue.subcategory || issue.defect_class || issue.category || '',
+                    ].map(part => String(part).replace(/\s+/g, ' ').trim());
+                    const key = identity.join('|');
+                    return identity.some(Boolean) ? key : `issue:${fallback}`;
+                },
+
+                compactOfflineEvidencePack(pack) {
+                    if (!pack || typeof pack !== 'object') {
+                        return undefined;
+                    }
+                    const keep = [
+                        'checker', 'candidate_source', 'candidate_is_conclusion', 'validation_required',
+                        'final_score', 'score', 'entry_function', 'sink_function', 'target_function',
+                        'resource', 'resource_kind', 'path', 'source_path', 'value_flow',
+                        'lifecycle_pair', 'ast_cfg', 'clang_matcher_fact', 'semantic_overlay_evidence',
+                    ];
+                    const compact = {};
+                    keep.forEach(key => {
+                        if (pack[key] !== undefined) {
+                            compact[key] = this.compactOfflineValue(pack[key], 1);
+                        }
+                    });
+                    return Object.keys(compact).length ? compact : undefined;
+                },
+
+                compactOfflineIssue(issue, fallback = '') {
+                    const compact = {};
+                    if (!issue || typeof issue !== 'object') {
+                        return compact;
+                    }
+                    const textLimits = {
+                        code_snippet: 12000,
+                        reasoning: 10000,
+                        reasoning_process: 10000,
+                        validation_reasoning: 10000,
+                        description: 5000,
+                        root_cause: 5000,
+                        suggested_fix: 5000,
+                        guard_analysis: 4000,
+                        exploit_scenario: 4000,
+                    };
+                    const keep = [
+                        'id', 'candidate_id', 'candidate_source', 'finding_kind', 'function', 'location',
+                        'category', 'subcategory', 'description', 'root_cause', 'suggested_fix',
+                        'reasoning', 'reasoning_process', 'code_snippet', 'validation_status',
+                        'validation_reasoning', 'confidence', 'impact_level', 'dedup_key',
+                        'stable_fingerprint', 'defect_class', 'rule', 'rule_id', 'cwe', 'source', 'sink',
+                        'guard_analysis', 'exploit_scenario', 'final_score', 'file', 'line',
+                        'start_line', 'end_line', 'entry_function', 'sink_function', 'target_function',
+                        'analyzed_from', 'reachable_from_entry', 'internal_sink_lifted',
+                        'normalized_category', 'source_loc', 'sink_loc',
+                    ];
+                    keep.forEach(key => {
+                        if (issue[key] === undefined) {
+                            return;
+                        }
+                        compact[key] = typeof issue[key] === 'string'
+                            ? this.limitOfflineText(issue[key], textLimits[key] || 2000)
+                            : issue[key];
+                    });
+                    ['positive_evidence', 'negative_evidence', 'evidence_refs', 'call_path', 'path_constraints'].forEach(key => {
+                        if (Array.isArray(issue[key])) {
+                            compact[key] = this.compactOfflineValue(issue[key]);
+                        }
+                    });
+                    const evidencePack = this.compactOfflineEvidencePack(issue.evidence_pack);
+                    if (evidencePack) {
+                        compact.evidence_pack = evidencePack;
+                    }
+                    if (Array.isArray(issue.call_paths)) {
+                        compact.call_paths = this.compactOfflineValue(issue.call_paths);
+                    }
+                    if (Array.isArray(issue.related_needs_review_observations)) {
+                        compact.related_needs_review_observations = issue.related_needs_review_observations
+                            .slice(0, 6)
+                            .map((item, index) => this.compactOfflineIssue(item, `${fallback}:related:${index}`));
+                    }
+                    compact._offline_id = this.offlineIssueKey(issue, fallback);
+                    return compact;
+                },
+
+                compactOfflineReportView(view) {
+                    const compact = {};
+                    if (!view || typeof view !== 'object') {
+                        return compact;
+                    }
+                    [
+                        'label', 'description', 'issue_count', 'included_needs_review_count',
+                        'independent_needs_review_count', 'attached_needs_review_count',
+                    ].forEach(key => {
+                        if (view[key] !== undefined) {
+                            compact[key] = this.compactOfflineValue(view[key]);
+                        }
+                    });
+                    return compact;
+                },
+
+                stripOfflineRuntimeFields(issue) {
+                    if (!issue || typeof issue !== 'object') {
+                        return issue;
+                    }
+                    const { uid, _offline_id, ...rest } = issue;
+                    return { ...rest };
+                },
+
+                hydrateOfflineState(rawState) {
+                    const state = rawState && typeof rawState === 'object' ? rawState : {};
+                    state.reportViews = state.reportViews || {};
+                    state.reportView = state.reportView || 'default';
+                    const store = state.issueStore && typeof state.issueStore === 'object' ? state.issueStore : null;
+                    if (store) {
+                        Object.entries(state.reportViews).forEach(([, view]) => {
+                            if (!view || typeof view !== 'object' || !Array.isArray(view.issueRefs)) {
+                                return;
+                            }
+                            view.issues = view.issueRefs
+                                .map(ref => store[ref])
+                                .filter(issue => issue && typeof issue === 'object');
+                        });
+                        if (!Array.isArray(state.findings) || !state.findings.length) {
+                            const selectedView = state.reportViews[state.reportView] || {};
+                            const refs = Array.isArray(state.currentIssueRefs)
+                                ? state.currentIssueRefs
+                                : (Array.isArray(selectedView.issueRefs) ? selectedView.issueRefs : []);
+                            state.findings = refs
+                                .map(ref => store[ref])
+                                .filter(issue => issue && typeof issue === 'object');
+                        }
+                    }
+                    if (!Array.isArray(state.findings) || !state.findings.length) {
+                        const selectedView = state.reportViews[state.reportView] || {};
+                        if (Array.isArray(selectedView.issues)) {
+                            state.findings = selectedView.issues;
+                        }
+                    }
+                    state.findings = Array.isArray(state.findings) ? state.findings : [];
+                    return state;
+                },
+
+                allOfflineIssues(state) {
+                    const items = [];
+                    const add = (issue) => {
+                        if (issue && typeof issue === 'object') {
+                            items.push(issue);
+                        }
+                    };
+                    if (state.issueStore && typeof state.issueStore === 'object') {
+                        Object.values(state.issueStore).forEach(add);
+                    }
+                    Object.values(state.reportViews || {}).forEach(view => {
+                        if (view && Array.isArray(view.issues)) {
+                            view.issues.forEach(add);
+                        }
+                    });
+                    if (Array.isArray(state.findings)) {
+                        state.findings.forEach(add);
+                    }
+                    const unique = new Map();
+                    items.forEach((issue, index) => {
+                        unique.set(this.offlineIssueKey(issue, index), this.stripOfflineRuntimeFields(issue));
+                    });
+                    return Array.from(unique.values());
+                },
+
+                buildOfflinePayload() {
+                    const issueStore = {};
+                    const addIssue = (issue, fallback) => {
+                        const compact = this.compactOfflineIssue(issue, fallback);
+                        const key = compact._offline_id || this.offlineIssueKey(issue, fallback);
+                        compact._offline_id = key;
+                        issueStore[key] = { ...(issueStore[key] || {}), ...compact };
+                        return key;
+                    };
+
+                    const reportViews = {};
+                    Object.entries(this.reportViews || {}).forEach(([name, view]) => {
+                        if (!view || typeof view !== 'object') {
+                            return;
+                        }
+                        const compactView = this.compactOfflineReportView(view);
+                        const issues = Array.isArray(view.issues) ? view.issues : [];
+                        compactView.issueRefs = issues.map((issue, index) => addIssue(issue, `${name}:${index}`));
+                        compactView.issue_count = compactView.issue_count ?? compactView.issueRefs.length;
+                        reportViews[name] = compactView;
+                    });
+
+                    const currentIssueRefs = (this.findings || []).map((issue, index) => (
+                        addIssue(issue, `${this.reportView || 'current'}:${index}`)
+                    ));
+                    if (!reportViews[this.reportView]) {
+                        reportViews[this.reportView] = {
+                            label: this.reportView || 'Current',
+                            description: 'Current dashboard view.',
+                            issue_count: currentIssueRefs.length,
+                            included_needs_review_count: 0,
+                            issueRefs: currentIssueRefs,
+                        };
+                    } else if (!Array.isArray(reportViews[this.reportView].issueRefs) || !reportViews[this.reportView].issueRefs.length) {
+                        reportViews[this.reportView].issueRefs = currentIssueRefs;
+                        reportViews[this.reportView].issue_count = currentIssueRefs.length;
+                    }
+
+                    return {
+                        schemaVersion: 2,
+                        reportSummary: this.compactOfflineValue(this.reportSummary || {}),
+                        reportViews,
+                        reportView: this.reportView,
+                        viewSummary: this.compactOfflineValue(this.viewSummary || {}),
+                        currentIssueRefs,
+                        issueStore,
+                        exportedAt: new Date().toISOString(),
+                    };
+                },
+
 
                 triggerOfflineImport() {
                     this.$refs.offlineImportInput.value = '';
@@ -1502,13 +1775,13 @@
                             if (!match) {
                                 throw new Error('未检测到离线状态数据');
                             }
-                            const offlineState = this.parseOfflineState(match[1]);
+                            const offlineState = this.hydrateOfflineState(this.parseOfflineState(match[1]));
                             const importedFindings = Array.isArray(offlineState.findings) ? offlineState.findings : [];
                             if (!importedFindings.length) {
                                 throw new Error('离线页面中没有可导入的问题数据');
                             }
                             this.findings = importedFindings.map((issue, index) => ({
-                                ...issue,
+                                ...this.stripOfflineRuntimeFields(issue),
                                 validation_status: issue.validation_status || 'pending',
                                 validation_reasoning: issue.validation_reasoning || '',
                                 uid: `${issue.id || 'issue'}-${issue.function || 'fn'}-${issue.location || 'loc'}-${index}`
@@ -1518,7 +1791,7 @@
                             this.reportView = offlineState.reportView || this.reportView;
                             this.viewSummary = offlineState.viewSummary || this.viewSummary;
                             this.selectFinding(this.findings[0]);
-                            this.saveFindings();
+                            this.saveFindings(this.allOfflineIssues(offlineState));
                         } catch (error) {
                             alert(`导入失败：${error.message || error}`);
                         }
@@ -1549,15 +1822,8 @@
                 },
 
                 async exportOfflinePage() {
-                    const payload = {
-                        reportSummary: this.reportSummary,
-                        reportViews: this.reportViews,
-                        reportView: this.reportView,
-                        viewSummary: this.viewSummary,
-                        findings: this.findings.map(({ uid, ...rest }) => ({ ...rest })),
-                        exportedAt: new Date().toISOString()
-                    };
                     try {
+                        const payload = this.buildOfflinePayload();
                         const offlineHtml = await this.createOfflineHtml(payload);
                         const blob = new Blob([offlineHtml], { type: 'text/html;charset=utf-8' });
                         const link = document.createElement('a');
@@ -1593,17 +1859,18 @@
                         });
                 },
 
-                saveFindings() {
+                saveFindings(issuesOverride = null) {
                     if (this.savingFindings) {
                         return;
                     }
+                    const issuesToSave = Array.isArray(issuesOverride) ? issuesOverride : this.findings;
                     this.savingFindings = true;
                     this.saveFeedbackStatus = '正在保存验证结果...';
                     this.saveFeedbackType = 'info';
                     fetch('/api/save_findings', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ issues: this.findings })
+                        body: JSON.stringify({ issues: issuesToSave.map(issue => this.stripOfflineRuntimeFields(issue)) })
                     })
                         .then(res => res.json())
                         .then(data => {
