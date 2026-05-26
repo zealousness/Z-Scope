@@ -546,20 +546,29 @@ class KnowledgeDB:
 
     # ── SVF Hash Cache ──
 
-    def get_svf_hash(self) -> str:
-        """获取上次 SVF 分析时的源码聚合哈希。"""
+    def get_metadata(self, key: str) -> str:
+        """Return a metadata value by key, or an empty string when absent."""
         row = self._conn.execute(
-            "SELECT value FROM metadata WHERE key = 'svf_source_hash'",
+            "SELECT value FROM metadata WHERE key = ?",
+            (key,),
         ).fetchone()
         return row["value"] if row else ""
 
-    def set_svf_hash(self, hash_value: str):
-        """记录 SVF 源码聚合哈希。"""
+    def set_metadata(self, key: str, value: str) -> None:
+        """Persist a metadata key/value pair."""
         self._conn.execute(
-            "INSERT OR REPLACE INTO metadata (key, value) VALUES ('svf_source_hash', ?)",
-            (hash_value,),
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
+            (key, value),
         )
         self._conn.commit()
+
+    def get_svf_hash(self) -> str:
+        """获取上次 SVF 分析时的源码聚合哈希。"""
+        return self.get_metadata("svf_source_hash")
+
+    def set_svf_hash(self, hash_value: str):
+        """记录 SVF 源码聚合哈希。"""
+        self.set_metadata("svf_source_hash", hash_value)
 
     def purge_svf_data(self, group: str = "default"):
         """清除 SVF 产生的间接调用和污点数据（按分组）。"""
