@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -197,6 +198,74 @@ def test_report_feedback_service_saves_validation_feedback(tmp_path: Path) -> No
     assert saved["issues"][0]["validation_status"] == "rejected"
     assert store.is_false_positive("entry", "src/demo.c:42", "double_free")
     assert store.get_finding_baseline("double_free|entry|src/demo.c:42")["status"] == "false_positive"
+
+
+def test_report_feedback_service_findings_payload_is_lightweight(tmp_path: Path) -> None:
+    report_path = tmp_path / "report.json"
+    heavy_issue = {
+        "id": "ISSUE_1",
+        "function": "entry",
+        "location": "src/demo.c:42",
+        "subcategory": "bounds",
+        "validation_status": "validated",
+        "code_snippet": "x" * 1000,
+    }
+    report_path.write_text(
+        json.dumps(
+            {
+                "summary": {"total_issues": 1},
+                "issues": [heavy_issue],
+                "metadata": {"raw_trace": "y" * 1000},
+                "report_views": {
+                    "default": {
+                        "label": "Default",
+                        "issue_count": 1,
+                        "issues": [heavy_issue],
+                        "issues_by_severity": {"medium": [heavy_issue]},
+                    },
+                    "with_needs_review": {
+                        "label": "With needs_review",
+                        "issue_count": 1,
+                        "included_needs_review_count": 0,
+                        "issues": [heavy_issue],
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = ReportFeedbackService(report_filename=str(report_path))
+
+    payload = service.selected_view_payload("/api/findings?view=default")
+
+    assert payload["findings"][0]["id"] == "ISSUE_1"
+    assert payload["report"]["summary"] == {"total_issues": 1}
+    assert "issues" not in payload["report"]["report_views"]["default"]
+    assert "issues_by_severity" not in payload["report"]["report_views"]["default"]
+    assert payload["views"]["with_needs_review"]["issue_count"] == 1
+
+
+def test_report_feedback_service_findings_payload_can_return_full_report(tmp_path: Path) -> None:
+    report_path = tmp_path / "report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "issues": [{"id": "ISSUE_1", "function": "entry", "location": "src/demo.c:42"}],
+                "report_views": {
+                    "default": {
+                        "issue_count": 1,
+                        "issues": [{"id": "ISSUE_1", "function": "entry", "location": "src/demo.c:42"}],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = ReportFeedbackService(report_filename=str(report_path))
+
+    payload = service.selected_view_payload("/api/findings?view=default&full_report=1")
+
+    assert payload["report"]["report_views"]["default"]["issues"][0]["id"] == "ISSUE_1"
 
 
 def test_source_snippet_service_resolves_only_configured_roots(tmp_path: Path) -> None:
