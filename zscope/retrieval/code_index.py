@@ -61,6 +61,7 @@ class CodeIndex:
         self._defer_svf = defer_svf
         self._index_ready = False
         self._cache_lock = threading.RLock()
+        self._declaration_comment_index_lock = threading.Lock()
         self._file_lines_cache: Dict[str, Tuple[str, ...]] = {}
         self._function_impl_cache: Dict[Tuple[str, int, bool], Dict[str, Any]] = {}
 
@@ -451,44 +452,48 @@ class CodeIndex:
             if self._declaration_comment_index is not None:
                 return self._declaration_comment_index
 
-        index: Dict[str, List[Dict[str, Any]]] = {}
-        seen: set[Tuple[str, int, int]] = set()
-        for file_name in sorted(self._find_all_files()):
-            file_path = self._resolve_file_path(file_name)
-            if not file_path.exists() or file_path.is_dir():
-                continue
-            try:
-                lines = self._read_file_lines(file_path)
-            except Exception:
-                continue
-            if not lines:
-                continue
+        with self._declaration_comment_index_lock:
+            with self._cache_lock:
+                if self._declaration_comment_index is not None:
+                    return self._declaration_comment_index
 
-            for line_no, line in enumerate(lines, start=1):
-                match = DECLARATION_LINE_RE.match(line)
-                if not match:
+            index: Dict[str, List[Dict[str, Any]]] = {}
+            seen: set[Tuple[str, int, int]] = set()
+            for file_name in sorted(self._find_all_files()):
+                file_path = self._resolve_file_path(file_name)
+                if not file_path.exists() or file_path.is_dir():
                     continue
-                block = self._find_leading_c_comment_block(lines, line_no)
-                if not block:
+                try:
+                    lines = self._read_file_lines(file_path)
+                except Exception:
                     continue
-                key = (str(file_path), block[0], block[1])
-                if key in seen:
+                if not lines:
                     continue
-                seen.add(key)
-                func_name = match.group("name")
-                index.setdefault(func_name, []).append(
-                    self._comment_block_payload(
-                        kind="declaration",
-                        file_path=file_path,
-                        lines=lines,
-                        block=block,
+
+                for line_no, line in enumerate(lines, start=1):
+                    match = DECLARATION_LINE_RE.match(line)
+                    if not match:
+                        continue
+                    block = self._find_leading_c_comment_block(lines, line_no)
+                    if not block:
+                        continue
+                    key = (str(file_path), block[0], block[1])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    func_name = match.group("name")
+                    index.setdefault(func_name, []).append(
+                        self._comment_block_payload(
+                            kind="declaration",
+                            file_path=file_path,
+                            lines=lines,
+                            block=block,
+                        )
                     )
-                )
 
-        with self._cache_lock:
-            if self._declaration_comment_index is None:
+            with self._cache_lock:
                 self._declaration_comment_index = index
-            return self._declaration_comment_index
+                return self._declaration_comment_index
 
     # ── Core retrieval methods ──
 

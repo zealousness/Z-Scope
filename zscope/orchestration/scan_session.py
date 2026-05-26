@@ -310,15 +310,31 @@ class ScanSessionRunner:
     def _entry_names(entries: List[FunctionEntry]) -> List[str]:
         return [entry.function_name for entry in entries if entry.function_name]
 
+    def _svf_scope_entries(
+        self,
+        state: Dict[str, Any],
+        active_entries: List[FunctionEntry],
+    ) -> List[FunctionEntry]:
+        """Return the entry set that should define SVF cache scope."""
+        if self.resume:
+            all_entries: List[FunctionEntry] = state.get("all_entries", [])
+            if all_entries:
+                return list(all_entries)
+        return list(active_entries)
+
     def _ensure_svf_for_entries(self, state: Dict[str, Any], entries: List[FunctionEntry]) -> None:
         code_index = state.get("code_index")
         if not code_index:
             return
-        entry_names = self._entry_names(entries)
+        if self.resume and not entries:
+            logger.info("Resume has no remaining entries; skipping deferred SVF run.")
+            return
+        svf_entries = self._svf_scope_entries(state, entries)
+        entry_names = self._entry_names(svf_entries)
         if not entry_names and self.config.project.entry_function:
             entry_names = [self.config.project.entry_function]
         if entry_names:
-            code_index.run_svf(entries)
+            code_index.run_svf(svf_entries)
 
     def _run_batch(
         self,
@@ -326,7 +342,8 @@ class ScanSessionRunner:
         steps: List[WorkflowStep],
     ) -> ScanSessionResult:
         entries: List[FunctionEntry] = state["entries"]
-        entry_names = self._entry_names(entries)
+        svf_entries = self._svf_scope_entries(state, entries)
+        entry_names = self._entry_names(entries) or self._entry_names(svf_entries)
         logger.info("Building shared code index...")
         if state.get("code_index") is None:
             state["code_index"] = CodeIndex(
@@ -337,8 +354,11 @@ class ScanSessionRunner:
                 priority_functions=entry_names,
                 include_paths=self.config.project.include_paths,
                 exclude_paths=self.config.project.exclude_paths,
-                svf_entry_functions=entries,
+                svf_entry_functions=svf_entries,
+                defer_svf=self.resume and not entries,
             )
+            if self.resume and not entries:
+                logger.info("Resume has no remaining entries; SVF initialization deferred.")
         else:
             self._ensure_svf_for_entries(state, entries)
 
