@@ -366,6 +366,59 @@ def test_premodel_callee_retrieval_failure_is_non_fatal() -> None:
     ) == (0, 0, 0)
 
 
+def test_premodel_callee_collection_uses_per_level_cap_and_light_impls() -> None:
+    class FanoutIndex:
+        def __init__(self):
+            self.impl_context_flags: list[bool] = []
+            self.callee_calls: list[str] = []
+
+        def get_callees(self, name: str, limit: int = 30):
+            self.callee_calls.append(name)
+            graph = {
+                "entry": ["a0", "a1", "a2", "a3"],
+                "a0": ["b0", "b1", "b2"],
+                "a1": ["b3", "b4", "b5"],
+            }
+            return [{"name": child} for child in graph.get(name, [])]
+
+        def get_function_impl(
+            self,
+            name: str,
+            warn_missing: bool = False,
+            include_context: bool = True,
+        ):
+            self.impl_context_flags.append(include_context)
+            return {
+                "func_name": name,
+                "file": "src/demo.c",
+                "start_line": 1,
+                "end_line": 4,
+                "code": f"1 | int {name}(void) {{\n2 |     return 0;\n3 | }}\n",
+                "callees": [],
+            }
+
+    class SnapshotStore:
+        def load_snapshot(self, func: str):
+            return {"func_name": func}
+
+    analyzer = object.__new__(Analyzer)
+    analyzer.code_index = FanoutIndex()
+    analyzer.snapshot_store = SnapshotStore()
+    analyzer._get_tools = lambda *args, **kwargs: []
+    analyzer._tool_policy_for_agent = lambda *args, **kwargs: None
+
+    modeled, skipped, tokens = analyzer._premodel_callees(
+        "entry",
+        object(),
+        max_depth=2,
+        max_callees=2,
+    )
+
+    assert (modeled, skipped, tokens) == (0, 4, 0)
+    assert analyzer.code_index.callee_calls == ["entry", "a0", "a1"]
+    assert analyzer.code_index.impl_context_flags == [False, False, False, False]
+
+
 def test_trivial_snapshot_keeps_security_contract_points_auditable() -> None:
     cases = [
         (

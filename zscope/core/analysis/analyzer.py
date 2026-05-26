@@ -9,6 +9,7 @@ import time
 import datetime
 import re
 import uuid
+from collections import deque
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, cast
@@ -3084,14 +3085,28 @@ class Analyzer:
         # 1. BFS 鏀堕泦鍙揪 callee 鍥?
         callee_graph: Dict[str, List[str]] = {}
         visited: Set[str] = set()
-        queue: list = [(entry_func, 0)]
-        impl_cache: Dict[str, Any] = {}  # 缂撳瓨 get_function_impl 缁撴灉
+        scheduled: Set[str] = {entry_func}
+        queue = deque([(entry_func, 0)])
+        expanded_by_depth: Dict[int, int] = {}
+        capped_depths: Set[int] = set()
+        impl_cache: Dict[str, Any] = {}
+        last_progress_log = time.monotonic()
+
+        logger.info(
+            "[premodel] Collecting reachable callees for '%s' (depth<=%s, per-level<=%s)",
+            entry_func,
+            max_depth,
+            max_callees,
+        )
 
         while queue:
-            func, depth = queue.pop(0)
+            func, depth = queue.popleft()
             if func in visited or depth > max_depth:
                 continue
             visited.add(func)
+            if depth >= max_depth:
+                callee_graph.setdefault(func, [])
+                continue
 
             try:
                 callees_raw = self.code_index.get_callees(func, limit=max_callees)
@@ -3109,11 +3124,19 @@ class Analyzer:
 
             # Only premodel callees with source implementations.
             resolvable = []
+            next_depth = depth + 1
             for c in callee_names:
-                if c in visited:
+                if c in visited or c in scheduled:
+                    continue
+                if expanded_by_depth.get(next_depth, 0) >= max_callees:
+                    capped_depths.add(next_depth)
                     continue
                 try:
-                    impl = self.code_index.get_function_impl(c, warn_missing=False)
+                    impl = self.code_index.get_function_impl(
+                        c,
+                        warn_missing=False,
+                        include_context=False,
+                    )
                 except Exception as exc:
                     logger.warning(
                         "[premodel] Failed to resolve callee '%s'; skipping: %s",
@@ -3125,14 +3148,32 @@ class Analyzer:
                 if impl is not None:
                     impl_cache[c] = impl
                     resolvable.append(c)
+                    scheduled.add(c)
+                    expanded_by_depth[next_depth] = expanded_by_depth.get(next_depth, 0) + 1
                     if not self._is_lightweight_snapshot_candidate(c, impl):
-                        queue.append((c, depth + 1))
+                        queue.append((c, next_depth))
                 else:
                     logger.debug("[premodel] Skipping unresolved callee '%s'", c)
 
             callee_graph[func] = resolvable
+            now = time.monotonic()
+            if now - last_progress_log >= 30.0:
+                logger.info(
+                    "[premodel] Still collecting callees for '%s': visited=%s queued=%s",
+                    entry_func,
+                    len(visited),
+                    len(queue),
+                )
+                last_progress_log = now
 
         # 2. 閫嗘嫇鎵戞帓搴忥細鍙跺瓙鍑芥暟浼樺厛
+        if capped_depths:
+            logger.info(
+                "[premodel] Breadth cap reached for '%s' at depth(s): %s",
+                entry_func,
+                ", ".join(str(d) for d in sorted(capped_depths)),
+            )
+
         order = self._topo_sort(callee_graph, entry_func)
         # 杩囨护鎺夊叆鍙ｅ嚱鏁版湰韬紙鐢变富娴佺▼寤烘ā锛?
         order = [f for f in order if f != entry_func]
@@ -3171,7 +3212,9 @@ class Analyzer:
             # status == "acquired"锛氱敱褰撳墠 Worker 寤烘ā
             try:
                 impl = impl_cache.get(func) or self.code_index.get_function_impl(
-                    func, warn_missing=False
+                    func,
+                    warn_missing=False,
+                    include_context=False,
                 )
                 if not impl:
                     self.snapshot_store.lock_manager.release(func, success=False)
@@ -3210,6 +3253,13 @@ class Analyzer:
                     self.snapshot_store.lock_manager.release(func, success=True)
                     modeled += 1
                     continue
+
+                impl = self.code_index.get_function_impl(
+                    func,
+                    warn_missing=False,
+                    include_context=True,
+                ) or impl
+                location = f"{impl['file']}:{impl['start_line']}"
 
                 context = {
                     "func_name": func,
