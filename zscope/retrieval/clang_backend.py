@@ -5,7 +5,7 @@ Provides precise C/C++ code structure extraction without Joern dependency.
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .backend_base import CodeBackend
 from .clang_extractor import ClangExtractor
@@ -101,6 +101,7 @@ class ClangBackend(CodeBackend):
             # 预扫描：检查有多少文件真正需要提取
             from .clang_extractor import ClangExtractor
             changed_count = 0
+            prescanned_tus: Dict[str, Tuple[int, bool]] = {}
             if self._db is None:
                 self._status = "error"
                 return False
@@ -109,7 +110,8 @@ class ClangBackend(CodeBackend):
             for fp in file_list:
                 fp = fp.resolve()
                 file_hash = ClangExtractor._compute_file_hash(fp)
-                _, changed = db.register_tu_hash(str(fp), file_hash)
+                tu_id, changed = db.register_tu_hash(str(fp), file_hash)
+                prescanned_tus[str(fp)] = (tu_id, changed)
                 if changed:
                     changed_count += 1
 
@@ -138,9 +140,12 @@ class ClangBackend(CodeBackend):
             # 等待 clangd 后台索引稳定
             extractor.wait_for_indexing(timeout=120, idle_threshold=3.0)
 
-            # 批量提取（内部会再次检查哈希，仅提取 changed 的）
+            # 批量提取（复用预扫描结果，仅提取 changed 的）
             stats = extractor.run_batch_extraction(
-                file_list, db, batch_size=self._batch_size,
+                file_list,
+                db,
+                batch_size=self._batch_size,
+                prescanned_tus=prescanned_tus,
             )
             logger.info(
                 "Extraction complete: %d extracted, %d skipped, %d failed",

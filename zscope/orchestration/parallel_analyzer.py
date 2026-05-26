@@ -6,6 +6,7 @@ Supports concurrent analysis of multiple functions using thread pool.
 import concurrent.futures
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -14,7 +15,10 @@ from dataclasses import dataclass, field
 from ..config.config import ZScopeConfig
 from ..config.function_entry import FunctionEntry
 from ..config.user_config_store import UserConfigStore
+from ..core.candidates.evidence import SemanticOverlayCompiler
 from ..core.analysis.analyzer import Analyzer
+from ..semantics.inference import LocalPatternSemanticBuilder
+from ..semantics.models import LocalPatternSemantics
 from ..snapshots.store import SnapshotStore
 from ..retrieval.code_index import CodeIndex
 from ..orchestration.candidates import CandidateLedger
@@ -42,6 +46,9 @@ class ParallelAnalysisResult:
     error: Optional[str] = None
     duration_seconds: float = 0.0
     context_tokens: int = 0
+    cumulative_prompt_tokens: int = 0
+    cumulative_completion_tokens: int = 0
+    cumulative_total_tokens: int = 0
 
 
 class ParallelAnalyzer:
@@ -75,6 +82,9 @@ class ParallelAnalyzer:
         self.snapshot_store = SnapshotStore(Path(config.analysis.snapshot_dir))
         db_dir = Path(config.analysis.user_config_db) if config.analysis.user_config_db else Path(config.analysis.snapshot_dir)
         self.user_config = user_config or UserConfigStore(db_dir)
+        self._shared_local_pattern_semantics: Optional[LocalPatternSemantics] = None
+        self._shared_semantic_overlay: Optional[Dict[str, Any]] = None
+        self._shared_semantics_lock = threading.Lock()
 
     @staticmethod
     def _normalize_md_text(value: Any) -> str:
@@ -103,6 +113,8 @@ class ParallelAnalyzer:
         completed = 0
         
         logger.info(f"Starting parallel analysis of {total} function entries with {self.max_workers} workers")
+        if total and not self.maintain_mode:
+            self._prepare_shared_semantics()
         
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
         try:
@@ -192,6 +204,12 @@ class ParallelAnalyzer:
                  force_ignore_history=self.force_ignore_history,
                  maintain_mode=self.maintain_mode,
                  candidate_ledger=CandidateLedger(),
+                 shared_local_pattern_semantics=(
+                     None if self.maintain_mode else self._get_shared_local_pattern_semantics()
+                 ),
+                 shared_semantic_overlay=(
+                     None if self.maintain_mode else self._get_shared_semantic_overlay()
+                 ),
             )
             report_dict = analyzer.run()
             
@@ -204,6 +222,9 @@ class ParallelAnalyzer:
                 audit_observations=report_dict.get("metadata", {}).get("audit_observations", []),
                 duration_seconds=duration,
                 context_tokens=report_dict.get("metadata", {}).get("context_tokens", 0),
+                cumulative_prompt_tokens=report_dict.get("metadata", {}).get("cumulative_prompt_tokens", 0),
+                cumulative_completion_tokens=report_dict.get("metadata", {}).get("cumulative_completion_tokens", 0),
+                cumulative_total_tokens=report_dict.get("metadata", {}).get("cumulative_total_tokens", 0),
             )
             
         except Exception as e:
@@ -215,6 +236,30 @@ class ParallelAnalyzer:
                 duration_seconds=duration
             )
     
+    def _prepare_shared_semantics(self) -> None:
+        """Warm shared project semantics before entry-level analyzers fan out."""
+        self._get_shared_local_pattern_semantics()
+        self._get_shared_semantic_overlay()
+
+    def _get_shared_local_pattern_semantics(self) -> LocalPatternSemantics:
+        if self._shared_local_pattern_semantics is None:
+            with self._shared_semantics_lock:
+                if self._shared_local_pattern_semantics is None:
+                    self._shared_local_pattern_semantics = LocalPatternSemanticBuilder(
+                        self.code_index,
+                        self.user_config,
+                        self.snapshot_store,
+                        self.base_config.project.exclude_paths,
+                    ).build()
+        return self._shared_local_pattern_semantics
+
+    def _get_shared_semantic_overlay(self) -> Dict[str, Any]:
+        if self._shared_semantic_overlay is None:
+            with self._shared_semantics_lock:
+                if self._shared_semantic_overlay is None:
+                    self._shared_semantic_overlay = SemanticOverlayCompiler(self.user_config).compile()
+        return self._shared_semantic_overlay
+
     def _create_config_for_entry(self, entry: FunctionEntry) -> ZScopeConfig:
         """Create a ZScopeConfig copy with the specified entry and custom prompt."""
         from copy import deepcopy
@@ -261,6 +306,9 @@ class ParallelAnalyzer:
                 "audit_observation_count": len(result.audit_observations),
                 "duration_seconds": round(result.duration_seconds, 2),
                 "context_tokens": result.context_tokens,
+                "cumulative_prompt_tokens": result.cumulative_prompt_tokens,
+                "cumulative_completion_tokens": result.cumulative_completion_tokens,
+                "cumulative_total_tokens": result.cumulative_total_tokens,
                 "error": result.error
             })
             
@@ -296,6 +344,9 @@ class ParallelAnalyzer:
                 ),
                 "total_duration_seconds": round(total_duration, 2),
                 "total_context_tokens": sum(r.context_tokens for r in results.values()),
+                "total_cumulative_prompt_tokens": sum(r.cumulative_prompt_tokens for r in results.values()),
+                "total_cumulative_completion_tokens": sum(r.cumulative_completion_tokens for r in results.values()),
+                "total_cumulative_total_tokens": sum(r.cumulative_total_tokens for r in results.values()),
                 "parallel_speedup": f"{len(results)}x potential (using {self.max_workers} workers)"
             },
             "function_results": function_summaries,
@@ -308,6 +359,10 @@ class ParallelAnalyzer:
                 "audit_observation_count": len(unique_observations),
                 "audit_observations": unique_observations,
                 "report_view_summary": view_summary,
+                "context_tokens": sum(r.context_tokens for r in results.values()),
+                "cumulative_prompt_tokens": sum(r.cumulative_prompt_tokens for r in results.values()),
+                "cumulative_completion_tokens": sum(r.cumulative_completion_tokens for r in results.values()),
+                "cumulative_total_tokens": sum(r.cumulative_total_tokens for r in results.values()),
             },
         }
         

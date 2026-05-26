@@ -15,6 +15,8 @@ import hashlib
 import shlex
 import shutil
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -59,10 +61,12 @@ class BitcodeBuilder:
         self.timeout = timeout
         # Map of generated .bc Path -> original c_src_path
         self._bc_to_src: Dict[Path, Path] = {}
+        self._bc_compile_index: Dict[Path, int] = {}
         self._env = self._make_gllvm_env()
         self._manifest_path = self.output_dir / "bitcode_manifest.json"
         self._manifest: Dict[str, Any] = {}
         self._manifest_dirty = False
+        self._state_lock = threading.Lock()
 
     @staticmethod
     def _make_gllvm_env() -> dict:
@@ -103,6 +107,8 @@ class BitcodeBuilder:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._manifest = self._load_manifest()
         self._manifest_dirty = False
+        self._bc_to_src.clear()
+        self._bc_compile_index.clear()
 
         commands = self._load_compile_commands()
         if not commands:
@@ -112,8 +118,22 @@ class BitcodeBuilder:
         logger.info("Building bitcode for %d translation units", len(commands))
 
         # 逐 TU 编译
-        for idx, cmd in enumerate(commands):
-            self._compile_tu(cmd, idx)
+        workers = self._build_worker_count(len(commands))
+        logger.info("Building bitcode with %d gclang worker(s)", workers)
+        if workers <= 1:
+            for idx, cmd in enumerate(commands):
+                self._compile_tu(cmd, idx)
+        else:
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="zscope-gclang") as executor:
+                futures = [
+                    executor.submit(self._compile_tu, cmd, idx)
+                    for idx, cmd in enumerate(commands)
+                ]
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        logger.warning("Bitcode worker failed: %s", exc)
 
         if not self._bc_to_src:
             logger.error("No .bc files produced")
@@ -138,7 +158,11 @@ class BitcodeBuilder:
             logger.info("Linking group '%s' (excluding %d pattern(s))", group_name, len(exclude_list))
             
             group_bcs = []
-            for bc_path, src_path in self._bc_to_src.items():
+            bc_items = sorted(
+                self._bc_to_src.items(),
+                key=lambda item: self._bc_compile_index.get(item[0], len(commands)),
+            )
+            for bc_path, src_path in bc_items:
                 src_name = src_path.name
                 if any(ex in src_name for ex in exclude_list):
                     continue
@@ -254,7 +278,7 @@ class BitcodeBuilder:
         args = self._replace_output(args, str(obj_path))
         bc_path = Path(str(obj_path) + ".bc")
 
-        if self._reuse_bitcode_if_current(bc_path, resolved_src, command_fingerprint):
+        if self._reuse_bitcode_if_current(bc_path, resolved_src, command_fingerprint, idx):
             return
 
         try:
@@ -293,7 +317,9 @@ class BitcodeBuilder:
             )
             if bc_path.exists():
                 resolved_bc = bc_path.resolve()
-                self._bc_to_src[resolved_bc] = resolved_src
+                with self._state_lock:
+                    self._bc_to_src[resolved_bc] = resolved_src
+                    self._bc_compile_index[resolved_bc] = idx
                 self._record_bitcode_manifest(resolved_bc, resolved_src, command_fingerprint)
                 logger.info("Extracted %s (%d bytes)", bc_path, bc_path.stat().st_size)
             else:
@@ -302,27 +328,38 @@ class BitcodeBuilder:
             stderr = getattr(e, 'stderr', '') or ''
             logger.warning("get-bc failed for %s: %s stderr=%s", obj_path, e, stderr[:300])
 
-    def _reuse_bitcode_if_current(self, bc_path: Path, src_path: Path, fingerprint: str) -> bool:
+    def _reuse_bitcode_if_current(
+        self,
+        bc_path: Path,
+        src_path: Path,
+        fingerprint: str,
+        idx: int,
+    ) -> bool:
         resolved_bc = bc_path.resolve()
-        entry = self._manifest.get("bitcode", {}).get(str(resolved_bc), {})
+        with self._state_lock:
+            entry = dict(self._manifest.get("bitcode", {}).get(str(resolved_bc), {}))
         if (
             entry.get("fingerprint") != fingerprint
             or not resolved_bc.exists()
             or entry.get("bitcode_hash") != self._file_hash(resolved_bc)
         ):
             return False
-        self._bc_to_src[resolved_bc] = src_path
+        with self._state_lock:
+            self._bc_to_src[resolved_bc] = src_path
+            self._bc_compile_index[resolved_bc] = idx
         logger.info("Reusing unchanged bitcode %s", resolved_bc)
         return True
 
     def _record_bitcode_manifest(self, bc_path: Path, src_path: Path, fingerprint: str) -> None:
-        bitcode = self._manifest.setdefault("bitcode", {})
-        bitcode[str(bc_path)] = {
-            "fingerprint": fingerprint,
-            "bitcode_hash": self._file_hash(bc_path),
-            "source": str(src_path),
-        }
-        self._manifest_dirty = True
+        bitcode_hash = self._file_hash(bc_path)
+        with self._state_lock:
+            bitcode = self._manifest.setdefault("bitcode", {})
+            bitcode[str(bc_path)] = {
+                "fingerprint": fingerprint,
+                "bitcode_hash": bitcode_hash,
+                "source": str(src_path),
+            }
+            self._manifest_dirty = True
 
     def _tu_fingerprint(
         self,
@@ -344,6 +381,13 @@ class BitcodeBuilder:
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True).encode("utf-8")
         ).hexdigest()
+
+    @staticmethod
+    def _build_worker_count(command_count: int) -> int:
+        if command_count <= 0:
+            return 1
+        cpu_count = os.cpu_count() or 4
+        return max(1, min(command_count, cpu_count, 8))
 
     def _link_all(self, bc_files: List[Path], group_name: str) -> Optional[Path]:
         """llvm-link 合并所有给定的 .bc 为单一文件（支持分批以避免参数过长）。"""

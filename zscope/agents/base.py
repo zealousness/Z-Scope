@@ -203,10 +203,11 @@ class JsonToolAgent(ToolCallingAgent):
             if parsed:
                 if post_process:
                     parsed = post_process(parsed)
+                metadata = self._conversation_token_metadata(result)
                 return AgentResponse(
                     success=True,
                     data=parsed,
-                    metadata={"context_tokens": ctx_tokens},
+                    metadata=metadata,
                 )
 
             if fail_on_truncated and result.get("truncated"):
@@ -231,6 +232,11 @@ class JsonToolAgent(ToolCallingAgent):
                 retry_choice = retry_response.get("choices", [{}])[0]
                 retry_message = retry_choice.get("message", {})
                 retry_content = str(retry_message.get("content") or "")
+                retry_prompt_tokens, retry_completion_tokens = LLMClient._response_token_usage(
+                    retry_response,
+                    conversation,
+                    retry_message,
+                )
                 conversation.append(retry_message)
 
                 parsed = extractor(retry_content, {}, conversation)
@@ -238,6 +244,17 @@ class JsonToolAgent(ToolCallingAgent):
                     if post_process:
                         parsed = post_process(parsed)
                     retry_ctx_tokens = LLMClient.estimate_tokens(conversation)
+                    retry_metadata = self._conversation_token_metadata(result)
+                    retry_metadata["context_tokens"] = ctx_tokens + retry_ctx_tokens
+                    retry_metadata["cumulative_prompt_tokens"] = int(
+                        retry_metadata.get("cumulative_prompt_tokens", 0) or 0
+                    ) + retry_prompt_tokens
+                    retry_metadata["cumulative_completion_tokens"] = int(
+                        retry_metadata.get("cumulative_completion_tokens", 0) or 0
+                    ) + retry_completion_tokens
+                    retry_metadata["cumulative_total_tokens"] = int(
+                        retry_metadata.get("cumulative_prompt_tokens", 0) or 0
+                    ) + int(retry_metadata.get("cumulative_completion_tokens", 0) or 0)
                     logger.info(
                         "[Retry %d] Successfully parsed %s for %s",
                         retry,
@@ -247,7 +264,7 @@ class JsonToolAgent(ToolCallingAgent):
                     return AgentResponse(
                         success=True,
                         data=parsed,
-                        metadata={"context_tokens": ctx_tokens + retry_ctx_tokens},
+                        metadata=retry_metadata,
                     )
 
             last_msg_debug = json.dumps(
@@ -268,3 +285,12 @@ class JsonToolAgent(ToolCallingAgent):
             )
         except Exception as exc:
             return AgentResponse(success=False, data={}, error=str(exc))
+
+    @staticmethod
+    def _conversation_token_metadata(result: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "context_tokens": int(result.get("context_tokens", 0) or 0),
+            "cumulative_prompt_tokens": int(result.get("cumulative_prompt_tokens", 0) or 0),
+            "cumulative_completion_tokens": int(result.get("cumulative_completion_tokens", 0) or 0),
+            "cumulative_total_tokens": int(result.get("cumulative_total_tokens", 0) or 0),
+        }

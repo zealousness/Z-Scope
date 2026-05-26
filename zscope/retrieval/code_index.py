@@ -3,8 +3,11 @@ Code indexing and function locator for C projects.
 Supports pluggable backends (Joern / Clang-SQLite / regex fallback).
 """
 
+import copy
 import logging
+import os
 import re
+import threading
 from pathlib import Path
 from typing import Optional, Dict, Any, Iterable, List, Sequence, Union, Tuple
 
@@ -57,6 +60,9 @@ class CodeIndex:
         self._svf_entry_functions = list(svf_entry_functions or [])
         self._defer_svf = defer_svf
         self._index_ready = False
+        self._cache_lock = threading.RLock()
+        self._file_lines_cache: Dict[str, Tuple[str, ...]] = {}
+        self._function_impl_cache: Dict[Tuple[str, int, bool], Dict[str, Any]] = {}
 
         # 向后兼容：如果传入了 joern_client，包装为 JoernBackend
         if self._backend is None and joern_client is not None:
@@ -182,7 +188,10 @@ class CodeIndex:
             return False
         entries = list(entry_functions or self._svf_entry_functions)
         self._svf_entry_functions = entries
-        return bool(getattr(self._backend, "run_svf")(entry_functions=entries))
+        ok = bool(getattr(self._backend, "run_svf")(entry_functions=entries))
+        if ok:
+            self._clear_function_impl_cache()
+        return ok
 
     @property
     def backend(self) -> Optional[CodeBackend]:
@@ -202,18 +211,18 @@ class CodeIndex:
         if self._backend:
             backend_index = self._backend.build_function_index()
             if backend_index:
-                self._function_index.update(backend_index)
+                with self._cache_lock:
+                    self._function_index.update(backend_index)
             else:
                 logger.warning("Backend index returned empty, falling back to regex")
                 self._build_index_regex()
         else:
             self._build_index_regex()
+        self._clear_function_impl_cache()
         logger.info(f"Indexed {len(self._function_index)} functions")
 
     def _is_path_allowed(self, p: Path) -> bool:
         """Check if a path passes include/exclude filters."""
-        import os
-        
         def is_subpath(child: Path, parent: Path) -> bool:
             try:
                 # Use absolute() instead of resolve() to avoid symlink physical path jumping out of bounds
@@ -269,8 +278,7 @@ class CodeIndex:
         logger.info(f"Scanning {len(all_files)} C/H files with regex")
         for file_path in all_files:
             try:
-                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
+                content = self._read_file_text(file_path)
                 self._extract_functions_regex(file_path, content)
             except Exception as e:
                 logger.debug(f"Failed to read {file_path}: {e}")
@@ -300,17 +308,70 @@ class CodeIndex:
                 brace_count += clean_line.count("{") - clean_line.count("}")
                 if brace_count == 0:
                     path = Path(file_path)
-                    self._function_index[func_name] = {
-                        "file": str(path),
-                        "start_line": func_start,
-                        "end_line": line_no,
-                        "signature": func_name + "(...)",
-                    }
+                    with self._cache_lock:
+                        self._function_index[func_name] = {
+                            "file": str(path),
+                            "start_line": func_start,
+                            "end_line": line_no,
+                            "signature": func_name + "(...)",
+                        }
                     in_function = False
 
     def _numbered_code(self, lines: Sequence[str], start_idx: int) -> str:
         """Format source lines with the line-number prefix used by tool outputs."""
         return "".join(f"{start_idx + i + 1} | {line}" for i, line in enumerate(lines))
+
+    def _file_cache_key(self, file_path: Union[str, Path]) -> str:
+        """Return a stable per-run key for cached source file contents."""
+        path = Path(file_path)
+        key = str(path.absolute())
+        return key.lower() if os.name == "nt" else key
+
+    def _read_file_lines(self, file_path: Union[str, Path]) -> List[str]:
+        """Read source file lines through the per-run cache."""
+        cache_key = self._file_cache_key(file_path)
+        with self._cache_lock:
+            cached = self._file_lines_cache.get(cache_key)
+            if cached is not None:
+                return list(cached)
+
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = tuple(f.readlines())
+
+        with self._cache_lock:
+            cached = self._file_lines_cache.setdefault(cache_key, lines)
+            return list(cached)
+
+    def _read_file_text(self, file_path: Union[str, Path]) -> str:
+        """Read source file text through the per-run line cache."""
+        return "".join(self._read_file_lines(file_path))
+
+    def _clone_function_impl(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Copy function implementation payloads before exposing cached data."""
+        return copy.deepcopy(result)
+
+    def _get_cached_function_impl(
+        self,
+        cache_key: Tuple[str, int, bool],
+    ) -> Optional[Dict[str, Any]]:
+        with self._cache_lock:
+            cached = self._function_impl_cache.get(cache_key)
+            if cached is None:
+                return None
+            return self._clone_function_impl(cached)
+
+    def _store_function_impl_cache(
+        self,
+        cache_key: Tuple[str, int, bool],
+        result: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        with self._cache_lock:
+            self._function_impl_cache[cache_key] = self._clone_function_impl(result)
+            return self._clone_function_impl(self._function_impl_cache[cache_key])
+
+    def _clear_function_impl_cache(self) -> None:
+        with self._cache_lock:
+            self._function_impl_cache.clear()
 
     def _find_leading_c_comment_block(
         self,
@@ -371,7 +432,8 @@ class CodeIndex:
         """Find leading comments above C function declarations/prototypes."""
         index = self._get_declaration_comment_index()
         results = []
-        impl_info = self._function_index.get(func_name, {})
+        with self._cache_lock:
+            impl_info = dict(self._function_index.get(func_name) or {})
         for block in index.get(func_name, []):
             block_file = self._resolve_file_path(str(block.get("file") or ""))
             if block_file == implementation_file and block.get("start_line") == impl_info.get(
@@ -385,8 +447,9 @@ class CodeIndex:
 
     def _get_declaration_comment_index(self) -> Dict[str, List[Dict[str, Any]]]:
         """Build a cached map of function declaration comments keyed by function name."""
-        if self._declaration_comment_index is not None:
-            return self._declaration_comment_index
+        with self._cache_lock:
+            if self._declaration_comment_index is not None:
+                return self._declaration_comment_index
 
         index: Dict[str, List[Dict[str, Any]]] = {}
         seen: set[Tuple[str, int, int]] = set()
@@ -395,9 +458,7 @@ class CodeIndex:
             if not file_path.exists() or file_path.is_dir():
                 continue
             try:
-                lines = file_path.read_text(encoding="utf-8", errors="ignore").splitlines(
-                    keepends=True
-                )
+                lines = self._read_file_lines(file_path)
             except Exception:
                 continue
             if not lines:
@@ -424,8 +485,10 @@ class CodeIndex:
                     )
                 )
 
-        self._declaration_comment_index = index
-        return index
+        with self._cache_lock:
+            if self._declaration_comment_index is None:
+                self._declaration_comment_index = index
+            return self._declaration_comment_index
 
     # ── Core retrieval methods ──
 
@@ -441,31 +504,41 @@ class CodeIndex:
             logger.debug("Identifier '%s' is not a function call target", func_name)
             return None
 
+        cache_key = (func_name, max_lines, bool(include_context))
+        cached_result = self._get_cached_function_impl(cache_key)
+        if cached_result is not None:
+            return cached_result
+
         # Try backend lookup if not in index
-        if func_name not in self._function_index and self._backend:
+        with self._cache_lock:
+            func_info = self._function_index.get(func_name)
+        if func_info is None and self._backend:
             m = self._backend.get_method(func_name)
             if m and m.get("filename"):
-                self._function_index[func_name] = {
+                func_info = {
                     "file": m["filename"],
                     "start_line": m.get("lineNumber", -1),
                     "end_line": m.get("lineNumberEnd", -1),
                     "signature": m.get("signature", f"{func_name}(...)"),
                 }
+                with self._cache_lock:
+                    self._function_index[func_name] = func_info
 
-        indexed_file = self._function_index.get(func_name, {}).get("file", "")
+        with self._cache_lock:
+            func_info = dict(self._function_index.get(func_name) or {})
+
+        indexed_file = func_info.get("file", "")
         if not indexed_file or indexed_file.startswith("<"):
             macro_result = self._find_macro_definition(func_name)
             if macro_result:
-                return macro_result
+                return self._store_function_impl_cache(cache_key, macro_result)
             if warn_missing:
                 logger.warning(f"Function '{func_name}' not found in index")
             return None
 
-        func_info = self._function_index[func_name]
         file_path = self._resolve_file_path(func_info["file"])
         try:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                lines = f.readlines()
+            lines = self._read_file_lines(file_path)
             start = func_info["start_line"] - 1
             end = func_info["end_line"]
             if end - start > max_lines:
@@ -509,7 +582,7 @@ class CodeIndex:
             else:
                 callees = self._filter_callee_names(extract_function_calls(code))
 
-            return {
+            result = {
                 "func_name": func_name,
                 "file": normalize_path(file_path, self.source_root),
                 "start_line": func_info["start_line"],
@@ -520,6 +593,7 @@ class CodeIndex:
                 "truncated": (func_info["end_line"] - func_info["start_line"] + 1) > max_lines,
                 "comment_blocks": comment_blocks,
             }
+            return self._store_function_impl_cache(cache_key, result)
         except Exception as e:
             logger.exception("Failed to read function '%s': %s", func_name, e)
             return None
@@ -532,8 +606,7 @@ class CodeIndex:
         if not full_path.exists() or full_path.is_dir():
             return None
         try:
-            with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
-                lines = f.readlines()
+            lines = self._read_file_lines(full_path)
             total_lines = len(lines)
             if total_lines == 0:
                 return {"file": self._normalize_path(full_path), "start_line": 1, "end_line": 0, "code": ""}
@@ -637,7 +710,7 @@ class CodeIndex:
         for pattern in globs:
             for fp in self.source_root.rglob(pattern):
                 try:
-                    content = fp.read_text(encoding="utf-8", errors="ignore")
+                    content = self._read_file_text(fp)
                 except Exception:
                     continue
                 for m in func_decl_re.finditer(content):
@@ -680,8 +753,7 @@ class CodeIndex:
                         continue
                     seen_files.add(real)
                     try:
-                        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                            lines = f.readlines()
+                        lines = self._read_file_lines(file_path)
                     except Exception:
                         continue
                     for idx, line in enumerate(lines):
@@ -772,5 +844,9 @@ class CodeIndex:
 
     def close(self):
         """Close backend resources."""
+        with self._cache_lock:
+            self._file_lines_cache.clear()
+            self._function_impl_cache.clear()
+            self._declaration_comment_index = None
         if self._backend:
             self._backend.close()

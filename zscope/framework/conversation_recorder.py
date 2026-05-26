@@ -26,8 +26,21 @@ class ConversationSession:
     jsonl_path: Path
 
 
+@dataclass
+class _ConversationSessionState:
+    session: ConversationSession
+    started_at: str
+    latest_exchange: Optional[Dict[str, Any]] = None
+    tool_result_count: int = 0
+    last_tool_result_summary: Optional[Dict[str, Any]] = None
+    ended_at: Optional[str] = None
+    iterations: Optional[int] = None
+    context_tokens: Optional[int] = None
+    truncated: bool = False
+
+
 class ConversationRecorder:
-    """Append-only Markdown and JSONL recorder split by Python thread."""
+    """Compact Markdown and JSONL recorder split by Python thread."""
 
     def __init__(self, output_root: Path):
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -36,6 +49,8 @@ class ConversationRecorder:
         self._lock = threading.Lock()
         self._thread_session_counts: Dict[str, int] = {}
         self._agent_session_counts: Dict[tuple[str, str], int] = {}
+        self._session_states: Dict[str, _ConversationSessionState] = {}
+        self._thread_session_ids: Dict[Path, List[str]] = {}
 
     def begin_session(
         self,
@@ -66,18 +81,12 @@ class ConversationRecorder:
                 md_path=md_path,
                 jsonl_path=jsonl_path,
             )
-            self._append_text(
-                md_path,
-                self._format_session_header(session),
+            self._session_states[session.id] = _ConversationSessionState(
+                session=session,
+                started_at=self._now(),
             )
-            self._append_jsonl(
-                jsonl_path,
-                {
-                    "event": "session_start",
-                    "session": self._session_dict(session),
-                    "timestamp": self._now(),
-                },
-            )
+            self._thread_session_ids.setdefault(md_path, []).append(session.id)
+            self._rewrite_thread_files(session)
             return session
 
     def record_exchange(
@@ -91,34 +100,21 @@ class ConversationRecorder:
         prompt_tokens: Optional[int],
         completion_tokens: Optional[int],
     ) -> None:
-        header = (
-            f"\n### {session.agent_name} iteration "
-            f"{iteration if iteration is not None else 'direct'}\n\n"
-            f"- Model: `{model or 'unknown'}`\n"
-            f"- Finish reason: `{finish_reason or 'unknown'}`\n"
-            f"- Context tokens: prompt~{prompt_tokens or 0}, "
-            f"completion~{completion_tokens or 0}, total~{(prompt_tokens or 0) + (completion_tokens or 0)}\n\n"
-        )
-        request_text = "#### Z-SCOPE -> Model\n\n" + self._format_messages(request_messages)
-        response_text = "#### Model -> Z-SCOPE\n\n" + self._format_message(response_message)
-
         with self._lock:
-            self._append_text(session.md_path, header + request_text + "\n" + response_text + "\n")
-            self._append_jsonl(
-                session.jsonl_path,
-                {
-                    "event": "exchange",
-                    "session": self._session_dict(session),
-                    "timestamp": self._now(),
-                    "iteration": iteration,
-                    "model": model,
-                    "finish_reason": finish_reason,
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "request_messages": request_messages,
-                    "response_message": response_message,
-                },
-            )
+            state = self._state_for(session)
+            state.latest_exchange = {
+                "event": "exchange",
+                "session": self._session_dict(session),
+                "timestamp": self._now(),
+                "iteration": iteration,
+                "model": model,
+                "finish_reason": finish_reason,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "request_messages": request_messages,
+                "response_message": response_message,
+            }
+            self._rewrite_thread_files(session)
 
     def record_tool_result(
         self,
@@ -129,32 +125,18 @@ class ConversationRecorder:
         result: Dict[str, Any],
         error: Optional[str] = None,
     ) -> None:
-        status = "error" if error else "ok"
-        body = [
-            f"\n#### Z-SCOPE Tool Result ({session.agent_name} iteration {iteration})\n\n",
-            f"- Tool: `{tool_name or 'unknown'}`\n",
-            f"- Status: `{status}`\n\n",
-            "**Arguments**\n\n",
-            self._fenced_json(tool_args),
-            "\n**Result**\n\n",
-            self._fenced_json({"error": error} if error else result),
-            "\n",
-        ]
         with self._lock:
-            self._append_text(session.md_path, "".join(body))
-            self._append_jsonl(
-                session.jsonl_path,
-                {
-                    "event": "tool_result",
-                    "session": self._session_dict(session),
-                    "timestamp": self._now(),
-                    "iteration": iteration,
-                    "tool_name": tool_name,
-                    "tool_args": tool_args,
-                    "result": result,
-                    "error": error,
-                },
+            state = self._state_for(session)
+            state.tool_result_count += 1
+            state.last_tool_result_summary = self._tool_result_summary(
+                session,
+                iteration,
+                tool_name,
+                tool_args,
+                result,
+                error,
             )
+            self._rewrite_thread_files(session)
 
     def record_session_end(
         self,
@@ -163,26 +145,13 @@ class ConversationRecorder:
         context_tokens: int,
         truncated: bool = False,
     ) -> None:
-        text = (
-            f"\n### Session End\n\n"
-            f"- Agent: `{session.agent_name}`\n"
-            f"- Iterations: `{iterations}`\n"
-            f"- Final context tokens: `{context_tokens}`\n"
-            f"- Truncated: `{str(truncated).lower()}`\n\n"
-        )
         with self._lock:
-            self._append_text(session.md_path, text)
-            self._append_jsonl(
-                session.jsonl_path,
-                {
-                    "event": "session_end",
-                    "session": self._session_dict(session),
-                    "timestamp": self._now(),
-                    "iterations": iterations,
-                    "context_tokens": context_tokens,
-                    "truncated": truncated,
-                },
-            )
+            state = self._state_for(session)
+            state.ended_at = self._now()
+            state.iterations = iterations
+            state.context_tokens = context_tokens
+            state.truncated = truncated
+            self._rewrite_thread_files(session)
 
     @staticmethod
     def _now() -> str:
@@ -192,16 +161,6 @@ class ConversationRecorder:
     def _safe_filename(value: str) -> str:
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip())
         return safe[:80] or "thread"
-
-    @staticmethod
-    def _append_text(path: Path, text: str) -> None:
-        with path.open("a", encoding="utf-8") as f:
-            f.write(text)
-
-    @staticmethod
-    def _append_jsonl(path: Path, data: Dict[str, Any]) -> None:
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(data, ensure_ascii=False) + "\n")
 
     @staticmethod
     def _session_dict(session: ConversationSession) -> Dict[str, Any]:
@@ -215,14 +174,173 @@ class ConversationRecorder:
         }
 
     @staticmethod
-    def _format_session_header(session: ConversationSession) -> str:
+    def _format_session_header(state: _ConversationSessionState) -> str:
+        session = state.session
         return (
             f"\n## Thread `{session.thread_name}` | Session {session.thread_session_index}\n\n"
             f"- Agent: `{session.agent_name}`\n"
             f"- Agent session in this thread: `{session.agent_session_index}`\n"
             f"- Label: {session.label or '(none)'}\n"
-            f"- Started: {ConversationRecorder._now()}\n\n"
+            f"- Started: {state.started_at}\n\n"
         )
+
+    def _state_for(self, session: ConversationSession) -> _ConversationSessionState:
+        try:
+            return self._session_states[session.id]
+        except KeyError as exc:
+            raise ValueError(f"Unknown conversation session: {session.id}") from exc
+
+    def _rewrite_thread_files(self, session: ConversationSession) -> None:
+        states = [
+            self._session_states[session_id]
+            for session_id in self._thread_session_ids.get(session.md_path, [])
+        ]
+        self._write_text(session.md_path, "".join(self._format_session_snapshot(s) for s in states))
+        self._write_jsonl(
+            session.jsonl_path,
+            [event for state in states for event in self._jsonl_events(state)],
+        )
+
+    def _format_session_snapshot(self, state: _ConversationSessionState) -> str:
+        parts = [self._format_session_header(state)]
+        exchange = state.latest_exchange
+        if exchange:
+            iteration_label = self._iteration_label(exchange.get("iteration"))
+            total_label = (
+                str(state.iterations)
+                if state.iterations is not None
+                else "pending"
+            )
+            prompt_tokens = exchange.get("prompt_tokens") or 0
+            completion_tokens = exchange.get("completion_tokens") or 0
+            parts.extend(
+                [
+                    f"### Retained Exchange ({state.session.agent_name})\n\n",
+                    f"- Final retained iteration: `{iteration_label}` / total iterations `{total_label}`\n",
+                    f"- Model: `{exchange.get('model') or 'unknown'}`\n",
+                    f"- Finish reason: `{exchange.get('finish_reason') or 'unknown'}`\n",
+                    f"- Context tokens: prompt~{prompt_tokens}, "
+                    f"completion~{completion_tokens}, total~{prompt_tokens + completion_tokens}\n\n",
+                    "#### Z-SCOPE -> Model\n\n",
+                    self._format_messages(exchange.get("request_messages") or []),
+                    "\n#### Model -> Z-SCOPE\n\n",
+                    self._format_message(exchange.get("response_message") or {}),
+                    "\n",
+                ]
+            )
+        else:
+            parts.append("### Retained Exchange\n\n- Final retained iteration: `(none yet)`\n\n")
+
+        if state.tool_result_count:
+            parts.append("#### Tool Result Summary\n\n")
+            parts.append(f"- Tool results observed: `{state.tool_result_count}`\n")
+            if state.last_tool_result_summary:
+                summary = state.last_tool_result_summary
+                parts.extend(
+                    [
+                        f"- Last tool iteration: `{summary.get('iteration')}`\n",
+                        f"- Last tool: `{summary.get('tool_name') or 'unknown'}`\n",
+                        f"- Last status: `{summary.get('status')}`\n",
+                        f"- Last argument keys: `{', '.join(summary.get('tool_arg_keys') or []) or '(none)'}`\n",
+                        f"- Last result keys: `{', '.join(summary.get('result_keys') or []) or '(none)'}`\n",
+                    ]
+                )
+                if summary.get("error"):
+                    parts.append(f"- Last error: `{summary.get('error')}`\n")
+            parts.append("\n")
+
+        if state.ended_at:
+            parts.extend(
+                [
+                    "### Session End\n\n",
+                    f"- Agent: `{state.session.agent_name}`\n",
+                    f"- Iterations: `{state.iterations}`\n",
+                    f"- Final context tokens: `{state.context_tokens}`\n",
+                    f"- Truncated: `{str(state.truncated).lower()}`\n",
+                    f"- Ended: {state.ended_at}\n\n",
+                ]
+            )
+        return "".join(parts)
+
+    def _jsonl_events(self, state: _ConversationSessionState) -> List[Dict[str, Any]]:
+        session = state.session
+        events: List[Dict[str, Any]] = [
+            {
+                "event": "session_start",
+                "session": self._session_dict(session),
+                "timestamp": state.started_at,
+            }
+        ]
+        if state.latest_exchange:
+            exchange = dict(state.latest_exchange)
+            exchange["retained_exchange"] = True
+            exchange["total_iterations"] = state.iterations
+            events.append(exchange)
+        if state.tool_result_count:
+            events.append(
+                {
+                    "event": "tool_result_summary",
+                    "session": self._session_dict(session),
+                    "timestamp": (
+                        state.last_tool_result_summary or {}
+                    ).get("timestamp", self._now()),
+                    "tool_result_count": state.tool_result_count,
+                    "last_tool_result": state.last_tool_result_summary,
+                }
+            )
+        if state.ended_at:
+            events.append(
+                {
+                    "event": "session_end",
+                    "session": self._session_dict(session),
+                    "timestamp": state.ended_at,
+                    "iterations": state.iterations,
+                    "context_tokens": state.context_tokens,
+                    "truncated": state.truncated,
+                }
+            )
+        return events
+
+    def _tool_result_summary(
+        self,
+        session: ConversationSession,
+        iteration: int,
+        tool_name: Optional[str],
+        tool_args: Dict[str, Any],
+        result: Dict[str, Any],
+        error: Optional[str],
+    ) -> Dict[str, Any]:
+        return {
+            "event": "tool_result_summary",
+            "session": self._session_dict(session),
+            "timestamp": self._now(),
+            "iteration": iteration,
+            "tool_name": tool_name,
+            "status": "error" if error else "ok",
+            "tool_arg_keys": sorted(str(k) for k in tool_args.keys()),
+            "result_keys": sorted(str(k) for k in result.keys()),
+            "result_size_bytes": len(json.dumps(result, ensure_ascii=False, default=str)),
+            "error": self._truncate(error, 500) if error else None,
+        }
+
+    @staticmethod
+    def _iteration_label(iteration: Optional[int]) -> str:
+        return str(iteration) if iteration is not None else "direct"
+
+    @staticmethod
+    def _truncate(value: str, limit: int) -> str:
+        return value if len(value) <= limit else value[: limit - 3] + "..."
+
+    @staticmethod
+    def _write_text(path: Path, text: str) -> None:
+        with path.open("w", encoding="utf-8") as f:
+            f.write(text)
+
+    @staticmethod
+    def _write_jsonl(path: Path, events: List[Dict[str, Any]]) -> None:
+        with path.open("w", encoding="utf-8") as f:
+            for event in events:
+                f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
     def _format_messages(self, messages: List[Dict[str, Any]]) -> str:
         return "\n".join(self._format_message(msg) for msg in messages) + "\n"

@@ -469,3 +469,221 @@ def _base_validation_requirements() -> List[str]:
         "If reachable_from_entry, complete_to_entry, call_path, or entry_function evidence is present, reject reachability only when code evidence disproves that specific path.",
         "If the only negative reachability evidence is zero callers for current_analysis_entry, absence from main, or absence of a worker creator, choose uncertain instead of rejected unless code disproves the entry-to-sink path.",
     ]
+
+
+FINDING_CORE_FIELDS = (
+    "id",
+    "candidate_id",
+    "candidate_source",
+    "candidate_role",
+    "dedup_key",
+    "function",
+    "entry_function",
+    "sink_function",
+    "target_function",
+    "location",
+    "file",
+    "line",
+    "start_line",
+    "end_line",
+    "category",
+    "subcategory",
+    "defect_class",
+    "cwe",
+    "confidence",
+    "rule_confidence",
+    "impact_level",
+    "source",
+    "sink",
+    "description",
+    "reasoning",
+    "root_cause",
+    "suggested_fix",
+    "guard_analysis",
+    "exploit_scenario",
+    "validation_status",
+    "finding_kind",
+    "reachable_from_entry",
+    "internal_sink_lifted",
+    "call_path",
+    "call_paths",
+    "path_constraints",
+    "evidence_refs",
+    "positive_evidence",
+    "negative_evidence",
+    "code_snippet",
+    "source_loc",
+    "sink_loc",
+    "backend_profile",
+    "evidence_checker",
+    "evidence_engines",
+    "score_components",
+)
+
+RAW_PAYLOAD_KEYS = {
+    "raw",
+    "raw_data",
+    "raw_evidence",
+    "raw_metadata",
+    "raw_report",
+    "raw_reports",
+    "raw_output",
+    "raw_outputs",
+    "metadata",
+    "reports",
+    "report",
+    "tool_output",
+    "tool_outputs",
+    "conversation",
+    "messages",
+    "full_ast",
+    "ast_dump",
+    "cfg_dump",
+    "clang_dump",
+    "joern_dump",
+    "svf_dump",
+}
+
+
+def compact_validation_finding(finding: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a validator-facing finding that keeps facts and trims bulky payloads."""
+    compact = {
+        key: _compact_validation_value(value)
+        for key, value in finding.items()
+        if key in FINDING_CORE_FIELDS and value not in (None, "", [], {})
+    }
+
+    evidence_pack = finding.get("evidence_pack")
+    if isinstance(evidence_pack, dict):
+        compact["evidence_summary"] = _compact_candidate_evidence(evidence_pack)
+    return compact
+
+
+def compact_validation_evidence_pack(evidence_pack: Dict[str, Any]) -> Dict[str, Any]:
+    """Trim validator evidence without changing the semantic contract of the pack."""
+    compact: Dict[str, Any] = {}
+    omitted_keys: List[str] = []
+    for key, value in evidence_pack.items():
+        if _is_raw_payload_key(key):
+            omitted_keys.append(key)
+            continue
+        if key == "candidate_evidence" and isinstance(value, dict):
+            compact[key] = _compact_candidate_evidence(value)
+        elif key in {"semantic_overlays", "semantic_overlay_evidence"}:
+            compact[key] = _compact_validation_value(value, max_list_items=8, max_dict_items=16)
+        else:
+            compact[key] = _compact_validation_value(value)
+
+    if omitted_keys:
+        compact["compaction_metadata"] = {
+            "omitted_large_payload_keys": sorted(omitted_keys),
+            "policy": "validator_input_compaction",
+        }
+    return compact
+
+
+def _compact_candidate_evidence(value: Dict[str, Any]) -> Dict[str, Any]:
+    kept: Dict[str, Any] = {}
+    omitted_keys: List[str] = []
+    for key, item in value.items():
+        if _is_raw_payload_key(key):
+            omitted_keys.append(key)
+            continue
+        if key in {
+            "id",
+            "candidate_id",
+            "candidate_source",
+            "checker",
+            "backend_profile",
+            "defect_class",
+            "category",
+            "function",
+            "entry_function",
+            "sink_function",
+            "target_function",
+            "source",
+            "sink",
+            "location",
+            "source_loc",
+            "sink_loc",
+            "path",
+            "call_path",
+            "call_paths",
+            "evidence_refs",
+            "positive_evidence",
+            "negative_evidence",
+            "finding_summary",
+            "semantic_overlays",
+            "semantic_overlay_evidence",
+            "path_constraints",
+            "score_components",
+        }:
+            kept[key] = _compact_validation_value(item)
+
+    if omitted_keys:
+        kept["compaction_metadata"] = {
+            "omitted_large_payload_keys": sorted(omitted_keys),
+            "policy": "candidate_evidence_compaction",
+        }
+    return kept
+
+
+def _compact_validation_value(
+    value: Any,
+    *,
+    max_string_chars: int = 2400,
+    max_list_items: int = 12,
+    max_dict_items: int = 24,
+) -> Any:
+    if isinstance(value, str):
+        return _trim_text(value, max_string_chars)
+    if isinstance(value, list):
+        compact_items = [
+            _compact_validation_value(
+                item,
+                max_string_chars=max_string_chars,
+                max_list_items=max_list_items,
+                max_dict_items=max_dict_items,
+            )
+            for item in value[:max_list_items]
+        ]
+        if len(value) > max_list_items:
+            compact_items.append({"omitted_items": len(value) - max_list_items})
+        return compact_items
+    if isinstance(value, dict):
+        compact: Dict[str, Any] = {}
+        omitted_keys: List[str] = []
+        for idx, (key, item) in enumerate(value.items()):
+            key_text = str(key)
+            if _is_raw_payload_key(key_text):
+                omitted_keys.append(key_text)
+                continue
+            if idx >= max_dict_items:
+                omitted_keys.append(key_text)
+                continue
+            compact[key_text] = _compact_validation_value(
+                item,
+                max_string_chars=max_string_chars,
+                max_list_items=max_list_items,
+                max_dict_items=max_dict_items,
+            )
+        if omitted_keys:
+            compact["_omitted_keys"] = sorted(omitted_keys)
+        return compact
+    return value
+
+
+def _is_raw_payload_key(key: str) -> bool:
+    normalized = str(key or "").strip().lower()
+    if normalized in RAW_PAYLOAD_KEYS:
+        return True
+    return normalized.startswith("raw_") or normalized.endswith("_raw")
+
+
+def _trim_text(value: str, max_chars: int) -> str:
+    text = str(value or "")
+    if len(text) <= max_chars:
+        return text
+    head = max_chars // 2
+    tail = max_chars - head
+    return text[:head] + "\n/* ... trimmed for validator input compaction ... */\n" + text[-tail:]

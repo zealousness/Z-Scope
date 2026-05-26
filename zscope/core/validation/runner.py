@@ -11,8 +11,11 @@ from ...common.issue_identity import canonical_issue_key, deduplicate_issues
 from ...framework.llm_client import LLMClient
 from .evidence import (
     build_validation_evidence_pack,
+    compact_validation_evidence_pack,
+    compact_validation_finding,
     is_entry_root_contract_scope_rejection,
     is_entry_root_dead_code_rejection,
+    trim_code,
     validation_verdict,
 )
 from .pipeline import ValidationPipeline
@@ -103,6 +106,7 @@ class ValidationRunner:
         issue_code = self._issue_code(issue_func, state)
         evidence_pack = self._build_evidence_pack(raw_issue, state, issue_code)
         val_resp = validator_agent.run(self._validator_input(raw_issue, issue_code, evidence_pack))
+        self._accumulate_token_metadata(state, getattr(val_resp, "metadata", {}) or {})
 
         if not val_resp.success:
             self._handle_validation_failure(state, raw_issue, issue_func, val_resp.error)
@@ -114,6 +118,7 @@ class ValidationRunner:
             evidence_pack,
             validator_agent,
             val_resp.data,
+            state,
         )
         verdict = validation_verdict(val_data)
         score_data = self.validation_pipeline.score_components(raw_issue, val_data)
@@ -136,9 +141,10 @@ class ValidationRunner:
         evidence_pack: Dict[str, Any],
         validator_agent: Any,
         val_data: Dict[str, Any],
+        state: Dict[str, Any],
     ) -> Dict[str, Any]:
         if is_entry_root_dead_code_rejection(val_data, evidence_pack):
-            val_data = self._retry_entry_root_rejection(raw_issue, issue_code, evidence_pack, validator_agent, val_data)
+            val_data = self._retry_entry_root_rejection(raw_issue, issue_code, evidence_pack, validator_agent, val_data, state)
         if is_entry_root_contract_scope_rejection(val_data, evidence_pack):
             val_data = dict(val_data)
             val_data["verdict"] = "uncertain"
@@ -159,6 +165,7 @@ class ValidationRunner:
         evidence_pack: Dict[str, Any],
         validator_agent: Any,
         val_data: Dict[str, Any],
+        state: Dict[str, Any],
     ) -> Dict[str, Any]:
         logger.info(
             "Retrying validation for issue %s because rejection conflicts with entry-root evidence.",
@@ -174,6 +181,7 @@ class ValidationRunner:
         )
         retry_pack["validation_requirements"] = retry_requirements
         retry_resp = validator_agent.run(self._validator_input(raw_issue, issue_code, retry_pack))
+        self._accumulate_token_metadata(state, getattr(retry_resp, "metadata", {}) or {})
         if not retry_resp.success:
             logger.warning(
                 "Entry-root validation retry failed for issue %s: %s",
@@ -195,6 +203,35 @@ class ValidationRunner:
                 "so the finding is retained as needs_review."
             ).strip()
         return retry_data
+
+    @staticmethod
+    def _accumulate_token_metadata(state: Dict[str, Any], metadata: Dict[str, Any]) -> None:
+        if not isinstance(metadata, dict):
+            return
+
+        def token_value(key: str, fallback_key: Optional[str] = None) -> int:
+            value = metadata.get(key)
+            if value is None and fallback_key:
+                value = metadata.get(fallback_key)
+            try:
+                return int(value or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        context_tokens = token_value("context_tokens")
+        cumulative_prompt = token_value("cumulative_prompt_tokens")
+        cumulative_completion = token_value("cumulative_completion_tokens")
+        cumulative_total = token_value("cumulative_total_tokens", "context_tokens")
+        state["total_context_tokens"] = int(state.get("total_context_tokens", 0) or 0) + context_tokens
+        state["total_cumulative_prompt_tokens"] = (
+            int(state.get("total_cumulative_prompt_tokens", 0) or 0) + cumulative_prompt
+        )
+        state["total_cumulative_completion_tokens"] = (
+            int(state.get("total_cumulative_completion_tokens", 0) or 0) + cumulative_completion
+        )
+        state["total_cumulative_total_tokens"] = (
+            int(state.get("total_cumulative_total_tokens", 0) or 0) + cumulative_total
+        )
 
     def _handle_validation_failure(
         self,
@@ -260,9 +297,13 @@ class ValidationRunner:
         evidence_pack: Dict[str, Any],
     ) -> Dict[str, Any]:
         val_input = {
-            "finding": json.dumps(raw_issue, indent=2, ensure_ascii=False),
-            "context_code": issue_code,
-            "evidence_pack": evidence_pack,
+            "finding": json.dumps(
+                compact_validation_finding(raw_issue),
+                indent=2,
+                ensure_ascii=False,
+            ),
+            "context_code": trim_code(issue_code, max_lines=180),
+            "evidence_pack": compact_validation_evidence_pack(evidence_pack),
         }
         self.attach_agent_contract(val_input, "validator_agent")
         return val_input

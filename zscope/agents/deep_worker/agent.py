@@ -78,6 +78,9 @@ class DeepWorkerAgent(ToolCallingAgent):
                     data=parsed,
                     metadata={
                         "context_tokens": result.get("context_tokens", 0),
+                        "cumulative_prompt_tokens": result.get("cumulative_prompt_tokens", 0),
+                        "cumulative_completion_tokens": result.get("cumulative_completion_tokens", 0),
+                        "cumulative_total_tokens": result.get("cumulative_total_tokens", 0),
                         "iterations": result.get("iterations", 0),
                         "tool_call_count": result.get(
                             "tool_call_count",
@@ -100,6 +103,9 @@ class DeepWorkerAgent(ToolCallingAgent):
                 error=f"Deep worker {ticket_id} did not return a worker_report JSON.",
                 metadata={
                     "context_tokens": result.get("context_tokens", 0),
+                    "cumulative_prompt_tokens": result.get("cumulative_prompt_tokens", 0),
+                    "cumulative_completion_tokens": result.get("cumulative_completion_tokens", 0),
+                    "cumulative_total_tokens": result.get("cumulative_total_tokens", 0),
                     "iterations": result.get("iterations", 0),
                     "tool_call_count": result.get(
                         "tool_call_count",
