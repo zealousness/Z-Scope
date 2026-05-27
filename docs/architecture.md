@@ -108,7 +108,7 @@ flowchart TB
     Report --> UserCfg
 ```
 
-总体架构由四个主平面组成。事实平面负责代码索引和程序事实沉淀；证据平面负责候选生成、去重、合并和风险预算输入；智能体平面负责语义建模、漏洞挖掘、聚焦深挖、问题调和和三态验证；反馈平面通过 SnapshotStore、UserConfigStore 与 ReviewMemory 保留语义快照、最终报告、人工抑制、baseline 和 Validator 记忆。UserConfigStore 当前既能读取历史 SQLite 配置，也能以 `user_config.xlsx` 作为人工可审阅的主配置界面，并用旁路 state DB 保存反馈状态。LLM Agent 通过受 ToolPolicy 约束的 ToolsRuntime 访问被索引、被切片、被缓存、被配置增强过的事实，分析过程与底层代码库保持可追踪边界。
+总体架构由四个主平面组成。事实平面负责代码索引和程序事实沉淀；证据平面负责候选生成、去重、合并和风险预算输入；智能体平面负责语义建模、漏洞挖掘、聚焦深挖、问题调和和三态验证；反馈平面通过 SnapshotStore、UserConfigStore 与 ReviewMemory 保留语义快照、最终报告、人工抑制、baseline 和 Validator 记忆。UserConfigStore 当前既能读取历史 SQLite 配置，也能以 `user_config.xlsx` 作为人工可审阅的主配置界面，并用同名旁路 state DB 保存反馈状态。LLM Agent 通过受 ToolPolicy 约束的 ToolsRuntime 访问被索引、被切片、被缓存、被配置增强过的事实；实际可见工具还会经过 `AGENT.md` 白名单和后端能力 gate，分析过程与底层代码库保持可追踪边界。
 
 v1.0 的主要架构边界不是替换上述平面，而是把原来集中在 `Analyzer` 和 `zscope/core/*.py` 的职责拆成可测试模块：
 
@@ -131,7 +131,7 @@ v1.0 的主要架构边界不是替换上述平面，而是把原来集中在 `A
 
 默认工作流来自 `zscope/workflows/default.yaml`：
 
-1. `discover_entries`：按需发现公共 API、通信/IPC、线程入口和用户输入点，并把候选入口列表写入项目根目录 `entry_functions_list.json`。
+1. `discover_entries`：当 `--discover-entries` 或 `project.entry_discovery.enabled` 启用时，发现公共 API、通信/IPC、线程入口和用户输入点，并把候选入口列表写入项目根目录 `entry_functions_list.json`。
 2. `premodel_reachable_callees`：为可达子函数提前构建语义快照。
 3. `model_entry`：为入口函数构建语义快照。
 4. `focused_subagent_planning`：从启发式、语义快照、确定性规则、图候选和后端信号中规划聚焦工单，并刷新本入口的 `effective_budget`。
@@ -139,13 +139,14 @@ v1.0 的主要架构边界不是替换上述平面，而是把原来集中在 `A
 6. `validate_findings`：Validator 做三态验证和可利用性判断。
 7. `persist_report`：写入最终报告、SQLite 快照和元数据。
 
-Workflow 是 Python 编排层的执行计划，不作为大段提示词注入模型。CLI 选择运行模式：默认使用 `default`，`--resume` 切换到 `resume`，`--maintain` 切换到 `maintain`。v1.0 中 `Analyzer.run()` 已收敛为调用 `WorkflowRunner.run()`；运行态 state 创建、workflow step 执行、已有报告返回分流和最终持久化由 `zscope/orchestration/workflow_runner.py` 负责。`analysis.workflow_name` 是运行时内部字段，写入 `zscope.yaml` 会被 `ConfigLoader` 拒绝。
+Workflow 是 Python 编排层的执行计划，不作为大段提示词注入模型。CLI 选择运行模式：默认使用 `default`，`--resume` 切换到 `resume`，`--maintain` 切换到 `maintain`；`--mode ruledriven` 和 `--mode alert-verify` 走各自的专用入口，不通过默认 entry workflow。`ScanSessionRunner` 会在 session 步骤后决定入口形态：显式 `entry_functions_list` 或入口发现候选进入批量模式，否则回退到 `entry_function` 单入口模式。v1.0 中 `Analyzer.run()` 已收敛为调用 `WorkflowRunner.run()`；运行态 state 创建、workflow step 执行、已有报告返回分流和最终持久化由 `zscope/orchestration/workflow_runner.py` 负责。`analysis.workflow_name` 是运行时内部字段，写入 `zscope.yaml` 会被 `ConfigLoader` 拒绝。
 
 ### 4.2 批量、断点续扫和增量维护
 
 | 模式 | 入口 | 行为 |
 |------|------|------|
-| 默认批量 | `project.entry_functions_list` 或自动发现生成的 `entry_functions_list.json` | 多线程执行每个入口，汇总 `zscope_batch_report.json/md` |
+| 默认单入口 | `project.entry_function` | 未配置 `entry_functions_list` 且入口发现无候选时，分析单个入口并生成 `report.json/md` |
+| 默认批量 | `project.entry_functions_list` 或入口发现候选 | 多线程执行每个入口，汇总 `zscope_batch_report.json/md` |
 | `--resume` | `resume.yaml` | 从 `snapshots.db` 跳过已有成功 final report 且无 pending validation 的函数，最后合并跳过项报告 |
 | `--maintain` | `maintain.yaml` | 比较源码/语义哈希，未变更函数零 Token 复用历史报告，变更函数先调和历史缺陷再重扫 |
 | `--mode ruledriven` | Joern | Joern 规则扫描后交给 LLM 验证 |
@@ -160,7 +161,7 @@ Workflow 是 Python 编排层的执行计划，不作为大段提示词注入模
 
 控制平面负责把用户意图变成可执行流程：
 
-- `zscope/cli/cli.py` 处理运行模式、WebUI、MCP、SARIF 告警验证、SARIF 导出、索引预热和 `--infer-user-config` 工作簿推断，并暴露 `--dashboard-host/--dashboard-port`、`--mcp-auth-token-env`、`--mcp-client-allowlist` 等服务边界参数。
+- `zscope/cli/cli.py` 处理运行模式、WebUI、MCP、SARIF 告警验证、SARIF 导出、索引预热和 `--infer-user-config` 工作簿推断，并暴露 `--mode`、`--sarif`、`--dashboard-host/--dashboard-port`、`--mcp-http`、`--mcp-host/--mcp-port/--mcp-endpoint`、`--mcp-auth-token-env`、`--mcp-client-allowlist` 等服务边界参数。
 - `zscope/orchestration/scan_session.py` 统一入口发现、发现结果落盘、批量加载、断点续扫和报告备份。
 - `zscope/orchestration/workflow_executor.py` 执行声明式 workflow step，并在报告 metadata 中记录进度。
 - `zscope/orchestration/workflow_runner.py` 装配单入口运行态，负责 state factory、workflow executor、report build/persist/finalize 回调和已有报告返回路径；history reconciler 与 validation runner 仍由 `Analyzer` step handler 调用。
@@ -176,7 +177,7 @@ Workflow 是 Python 编排层的执行计划，不作为大段提示词注入模
 | 后端 | 主要能力 | 适用场景 |
 |------|----------|----------|
 | `regex` | 轻量函数提取和源码片段读取 | 无外部依赖的回退模式 |
-| `clang` | clangd LSP 批量提取函数、类型、调用、宏、全局变量 | 默认推荐的结构化 C 索引路径 |
+| `clang` | clangd LSP 批量提取函数、类型、调用、宏、全局变量 | 常规结构化 C 索引路径 |
 | `joern` | CPGQL 查询与 Joern 规则扫描 | 规则驱动模式和 CPG 查询 |
 | `unified` | ClangBackend + SVF/Saber，共享 KnowledgeDB | 需要间接调用、指针分析、内存缺陷后端信号的深度模式 |
 
@@ -191,7 +192,7 @@ Workflow 是 Python 编排层的执行计划，不作为大段提示词注入模
 
 当前 `CodeIndex.get_function_impl()` 还会查找函数声明和实现前的 C/C++ 注释块，并把这些 comment block 连同带绝对行号的实现源码一起返回。这样头文件中的 API 契约、所有权说明、锁要求和参数语义可以在不额外检索文档的情况下进入 Agent 上下文，同时仍然保留文件与行号来源。
 
-Unified 后端的 SVF 路径现在支持入口裁剪。`svf_scope=auto|entry` 时，`EntryBitcodeSelector` 会从入口函数沿 KnowledgeDB 调用图选择相关翻译单元，再通过 `llvm-nm` 的 undefined symbol 闭包补齐依赖；如果没有选中 bitcode 或超过 `svf_max_selected_tus`，按 `svf_fallback=full|skip` 保守处理。每个 SVF 分组会在 `.zscope_bc/bitcode_scope_<group>.json` 写入裁剪计划，包括入口、可达函数、选中的源码和 `.bc`、符号闭包补齐项与回退原因。
+Unified 后端的 SVF 路径现在支持入口裁剪。`svf_scope=auto|entry` 时，`EntryBitcodeSelector` 会从入口函数沿 KnowledgeDB 调用图选择相关翻译单元，再通过 `llvm-nm` 的 undefined symbol 闭包补齐依赖；如果没有选中 bitcode 或超过 `svf_max_selected_tus`，按 `svf_fallback=full|skip` 保守处理。每个 SVF 分组会在 bitcode 输出目录写入 `bitcode_scope_<group>.json` 裁剪计划，包括入口、可达函数、选中的源码和 `.bc`、符号闭包补齐项与回退原因；通常该目录是 `.zscope_bc/`，WSL `/mnt/...` 场景会自动重定向到 Linux 原生临时目录以避开 NTFS 与 gllvm/objcopy 的兼容问题。
 
 ### 5.3 证据平面：CandidatePipeline + Backend Signals
 
@@ -213,7 +214,8 @@ v1.0 继续沿用证据候选层，并把候选收集、合并、统计和 IR �
 | 层级 | 作用 |
 |------|------|
 | `defaults.yaml` | 打包发布的默认 API role、type alias 和 checker role |
-| user workbook / state DB | 项目私有 allocator、release、lock、dispatcher、module lifecycle、function intent |
+| user workbook | 项目私有 allocator、release、lock、dispatcher、module lifecycle、pointer target、function intent |
+| state DB / legacy SQLite | 配置告警、finding suppression、baseline 和旧 SQLite 配置兼容 |
 | local inference | typedef、宏别名、历史 snapshot 和函数命名启发式补充 |
 | filtered context | `user_config_context.py` 按入口函数和文件 scope 注入 prompt 所需片段 |
 
@@ -264,9 +266,11 @@ Z-SCOPE 的多智能体采用职责分离设计：
 
 Skill 是漏洞领域契约，用于约束分析目标和证据要求。`vulnerability_analyzer.task` 会被解析为 active skills，例如 `bounds_and_integer`、`resource_lifecycle`、`temporal_memory`、`shared_state_race` 等。当前选择器先用本地关键词、否定词和范围词做快速判断；当本地置信度不足时，可调用同一 Agent 模型做语义路由。语义路由低置信或与本地结果冲突时会保守放宽到全量 Skill，避免老配置和含糊任务漏扫。
 
-ToolsRuntime 提供 12 个内置 Agent 工具：
+ToolsRuntime 定义最多 12 个内置代码查询工具：
 
 `get_function_impl`、`get_function_snapshot`、`list_known_functions`、`get_file_snippet`、`get_callers`、`get_type_info`、`get_call_graph`、`get_data_flow`、`find_function_pointers`、`query_pointer_alias`、`verify_taint_reachability`、`get_deep_call_context`。
+
+Agent 实际能看到的工具不是固定 12 个。`Analyzer._get_tools()` 会先提供前 6 个基础工具；仅当后端是 `joern`、`svf` 或 `unified` 时才追加调用图、数据流、函数指针、SVF alias、SVF/Saber 内存缺陷查询和深度调用上下文等高级工具；随后再由对应 `AGENT.md` 与 `ToolPolicy` 过滤。`semantic_modeler` 主要使用基础工具，`vulnerability_analyzer`、`deep_worker` 和 `validator_agent` 各自只开放其白名单中的子集。MCP 侧复用 ToolsRuntime schema，但还会额外提供 `query_knowledge`、`discover_entries` 和 namespaced aliases，因此 MCP 工具集合与单个 Agent 的可见工具集合并不完全相同。
 
 工具层还做了三类重要防护：
 
@@ -296,7 +300,7 @@ Z-SCOPE 使用五类主要持久化区域：
 | `.zscope_snapshots/snapshots.db` | 语义快照索引、final report 索引 | `--resume`、`--maintain` 和函数级缓存 |
 | `.zscope_snapshots/user_config.xlsx` | 外部函数、配对函数、函数指针、dispatcher、模块生命周期、函数意图 | 人工可审阅的用户领域知识 |
 | `.zscope_snapshots/user_config.state.db` 或 `user_config.db` | 抑制、baseline、配置告警和历史兼容数据 | 误报反馈与旧 SQLite 配置兼容 |
-| `.zscope_bc/bitcode_scope_<group>.json` | SVF 入口裁剪计划 | 审计本次 SVF 分析实际纳入了哪些翻译单元 |
+| `.zscope_bc/bitcode_scope_<group>.json` | SVF 入口裁剪计划 | 审计本次 SVF 分析实际纳入了哪些翻译单元；WSL `/mnt/...` 场景可能写入 Linux 原生临时 bitcode 目录 |
 
 `UserConfigStore` 当前的人工配置工作簿 sheet：
 
@@ -357,7 +361,7 @@ Z-SCOPE 将“候选”“审计观察项”和“确认漏洞”分为不同层
 
 ### 6.5 工程化运行与开放集成
 
-每个函数的语义快照、最终报告、批量汇总、候选 IR 和用户反馈都有落地点。大规模扫描中断后可以 `--resume`，代码小改后可以 `--maintain`，旧报告覆盖前有自动备份。MCP Server 还暴露 `zscope://config`、`zscope://knowledge/stats`、`zscope://snapshots/list` 等资源，并提供 `query_knowledge`、`discover_entries` 和全部代码查询工具，使 Z-SCOPE 可以作为本地代码知识底座接入外部 AI IDE。
+每个函数的语义快照、最终报告、批量汇总、候选 IR 和用户反馈都有落地点。大规模扫描中断后可以 `--resume`，代码小改后可以 `--maintain`，旧报告覆盖前有自动备份。MCP Server 还暴露 `zscope://config`、`zscope://knowledge/stats`、`zscope://knowledge/functions`、`zscope://snapshots/list` 等资源，并在 `ToolPolicy` 过滤后提供 `query_knowledge`、`discover_entries`、代码查询工具和 namespaced aliases，使 Z-SCOPE 可以作为本地代码知识底座接入外部 AI IDE。
 
 ## 7. 业界领先或差异化特性
 
@@ -382,7 +386,7 @@ Z-SCOPE 的差异化不在单个算法，而在“程序事实、候选证据、
 
 | 环节 | 开源工具常见能力 | 商用工具常见能力 | Z-SCOPE 实现 |
 |------|------------------|------------------|--------------|
-| 入口发现 | 通常依赖配置、构建数据库或查询入口 | 依赖扫描配置、仓库集成和语言前端 | `entry_functions_list` + `--discover-entries` 落盘 + `entry_discovery.search_root` |
+| 入口发现 | 通常依赖配置、构建数据库或查询入口 | 依赖扫描配置、仓库集成和语言前端 | `entry_functions_list` + `--discover-entries` / `project.entry_discovery.enabled` 落盘 + `entry_discovery.search_root` |
 | 代码事实 | AST/CFG/CPG/规则匹配，各工具侧重点不同 | 专有前端和数据流引擎 | `CodeIndex` 统一 Clang、Joern、Regex、Unified 后端 |
 | 跨函数关系 | 依赖数据流查询、库模型或指针分析能力 | 专有模型和框架配置 | SVF Andersen、Saber、调用图、语义快照共同补强 |
 | 候选生成 | 查询或规则命中即输出告警 | 内置规则和数据流引擎输出告警 | 确定性规则、后端信号、语义快照、外部 SARIF 统一入 ledger |
@@ -391,7 +395,7 @@ Z-SCOPE 的差异化不在单个算法，而在“程序事实、候选证据、
 ### 8.2 入口覆盖
 
 - 显式支持批量入口 `entry_functions_list`。
-- `--discover-entries` 能扫描头文件公共 API、网络/IPC、线程创建、文件/环境/标准输入等入口。
+- `--discover-entries` 或 `project.entry_discovery.enabled` 能扫描头文件公共 API、网络/IPC、线程创建、文件/环境/标准输入等入口。
 - 自动发现结果会写入 `entry_functions_list.json`，包含 exposure、reasons、confidence 和入口级审计提示，可由人工继续编辑后复用。
 - `entry_discovery.search_root` 可把入口发现限制到指定绝对目录，适合只审计大型仓库中的某个模块。
 - handler、allocator、release、dispatch 等项目语义由 `user_config.xlsx` 与 `--infer-user-config` 承担，不再通过批量 prompt autofill 注入。
@@ -508,6 +512,7 @@ WebUI 保存验证状态时，`rejected` 会写入 `finding_suppressions`，后�
 | `zscope -c zscope.yaml --build-cpg` | 仅构建索引 |
 | `zscope -c zscope.yaml --dashboard` | 启动 Web 仪表盘 |
 | `zscope -c zscope.yaml --mcp-stdio` | 启动 MCP stdio server |
+| `zscope -c zscope.yaml --mcp-http --mcp-host 127.0.0.1 --mcp-port 8765` | 启动实验性 Streamable HTTP MCP server |
 | `zscope -c zscope.yaml --export-sarif zscope-results.sarif` | 扫描完成后导出 SARIF v2.1.0 |
 | `zscope --mode ruledriven -c zscope.yaml` | Joern 规则驱动模式 |
 | `zscope --mode alert-verify --sarif alerts.sarif -c zscope.yaml` | SARIF 告警验证 |
@@ -550,7 +555,7 @@ MCP 暴露三类能力，并统一经过 `ToolPolicy` 过滤：
 
 - Resources：`zscope://config`、`zscope://knowledge/stats`、`zscope://knowledge/functions`、`zscope://snapshots/list`
 - Prompts：`zscope.entry_discovery`、`zscope.resource_lifecycle_audit`、`zscope.concurrency_audit`
-- Tools：12 个 ToolsRuntime 工具，外加 `query_knowledge` 和 `discover_entries`
+- Tools：ToolsRuntime 的 12 个 raw schema，外加 `query_knowledge`、`discover_entries`，并为 raw 工具提供 `zscope.code.*`、`zscope.graph.*`、`zscope.knowledge.query` 和 `zscope.entries.discover` aliases
 
 stdio MCP 适合作为本地 IDE/Agent 接入。HTTP MCP 是显式开启的远程实验入口：默认绑定 loopback；当绑定非 loopback 地址时，CLI 会强制要求 `--mcp-auth-token-env` 和至少一个 `--mcp-client-allowlist`，HTTP 层再做 Bearer token 与客户端 IP allowlist 校验。
 
