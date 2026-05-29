@@ -7,6 +7,11 @@ import re
 from typing import Any, Dict, List, Optional
 
 
+MAX_CATEGORY_TOKEN_LENGTH = 64
+MAX_ISSUE_KEY_PART_LENGTH = 160
+ISSUE_KEY_HASH_LENGTH = 12
+
+
 def deduplicate_issues(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Merge findings that point at the same root cause."""
     records: Dict[str, Dict[str, Any]] = {}
@@ -61,6 +66,8 @@ def normalize_issue_fields(issue: Dict[str, Any]) -> None:
         "memory_safety",
         "resource_leak",
         "backend_signal",
+        "use_after_return",
+        "use_after_scope",
     }
     if current in generic_categories:
         issue["category"] = normalized_category
@@ -86,11 +93,17 @@ def structured_issue_category(issue: Dict[str, Any]) -> str:
         "memory_safety",
         "resource_leak",
         "backend_signal",
+        "use_after_return",
+        "use_after_scope",
     }
     for key in ("category", "subcategory", "defect_class", "vulnerability_type"):
-        value = str(issue.get(key) or "").replace("-", "_").lower().strip()
+        raw_value = str(issue.get(key) or "").strip()
+        value = raw_value.replace("-", "_").lower().strip()
         if value in _KNOWN_CATEGORIES and value not in generic_categories:
             return value
+        token = safe_category_token(value) if not re.search(r"\s", raw_value) else ""
+        if token and token not in generic_categories:
+            return token
     return ""
 
 
@@ -752,12 +765,30 @@ def normalize_issue_category(value: str) -> str:
     stripped = text.strip()
     if stripped in {"memory safety", "memory_safety"}:
         return "memory_safety"
-    return stripped or "unknown"
+    token = safe_category_token(stripped)
+    return token or "unknown"
 
 
 def normalize_issue_key_part(value: Any) -> str:
     text = str(value or "").replace("\\", "/").lower().strip()
-    return re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    if len(text) <= MAX_ISSUE_KEY_PART_LENGTH:
+        return text
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:ISSUE_KEY_HASH_LENGTH]
+    prefix_len = MAX_ISSUE_KEY_PART_LENGTH - ISSUE_KEY_HASH_LENGTH - 1
+    return f"{text[:prefix_len].rstrip()}~{digest}"
+
+
+def safe_category_token(value: Any) -> str:
+    """Return a short category token, never a prose paragraph."""
+    text = str(value or "").replace("-", "_").lower().strip()
+    text = re.sub(r"\s+", "_", text)
+    text = re.sub(r"[^a-z0-9_]+", "_", text).strip("_")
+    if not text or len(text) > MAX_CATEGORY_TOKEN_LENGTH:
+        return ""
+    if not re.match(r"^[a-z][a-z0-9_]*$", text):
+        return ""
+    return text
 
 
 _KNOWN_CATEGORIES = {

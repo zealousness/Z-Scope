@@ -30,10 +30,15 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(WEB_DIR), **kwargs)
 
     def _send_json(self, payload, status=200):
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(json.dumps(payload).encode("utf-8"))
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def end_headers(self):
         # Avoid stale dashboard cache causing old broken JS to persist in browser.
