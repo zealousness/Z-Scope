@@ -125,6 +125,11 @@ int td_handle_real_protocol_message(int fd, const char* fallback_key,
                                     unsigned char* out, size_t out_size);
 int td_handle_distributed_cs_message(int listen_fd, int work_fd, int peer_protocol,
                                      unsigned char* out, size_t out_size);
+int td_handle_issue42_shared_memory_message(int shm_fd, const char* shm_name,
+                                            const unsigned char* wire,
+                                            size_t wire_len,
+                                            unsigned char* out,
+                                            size_t out_size);
 int td_update_os_policy(const char* os_name, int pid, const char* proc_name,
                         const char* policy_key, int route_key, uint32_t delta);
 
@@ -142,6 +147,8 @@ int td_start_real_protocol_worker(int fd, const char* fallback_key);
 
 int td_run_issue41_cases(int listen_fd, int work_fd, int peer_protocol, const unsigned char* report, size_t report_len, unsigned char* out, size_t out_size);
 int td_start_issue41_worker(int listen_fd, int work_fd, int peer_protocol);
+int td_run_issue42_cases(int shm_fd, const char* shm_name, const unsigned char* wire, size_t wire_len, unsigned char* out, size_t out_size);
+int td_start_issue42_worker(int shm_fd, const char* shm_name);
 
 /**
  * Query the status of a previously submitted task

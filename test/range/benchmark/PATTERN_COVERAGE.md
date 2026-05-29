@@ -3,7 +3,9 @@
 Source document: `docs/c_memory_concurrency_patterns.md`.
 
 This matrix records how the `test/range` benchmark maps the pattern catalog to
-realistic task-dispatcher code. Version 8 adds a high-priority `ISSUE41-*` tier
+realistic task-dispatcher code. Version 11 adds a high-priority `ISSUE42-*`
+tier from GitHub issue #42 runtime, shared-memory, signal, timer, and callback
+models. Version 8 adds a high-priority `ISSUE41-*` tier
 from GitHub issue #41 distributed C/S messaging and task-creation models.
 Version 7 adds a high-priority `REAL-*` tier from GitHub issue #40 real-project
 abstract vulnerability models; those entries are weighted above the original
@@ -21,16 +23,16 @@ normalization, stale tree-node, and macro-gated lock coverage.
 | Pattern family | Covered by | Notes |
 | --- | --- | --- |
 | Null pointer dereference | RANGE-018 | Missing delimiter in control-message parsing. |
-| Out-of-bounds read/write | RANGE-001, RANGE-030 | Parser length trust and fixed stack buffer off-by-one. |
+| Out-of-bounds read/write | RANGE-001, RANGE-030, ISSUE42-006, ISSUE42-010, ISSUE42-014 | Parser length trust, fixed stack buffer off-by-one, and issue #42 lcore/freelist/cache index mismatches. |
 | Integer overflow in allocation/copy size | RANGE-002, RANGE-015, RANGE-017, ISSUE41-001 | Binary payload, network receive, serialization paths, and issue #41 spec-vs-fixed-label-limit mismatch. |
 | Signed/unsigned conversion | RANGE-029 | Negative receive result converted to `size_t`. |
-| Use-after-free / stale lifetime | RANGE-020, RANGE-022, RANGE-036, RANGE-047 | Cache borrowed pointer, callback context, unmapped rule table, and stale AVL node after failure cleanup. |
+| Use-after-free / stale lifetime | RANGE-020, RANGE-022, RANGE-036, RANGE-047, ISSUE42-005, ISSUE42-029 | Cache borrowed pointer, callback context, unmapped rule table, stale AVL node after failure cleanup, pbuf pool premature destroy, and WORK self-destruction. |
 | Double free | RANGE-006 | Cleanup path frees the same local allocation twice. |
-| Memory/resource leak | RANGE-007, RANGE-013, RANGE-028, RANGE-037, RANGE-038, RANGE-039, RANGE-040, RANGE-045 | Error path leaks, thread-id array leak, `realloc` pointer loss, global-container hook/architecture gaps, unlink-without-release, nested mutex cleanup omission, and child-list leaks. |
+| Memory/resource leak | RANGE-007, RANGE-013, RANGE-028, RANGE-037, RANGE-038, RANGE-039, RANGE-040, RANGE-045, ISSUE42-002, ISSUE42-009, ISSUE42-022 | Error path leaks, thread-id array leak, `realloc` pointer loss, global-container hook/architecture gaps, unlink-without-release, nested mutex cleanup omission, child-list leaks, TLS/thread-cache leaks, and CRCU/TLSCB cleanup gaps. |
 | Invalid free | RANGE-032 | Frees an offset into a caller-owned line buffer. |
 | Stack escape | RANGE-024 | Detached thread receives a stack `FlushJob`. |
 | Stack overflow / uncontrolled stack allocation | RANGE-033 | User-controlled VLA size. |
-| Uninitialized read / padding disclosure | RANGE-031 | Partially initialized status struct is sent over the network layer. |
+| Uninitialized read / padding disclosure | RANGE-031, ISSUE42-008 | Partially initialized status or arena-info structs are exposed to callers. |
 | Type confusion / wrong cleanup type | RANGE-014 | `TaskConfig*` passed to a cleanup routine expecting `SharedResources*`. |
 | Alignment / strict-aliasing-sensitive cast | RANGE-034 | Wire bytes cast from `packet + 1` to `uint32_t*`. |
 | Format string | RANGE-004 | Global log buffer used as the `printf` format string. |
@@ -41,13 +43,13 @@ normalization, stale tree-node, and macro-gated lock coverage.
 
 | Pattern family | Covered by | Notes |
 | --- | --- | --- |
-| Data race on shared state | RANGE-009, RANGE-016, RANGE-048, ISSUE41-007 | Unsynchronized counter, shutdown flag, architecture-specific no-op locking, and task-array expansion without synchronization. |
+| Data race on shared state | RANGE-009, RANGE-016, RANGE-048, ISSUE41-007, ISSUE42-004, ISSUE42-009, ISSUE42-016, ISSUE42-017, ISSUE42-021 | Unsynchronized counter, shutdown flag, architecture-specific no-op locking, task-array expansion, and issue #42 reader PID, CRCU, QRCU, PCM, and shared-memory creation races. |
 | Non-atomic read-modify-write | RANGE-009, RANGE-021 | Counter increment and refcount changes. |
-| Check-then-act / TOCTOU | RANGE-011, RANGE-020, RANGE-026, RANGE-035, RANGE-036 | File permission check, borrowed cache value, lazy config, stale fd, and stale mmap pointer. |
-| Deadlock / recursive locking | RANGE-005, RANGE-041, RANGE-044 | Registry recursive lock, scheduler/control ABBA lock inversion, and timer callback cascade waiting. |
+| Check-then-act / TOCTOU | RANGE-011, RANGE-020, RANGE-026, RANGE-035, RANGE-036, ISSUE42-013, ISSUE42-023, ISSUE42-026 | File permission check, borrowed cache value, lazy config, stale fd, stale mmap pointer, FixPool registration, shared-memory path attach, and ftok-style key generation. |
+| Deadlock / recursive locking | RANGE-005, RANGE-041, RANGE-044, ISSUE42-027, ISSUE42-028 | Registry recursive lock, scheduler/control ABBA lock inversion, timer callback cascade waiting, wheel-timer self-delete, and signal/semaphore re-entry. |
 | Missing unlock on error path | RANGE-025 | Config reload returns while holding `g_config_lock`. |
 | Callback while holding lock | RANGE-023 | External callback invoked under lifecycle cache lock. |
-| Condition-variable lost wakeup | RANGE-027 | Predicate guarded by `if` instead of a loop. |
+| Condition-variable lost wakeup | RANGE-027, ISSUE42-020 | Predicate guarded by `if` instead of a loop, and trigger-mode same-core wake without scheduling. |
 | Double-checked locking / unsafe publication | RANGE-019, RANGE-026 | Half-initialized cache entry publication and lazy config read. |
 | Thread lifecycle / detached async work | RANGE-013, RANGE-024 | Thread argument ownership and detached worker argument lifetime. |
 | Concurrent container modification | RANGE-019, RANGE-020, RANGE-021, RANGE-022 | Cache list mutation, borrowed values, and refcount races. |
@@ -71,8 +73,8 @@ normalization, stale tree-node, and macro-gated lock coverage.
 | Ownership transfer/refcount/container | RANGE-020, RANGE-021, RANGE-022, RANGE-024, RANGE-032, RANGE-037, RANGE-038, RANGE-039, RANGE-040, RANGE-045, RANGE-047 | Borrowed value, refcount, callback context, async job, substring ownership, global-container ownership, nested child ownership, and stale tree ownership. |
 | Queue/producer-consumer | RANGE-009, RANGE-016, RANGE-027 | Dispatcher queue and lifecycle pending work condition variable. |
 | Reload/error path | RANGE-025, RANGE-028 | Config reload and metrics resize. |
-| mmap/shared mapping | RANGE-036 | Rule-table map/unmap and later matching. |
-| Signal/start-stop path | RANGE-016 | Signal handler and cleanup both modify shutdown state. |
+| mmap/shared mapping | RANGE-036, ISSUE42-011, ISSUE42-018, ISSUE42-021, ISSUE42-023 | Rule-table map/unmap, shared-memory file-type handling, named-pipe permissions, concurrent zone creation, and path attach races. |
+| Signal/start-stop path | RANGE-016, ISSUE42-019, ISSUE42-028 | Signal handler and cleanup both modify shutdown state; issue #42 adds callstack and exception-reservation signal paths. |
 | Conditional compilation / architecture variant | RANGE-048 | Locking macros compile to real locks on 64-bit builds and no-ops elsewhere. |
 
 ## GCR-Leak Variants Added In v4
@@ -120,6 +122,16 @@ normalization, stale tree-node, and macro-gated lock coverage.
 | Task creation and task-index lifecycle | ISSUE41-006, ISSUE41-007, ISSUE41-009 | Task creation and retry paths exercise partial initialization leaks, dynamic global task-array expansion races, and resource cleanup without reference-count checks. |
 | Wire compatibility and fd conversion | ISSUE41-004, ISSUE41-008, ISSUE41-011 | Models reliable-fd/raw-fd type confusion, missing cross-version filtering, and raw work-fd values passed to validators expecting encoded fds. |
 | Spec-vs-runtime capacity mismatch | ISSUE41-001 | Collection registration and label-cache replacement model a hidden fixed byte cap that is lower than the declared element-count specification. |
+
+## Runtime/Shared-Memory Issue #42 Tier Added In v11
+
+| Variant family | Covered by | Notes |
+| --- | --- | --- |
+| Shared-memory and process-table lifecycle | ISSUE42-011, ISSUE42-018, ISSUE42-021, ISSUE42-023, ISSUE42-025, ISSUE42-026 | Routed through `td_handle_issue42_shared_memory_message` and `_issue42_process_shared_memory_message`: reserved-file type handling, named-pipe permissions, memzone concurrent create, POSIX shm path attach race, PCM state transition, and ftok-style key creation. |
+| Runtime callbacks, event loops, timers, and work items | ISSUE42-001, ISSUE42-020, ISSUE42-027, ISSUE42-029 | Models callback parameter semantic mismatch, flushJob same-core wake gaps, wheel-timer self-delete deadlock, and WORK self-destruction race. |
+| Allocator/cache/resource management | ISSUE42-002, ISSUE42-005, ISSUE42-009, ISSUE42-022, ISSUE42-024 | Covers thread-cache leaks, pbuf premature destroy, CRCU pending-batch race/leak, TLSCB preallocation cleanup, and Lfhash allocator/free mismatch. |
+| Bounds, formatting, byte order, and output state | ISSUE42-003, ISSUE42-006, ISSUE42-007, ISSUE42-008, ISSUE42-010, ISSUE42-014 | Covers big-endian `ctz`, lcore index OOB, thread-name overflow, uninitialized arena outputs, freelist size mismatch, and FixPool cache-count OOB. |
+| Runtime global state and signal safety | ISSUE42-004, ISSUE42-012, ISSUE42-013, ISSUE42-015, ISSUE42-016, ISSUE42-017, ISSUE42-019, ISSUE42-028 | Covers single-field multi-reader state, log-level misuse, ops registration race, arena traversal logic, QRCU mode race, PCM slot race, callstack signal race, and semaphore work from signal handlers. |
 
 ## Deliberately Not Scored In v3
 

@@ -109,4 +109,40 @@ int _issue41_missing_reference_count(int resource_id, int close_now);
 int _issue41_sigpipe_not_handled(int peer_fd, const unsigned char* payload, size_t len);
 int _issue41_raw_fd_missing_encode(int listen_fd, int work_fd);
 
+int _issue42_process_shared_memory_message(int shm_fd, const char* shm_name,
+                                           const unsigned char* wire,
+                                           size_t wire_len,
+                                           unsigned char* out,
+                                           size_t out_len);
+int _issue42_init_sleep_busyflag_misuse(int fd, int start_sec);
+int _issue42_thread_cache_destroy_leak(size_t block_size);
+size_t _issue42_big_endian_ctz_offset(const unsigned char* input, size_t len);
+uint32_t _issue42_shared_rwlock_readerpid_race(uint32_t reader_pid);
+int _issue42_pbuf_pool_premature_destroy(int active_tasks);
+uint64_t _issue42_pmdtimer_lcore_oob(uint32_t lcore_id);
+int _issue42_thread_name_overflow(const char* thread_name, uint32_t id);
+int _issue42_crcu_multi_writer_race(int need_judge_pending, int callback_id);
+int _issue42_mmpool_temporary_array_mismatch(uint32_t configured_lcores);
+void* _issue42_reserved_file_size_check_bypass(uint32_t mode, uint64_t file_size,
+                                               uint64_t map_size);
+int _issue42_inappropriate_error_level_logging(int already_initialized);
+uint32_t _issue42_shmdbg_arena_group_repeated_get(uint32_t max_partition);
+int _issue42_qrcu_version_switch_race(int use_qrcu, void* rcu, void* cb);
+uint32_t _issue42_pcm_process_slot_race(uint32_t user_proc_id, uint32_t pid,
+                                        const char* proc_name);
+int _issue42_namedpipe_shm_permission(const char* shm_name, uint32_t requested_perm);
+int _issue42_signal_stack_race(int sig, void* ucontext);
+int _issue42_flushjob_same_core_wakeup(int same_core, int fast_mode);
+void* _issue42_smmap_concurrent_create(const char* name, size_t size);
+int _issue42_tlscb_prealloc_cleanup_gap(size_t reserve_size, int tlscb_ready);
+void* _issue42_shm_get_addr_by_path_race(const char* real_path,
+                                         const char* link_path,
+                                         size_t shm_size);
+int _issue42_lfhash_alloc_free_type_mismatch(size_t node_size, int use_mismatch);
+int _issue42_pcm_server_state_missing(int identity, uint32_t logic_proc_id);
+int _issue42_ftok_concurrent_key_race(const char* path, int project_id);
+int _issue42_wheel_timer_self_destruct_deadlock(int call_from_callback);
+int _issue42_signal_handler_sem_interrupt(int sig, int hold_sem);
+int _issue42_work_self_destruction_race(int destroy_in_callback);
+
 #endif

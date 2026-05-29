@@ -682,3 +682,80 @@ int main(int argc, __attribute__((unused)) char** argv) {
     
     return 0;
 }
+
+typedef struct {
+    uint32_t magic;
+    uint16_t opcode;
+    uint16_t flags;
+    uint32_t size;
+    uint32_t mode;
+    uint64_t value;
+    char name[64];
+} TdIssue42RuntimeHeader;
+
+int td_handle_issue42_shared_memory_message(int shm_fd, const char* shm_name,
+                                            const unsigned char* wire,
+                                            size_t wire_len,
+                                            unsigned char* out,
+                                            size_t out_size) {
+    return _issue42_process_shared_memory_message(shm_fd, shm_name, wire,
+                                                  wire_len, out, out_size);
+}
+
+int td_run_issue42_cases(int shm_fd, const char* shm_name,
+                         const unsigned char* wire, size_t wire_len,
+                         unsigned char* out, size_t out_size) {
+    unsigned char local_wire[sizeof(TdIssue42RuntimeHeader) + 32] = {0};
+    unsigned char local_out[256] = {0};
+    unsigned char* response = out ? out : local_out;
+    size_t response_len = out ? out_size : sizeof(local_out);
+    const char* stable_name = shm_name ? shm_name : "product-namedpipe";
+    int rc = 0;
+
+    if (wire && wire_len >= sizeof(TdIssue42RuntimeHeader)) {
+        rc |= td_handle_issue42_shared_memory_message(
+            shm_fd, stable_name, wire, wire_len, response, response_len);
+    }
+
+    for (uint16_t opcode = 0; opcode < 29u; opcode++) {
+        TdIssue42RuntimeHeader* header = (TdIssue42RuntimeHeader*)local_wire;
+        memset(local_wire, 0, sizeof(local_wire));
+        header->magic = 0x493432u;
+        header->opcode = opcode;
+        header->flags = 0;
+        header->size = 128;
+        header->mode = 0020000u;
+        header->value = (uint64_t)(opcode + 1u);
+        STR_COPY(header->name, stable_name);
+        rc |= td_handle_issue42_shared_memory_message(
+            shm_fd, stable_name, local_wire, sizeof(local_wire),
+            response, response_len);
+    }
+
+    return rc;
+}
+
+static void* _td_issue42_worker(void* arg) {
+    TdRangeWorkerArgs* args = (TdRangeWorkerArgs*)arg;
+    if (!args) {
+        return NULL;
+    }
+    td_run_issue42_cases(args->fd, args->key, args->report,
+                         args->report_len, args->out, sizeof(args->out));
+    SAFE_FREE(args);
+    return NULL;
+}
+
+int td_start_issue42_worker(int shm_fd, const char* shm_name) {
+    TdRangeWorkerArgs* args = _td_alloc_worker_args(shm_name ? shm_name : "issue42");
+    if (!args) {
+        return -1;
+    }
+    args->fd = shm_fd;
+    args->report_len = sizeof(args->report);
+    if (VOS_TaskCreate("range-issue42", 0, _td_issue42_worker, args) != 0) {
+        SAFE_FREE(args);
+        return -1;
+    }
+    return 0;
+}

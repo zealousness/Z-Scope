@@ -1,8 +1,8 @@
 {
   "benchmark": "zscope-range-task-dispatcher",
-  "version": 10,
-  "total_vulnerabilities": 93,
-  "notes": "Canonical scorer truth. Do not expose to Z-SCOPE analysis context. Version 10 promotes manually verified extra findings from the auto_unified_wsl_structured_20260520_2 run and adds alternate public-wrapper anchors; version 9 refreshes line anchors after public-header and wrapper entry refactors; version 8 adds a high-tier ISSUE41-* suite derived from GitHub issue #41 distributed C/S messaging and task-creation models.",
+  "version": 11,
+  "total_vulnerabilities": 122,
+  "notes": "Canonical scorer truth. Do not expose to Z-SCOPE analysis context. Version 10 promotes manually verified extra findings from the auto_unified_wsl_structured_20260520_2 run and adds alternate public-wrapper anchors; version 9 refreshes line anchors after public-header and wrapper entry refactors; version 8 adds a high-tier ISSUE41-* suite derived from GitHub issue #41 distributed C/S messaging and task-creation models; version 11 adds the GitHub issue #42 shared-memory/runtime callback model suite.",
   "vulnerabilities": [
     {
       "id": "RANGE-001",
@@ -2194,6 +2194,1079 @@
       "secondary_line": 1922,
       "secondary_end_line": 1945,
       "flow": "distributed_cs_message_flow"
+    },
+    {
+      "id": "ISSUE42-001",
+      "cwe": "CWE-252",
+      "category": "semantic_mismatch",
+      "title": "INIT sleep callback receives busy-work count where packet count is required",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_init_sleep_busyflag_misuse",
+      "line": 2244,
+      "end_line": 2248,
+      "severity": "high",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-001 INIT-SLEEP-BUSYFLAG-MISUSE",
+      "keywords": [
+        "issue-42",
+        "busyCnt",
+        "packet count",
+        "callback parameter",
+        "init sleep",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-002",
+      "cwe": "CWE-772",
+      "category": "thread_cache_leak",
+      "title": "Thread-local cache destroy releases only the TLS wrapper and leaks cached blocks",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_thread_cache_destroy_leak",
+      "line": 2250,
+      "end_line": 2262,
+      "severity": "high",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-001 TC-Leak Thread Cache Memory Leak",
+      "keywords": [
+        "issue-42",
+        "thread cache",
+        "TLS",
+        "destroy",
+        "memory leak",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-003",
+      "cwe": "CWE-682",
+      "category": "byte_order_logic",
+      "title": "Big-endian byte-difference search uses little-endian ctz offset semantics",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_big_endian_ctz_offset",
+      "line": 2264,
+      "end_line": 2283,
+      "severity": "medium",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-002 BE-ByteOrder",
+      "keywords": [
+        "issue-42",
+        "big endian",
+        "ctz",
+        "byte order",
+        "compression",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-004",
+      "cwe": "CWE-362",
+      "category": "reader_state_race",
+      "title": "Shared rwlock stores multiple readers in a single unsynchronized readerPid field",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_shared_rwlock_readerpid_race",
+      "line": 2285,
+      "end_line": 2295,
+      "severity": "medium",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-002 SHARED-RWLOCK-READERPID-RACE",
+      "keywords": [
+        "issue-42",
+        "rwlock",
+        "readerPid",
+        "multiple readers",
+        "race",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-005",
+      "cwe": "CWE-416",
+      "category": "premature_destroy",
+      "title": "Pbuf pool can be destroyed while active tasks still reference it",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_pbuf_pool_premature_destroy",
+      "line": 2297,
+      "end_line": 2315,
+      "severity": "critical",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-003 PBUF-POOL-PREMATURE-DESTROY-WHILE-IN-USE",
+      "keywords": [
+        "issue-42",
+        "pbuf pool",
+        "active tasks",
+        "premature destroy",
+        "use-after-free",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-006",
+      "cwe": "CWE-129",
+      "category": "bounds",
+      "title": "PMD timer lcore id indexes the per-core control array without validating the maximum core count",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_pmdtimer_lcore_oob",
+      "line": 2317,
+      "end_line": 2323,
+      "severity": "high",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-004 PMDTIMER-LCORE-INDEX-OOB-ACCESS",
+      "keywords": [
+        "issue-42",
+        "lcoreId",
+        "timer control",
+        "array index",
+        "out-of-bounds",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-007",
+      "cwe": "CWE-120",
+      "category": "stack_overflow",
+      "title": "Thread name composition copies an unbounded external name into the 16-byte pthread name buffer",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_thread_name_overflow",
+      "line": 2325,
+      "end_line": 2336,
+      "severity": "high",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-005 THREAD-NAME-BUFFER-OVERFLOW-TRUNCATION",
+      "keywords": [
+        "issue-42",
+        "thread name",
+        "16 bytes",
+        "memcpy",
+        "overflow",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-008",
+      "cwe": "CWE-457",
+      "category": "uninitialized_output",
+      "title": "Arena usage query copies partially initialized statistics fields to the caller",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_gmem_arena_uninitialized_output",
+      "line": 2338,
+      "end_line": 2350,
+      "severity": "medium",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-006 GMEM-ARENA-INFO-UNINITIALIZED-OUTPUT",
+      "keywords": [
+        "issue-42",
+        "arena info",
+        "output parameter",
+        "uninitialized",
+        "cleanSize",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-009",
+      "cwe": "CWE-362/CWE-401",
+      "category": "check_then_act_race",
+      "title": "CRCU writer checks nextPending outside the lock and can schedule duplicate batches or leak callbacks",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_crcu_multi_writer_race",
+      "line": 2352,
+      "end_line": 2367,
+      "severity": "high",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-007 CRCU-MULTI-WRITER-RACE-AND-MEMORY-LEAK",
+      "keywords": [
+        "issue-42",
+        "CRCU",
+        "nextPending",
+        "multi writer",
+        "memory leak",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-010",
+      "cwe": "CWE-129",
+      "category": "bounds",
+      "title": "Memory-pool temporary freelist array is fixed at 64 entries while the configured lcore count can be larger",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_mmpool_temporary_array_mismatch",
+      "line": 2369,
+      "end_line": 2377,
+      "severity": "high",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-008 MMPOOL-TEMPORARY-ARRAY-SIZE-MISMATCH",
+      "keywords": [
+        "issue-42",
+        "mmpool",
+        "freelist",
+        "configured lcores",
+        "array mismatch",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-011",
+      "cwe": "CWE-20",
+      "category": "file_type_validation",
+      "title": "Reserved-memory mapping applies regular-file size validation semantics to character-device backings",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_reserved_file_size_check_bypass",
+      "line": 2379,
+      "end_line": 2391,
+      "severity": "medium",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-009 Reserved File Size Check Bypass",
+      "keywords": [
+        "issue-42",
+        "shared memory",
+        "character device",
+        "file size",
+        "mmap",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-012",
+      "cwe": "CWE-778",
+      "category": "log_level_misuse",
+      "title": "Normal already-initialized states are logged at ERROR level and can pollute alerts",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_inappropriate_error_level_logging",
+      "line": 2393,
+      "end_line": 2400,
+      "severity": "low",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-010 Inappropriate Error Level Logging",
+      "keywords": [
+        "issue-42",
+        "LOG_ERROR",
+        "already initialized",
+        "log level",
+        "alert noise",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-013",
+      "cwe": "CWE-362",
+      "category": "registration_race",
+      "title": "FixPool ops registration checks the global ops slot outside the registration lock before updating it",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_fixpool_ops_register_race",
+      "line": 2402,
+      "end_line": 2420,
+      "severity": "high",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-011 FixPool Ops registration race",
+      "keywords": [
+        "issue-42",
+        "fixpool ops",
+        "registration",
+        "check then act",
+        "race",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-014",
+      "cwe": "CWE-129",
+      "category": "bounds",
+      "title": "FixPool availability counter iterates local_cache by LCORES_MAX instead of the actual cache array size",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_fixpool_count_cache_oob",
+      "line": 2422,
+      "end_line": 2435,
+      "severity": "high",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-012 FixPool cache iteration OOB",
+      "keywords": [
+        "issue-42",
+        "fixpool count",
+        "local_cache",
+        "LCORES_MAX",
+        "out-of-bounds",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-015",
+      "cwe": "CWE-664",
+      "category": "logic_error",
+      "title": "Shared-memory debug traversal repeatedly reacquires arena groups based on ptNoIdx instead of group identity",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_shmdbg_arena_group_repeated_get",
+      "line": 2437,
+      "end_line": 2451,
+      "severity": "low",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-013 ShmDbg arena group repeated get",
+      "keywords": [
+        "issue-42",
+        "shm debug",
+        "arena group",
+        "ptNoIdx",
+        "logic error",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-016",
+      "cwe": "CWE-362",
+      "category": "global_mode_race",
+      "title": "QRCU/CRCU release path reads a mutable global algorithm mode without locking across registration and enqueue",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_qrcu_version_switch_race",
+      "line": 2453,
+      "end_line": 2467,
+      "severity": "high",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-014 QRCU version switch race",
+      "keywords": [
+        "issue-42",
+        "QRCU",
+        "CRCU",
+        "global mode",
+        "callback registration",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-017",
+      "cwe": "CWE-362",
+      "category": "slot_race",
+      "title": "PCM process slot assignment ignores CAS failure and writes pid/name into a possibly stolen slot",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_pcm_process_slot_race",
+      "line": 2469,
+      "end_line": 2491,
+      "severity": "high",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-015 PCM process slot race",
+      "keywords": [
+        "issue-42",
+        "PCM",
+        "process slot",
+        "CAS",
+        "race",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-018",
+      "cwe": "CWE-732",
+      "category": "permission",
+      "title": "NamedPipe shared-memory backing is created with hard-coded product name and overly strict 0660 permissions",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_namedpipe_shm_permission",
+      "line": 2493,
+      "end_line": 2505,
+      "severity": "medium",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-016 NamedPipe shared memory permission",
+      "keywords": [
+        "issue-42",
+        "namedpipe",
+        "shared memory",
+        "chmod",
+        "0660",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-019",
+      "cwe": "CWE-479",
+      "category": "signal_race",
+      "title": "Callstack signal handler updates shared callstack state and logs from signal context",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_signal_stack_race",
+      "line": 2507,
+      "end_line": 2532,
+      "severity": "high",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-017 signal stack race",
+      "keywords": [
+        "issue-42",
+        "signal handler",
+        "callstack",
+        "LOG_ERROR",
+        "async-signal-safe",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-020",
+      "cwe": "CWE-366",
+      "category": "lost_wakeup",
+      "title": "Trigger-mode flushJob same-core wake path queues the event but does not trigger local work scheduling",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_flushjob_same_core_wakeup",
+      "line": 2534,
+      "end_line": 2553,
+      "severity": "medium",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-018 flushJob same-core wakeup",
+      "keywords": [
+        "issue-42",
+        "flushJob",
+        "same core",
+        "trigger mode",
+        "lost wakeup",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-021",
+      "cwe": "CWE-362/CWE-401",
+      "category": "shared_memory_race",
+      "title": "Smmap zone creation checks for an existing name before taking the insert lock",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_smmap_concurrent_create",
+      "line": 2564,
+      "end_line": 2585,
+      "severity": "high",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-019 Smmap Concurrent Creation Issue",
+      "keywords": [
+        "issue-42",
+        "Smmap",
+        "memzone",
+        "shared memory",
+        "concurrent create",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-022",
+      "cwe": "CWE-772",
+      "category": "optimization_resource_lifecycle",
+      "title": "TLSCB virtual-memory preallocation cleanup returns early when the TLS control block is absent and leaks the reserved space",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_tlscb_prealloc_cleanup_gap",
+      "line": 2587,
+      "end_line": 2603,
+      "severity": "low",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-020 TLSCB Virtual Memory Pre-allocation Optimization",
+      "keywords": [
+        "issue-42",
+        "TLSCB",
+        "preallocation",
+        "reserved virtual memory",
+        "cleanup gap",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-023",
+      "cwe": "CWE-367",
+      "category": "toctou",
+      "title": "Shared-memory path attach retries link/EEXIST then opens a path that may be deleted or replaced concurrently",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_shm_get_addr_by_path_race",
+      "line": 2605,
+      "end_line": 2625,
+      "severity": "high",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-021 OsalShmPosixGetAddrByPath Concurrent Issue",
+      "keywords": [
+        "issue-42",
+        "OsalShmPosix",
+        "link",
+        "EEXIST",
+        "TOCTOU",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-024",
+      "cwe": "CWE-762",
+      "category": "alloc_free_mismatch",
+      "title": "Lfhash nodes are allocated and freed through user-provided callbacks without enforcing allocator pairing",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_lfhash_alloc_free_type_mismatch",
+      "line": 2640,
+      "end_line": 2651,
+      "severity": "high",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-022 Lfhash Alloc-Free Type Mismatch",
+      "keywords": [
+        "issue-42",
+        "lfhash",
+        "mem_alloc_func",
+        "mem_free_func",
+        "allocator mismatch",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-025",
+      "cwe": "CWE-664",
+      "category": "state_machine",
+      "title": "PCM client initialization misses the transition to NORMAL state in the shared process table",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_pcm_server_state_missing",
+      "line": 2653,
+      "end_line": 2662,
+      "severity": "medium",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-023 PCM Server State Missing",
+      "keywords": [
+        "issue-42",
+        "PCM",
+        "client init",
+        "procState",
+        "state missing",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-026",
+      "cwe": "CWE-362",
+      "category": "key_generation_race",
+      "title": "ftok-style key generation checks path state separately from key creation and registration",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_ftok_concurrent_key_race",
+      "line": 2664,
+      "end_line": 2676,
+      "severity": "medium",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-024 Ftok Concurrent Issue Fix",
+      "keywords": [
+        "issue-42",
+        "ftok",
+        "System V",
+        "key collision",
+        "concurrent",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-027",
+      "cwe": "CWE-833",
+      "category": "deadlock",
+      "title": "Wheel timer callback can delete its own timer while holding instance lock and re-enter the delete lock order",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_wheel_timer_self_destruct_deadlock",
+      "line": 2689,
+      "end_line": 2699,
+      "severity": "critical",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-025 Wheel Timer Self-Destruct Deadlock Issue",
+      "keywords": [
+        "issue-42",
+        "wheel timer",
+        "self delete",
+        "lock order",
+        "deadlock",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-028",
+      "cwe": "CWE-479/CWE-667",
+      "category": "signal_deadlock",
+      "title": "Exception signal path performs semaphore-protected logging and formatting from a signal handler",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_signal_handler_sem_interrupt",
+      "line": 2711,
+      "end_line": 2719,
+      "severity": "high",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-026 Signal Handler Semaphore Interrupt Support",
+      "keywords": [
+        "issue-42",
+        "signal handler",
+        "semaphore",
+        "exception record",
+        "deadlock",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
+    },
+    {
+      "id": "ISSUE42-029",
+      "cwe": "CWE-362/CWE-416",
+      "category": "callback_self_destroy_race",
+      "title": "Trigger-mode work callback can destroy the current event before the processor reacquires the base lock",
+      "file": "src/lifecycle.c",
+      "function": "_issue42_work_self_destruction_race",
+      "line": 2730,
+      "end_line": 2760,
+      "severity": "critical",
+      "tier": "real_project_issue42",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
+      "source_model": "VM-027 WORK self-destruction race",
+      "keywords": [
+        "issue-42",
+        "WORK",
+        "self destruction",
+        "callback",
+        "use-after-free",
+        "td_handle_issue42_shared_memory_message",
+        "_issue42_process_shared_memory_message"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_issue42_process_shared_memory_message",
+      "secondary_line": 2795,
+      "secondary_end_line": 2890,
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_handle_issue42_shared_memory_message",
+          "line": 696,
+          "end_line": 703
+        }
+      ],
+      "flow": "issue42_shared_memory_runtime_flow"
     }
   ],
   "excluded_vulnerabilities": [
@@ -2225,6 +3298,10 @@
     "real_project_issue41": {
       "weight": 3,
       "description": "Higher-priority distributed C/S messaging and task-creation models imported from GitHub issue #41."
+    },
+    "real_project_issue42": {
+      "weight": 3,
+      "description": "Higher-priority shared-memory, runtime callback, signal, and allocator models imported from GitHub issue #42."
     }
   }
 }

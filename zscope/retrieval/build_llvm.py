@@ -69,6 +69,7 @@ class BitcodeBuilder:
         self._manifest_dirty = False
         self._state_lock = threading.Lock()
         self.reused_linked_groups: set[str] = set()
+        self.failed_tus: List[Dict[str, str]] = []
 
     @staticmethod
     def _make_gllvm_env() -> dict:
@@ -112,6 +113,7 @@ class BitcodeBuilder:
         self._bc_to_src.clear()
         self._bc_compile_index.clear()
         self.reused_linked_groups.clear()
+        self.failed_tus.clear()
 
         commands = self._load_compile_commands()
         if not commands:
@@ -368,6 +370,7 @@ class BitcodeBuilder:
         elif command_str:
             args = self._split_command(command_str)
         else:
+            self._record_tu_failure(src_file, "missing_compile_command")
             return
 
         # 替换编译器为 gclang，注入调试标志
@@ -408,10 +411,12 @@ class BitcodeBuilder:
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             stderr = getattr(e, 'stderr', '') or ''
             logger.warning("Compile failed for %s: %s stderr=%s", src_file, e, stderr[:300])
+            self._record_tu_failure(src_file, "compile_failed")
             return
 
         if not obj_path.exists():
             logger.warning("gclang succeeded but %s not found", obj_path)
+            self._record_tu_failure(src_file, "object_missing")
             return
         logger.info("Compiled %s -> %s (%d bytes)", src_file, obj_path, obj_path.stat().st_size)
 
@@ -435,9 +440,18 @@ class BitcodeBuilder:
                 logger.info("Extracted %s (%d bytes)", bc_path, bc_path.stat().st_size)
             else:
                 logger.warning("get-bc succeeded but %s not found", bc_path)
+                self._record_tu_failure(src_file, "bitcode_missing")
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             stderr = getattr(e, 'stderr', '') or ''
             logger.warning("get-bc failed for %s: %s stderr=%s", obj_path, e, stderr[:300])
+            self._record_tu_failure(src_file, "get_bc_failed")
+
+    def _record_tu_failure(self, src_file: str, reason: str) -> None:
+        with self._state_lock:
+            self.failed_tus.append({
+                "file": str(src_file),
+                "reason": reason,
+            })
 
     def _reuse_bitcode_if_current(
         self,
