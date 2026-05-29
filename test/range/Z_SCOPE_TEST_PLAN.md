@@ -9,13 +9,14 @@ Measure whether Z-SCOPE can find intentionally planted C defects in a compact
 task dispatcher project. The benchmark should report recall, precision, F1, and
 per-CWE coverage against `benchmark/ground_truth.json`.
 
-Current scorer truth is benchmark v8 with 87 scored vulnerabilities. The
+Current scorer truth is benchmark v11 with 122 scored vulnerabilities. The
 `REAL-*` items are a higher-priority tier derived from GitHub issue #40 real
-project models, and `ISSUE41-*` is a separate high-priority tier derived from
-GitHub issue #41 distributed C/S messaging and task-creation models. Both tiers
-are weighted above the original `RANGE-*` findings. Older observed-run notes
-below refer to previous 12-item, 14-item, and 33-item truths and are retained
-as historical context only.
+project models, `ISSUE41-*` is a separate high-priority tier derived from
+GitHub issue #41 distributed C/S messaging and task-creation models, and
+`ISSUE42-*` covers the shared-memory/runtime callback models from GitHub issue
+#42. These tiers are weighted above the original `RANGE-*` findings. Older
+observed-run notes below refer to previous 12-item, 14-item, 33-item, and
+87-item truths and are retained as historical context only.
 
 Protocol-oriented `REAL-*` findings should be exercised through the realistic
 message path `td_handle_real_protocol_message` ->
@@ -27,6 +28,12 @@ The `ISSUE41-*` tier should be exercised through the distributed C/S path
 `td_handle_distributed_cs_message` -> `_issue41_process_cs_message`. This path
 models receive-frame handling, task creation, task-array indexing, enqueue, and
 dispatch before reaching the specific issue #41 handlers.
+
+The `ISSUE42-*` tier should be exercised through the shared-memory/runtime path
+`td_handle_issue42_shared_memory_message` ->
+`_issue42_process_shared_memory_message`. This path models fd-backed receive
+fallback, shared-memory names, runtime opcode dispatch, callback execution,
+signal paths, timer/work self-destruction, and allocator/process-table helpers.
 
 ## Mandatory Execution Rule
 

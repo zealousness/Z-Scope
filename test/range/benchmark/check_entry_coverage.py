@@ -90,6 +90,14 @@ def main() -> None:
         raise SystemExit(f"{args.truth} field 'vulnerabilities' must be an array")
 
     entry_names = [str(item.get("function_name") or "") for item in entries if isinstance(item, dict)]
+    entry_files_by_name: dict[str, set[str]] = {}
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("function_name") or "")
+        file_path = str(item.get("file_path") or "")
+        if name and file_path:
+            entry_files_by_name.setdefault(name, set()).add(file_path)
     entry_set = {name for name in entry_names if name}
     duplicates = sorted({name for name in entry_names if entry_names.count(name) > 1})
 
@@ -111,7 +119,14 @@ def main() -> None:
 
     defs = find_function_defs(root)
     missing_defs = sorted(name for name in entry_set if name not in defs)
-    duplicate_defs = sorted(name for name in entry_set if len(defs.get(name, [])) > 1)
+    duplicate_defs = []
+    for name in sorted(entry_set):
+        def_paths = defs.get(name, [])
+        if len(def_paths) <= 1:
+            continue
+        entry_paths = entry_files_by_name.get(name, set())
+        if not entry_paths or not any(path in def_paths for path in entry_paths):
+            duplicate_defs.append(name)
 
     print(
         json.dumps(

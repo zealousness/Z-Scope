@@ -1980,3 +1980,911 @@ uint32_t _real_model_macro_guarded_counter(uint32_t delta) {
     REAL_COUNTER_UNLOCK();
     return g_real_counter;
 }
+
+#define ISSUE42_RUNTIME_MAGIC 0x493432u
+#define ISSUE42_RUNTIME_BODY_CAP 256
+#define ISSUE42_MAX_CORES 64u
+#define ISSUE42_LCORES_MAX 128u
+#define ISSUE42_THREAD_NAME_SIZE 16u
+#define ISSUE42_FREELIST_LIMIT 64u
+#define ISSUE42_FIXPOOL_OPS_MAX 4u
+#define ISSUE42_PCM_PROC_MAX 8u
+#define ISSUE42_SHM_MODE_REG 0100000u
+#define ISSUE42_SHM_MODE_CHR 0020000u
+#define ISSUE42_SHM_MODE_MASK 0170000u
+#define ISSUE42_IS_REG(mode) (((mode) & ISSUE42_SHM_MODE_MASK) == ISSUE42_SHM_MODE_REG)
+#define ISSUE42_IS_CHR(mode) (((mode) & ISSUE42_SHM_MODE_MASK) == ISSUE42_SHM_MODE_CHR)
+
+typedef struct {
+    uint32_t magic;
+    uint16_t opcode;
+    uint16_t flags;
+    uint32_t size;
+    uint32_t mode;
+    uint64_t value;
+    char name[64];
+} Issue42RuntimeHeader;
+
+typedef struct {
+    Issue42RuntimeHeader header;
+    unsigned char body[ISSUE42_RUNTIME_BODY_CAP];
+    size_t body_len;
+    int fd;
+} Issue42RuntimeFrame;
+
+typedef struct {
+    int work_count;
+    int packet_count;
+    uint64_t init_sleep_packets;
+    int init_sleep_done;
+} Issue42SleepStats;
+
+typedef struct {
+    char* cached_blocks[4];
+    size_t cached_count;
+} Issue42ThreadCache;
+
+typedef struct {
+    volatile int32_t cnt;
+    uint32_t writer_pid;
+    uint32_t reader_pid;
+} Issue42SharedRwlock;
+
+typedef struct {
+    char* buffer;
+    int active_tasks;
+    int destroyed;
+} Issue42PbufPool;
+
+typedef struct {
+    uint32_t lcore_id;
+    uint64_t ticks;
+} Issue42TimerControl;
+
+typedef struct {
+    char name[ISSUE42_THREAD_NAME_SIZE];
+    void* (*start)(void*);
+    void* arg;
+} Issue42ThreadAux;
+
+typedef struct {
+    uint64_t total_size;
+    uint64_t used_size;
+    uint64_t clean_size;
+    uint32_t total_num;
+    uint32_t used_num;
+    uint32_t clean_num;
+    uint64_t max_clean_block_size;
+    uint64_t max_normal_block_size;
+} Issue42UseInfo;
+
+typedef struct Issue42RcuBatch {
+    int callback_id;
+    struct Issue42RcuBatch* next;
+} Issue42RcuBatch;
+
+typedef struct {
+    int cache_len;
+} Issue42FixpoolCache;
+
+typedef struct {
+    uint32_t num;
+    uint32_t cache_size;
+    Issue42FixpoolCache local_cache[32];
+} Issue42Fixpool;
+
+typedef int (*Issue42FixpoolOp)(void* ctx);
+
+typedef struct {
+    int type;
+    Issue42FixpoolOp enqueue;
+    Issue42FixpoolOp dequeue;
+    Issue42FixpoolOp init;
+    Issue42FixpoolOp parse;
+} Issue42FixpoolOps;
+
+typedef struct {
+    uint32_t total_alloc_size;
+    uint32_t total_used_size;
+    int status;
+} Issue42Arena;
+
+typedef struct {
+    Issue42Arena arena[4];
+} Issue42ArenaGroup;
+
+typedef void (*Issue42RcuRegFn)(void* rcu, void* cb);
+
+typedef struct {
+    Issue42RcuRegFn reg;
+    int is_registered;
+} Issue42RcuFunc;
+
+typedef struct {
+    uint32_t proc_state;
+    uint32_t user_proc_id;
+    uint32_t pid;
+    char proc_name[32];
+    pthread_mutex_t check_lock;
+} Issue42PcmProc;
+
+typedef struct {
+    int fd;
+    char* addr;
+    uint32_t perm;
+} Issue42NamedPipe;
+
+typedef struct {
+    uintptr_t call_stack_addr[16];
+    uint32_t stack_size;
+    uint32_t call_stack_rel_size;
+    uint32_t bt_recorded;
+} Issue42CallstackInfo;
+
+typedef struct Issue42Event {
+    int res_events;
+    int wake_cnt;
+    int queued;
+    int running;
+    int sched_cnt;
+    int destroyed;
+    void* callback_arg;
+    int (*callback)(void* arg, uint32_t* result_events);
+    struct Issue42Event* next;
+} Issue42Event;
+
+typedef struct {
+    int fast_mode;
+    int fast_flag;
+    Issue42Event* level_trigger_list;
+    Issue42Event* cur_proc_event;
+    pthread_mutex_t lock;
+} Issue42EventBase;
+
+typedef struct Issue42Memzone {
+    char name[64];
+    size_t size;
+    void* addr;
+    struct Issue42Memzone* next;
+} Issue42Memzone;
+
+typedef struct {
+    char* tlscb;
+    void* reserved_base;
+    size_t reserved_size;
+} Issue42TlscbInfo;
+
+typedef void* (*Issue42AllocFn)(size_t size);
+typedef void (*Issue42FreeFn)(void* ptr);
+
+typedef struct {
+    Issue42AllocFn mem_alloc_func;
+    Issue42FreeFn mem_free_func;
+} Issue42LfhashTable;
+
+typedef struct {
+    int timer_id;
+    pthread_mutex_t lock;
+    int in_callback;
+} Issue42WheelTimer;
+
+static Issue42SleepStats g_issue42_sleep;
+static __thread Issue42ThreadCache* g_issue42_thread_cache;
+static Issue42SharedRwlock g_issue42_rwlock;
+static Issue42PbufPool* g_issue42_pbuf_pool;
+static Issue42TimerControl* g_issue42_timer_ctrl[ISSUE42_MAX_CORES];
+static pthread_mutex_t g_issue42_rcu_lock = PTHREAD_MUTEX_INITIALIZER;
+static int g_issue42_rcu_next_pending = 0;
+static Issue42RcuBatch* g_issue42_rcu_batches = NULL;
+static uint32_t g_issue42_slice_list_max_num = ISSUE42_LCORES_MAX;
+static Issue42FixpoolOps* g_issue42_fixpool_ops[ISSUE42_FIXPOOL_OPS_MAX];
+static pthread_mutex_t g_issue42_fixpool_lock = PTHREAD_MUTEX_INITIALIZER;
+static Issue42ArenaGroup g_issue42_arena_groups[2];
+static uint32_t g_issue42_arena_group_lookups = 0;
+static int g_issue42_use_qrcu = 0;
+static Issue42RcuFunc g_issue42_rcu_funcs[2];
+static Issue42PcmProc g_issue42_proc_table[ISSUE42_PCM_PROC_MAX];
+static pthread_mutex_t g_issue42_pcm_table_lock = PTHREAD_MUTEX_INITIALIZER;
+static Issue42NamedPipe g_issue42_named_pipe = { .fd = -1, .addr = NULL, .perm = 0 };
+static Issue42CallstackInfo* g_issue42_callstack_info = NULL;
+static Issue42EventBase g_issue42_event_base = {
+    .fast_mode = 0,
+    .fast_flag = 0,
+    .level_trigger_list = NULL,
+    .cur_proc_event = NULL,
+    .lock = PTHREAD_MUTEX_INITIALIZER
+};
+static pthread_mutex_t g_issue42_memzone_lock = PTHREAD_MUTEX_INITIALIZER;
+static Issue42Memzone* g_issue42_memzones = NULL;
+static pthread_mutex_t g_issue42_ftok_lock = PTHREAD_MUTEX_INITIALIZER;
+static Issue42WheelTimer g_issue42_wheel_timer = {
+    .timer_id = 1,
+    .lock = PTHREAD_MUTEX_INITIALIZER,
+    .in_callback = 0
+};
+static pthread_mutex_t g_issue42_wheel_global_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_issue42_signal_sem = PTHREAD_MUTEX_INITIALIZER;
+
+static int _issue42_noop_op(void* ctx) {
+    return ctx ? 0 : -1;
+}
+
+static void _issue42_rcu_crcu_reg(void* rcu, void* cb) {
+    (void)rcu;
+    (void)cb;
+}
+
+static Issue42ThreadCache* _issue42_thread_cache_get(void) {
+    if (!g_issue42_thread_cache) {
+        g_issue42_thread_cache = (Issue42ThreadCache*)_safe_calloc(
+            1, sizeof(Issue42ThreadCache));
+        if (!g_issue42_thread_cache) {
+            return NULL;
+        }
+    }
+    return g_issue42_thread_cache;
+}
+
+static int _issue42_base_loop_once(int fd) {
+    unsigned char packet[32];
+    int received = _net_recv_data(fd, packet, sizeof(packet));
+    g_issue42_sleep.packet_count = received > 0 ? received : 0;
+    g_issue42_sleep.work_count = (received > 0) ? 1 : 0;
+    return g_issue42_sleep.work_count;
+}
+
+static void _issue42_sleep_entry(int start_sec, int busy_flag) {
+    (void)start_sec;
+    g_issue42_sleep.init_sleep_packets += (uint64_t)busy_flag;
+    if (g_issue42_sleep.init_sleep_packets > 4096u) {
+        g_issue42_sleep.init_sleep_done = 1;
+    }
+}
+
+int _issue42_init_sleep_busyflag_misuse(int fd, int start_sec) {
+    int busy_cnt = _issue42_base_loop_once(fd);
+    _issue42_sleep_entry(start_sec, busy_cnt);
+    return g_issue42_sleep.init_sleep_done;
+}
+
+int _issue42_thread_cache_destroy_leak(size_t block_size) {
+    Issue42ThreadCache* cache = _issue42_thread_cache_get();
+    if (!cache) {
+        return -1;
+    }
+
+    size_t slot = cache->cached_count % ARRAY_SIZE(cache->cached_blocks);
+    cache->cached_blocks[slot] = (char*)_safe_malloc(block_size ? block_size : 64);
+    cache->cached_count++;
+
+    SAFE_FREE(g_issue42_thread_cache);
+    return 0;
+}
+
+size_t _issue42_big_endian_ctz_offset(const unsigned char* input, size_t len) {
+    if (!input || len < 17) {
+        return 0;
+    }
+
+    uint64_t left = 0;
+    uint64_t right = 0;
+    memcpy(&left, input + 1, sizeof(left));
+    memcpy(&right, input + 9, sizeof(right));
+    uint64_t diff = left ^ right;
+    if (diff == 0) {
+        return 0;
+    }
+
+    size_t byte_offset = (size_t)(__builtin_ctzll(diff) >> 3);
+    if (input[0] == 0x42) {
+        return byte_offset;
+    }
+    return byte_offset;
+}
+
+uint32_t _issue42_shared_rwlock_readerpid_race(uint32_t reader_pid) {
+    while (((uint32_t)__atomic_load_n(&g_issue42_rwlock.cnt, __ATOMIC_RELAXED) & 0x80000000u) != 0) {
+        usleep(1);
+    }
+
+    __atomic_fetch_add(&g_issue42_rwlock.cnt, 1, __ATOMIC_ACQUIRE);
+    g_issue42_rwlock.reader_pid = reader_pid;
+    __atomic_fetch_sub(&g_issue42_rwlock.cnt, 1, __ATOMIC_RELEASE);
+    g_issue42_rwlock.reader_pid = 0;
+    return g_issue42_rwlock.reader_pid;
+}
+
+int _issue42_pbuf_pool_premature_destroy(int active_tasks) {
+    Issue42PbufPool* pool = (Issue42PbufPool*)_safe_calloc(1, sizeof(Issue42PbufPool));
+    if (!pool) {
+        return -1;
+    }
+    pool->buffer = (char*)_safe_malloc(256);
+    pool->active_tasks = active_tasks;
+    g_issue42_pbuf_pool = pool;
+
+    if (active_tasks > 0) {
+        SAFE_FREE(g_issue42_pbuf_pool->buffer);
+        SAFE_FREE(g_issue42_pbuf_pool);
+        return active_tasks;
+    }
+
+    SAFE_FREE(pool->buffer);
+    SAFE_FREE(pool);
+    return 0;
+}
+
+uint64_t _issue42_pmdtimer_lcore_oob(uint32_t lcore_id) {
+    Issue42TimerControl* ctrl = g_issue42_timer_ctrl[lcore_id];
+    if (!ctrl) {
+        return 0;
+    }
+    return ctrl->ticks;
+}
+
+int _issue42_thread_name_overflow(const char* thread_name, uint32_t id) {
+    Issue42ThreadAux aux;
+    memset(&aux, 0, sizeof(aux));
+    aux.start = NULL;
+    aux.arg = NULL;
+
+    char composed[64];
+    snprintf(composed, sizeof(composed), "issue42-%u-%s", id,
+             thread_name ? thread_name : "worker");
+    memcpy(aux.name, composed, strlen(composed) + 1);
+    return (int)aux.name[0];
+}
+
+int _issue42_gmem_arena_uninitialized_output(Issue42UseInfo* out) {
+    if (!out) {
+        return -1;
+    }
+
+    Issue42UseInfo tmp;
+    tmp.total_size = 4096;
+    tmp.used_size = 1024;
+    tmp.total_num = 8;
+    tmp.used_num = 2;
+    *out = tmp;
+    return 0;
+}
+
+int _issue42_crcu_multi_writer_race(int need_judge_pending, int callback_id) {
+    if (need_judge_pending && !g_issue42_rcu_next_pending) {
+        Issue42RcuBatch* batch = (Issue42RcuBatch*)_safe_calloc(1, sizeof(Issue42RcuBatch));
+        if (!batch) {
+            return -1;
+        }
+        batch->callback_id = callback_id;
+
+        LOCK(&g_issue42_rcu_lock);
+        g_issue42_rcu_next_pending = 1;
+        batch->next = g_issue42_rcu_batches;
+        g_issue42_rcu_batches = batch;
+        UNLOCK(&g_issue42_rcu_lock);
+    }
+    return g_issue42_rcu_next_pending;
+}
+
+int _issue42_mmpool_temporary_array_mismatch(uint32_t configured_lcores) {
+    int remain_node[ISSUE42_FREELIST_LIMIT] = {0};
+    g_issue42_slice_list_max_num = configured_lcores;
+
+    for (uint32_t i = 0; i < g_issue42_slice_list_max_num; i++) {
+        remain_node[i] = (int)i;
+    }
+    return remain_node[0];
+}
+
+void* _issue42_reserved_file_size_check_bypass(uint32_t mode, uint64_t file_size,
+                                               uint64_t map_size) {
+    if (file_size < map_size) {
+        LOG_ERROR("mapping size exceeds file size");
+        return NULL;
+    }
+    if (ISSUE42_IS_CHR(mode)) {
+        LOG_INFO("character device mapping accepted");
+    } else if (!ISSUE42_IS_REG(mode)) {
+        LOG_WARN("unknown shared memory backing type");
+    }
+    return (void*)(uintptr_t)map_size;
+}
+
+int _issue42_inappropriate_error_level_logging(int already_initialized) {
+    if (already_initialized) {
+        LOG_ERROR("module has already been initialized");
+        return 0;
+    }
+    LOG_INFO("module initialized");
+    return 0;
+}
+
+int _issue42_fixpool_ops_register_race(Issue42FixpoolOps* ops) {
+    if (!ops || ops->type < 0 || ops->type >= (int)ISSUE42_FIXPOOL_OPS_MAX) {
+        return -1;
+    }
+
+    if (g_issue42_fixpool_ops[ops->type] != NULL) {
+        LOCK(&g_issue42_fixpool_lock);
+        Issue42FixpoolOps* old_ops = g_issue42_fixpool_ops[ops->type];
+        old_ops->enqueue = ops->enqueue;
+        old_ops->dequeue = ops->dequeue;
+        UNLOCK(&g_issue42_fixpool_lock);
+        return 0;
+    }
+
+    LOCK(&g_issue42_fixpool_lock);
+    g_issue42_fixpool_ops[ops->type] = ops;
+    UNLOCK(&g_issue42_fixpool_lock);
+    return 0;
+}
+
+uint32_t _issue42_fixpool_count_cache_oob(const Issue42Fixpool* mp,
+                                          uint32_t lcore_limit) {
+    if (!mp) {
+        return 0;
+    }
+
+    uint32_t count = mp->num;
+    if (mp->cache_size != 0) {
+        for (uint32_t lcore_id = 0; lcore_id < lcore_limit; lcore_id++) {
+            count += (uint32_t)mp->local_cache[lcore_id].cache_len;
+        }
+    }
+    return count;
+}
+
+uint32_t _issue42_shmdbg_arena_group_repeated_get(uint32_t max_partition) {
+    Issue42ArenaGroup* arena_grp = NULL;
+    uint32_t total = 0;
+
+    for (uint32_t i = 0; i <= max_partition; i++) {
+        uint32_t group_idx = (i / 4u) % ARRAY_SIZE(g_issue42_arena_groups);
+        uint32_t pt_no_idx = i % 4u;
+        if (pt_no_idx == 0 || arena_grp == NULL) {
+            arena_grp = &g_issue42_arena_groups[group_idx];
+            g_issue42_arena_group_lookups++;
+        }
+        total += arena_grp->arena[pt_no_idx].total_used_size;
+    }
+    return total;
+}
+
+int _issue42_qrcu_version_switch_race(int use_qrcu, void* rcu, void* cb) {
+    g_issue42_use_qrcu = use_qrcu;
+    g_issue42_rcu_funcs[0].reg = _issue42_rcu_crcu_reg;
+    g_issue42_rcu_funcs[0].is_registered = 1;
+
+    if (g_issue42_use_qrcu == 0) {
+        g_issue42_rcu_funcs[0].reg(rcu, cb);
+        return 0;
+    }
+
+    if (!g_issue42_rcu_funcs[1].is_registered) {
+        LOG_ERROR("qrcu thread not registered");
+    }
+    return 0;
+}
+
+uint32_t _issue42_pcm_process_slot_race(uint32_t user_proc_id, uint32_t pid,
+                                        const char* proc_name) {
+    uint16_t logic_proc_id = 0;
+
+    LOCK(&g_issue42_pcm_table_lock);
+    for (uint16_t i = 0; i < ISSUE42_PCM_PROC_MAX; i++) {
+        if (g_issue42_proc_table[i].proc_state == TASK_STATUS_COMPLETED) {
+            logic_proc_id = i;
+            break;
+        }
+    }
+
+    Issue42PcmProc* tbl = &g_issue42_proc_table[logic_proc_id];
+    (void)__sync_bool_compare_and_swap(
+        (volatile uint32_t*)&tbl->proc_state,
+        TASK_STATUS_COMPLETED,
+        TASK_STATUS_RUNNING);
+    tbl->user_proc_id = user_proc_id;
+    tbl->pid = pid;
+    STR_COPY(tbl->proc_name, proc_name ? proc_name : "pcm");
+    UNLOCK(&g_issue42_pcm_table_lock);
+    return logic_proc_id;
+}
+
+int _issue42_namedpipe_shm_permission(const char* shm_name, uint32_t requested_perm) {
+    g_issue42_named_pipe.fd = 42;
+    g_issue42_named_pipe.addr = (char*)_safe_malloc(ISSUE42_RUNTIME_BODY_CAP);
+    g_issue42_named_pipe.perm = 0660u;
+
+    if (shm_name && strcmp(shm_name, "product-namedpipe") == 0) {
+        LOG_INFO("using product-specific named pipe shared memory");
+    }
+    if ((requested_perm & 0004u) != 0 && (g_issue42_named_pipe.perm & 0004u) == 0) {
+        return -1;
+    }
+    return 0;
+}
+
+int _issue42_signal_stack_race(int sig, void* ucontext) {
+    uintptr_t call_chain[16];
+    uint32_t trace_num = 0;
+    (void)sig;
+
+    if (!g_issue42_callstack_info) {
+        g_issue42_callstack_info = (Issue42CallstackInfo*)_safe_calloc(
+            1, sizeof(Issue42CallstackInfo));
+        if (!g_issue42_callstack_info) {
+            return -1;
+        }
+    }
+
+    trace_num = g_issue42_callstack_info->stack_size;
+    if (trace_num == 0 || trace_num > ARRAY_SIZE(call_chain)) {
+        trace_num = (uint32_t)ARRAY_SIZE(call_chain);
+    }
+    LOG_ERROR("capturing callstack from signal context");
+    for (uint32_t i = 0; i < trace_num; i++) {
+        call_chain[i] = (uintptr_t)ucontext + i;
+        g_issue42_callstack_info->call_stack_addr[i] = call_chain[i];
+    }
+    g_issue42_callstack_info->call_stack_rel_size = trace_num;
+    __atomic_store_n(&g_issue42_callstack_info->bt_recorded, 1, __ATOMIC_SEQ_CST);
+    return 0;
+}
+
+int _issue42_flushjob_same_core_wakeup(int same_core, int fast_mode) {
+    Issue42Event ev;
+    memset(&ev, 0, sizeof(ev));
+    g_issue42_event_base.fast_mode = fast_mode;
+
+    if (same_core) {
+        if (g_issue42_event_base.fast_mode) {
+            g_issue42_event_base.fast_flag = 1;
+            return 0;
+        }
+        LOCK(&g_issue42_event_base.lock);
+        ev.res_events |= 1;
+        ev.wake_cnt++;
+        ev.next = g_issue42_event_base.level_trigger_list;
+        g_issue42_event_base.level_trigger_list = &ev;
+        UNLOCK(&g_issue42_event_base.lock);
+        return 0;
+    }
+    return -1;
+}
+
+static Issue42Memzone* _issue42_memzone_lookup(const char* name) {
+    for (Issue42Memzone* zone = g_issue42_memzones; zone; zone = zone->next) {
+        if (strcmp(zone->name, name) == 0) {
+            return zone;
+        }
+    }
+    return NULL;
+}
+
+void* _issue42_smmap_concurrent_create(const char* name, size_t size) {
+    const char* stable_name = name ? name : "issue42-zone";
+    if (_issue42_memzone_lookup(stable_name) != NULL) {
+        errno = EEXIST;
+        return NULL;
+    }
+
+    Issue42Memzone* zone = (Issue42Memzone*)_safe_calloc(1, sizeof(Issue42Memzone));
+    if (!zone) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    STR_COPY(zone->name, stable_name);
+    zone->size = size;
+    zone->addr = _safe_malloc(size ? size : 1);
+
+    LOCK(&g_issue42_memzone_lock);
+    zone->next = g_issue42_memzones;
+    g_issue42_memzones = zone;
+    UNLOCK(&g_issue42_memzone_lock);
+    return zone;
+}
+
+int _issue42_tlscb_prealloc_cleanup_gap(size_t reserve_size, int tlscb_ready) {
+    Issue42TlscbInfo info;
+    memset(&info, 0, sizeof(info));
+    info.reserved_base = _safe_malloc(reserve_size ? reserve_size : 4096);
+    info.reserved_size = reserve_size;
+    if (tlscb_ready) {
+        info.tlscb = (char*)_safe_malloc(64);
+    }
+
+    if (info.tlscb == NULL) {
+        return 0;
+    }
+
+    SAFE_FREE(info.tlscb);
+    SAFE_FREE(info.reserved_base);
+    return 0;
+}
+
+void* _issue42_shm_get_addr_by_path_race(const char* real_path,
+                                         const char* link_path,
+                                         size_t shm_size) {
+    if (!real_path || !link_path) {
+        return NULL;
+    }
+
+    for (uint32_t i = 0; i < 3; i++) {
+        int link_exists = _file_exists(link_path);
+        if (!link_exists) {
+            return _safe_malloc(shm_size ? shm_size : 1);
+        }
+
+        int fd = open(link_path, O_RDONLY);
+        if (fd >= 0) {
+            close(fd);
+            return _safe_malloc(shm_size ? shm_size : 1);
+        }
+    }
+    return NULL;
+}
+
+static void* _issue42_header_alloc(size_t size) {
+    char* raw = (char*)_safe_malloc(size + 8u);
+    if (!raw) {
+        return NULL;
+    }
+    memcpy(raw, "I42ALLOC", 8);
+    return raw + 8u;
+}
+
+static void _issue42_drop_free(void* ptr) {
+    (void)ptr;
+}
+
+int _issue42_lfhash_alloc_free_type_mismatch(size_t node_size, int use_mismatch) {
+    Issue42LfhashTable table;
+    table.mem_alloc_func = use_mismatch ? _issue42_header_alloc : _safe_malloc;
+    table.mem_free_func = use_mismatch ? _issue42_drop_free : free;
+
+    void* node = table.mem_alloc_func(node_size + 32u);
+    if (!node) {
+        return -1;
+    }
+    table.mem_free_func(node);
+    return 0;
+}
+
+int _issue42_pcm_server_state_missing(int identity, uint32_t logic_proc_id) {
+    Issue42PcmProc* tbl = &g_issue42_proc_table[logic_proc_id % ISSUE42_PCM_PROC_MAX];
+    if (identity == 1) {
+        tbl->proc_state = TASK_STATUS_RUNNING;
+        return 0;
+    }
+
+    tbl->pid = logic_proc_id + 1000u;
+    return 0;
+}
+
+int _issue42_ftok_concurrent_key_race(const char* path, int project_id) {
+    if (!path) {
+        return -1;
+    }
+
+    if (!_file_exists(path)) {
+        LOG_WARN("ftok path does not exist");
+    }
+    int key = (int)(_hash_string(path) & 0xffffu) | ((project_id & 0xff) << 16);
+    LOCK(&g_issue42_ftok_lock);
+    UNLOCK(&g_issue42_ftok_lock);
+    return key;
+}
+
+static int _issue42_wheel_timer_delete(uint32_t lcore_id, uint8_t ins_id) {
+    (void)lcore_id;
+    (void)ins_id;
+    LOCK(&g_issue42_wheel_global_lock);
+    LOCK(&g_issue42_wheel_timer.lock);
+    g_issue42_wheel_timer.timer_id = -1;
+    UNLOCK(&g_issue42_wheel_timer.lock);
+    UNLOCK(&g_issue42_wheel_global_lock);
+    return 0;
+}
+
+int _issue42_wheel_timer_self_destruct_deadlock(int call_from_callback) {
+    if (call_from_callback) {
+        LOCK(&g_issue42_wheel_timer.lock);
+        g_issue42_wheel_timer.in_callback = 1;
+        int rc = _issue42_wheel_timer_delete(0, 0);
+        g_issue42_wheel_timer.in_callback = 0;
+        UNLOCK(&g_issue42_wheel_timer.lock);
+        return rc;
+    }
+    return _issue42_wheel_timer_delete(0, 0);
+}
+
+static int _issue42_exception_reserved_proc(int sig) {
+    char record[64];
+    snprintf(record, sizeof(record), "signal=%d", sig);
+    if (pthread_mutex_trylock(&g_issue42_signal_sem) == 0) {
+        LOG_ERROR("writing exception record from signal handler: %s", record);
+        UNLOCK(&g_issue42_signal_sem);
+    }
+    return 0;
+}
+
+int _issue42_signal_handler_sem_interrupt(int sig, int hold_sem) {
+    if (hold_sem) {
+        LOCK(&g_issue42_signal_sem);
+        _issue42_exception_reserved_proc(sig);
+        UNLOCK(&g_issue42_signal_sem);
+        return 0;
+    }
+    return _issue42_exception_reserved_proc(sig);
+}
+
+static int _issue42_self_destroy_callback(void* arg, uint32_t* result_events) {
+    Issue42Event* event = (Issue42Event*)arg;
+    if (result_events) {
+        *result_events = 0;
+    }
+    SAFE_FREE(event);
+    return 0;
+}
+
+int _issue42_work_self_destruction_race(int destroy_in_callback) {
+    Issue42Event* event = (Issue42Event*)_safe_calloc(1, sizeof(Issue42Event));
+    if (!event) {
+        return -1;
+    }
+
+    event->callback_arg = event;
+    event->callback = destroy_in_callback ? _issue42_self_destroy_callback : NULL;
+    LOCK(&g_issue42_event_base.lock);
+    g_issue42_event_base.cur_proc_event = event;
+    event->running = 1;
+    UNLOCK(&g_issue42_event_base.lock);
+
+    uint32_t action = 0;
+    if (event->callback) {
+        action = (uint32_t)event->callback(event->callback_arg, &action);
+    }
+
+    LOCK(&g_issue42_event_base.lock);
+    if (g_issue42_event_base.cur_proc_event == NULL) {
+        UNLOCK(&g_issue42_event_base.lock);
+        return 0;
+    }
+    event->running = 0;
+    event->sched_cnt++;
+    g_issue42_event_base.cur_proc_event = NULL;
+    UNLOCK(&g_issue42_event_base.lock);
+
+    SAFE_FREE(event);
+    return (int)action;
+}
+
+static int _issue42_receive_runtime_frame(int fd, const unsigned char* wire,
+                                          size_t wire_len,
+                                          Issue42RuntimeFrame* frame) {
+    if (!frame) {
+        return -1;
+    }
+
+    memset(frame, 0, sizeof(*frame));
+    frame->fd = fd;
+    if (wire && wire_len >= sizeof(Issue42RuntimeHeader)) {
+        memcpy(&frame->header, wire, sizeof(frame->header));
+        frame->body_len = MIN(wire_len - sizeof(Issue42RuntimeHeader),
+                              sizeof(frame->body));
+        memcpy(frame->body, wire + sizeof(Issue42RuntimeHeader),
+               frame->body_len);
+    } else {
+        int got = _net_recv_data(fd, &frame->header, sizeof(frame->header));
+        if (got <= 0) {
+            frame->header.magic = ISSUE42_RUNTIME_MAGIC;
+            frame->header.opcode = 0;
+            frame->header.size = 128;
+            frame->header.mode = ISSUE42_SHM_MODE_CHR;
+            frame->header.value = 1;
+            STR_COPY(frame->header.name, "product-namedpipe");
+        }
+    }
+
+    if (frame->header.magic != ISSUE42_RUNTIME_MAGIC) {
+        return -1;
+    }
+    return 0;
+}
+
+int _issue42_process_shared_memory_message(int shm_fd, const char* shm_name,
+                                           const unsigned char* wire,
+                                           size_t wire_len,
+                                           unsigned char* out,
+                                           size_t out_len) {
+    Issue42RuntimeFrame frame;
+    Issue42UseInfo use_info;
+    int rc = _issue42_receive_runtime_frame(shm_fd, wire, wire_len, &frame);
+    (void)out_len;
+    if (rc != 0) {
+        return rc;
+    }
+
+    const char* stable_name = shm_name ? shm_name : frame.header.name;
+    switch (frame.header.opcode % 29u) {
+        case 0:
+            return _issue42_init_sleep_busyflag_misuse(shm_fd, (int)frame.header.value);
+        case 1:
+            return _issue42_thread_cache_destroy_leak((size_t)frame.header.size);
+        case 2:
+            return (int)_issue42_big_endian_ctz_offset(frame.body, frame.body_len);
+        case 3:
+            return (int)_issue42_shared_rwlock_readerpid_race((uint32_t)frame.header.value);
+        case 4:
+            return _issue42_pbuf_pool_premature_destroy((int)frame.header.flags);
+        case 5:
+            return (int)_issue42_pmdtimer_lcore_oob((uint32_t)frame.header.value);
+        case 6:
+            return _issue42_thread_name_overflow(stable_name, (uint32_t)frame.header.value);
+        case 7:
+            return _issue42_gmem_arena_uninitialized_output(&use_info);
+        case 8:
+            return _issue42_crcu_multi_writer_race(1, (int)frame.header.value);
+        case 9:
+            return _issue42_mmpool_temporary_array_mismatch((uint32_t)frame.header.value);
+        case 10:
+            return _issue42_reserved_file_size_check_bypass(
+                frame.header.mode, frame.header.size, frame.header.value) ? 0 : -1;
+        case 11:
+            return _issue42_inappropriate_error_level_logging((int)frame.header.flags);
+        case 12: {
+            Issue42FixpoolOps ops = {
+                .type = (int)(frame.header.value % ISSUE42_FIXPOOL_OPS_MAX),
+                .enqueue = _issue42_noop_op,
+                .dequeue = _issue42_noop_op,
+                .init = _issue42_noop_op,
+                .parse = _issue42_noop_op
+            };
+            return _issue42_fixpool_ops_register_race(&ops);
+        }
+        case 13: {
+            Issue42Fixpool pool;
+            memset(&pool, 0, sizeof(pool));
+            pool.num = 4;
+            pool.cache_size = 1;
+            return (int)_issue42_fixpool_count_cache_oob(
+                &pool, (uint32_t)frame.header.value);
+        }
+        case 14:
+            return (int)_issue42_shmdbg_arena_group_repeated_get((uint32_t)frame.header.value);
+        case 15:
+            return _issue42_qrcu_version_switch_race((int)frame.header.flags, &frame, out);
+        case 16:
+            return (int)_issue42_pcm_process_slot_race(
+                (uint32_t)frame.header.value, (uint32_t)shm_fd, stable_name);
+        case 17:
+            return _issue42_namedpipe_shm_permission(stable_name, frame.header.mode);
+        case 18:
+            return _issue42_signal_stack_race((int)frame.header.flags, &frame);
+        case 19:
+            return _issue42_flushjob_same_core_wakeup(1, (int)frame.header.flags);
+        case 20:
+            return _issue42_smmap_concurrent_create(stable_name, frame.header.size) ? 0 : -1;
+        case 21:
+            return _issue42_tlscb_prealloc_cleanup_gap((size_t)frame.header.size,
+                                                       (int)frame.header.flags);
+        case 22:
+            return _issue42_shm_get_addr_by_path_race(
+                stable_name, frame.header.name, (size_t)frame.header.size) ? 0 : -1;
+        case 23:
+            return _issue42_lfhash_alloc_free_type_mismatch(
+                (size_t)frame.header.size, (int)frame.header.flags);
+        case 24:
+            return _issue42_pcm_server_state_missing(
+                (int)frame.header.flags, (uint32_t)frame.header.value);
+        case 25:
+            return _issue42_ftok_concurrent_key_race(stable_name, (int)frame.header.flags);
+        case 26:
+            return _issue42_wheel_timer_self_destruct_deadlock((int)frame.header.flags);
+        case 27:
+            return _issue42_signal_handler_sem_interrupt((int)frame.header.flags, 1);
+        case 28:
+        default:
+            return _issue42_work_self_destruction_race((int)frame.header.flags);
+    }
+}

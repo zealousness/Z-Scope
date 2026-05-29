@@ -223,6 +223,32 @@ def test_dynamic_array_category_does_not_capture_generic_race_or_double_free() -
     assert normalize_issue_category("dynamic array resize race") == "dynamic_array_race"
 
 
+def test_unknown_category_text_does_not_expand_identity_fields() -> None:
+    prose = "logic incorrect permission check " + ("permission state narrative " * 500)
+    issue = {
+        "id": "ISSUE_1",
+        "function": "_check_file_permission",
+        "location": "src/utils.c:169-170",
+        "category": "logic",
+        "subcategory": "incorrect_permission_check",
+        "description": prose,
+        "validation_reasoning": prose,
+    }
+
+    normalize_issue_fields(issue)
+    key = canonical_issue_key(issue)
+
+    assert issue["category"] == "incorrect_permission_check"
+    assert issue["normalized_category"] == "incorrect_permission_check"
+    assert len(key) < 260
+
+
+def test_free_form_unknown_category_falls_back_to_unknown() -> None:
+    value = "custom prose category " + ("with narrative " * 200)
+
+    assert normalize_issue_category(value) == "unknown"
+
+
 def test_structured_candidate_wins_over_long_free_form_duplicate() -> None:
     free_form = {
         "id": "ISSUE_1",

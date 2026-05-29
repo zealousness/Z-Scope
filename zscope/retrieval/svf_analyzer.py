@@ -122,6 +122,14 @@ class SvfAnalyzer:
                 )
             else:
                 bc_paths = builder.build(groups=groups)
+            failed_tus = list(getattr(builder, "failed_tus", []))
+            bitcode_complete = not failed_tus
+            if failed_tus:
+                logger.warning(
+                    "Bitcode build incomplete: %d translation unit(s) failed; "
+                    "SVF source cache will not be marked complete",
+                    len(failed_tus),
+                )
 
             if not bc_paths:
                 logger.warning("Bitcode build failed or no bitcode generated; SVF skipped")
@@ -139,8 +147,13 @@ class SvfAnalyzer:
                     "SVF incremental: merged bitcode fingerprint unchanged; "
                     "reusing cached SVF data"
                 )
-                if cache_fingerprint:
+                if cache_fingerprint and bitcode_complete:
                     self._db.set_svf_hash(cache_fingerprint)
+                elif not bitcode_complete:
+                    logger.info(
+                        "SVF incremental: bitcode build is incomplete; "
+                        "leaving source cache fingerprint unset"
+                    )
                 return True
             reused_linked_groups = set(getattr(builder, "reused_linked_groups", set()))
             if old_hash and bc_paths and set(bc_paths.keys()) == reused_linked_groups:
@@ -148,8 +161,13 @@ class SvfAnalyzer:
                     "SVF incremental: merged bitcode reused for all groups; "
                     "refreshing cache fingerprint without rerunning SVF"
                 )
-                if cache_fingerprint:
+                if cache_fingerprint and bitcode_complete:
                     self._db.set_svf_hash(cache_fingerprint)
+                elif not bitcode_complete:
+                    logger.info(
+                        "SVF incremental: bitcode build is incomplete; "
+                        "leaving source cache fingerprint unset"
+                    )
                 if artifact_fingerprint:
                     self._db.set_metadata("svf_artifact_hash", artifact_fingerprint)
                 return True
@@ -183,8 +201,13 @@ class SvfAnalyzer:
                 logger.warning("SVF analysis timed out; cache fingerprint will not be updated")
                 return False
 
-            if cache_fingerprint:
+            if cache_fingerprint and bitcode_complete:
                 self._db.set_svf_hash(cache_fingerprint)
+            elif not bitcode_complete:
+                logger.warning(
+                    "SVF analysis used partial bitcode; cache fingerprint will not be updated "
+                    "so failed translation unit(s) are retried next run"
+                )
             if artifact_fingerprint:
                 self._db.set_metadata("svf_artifact_hash", artifact_fingerprint)
             return True
@@ -215,6 +238,7 @@ class SvfAnalyzer:
 
     def _cache_config(self) -> Dict[str, Any]:
         return {
+            "cache_schema_version": 2,
             "svf_bin_dir": str(self._svf_bin_dir or ""),
             "gclang_path": str(self._gclang),
             "get_bc_path": str(self._get_bc),
