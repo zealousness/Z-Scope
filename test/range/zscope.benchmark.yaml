@@ -55,6 +55,7 @@ project:
     - benchmark/ground_truth.json
     - benchmark/ISSUE40_REAL_MODEL_MAPPING.md
     - benchmark/ISSUE41_CS_MODEL_MAPPING.md
+    - benchmark/ISSUE42_RUNTIME_MODEL_MAPPING.md
     - GROUND_TRUTH.md
     - DELIVERY.md
 

@@ -245,6 +245,47 @@ def test_report_feedback_service_findings_payload_is_lightweight(tmp_path: Path)
     assert payload["views"]["with_needs_review"]["issue_count"] == 1
 
 
+def test_report_feedback_service_compacts_runaway_finding_fields(tmp_path: Path) -> None:
+    report_path = tmp_path / "report.json"
+    huge_text = "logic incorrect permission check " + ("permission narrative " * 1000)
+    heavy_issue = {
+        "id": "ISSUE_1",
+        "function": "_check_file_permission",
+        "location": "src/utils.c:169-170",
+        "category": huge_text,
+        "normalized_category": huge_text,
+        "subcategory": "incorrect_permission_check",
+        "dedup_key": huge_text * 3,
+        "validation_status": "needs_review",
+        "description": "Permission check uses file mode bits.",
+    }
+    report_path.write_text(
+        json.dumps(
+            {
+                "issues": [],
+                "report_views": {
+                    "with_needs_review": {
+                        "issue_count": 1,
+                        "included_needs_review_count": 1,
+                        "issues": [heavy_issue],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = ReportFeedbackService(report_filename=str(report_path))
+
+    payload = service.selected_view_payload("/api/findings?view=with_needs_review")
+    finding = payload["findings"][0]
+    encoded = json.dumps(payload, ensure_ascii=False)
+
+    assert finding["dedup_key"].startswith("sha256:")
+    assert finding["category"] == "incorrect_permission_check"
+    assert finding["normalized_category"] == "incorrect_permission_check"
+    assert len(encoded) < 10000
+
+
 def test_report_feedback_service_findings_payload_can_return_full_report(tmp_path: Path) -> None:
     report_path = tmp_path / "report.json"
     report_path.write_text(

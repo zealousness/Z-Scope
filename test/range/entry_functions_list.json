@@ -3,10 +3,10 @@
   "discovery": {
     "exposure_kind": "mixed_api_and_communication",
     "summary": {
-      "api": 52,
-      "thread": 6,
+      "api": 54,
+      "thread": 7,
       "communication": 7,
-      "other_user_input": 4
+      "other_user_input": 5
     },
     "notes": []
   },
@@ -19,7 +19,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 133,
+      "line": 138,
       "confidence": 0.9
     },
     {
@@ -239,7 +239,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 170,
+      "line": 177,
       "confidence": 0.9
     },
     {
@@ -371,7 +371,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 152,
+      "line": 159,
       "confidence": 0.9
     },
     {
@@ -426,7 +426,18 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 143,
+      "line": 148,
+      "confidence": 0.9
+    },
+    {
+      "function_name": "td_run_issue42_cases",
+      "file_path": "include/task_dispatcher.h",
+      "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
+      "exposure": "api",
+      "reasons": [
+        "declared_in_header"
+      ],
+      "line": 150,
       "confidence": 0.9
     },
     {
@@ -437,7 +448,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 135,
+      "line": 140,
       "confidence": 0.9
     },
     {
@@ -448,7 +459,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 137,
+      "line": 142,
       "confidence": 0.9
     },
     {
@@ -459,7 +470,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 139,
+      "line": 144,
       "confidence": 0.9
     },
     {
@@ -470,7 +481,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 136,
+      "line": 141,
       "confidence": 0.9
     },
     {
@@ -514,7 +525,18 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 144,
+      "line": 149,
+      "confidence": 0.9
+    },
+    {
+      "function_name": "td_start_issue42_worker",
+      "file_path": "include/task_dispatcher.h",
+      "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
+      "exposure": "api",
+      "reasons": [
+        "declared_in_header"
+      ],
+      "line": 151,
       "confidence": 0.9
     },
     {
@@ -525,7 +547,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 141,
+      "line": 146,
       "confidence": 0.9
     },
     {
@@ -547,7 +569,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 160,
+      "line": 167,
       "confidence": 0.9
     },
     {
@@ -558,7 +580,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 128,
+      "line": 133,
       "confidence": 0.9
     },
     {
@@ -625,6 +647,17 @@
         "thread_entry:VOS_TaskCreate"
       ],
       "line": 477,
+      "confidence": 0.88
+    },
+    {
+      "function_name": "_td_issue42_worker",
+      "file_path": "src/main.c",
+      "custom_prompt": "Thread entry or thread creator. Audit stack lifetime, shared state, lock ordering, and handoff ownership.",
+      "exposure": "thread",
+      "reasons": [
+        "thread_entry:VOS_TaskCreate"
+      ],
+      "line": 738,
       "confidence": 0.88
     },
     {
@@ -749,6 +782,17 @@
         "input:fread"
       ],
       "line": 94,
+      "confidence": 0.7
+    },
+    {
+      "function_name": "_issue42_shm_get_addr_by_path_race",
+      "file_path": "src/lifecycle.c",
+      "custom_prompt": "User-controlled input entry. Treat file, environment, CLI, device, and stdin data as untrusted. Audit parsing, size conversion, range checks, termination, and resource cleanup before the data feeds copies, indexing, allocation sizes, dispatch, paths, or commands. If the input buffer, string, parsed value, or derived length is returned, written through an out-parameter, stored globally, or consumed by callers, use get_callers to inspect caller-side validation and sinks.",
+      "exposure": "other_user_input",
+      "reasons": [
+        "input:open"
+      ],
+      "line": 2605,
       "confidence": 0.7
     },
     {

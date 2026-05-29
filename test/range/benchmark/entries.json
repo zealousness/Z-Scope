@@ -1,5 +1,5 @@
 {
-  "description": "Fixed Z-SCOPE benchmark entry list for the task dispatcher fixture. Entries intentionally omit custom prompts so the benchmark measures generic analysis behavior. Includes high-tier REAL-* and ISSUE41-* entries derived from real-project abstract models.",
+  "description": "Fixed Z-SCOPE benchmark entry list for the task dispatcher fixture. Entries intentionally omit custom prompts so the benchmark measures generic analysis behavior. Includes high-tier REAL-* and ISSUE41-* entries derived from real-project abstract models, and ISSUE42 shared-memory/runtime models.",
   "functions": [
     {
       "function_name": "td_init",
@@ -424,6 +424,138 @@
     {
       "function_name": "_issue41_raw_fd_missing_encode",
       "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "td_handle_issue42_shared_memory_message",
+      "file_path": "src/main.c"
+    },
+    {
+      "function_name": "_issue42_process_shared_memory_message",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_init_sleep_busyflag_misuse",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_thread_cache_destroy_leak",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_big_endian_ctz_offset",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_shared_rwlock_readerpid_race",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_pbuf_pool_premature_destroy",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_pmdtimer_lcore_oob",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_thread_name_overflow",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_gmem_arena_uninitialized_output",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_crcu_multi_writer_race",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_mmpool_temporary_array_mismatch",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_reserved_file_size_check_bypass",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_inappropriate_error_level_logging",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_fixpool_ops_register_race",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_fixpool_count_cache_oob",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_shmdbg_arena_group_repeated_get",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_qrcu_version_switch_race",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_pcm_process_slot_race",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_namedpipe_shm_permission",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_signal_stack_race",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_flushjob_same_core_wakeup",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_smmap_concurrent_create",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_tlscb_prealloc_cleanup_gap",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_shm_get_addr_by_path_race",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_lfhash_alloc_free_type_mismatch",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_pcm_server_state_missing",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_ftok_concurrent_key_race",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_wheel_timer_self_destruct_deadlock",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_signal_handler_sem_interrupt",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_issue42_work_self_destruction_race",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_plugin_register",
+      "file_path": "src/plugin.c"
+    },
+    {
+      "function_name": "platform_execute_task",
+      "file_path": "src/platform_linux.c"
     }
   ]
 }

@@ -229,6 +229,51 @@ def test_svf_skips_runner_when_builder_reuses_all_merged_groups(
     db.close()
 
 
+def test_partial_bitcode_build_retries_failed_tus_next_run(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root, compile_commands = _write_compile_commands(tmp_path)
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    merged_bc = tmp_path / "partial.bc"
+    merged_bc.write_text("partial merged bitcode\n", encoding="utf-8")
+    calls = []
+
+    class FakeBitcodeBuilder:
+        def __init__(self, *args, **kwargs):
+            self.failed_tus = [{"file": "failed.c", "reason": "compile_failed"}]
+            self.reused_linked_groups = set()
+
+        def build(self, groups):
+            calls.append("build")
+            return {"default": merged_bc}
+
+    class FakeSvfRunner:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run_all(self, bc_path, output_dir):
+            calls.append("runner")
+            return {
+                "ander": SvfResult(tool="wpa-ander", success=True),
+                "saber": SvfResult(tool="saber", success=True),
+            }
+
+    monkeypatch.setattr(svf_module, "BitcodeBuilder", FakeBitcodeBuilder)
+    monkeypatch.setattr(svf_module, "SvfRunner", FakeSvfRunner)
+
+    analyzer = SvfAnalyzer(db=db, timeout=42)
+
+    assert analyzer.run(source_root, tmp_path, compile_commands) is True
+    assert db.get_svf_hash() == ""
+    assert db.get_metadata("svf_artifact_hash")
+
+    assert analyzer.run(source_root, tmp_path, compile_commands) is True
+    assert calls == ["build", "runner", "build"]
+    assert db.get_svf_hash() == ""
+    db.close()
+
+
 def test_svf_timeout_result_is_not_cached(tmp_path: Path, monkeypatch) -> None:
     source_root, compile_commands = _write_compile_commands(tmp_path)
     db = KnowledgeDB(str(tmp_path / "knowledge.db"))
