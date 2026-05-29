@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs
@@ -26,6 +27,98 @@ ALLOWED_VALIDATION_STATUSES = {
     "pending",
     "rejected",
 }
+
+DASHBOARD_TEXT_LIMITS = {
+    "dedup_key": 240,
+    "category": 80,
+    "normalized_category": 80,
+    "subcategory": 80,
+    "defect_class": 80,
+    "code_snippet": 12000,
+    "reasoning": 10000,
+    "reasoning_process": 10000,
+    "validation_reasoning": 10000,
+    "description": 5000,
+    "root_cause": 5000,
+    "suggested_fix": 5000,
+    "guard_analysis": 4000,
+    "exploit_scenario": 4000,
+}
+
+DASHBOARD_ISSUE_FIELDS = (
+    "id",
+    "candidate_id",
+    "candidate_source",
+    "finding_kind",
+    "function",
+    "location",
+    "category",
+    "subcategory",
+    "description",
+    "root_cause",
+    "suggested_fix",
+    "reasoning",
+    "reasoning_process",
+    "code_snippet",
+    "validation_status",
+    "validation_reasoning",
+    "confidence",
+    "impact_level",
+    "dedup_key",
+    "stable_fingerprint",
+    "defect_class",
+    "rule",
+    "rule_id",
+    "cwe",
+    "source",
+    "sink",
+    "guard_analysis",
+    "exploit_scenario",
+    "final_score",
+    "file",
+    "line",
+    "start_line",
+    "end_line",
+    "entry_function",
+    "sink_function",
+    "target_function",
+    "analyzed_from",
+    "reachable_from_entry",
+    "internal_sink_lifted",
+    "normalized_category",
+    "source_loc",
+    "sink_loc",
+)
+
+DASHBOARD_ARRAY_FIELDS = (
+    "positive_evidence",
+    "negative_evidence",
+    "evidence_refs",
+    "call_path",
+    "path_constraints",
+    "call_paths",
+)
+
+DASHBOARD_EVIDENCE_PACK_FIELDS = (
+    "checker",
+    "candidate_source",
+    "candidate_is_conclusion",
+    "validation_required",
+    "final_score",
+    "score",
+    "entry_function",
+    "sink_function",
+    "target_function",
+    "resource",
+    "resource_kind",
+    "path",
+    "source_path",
+    "value_flow",
+    "lifecycle_pair",
+    "ast_cfg",
+    "clang_matcher_fact",
+    "semantic_overlay_evidence",
+)
 
 
 def empty_report() -> Dict[str, Any]:
@@ -432,24 +525,35 @@ class ReportFeedbackService:
         self.user_config_store = user_config_store
         self.snapshot_store = snapshot_store
         self.report_filename = report_filename
+        self._report_cache_key: Optional[tuple[str, int, int]] = None
+        self._report_cache: Optional[Dict[str, Any]] = None
 
     def load_report(self) -> Dict[str, Any]:
         report_path = Path(self.report_filename)
         if not report_path.exists():
             return empty_report()
+        stat = report_path.stat()
+        cache_key = (str(report_path.resolve()), stat.st_mtime_ns, stat.st_size)
+        if self._report_cache_key == cache_key and self._report_cache is not None:
+            return self._report_cache
         raw_content = report_path.read_text(encoding="utf-8", errors="ignore")
         sanitized = strip_json_code_fence(raw_content)
         if not sanitized:
             return empty_report()
         try:
-            return json.loads(sanitized)
+            report = json.loads(sanitized)
         except json.JSONDecodeError as exc:
             print(f"Warning: failed to parse report JSON: {exc}")
             return empty_report()
+        self._report_cache_key = cache_key
+        self._report_cache = report
+        return report
 
     def save_report(self, report: Dict[str, Any]) -> None:
         with Path(self.report_filename).open("w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
+        self._report_cache_key = None
+        self._report_cache = None
 
     @staticmethod
     def _lightweight_report(report: Dict[str, Any]) -> Dict[str, Any]:
@@ -487,12 +591,110 @@ class ReportFeedbackService:
             "true",
             "yes",
         }
+        findings = findings_for_view(report, view)
         return {
             "report": report if full_report else self._lightweight_report(report),
-            "findings": findings_for_view(report, view),
+            "findings": findings if full_report else self._compact_findings(findings),
             "view": view,
             "views": report_view_summary(report),
         }
+
+    @classmethod
+    def _compact_findings(cls, findings: list[Any]) -> list[Dict[str, Any]]:
+        return [
+            cls._compact_issue(issue)
+            for issue in findings
+            if isinstance(issue, dict)
+        ]
+
+    @classmethod
+    def _compact_issue(cls, issue: Dict[str, Any], depth: int = 0) -> Dict[str, Any]:
+        compact: Dict[str, Any] = {}
+        truncated_fields: list[str] = []
+
+        for key in DASHBOARD_ISSUE_FIELDS:
+            if key not in issue:
+                continue
+            value = issue[key]
+            if isinstance(value, str):
+                compact_value = cls._compact_issue_text(key, value, issue)
+                if compact_value != value:
+                    truncated_fields.append(key)
+                compact[key] = compact_value
+            else:
+                compact[key] = cls._compact_value(value, depth=1)
+
+        for key in DASHBOARD_ARRAY_FIELDS:
+            value = issue.get(key)
+            if isinstance(value, list):
+                compact[key] = cls._compact_value(value, depth=1)
+
+        evidence_pack = issue.get("evidence_pack")
+        if isinstance(evidence_pack, dict):
+            compact_pack = {
+                key: cls._compact_value(evidence_pack[key], depth=1)
+                for key in DASHBOARD_EVIDENCE_PACK_FIELDS
+                if key in evidence_pack
+            }
+            if compact_pack:
+                compact["evidence_pack"] = compact_pack
+
+        related = issue.get("related_needs_review_observations")
+        if isinstance(related, list) and depth < 1:
+            compact["related_needs_review_observations"] = [
+                cls._compact_issue(item, depth=depth + 1)
+                for item in related[:6]
+                if isinstance(item, dict)
+            ]
+            if len(related) > 6:
+                compact["related_needs_review_omitted"] = len(related) - 6
+
+        if truncated_fields:
+            compact["_truncated_fields"] = truncated_fields
+        return compact
+
+    @classmethod
+    def _compact_issue_text(cls, key: str, value: str, issue: Dict[str, Any]) -> str:
+        if key == "dedup_key" and len(value) > DASHBOARD_TEXT_LIMITS["dedup_key"]:
+            digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
+            return f"sha256:{digest}"
+        if key in {"category", "normalized_category"} and len(value) > DASHBOARD_TEXT_LIMITS[key]:
+            fallback = issue.get("subcategory") or issue.get("defect_class") or "unknown"
+            return cls._compact_text(str(fallback), DASHBOARD_TEXT_LIMITS[key])
+        return cls._compact_text(value, DASHBOARD_TEXT_LIMITS.get(key, 2000))
+
+    @classmethod
+    def _compact_value(cls, value: Any, depth: int = 0) -> Any:
+        if isinstance(value, str):
+            return cls._compact_text(value, 1200 if depth else 4000)
+        if isinstance(value, (int, float, bool)) or value is None:
+            return value
+        if isinstance(value, list):
+            max_items = 8 if depth > 0 else 16
+            result = [cls._compact_value(item, depth + 1) for item in value[:max_items]]
+            if len(value) > max_items:
+                result.append(f"... [truncated {len(value) - max_items} items]")
+            return result
+        if isinstance(value, dict):
+            if depth >= 3:
+                return cls._compact_text(json.dumps(value, ensure_ascii=False, default=str), 1200)
+            entries = list(value.items())[:40]
+            result = {
+                str(key): cls._compact_value(item, depth + 1)
+                for key, item in entries
+            }
+            omitted = len(value) - len(entries)
+            if omitted > 0:
+                result["_truncated_keys"] = omitted
+            return result
+        return cls._compact_text(str(value), 1200)
+
+    @staticmethod
+    def _compact_text(value: str, limit: int) -> str:
+        if len(value) <= limit:
+            return value
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+        return f"{value[:limit].rstrip()}... [truncated {len(value) - limit} chars, sha256:{digest}]"
 
     def persist_validation_feedback(self, updates: list[Any]) -> Dict[str, Any]:
         store = self.user_config_store
