@@ -41,6 +41,7 @@ class BitcodeBuilder:
         "__FILENAME__",
         "__VOSFILENAME__",
     }
+    _DEFAULT_EXCLUSIVE_POOL = "default"
     _MANIFEST_VERSION = 1
     _LINK_MANIFEST_VERSION = 1
 
@@ -196,6 +197,7 @@ class BitcodeBuilder:
             if not group_bcs:
                 logger.warning("No .bc files left for group '%s' after exclusions", group_name)
                 continue
+            candidate_group_bcs = list(group_bcs)
 
             if selector:
                 selected_bcs, plan = selector.select(
@@ -224,6 +226,7 @@ class BitcodeBuilder:
             link_variants, duplicate_symbols = self._exclusive_pool_link_variants(
                 group_name=group_name,
                 bc_files=group_bcs,
+                all_bcs=candidate_group_bcs,
                 bc_to_src=self._bc_to_src,
                 pool_classifier=pool_classifier,
                 symbol_reader=symbol_reader,
@@ -241,6 +244,9 @@ class BitcodeBuilder:
                             "exclusive_pool": variant.get("exclusive_pool", ""),
                             "selected_bcs": self._format_paths(variant_bcs),
                             "excluded_pools": list(variant.get("excluded_pools") or []),
+                            "dependency_closure_added": list(
+                                variant.get("dependency_closure_added") or []
+                            ),
                         }
                     )
                 merged = self._link_all(
@@ -315,11 +321,13 @@ class BitcodeBuilder:
         *,
         group_name: str,
         bc_files: Sequence[Path],
+        all_bcs: Sequence[Path],
         bc_to_src: Dict[Path, Path],
         pool_classifier: ExclusivePoolClassifier,
         symbol_reader: Any,
     ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         bc_list = [Path(bc).resolve() for bc in bc_files]
+        all_bc_list = [Path(bc).resolve() for bc in all_bcs]
         if not pool_classifier.enabled:
             return [
                 {
@@ -332,42 +340,74 @@ class BitcodeBuilder:
 
         pool_by_bc = {
             bc: pool_classifier.pool_for_bc(bc, bc_to_src)
-            for bc in bc_list
+            for bc in all_bc_list
         }
-        duplicates = self._duplicate_external_symbols(bc_list, symbol_reader, pool_by_bc)
+        symbols_by_bc = {
+            bc: self._read_symbols(symbol_reader, bc)
+            for bc in all_bc_list
+        }
+        effective_pool_by_bc = {
+            bc: self._effective_exclusive_pool(pool_by_bc.get(bc, ""))
+            for bc in all_bc_list
+        }
+        duplicates = self._duplicate_external_symbols(
+            bc_list,
+            symbol_reader,
+            effective_pool_by_bc,
+            symbols_by_bc=symbols_by_bc,
+        )
         split_pools: set[str] = set()
+        conflict_provider_bcs: set[Path] = set()
         for item in duplicates:
             pools = {str(provider.get("exclusive_pool") or "") for provider in item["providers"]}
-            concrete_pools = {pool for pool in pools if pool}
-            if len(concrete_pools) > 1:
-                split_pools.update(concrete_pools)
+            if len(pools) > 1:
+                split_pools.update(pools)
+                for provider in item["providers"]:
+                    provider_bc = Path(str(provider.get("bc") or "")).resolve()
+                    if provider_bc:
+                        conflict_provider_bcs.add(provider_bc)
 
         if len(split_pools) <= 1:
-            exclusive_pool = next(iter({pool for pool in pool_by_bc.values() if pool}), "")
+            concrete_pools = {pool for pool in pool_by_bc.values() if pool}
+            exclusive_pool = next(iter(concrete_pools), "")
             return [
                 {
                     "group_name": group_name,
-                    "exclusive_pool": exclusive_pool if len({p for p in pool_by_bc.values() if p}) == 1 else "",
+                    "exclusive_pool": exclusive_pool if len(concrete_pools) == 1 else "",
                     "bc_files": bc_list,
                     "excluded_pools": [],
                 }
             ], duplicates
 
         variants: List[Dict[str, Any]] = []
-        for pool_name in pool_classifier.ordered_pool_names(split_pools):
-            variant_bcs = [
+        for pool_name in self._ordered_effective_pools(pool_classifier, split_pools):
+            seed_bcs = [
                 bc for bc in bc_list
-                if not pool_by_bc.get(bc) or pool_by_bc.get(bc) == pool_name
+                if self._bc_allowed_in_effective_pool(
+                    bc,
+                    pool_name,
+                    pool_by_bc,
+                    conflict_provider_bcs,
+                )
             ]
+            variant_bcs, dependency_added = self._expand_variant_dependencies(
+                seed_bcs=seed_bcs,
+                all_bcs=all_bc_list,
+                pool_name=pool_name,
+                pool_by_bc=pool_by_bc,
+                conflict_provider_bcs=conflict_provider_bcs,
+                symbols_by_bc=symbols_by_bc,
+            )
             variants.append(
                 {
                     "group_name": f"{group_name}__{self._safe_group_suffix(pool_name)}",
                     "exclusive_pool": pool_name,
                     "bc_files": variant_bcs,
                     "excluded_pools": [
-                        pool for pool in pool_classifier.ordered_pool_names(split_pools)
+                        pool for pool in self._ordered_effective_pools(pool_classifier, split_pools)
                         if pool != pool_name
                     ],
+                    "dependency_closure_added": dependency_added,
                 }
             )
         logger.warning(
@@ -378,17 +418,127 @@ class BitcodeBuilder:
         )
         return variants, duplicates
 
+    def _expand_variant_dependencies(
+        self,
+        *,
+        seed_bcs: Sequence[Path],
+        all_bcs: Sequence[Path],
+        pool_name: str,
+        pool_by_bc: Dict[Path, str],
+        conflict_provider_bcs: set[Path],
+        symbols_by_bc: Dict[Path, BitcodeSymbols],
+    ) -> tuple[List[Path], List[str]]:
+        selected = {Path(bc).resolve() for bc in seed_bcs}
+        allowed_bcs = [
+            Path(bc).resolve()
+            for bc in all_bcs
+            if self._bc_allowed_in_effective_pool(
+                Path(bc).resolve(),
+                pool_name,
+                pool_by_bc,
+                conflict_provider_bcs,
+            )
+        ]
+        providers: Dict[str, List[Path]] = {}
+        for bc in allowed_bcs:
+            for symbol in symbols_by_bc.get(bc, BitcodeSymbols()).defined:
+                providers.setdefault(symbol, []).append(bc)
+        for symbol, provider_bcs in list(providers.items()):
+            providers[symbol] = sorted(
+                provider_bcs,
+                key=lambda provider: self._dependency_provider_rank(
+                    provider,
+                    pool_name,
+                    pool_by_bc,
+                ),
+            )
+
+        added: set[Path] = set()
+        changed = True
+        while changed:
+            changed = False
+            unresolved: set[str] = set()
+            defined: set[str] = set()
+            for bc in selected:
+                symbols = symbols_by_bc.get(bc, BitcodeSymbols())
+                unresolved.update(symbols.undefined)
+                defined.update(symbols.defined)
+            for symbol in sorted(unresolved - defined):
+                for provider in providers.get(symbol, []):
+                    if provider in selected:
+                        continue
+                    selected.add(provider)
+                    added.add(provider)
+                    changed = True
+                    break
+
+        ordered = [Path(bc).resolve() for bc in all_bcs if Path(bc).resolve() in selected]
+        return ordered, self._format_paths(added)
+
+    def _dependency_provider_rank(
+        self,
+        bc: Path,
+        pool_name: str,
+        pool_by_bc: Dict[Path, str],
+    ) -> tuple[int, str]:
+        configured_pool = pool_by_bc.get(Path(bc).resolve(), "")
+        if configured_pool == pool_name:
+            return (0, Path(bc).as_posix())
+        if not configured_pool:
+            return (1, Path(bc).as_posix())
+        return (2, Path(bc).as_posix())
+
+    def _bc_allowed_in_effective_pool(
+        self,
+        bc: Path,
+        pool_name: str,
+        pool_by_bc: Dict[Path, str],
+        conflict_provider_bcs: set[Path],
+    ) -> bool:
+        bc = Path(bc).resolve()
+        configured_pool = pool_by_bc.get(bc, "")
+        if configured_pool:
+            return configured_pool == pool_name
+        if pool_name == self._DEFAULT_EXCLUSIVE_POOL:
+            return True
+        return bc not in conflict_provider_bcs
+
+    def _effective_exclusive_pool(self, pool_name: str) -> str:
+        return pool_name or self._DEFAULT_EXCLUSIVE_POOL
+
+    def _ordered_effective_pools(
+        self,
+        pool_classifier: ExclusivePoolClassifier,
+        pools: Iterable[str],
+    ) -> List[str]:
+        wanted = {self._effective_exclusive_pool(pool) for pool in pools}
+        ordered = [
+            pool
+            for pool in pool_classifier.ordered_pool_names(wanted)
+            if pool != self._DEFAULT_EXCLUSIVE_POOL
+        ]
+        if self._DEFAULT_EXCLUSIVE_POOL in wanted:
+            ordered.insert(0, self._DEFAULT_EXCLUSIVE_POOL)
+        return ordered
+
     def _duplicate_external_symbols(
         self,
         bc_files: Sequence[Path],
         symbol_reader: Any,
         pool_by_bc: Optional[Dict[Path, str]] = None,
+        *,
+        symbols_by_bc: Optional[Dict[Path, BitcodeSymbols]] = None,
     ) -> List[Dict[str, Any]]:
         providers: Dict[str, List[Path]] = {}
         for bc in bc_files:
-            symbols = self._read_symbols(symbol_reader, Path(bc))
+            resolved_bc = Path(bc).resolve()
+            symbols = (
+                symbols_by_bc.get(resolved_bc, BitcodeSymbols())
+                if symbols_by_bc is not None
+                else self._read_symbols(symbol_reader, resolved_bc)
+            )
             for symbol in symbols.external_defined:
-                providers.setdefault(symbol, []).append(Path(bc).resolve())
+                providers.setdefault(symbol, []).append(resolved_bc)
 
         duplicates: List[Dict[str, Any]] = []
         for symbol, provider_bcs in sorted(providers.items()):
