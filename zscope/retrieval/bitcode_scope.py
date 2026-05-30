@@ -27,6 +27,7 @@ class BitcodeScopeConfig:
     always_include: List[str] = field(default_factory=list)
     symbol_closure: bool = True
     exclusive_pools: List[Dict[str, Any]] = field(default_factory=list)
+    shared_pools: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -91,6 +92,29 @@ def normalize_exclusive_pools(raw_pools: Optional[Sequence[Mapping[str, Any]]]) 
     return pools
 
 
+def normalize_shared_pools(raw_pools: Optional[Sequence[Mapping[str, Any]]]) -> List[Dict[str, Any]]:
+    """Return valid shared pool records, including optional conflicts."""
+    pools: List[Dict[str, Any]] = []
+    for item in normalize_exclusive_pools(raw_pools):
+        raw_conflicts: Any = {}
+        if isinstance(raw_pools, Sequence):
+            for raw_item in raw_pools:
+                if (
+                    isinstance(raw_item, Mapping)
+                    and str(raw_item.get("name") or "").strip() == item["name"]
+                ):
+                    raw_conflicts = raw_item.get("conflicts_with") or []
+                    break
+        if isinstance(raw_conflicts, str):
+            conflicts = [raw_conflicts]
+        elif isinstance(raw_conflicts, Sequence):
+            conflicts = [str(value).strip() for value in raw_conflicts if str(value).strip()]
+        else:
+            conflicts = []
+        pools.append({**item, "conflicts_with": conflicts})
+    return pools
+
+
 class ExclusivePoolClassifier:
     """Classify source/bitcode files into user-configured mutually exclusive pools."""
 
@@ -100,14 +124,16 @@ class ExclusivePoolClassifier:
         source_root: Path,
         project_root: Path,
         pools: Optional[Sequence[Mapping[str, Any]]],
+        shared_pools: Optional[Sequence[Mapping[str, Any]]] = None,
     ) -> None:
         self.source_root = Path(source_root).resolve()
         self.project_root = Path(project_root).resolve()
         self.pools = normalize_exclusive_pools(pools)
+        self.shared_pools = normalize_shared_pools(shared_pools)
 
     @property
     def enabled(self) -> bool:
-        return bool(self.pools)
+        return bool(self.pools or self.shared_pools)
 
     def pool_for_bc(self, bc_path: Path, bc_to_src: Mapping[Path, Path]) -> str:
         normalized_map = {Path(bc).resolve(): src for bc, src in bc_to_src.items()}
@@ -122,6 +148,36 @@ class ExclusivePoolClassifier:
             if any(matches_configured_path(candidate, pool["paths"]) for candidate in candidates):
                 return str(pool["name"])
         return ""
+
+    def shared_pools_for_bc(self, bc_path: Path, bc_to_src: Mapping[Path, Path]) -> List[str]:
+        normalized_map = {Path(bc).resolve(): src for bc, src in bc_to_src.items()}
+        src = normalized_map.get(Path(bc_path).resolve())
+        return self.shared_pools_for_source(src) if src else []
+
+    def shared_pools_for_source(self, source_path: Optional[Path]) -> List[str]:
+        if not source_path or not self.shared_pools:
+            return []
+        candidates = self._path_candidates(Path(source_path))
+        matches: List[str] = []
+        for pool in self.shared_pools:
+            if any(matches_configured_path(candidate, pool["paths"]) for candidate in candidates):
+                matches.append(str(pool["name"]))
+        return matches
+
+    def shared_conflicts_for_bc(self, bc_path: Path, bc_to_src: Mapping[Path, Path]) -> Set[str]:
+        normalized_map = {Path(bc).resolve(): src for bc, src in bc_to_src.items()}
+        src = normalized_map.get(Path(bc_path).resolve())
+        return self.shared_conflicts_for_source(src) if src else set()
+
+    def shared_conflicts_for_source(self, source_path: Optional[Path]) -> Set[str]:
+        if not source_path or not self.shared_pools:
+            return set()
+        candidates = self._path_candidates(Path(source_path))
+        conflicts: Set[str] = set()
+        for pool in self.shared_pools:
+            if any(matches_configured_path(candidate, pool["paths"]) for candidate in candidates):
+                conflicts.update(str(value) for value in pool.get("conflicts_with", []) if str(value))
+        return conflicts
 
     def ordered_pool_names(self, pools: Iterable[str]) -> List[str]:
         wanted = {pool for pool in pools if pool}
@@ -240,6 +296,7 @@ class EntryBitcodeSelector:
             source_root=self.source_root,
             project_root=self.project_root,
             pools=self.config.exclusive_pools,
+            shared_pools=self.config.shared_pools,
         )
 
     def select(
