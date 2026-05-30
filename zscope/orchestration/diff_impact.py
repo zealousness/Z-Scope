@@ -125,6 +125,7 @@ class DiffImpactPlanner:
         self.max_call_depth = max_call_depth
         self.caller_limit = caller_limit
         self.synthetic_depth_threshold = synthetic_depth_threshold
+        self.git_root = self._detect_git_root(self.repo_root)
         self._entry_discovery = EntryDiscovery(
             code_index,
             header_files=self.header_files or None,
@@ -167,6 +168,22 @@ class DiffImpactPlanner:
             encoding="utf-8",
         )
         return path
+
+    @staticmethod
+    def _detect_git_root(path: Path) -> Optional[Path]:
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            return None
+        if proc.returncode != 0:
+            return None
+        stdout = proc.stdout.strip()
+        return Path(stdout).resolve() if stdout else None
 
     def _collect_changed_line_ranges(self) -> List[ChangedLineRange]:
         cmd = [
@@ -229,7 +246,8 @@ class DiffImpactPlanner:
         for item in changed_ranges:
             if Path(item.file_path).suffix not in SOURCE_EXTENSIONS:
                 continue
-            ranges_by_file.setdefault(self._abs_key(self.repo_root / item.file_path), []).append(item)
+            for key in self._diff_file_abs_keys(item.file_path):
+                ranges_by_file.setdefault(key, []).append(item)
 
         by_key: Dict[Tuple[str, str], ChangedFunction] = {}
         for name, info in self._iter_indexed_functions():
@@ -274,7 +292,8 @@ class DiffImpactPlanner:
         ranges_by_file: Dict[str, List[ChangedLineRange]] = {}
         for item in changed_ranges:
             if Path(item.file_path).suffix in HEADER_EXTENSIONS:
-                ranges_by_file.setdefault(self._abs_key(self.repo_root / item.file_path), []).append(item)
+                for key in self._diff_file_abs_keys(item.file_path):
+                    ranges_by_file.setdefault(key, []).append(item)
 
         if not ranges_by_file:
             return []
@@ -638,6 +657,41 @@ class DiffImpactPlanner:
             if candidate.exists():
                 return candidate.resolve()
         return (self.repo_root / path).resolve()
+
+    def _diff_file_abs_keys(self, file_path: str) -> List[str]:
+        path = Path(file_path)
+        if path.is_absolute():
+            return [self._abs_key(path)]
+
+        keys: List[str] = []
+        seen: set[str] = set()
+        for base in self._diff_file_roots():
+            candidate = (base / path).resolve()
+            key = self._abs_key(candidate)
+            if key in seen:
+                continue
+            keys.append(key)
+            seen.add(key)
+        return keys
+
+    def _diff_file_roots(self) -> List[Path]:
+        roots: List[Path] = []
+        seen: set[str] = set()
+        for base in (
+            self.git_root,
+            self.repo_root,
+            getattr(self.code_index, "source_root", None),
+            getattr(self.code_index, "project_root", None),
+        ):
+            if base is None:
+                continue
+            root = Path(base).resolve()
+            key = self._abs_key(root)
+            if key in seen:
+                continue
+            roots.append(root)
+            seen.add(key)
+        return roots
 
     def _normalize_file(self, file_path: Path) -> str:
         source_root = getattr(self.code_index, "source_root", None)
