@@ -124,3 +124,38 @@ def test_entry_file_path_hint_selects_matching_bitcode(tmp_path: Path) -> None:
     assert selected == [hinted_bc.resolve()]
     assert plan.unresolved_entries == ["entry"]
     db.close()
+
+
+def test_entry_file_path_hint_disambiguates_duplicate_function_names(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source_root = project
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    db.insert_function("A", "src/pool/normal/A.c", 1, 5)
+    db.insert_function("A", "src/pool/compat/A.c", 1, 5)
+
+    normal_bc = _touch(tmp_path / "bc" / "normal_A.bc")
+    compat_bc = _touch(tmp_path / "bc" / "compat_A.bc")
+    bc_to_src = {
+        normal_bc: source_root / "src" / "pool" / "normal" / "A.c",
+        compat_bc: source_root / "src" / "pool" / "compat" / "A.c",
+    }
+
+    selector = EntryBitcodeSelector(
+        db=db,
+        source_root=source_root,
+        project_root=project,
+        config=BitcodeScopeConfig(mode="entry", entry_depth=1, symbol_closure=False),
+    )
+
+    selected, plan = selector.select(
+        group_name="default",
+        candidate_bcs=[normal_bc, compat_bc],
+        bc_to_src=bc_to_src,
+        entries=[FunctionEntry("A", file_path="src/pool/compat/A.c")],
+    )
+
+    assert selected == [compat_bc.resolve()]
+    selected_sources = [path.replace("\\", "/") for path in plan.selected_sources]
+    assert any(path.endswith("src/pool/compat/A.c") for path in selected_sources)
+    assert not any(path.endswith("src/pool/normal/A.c") for path in selected_sources)
+    db.close()

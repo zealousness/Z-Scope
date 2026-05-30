@@ -1,9 +1,11 @@
 import json
 import subprocess
 import hashlib
+import shutil
 from collections import Counter
 from pathlib import Path
 
+from zscope.retrieval.bitcode_scope import BitcodeScopeConfig
 from zscope.retrieval.build_llvm import BitcodeBuilder
 
 
@@ -44,6 +46,33 @@ def _write_multi_compile_commands(tmp_path: Path, count: int) -> tuple[Path, Pat
     return source_root, compile_commands
 
 
+def _write_exclusive_pool_compile_commands(tmp_path: Path) -> tuple[Path, Path]:
+    source_root = tmp_path / "project"
+    normal_dir = source_root / "src" / "pool" / "normal"
+    compat_dir = source_root / "src" / "pool" / "compat"
+    normal_dir.mkdir(parents=True)
+    compat_dir.mkdir(parents=True)
+    (normal_dir / "A.c").write_text("int A(void) { return 1; }\n", encoding="utf-8")
+    (compat_dir / "A.c").write_text("int A(void) { return 2; }\n", encoding="utf-8")
+    compile_commands = tmp_path / "compile_commands.json"
+    compile_commands.write_text(
+        json.dumps([
+            {
+                "directory": str(source_root),
+                "command": "cc -c src/pool/normal/A.c",
+                "file": "src/pool/normal/A.c",
+            },
+            {
+                "directory": str(source_root),
+                "command": "cc -c src/pool/compat/A.c",
+                "file": "src/pool/compat/A.c",
+            },
+        ]),
+        encoding="utf-8",
+    )
+    return source_root, compile_commands
+
+
 def _fake_bitcode_tools(monkeypatch, calls: list[str]) -> None:
     def fake_run(cmd, *args, **kwargs):
         calls.append(Path(cmd[0]).name)
@@ -70,6 +99,59 @@ def _fake_bitcode_tools(monkeypatch, calls: list[str]) -> None:
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+
+
+def _fake_exclusive_pool_tools(monkeypatch, calls: list[str]) -> None:
+    original_which = shutil.which
+
+    def fake_run(cmd, *args, **kwargs):
+        tool = Path(cmd[0]).name
+        if tool in {"gclang", "get-bc", "llvm-link"}:
+            calls.append(tool)
+        if tool == "gclang":
+            out_path = Path(cmd[cmd.index("-o") + 1])
+            cwd = Path(kwargs.get("cwd") or ".")
+            source_path = next(
+                (
+                    (Path(arg) if Path(arg).is_absolute() else cwd / Path(arg))
+                    for arg in cmd
+                    if Path(str(arg)).suffix.lower() == ".c"
+                ),
+                None,
+            )
+            source_text = str(source_path or "")
+            out_path.write_text(f"object {source_text}\n", encoding="utf-8")
+        elif tool == "get-bc":
+            object_text = Path(cmd[1]).read_text(encoding="utf-8")
+            Path(str(cmd[1]) + ".bc").write_text(f"bitcode {object_text}", encoding="utf-8")
+        elif tool == "llvm-nm":
+            bc_text = Path(cmd[-1]).read_text(encoding="utf-8")
+            if "--undefined-only" in cmd:
+                stdout = ""
+            elif "normal" in bc_text or "compat" in bc_text:
+                stdout = "T A\n"
+            else:
+                stdout = ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+        elif tool == "llvm-link":
+            out_path = Path(cmd[cmd.index("-o") + 1])
+            inputs = [Path(arg) for arg in cmd[cmd.index("-o") + 2:]]
+            input_text = "\n".join(path.read_text(encoding="utf-8") for path in inputs)
+            if "normal" in input_text and "compat" in input_text:
+                raise subprocess.CalledProcessError(
+                    1,
+                    cmd,
+                    stderr="error: Linking globals named 'A': symbol multiply defined!",
+                )
+            out_path.write_text("merged\n", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name: name if Path(str(name)).name == "llvm-nm" else original_which(name),
+    )
 
 
 def _build_once(source_root: Path, compile_commands: Path, output_dir: Path, timeout: int = 1800):
@@ -191,6 +273,46 @@ def test_bitcode_build_compiles_multiple_tus_before_single_link(tmp_path: Path, 
     assert result["default"].exists()
     assert Counter(calls) == Counter({"gclang": 6, "get-bc": 6, "llvm-link": 1})
     assert BitcodeBuilder._build_worker_count(100) <= 8
+
+
+def test_exclusive_pool_duplicate_symbols_split_link_variants(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root, compile_commands = _write_exclusive_pool_compile_commands(tmp_path)
+    output_dir = tmp_path / ".zscope_bc"
+    calls: list[str] = []
+    _fake_exclusive_pool_tools(monkeypatch, calls)
+
+    builder = BitcodeBuilder(
+        source_root=source_root,
+        compile_commands_path=compile_commands,
+        output_dir=output_dir,
+        gclang_path="gclang",
+        get_bc_path="get-bc",
+        llvm_link_path="llvm-link",
+    )
+    result = builder.build(
+        scope_config=BitcodeScopeConfig(
+            mode="full",
+            exclusive_pools=[
+                {"name": "normal", "paths": ["src/pool/normal/**"]},
+                {"name": "compat", "paths": ["src/pool/compat/**"]},
+            ],
+        )
+    )
+
+    assert sorted(result) == ["default__compat", "default__normal"]
+    assert Counter(calls)["llvm-link"] == 2
+    assert (output_dir / "merged_default__normal.bc").exists()
+    assert (output_dir / "merged_default__compat.bc").exists()
+
+    plan = json.loads((output_dir / "bitcode_scope_default.json").read_text(encoding="utf-8"))
+    assert [item["symbol"] for item in plan["duplicate_symbols"]] == ["A"]
+    assert sorted(item["exclusive_pool"] for item in plan["link_variants"]) == ["compat", "normal"]
+    for variant in plan["link_variants"]:
+        text = "\n".join(Path(path).read_text(encoding="utf-8") for path in variant["selected_bcs"])
+        assert not ("normal" in text and "compat" in text)
 
 
 def test_sanitize_rewrites_filename_define_fragments_from_whitespace_split() -> None:

@@ -243,7 +243,13 @@ llms:
     timeout: 180
   smart_model:
     provider: openai
-    base_url: https://api.siliconflow.cn/v1
+    # Single endpoint remains supported with base_url.
+    # Use base_urls to spread requests across compatible gateways with the same key/model.
+    base_urls:
+      - https://api-gateway-1.example.com/v1
+      - https://api-gateway-2.example.com/v1
+    # Optional: hard cap per base_url; 0 or omitted means only load balancing is applied.
+    base_url_rate_limit_per_minute: 60
     models:
       - Qwen/Qwen3-Coder-30B-Instruct
     api_key: ${Z_SCOPE_API_KEY}

@@ -12,15 +12,23 @@ import json
 import logging
 import os
 import hashlib
+import re
 import shlex
 import shutil
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from .bitcode_scope import BitcodeScopeConfig, EntryBitcodeSelector
+from .bitcode_scope import (
+    BitcodeScopeConfig,
+    BitcodeScopePlan,
+    BitcodeSymbols,
+    EntryBitcodeSelector,
+    ExclusivePoolClassifier,
+    LlvmNmSymbolReader,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -149,13 +157,21 @@ class BitcodeBuilder:
             groups = {"default": []}
 
         selector: Optional[EntryBitcodeSelector] = None
+        scope_entry_names = self._entry_names(entry_functions or [])
+        project_root_path = Path(project_root or self.source_root)
         if scope_config and scope_config.mode != "full" and entry_functions and knowledge_db:
             selector = EntryBitcodeSelector(
                 db=knowledge_db,
                 source_root=self.source_root,
-                project_root=Path(project_root or self.source_root),
+                project_root=project_root_path,
                 config=scope_config,
             )
+        pool_classifier = ExclusivePoolClassifier(
+            source_root=self.source_root,
+            project_root=project_root_path,
+            pools=scope_config.exclusive_pools if scope_config else [],
+        )
+        symbol_reader = selector.symbol_reader if selector else LlvmNmSymbolReader()
 
         results: Dict[str, Path] = {}
         # 为每组过滤并合并 bc 文件
@@ -188,7 +204,6 @@ class BitcodeBuilder:
                     bc_to_src=self._bc_to_src,
                     entries=entry_functions or [],
                 )
-                selector.write_plan(plan, self.output_dir)
                 logger.info(
                     "SVF bitcode scope for group '%s': %d/%d .bc selected%s",
                     group_name,
@@ -197,21 +212,232 @@ class BitcodeBuilder:
                     f" (fallback={plan.fallback_reason})" if plan.fallback_reason else "",
                 )
                 group_bcs = selected_bcs
+            elif scope_config and pool_classifier.enabled:
+                plan = self._full_scope_plan(group_name, scope_entry_names, group_bcs)
+            else:
+                plan = None
 
             if not group_bcs:
                 logger.warning("No .bc files selected for group '%s'", group_name)
                 continue
 
-            merged = self._link_all(
-                group_bcs,
-                group_name,
-                previous_selected_bcs=previous_selected_bcs,
+            link_variants, duplicate_symbols = self._exclusive_pool_link_variants(
+                group_name=group_name,
+                bc_files=group_bcs,
+                bc_to_src=self._bc_to_src,
+                pool_classifier=pool_classifier,
+                symbol_reader=symbol_reader,
             )
-            if merged:
-                results[group_name] = merged
+            if plan:
+                plan.duplicate_symbols = duplicate_symbols
+
+            for variant in link_variants:
+                variant_name = str(variant["group_name"])
+                variant_bcs = list(variant["bc_files"])
+                if plan:
+                    plan.link_variants.append(
+                        {
+                            "group_name": variant_name,
+                            "exclusive_pool": variant.get("exclusive_pool", ""),
+                            "selected_bcs": self._format_paths(variant_bcs),
+                            "excluded_pools": list(variant.get("excluded_pools") or []),
+                        }
+                    )
+                merged = self._link_all(
+                    variant_bcs,
+                    variant_name,
+                    previous_selected_bcs=(
+                        previous_selected_bcs if variant_name == group_name else None
+                    ),
+                )
+                if merged:
+                    results[variant_name] = merged
+                    continue
+                if plan:
+                    plan.skipped_variants.append(
+                        {
+                            "group_name": variant_name,
+                            "exclusive_pool": variant.get("exclusive_pool", ""),
+                            "reason": "llvm-link_failed",
+                            "duplicate_symbols": self._duplicate_external_symbols(
+                                variant_bcs,
+                                symbol_reader,
+                            ),
+                        }
+                    )
+
+            if plan:
+                self._write_scope_plan(plan)
 
         self._save_manifest()
         return results
+
+    def _write_scope_plan(self, plan: BitcodeScopePlan) -> None:
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        plan_path = self.output_dir / f"bitcode_scope_{plan.group_name}.json"
+        plan_path.write_text(
+            json.dumps(plan.to_dict(), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    def _full_scope_plan(
+        self,
+        group_name: str,
+        entry_names: Sequence[str],
+        bc_files: Sequence[Path],
+    ) -> BitcodeScopePlan:
+        sources = [self._bc_to_src.get(Path(bc).resolve()) for bc in bc_files]
+        return BitcodeScopePlan(
+            group_name=group_name,
+            mode="full",
+            entries=list(entry_names),
+            selected_sources=self._format_paths(p for p in sources if p),
+            selected_bcs=self._format_paths(bc_files),
+        )
+
+    @staticmethod
+    def _entry_names(entries: Sequence[Any]) -> List[str]:
+        names: List[str] = []
+        seen: set[str] = set()
+        for entry in entries:
+            name = getattr(entry, "function_name", entry)
+            if not name:
+                continue
+            name_text = str(name)
+            if name_text in seen:
+                continue
+            seen.add(name_text)
+            names.append(name_text)
+        return names
+
+    def _exclusive_pool_link_variants(
+        self,
+        *,
+        group_name: str,
+        bc_files: Sequence[Path],
+        bc_to_src: Dict[Path, Path],
+        pool_classifier: ExclusivePoolClassifier,
+        symbol_reader: Any,
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        bc_list = [Path(bc).resolve() for bc in bc_files]
+        if not pool_classifier.enabled:
+            return [
+                {
+                    "group_name": group_name,
+                    "exclusive_pool": "",
+                    "bc_files": bc_list,
+                    "excluded_pools": [],
+                }
+            ], []
+
+        pool_by_bc = {
+            bc: pool_classifier.pool_for_bc(bc, bc_to_src)
+            for bc in bc_list
+        }
+        duplicates = self._duplicate_external_symbols(bc_list, symbol_reader, pool_by_bc)
+        split_pools: set[str] = set()
+        for item in duplicates:
+            pools = {str(provider.get("exclusive_pool") or "") for provider in item["providers"]}
+            concrete_pools = {pool for pool in pools if pool}
+            if len(concrete_pools) > 1:
+                split_pools.update(concrete_pools)
+
+        if len(split_pools) <= 1:
+            exclusive_pool = next(iter({pool for pool in pool_by_bc.values() if pool}), "")
+            return [
+                {
+                    "group_name": group_name,
+                    "exclusive_pool": exclusive_pool if len({p for p in pool_by_bc.values() if p}) == 1 else "",
+                    "bc_files": bc_list,
+                    "excluded_pools": [],
+                }
+            ], duplicates
+
+        variants: List[Dict[str, Any]] = []
+        for pool_name in pool_classifier.ordered_pool_names(split_pools):
+            variant_bcs = [
+                bc for bc in bc_list
+                if not pool_by_bc.get(bc) or pool_by_bc.get(bc) == pool_name
+            ]
+            variants.append(
+                {
+                    "group_name": f"{group_name}__{self._safe_group_suffix(pool_name)}",
+                    "exclusive_pool": pool_name,
+                    "bc_files": variant_bcs,
+                    "excluded_pools": [
+                        pool for pool in pool_classifier.ordered_pool_names(split_pools)
+                        if pool != pool_name
+                    ],
+                }
+            )
+        logger.warning(
+            "SVF group '%s' has cross-pool duplicate external symbols; split into %d variants: %s",
+            group_name,
+            len(variants),
+            ", ".join(str(variant["group_name"]) for variant in variants),
+        )
+        return variants, duplicates
+
+    def _duplicate_external_symbols(
+        self,
+        bc_files: Sequence[Path],
+        symbol_reader: Any,
+        pool_by_bc: Optional[Dict[Path, str]] = None,
+    ) -> List[Dict[str, Any]]:
+        providers: Dict[str, List[Path]] = {}
+        for bc in bc_files:
+            symbols = self._read_symbols(symbol_reader, Path(bc))
+            for symbol in symbols.external_defined:
+                providers.setdefault(symbol, []).append(Path(bc).resolve())
+
+        duplicates: List[Dict[str, Any]] = []
+        for symbol, provider_bcs in sorted(providers.items()):
+            if len(provider_bcs) <= 1:
+                continue
+            duplicates.append(
+                {
+                    "symbol": symbol,
+                    "providers": [
+                        {
+                            "bc": self._format_path(provider),
+                            "source": self._format_path(self._bc_to_src.get(provider)),
+                            "exclusive_pool": (pool_by_bc or {}).get(provider, ""),
+                        }
+                        for provider in provider_bcs
+                    ],
+                }
+            )
+        return duplicates
+
+    @staticmethod
+    def _read_symbols(symbol_reader: Any, bc_path: Path) -> BitcodeSymbols:
+        try:
+            symbols = symbol_reader.read_symbols(bc_path)
+        except Exception as exc:
+            logger.debug("Failed to read bitcode symbols from %s: %s", bc_path, exc)
+            return BitcodeSymbols()
+        if isinstance(symbols, BitcodeSymbols):
+            return symbols
+        return BitcodeSymbols(
+            defined=set(getattr(symbols, "defined", set()) or set()),
+            undefined=set(getattr(symbols, "undefined", set()) or set()),
+            external_defined=set(getattr(symbols, "external_defined", set()) or set()),
+        )
+
+    @staticmethod
+    def _safe_group_suffix(value: str) -> str:
+        suffix = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
+        return suffix.strip("._-") or "pool"
+
+    @staticmethod
+    def _format_path(path: Optional[Path]) -> str:
+        if path is None or not str(path):
+            return ""
+        return Path(path).resolve().as_posix()
+
+    @classmethod
+    def _format_paths(cls, paths: Iterable[Path]) -> List[str]:
+        return sorted({cls._format_path(Path(path)) for path in paths if str(path)})
 
     def _load_manifest(self) -> Dict[str, Any]:
         if not self._manifest_path.exists():

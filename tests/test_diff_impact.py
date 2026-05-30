@@ -110,8 +110,8 @@ def test_collect_changed_line_ranges_runs_git_diff_from_git_root(tmp_path: Path,
     project_root.mkdir()
     calls = []
 
-    def fake_run(cmd, capture_output, text, check):
-        calls.append(cmd)
+    def fake_run(cmd, capture_output, text, encoding=None, errors=None, check=False):
+        calls.append((cmd, encoding, errors))
         if cmd[3:] == ["rev-parse", "--show-toplevel"]:
             return SimpleNamespace(returncode=0, stdout=str(git_root), stderr="")
         return SimpleNamespace(
@@ -135,7 +135,8 @@ def test_collect_changed_line_ranges_runs_git_diff_from_git_root(tmp_path: Path,
 
     ranges = planner._collect_changed_line_ranges()
 
-    assert calls[-1][0:3] == ["git", "-C", str(git_root)]
+    assert calls[-1][0][0:3] == ["git", "-C", str(git_root)]
+    assert calls[-1][1:] == ("utf-8", "replace")
     assert [(item.file_path, item.start_line, item.end_line) for item in ranges] == [
         ("ssp/src/api.c", 2, 2)
     ]
@@ -149,8 +150,8 @@ def test_explicit_diff_repo_root_takes_precedence_over_source_root_git(tmp_path:
     project_root.mkdir()
     calls = []
 
-    def fake_run(cmd, capture_output, text, check):
-        calls.append(cmd)
+    def fake_run(cmd, capture_output, text, encoding=None, errors=None, check=False):
+        calls.append((cmd, encoding, errors))
         cwd = Path(cmd[2])
         if cmd[3:] == ["rev-parse", "--show-toplevel"]:
             stdout = str(source_root if cwd == source_root else git_root)
@@ -176,7 +177,8 @@ def test_explicit_diff_repo_root_takes_precedence_over_source_root_git(tmp_path:
 
     assert planner.git_root == git_root.resolve()
     planner._collect_changed_line_ranges()
-    assert calls[-1][0:3] == ["git", "-C", str(git_root)]
+    assert calls[-1][0][0:3] == ["git", "-C", str(git_root)]
+    assert calls[-1][1:] == ("utf-8", "replace")
 
 
 def test_seeded_discovery_keeps_all_external_entries(tmp_path: Path):

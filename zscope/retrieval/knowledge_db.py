@@ -597,11 +597,19 @@ class KnowledgeDB:
             rows,
         )
 
-    def get_function(self, name: str) -> Optional[Dict[str, Any]]:
-        row = self._conn.execute(
-            "SELECT * FROM functions WHERE name = ? AND is_declaration = 0 LIMIT 1", (name,)
-        ).fetchone()
-        return dict(row) if row else None
+    def get_function(self, name: str, file_path: str = "") -> Optional[Dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM functions WHERE name = ? AND is_declaration = 0 "
+            "ORDER BY file_path, start_line",
+            (name,),
+        ).fetchall()
+        if not rows:
+            return None
+        if file_path:
+            for row in rows:
+                if self._paths_match_hint(str(row["file_path"] or ""), file_path):
+                    return dict(row)
+        return dict(rows[0])
 
     def get_all_functions(self) -> Dict[str, Dict[str, Any]]:
         rows = self._conn.execute(
@@ -686,14 +694,44 @@ class KnowledgeDB:
         return [{"name": r["caller_name"], "filename": r["caller_file"],
                  "lineNumber": r["call_line"]} for r in rows]
 
-    def get_callees(self, func_name: str, limit: int = 30) -> List[Dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT DISTINCT callee_name, callee_file, call_line, call_type FROM call_edges "
-            "WHERE caller_name = ? LIMIT ?",
-            (func_name, limit),
-        ).fetchall()
+    def get_callees(
+        self,
+        func_name: str,
+        limit: int = 30,
+        caller_file: str = "",
+    ) -> List[Dict[str, Any]]:
+        if caller_file:
+            all_rows = self._conn.execute(
+                "SELECT DISTINCT callee_name, callee_file, call_line, call_type, caller_file "
+                "FROM call_edges WHERE caller_name = ?",
+                (func_name,),
+            ).fetchall()
+            rows = [
+                row for row in all_rows
+                if self._paths_match_hint(str(row["caller_file"] or ""), caller_file)
+            ][:limit]
+        else:
+            rows = self._conn.execute(
+                "SELECT DISTINCT callee_name, callee_file, call_line, call_type FROM call_edges "
+                "WHERE caller_name = ? LIMIT ?",
+                (func_name, limit),
+            ).fetchall()
         return [{"name": r["callee_name"], "filename": r["callee_file"],
                  "lineNumber": r["call_line"], "call_type": r["call_type"]} for r in rows]
+
+    @staticmethod
+    def _paths_match_hint(stored_path: str, hint_path: str) -> bool:
+        stored = str(stored_path or "").replace("\\", "/").strip()
+        hint = str(hint_path or "").replace("\\", "/").strip()
+        if not stored or not hint:
+            return False
+        stored = stored.lstrip("./")
+        hint = hint.lstrip("./")
+        return (
+            stored == hint
+            or stored.endswith(f"/{hint}")
+            or hint.endswith(f"/{stored}")
+        )
 
     def find_callers_without_callee(
         self,

@@ -205,11 +205,14 @@ def main(
             llm_cfg = zscope_config.llms.get("default") or next(iter(zscope_config.llms.values()))
             llm_client = LLMClient(
                 api_key=llm_cfg.api_key,
-                base_url=llm_cfg.base_url,
+                base_url=getattr(llm_cfg, "base_urls", None) or llm_cfg.base_url,
                 models=llm_cfg.models,
                 timeout=llm_cfg.timeout,
                 max_retries=llm_cfg.max_retries,
                 max_tokens=llm_cfg.max_tokens,
+                base_url_rate_limit_per_minute=getattr(
+                    llm_cfg, "base_url_rate_limit_per_minute", 0
+                ),
             )
             generated, llm_stats = filter_user_config_rows_with_llm(
                 generated,
@@ -307,11 +310,14 @@ def main(
             
             llm_client = LLMClient(
                 api_key=llm_cfg.api_key,
-                base_url=llm_cfg.base_url,
+                base_url=getattr(llm_cfg, "base_urls", None) or llm_cfg.base_url,
                 models=llm_cfg.models,
                 timeout=llm_cfg.timeout,
                 max_retries=llm_cfg.max_retries,
                 max_tokens=llm_cfg.max_tokens,
+                base_url_rate_limit_per_minute=getattr(
+                    llm_cfg, "base_url_rate_limit_per_minute", 0
+                ),
             )
             db_dir = (
                 Path(zscope_config.analysis.user_config_db)

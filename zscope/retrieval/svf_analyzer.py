@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -36,6 +37,7 @@ class SvfAnalyzer:
         fallback: str = "full",
         always_include: Optional[List[str]] = None,
         symbol_closure: bool = True,
+        exclusive_pools: Optional[List[Dict[str, Any]]] = None,
     ):
         self._db = db
         self._svf_bin_dir = svf_bin_dir
@@ -51,6 +53,7 @@ class SvfAnalyzer:
             fallback=fallback,
             always_include=list(always_include or []),
             symbol_closure=symbol_closure,
+            exclusive_pools=list(exclusive_pools or []),
         )
         self._results: Dict[str, SvfResult] = {}
 
@@ -112,16 +115,12 @@ class SvfAnalyzer:
                 llvm_link_path=self._llvm_link,
                 timeout=self._timeout,
             )
-            if normalized_entries and self._scope_config.mode != "full":
-                bc_paths = builder.build(
-                    groups=groups,
-                    scope_config=self._scope_config,
-                    entry_functions=scope_entries,
-                    knowledge_db=self._db,
-                    project_root=project_root,
-                )
-            else:
-                bc_paths = builder.build(groups=groups)
+            bc_paths = self._build_bitcode(
+                builder,
+                groups=groups,
+                scope_entries=scope_entries,
+                project_root=project_root,
+            )
             failed_tus = list(getattr(builder, "failed_tus", []))
             bitcode_complete = not failed_tus
             if failed_tus:
@@ -215,6 +214,33 @@ class SvfAnalyzer:
             logger.error("SVF analysis failed: %s", exc)
             return False
 
+    def _build_bitcode(
+        self,
+        builder: Any,
+        *,
+        groups: Dict[str, List[str]],
+        scope_entries: Sequence[Any],
+        project_root: Path,
+    ) -> Dict[str, Path]:
+        """Call BitcodeBuilder with scope kwargs when the implementation supports them."""
+        try:
+            params = inspect.signature(builder.build).parameters
+        except (TypeError, ValueError):
+            params = {}
+        supports_scope_kwargs = (
+            "scope_config" in params
+            or any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values())
+        )
+        if not supports_scope_kwargs:
+            return builder.build(groups=groups)
+        return builder.build(
+            groups=groups,
+            scope_config=self._scope_config,
+            entry_functions=scope_entries,
+            knowledge_db=self._db,
+            project_root=project_root,
+        )
+
     @staticmethod
     def _load_groups_config(project_root: Path, svf_groups_config: str) -> Dict[str, List[str]]:
         groups: Dict[str, List[str]] = {"default": []}
@@ -251,6 +277,7 @@ class SvfAnalyzer:
             "fallback": self._scope_config.fallback,
             "always_include": self._scope_config.always_include,
             "symbol_closure": self._scope_config.symbol_closure,
+            "exclusive_pools": self._scope_config.exclusive_pools,
         }
 
     @staticmethod
