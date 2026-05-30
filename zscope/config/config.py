@@ -126,6 +126,7 @@ class IndexingConfig:
     svf_always_include: List[str] = field(default_factory=list)
     svf_symbol_closure: bool = True
     svf_exclusive_pools: List[Dict[str, Any]] = field(default_factory=list)
+    svf_shared_pools: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -461,6 +462,7 @@ class ConfigLoader:
                 svf_always_include=indexing_data.get("svf_always_include", []) or [],
                 svf_symbol_closure=indexing_data.get("svf_symbol_closure", True),
                 svf_exclusive_pools=indexing_data.get("svf_exclusive_pools", []) or [],
+                svf_shared_pools=indexing_data.get("svf_shared_pools", []) or [],
             )
 
             # Analysis config
