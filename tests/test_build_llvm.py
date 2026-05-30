@@ -391,6 +391,104 @@ def test_unclassified_duplicate_provider_becomes_default_variant_and_pulls_commo
     assert by_pool["lite"]["dependency_closure_added"] == [common_bc.resolve().as_posix()]
 
 
+def test_shared_pool_dependency_is_reused_except_for_declared_conflict(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "project"
+    compile_commands = tmp_path / "compile_commands.json"
+    compile_commands.write_text("[]", encoding="utf-8")
+    normal_bc = tmp_path / "bc" / "normal.bc"
+    lite_bc = tmp_path / "bc" / "lite.bc"
+    liteos_bc = tmp_path / "bc" / "liteos.bc"
+    generic_bc = tmp_path / "bc" / "generic.bc"
+    for bc in (normal_bc, lite_bc, liteos_bc, generic_bc):
+        bc.parent.mkdir(parents=True, exist_ok=True)
+        bc.write_text(bc.stem, encoding="utf-8")
+
+    class FakeSymbolReader:
+        def read_symbols(self, bc_path: Path) -> BitcodeSymbols:
+            if bc_path.name in {"normal.bc", "lite.bc", "liteos.bc"}:
+                return BitcodeSymbols(
+                    defined={"A"},
+                    undefined={"helper"},
+                    external_defined={"A"},
+                )
+            if bc_path.name == "generic.bc":
+                return BitcodeSymbols(
+                    defined={"helper"},
+                    undefined=set(),
+                    external_defined={"helper"},
+                )
+            return BitcodeSymbols()
+
+    builder = BitcodeBuilder(
+        source_root=source_root,
+        compile_commands_path=compile_commands,
+        output_dir=tmp_path / ".zscope_bc",
+    )
+    bc_to_src = {
+        normal_bc.resolve(): source_root / "src/pool/normal/v.c",
+        lite_bc.resolve(): source_root / "src/pool/lite/v.c",
+        liteos_bc.resolve(): source_root / "src/pool/liteos/v.c",
+        generic_bc.resolve(): source_root / "src/pool/generic/helper.c",
+    }
+    builder._bc_to_src = dict(bc_to_src)
+
+    variants, _duplicates = builder._exclusive_pool_link_variants(
+        group_name="default",
+        bc_files=[normal_bc, lite_bc, liteos_bc],
+        all_bcs=[normal_bc, lite_bc, liteos_bc, generic_bc],
+        bc_to_src=bc_to_src,
+        pool_classifier=ExclusivePoolClassifier(
+            source_root=source_root,
+            project_root=source_root,
+            pools=[
+                {"name": "normal", "paths": [".*/normal/.*"]},
+                {"name": "lite", "paths": [".*/lite/.*"]},
+                {"name": "liteos", "paths": [".*/liteos/.*"]},
+            ],
+            shared_pools=[
+                {
+                    "name": "generic",
+                    "paths": [".*/generic/.*"],
+                    "conflicts_with": ["liteos"],
+                }
+            ],
+        ),
+        symbol_reader=FakeSymbolReader(),
+    )
+
+    by_pool = {variant["exclusive_pool"]: variant for variant in variants}
+    assert set(by_pool) == {"normal", "lite", "liteos"}
+    assert {Path(path).name for path in by_pool["normal"]["bc_files"]} == {
+        "normal.bc",
+        "generic.bc",
+    }
+    assert {Path(path).name for path in by_pool["lite"]["bc_files"]} == {
+        "lite.bc",
+        "generic.bc",
+    }
+    assert {Path(path).name for path in by_pool["liteos"]["bc_files"]} == {"liteos.bc"}
+    assert by_pool["normal"]["shared_pools"] == ["generic"]
+    assert by_pool["lite"]["shared_pools"] == ["generic"]
+    assert by_pool["liteos"]["shared_pools"] == []
+    assert by_pool["liteos"]["excluded_conflicting_bcs"] == [generic_bc.resolve().as_posix()]
+
+
+def test_path_can_have_exclusive_and_shared_pool_metadata(tmp_path: Path) -> None:
+    source_root = tmp_path / "project"
+    src = source_root / "src" / "pool" / "lite" / "generic" / "helper.c"
+    classifier = ExclusivePoolClassifier(
+        source_root=source_root,
+        project_root=source_root,
+        pools=[{"name": "lite", "paths": [".*/lite/.*"]}],
+        shared_pools=[{"name": "generic", "paths": [".*/generic/.*"]}],
+    )
+
+    assert classifier.pool_for_source(src) == "lite"
+    assert classifier.shared_pools_for_source(src) == ["generic"]
+
+
 def test_sanitize_rewrites_filename_define_fragments_from_whitespace_split() -> None:
     args = [
         "cc",

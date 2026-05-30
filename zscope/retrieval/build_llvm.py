@@ -171,6 +171,7 @@ class BitcodeBuilder:
             source_root=self.source_root,
             project_root=project_root_path,
             pools=scope_config.exclusive_pools if scope_config else [],
+            shared_pools=scope_config.shared_pools if scope_config else [],
         )
         symbol_reader = selector.symbol_reader if selector else LlvmNmSymbolReader()
 
@@ -242,10 +243,14 @@ class BitcodeBuilder:
                         {
                             "group_name": variant_name,
                             "exclusive_pool": variant.get("exclusive_pool", ""),
+                            "shared_pools": list(variant.get("shared_pools") or []),
                             "selected_bcs": self._format_paths(variant_bcs),
                             "excluded_pools": list(variant.get("excluded_pools") or []),
                             "dependency_closure_added": list(
                                 variant.get("dependency_closure_added") or []
+                            ),
+                            "excluded_conflicting_bcs": list(
+                                variant.get("excluded_conflicting_bcs") or []
                             ),
                         }
                     )
@@ -342,6 +347,14 @@ class BitcodeBuilder:
             bc: pool_classifier.pool_for_bc(bc, bc_to_src)
             for bc in all_bc_list
         }
+        shared_pools_by_bc = {
+            bc: pool_classifier.shared_pools_for_bc(bc, bc_to_src)
+            for bc in all_bc_list
+        }
+        shared_conflicts_by_bc = {
+            bc: pool_classifier.shared_conflicts_for_bc(bc, bc_to_src)
+            for bc in all_bc_list
+        }
         symbols_by_bc = {
             bc: self._read_symbols(symbol_reader, bc)
             for bc in all_bc_list
@@ -354,6 +367,7 @@ class BitcodeBuilder:
             bc_list,
             symbol_reader,
             effective_pool_by_bc,
+            shared_pools_by_bc=shared_pools_by_bc,
             symbols_by_bc=symbols_by_bc,
         )
         split_pools: set[str] = set()
@@ -387,6 +401,7 @@ class BitcodeBuilder:
                     bc,
                     pool_name,
                     pool_by_bc,
+                    shared_conflicts_by_bc,
                     conflict_provider_bcs,
                 )
             ]
@@ -395,19 +410,36 @@ class BitcodeBuilder:
                 all_bcs=all_bc_list,
                 pool_name=pool_name,
                 pool_by_bc=pool_by_bc,
+                shared_pools_by_bc=shared_pools_by_bc,
+                shared_conflicts_by_bc=shared_conflicts_by_bc,
                 conflict_provider_bcs=conflict_provider_bcs,
                 symbols_by_bc=symbols_by_bc,
+            )
+            variant_shared_pools = sorted(
+                {
+                    shared_pool
+                    for bc in variant_bcs
+                    for shared_pool in shared_pools_by_bc.get(Path(bc).resolve(), [])
+                }
             )
             variants.append(
                 {
                     "group_name": f"{group_name}__{self._safe_group_suffix(pool_name)}",
                     "exclusive_pool": pool_name,
+                    "shared_pools": variant_shared_pools,
                     "bc_files": variant_bcs,
                     "excluded_pools": [
                         pool for pool in self._ordered_effective_pools(pool_classifier, split_pools)
                         if pool != pool_name
                     ],
                     "dependency_closure_added": dependency_added,
+                    "excluded_conflicting_bcs": self._excluded_conflicting_bcs(
+                        all_bc_list,
+                        pool_name,
+                        pool_by_bc,
+                        shared_conflicts_by_bc,
+                        conflict_provider_bcs,
+                    ),
                 }
             )
         logger.warning(
@@ -425,6 +457,8 @@ class BitcodeBuilder:
         all_bcs: Sequence[Path],
         pool_name: str,
         pool_by_bc: Dict[Path, str],
+        shared_pools_by_bc: Dict[Path, List[str]],
+        shared_conflicts_by_bc: Dict[Path, set[str]],
         conflict_provider_bcs: set[Path],
         symbols_by_bc: Dict[Path, BitcodeSymbols],
     ) -> tuple[List[Path], List[str]]:
@@ -436,6 +470,7 @@ class BitcodeBuilder:
                 Path(bc).resolve(),
                 pool_name,
                 pool_by_bc,
+                shared_conflicts_by_bc,
                 conflict_provider_bcs,
             )
         ]
@@ -450,6 +485,7 @@ class BitcodeBuilder:
                     provider,
                     pool_name,
                     pool_by_bc,
+                    shared_pools_by_bc,
                 ),
             )
 
@@ -480,28 +516,57 @@ class BitcodeBuilder:
         bc: Path,
         pool_name: str,
         pool_by_bc: Dict[Path, str],
+        shared_pools_by_bc: Dict[Path, List[str]],
     ) -> tuple[int, str]:
         configured_pool = pool_by_bc.get(Path(bc).resolve(), "")
         if configured_pool == pool_name:
             return (0, Path(bc).as_posix())
-        if not configured_pool:
+        if shared_pools_by_bc.get(Path(bc).resolve(), []):
             return (1, Path(bc).as_posix())
-        return (2, Path(bc).as_posix())
+        if not configured_pool:
+            return (2, Path(bc).as_posix())
+        return (3, Path(bc).as_posix())
 
     def _bc_allowed_in_effective_pool(
         self,
         bc: Path,
         pool_name: str,
         pool_by_bc: Dict[Path, str],
+        shared_conflicts_by_bc: Dict[Path, set[str]],
         conflict_provider_bcs: set[Path],
     ) -> bool:
         bc = Path(bc).resolve()
         configured_pool = pool_by_bc.get(bc, "")
         if configured_pool:
             return configured_pool == pool_name
+        if pool_name in shared_conflicts_by_bc.get(bc, set()):
+            return False
         if pool_name == self._DEFAULT_EXCLUSIVE_POOL:
             return True
         return bc not in conflict_provider_bcs
+
+    def _excluded_conflicting_bcs(
+        self,
+        all_bcs: Sequence[Path],
+        pool_name: str,
+        pool_by_bc: Dict[Path, str],
+        shared_conflicts_by_bc: Dict[Path, set[str]],
+        conflict_provider_bcs: set[Path],
+    ) -> List[str]:
+        excluded = []
+        for bc in all_bcs:
+            resolved = Path(bc).resolve()
+            if self._bc_allowed_in_effective_pool(
+                resolved,
+                pool_name,
+                pool_by_bc,
+                shared_conflicts_by_bc,
+                conflict_provider_bcs,
+            ):
+                continue
+            if pool_name in shared_conflicts_by_bc.get(resolved, set()):
+                excluded.append(resolved)
+        return self._format_paths(excluded)
 
     def _effective_exclusive_pool(self, pool_name: str) -> str:
         return pool_name or self._DEFAULT_EXCLUSIVE_POOL
@@ -527,6 +592,7 @@ class BitcodeBuilder:
         symbol_reader: Any,
         pool_by_bc: Optional[Dict[Path, str]] = None,
         *,
+        shared_pools_by_bc: Optional[Dict[Path, List[str]]] = None,
         symbols_by_bc: Optional[Dict[Path, BitcodeSymbols]] = None,
     ) -> List[Dict[str, Any]]:
         providers: Dict[str, List[Path]] = {}
@@ -552,6 +618,7 @@ class BitcodeBuilder:
                             "bc": self._format_path(provider),
                             "source": self._format_path(self._bc_to_src.get(provider)),
                             "exclusive_pool": (pool_by_bc or {}).get(provider, ""),
+                            "shared_pools": list((shared_pools_by_bc or {}).get(provider, [])),
                         }
                         for provider in provider_bcs
                     ],

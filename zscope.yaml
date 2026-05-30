@@ -142,6 +142,10 @@ indexing:                                  # 代码索引和确定性后端配�
   #     paths: ["src/pool/normal/**"]
   #   - name: compat
   #     paths: ["src/pool/compat/**"]
+  # svf_shared_pools:                      # 可选：可被多个 SVF 互斥 variant 拉取的共享依赖池
+  #   - name: generic
+  #     paths: ["src/pool/generic/**"]
+  #     conflicts_with: ["liteos"]          # 可选：声明该共享池不能被哪些互斥池拉入
 
 analysis:                                  # 分析流程和缓存行为配置
   max_recursion_depth: 3                   # 函数调用递归分析最大深度

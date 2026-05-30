@@ -38,6 +38,7 @@ class SvfAnalyzer:
         always_include: Optional[List[str]] = None,
         symbol_closure: bool = True,
         exclusive_pools: Optional[List[Dict[str, Any]]] = None,
+        shared_pools: Optional[List[Dict[str, Any]]] = None,
     ):
         self._db = db
         self._svf_bin_dir = svf_bin_dir
@@ -54,6 +55,7 @@ class SvfAnalyzer:
             always_include=list(always_include or []),
             symbol_closure=symbol_closure,
             exclusive_pools=list(exclusive_pools or []),
+            shared_pools=list(shared_pools or []),
         )
         self._results: Dict[str, SvfResult] = {}
 
@@ -278,6 +280,7 @@ class SvfAnalyzer:
             "always_include": self._scope_config.always_include,
             "symbol_closure": self._scope_config.symbol_closure,
             "exclusive_pools": self._scope_config.exclusive_pools,
+            "shared_pools": self._scope_config.shared_pools,
         }
 
     @staticmethod
