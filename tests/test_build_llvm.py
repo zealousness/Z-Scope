@@ -5,7 +5,11 @@ import shutil
 from collections import Counter
 from pathlib import Path
 
-from zscope.retrieval.bitcode_scope import BitcodeScopeConfig
+from zscope.retrieval.bitcode_scope import (
+    BitcodeScopeConfig,
+    BitcodeSymbols,
+    ExclusivePoolClassifier,
+)
 from zscope.retrieval.build_llvm import BitcodeBuilder
 
 
@@ -313,6 +317,78 @@ def test_exclusive_pool_duplicate_symbols_split_link_variants(
     for variant in plan["link_variants"]:
         text = "\n".join(Path(path).read_text(encoding="utf-8") for path in variant["selected_bcs"])
         assert not ("normal" in text and "compat" in text)
+
+
+def test_unclassified_duplicate_provider_becomes_default_variant_and_pulls_common_deps(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "project"
+    compile_commands = tmp_path / "compile_commands.json"
+    compile_commands.write_text("[]", encoding="utf-8")
+    normal_bc = tmp_path / "bc" / "normal.bc"
+    compat_bc = tmp_path / "bc" / "compat.bc"
+    common_bc = tmp_path / "bc" / "common.bc"
+    for bc in (normal_bc, compat_bc, common_bc):
+        bc.parent.mkdir(parents=True, exist_ok=True)
+        bc.write_text(bc.stem, encoding="utf-8")
+
+    class FakeSymbolReader:
+        def read_symbols(self, bc_path: Path) -> BitcodeSymbols:
+            if bc_path.name == "normal.bc":
+                return BitcodeSymbols(
+                    defined={"A"},
+                    undefined={"helper"},
+                    external_defined={"A"},
+                )
+            if bc_path.name == "compat.bc":
+                return BitcodeSymbols(
+                    defined={"A"},
+                    undefined={"helper"},
+                    external_defined={"A"},
+                )
+            if bc_path.name == "common.bc":
+                return BitcodeSymbols(
+                    defined={"helper"},
+                    undefined=set(),
+                    external_defined={"helper"},
+                )
+            return BitcodeSymbols()
+
+    builder = BitcodeBuilder(
+        source_root=source_root,
+        compile_commands_path=compile_commands,
+        output_dir=tmp_path / ".zscope_bc",
+    )
+    bc_to_src = {
+        normal_bc.resolve(): source_root / "ssp/src/ose/vfs/v_vfs/src/normal/v.c",
+        compat_bc.resolve(): source_root / "ssp/src/ose/vfs/v_vfs/src/lite/v.c",
+        common_bc.resolve(): source_root / "ssp/src/ose/vfs/common/helper.c",
+    }
+    builder._bc_to_src = dict(bc_to_src)
+
+    variants, duplicates = builder._exclusive_pool_link_variants(
+        group_name="default",
+        bc_files=[normal_bc, compat_bc],
+        all_bcs=[normal_bc, compat_bc, common_bc],
+        bc_to_src=bc_to_src,
+        pool_classifier=ExclusivePoolClassifier(
+            source_root=source_root,
+            project_root=source_root,
+            pools=[{"name": "lite", "paths": [".*/lite/.*"]}],
+        ),
+        symbol_reader=FakeSymbolReader(),
+    )
+
+    assert [item["symbol"] for item in duplicates] == ["A"]
+    assert [variant["exclusive_pool"] for variant in variants] == ["default", "lite"]
+
+    by_pool = {variant["exclusive_pool"]: variant for variant in variants}
+    default_names = {Path(path).name for path in by_pool["default"]["bc_files"]}
+    lite_names = {Path(path).name for path in by_pool["lite"]["bc_files"]}
+    assert default_names == {"normal.bc", "common.bc"}
+    assert lite_names == {"compat.bc", "common.bc"}
+    assert by_pool["default"]["dependency_closure_added"] == [common_bc.resolve().as_posix()]
+    assert by_pool["lite"]["dependency_closure_added"] == [common_bc.resolve().as_posix()]
 
 
 def test_sanitize_rewrites_filename_define_fragments_from_whitespace_split() -> None:
