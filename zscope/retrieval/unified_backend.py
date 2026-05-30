@@ -37,6 +37,7 @@ class UnifiedBackend(CodeBackend):
         svf_fallback: str = "full",
         svf_always_include: Optional[List[str]] = None,
         svf_symbol_closure: bool = True,
+        svf_exclusive_pools: Optional[List[Dict[str, Any]]] = None,
     ):
         self._clang = ClangBackend(
             clangd_path=clangd_path,
@@ -57,6 +58,7 @@ class UnifiedBackend(CodeBackend):
             fallback=svf_fallback,
             always_include=list(svf_always_include or []),
             symbol_closure=svf_symbol_closure,
+            exclusive_pools=list(svf_exclusive_pools or []),
         )
         self._svf_groups_config = svf_groups_config
         self._svf: Optional[SvfAnalyzer] = None

@@ -200,6 +200,8 @@ class DiffImpactPlanner:
                 ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=False,
             )
         except OSError:
@@ -223,7 +225,14 @@ class DiffImpactPlanner:
             "--",
         ]
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
         except OSError as exc:
             raise RuntimeError(f"Failed to run git diff in {self.git_root}: {exc}") from exc
         if proc.returncode != 0:

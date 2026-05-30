@@ -41,11 +41,14 @@ class RuleDrivenAnalyzer:
         for name, llm_cfg in config.llms.items():
             self.llm_clients[name] = LLMClient(
                 api_key=llm_cfg.api_key,
-                base_url=llm_cfg.base_url,
+                base_url=getattr(llm_cfg, "base_urls", None) or llm_cfg.base_url,
                 models=llm_cfg.models,
                 timeout=llm_cfg.timeout,
                 max_retries=llm_cfg.max_retries,
                 max_tokens=llm_cfg.max_tokens,
+                base_url_rate_limit_per_minute=getattr(
+                    llm_cfg, "base_url_rate_limit_per_minute", 0
+                ),
             )
         self.report_generator = ReportGenerator(config.project.project_root)
 
