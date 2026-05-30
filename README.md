@@ -395,6 +395,8 @@ Workflow 选择是运行时行为，不是 YAML 配置项。普通 `zscope -c zs
 
 `--diff-base` 会进入 v1.1 的差异影响扫描模式。`DiffImpactPlanner` 调用 `git diff --unified=0` 获取新版本行号，把变更行映射到当前 `CodeIndex` 中的函数，再沿反向调用图寻找公共 API、通信入口、线程入口或用户输入点。如果没有可证明的外部入口，系统会生成合成内部入口，但会在 `custom_prompt` 和 `diff_focus.fallback_reasons` 中要求 Agent 先验证可达性。
 
+默认情况下，diff 扫描会从 `project.source_root` 自动推断 git worktree 根目录。若 `source_root` 是仓库子目录且 diff 路径带有上层目录前缀，可用 `--diff-repo-root /path/to/git/root` 显式指定执行 `git diff` 的仓库根。
+
 该模式会写出项目根目录的 `entry_functions_diff.json`，并把每个入口的 `diff_focus` 注入 Agent 上下文。批量报告会给 issue 和 audit observation 标注 `diff_relevance`：`incremental` 表示直接落在变更函数、变更行或受影响路径上；`existing` 表示本轮入口发现到的存量问题；`unknown` 表示需要人工确认变更影响。`--diff-base` 不能与 `--resume` 或 `--maintain` 同时使用。
 
 #### 用户配置工作簿与自动推断
@@ -441,6 +443,8 @@ zscope -c zscope.yaml --discover-entries
 # 差异影响扫描：根据 git diff 自动选择受影响入口
 # 生成 entry_functions_diff.json，并在报告中标注增量/存量/影响待确认
 zscope -c zscope.yaml --diff-base origin/main --diff-head HEAD
+# 若 source_root 是仓库子目录，可显式指定 git worktree 根
+zscope -c zscope.yaml --diff-base origin/main --diff-head HEAD --diff-repo-root /path/to/git/root
 
 # 推断/刷新人工可审阅的用户配置工作簿，然后退出
 zscope -c zscope.yaml --infer-user-config

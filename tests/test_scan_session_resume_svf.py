@@ -46,6 +46,16 @@ def test_diff_repo_root_defaults_to_source_root(tmp_path: Path) -> None:
     assert runner.diff_repo_root == source_root.resolve()
 
 
+def test_diff_repo_root_can_be_overridden(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    git_root = tmp_path / "repo"
+    git_root.mkdir()
+
+    runner = ScanSessionRunner(cfg, diff_base="base", diff_repo_root=git_root)
+
+    assert runner.diff_repo_root == git_root.resolve()
+
+
 def test_resume_svf_scope_uses_original_entry_list(tmp_path: Path) -> None:
     runner = ScanSessionRunner(_config(tmp_path), resume=True)
     captured = {}
