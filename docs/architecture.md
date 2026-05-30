@@ -1,4 +1,4 @@
-# Z-SCOPE 架构文档（v1.0）
+# Z-SCOPE 架构文档（v1.1）
 
 ## 1. 架构定位
 
@@ -12,7 +12,7 @@ Z-SCOPE 的定位可以归纳为三个层面：
 |------|------|
 | 工具属性 | 面向 C/C++ 安全审计的本地化 SAST 与 AI 验证平台 |
 | 架构属性 | 事实平面、证据平面、智能体平面、反馈平面分层解耦 |
-| 使用属性 | 支持批量扫描、增量维护、断点续扫、SARIF 告警复核与导出、WebUI 与 MCP 接入 |
+| 使用属性 | 支持批量扫描、diff impact 变更审计、增量维护、断点续扫、SARIF 告警复核与导出、WebUI 与 MCP 接入 |
 
 面向的主要问题域：
 
@@ -27,7 +27,7 @@ Z-SCOPE 的定位可以归纳为三个层面：
 
 Z-SCOPE 的架构目标可以概括为四句话：
 
-1. **高检出**：多个来源并行产生候选，包括 Clang/Joern/SVF 后端事实、通用 C 规则、跨函数图候选、入口发现、语义快照和 LLM 挖掘。
+1. **高检出**：多个来源并行产生候选，包括 Clang/Joern/SVF 后端事实、通用 C 规则、跨函数图候选、入口发现、diff impact 受影响入口、语义快照和 LLM 挖掘。
 2. **低误报**：每个候选必须携带 source/sink、路径、对象或锁、正反证据、稳定去重键，并经过 Validator、评分、用户反馈和报告分层。
 3. **可恢复**：所有关键中间产物和最终报告落地到 SQLite/JSON，支持断点续扫、增量维护和失败后的继续分析。
 4. **可演进**：后端、Agent、Skill、Workflow、MCP 工具和 Web 反馈均是边界清晰的可插拔模块。
@@ -46,6 +46,7 @@ flowchart TB
     Ingress["CLI<br/>WebUI<br/>MCP<br/>SARIF"]
     Config["ConfigLoader<br/>zscope.yaml + ENV"]
     Workflow["WorkflowRunner<br/>default / resume / maintain"]
+    DiffImpact["DiffImpactPlanner<br/>git diff → impacted entries"]
 
     subgraph FactPlane["事实平面"]
         Index["CodeIndex<br/>统一查询接口"]
@@ -59,6 +60,7 @@ flowchart TB
     subgraph EvidencePlane["证据平面"]
         Candidate["CandidatePipeline<br/>rules + graph + backend signals"]
         Ledger["CandidateLedger<br/>dedup + merge"]
+        SemanticDedup["Semantic report dedup<br/>programmatic + optional LLM"]
     end
 
     Budget["RiskBudgetPlanner<br/>effective_budget"]
@@ -75,9 +77,10 @@ flowchart TB
     Tools["ToolsRuntime<br/>ToolPolicy + agent tools"]
     Snapshot["SnapshotStore<br/>snapshots + reports"]
     UserCfg["UserConfigStore<br/>user_config.xlsx + feedback state"]
-    Report["ReportAssembler<br/>views / SARIF / metadata"]
+    Report["ReportAssembler<br/>views / semantic dedup / SARIF / metadata"]
 
     Ingress --> Config --> Workflow
+    Workflow --> DiffImpact --> Candidate
     Workflow --> Index
     Index --> Regex --> KDB
     Index --> Clang --> KDB
@@ -89,6 +92,7 @@ flowchart TB
     Snapshot --> Candidate
     UserCfg --> Candidate
     Candidate --> Ledger
+    Ledger --> SemanticDedup
     Candidate --> Budget
     Budget --> Analyzer
     Ledger --> Analyzer
@@ -108,20 +112,20 @@ flowchart TB
     Report --> UserCfg
 ```
 
-总体架构由四个主平面组成。事实平面负责代码索引和程序事实沉淀；证据平面负责候选生成、去重、合并和风险预算输入；智能体平面负责语义建模、漏洞挖掘、聚焦深挖、问题调和和三态验证；反馈平面通过 SnapshotStore、UserConfigStore 与 ReviewMemory 保留语义快照、最终报告、人工抑制、baseline 和 Validator 记忆。UserConfigStore 当前既能读取历史 SQLite 配置，也能以 `user_config.xlsx` 作为人工可审阅的主配置界面，并用同名旁路 state DB 保存反馈状态。LLM Agent 通过受 ToolPolicy 约束的 ToolsRuntime 访问被索引、被切片、被缓存、被配置增强过的事实；实际可见工具还会经过 `AGENT.md` 白名单和后端能力 gate，分析过程与底层代码库保持可追踪边界。
+总体架构由四个主平面组成。事实平面负责代码索引和程序事实沉淀；证据平面负责候选生成、去重、合并、diff impact 入口选择和风险预算输入；智能体平面负责语义建模、漏洞挖掘、聚焦深挖、问题调和和三态验证；反馈平面通过 SnapshotStore、UserConfigStore 与 ReviewMemory 保留语义快照、最终报告、人工抑制、baseline 和 Validator 记忆。UserConfigStore 当前既能读取历史 SQLite 配置，也能以 `user_config.xlsx` 作为人工可审阅的主配置界面，并用同名旁路 state DB 保存反馈状态。LLM Agent 通过受 ToolPolicy 约束的 ToolsRuntime 访问被索引、被切片、被缓存、被配置增强过的事实；实际可见工具还会经过 `AGENT.md` 白名单和后端能力 gate，分析过程与底层代码库保持可追踪边界。
 
-v1.0 的主要架构边界不是替换上述平面，而是把原来集中在 `Analyzer` 和 `zscope/core/*.py` 的职责拆成可测试模块：
+v1.1 没有替换 v1.0 的主平面；本次架构增量集中在运行时入口选择、最终报告去重和协议/运行时类候选扩展。v1.0 已经把原来集中在 `Analyzer` 和 `zscope/core/*.py` 的职责拆成可测试模块：
 
 | 模块 | 主要文件 | 职责 |
 |------|----------|------|
 | Analysis | `zscope/core/analysis/analyzer.py` | 顶层协调器，装配 pipelines、agents、tools、workflow、budget、snapshot 与 agent policy |
 | Candidates | `zscope/core/candidates/` | regex、Clang AST/CFG、SVF/Saber、Graph、Joern/KnowledgeDB 后端信号和 candidate evidence |
 | Validation | `zscope/core/validation/` | Validator evidence pack、验证运行、suppression、baseline、score、`needs_review` 分流 |
-| Reporting | `zscope/reporting/` | `FinalReport`、JSON/Markdown、report views、SARIF v2.1.0 |
+| Reporting | `zscope/reporting/` | `FinalReport`、JSON/Markdown、report views、semantic dedup metadata、SARIF v2.1.0 |
 | Identity | `zscope/common/issue_identity.py` | `canonical_issue_key`、`stable_issue_fingerprint`、source context fingerprint、根因级去重 |
 | Review Memory | `zscope/memory/review_memory.py` | 人工 false-positive、finding baseline、Validator memory 的统一门面 |
 | Semantics | `zscope/semantics/` | 内置默认 API 语义、项目 overlay、用户配置上下文、语义推断 |
-| Orchestration | `zscope/orchestration/` | workflow、entry discovery、risk budget、subagent、history reconciler、parallel analyzer |
+| Orchestration | `zscope/orchestration/` | workflow、entry discovery、diff impact、risk budget、subagent、history reconciler、parallel analyzer |
 | Tools | `zscope/tools/` | LLM 工具运行时、参数校验、ToolPolicy、敏感路径 hook 和审计 |
 | Web / MCP | `zscope/web/`、`zscope/mcp/` | Dashboard service layer、stdio/HTTP MCP、远程安全校验 |
 
@@ -139,7 +143,7 @@ v1.0 的主要架构边界不是替换上述平面，而是把原来集中在 `A
 6. `validate_findings`：Validator 做三态验证和可利用性判断。
 7. `persist_report`：写入最终报告、SQLite 快照和元数据。
 
-Workflow 是 Python 编排层的执行计划，不作为大段提示词注入模型。CLI 选择运行模式：默认使用 `default`，`--resume` 切换到 `resume`，`--maintain` 切换到 `maintain`；`--mode ruledriven` 和 `--mode alert-verify` 走各自的专用入口，不通过默认 entry workflow。`ScanSessionRunner` 会在 session 步骤后决定入口形态：显式 `entry_functions_list` 或入口发现候选进入批量模式，否则回退到 `entry_function` 单入口模式。v1.0 中 `Analyzer.run()` 已收敛为调用 `WorkflowRunner.run()`；运行态 state 创建、workflow step 执行、已有报告返回分流和最终持久化由 `zscope/orchestration/workflow_runner.py` 负责。`analysis.workflow_name` 是运行时内部字段，写入 `zscope.yaml` 会被 `ConfigLoader` 拒绝。
+Workflow 是 Python 编排层的执行计划，不作为大段提示词注入模型。CLI 选择运行模式：默认使用 `default`，`--resume` 切换到 `resume`，`--maintain` 切换到 `maintain`；`--mode ruledriven` 和 `--mode alert-verify` 走各自的专用入口，不通过默认 entry workflow。`ScanSessionRunner` 会在 session 步骤后决定入口形态：显式 `entry_functions_list`、入口发现候选或 diff impact 候选进入批量模式，否则回退到 `entry_function` 单入口模式。v1.0 中 `Analyzer.run()` 已收敛为调用 `WorkflowRunner.run()`；v1.1 在进入 workflow 前增加可选 `DiffImpactPlanner`，用于把 git diff 转换为批量入口和 `diff_focus`。运行态 state 创建、workflow step 执行、已有报告返回分流和最终持久化由 `zscope/orchestration/workflow_runner.py` 负责。`analysis.workflow_name` 是运行时内部字段，写入 `zscope.yaml` 会被 `ConfigLoader` 拒绝。
 
 ### 4.2 批量、断点续扫和增量维护
 
@@ -147,13 +151,14 @@ Workflow 是 Python 编排层的执行计划，不作为大段提示词注入模
 |------|------|------|
 | 默认单入口 | `project.entry_function` | 未配置 `entry_functions_list` 且入口发现无候选时，分析单个入口并生成 `report.json/md` |
 | 默认批量 | `project.entry_functions_list` 或入口发现候选 | 多线程执行每个入口，汇总 `zscope_batch_report.json/md` |
+| `--diff-base` / `--diff-head` | `entry_functions_diff.json` | 从 git diff 映射变更函数并反向寻找受影响入口；报告标注 diff relevance |
 | `--resume` | `resume.yaml` | 从 `snapshots.db` 跳过已有成功 final report 且无 pending validation 的函数，最后合并跳过项报告 |
 | `--maintain` | `maintain.yaml` | 比较源码/语义哈希，未变更函数零 Token 复用历史报告，变更函数先调和历史缺陷再重扫 |
 | `--mode ruledriven` | Joern | Joern 规则扫描后交给 LLM 验证 |
 | `--mode alert-verify` | SARIF | 将外部 SAST 告警归一化为 `ExternalAlert`，再由 LLM 二次确认 |
 | `--export-sarif` | 完成后的 Z-SCOPE 报告 | 将本次扫描结果导出为 SARIF v2.1.0，供代码扫描平台消费 |
 
-批量报告覆盖前会自动将旧 JSON 备份到 `.zscope_knowledge/backups/`。
+diff impact 模式不会写入 YAML，也不能与 `--resume` 或 `--maintain` 同时使用。它会生成项目根目录 `entry_functions_diff.json`，其中每个入口携带 `diff_focus.changed_functions`、`affected_paths`、`fallback_reasons` 和入口暴露原因；`ParallelAnalyzer` 会据此把 issue 标为 `incremental`、`existing` 或 `unknown`。批量报告覆盖前会自动将旧 JSON 备份到 `.zscope_knowledge/backups/`。
 
 ## 5. 核心分层
 
@@ -161,8 +166,8 @@ Workflow 是 Python 编排层的执行计划，不作为大段提示词注入模
 
 控制平面负责把用户意图变成可执行流程：
 
-- `zscope/cli/cli.py` 处理运行模式、WebUI、MCP、SARIF 告警验证、SARIF 导出、索引预热和 `--infer-user-config` 工作簿推断，并暴露 `--mode`、`--sarif`、`--dashboard-host/--dashboard-port`、`--mcp-http`、`--mcp-host/--mcp-port/--mcp-endpoint`、`--mcp-auth-token-env`、`--mcp-client-allowlist` 等服务边界参数。
-- `zscope/orchestration/scan_session.py` 统一入口发现、发现结果落盘、批量加载、断点续扫和报告备份。
+- `zscope/cli/cli.py` 处理运行模式、WebUI、MCP、SARIF 告警验证、SARIF 导出、索引预热、`--infer-user-config` 工作簿推断和 `--diff-base/--diff-head` 差异影响扫描，并暴露 `--mode`、`--sarif`、`--dashboard-host/--dashboard-port`、`--mcp-http`、`--mcp-host/--mcp-port/--mcp-endpoint`、`--mcp-auth-token-env`、`--mcp-client-allowlist` 等服务边界参数。
+- `zscope/orchestration/scan_session.py` 统一入口发现、diff impact 入口规划、发现/差异结果落盘、批量加载、断点续扫和报告备份。
 - `zscope/orchestration/workflow_executor.py` 执行声明式 workflow step，并在报告 metadata 中记录进度。
 - `zscope/orchestration/workflow_runner.py` 装配单入口运行态，负责 state factory、workflow executor、report build/persist/finalize 回调和已有报告返回路径；history reconciler 与 validation runner 仍由 `Analyzer` step handler 调用。
 
@@ -196,7 +201,7 @@ Unified 后端的 SVF 路径现在支持入口裁剪。`svf_scope=auto|entry` �
 
 ### 5.3 证据平面：CandidatePipeline + Backend Signals
 
-v1.0 继续沿用证据候选层，并把候选收集、合并、统计和 IR 持久化集中到 `zscope/core/candidates/pipeline.py`。候选来源包括：
+v1.1 继续沿用证据候选层，并把候选收集、合并、统计和 IR 持久化集中到 `zscope/core/candidates/pipeline.py`。候选来源包括：
 
 - `zscope/core/candidates/regex.py`：基于通用 C 模式生成内存、资源、并发、输入和逻辑候选。
 - `zscope/core/candidates/clang_ast_cfg.py`：用本地 AST/CFG 视图补足结构化控制流、协议字段和 copy/size 证据。
@@ -219,9 +224,9 @@ v1.0 继续沿用证据候选层，并把候选收集、合并、统计和 IR �
 | local inference | typedef、宏别名、历史 snapshot 和函数命名启发式补充 |
 | filtered context | `user_config_context.py` 按入口函数和文件 scope 注入 prompt 所需片段 |
 
-图候选弥补单函数词法规则的边界，当前覆盖持锁调用会重入加锁的 helper、错误清理类型、线程参数生命周期、全局容器生命周期、timer/pipe 等级联等待、锁顺序反转以及 stale tree/list 链接等形态。图候选输出仍保持与其他 issue/candidate 相同的数据形状，因此可以直接进入 ledger、Deep Worker、Validator、报告和 benchmark 流水线。
+图候选弥补单函数词法规则的边界，当前覆盖持锁调用会重入加锁的 helper、错误清理类型、线程参数生命周期、全局容器生命周期、对象发布后初始化、容器解链后释放、timer/pipe 等级联等待、锁顺序反转、协议状态机、字节序逻辑、shared-memory create-if-absent race、signal handler deadlock、callback self-destroy 以及 stale tree/list 链接等形态。图候选输出仍保持与其他 issue/candidate 相同的数据形状，因此可以直接进入 ledger、Deep Worker、Validator、报告和 benchmark 流水线。
 
-候选会被 `CandidateLedger` 统一去重和合并。验证和报告层还会复用 `zscope/common/issue_identity.py` 中的 `deduplicate_issues()` / `canonical_issue_key()` 对 LLM finding、规则候选、图候选和 Worker 结果做根因级合并，避免跨入口或跨信号源重复报告同一个问题。去重综合 defect class、resource kind、source、sink、root cause key 和 call path，避免仅按行号合并。每个候选携带：
+候选会被 `CandidateLedger` 统一去重和合并。验证和报告层还会复用 `zscope/common/issue_identity.py` 中的 `deduplicate_issues()` / `canonical_issue_key()` 对 LLM finding、规则候选、图候选和 Worker 结果做根因级合并，避免跨入口或跨信号源重复报告同一个问题。v1.1 增加 `deduplicate_semantic_issues_programmatic()` 与可选的 `issue_reconciler_agent` LLM 小簇判重，在保留 `duplicate_sources`、`alternate_evidence` 和 `dedup_decisions` 的前提下进一步合并同根因重复报告。去重综合 defect class、resource kind、source、sink、root cause key、resource signature 和 call path，避免仅按行号合并。每个候选携带：
 
 | 字段 | 作用 |
 |------|------|
@@ -233,13 +238,13 @@ v1.0 继续沿用证据候选层，并把候选收集、合并、统计和 IR �
 | `negative_evidence` | 可能降低可信度的保护条件或未决事实 |
 | `evidence_pack` | 结构化证据包，包含路径、对象、规则、证据引用 |
 | `evidence_refs` | 指向 `ir_path_slices`、资源/锁/共享状态事件等 IR 表 |
-| `validation_required` | v1.0 默认要求候选进入 Validator / ValidationPipeline，而不是由规则层直接报告 |
+| `validation_required` | 默认要求候选进入 Validator / ValidationPipeline，而不是由规则层直接报告 |
 
 Worker 预算仅限制本轮深挖数量，不限定候选覆盖边界。`max_subagent_tickets` 决定实际启动多少 Deep Worker，未执行候选仍会作为 `subagent_unassigned_candidates` 回流给主 `vulnerability_analyzer`。
 
 ### 5.4 风险自适应预算
 
-配置中的 `max_recursion_depth`、`max_premodel_depth`、`max_premodel_callees` 和 `max_subagent_tickets` 是硬上限，不代表每个入口都会消耗满额资源。`RiskBudgetPlanner` 会在多个阶段根据入口源码、调用扇出、用户配置上下文、确定性候选、图候选、后端候选、候选来源多样性和历史缺陷计算本入口的 `EffectiveBudget`。
+配置中的 `max_recursion_depth`、`max_premodel_depth`、`max_premodel_callees` 和 `max_subagent_tickets` 是硬上限，不代表每个入口都会消耗满额资源。`RiskBudgetPlanner` 会在多个阶段根据入口源码、调用扇出、用户配置上下文、确定性候选、图候选、后端候选、候选来源多样性、protocol/runtime callee、thin public facade 和历史缺陷计算本入口的 `EffectiveBudget`。
 
 预算会拆成四个维度：
 
@@ -251,6 +256,8 @@ Worker 预算仅限制本轮深挖数量，不限定候选覆盖边界。`max_su
 | `subagent_tickets` | 本轮实际启动的 Deep Worker 数量 |
 
 这种设计把“覆盖率”和“深挖成本”拆开：候选会尽量全量保留，低风险入口减少预建模、图遍历和 Worker 消耗；高风险入口才接近硬上限。报告 metadata 会记录 `effective_budget`、`budget_hard_caps`、`budget_scores` 和 `budget_reasons`，便于解释某个入口为什么被深挖或为什么被轻量处理。
+
+v1.1 还把 Deep Worker 执行控制显式配置化：`subagent_max_turns` 限制单个工单工具/模型轮次，`subagent_ticket_timeout` 限制单工单耗时，`subagent_spawn_allowlist` 与 `ToolPolicy` 共同约束可创建的子 Agent，`subagent_skill_llm_refs` / `subagent_skill_efforts` 允许按 Skill 做模型或推理策略路由，`tool_audit_log` 可把工具、MCP 和子 Agent policy 事件写入 JSONL 审计日志。
 
 ### 5.5 智能体平面：Agent + Skill + Tool
 
@@ -280,7 +287,7 @@ Agent 实际能看到的工具不是固定 12 个。`Analyzer._get_tools()` 会�
 
 ### 5.6 验证平面：ValidationRunner + ValidationPipeline
 
-v1.0 将验证逻辑从 `Analyzer` 主流程中拆出：
+自 v1.0 起，验证逻辑已经从 `Analyzer` 主流程中拆出：
 
 | 模块 | 职责 |
 |------|------|
@@ -321,7 +328,7 @@ Issue identity 由 `zscope/common/issue_identity.py` 统一提供。`canonical_i
 
 与 prompt 相关的用户配置上下文已经迁入 `zscope/semantics/user_config_context.py`。运行时会按当前函数源码标识符和文件 scope 过滤用户配置，只注入与当前入口相关的 resource、lock、pointer target、dispatcher、module lifecycle 和 function intent 片段。
 
-报告层默认生成两类视图：`report_views.default` 只包含可报告的确认问题；`report_views.with_needs_review` 会把 `needs_review` 审计观察项也并入列表，供人工复核或 WebUI 切换查看。`ReportAssembler` 负责最终 report、views、metadata、JSON/Markdown 和 snapshot 持久化。CLI 的 `--export-sarif` 读取完成后的 JSON 报告并输出 SARIF v2.1.0，保留 rule、level、位置、codeFlows、`partialFingerprints.zscopeStableIssueFingerprint` 和 Z-SCOPE 私有证据属性，便于接入 GitHub code scanning 或其他 SARIF 消费端。
+报告层默认生成两类视图：`report_views.default` 只包含可报告的确认问题；`report_views.with_needs_review` 会把 `needs_review` 审计观察项也并入列表，供人工复核或 WebUI 切换查看。`ReportAssembler` 负责最终 report、views、metadata、JSON/Markdown 和 snapshot 持久化，并在 v1.1 支持 `deduplicate_report_issues` 钩子，让最终报告在构建视图前应用语义去重。`semantic_dedup_summary` 会记录程序化合并、LLM 小簇判重、cache hit、合并数和拒绝合并数；issue 本身保留 `duplicate_sources`、`alternate_evidence`、`dedup_decisions`、`category_family` 与 `resource_signature`。CLI 的 `--export-sarif` 读取完成后的 JSON 报告并输出 SARIF v2.1.0，保留 rule、level、位置、codeFlows、`partialFingerprints.zscopeStableIssueFingerprint` 和 Z-SCOPE 私有证据属性，便于接入 GitHub code scanning 或其他 SARIF 消费端。
 
 ## 6. 架构优势
 
@@ -410,9 +417,9 @@ Z-SCOPE 的差异化不在单个算法，而在“程序事实、候选证据、
 
 ### 8.4 候选覆盖
 
-`RegexCandidateGenerator` 和 `ClangAstCfgCandidateGenerator` 覆盖一批 C 项目高频高价值模式，包括 size arithmetic before allocation/copy、same-function resource leak、direct `realloc` assignment、double free / invalid free、stack address escape、missing unlock、callback under lock、recursive lock risk、`pthread_cond_wait` with `if`、signed-to-unsigned length conversion、off-by-one、uninitialized read、alignment cast、null dereference after unchecked result、shared global race、refcount race、object publication、non-literal format string、system command、path TOCTOU、fd close without invalidation、mmap stale pointer、ignored protocol version、state not restored 等。规则保持通用 C 语义，不依赖 benchmark 专有函数名。
+`RegexCandidateGenerator` 和 `ClangAstCfgCandidateGenerator` 覆盖一批 C 项目高频高价值模式，包括 size arithmetic before allocation/copy、same-function resource leak、direct `realloc` assignment、double free / invalid free、stack address escape、missing unlock、callback under lock、recursive lock risk、`pthread_cond_wait` with `if`、signed-to-unsigned length conversion、off-by-one、uninitialized read、alignment cast、null dereference after unchecked result、shared global race、refcount race、object publication、non-literal format string、system command、path TOCTOU、fd close without invalidation、mmap stale pointer、ignored protocol version、state not restored、fd encoding mismatch、file type validation、byte-order logic、state machine mismatch 等。规则保持通用 C 语义，不依赖 benchmark 专有函数名。
 
-`GraphCandidateGenerator` 负责跨函数和协议形态，包括 cross-function recursive lock、lock order inversion、wrong cleanup contract、thread argument lifetime、global container lifecycle、timer cascade wait 和 stale tree/list liveness。它与确定性规则共享候选形状和去重链路，因此不会形成一套旁路报告体系。
+`GraphCandidateGenerator` 负责跨函数和协议形态，包括 cross-function recursive lock、lock order inversion、wrong cleanup contract、thread argument lifetime、global container lifecycle、object publication ordering、runtime/protocol state contract、lost wakeup、shared-memory race、signal deadlock、callback self-destroy、timer cascade wait 和 stale tree/list liveness。它与确定性规则共享候选形状和去重链路，因此不会形成一套旁路报告体系。
 
 ### 8.5 分析覆盖
 
@@ -489,12 +496,13 @@ WebUI 保存验证状态时，`rejected` 会写入 `finding_suppressions`，后�
 | 能力 | 架构机制 |
 |------|----------|
 | 大批量入口 | `ParallelAnalyzer` 线程池并发执行入口分析 |
+| 变更审计 | `DiffImpactPlanner` 从 git diff 映射变更函数和受影响入口，报告保留 diff relevance |
 | 中断恢复 | `--resume` 基于 final report 和 pending 状态跳过已完成项 |
 | 增量维护 | `--maintain` 比较 code/semantic hash，未变更函数零 Token 复用 |
 | Token 控制 | 语义快照、平凡函数旁路、active skill 注入、风险自适应预算、Deep Worker 切片 |
 | SVF 伸缩 | 入口裁剪 bitcode、符号闭包补齐、分组链接和 full/skip 回退 |
 | 报告安全 | 覆盖批量 JSON 前自动备份，标准 SARIF 导出不改写主报告 |
-| Benchmark v3 | 记录 default / with-needs-review 双视图、matched pairs、stable identity、cost、trajectory、grader 和稳定性统计 |
+| Benchmark v3 | 记录 default / with-needs-review 双视图、matched pairs、stable identity、duplicate-of-matched、cost、trajectory、grader 和稳定性统计 |
 | 多模型策略 | `llms` 多 profile + Agent 级 `llm_ref` + 模型列表回退 |
 | 代理模型兼容 | 流式调用、JSON 修复、XML tool-call fallback、自动续写 |
 
@@ -508,6 +516,7 @@ WebUI 保存验证状态时，`rejected` 会写入 `finding_suppressions`，后�
 | `zscope -c zscope.yaml --resume` | 断点续扫 |
 | `zscope -c zscope.yaml --maintain` | 增量维护 |
 | `zscope -c zscope.yaml --discover-entries` | 自动入口发现 |
+| `zscope -c zscope.yaml --diff-base origin/main --diff-head HEAD` | 差异影响扫描，生成 `entry_functions_diff.json` 并标注 diff relevance |
 | `zscope -c zscope.yaml --infer-user-config` | 推断或刷新 `user_config.xlsx` 后退出 |
 | `zscope -c zscope.yaml --build-cpg` | 仅构建索引 |
 | `zscope -c zscope.yaml --dashboard` | 启动 Web 仪表盘 |

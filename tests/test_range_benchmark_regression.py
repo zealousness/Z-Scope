@@ -19,7 +19,7 @@ def test_range_regex_candidate_coverage_when_available() -> None:
         pytest.skip("test/range benchmark fixtures are not available in this checkout")
 
     truth = json.loads((benchmark_dir / "ground_truth.json").read_text(encoding="utf-8"))
-    assert truth.get("version") == 10
+    assert truth.get("version") == 13
 
     result = evaluate_range_regression(
         project_root=project_root,

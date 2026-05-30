@@ -21,6 +21,12 @@ CALLBACK_RE = re.compile(
     r"\b(callback|register|unregister|notify|timer|workqueue|pthread_create|thread|irq|tasklet)\b",
     re.IGNORECASE,
 )
+PROTOCOL_FLOW_RE = re.compile(
+    r"(?:runtime|event|callback|timer|rcu|qrcu|crcu|shared|shm|memzone|"
+    r"proc|slot|signal|pool|cache|arena|worker|publish|schedule|configure|"
+    r"apply|refresh|maintenance)",
+    re.IGNORECASE,
+)
 RESOURCE_RE = re.compile(
     r"(?:^|[^A-Za-z0-9])("
     r"alloc|calloc|malloc|realloc|strdup|free|open|close|fopen|fclose|socket|"
@@ -201,6 +207,13 @@ class RiskBudgetPlanner:
         if CALLBACK_RE.search(code):
             score += 15
             reasons.append("callback_or_threading_signal")
+        if any(PROTOCOL_FLOW_RE.search(name) for name in call_tokens):
+            score += 15
+            reasons.append("protocol_or_runtime_callee")
+        return_call = re.search(r"\breturn\s+(?P<callee>[A-Za-z_]\w+)\s*\(", code)
+        if return_call and PROTOCOL_FLOW_RE.search(return_call.group("callee")):
+            score += 10
+            reasons.append("thin_public_facade_requires_callee_trace")
         if any(self._candidate_source(item, "graph") for item in candidates):
             score += 25
             reasons.append("graph_candidate_requires_cross_function_trace")
@@ -237,6 +250,13 @@ class RiskBudgetPlanner:
         if CALLBACK_RE.search(code) or "function pointers" in user_config_context.lower():
             score += 15
             reasons.append("callback_or_pointer_target_context")
+        if any(PROTOCOL_FLOW_RE.search(name) for name in set(callees) | set(call_tokens)):
+            score += 15
+            reasons.append("protocol_or_runtime_callee_context")
+        return_call = re.search(r"\breturn\s+(?P<callee>[A-Za-z_]\w+)\s*\(", code)
+        if return_call and PROTOCOL_FLOW_RE.search(return_call.group("callee")):
+            score += 15
+            reasons.append("thin_public_facade_requires_callee_context")
         lowered_context = user_config_context.lower()
         if (
             "paired" in lowered_context
@@ -279,6 +299,9 @@ class RiskBudgetPlanner:
         if CONTROL_FLOW_RE.search(code):
             score += 15
             reasons.append("dispatcher_or_protocol_control_flow")
+        if any(PROTOCOL_FLOW_RE.search(name) for name in distinct_calls):
+            score += 10
+            reasons.append("protocol_or_runtime_callee_context")
         if "external" in user_config_context.lower():
             score += 10
             reasons.append("user_config_external_api_context")

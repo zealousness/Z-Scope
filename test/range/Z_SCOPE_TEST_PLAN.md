@@ -9,7 +9,7 @@ Measure whether Z-SCOPE can find intentionally planted C defects in a compact
 task dispatcher project. The benchmark should report recall, precision, F1, and
 per-CWE coverage against `benchmark/ground_truth.json`.
 
-Current scorer truth is benchmark v11 with 122 scored vulnerabilities. The
+Current scorer truth is benchmark v13 with 121 scored vulnerabilities. The
 `REAL-*` items are a higher-priority tier derived from GitHub issue #40 real
 project models, `ISSUE41-*` is a separate high-priority tier derived from
 GitHub issue #41 distributed C/S messaging and task-creation models, and
@@ -19,13 +19,13 @@ observed-run notes below refer to previous 12-item, 14-item, 33-item, and
 87-item truths and are retained as historical context only.
 
 Protocol-oriented `REAL-*` findings should be exercised through the realistic
-message path `td_handle_real_protocol_message` ->
-`_real_model_process_protocol_task` whenever possible. The helper entries are
+message path `td_handle_protocol_message` ->
+`_runtime_process_protocol_task` whenever possible. The helper entries are
 kept as direct scan targets, but the intended project-level behavior is a
 receive/decode/dispatch/handler flow.
 
 The `ISSUE41-*` tier should be exercised through the distributed C/S path
-`td_handle_distributed_cs_message` -> `_issue41_process_cs_message`. This path
+`td_handle_distributed_cs_message` -> `_peer_process_session_message`. This path
 models receive-frame handling, task creation, task-array indexing, enqueue, and
 dispatch before reaching the specific issue #41 handlers.
 

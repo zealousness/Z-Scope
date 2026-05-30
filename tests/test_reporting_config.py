@@ -1,0 +1,47 @@
+import json
+
+from zscope.config.config import ConfigLoader, SemanticDedupConfig
+
+
+def _base_config(tmp_path):
+    return {
+        "llms": {
+            "default": {
+                "model": "unit-model",
+                "api_key": "unit-key",
+            }
+        },
+        "project": {
+            "root": str(tmp_path),
+            "source_root": str(tmp_path),
+        },
+    }
+
+
+def test_semantic_dedup_config_defaults_to_llm_enabled() -> None:
+    cfg = SemanticDedupConfig()
+
+    assert cfg.enabled is True
+    assert cfg.llm_enabled is True
+
+
+def test_config_loader_defaults_llm_semantic_dedup_to_enabled(tmp_path) -> None:
+    path = tmp_path / "zscope.yaml"
+    path.write_text(json.dumps(_base_config(tmp_path)), encoding="utf-8")
+
+    cfg = ConfigLoader.load(str(path))
+
+    assert cfg.reporting.semantic_dedup.enabled is True
+    assert cfg.reporting.semantic_dedup.llm_enabled is True
+
+
+def test_config_loader_allows_disabling_llm_semantic_dedup(tmp_path) -> None:
+    data = _base_config(tmp_path)
+    data["reporting"] = {"semantic_dedup": {"llm_enabled": False}}
+    path = tmp_path / "zscope.yaml"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    cfg = ConfigLoader.load(str(path))
+
+    assert cfg.reporting.semantic_dedup.enabled is True
+    assert cfg.reporting.semantic_dedup.llm_enabled is False

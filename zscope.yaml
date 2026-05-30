@@ -1,9 +1,10 @@
-# Z-SCOPE 配置文件
+# Z-SCOPE v1.1 配置文件
 #
 # 说明：
 # - 本文件字段来自 zscope/config/config.py 的 ConfigLoader.load()。
 # - 字符串支持环境变量展开，例如 ${Z_SCOPE_API_KEY}。
 # - analysis.workflow_name 是运行时内部字段，请不要写入 zscope.yaml；需要切换工作流时使用 CLI 的 --resume / --maintain。
+# - v1.1 新增 diff impact 扫描、报告语义去重、Deep Worker 工单控制和工具审计配置；diff 扫描通过 CLI 参数启用，不写入 YAML。
 
 # llm:                                      # 兼容旧版单模型配置；推荐使用下面的 llms 多模型配置
 #   provider: openai                        # LLM 服务类型预留字段，当前按 OpenAI 兼容接口调用
@@ -150,4 +151,18 @@ analysis:                                  # 分析流程和缓存行为配置
   trivial_function_max_lines: 5            # 小于等于该有效行数的函数可视为 trivial，减少建模开销
   enable_subagent_workers: true            # 是否允许全局启用 Deep Worker 子 Agent
   max_subagent_tickets: 4                  # Deep Worker 执行预算；候选点仍会全量保留并传给主 Agent
+  subagent_max_turns: 20                   # 单个 Deep Worker 工单最大工具/模型轮次
+  subagent_ticket_timeout: 0               # 单个 Deep Worker 工单超时秒数；0 表示不启用超时
+  subagent_spawn_allowlist:                # ToolPolicy 允许创建的子 Agent 名称
+    - deep_worker                          # 默认只允许内置 Deep Worker
+  subagent_skill_llm_refs: {}              # 可选：按 Skill 指定子 Agent 使用的 llms profile
+  subagent_skill_efforts: {}               # 可选：按 Skill 指定子 Agent 推理强度/执行策略标签
+  tool_audit_log: ""                       # 可选 JSONL 日志路径，记录工具、MCP 和子 Agent policy 事件
   # workflow_name: default                 # 禁止配置：运行时内部字段；使用 --resume / --maintain 选择工作流
+
+reporting:                                 # 报告组装、去重和展示配置
+  semantic_dedup:                          # 最终报告语义去重；在 canonical key 去重后继续合并同根因重复项
+    enabled: true                          # 是否启用程序化语义去重
+    llm_enabled: true                      # 是否允许 issue_reconciler_agent 对小簇重复项做 LLM 判定
+    llm_confidence_threshold: 0.85         # LLM 重复合并的最低置信度
+    max_cluster_size: 8                    # 单次 LLM 去重候选簇最大 issue 数

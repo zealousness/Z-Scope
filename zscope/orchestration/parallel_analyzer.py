@@ -24,6 +24,7 @@ from ..retrieval.code_index import CodeIndex
 from ..orchestration.candidates import CandidateLedger
 from ..common.issue_identity import (
     canonical_issue_key,
+    deduplicate_semantic_issues_programmatic,
     deduplicate_issues,
     flatten_issue_text,
     issue_rank,
@@ -49,6 +50,7 @@ class ParallelAnalysisResult:
     cumulative_prompt_tokens: int = 0
     cumulative_completion_tokens: int = 0
     cumulative_total_tokens: int = 0
+    diff_focus: Optional[Dict[str, Any]] = None
 
 
 class ParallelAnalyzer:
@@ -132,16 +134,17 @@ class ParallelAnalyzer:
                     
                     try:
                         result = future.result()
-                        results[entry.function_name] = result
+                        results[self._entry_result_key(entry)] = result
                         logger.info(f"[{completed}/{total}] {entry.function_name}: {result.verdict} ({len(result.issues)} issues, ctx ≈ {result.context_tokens:,} tokens)")
                     except concurrent.futures.CancelledError:
                         logger.warning(f"[{completed}/{total}] {entry.function_name}: Cancelled due to interrupt")
                     except Exception as e:
                         logger.error(f"[{completed}/{total}] {entry.function_name}: ERROR - {e}")
-                        results[entry.function_name] = ParallelAnalysisResult(
+                        results[self._entry_result_key(entry)] = ParallelAnalysisResult(
                             function_name=entry.function_name,
                             verdict="error",
-                            error=str(e)
+                            error=str(e),
+                            diff_focus=entry.diff_focus,
                         )
                     
                     if progress_callback:
@@ -166,6 +169,15 @@ class ParallelAnalyzer:
                     pass
                     
         return results
+
+    @staticmethod
+    def _entry_result_key(entry: FunctionEntry) -> str:
+        focus = entry.diff_focus if isinstance(entry.diff_focus, dict) else {}
+        component = str(focus.get("component") or "").strip()
+        file_path = str(entry.file_path or focus.get("entry_file_path") or "").strip()
+        if component or file_path:
+            return f"{component or 'default'}:{entry.function_name}@{file_path or '<unknown>'}"
+        return entry.function_name
     
     def analyze_functions(
         self, 
@@ -225,6 +237,7 @@ class ParallelAnalyzer:
                 cumulative_prompt_tokens=report_dict.get("metadata", {}).get("cumulative_prompt_tokens", 0),
                 cumulative_completion_tokens=report_dict.get("metadata", {}).get("cumulative_completion_tokens", 0),
                 cumulative_total_tokens=report_dict.get("metadata", {}).get("cumulative_total_tokens", 0),
+                diff_focus=entry.diff_focus,
             )
             
         except Exception as e:
@@ -233,7 +246,8 @@ class ParallelAnalyzer:
                 function_name=entry.function_name,
                 verdict="error",
                 error=str(e),
-                duration_seconds=duration
+                duration_seconds=duration,
+                diff_focus=entry.diff_focus,
             )
     
     def _prepare_shared_semantics(self) -> None:
@@ -265,6 +279,7 @@ class ParallelAnalyzer:
         from copy import deepcopy
         config = deepcopy(self.base_config)
         config.project.entry_function = entry.function_name
+        config.project.entry_diff_focus = entry.diff_focus
         
         # Keep entry-specific focus separate from the configured task so skill
         # routing remains driven by the global vulnerability scope.
@@ -296,11 +311,12 @@ class ParallelAnalyzer:
         function_summaries = []
         total_duration = 0.0
         
-        for func_name, result in results.items():
+        for entry_key, result in results.items():
             total_duration += result.duration_seconds
             
             function_summaries.append({
-                "function": func_name,
+                "function": result.function_name,
+                "entry_key": entry_key,
                 "verdict": result.verdict,
                 "issue_count": len(result.issues),
                 "audit_observation_count": len(result.audit_observations),
@@ -315,11 +331,17 @@ class ParallelAnalyzer:
             # Add function context to each issue
             for issue in result.issues:
                 issue_copy = issue.copy()
-                issue_copy["analyzed_from"] = func_name
+                issue_copy["analyzed_from"] = result.function_name
+                if entry_key != result.function_name:
+                    issue_copy["entry_key"] = entry_key
+                self._annotate_diff_relevance(issue_copy, result.diff_focus)
                 all_issues.append(issue_copy)
             for observation in result.audit_observations:
                 observation_copy = observation.copy()
-                observation_copy["analyzed_from"] = func_name
+                observation_copy["analyzed_from"] = result.function_name
+                if entry_key != result.function_name:
+                    observation_copy["entry_key"] = entry_key
+                self._annotate_diff_relevance(observation_copy, result.diff_focus)
                 all_observations.append(observation_copy)
         
         # Deduplicate issues by location
@@ -329,6 +351,8 @@ class ParallelAnalyzer:
         view_summary = report_view_summary({"report_views": report_views})
         with_review_view = report_views.get("with_needs_review", {})
         
+        diff_relevance_summary = self._diff_relevance_summary(unique_issues, unique_observations)
+
         combined_report = {
             "type": "parallel_analysis_report",
             "summary": {
@@ -347,7 +371,8 @@ class ParallelAnalyzer:
                 "total_cumulative_prompt_tokens": sum(r.cumulative_prompt_tokens for r in results.values()),
                 "total_cumulative_completion_tokens": sum(r.cumulative_completion_tokens for r in results.values()),
                 "total_cumulative_total_tokens": sum(r.cumulative_total_tokens for r in results.values()),
-                "parallel_speedup": f"{len(results)}x potential (using {self.max_workers} workers)"
+                "parallel_speedup": f"{len(results)}x potential (using {self.max_workers} workers)",
+                "diff_relevance": diff_relevance_summary["issues"],
             },
             "function_results": function_summaries,
             "issues": unique_issues,
@@ -359,6 +384,7 @@ class ParallelAnalyzer:
                 "audit_observation_count": len(unique_observations),
                 "audit_observations": unique_observations,
                 "report_view_summary": view_summary,
+                "diff_relevance_summary": diff_relevance_summary,
                 "context_tokens": sum(r.context_tokens for r in results.values()),
                 "cumulative_prompt_tokens": sum(r.cumulative_prompt_tokens for r in results.values()),
                 "cumulative_completion_tokens": sum(r.cumulative_completion_tokens for r in results.values()),
@@ -372,6 +398,128 @@ class ParallelAnalyzer:
             logger.info(f"Combined report saved to: {output_path}")
         
         return combined_report
+
+    @classmethod
+    def _annotate_diff_relevance(
+        cls,
+        issue: Dict[str, Any],
+        diff_focus: Optional[Dict[str, Any]],
+    ) -> None:
+        if not isinstance(diff_focus, dict) or diff_focus.get("mode") != "diff_impact":
+            return
+        relevance = cls._classify_diff_relevance(issue, diff_focus)
+        label = {
+            "incremental": "[增量]",
+            "existing": "[存量]",
+            "unknown": "[影响待确认]",
+        }.get(relevance, "[影响待确认]")
+        issue["diff_relevance"] = relevance
+        issue["diff_relevance_label"] = label
+        issue["diff_focus"] = cls._compact_diff_focus_for_issue(diff_focus)
+        cls._prefix_issue_summary(issue, label)
+
+    @classmethod
+    def _classify_diff_relevance(
+        cls,
+        issue: Dict[str, Any],
+        diff_focus: Dict[str, Any],
+    ) -> str:
+        changed_functions = diff_focus.get("changed_functions")
+        if not isinstance(changed_functions, list):
+            return "unknown"
+        changed_names = {
+            str(item.get("function_name") or "")
+            for item in changed_functions
+            if isinstance(item, dict)
+        }
+        issue_func = str(issue.get("function") or issue.get("func_name") or "")
+        if issue_func and issue_func in changed_names:
+            return "incremental"
+
+        issue_file, issue_line = parse_issue_location(str(issue.get("location") or ""))
+        if issue_file and issue_line is not None:
+            for item in changed_functions:
+                if not isinstance(item, dict):
+                    continue
+                changed_file = str(item.get("file_path") or "")
+                changed_lines = item.get("changed_lines")
+                if not isinstance(changed_lines, list):
+                    continue
+                if cls._same_report_path(issue_file, changed_file) and issue_line in {
+                    int(line) for line in changed_lines if str(line).isdigit()
+                }:
+                    return "incremental"
+
+        affected_path_nodes = set()
+        for path_item in diff_focus.get("affected_paths") or []:
+            if not isinstance(path_item, dict):
+                continue
+            path = path_item.get("path")
+            if isinstance(path, list):
+                affected_path_nodes.update(str(node) for node in path if str(node))
+        if issue_func and issue_func in affected_path_nodes:
+            return "incremental"
+        if diff_focus.get("fallback_reasons"):
+            return "unknown"
+        return "existing"
+
+    @staticmethod
+    def _same_report_path(left: str, right: str) -> bool:
+        left_norm = str(left or "").replace("\\", "/").lstrip("./")
+        right_norm = str(right or "").replace("\\", "/").lstrip("./")
+        return bool(
+            left_norm
+            and right_norm
+            and (left_norm == right_norm or left_norm.endswith("/" + right_norm) or right_norm.endswith("/" + left_norm))
+        )
+
+    @staticmethod
+    def _compact_diff_focus_for_issue(diff_focus: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "component": diff_focus.get("component", ""),
+            "base_ref": diff_focus.get("base_ref", ""),
+            "head_ref": diff_focus.get("head_ref", ""),
+            "entry_function": diff_focus.get("entry_function", ""),
+            "entry_exposure": diff_focus.get("entry_exposure", ""),
+            "fallback_reasons": list(diff_focus.get("fallback_reasons") or []),
+            "changed_functions": [
+                {
+                    "function_name": item.get("function_name", ""),
+                    "file_path": item.get("file_path", ""),
+                    "changed_lines": list(item.get("changed_lines") or []),
+                }
+                for item in diff_focus.get("changed_functions") or []
+                if isinstance(item, dict)
+            ],
+        }
+
+    @staticmethod
+    def _prefix_issue_summary(issue: Dict[str, Any], label: str) -> None:
+        for key in ("title", "summary", "description"):
+            value = issue.get(key)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            if value.startswith("[增量]") or value.startswith("[存量]") or value.startswith("[影响待确认]"):
+                return
+            issue[key] = f"{label} {value}"
+            return
+        issue["summary"] = label
+
+    @staticmethod
+    def _diff_relevance_summary(
+        issues: List[Dict[str, Any]],
+        observations: List[Dict[str, Any]],
+    ) -> Dict[str, Dict[str, int]]:
+        def count(items: List[Dict[str, Any]]) -> Dict[str, int]:
+            result = {"incremental": 0, "existing": 0, "unknown": 0, "unscoped": 0}
+            for item in items:
+                relevance = str(item.get("diff_relevance") or "unscoped")
+                if relevance not in result:
+                    relevance = "unknown"
+                result[relevance] += 1
+            return result
+
+        return {"issues": count(issues), "audit_observations": count(observations)}
 
     def generate_combined_markdown_report(
         self, 
@@ -416,13 +564,14 @@ class ParallelAnalyzer:
         
         for name, res in sorted(results.items()):
             duration_str = f"{res.duration_seconds:.1f}s" if res.duration_seconds else "N/A"
+            display_name = res.function_name if name == res.function_name else f"{res.function_name} ({name})"
             needs_review_count = sum(
                 1
                 for issue in res.audit_observations
                 if str(issue.get("validation_status") or "").lower() == "needs_review"
             )
             md.append(
-                f"| {name} | {res.verdict} | {len(res.issues)} | "
+                f"| {display_name} | {res.verdict} | {len(res.issues)} | "
                 f"{needs_review_count} / {len(res.audit_observations)} | {duration_str} |"
             )
         
@@ -432,9 +581,9 @@ class ParallelAnalyzer:
         
         # Group issues by analyzed_from (entry function)
         issues_by_entry = {}
-        for r in results.values():
+        for entry_key, r in results.items():
             if r.verdict == "issues_found":
-                issues_by_entry[r.function_name] = r.issues
+                issues_by_entry[entry_key] = r.issues
 
         if not issues_by_entry:
             md.append("*No issues detected.*")
@@ -494,14 +643,14 @@ class ParallelAnalyzer:
                     md.append("")
 
         needs_review_by_entry = {}
-        for r in results.values():
+        for entry_key, r in results.items():
             review_items = [
                 issue
                 for issue in r.audit_observations
                 if str(issue.get("validation_status") or "").lower() == "needs_review"
             ]
             if review_items:
-                needs_review_by_entry[r.function_name] = review_items
+                needs_review_by_entry[entry_key] = review_items
 
         md.append("")
         md.append("## Needs Review Findings")
@@ -541,6 +690,10 @@ class ParallelAnalyzer:
     
     def _deduplicate_issues(self, issues: List[Dict]) -> List[Dict]:
         """Remove duplicate issues based on canonical sink/root-cause evidence."""
+        semantic_cfg = getattr(getattr(getattr(self, "config", None), "reporting", None), "semantic_dedup", None)
+        if semantic_cfg is not None and getattr(semantic_cfg, "enabled", True):
+            deduped, _summary = deduplicate_semantic_issues_programmatic(issues)
+            return deduped
         return deduplicate_issues(issues)
 
     @staticmethod

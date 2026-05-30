@@ -6,7 +6,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +20,12 @@ class FunctionEntry:
         function_name: Name of the function to analyze
         custom_prompt: Optional custom prompt to append to agent's base task
         file_path: Optional file path for disambiguation when multiple TUs have same function name
+        diff_focus: Optional diff-impact metadata used by diff mode
     """
     function_name: str
     custom_prompt: Optional[str] = None
     file_path: Optional[str] = None
+    diff_focus: Optional[Dict[str, Any]] = None
     
     def __post_init__(self):
         if not self.function_name:
@@ -84,7 +86,8 @@ class FunctionListLoader:
                 entry = FunctionEntry(
                     function_name=func_data.get('function_name', ''),
                     custom_prompt=func_data.get('custom_prompt'),
-                    file_path=func_data.get('file_path')
+                    file_path=func_data.get('file_path'),
+                    diff_focus=func_data.get('diff_focus') if isinstance(func_data.get('diff_focus'), dict) else None,
                 )
                 entries.append(entry)
                 logger.debug(f"Loaded function entry: {entry.function_name}")

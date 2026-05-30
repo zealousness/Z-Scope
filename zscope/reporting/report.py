@@ -64,6 +64,12 @@ class Issue:
     call_path: Optional[List[str]] = None
     call_paths: Optional[List[List[str]]] = None
     duplicate_sources: Optional[List[Dict[str, Any]]] = None
+    duplicate_count: Optional[int] = None
+    alternate_evidence: Optional[List[Dict[str, Any]]] = None
+    dedup_decision: Optional[Dict[str, Any]] = None
+    dedup_decisions: Optional[List[Dict[str, Any]]] = None
+    category_family: Optional[str] = None
+    resource_signature: Optional[str] = None
     related_needs_review_observations: Optional[List[Dict[str, Any]]] = None
     path_constraints: Optional[List[str]] = None
     allocator_kind: Optional[str] = None

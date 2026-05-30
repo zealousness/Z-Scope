@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import json
 import logging
 
@@ -71,6 +71,49 @@ Or if it is fixed:
 """
 
 
+DEDUPLICATE_CLUSTER_PROMPT = """Mode: Deduplicate Cluster
+
+You are reviewing a small cluster of findings from the same Z-SCOPE report.
+Your job is only to decide whether some findings are duplicate descriptions of
+the exact same underlying vulnerability/root cause. Do not decide whether the
+vulnerability is real; that is the validator's job.
+
+Rules:
+- Merge only when the findings describe the same defect in the same code/resource.
+- Keep findings distinct when they involve different resources, member fields,
+  ownership paths, source/sink paths, or independent failure paths.
+- Prefer the most concrete/local/backend-backed finding as the primary issue.
+- If unsure, keep findings distinct.
+
+Cluster:
+{cluster}
+
+You must output a JSON code block in EXACTLY this format:
+```json
+{{
+  "duplicate_groups": [
+    {{
+      "primary_issue_id": "ISSUE_A",
+      "duplicate_issue_ids": ["ISSUE_B"],
+      "root_cause_key": "category|file|function|resource",
+      "confidence": 0.91,
+      "reasoning": "Both findings describe the same missing cleanup of the same object on the same failure path."
+    }}
+  ],
+  "must_keep_distinct_issue_ids": ["ISSUE_C"]
+}}
+```
+
+If there are no duplicates, output:
+```json
+{{
+  "duplicate_groups": [],
+  "must_keep_distinct_issue_ids": ["ISSUE_A", "ISSUE_B"]
+}}
+```
+"""
+
+
 class IssueReconcilerAgent(ToolCallingAgent):
     """Agent for reconciling historical issues with new code or new findings."""
 
@@ -90,6 +133,8 @@ class IssueReconcilerAgent(ToolCallingAgent):
             return self._run_deduplicate(input_data)
         if mode == "verify_fix":
             return self._run_verify_fix(input_data)
+        if mode == "deduplicate_cluster":
+            return self._run_deduplicate_cluster(input_data)
         return AgentResponse(success=False, data={}, error=f"Unknown mode: {mode}")
 
     def _run_deduplicate(self, input_data: Dict[str, Any]) -> AgentResponse:
@@ -127,6 +172,36 @@ class IssueReconcilerAgent(ToolCallingAgent):
         )
         return self._call_llm(prompt)
 
+    def _run_deduplicate_cluster(self, input_data: Dict[str, Any]) -> AgentResponse:
+        issues = input_data.get("issues", [])
+        if not isinstance(issues, list) or len(issues) < 2:
+            return AgentResponse(
+                success=True,
+                data={"duplicate_groups": [], "must_keep_distinct_issue_ids": []},
+            )
+
+        compact_issues = [self._compact_cluster_issue(issue) for issue in issues if isinstance(issue, dict)]
+        cluster = {
+            "cluster_id": input_data.get("cluster_id"),
+            "issues": compact_issues,
+            "deterministic_hints": input_data.get("deterministic_hints", {}),
+        }
+        prompt = DEDUPLICATE_CLUSTER_PROMPT.format(
+            cluster=json.dumps(cluster, ensure_ascii=False, indent=2)
+        )
+        response = self._call_llm(prompt)
+        if not response.success:
+            return response
+        normalized = self._normalize_cluster_decision(response.data, compact_issues)
+        if normalized is None:
+            return AgentResponse(
+                success=False,
+                data={},
+                error="Invalid deduplicate_cluster JSON schema",
+                metadata=response.metadata,
+            )
+        return AgentResponse(success=True, data=normalized, metadata=response.metadata)
+
     def _call_llm(self, user_prompt: str) -> AgentResponse:
         try:
             result = self._run_tool_conversation(
@@ -148,6 +223,72 @@ class IssueReconcilerAgent(ToolCallingAgent):
         except Exception as exc:
             logger.exception("IssueReconciler agent failed")
             return AgentResponse(success=False, data={}, error=str(exc))
+
+    @staticmethod
+    def _compact_cluster_issue(issue: Dict[str, Any]) -> Dict[str, Any]:
+        keep = (
+            "id",
+            "category",
+            "category_family",
+            "function",
+            "file",
+            "location",
+            "root_cause",
+            "description",
+            "positive_evidence",
+            "candidate_source",
+            "resource_signature",
+            "root_cause_key",
+            "source",
+            "sink",
+            "call_path",
+        )
+        return {key: issue.get(key) for key in keep if issue.get(key) not in (None, "", [], {})}
+
+    @staticmethod
+    def _normalize_cluster_decision(
+        data: Dict[str, Any],
+        issues: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(data, dict):
+            return None
+        issue_ids = {str(issue.get("id")) for issue in issues if issue.get("id")}
+        raw_groups = data.get("duplicate_groups", [])
+        raw_keep = data.get("must_keep_distinct_issue_ids", [])
+        if not isinstance(raw_groups, list) or not isinstance(raw_keep, list):
+            return None
+
+        groups = []
+        for raw_group in raw_groups:
+            if not isinstance(raw_group, dict):
+                return None
+            primary_id = str(raw_group.get("primary_issue_id") or "")
+            duplicate_ids = [
+                str(item)
+                for item in raw_group.get("duplicate_issue_ids", [])
+                if str(item or "") in issue_ids
+            ]
+            if primary_id not in issue_ids or not duplicate_ids:
+                return None
+            try:
+                confidence = float(raw_group.get("confidence", 0) or 0)
+            except (TypeError, ValueError):
+                return None
+            groups.append(
+                {
+                    "primary_issue_id": primary_id,
+                    "duplicate_issue_ids": duplicate_ids,
+                    "root_cause_key": str(raw_group.get("root_cause_key") or ""),
+                    "confidence": confidence,
+                    "reasoning": str(raw_group.get("reasoning") or ""),
+                }
+            )
+
+        keep_distinct = [str(item) for item in raw_keep if str(item or "") in issue_ids]
+        return {
+            "duplicate_groups": groups,
+            "must_keep_distinct_issue_ids": keep_distinct,
+        }
 
     @staticmethod
     def _trace_label(user_prompt: str) -> str:

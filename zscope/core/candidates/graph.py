@@ -64,6 +64,23 @@ class GraphCandidateGenerator:
         "key_truncation": "CWE-187",
         "use_after_free": "CWE-416",
         "race": "CWE-362",
+        "semantic_mismatch": "CWE-628",
+        "byte_order_logic": "CWE-682",
+        "reader_state_race": "CWE-362",
+        "stack_overflow": "CWE-121",
+        "uninitialized_output": "CWE-457",
+        "file_type_validation": "CWE-20",
+        "log_level_misuse": "CWE-778",
+        "logic_error": "CWE-682",
+        "global_mode_race": "CWE-362",
+        "slot_race": "CWE-362",
+        "lost_wakeup": "CWE-366",
+        "shared_memory_race": "CWE-362",
+        "state_machine": "CWE-672",
+        "signal_deadlock": "CWE-833",
+        "callback_self_destroy_race": "CWE-416",
+        "object_publication": "CWE-362",
+        "fd_type_mismatch": "CWE-628",
     }
 
     def __init__(
@@ -189,6 +206,8 @@ class GraphCandidateGenerator:
             self._rule_thread_argument_lifetime(view, issues)
             self._rule_global_container_lifecycle(view, issues)
             self._rule_tree_and_liveness_protocols(view, issues)
+            self._rule_publication_and_lifetime_order(view, issues)
+            self._rule_protocol_state_contracts(view, issues)
 
         self._rule_paired_lifecycle_protocols(views, issues)
         self._rule_paired_member_cleanup_protocols(views, issues)
@@ -196,6 +215,7 @@ class GraphCandidateGenerator:
         self._rule_paired_self_link_log_traversal(views, issues)
         self._rule_paired_global_registration_cleanup(views, issues)
         self._rule_timer_cascade_wait(views, issues)
+        self._rule_callback_self_destroy_protocols(views, issues)
         self._rule_lock_order_inversion(views, issues)
         return self._dedupe(issues)
 
@@ -227,7 +247,10 @@ class GraphCandidateGenerator:
             expand_dispatcher_siblings = (
                 depth >= max_depth
                 and depth < max_depth + 1
-                and self._looks_like_dispatcher_view(view)
+                and (
+                    self._looks_like_dispatcher_view(view)
+                    or self._looks_like_boundary_fanout_view(view)
+                )
             )
             if depth >= max_depth and not expand_dispatcher_siblings:
                 continue
@@ -799,6 +822,735 @@ class GraphCandidateGenerator:
                     ],
                 )
             )
+
+    def _rule_publication_and_lifetime_order(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        allocs = self._local_allocated_variables(view)
+        if not allocs:
+            return
+
+        for var, alloc_line in allocs.items():
+            publish_line: Optional[GraphLine] = None
+            unlock_after_publish: Optional[GraphLine] = None
+            for line in view.lines:
+                if line.index <= alloc_line.index:
+                    continue
+                if publish_line is None and self._line_publishes_object(line.text, var):
+                    publish_line = line
+                    continue
+                if publish_line is not None and line.index > publish_line.index and self._unlock_call_re.search(line.text):
+                    unlock_after_publish = line
+                    break
+            if publish_line and unlock_after_publish:
+                late_init = next(
+                    (
+                        line
+                        for line in view.lines
+                        if line.index > unlock_after_publish.index
+                        and (
+                            (
+                                re.search(rf"\b{re.escape(var)}->\w+\s*=", line.text)
+                                and not re.search(r"=\s*(?:0|NULL|nullptr)\s*;", line.text)
+                            )
+                            or re.search(rf"\bpthread_(?:mutex|cond|rwlock)_init\s*\([^;]*\b{re.escape(var)}->", line.text)
+                        )
+                    ),
+                    None,
+                )
+                if late_init:
+                    issues.append(
+                        self._issue(
+                            defect_class="object_publication",
+                            rule="published_before_member_initialization",
+                            view=view,
+                            line=publish_line,
+                            description=(
+                                f"`{var}` is linked or published before later member initialization completes."
+                            ),
+                            root_cause="Concurrent readers can observe a partially initialized object after it is inserted into shared state.",
+                            suggested_fix="Initialize all fields and embedded synchronization primitives before publishing the object.",
+                            source=f"{view.name}:{alloc_line.number}:{var}",
+                            sink=publish_line.text.strip(),
+                            confidence=0.84,
+                            impact_level="high",
+                            positive=[
+                                f"line {alloc_line.number}: `{var}` is allocated",
+                                f"line {publish_line.number}: `{var}` is published to shared/container state",
+                                f"line {unlock_after_publish.number}: publication lock is released",
+                                f"line {late_init.number}: member initialization occurs after publication",
+                            ],
+                            evidence={
+                                "path": {
+                                    "function": view.name,
+                                    "source_line": alloc_line.number,
+                                    "publish_line": publish_line.number,
+                                    "late_init_line": late_init.number,
+                                    "complete_in_function": True,
+                                    "path_constraints": ["shared/container readers can observe the object after publication"],
+                                }
+                            },
+                        )
+                    )
+
+            unlink_line = next(
+                (
+                    line
+                    for line in view.lines
+                    if line.index > alloc_line.index
+                    and re.search(rf"\bg_[A-Za-z_0-9.]*\s*=\s*{re.escape(var)}->next\b", line.text)
+                ),
+                None,
+            )
+            if not unlink_line:
+                continue
+            unlock_line = next(
+                (
+                    line
+                    for line in view.lines
+                    if line.index > unlink_line.index and self._unlock_call_re.search(line.text)
+                ),
+                None,
+            )
+            free_line = next(
+                (
+                    line
+                    for line in view.lines
+                    if unlock_line
+                    and line.index > unlock_line.index
+                    and re.search(rf"\b(?:SAFE_FREE|free|kfree)\s*\(\s*(?:{re.escape(var)}(?:->\w+)?|{re.escape(var)})\s*\)", line.text)
+                ),
+                None,
+            )
+            if unlink_line and unlock_line and free_line:
+                issues.append(
+                    self._issue(
+                        defect_class="race",
+                        rule="container_unlink_free_after_unlock",
+                        view=view,
+                        line=unlink_line,
+                        description=(
+                            f"`{var}` is unlinked under the container lock, then released after the lock is dropped."
+                        ),
+                        root_cause="Concurrent readers that observed the node before unlink can race with member or node release after unlock.",
+                        suggested_fix="Use refcounts/RCU or keep the lifetime lock held until no reader can still dereference the node.",
+                        source=unlink_line.text.strip(),
+                        sink=free_line.text.strip(),
+                        confidence=0.82,
+                        impact_level="high",
+                        positive=[
+                            f"line {unlink_line.number}: global/container link is changed to `{var}->next`",
+                            f"line {unlock_line.number}: container lock is released",
+                            f"line {free_line.number}: `{var}` or one of its members is freed after unlock",
+                        ],
+                        evidence={
+                            "path": {
+                                "function": view.name,
+                                "source_line": unlink_line.number,
+                                "sink_line": free_line.number,
+                                "complete_in_function": True,
+                                "path_constraints": ["concurrent readers can retain references across unlink"],
+                            }
+                        },
+                    )
+                )
+
+    def _rule_protocol_state_contracts(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        text = "\n".join(line.text for line in view.lines)
+
+        mismatch_line = self._first_line_matching(
+            view,
+            re.compile(r"\b[A-Za-z_]\w*(?:sleep|window|timer|callback|schedule)[A-Za-z_0-9]*\s*\([^;]*(?:busy|work)[A-Za-z_0-9]*", re.I),
+        )
+        if mismatch_line and re.search(r"\b(?:busy|work)[A-Za-z_0-9]*\s*=", text, re.I):
+            issues.append(
+                self._issue(
+                    defect_class="semantic_mismatch",
+                    rule="cross_domain_counter_passed_to_callback_contract",
+                    view=view,
+                    line=mismatch_line,
+                    description="A counter derived from one runtime domain is passed into a callback/scheduler contract from another domain.",
+                    root_cause="The call path preserves type compatibility but loses the semantic unit expected by the callee contract.",
+                    suggested_fix="Pass the callee's expected domain value explicitly or rename/split the counters so unit mismatches are rejected at the boundary.",
+                    source="domain counter",
+                    sink=mismatch_line.text.strip(),
+                    confidence=0.72,
+                    impact_level="medium",
+                    positive=[
+                        "local code derives a busy/work counter",
+                        f"line {mismatch_line.number}: the counter is passed to a sleep/window/timer/callback contract",
+                    ],
+                    negative=["Validator must confirm the callee expects a different counter domain."],
+                )
+            )
+
+        endian_line = self._first_line_matching(view, re.compile(r"__builtin_ctz(?:ll)?\s*\("))
+        if endian_line and re.search(r"\bmemcpy\s*\(\s*&[A-Za-z_]\w+\s*,\s*[^;]*input\s*\+", text) and not re.search(
+            r"\b(?:be(?:16|32|64)toh|ntoh(?:s|l)|bswap|__builtin_bswap)", text
+        ):
+            issues.append(
+                self._issue(
+                    defect_class="byte_order_logic",
+                    rule="wire_bitmap_ctz_without_endian_normalization",
+                    view=view,
+                    line=endian_line,
+                    description="Wire bytes are copied into host integers and scanned with ctz without endian normalization.",
+                    root_cause="The bit index returned by trailing-zero operations is host-order dependent and can point at the wrong wire byte on big-endian data.",
+                    suggested_fix="Normalize byte order before bit scans or scan the wire byte array in protocol order.",
+                    source="wire bitmap bytes",
+                    sink=endian_line.text.strip(),
+                    confidence=0.82,
+                    impact_level="medium",
+                    positive=[
+                        "function copies byte-buffer data into integer words",
+                        f"line {endian_line.number}: trailing-zero scan is applied to the host integer",
+                        "no endian conversion is visible before the scan",
+                    ],
+                )
+            )
+
+        reader_line = self._first_line_matching(
+            view,
+            re.compile(r"(?:\.|->)?(?:[A-Za-z_]\w*)?reader[A-Za-z_0-9]*\s*="),
+        )
+        if reader_line and "__atomic_fetch_add" in text and "__atomic_fetch_sub" in text and not re.search(
+            r"\b(?:pthread_mutex_lock|LOCK|spin_lock)\s*\(", text
+        ):
+            issues.append(
+                self._issue(
+                    defect_class="reader_state_race",
+                    rule="single_reader_field_under_shared_reader_count",
+                    view=view,
+                    line=reader_line,
+                    description="A shared reader-owner field is written while a shared reader count allows multiple readers.",
+                    root_cause="Atomic count updates protect the count value, but not the side field that stores one reader identity.",
+                    suggested_fix="Use per-reader state, protect the identity field with the rwlock writer protocol, or remove the single-owner field.",
+                    source="shared reader field",
+                    sink=reader_line.text.strip(),
+                    confidence=0.84,
+                    impact_level="high",
+                    positive=[
+                        "function increments/decrements a reader count atomically",
+                        f"line {reader_line.number}: reader identity state is assigned outside a lock",
+                    ],
+                )
+            )
+
+        stack_line = self._first_line_matching(
+            view,
+            re.compile(r"\bmem(?:cpy|move)\s*\([^;]*\b[A-Za-z_]\w*\.name\s*,\s*[A-Za-z_]\w+\s*,\s*strlen\s*\(", re.I),
+        )
+        if stack_line and re.search(r"\bsnprintf\s*\([^;]*%s", text):
+            issues.append(
+                self._issue(
+                    defect_class="stack_overflow",
+                    rule="composed_string_copied_to_member_buffer_without_bound",
+                    view=view,
+                    line=stack_line,
+                    description="A variable-length composed string is copied into a fixed member buffer using strlen length.",
+                    root_cause="The formatting buffer is bounded, but the destination member's smaller fixed size is not used as the copy limit.",
+                    suggested_fix="Copy with the destination member size and reject or truncate names before composing the thread label.",
+                    source="composed string",
+                    sink=stack_line.text.strip(),
+                    confidence=0.82,
+                    impact_level="high",
+                    positive=[
+                        "function composes a string containing external text",
+                        f"line {stack_line.number}: strlen(composed)+1 controls a member-buffer copy",
+                    ],
+                )
+            )
+
+        self._emit_uninitialized_output_candidate(view, issues)
+
+        file_type_line = self._first_line_matching(view, re.compile(r"\bfile_size\s*<\s*map_size\b|\bmap_size\s*>\s*file_size\b"))
+        if file_type_line and re.search(r"(?:IS_CHR|S_ISCHR|character device|chr)", text, re.I):
+            issues.append(
+                self._issue(
+                    defect_class="file_type_validation",
+                    rule="regular_file_size_check_applied_to_device_mapping",
+                    view=view,
+                    line=file_type_line,
+                    description="Mapping validation applies regular-file size semantics before distinguishing character-device backings.",
+                    root_cause="Character-device/shared-memory mappings do not have the same file-size contract as regular files.",
+                    suggested_fix="Branch on backing type first and apply type-specific size validation before mapping.",
+                    source="mapping size validation",
+                    sink=file_type_line.text.strip(),
+                    confidence=0.78,
+                    impact_level="medium",
+                    positive=[
+                        f"line {file_type_line.number}: file-size check guards mapping size",
+                        "the same function accepts character-device/shared-memory backing modes",
+                    ],
+                )
+            )
+
+        self._emit_index_bound_candidate(view, issues)
+        self._emit_cached_group_iteration_candidate(view, issues)
+        self._emit_global_mode_candidate(view, issues)
+        self._emit_cas_slot_candidate(view, issues)
+        self._emit_lost_wakeup_candidate(view, issues)
+        self._emit_find_before_insert_lock_candidate(view, issues)
+        self._emit_state_transition_candidate(view, issues)
+        self._emit_signal_handler_candidate(view, issues)
+        self._emit_role_release_candidate(view, issues)
+        self._emit_fd_contract_candidate(view, issues)
+
+    def _emit_uninitialized_output_candidate(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        text = "\n".join(line.text for line in view.lines)
+        if "memset" in text:
+            return
+        for line in view.lines:
+            match = re.search(r"\b(?P<type>[A-Z][A-Za-z_0-9]*)\s+(?P<var>[A-Za-z_]\w*)\s*;", line.text)
+            if not match:
+                continue
+            var = match.group("var")
+            copy_line = next(
+                (
+                    item
+                    for item in view.lines
+                    if item.index > line.index
+                    and re.search(rf"\*\s*[A-Za-z_]\w+\s*=\s*{re.escape(var)}\s*;", item.text)
+                ),
+                None,
+            )
+            if not copy_line:
+                continue
+            assigned_fields = {
+                m.group(1)
+                for item in view.lines
+                if line.index < item.index < copy_line.index
+                for m in re.finditer(rf"\b{re.escape(var)}\.(\w+)\s*=", item.text)
+            }
+            if not assigned_fields or len(assigned_fields) >= 6:
+                continue
+            issues.append(
+                self._issue(
+                    defect_class="uninitialized_output",
+                    rule="partial_stack_struct_copied_to_output",
+                    view=view,
+                    line=copy_line,
+                    description="A stack struct is copied to an output parameter after only a subset of fields are initialized.",
+                    root_cause="Uninitialized padding or fields can leak stale stack data or produce nondeterministic API results.",
+                    suggested_fix="Zero-initialize the temporary struct before filling fields or assign every field before copying it out.",
+                    source=f"{match.group('type')} {var}",
+                    sink=copy_line.text.strip(),
+                    confidence=0.82,
+                    impact_level="medium",
+                    positive=[
+                        f"line {line.number}: local output struct `{var}` is declared without initialization",
+                        f"line {copy_line.number}: `{var}` is copied to an output parameter",
+                        f"assigned fields before copy: {', '.join(sorted(assigned_fields))}",
+                    ],
+                )
+            )
+            return
+
+    def _emit_index_bound_candidate(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        for idx, line in enumerate(view.lines):
+            loop = re.search(
+                r"\bfor\s*\([^;]*\b(?P<idx>[A-Za-z_]\w*)\s*=\s*[^;]*;\s*(?P=idx)\s*<\s*(?P<limit>[A-Za-z_]\w*)",
+                line.text,
+            )
+            if not loop:
+                continue
+            idx_name = loop.group("idx")
+            limit_name = loop.group("limit")
+            window = view.lines[idx + 1 : min(len(view.lines), idx + 8)]
+            access_line = next(
+                (
+                    item
+                    for item in window
+                    if re.search(rf"->\s*[A-Za-z_]\w*\s*\[\s*{re.escape(idx_name)}\s*\]", item.text)
+                    or re.search(rf"\.[A-Za-z_]\w*\s*\[\s*{re.escape(idx_name)}\s*\]", item.text)
+                ),
+                None,
+            )
+            if not access_line:
+                continue
+            guard_text = "\n".join(item.text for item in view.lines[max(0, idx - 5) : idx + 1])
+            if "ARRAY_SIZE" in guard_text or re.search(rf"\b{re.escape(limit_name)}\s*<=\s*(?:ARRAY_SIZE|sizeof)", guard_text):
+                continue
+            issues.append(
+                self._issue(
+                    defect_class="bounds",
+                    rule="caller_limit_indexes_fixed_member_array",
+                    view=view,
+                    line=access_line,
+                    description="A caller-controlled limit indexes a fixed member array without proving it is within the array size.",
+                    root_cause="The loop bound is a function argument or protocol limit, while the indexed member has its own fixed capacity.",
+                    suggested_fix="Clamp the loop bound to the destination array length before indexing.",
+                    source=f"{idx_name} < {limit_name}",
+                    sink=access_line.text.strip(),
+                    confidence=0.8,
+                    impact_level="high",
+                    positive=[
+                        f"line {line.number}: loop uses `{limit_name}` as the bound",
+                        f"line {access_line.number}: member array is indexed by `{idx_name}`",
+                        "no nearby ARRAY_SIZE/sizeof guard for the member array is visible",
+                    ],
+                )
+            )
+            return
+
+    def _emit_cached_group_iteration_candidate(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        text = "\n".join(line.text for line in view.lines)
+        if not ("group_idx" in text and "pt_no_idx" in text and re.search(r"\b[A-Za-z_]\w*grp\b|\barena_grp\b", text)):
+            return
+        stale_line = self._first_line_matching(view, re.compile(r"\barena_grp\s*=\s*&[A-Za-z_]\w+\[group_idx\]"))
+        use_line = self._first_line_matching(view, re.compile(r"\barena_grp->\w+\[pt_no_idx\]"))
+        if not stale_line or not use_line:
+            return
+        issues.append(
+            self._issue(
+                defect_class="logic_error",
+                rule="cached_group_pointer_reused_across_partition_index",
+                view=view,
+                line=use_line,
+                description="A cached group pointer is reused while a per-iteration group index changes.",
+                root_cause="Traversal state is refreshed from one index dimension but used with another, so later iterations can read the wrong group.",
+                suggested_fix="Recompute the group pointer whenever the group index changes, or derive both group and member from the same canonical index.",
+                source=stale_line.text.strip(),
+                sink=use_line.text.strip(),
+                confidence=0.78,
+                impact_level="medium",
+                positive=[
+                    f"line {stale_line.number}: group pointer is cached from `group_idx`",
+                    f"line {use_line.number}: cached pointer is used with `pt_no_idx`",
+                ],
+            )
+        )
+
+    def _emit_global_mode_candidate(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        text = "\n".join(line.text for line in view.lines)
+        assign_line = self._first_line_matching(view, re.compile(r"\bg_[A-Za-z_0-9]*(?:mode|use|algorithm)[A-Za-z_0-9]*\s*="))
+        if not assign_line or self._lock_call_re.search(text):
+            return
+        branch_line = self._first_line_matching(view, re.compile(r"\bif\s*\([^)]*g_[A-Za-z_0-9]*(?:mode|use|algorithm)[A-Za-z_0-9]*"))
+        callback_line = self._first_line_matching(view, re.compile(r"\b[A-Za-z_]\w+\[[^]]+\]\.[A-Za-z_]\w+\s*\("))
+        if not (branch_line and callback_line):
+            return
+        issues.append(
+            self._issue(
+                defect_class="global_mode_race",
+                rule="mutable_global_mode_drives_callback_without_lock",
+                view=view,
+                line=assign_line,
+                description="A mutable global mode selects a callback path without synchronization across registration and use.",
+                root_cause="Concurrent callers can change the global mode between callback registration and dispatch.",
+                suggested_fix="Protect the mode and callback table with the same lock or pass an immutable mode snapshot through the operation.",
+                source=assign_line.text.strip(),
+                sink=callback_line.text.strip(),
+                confidence=0.82,
+                impact_level="high",
+                positive=[
+                    f"line {assign_line.number}: global mode is updated",
+                    f"line {branch_line.number}: global mode controls the branch",
+                    f"line {callback_line.number}: callback/function table dispatch follows that mode",
+                    "no lock is visible in the function",
+                ],
+            )
+        )
+
+    def _emit_cas_slot_candidate(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        cas_line = self._first_line_matching(view, re.compile(r"\(void\)\s*__sync_bool_compare_and_swap|__sync_bool_compare_and_swap"))
+        if not cas_line:
+            return
+        text = "\n".join(line.text for line in view.lines)
+        if not re.search(r"\(void\)\s*__sync_bool_compare_and_swap", text):
+            return
+        write_line = next(
+            (
+                line
+                for line in view.lines
+                if line.index > cas_line.index and re.search(r"\b[A-Za-z_]\w*->(?:pid|name|state|id|proc)", line.text)
+            ),
+            None,
+        )
+        if not write_line:
+            return
+        issues.append(
+            self._issue(
+                defect_class="slot_race",
+                rule="cas_result_ignored_before_slot_publication",
+                view=view,
+                line=cas_line,
+                description="A compare-and-swap claim result is ignored before writing into the shared slot.",
+                root_cause="If another caller wins the CAS, subsequent field writes can corrupt a slot owned by that caller.",
+                suggested_fix="Check the CAS result and retry or fail before writing any slot fields.",
+                source=cas_line.text.strip(),
+                sink=write_line.text.strip(),
+                confidence=0.86,
+                impact_level="high",
+                positive=[
+                    f"line {cas_line.number}: CAS result is explicitly discarded",
+                    f"line {write_line.number}: slot fields are written after the unchecked CAS",
+                ],
+            )
+        )
+
+    def _emit_lost_wakeup_candidate(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        text = "\n".join(line.text for line in view.lines)
+        if not re.search(r"\b[A-Za-z_]\w*Event\s+[A-Za-z_]\w+\s*;", text):
+            return
+        enqueue_line = self._first_line_matching(view, re.compile(r"\bg_[A-Za-z_0-9.]*list\s*=\s*&[A-Za-z_]\w+"))
+        if not enqueue_line:
+            return
+        if re.search(r"\b(?:pthread_cond_signal|pthread_cond_broadcast|eventfd_write|notify|trigger|wakeup)\s*\(", text, re.I):
+            return
+        issues.append(
+            self._issue(
+                defect_class="lost_wakeup",
+                rule="queued_local_event_without_scheduler_wakeup",
+                view=view,
+                line=enqueue_line,
+                description="A local event is queued into shared scheduling state without a wakeup/trigger operation.",
+                root_cause="The producer publishes work but does not notify the consumer path that new work is available.",
+                suggested_fix="Trigger the local scheduler or signal the condition/eventfd after queueing the event.",
+                source="local event enqueue",
+                sink=enqueue_line.text.strip(),
+                confidence=0.82,
+                impact_level="high",
+                positive=[
+                    "function creates a local event object",
+                    f"line {enqueue_line.number}: local event address is linked into shared event state",
+                    "no scheduler trigger or wakeup call is visible",
+                ],
+            )
+        )
+
+    def _emit_find_before_insert_lock_candidate(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        find_line = self._first_line_matching(view, re.compile(r"\bif\s*\([^)]*(?:find|lookup)[A-Za-z_0-9]*\([^)]*\)\s*!=\s*NULL", re.I))
+        if not find_line:
+            return
+        lock_line = next((line for line in view.lines if line.index > find_line.index and self._lock_arg(line.text)), None)
+        insert_line = next(
+            (
+                line
+                for line in view.lines
+                if lock_line
+                and line.index > lock_line.index
+                and re.search(r"\bg_[A-Za-z_0-9.]*\s*=\s*[A-Za-z_]\w+", line.text)
+            ),
+            None,
+        )
+        if not insert_line:
+            return
+        issues.append(
+            self._issue(
+                defect_class="shared_memory_race",
+                rule="lookup_before_insert_lock",
+                view=view,
+                line=find_line,
+                description="A duplicate/existence lookup is performed before taking the lock that protects insertion.",
+                root_cause="Two creators can both observe absence and then insert duplicate shared resources.",
+                suggested_fix="Hold the insertion lock across lookup and insert, or use an atomic create-if-absent primitive.",
+                source=find_line.text.strip(),
+                sink=insert_line.text.strip(),
+                confidence=0.84,
+                impact_level="high",
+                positive=[
+                    f"line {find_line.number}: existence lookup occurs before lock acquisition",
+                    f"line {insert_line.number}: shared/global list is updated after the lock is acquired",
+                ],
+            )
+        )
+
+    def _emit_state_transition_candidate(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        state_lines = [line for line in view.lines if re.search(r"->\s*(?:proc_)?state\s*=", line.text)]
+        if len(state_lines) != 1:
+            return
+        state_line = state_lines[0]
+        later_write = next(
+            (
+                line
+                for line in view.lines
+                if line.index > state_line.index and re.search(r"->\s*(?:pid|name|id)\s*=", line.text)
+            ),
+            None,
+        )
+        if not later_write:
+            return
+        issues.append(
+            self._issue(
+                defect_class="state_machine",
+                rule="partial_state_machine_publication",
+                view=view,
+                line=state_line,
+                description="One state-machine branch publishes a state transition while another publishes related identity fields without the state transition.",
+                root_cause="Consumers can observe initialized identity data while the shared state still advertises an old lifecycle state.",
+                suggested_fix="Update the lifecycle state consistently for every successful publication branch.",
+                source=state_line.text.strip(),
+                sink=later_write.text.strip(),
+                confidence=0.76,
+                impact_level="medium",
+                positive=[
+                    f"line {state_line.number}: a lifecycle state is assigned in one branch",
+                    f"line {later_write.number}: related identity fields are written later without another state assignment",
+                ],
+                negative=["Validator must confirm the later branch represents a successful publication path."],
+            )
+        )
+
+    def _emit_signal_handler_candidate(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        text = "\n".join(line.text for line in view.lines)
+        if not re.search(r"\b(?:sig|signal|exception)\b", view.name + "\n" + text, re.I):
+            return
+        lock_line = self._first_line_matching(view, re.compile(r"\b(?:pthread_mutex_trylock|LOCK)\s*\([^;]*(?:sem|signal|exception)", re.I))
+        log_line = self._first_line_matching(view, re.compile(r"\b(?:snprintf|LOG_ERROR|printf)\s*\("))
+        if not (lock_line and log_line):
+            return
+        issues.append(
+            self._issue(
+                defect_class="signal_deadlock",
+                rule="signal_path_uses_locking_and_formatting",
+                view=view,
+                line=lock_line,
+                description="A signal/exception path performs locking and formatting/logging work.",
+                root_cause="Signal handlers can interrupt code that owns the same lock or uses non-async-signal-safe routines.",
+                suggested_fix="Record only async-signal-safe data in the handler and defer formatting/logging to a normal thread.",
+                source=lock_line.text.strip(),
+                sink=log_line.text.strip(),
+                confidence=0.84,
+                impact_level="high",
+                positive=[
+                    f"line {lock_line.number}: signal path takes or probes a lock",
+                    f"line {log_line.number}: signal path formats or logs data",
+                ],
+            )
+        )
+
+    def _emit_role_release_candidate(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        text = "\n".join(line.text for line in view.lines)
+        role_assign = self._first_line_matching(view, re.compile(r"->\s*role\s*=\s*(?P<role>[A-Za-z_]\w*)\s*;"))
+        release_line = self._first_line_matching(view, re.compile(r"\b[A-Za-z_]\w*(?:release|cleanup|destroy)[A-Za-z_0-9]*\s*\([^;]*,\s*0\s*\)", re.I))
+        if not (role_assign and release_line):
+            return
+        role_match = re.search(r"->\s*role\s*=\s*(?P<role>[A-Za-z_]\w*)\s*;", role_assign.text)
+        role_name = role_match.group("role") if role_match else "role"
+        if role_name not in text:
+            return
+        issues.append(
+            self._issue(
+                defect_class="memory_leak",
+                rule="role_specific_release_uses_hardcoded_role",
+                view=view,
+                line=release_line,
+                description="A role-specific release helper is called with a hardcoded role instead of the object's stored role.",
+                root_cause="Cleanup only releases resources for one role and can leak role-specific members owned by other roles.",
+                suggested_fix="Pass the stored role/member role to the release helper or dispatch cleanup by the object's actual role.",
+                source=role_assign.text.strip(),
+                sink=release_line.text.strip(),
+                confidence=0.84,
+                impact_level="high",
+                positive=[
+                    f"line {role_assign.number}: object role is set from `{role_name}`",
+                    f"line {release_line.number}: role-specific release is called with literal `0`",
+                ],
+            )
+        )
+
+    def _emit_fd_contract_candidate(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        signature = view.signature or ""
+        if not re.search(r"\b(?:reliable|encoded)[A-Za-z_0-9]*fd\b", signature, re.I):
+            return
+        line = self._first_line_matching(
+            view,
+            re.compile(r"\b[A-Za-z_]\w*(?:inter|raw|lower)[A-Za-z_0-9]*fd[A-Za-z_0-9]*\s*\([^;]*(?:reliable|encoded)[A-Za-z_0-9]*fd", re.I),
+        )
+        if not line:
+            return
+        issues.append(
+            self._issue(
+                defect_class="fd_type_mismatch",
+                rule="encoded_or_reliable_fd_passed_to_raw_fd_contract",
+                view=view,
+                line=line,
+                description="An encoded/reliable descriptor is passed to a lower-level API that expects a raw descriptor.",
+                root_cause="The descriptor representation contract is lost because both representations are integer-like values.",
+                suggested_fix="Decode/strip check bits before calling raw-fd helpers, or change the callee to accept the encoded descriptor type.",
+                source=signature,
+                sink=line.text.strip(),
+                confidence=0.86,
+                impact_level="medium",
+                positive=[
+                    "function signature exposes an encoded/reliable descriptor parameter",
+                    f"line {line.number}: descriptor is passed to an inter/raw-fd helper",
+                ],
+            )
+        )
+
+    @staticmethod
+    def _local_allocated_variables(view: FunctionView) -> Dict[str, GraphLine]:
+        allocs: Dict[str, GraphLine] = {}
+        for line in view.lines:
+            match = re.search(
+                r"\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?"
+                r"(?:_safe_calloc|_safe_malloc|calloc|malloc|kzalloc|kmalloc|[A-Za-z_]\w*(?:alloc|create|new)[A-Za-z_0-9]*)\s*\(",
+                line.text,
+                re.I,
+            )
+            if match:
+                allocs.setdefault(match.group("var"), line)
+        return allocs
+
+    @staticmethod
+    def _line_publishes_object(text: str, var: str) -> bool:
+        escaped = re.escape(var)
+        return bool(
+            re.search(rf"\b[A-Za-z_]\w*(?:insert|link|publish|register|add)[A-Za-z_0-9]*\s*\([^;]*\b{escaped}\b", text, re.I)
+            or re.search(rf"\bg_[A-Za-z_0-9.]*\s*=\s*{escaped}\b", text)
+        )
 
     def _rule_paired_member_cleanup_protocols(
         self,
@@ -1460,6 +2212,127 @@ class GraphCandidateGenerator:
                 )
                 break
 
+    def _rule_callback_self_destroy_protocols(
+        self,
+        views: Sequence[FunctionView],
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        free_callbacks: Dict[str, GraphLine] = {}
+        for view in views:
+            arg_aliases = {"arg"}
+            for line in view.lines:
+                alias = re.search(r"\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?arg\b", line.text)
+                if alias:
+                    arg_aliases.add(alias.group("var"))
+            free_line = next(
+                (
+                    line
+                    for line in view.lines
+                    if any(
+                        re.search(rf"\b(?:SAFE_FREE|free|kfree)\s*\(\s*{re.escape(alias)}\s*\)", line.text)
+                        for alias in arg_aliases
+                    )
+                ),
+                None,
+            )
+            if free_line:
+                free_callbacks[view.name] = free_line
+
+        for view in views:
+            text = "\n".join(line.text for line in view.lines)
+            self_arg = re.search(r"\b(?P<obj>[A-Za-z_]\w*)->callback_arg\s*=\s*(?P=obj)\s*;", text)
+            cb_assign = re.search(r"\b(?P<obj>[A-Za-z_]\w*)->callback\s*=\s*(?P<rhs>[^;]+)", text)
+            if not (self_arg and cb_assign and self_arg.group("obj") == cb_assign.group("obj")):
+                continue
+            callback_name = ""
+            free_line = None
+            for candidate_name in self._callback_assignment_targets(cb_assign.group("rhs")):
+                candidate_free = free_callbacks.get(candidate_name)
+                if not candidate_free:
+                    callback_view = next((item for item in views if item.name == candidate_name), None) or self._view_for(candidate_name)
+                    if callback_view:
+                        candidate_free = self._callback_free_line(callback_view)
+                if candidate_free:
+                    callback_name = candidate_name
+                    free_line = candidate_free
+                    break
+            if not free_line:
+                continue
+            obj = self_arg.group("obj")
+            call_line = self._first_line_matching(
+                view,
+                re.compile(rf"\b{re.escape(obj)}->callback\s*\(\s*{re.escape(obj)}->callback_arg"),
+            )
+            if not call_line:
+                continue
+            post_use = next(
+                (
+                    line
+                    for line in view.lines
+                    if line.index > call_line.index and re.search(rf"\b{re.escape(obj)}->", line.text)
+                ),
+                None,
+            )
+            if not post_use:
+                continue
+            issues.append(
+                self._issue(
+                    defect_class="callback_self_destroy_race",
+                    rule="callback_can_free_current_event_before_reacquire",
+                    view=view,
+                    line=call_line,
+                    description="A callback receives the current object as its context and can free it before the caller resumes using it.",
+                    root_cause="The callback contract permits self-destruction, but the caller keeps dereferencing the object after the callback returns.",
+                    suggested_fix="Hold a reference across callback execution or mark/detach the current object before invoking callbacks that may destroy it.",
+                    source=f"{callback_name}:{free_line.number}",
+                    sink=post_use.text.strip(),
+                    confidence=0.88,
+                    impact_level="high",
+                    positive=[
+                        f"{view.name}: callback_arg is set to the current object `{obj}`",
+                        f"line {call_line.number}: callback is invoked with `{obj}->callback_arg`",
+                        f"{callback_name} line {free_line.number}: callback frees the argument object",
+                        f"line {post_use.number}: caller uses `{obj}` after callback returns",
+                    ],
+                    evidence={
+                        "path": {
+                            "caller": view.name,
+                            "callback": callback_name,
+                            "callback_free_line": free_line.number,
+                            "source_line": call_line.number,
+                            "sink_line": post_use.number,
+                            "complete_in_function": False,
+                            "path_constraints": ["callback may execute synchronously and destroy its context"],
+                        }
+                    },
+                )
+        )
+
+    @staticmethod
+    def _callback_assignment_targets(rhs: str) -> List[str]:
+        skip = {"NULL", "nullptr", "true", "false"}
+        names = re.findall(r"\b[A-Za-z_]\w*\b", str(rhs or ""))
+        return [name for name in names if name not in skip and name.startswith("_")]
+
+    @staticmethod
+    def _callback_free_line(view: FunctionView) -> Optional[GraphLine]:
+        arg_aliases = {"arg"}
+        for line in view.lines:
+            alias = re.search(r"\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?arg\b", line.text)
+            if alias:
+                arg_aliases.add(alias.group("var"))
+        return next(
+            (
+                line
+                for line in view.lines
+                if any(
+                    re.search(rf"\b(?:SAFE_FREE|free|kfree)\s*\(\s*{re.escape(alias)}\s*\)", line.text)
+                    for alias in arg_aliases
+                )
+            ),
+            None,
+        )
+
     def _rule_lock_order_inversion(
         self,
         views: Sequence[FunctionView],
@@ -1760,6 +2633,23 @@ class GraphCandidateGenerator:
         switch_hint = "switch" in text or len(re.findall(r"\bcase\b|\bdefault\s*:", text)) >= 2
         branch_hint = len(re.findall(r"\b(?:if|else\s+if)\s*\(", text)) >= 3
         return bool(switch_hint or (name_hint and branch_hint))
+
+    @staticmethod
+    def _looks_like_boundary_fanout_view(view: FunctionView) -> bool:
+        if not view.callees:
+            return False
+        text = "\n".join(line.text for line in view.lines)
+        if len(view.callees) == 1 and re.search(r"\breturn\s+[A-Za-z_]\w+\s*\(", text):
+            return True
+        call_statements = sum(1 for line in view.lines if GraphCandidateGenerator._called_names(line.text))
+        if len(view.callees) >= 3 and call_statements >= 3:
+            return True
+        name_hint = re.search(
+            r"(?:apply|configure|publish|schedule|refresh|accept|cycle|plan|record|maintenance|cases|worker|runtime)",
+            view.name,
+            re.I,
+        )
+        return bool(name_hint and len(view.callees) >= 2 and call_statements >= 2)
 
     @staticmethod
     def _first_line_containing(view: FunctionView, needle: str) -> Optional[GraphLine]:

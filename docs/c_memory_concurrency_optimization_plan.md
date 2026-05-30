@@ -180,6 +180,60 @@ rate <= 50%. Remaining work should focus on generic type-contract checks,
 cross-function init cleanup ownership, and recursive-lock proof without fixture
 function-name matching.
 
+## 8.1 Current WSL Auto-Unified Range Result
+
+Run: `test/range/benchmark_runs/auto_unified_wsl_protocolfix_20260530_035047`
+
+Environment:
+
+- WSL Ubuntu
+- automatic entry discovery enabled
+- `indexing.backend: unified`
+- `header_files: ["*.h"]`
+- clangd indexing succeeded
+- SVF `wpa` and Saber succeeded
+- 820 SVF indirect-call edges and 13 Saber bugs imported
+- no `svf unavailable` fallback was used
+
+Metrics:
+
+| View | Reported | Ground truth | TP | FP | FN | Precision | Recall | F1 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| default | 136 | 122 | 83 | 53 | 39 | 61.03% | 68.03% | 64.34% |
+| with needs_review | 237 | 122 | 100 | 137 | 22 | 42.19% | 81.97% | 55.71% |
+
+Note: this run used benchmark truth v12. Benchmark v13 retired
+`ISSUE42-012/log_level_misuse` as a style-only logging case, so the current
+scored truth count is 121.
+
+Compared with `auto_unified_wsl_benchfix_20260529_001`, the default view
+improved from 77 TP / 45 FN / 63.11% recall to 83 TP / 39 FN / 68.03% recall.
+The with-needs-review view improved from 99 TP / 23 FN / 81.15% recall to
+100 TP / 22 FN / 81.97% recall, but its FP count increased from 109 to 137.
+
+The default result is still below the near-term 70% recall target, while the
+with-needs-review result exceeds the recall target but fails the FP-rate target.
+The next iteration should therefore focus on validator/scorer alignment for
+security-impact semantics and on needs_review precision.
+
+Remaining with-needs-review misses:
+
+- `RANGE-023`, `RANGE-049`
+- `REAL-001`, `REAL-012`, `REAL-014`
+- `ISSUE41-004`, `ISSUE41-010`
+- `ISSUE42-002`, `ISSUE42-004`, `ISSUE42-005`, `ISSUE42-006`,
+  `ISSUE42-010`, `ISSUE42-011`, `ISSUE42-013`,
+  `ISSUE42-016`, `ISSUE42-017`, `ISSUE42-019`, `ISSUE42-024`,
+  `ISSUE42-025`, `ISSUE42-026`, `ISSUE42-028`
+
+Observed dominant miss cause: the new protocol/runtime candidates are usually
+created and routed, but the validator rejects several as code-quality,
+fail-safe, stub, no-observable-impact, or non-signal-context issues. Examples:
+`fd_type_mismatch`, `file_type_validation`, `reader_state_race`,
+`global_mode_race`, `slot_race`, `state_machine`, and `signal_deadlock`.
+Benchmark v13 strengthens those impact chains instead of relying on
+range-specific name rules.
+
 ## 9. Current Clang AST/CFG Candidate Rules
 
 The Clang candidate generator uses clangd/CodeIndex function bodies and

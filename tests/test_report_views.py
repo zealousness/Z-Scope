@@ -180,6 +180,35 @@ def test_needs_review_with_same_entry_but_different_sink_stays_independent() -> 
     assert "related_needs_review_observations" not in with_review["issues"][0]
 
 
+def test_needs_review_numeric_category_variant_attaches_by_root() -> None:
+    issues = [
+        {
+            "id": "CLANG_CFG_SIZE_LIMIT_MISMATCH",
+            "function": "_issue41_label_cache_size_miscalc",
+            "location": "src/lifecycle.c:1677",
+            "category": "size_limit_mismatch",
+            "validation_status": "validated",
+            "description": "label cache size calculation uses the wrong limit.",
+        }
+    ]
+    observations = [
+        {
+            "id": "ISSUE_INTEGER_OVERFLOW",
+            "function": "_issue41_label_cache_size_miscalc",
+            "location": "src/lifecycle.c:1677",
+            "category": "integer_overflow",
+            "validation_status": "needs_review",
+            "description": "element_count multiplication can overflow in the same label cache calculation.",
+        }
+    ]
+
+    with_review = build_report_views(issues, observations)["with_needs_review"]
+
+    assert with_review["issue_count"] == 1
+    assert with_review["attached_needs_review_count"] == 1
+    assert with_review["issues"][0]["related_needs_review_observations"][0]["id"] == "ISSUE_INTEGER_OVERFLOW"
+
+
 def test_parallel_combined_report_exposes_needs_review_view() -> None:
     analyzer = object.__new__(ParallelAnalyzer)
     analyzer.max_workers = 12

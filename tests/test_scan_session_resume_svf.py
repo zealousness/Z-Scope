@@ -26,6 +26,26 @@ def _config(tmp_path: Path) -> ZScopeConfig:
     )
 
 
+def test_diff_repo_root_defaults_to_source_root(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    source_root = project_root / "src"
+    source_root.mkdir(parents=True)
+    cfg = ZScopeConfig(
+        llm=LLMConfig(),
+        llms={"default": LLMConfig()},
+        indexing=IndexingConfig(),
+        analysis=AnalysisConfig(snapshot_dir=str(project_root / ".zscope_snapshots")),
+        project=ProjectConfig(
+            project_root=project_root,
+            source_root=source_root,
+        ),
+    )
+
+    runner = ScanSessionRunner(cfg, diff_base="base")
+
+    assert runner.diff_repo_root == source_root.resolve()
+
+
 def test_resume_svf_scope_uses_original_entry_list(tmp_path: Path) -> None:
     runner = ScanSessionRunner(_config(tmp_path), resume=True)
     captured = {}

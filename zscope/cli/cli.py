@@ -31,6 +31,8 @@ from ..orchestration.scan_session import ScanSessionRunner
 @click.option("--resume", is_flag=True, default=False, help="Resume interrupted batch scan from last checkpoint.")
 @click.option("--maintain", is_flag=True, default=False, help="Incremental maintenance scan: skip unchanged functions, verify historical issues.")
 @click.option("--discover-entries", is_flag=True, default=False, help="Discover public API, communication, thread, and other input entries before scanning.")
+@click.option("--diff-base", default=None, help="Base git ref for diff impact mode.")
+@click.option("--diff-head", default="HEAD", show_default=True, help="Head git ref for diff impact mode.")
 @click.option("--infer-user-config", is_flag=True, default=False, help="Infer/update the human-editable user_config.xlsx and exit.")
 @click.option("--mcp-stdio", is_flag=True, default=False, help="Run Z-SCOPE local MCP server over stdio.")
 @click.option("--mcp-http", is_flag=True, default=False, help="Run experimental remote MCP server over Streamable HTTP.")
@@ -52,6 +54,8 @@ def main(
     resume: bool,
     maintain: bool,
     discover_entries: bool,
+    diff_base: Optional[str],
+    diff_head: str,
     infer_user_config: bool,
     mcp_stdio: bool,
     mcp_http: bool,
@@ -125,6 +129,9 @@ def main(
 
         if resume and maintain:
             click.echo("Error: --resume and --maintain cannot be used together.")
+            sys.exit(1)
+        if diff_base and (resume or maintain):
+            click.echo("Error: --diff-base cannot be combined with --resume or --maintain.")
             sys.exit(1)
         if mcp_stdio and mcp_http:
             click.echo("Error: --mcp-stdio and --mcp-http cannot be used together.")
@@ -331,6 +338,9 @@ def main(
             resume=resume,
             maintain=maintain,
             discover_entries=discover_entries,
+            diff_base=diff_base,
+            diff_head=diff_head,
+            diff_repo_root=zscope_config.project.source_root,
             emit=click.echo,
         )
         session_result = session_runner.run()

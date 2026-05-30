@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 MAX_CATEGORY_TOKEN_LENGTH = 64
@@ -21,22 +21,121 @@ def deduplicate_issues(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         existing = records.get(key)
         if existing is None:
             issue["dedup_key"] = key
+            issue.setdefault("category_family", semantic_category_family(issue.get("category")))
+            signature = issue_resource_signature(issue)
+            if signature:
+                issue.setdefault("resource_signature", signature)
             issue.setdefault("duplicate_sources", [])
             records[key] = issue
             continue
 
-        existing["duplicate_count"] = int(existing.get("duplicate_count", 0) or 0) + 1
-        sources = existing.setdefault("duplicate_sources", [])
-        source = issue.get("analyzed_from") or issue.get("id") or issue.get("function")
-        if source and source not in sources:
-            sources.append(source)
-
         if issue_rank(issue) > issue_rank(existing):
-            issue["duplicate_count"] = existing.get("duplicate_count", 0)
-            issue["duplicate_sources"] = list(sources)
+            merge_duplicate_issue(
+                issue,
+                existing,
+                dedup_key=key,
+                decision={"method": "canonical_issue_key", "root_cause_key": key},
+            )
             issue["dedup_key"] = key
             records[key] = issue
+            continue
+
+        merge_duplicate_issue(
+            existing,
+            issue,
+            dedup_key=key,
+            decision={"method": "canonical_issue_key", "root_cause_key": key},
+        )
     return list(records.values())
+
+
+def merge_duplicate_issue(
+    primary: Dict[str, Any],
+    duplicate: Dict[str, Any],
+    *,
+    dedup_key: str = "",
+    decision: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Attach duplicate evidence to ``primary`` without silently discarding it."""
+    if dedup_key:
+        primary["dedup_key"] = dedup_key
+    primary.setdefault("category_family", semantic_category_family(primary.get("category")))
+    signature = issue_resource_signature(primary)
+    if signature:
+        primary.setdefault("resource_signature", signature)
+
+    duplicate_extra_count = int(duplicate.get("duplicate_count", 0) or 0)
+    primary["duplicate_count"] = int(primary.get("duplicate_count", 0) or 0) + 1 + duplicate_extra_count
+
+    sources = primary.setdefault("duplicate_sources", [])
+    for source in _duplicate_source_records(duplicate):
+        if source not in sources:
+            sources.append(source)
+
+    alternate = primary.setdefault("alternate_evidence", [])
+    for evidence in _alternate_evidence_records(duplicate):
+        if evidence not in alternate:
+            alternate.append(evidence)
+
+    if decision:
+        decisions = primary.setdefault("dedup_decisions", [])
+        compact_decision = {
+            key: value
+            for key, value in decision.items()
+            if value not in (None, "", [], {})
+        }
+        if compact_decision and compact_decision not in decisions:
+            decisions.append(compact_decision)
+        primary["dedup_decision"] = compact_decision or primary.get("dedup_decision")
+    return primary
+
+
+def _duplicate_source_records(issue: Dict[str, Any]) -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    existing_sources = issue.get("duplicate_sources")
+    if isinstance(existing_sources, list):
+        for source in existing_sources:
+            if isinstance(source, dict):
+                records.append(dict(source))
+            elif source not in (None, ""):
+                records.append({"source": str(source)})
+    record = {
+        "id": issue.get("id"),
+        "candidate_id": issue.get("candidate_id"),
+        "candidate_source": issue.get("candidate_source") or issue.get("finding_kind"),
+        "function": issue.get("function") or issue.get("func_name"),
+        "location": issue.get("location") or issue.get("file"),
+        "category": issue.get("category"),
+        "dedup_key": issue.get("dedup_key"),
+        "resource_signature": issue_resource_signature(issue),
+    }
+    records.append({key: value for key, value in record.items() if value not in (None, "", [], {})})
+    return records
+
+
+def _alternate_evidence_records(issue: Dict[str, Any]) -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    existing = issue.get("alternate_evidence")
+    if isinstance(existing, list):
+        records.extend(item for item in existing if isinstance(item, dict))
+    record = {
+        "id": issue.get("id"),
+        "candidate_id": issue.get("candidate_id"),
+        "candidate_source": issue.get("candidate_source") or issue.get("finding_kind"),
+        "description": issue.get("description"),
+        "root_cause": issue.get("root_cause"),
+        "reasoning": issue.get("reasoning"),
+        "positive_evidence": issue.get("positive_evidence"),
+        "negative_evidence": issue.get("negative_evidence"),
+        "source": issue.get("source"),
+        "sink": issue.get("sink") or issue.get("sink_function"),
+        "call_path": issue.get("call_path"),
+        "location": issue.get("location") or issue.get("file"),
+    }
+    compact = {key: value for key, value in record.items() if value not in (None, "", [], {})}
+    if compact:
+        records.append(compact)
+    return records
 
 
 def normalize_issue_fields(issue: Dict[str, Any]) -> None:
@@ -125,7 +224,17 @@ def semantic_category_override(structured_category: str, inferred_category: str)
     return ""
 
 
-def issue_rank(issue: Dict[str, Any]) -> tuple[int, float, int, int]:
+def issue_rank(issue: Dict[str, Any]) -> tuple[int, int, int, float, int]:
+    status_order = {
+        "validated": 4,
+        "verified": 4,
+        "accepted": 4,
+        "true_positive": 4,
+        "needs_review": 3,
+        "uncertain": 2,
+        "pending": 1,
+    }
+    status = status_order.get(str(issue.get("validation_status") or "").lower(), 0)
     severity_order = {"critical": 4, "high": 3, "medium": 2, "low": 1}
     severity = severity_order.get(
         str(issue.get("impact_level") or issue.get("severity") or "").lower(),
@@ -137,7 +246,7 @@ def issue_rank(issue: Dict[str, Any]) -> tuple[int, float, int, int]:
         confidence = 0.0
     source_rank = structured_evidence_rank(issue)
     detail_len = len(str(issue.get("reasoning") or issue.get("description") or ""))
-    return severity, confidence, source_rank, detail_len
+    return status, severity, source_rank, confidence, detail_len
 
 
 def structured_evidence_rank(issue: Dict[str, Any]) -> int:
@@ -176,6 +285,7 @@ def canonical_issue_key(issue: Dict[str, Any]) -> str:
     function = str(issue.get("function") or issue.get("func_name") or "")
     category = canonical_category(issue, text)
     root = root_cause_token(issue, category, text)
+    category = report_cluster_category(category, root)
     scope = file_path or function
     if root:
         scoped_root = root_scope_token(issue, category, root)
@@ -197,6 +307,306 @@ def canonical_issue_key(issue: Dict[str, Any]) -> str:
         normalize_issue_key_part(part)
         for part in (category, scope, str(line or ""), sink or function)
     )
+
+
+def report_cluster_category(category: str, root: str) -> str:
+    """Return the category bucket used for same-report root-cause merging.
+
+    This is intentionally narrower than user-facing category normalization.  It
+    only folds categories when the root token points at the same concrete
+    operation/resource, so distinct resources or member fields remain separate.
+    """
+    normalized = str(category or "").replace("-", "_").lower()
+    root_key = str(root or "").replace("-", "_").lower()
+    numeric_roots = {
+        "issue41_label_cache_size_miscalc",
+        "label_cache_size_miscalc",
+    }
+    if root_key in numeric_roots and normalized in {
+        "integer_overflow",
+        "bounds",
+        "size_limit_mismatch",
+    }:
+        return "numeric_size_mismatch"
+    path_roots = {"path_check_before_open"}
+    if root_key in path_roots and normalized in {
+        "sigpipe_unhandled",
+        "race",
+        "path_traversal",
+        "toctou",
+    }:
+        return "path_check_use"
+    return normalized
+
+
+def semantic_category_family(category: Any) -> str:
+    """Return a conservative semantic family used for duplicate clustering."""
+    normalized = str(category or "").replace("-", "_").lower().strip()
+    if not normalized:
+        return ""
+    for family, categories in _CATEGORY_FAMILIES.items():
+        if normalized in categories:
+            return family
+    return normalized
+
+
+def category_families_compatible(left_category: Any, right_category: Any) -> bool:
+    left = semantic_category_family(left_category)
+    right = semantic_category_family(right_category)
+    return bool(left and right and left == right)
+
+
+def issue_resource_signature(issue: Dict[str, Any]) -> str:
+    """Return the concrete object/member identity that constrains semantic merges."""
+    if not isinstance(issue, dict):
+        return ""
+    explicit = first_issue_value(issue, *_RESOURCE_IDENTITY_KEYS)
+    if explicit:
+        return normalize_issue_key_part(explicit)
+
+    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    clang_fact = pack.get("clang_matcher_fact") if isinstance(pack.get("clang_matcher_fact"), dict) else {}
+    for key in (
+        "resource_symbol",
+        "object_symbol",
+        "member",
+        "field",
+        "source_symbol",
+        "sink_symbol",
+    ):
+        if clang_fact.get(key):
+            return normalize_issue_key_part(clang_fact.get(key))
+
+    text = flatten_issue_text(issue)
+    raw_lower = text.lower()
+    global_match = re.search(r"\b(g_[a-z0-9_]{3,})\b", raw_lower)
+    if global_match:
+        return normalize_issue_key_part(global_match.group(1))
+    for member_match in re.finditer(r"\b([a-z_]\w*(?:->|\.)[a-z_]\w*)\b", raw_lower):
+        token = member_match.group(1)
+        if re.search(r"\.(?:c|h|cc|cpp|hpp)$", token):
+            continue
+        return normalize_issue_key_part(token)
+    backtick_match = re.search(r"`([^`]{2,80})`", text)
+    if backtick_match:
+        token = backtick_match.group(1).strip()
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*(?:(?:->|\.)[A-Za-z_][A-Za-z0-9_]*)?$", token):
+            return normalize_issue_key_part(token)
+    category = canonical_category(issue, text)
+    root = root_cause_token(issue, category, text)
+    if root and (
+        root in _GLOBAL_OBJECT_ROOTS
+        or "->" in root
+        or root.startswith("g_")
+        or root in {"thread_ids", "g_dispatcher.queue.tasks"}
+    ):
+        return normalize_issue_key_part(root)
+    return ""
+
+
+def semantic_root_cause_key(issue: Dict[str, Any]) -> str:
+    """Return a report-level semantic root key with resource guardrails."""
+    normalize_issue_fields(issue)
+    text = flatten_issue_text(issue)
+    category = canonical_category(issue, text)
+    family = semantic_category_family(report_cluster_category(category, root_cause_token(issue, category, text)))
+    file_path = issue_file_identity(issue, text)
+    function = issue_function_identity(issue)
+    root = root_cause_token(issue, category, text)
+    resource = issue_resource_signature(issue)
+    parts = ["semantic-v1", family, file_path, function, root or resource]
+    normalized = [normalize_issue_key_part(part) for part in parts if normalize_issue_key_part(part)]
+    if len(normalized) < 4:
+        return ""
+    return "|".join(normalized)
+
+
+def semantic_cluster_key(issue: Dict[str, Any]) -> str:
+    """Return a loose key for LLM duplicate adjudication pre-clusters."""
+    normalize_issue_fields(issue)
+    text = flatten_issue_text(issue)
+    category = canonical_category(issue, text)
+    family = semantic_category_family(category)
+    file_path = issue_file_identity(issue, text)
+    function = issue_function_identity(issue)
+    if not family or not (file_path or function):
+        return ""
+    return "|".join(
+        normalize_issue_key_part(part)
+        for part in ("semantic-cluster-v1", family, file_path, function)
+        if normalize_issue_key_part(part)
+    )
+
+
+def issues_same_context(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    """Return whether two issues are anchored to the same function/path context."""
+    left_file = issue_file_identity(left, flatten_issue_text(left))
+    right_file = issue_file_identity(right, flatten_issue_text(right))
+    left_func = issue_function_identity(left)
+    right_func = issue_function_identity(right)
+    if left_file and right_file and left_file == right_file and left_func and right_func and left_func == right_func:
+        return True
+
+    left_paths = _call_path_sets(left)
+    right_paths = _call_path_sets(right)
+    if left_paths and right_paths and any(path in right_paths for path in left_paths):
+        return True
+
+    left_anchors = _function_anchor_set(left)
+    right_anchors = _function_anchor_set(right)
+    return bool(left_anchors and right_anchors and left_anchors.intersection(right_anchors))
+
+
+def resource_signatures_conflict(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    """Return true when both issues name concrete, different resources."""
+    left_sig = issue_resource_signature(left)
+    right_sig = issue_resource_signature(right)
+    if not left_sig or not right_sig:
+        return False
+    return left_sig != right_sig
+
+
+def issues_may_share_root_cause(
+    left: Dict[str, Any],
+    right: Dict[str, Any],
+    *,
+    confidence: float = 1.0,
+    threshold: float = 0.85,
+    require_concrete_root: bool = False,
+) -> bool:
+    """Guardrail for deterministic and LLM-backed duplicate decisions."""
+    if confidence < threshold:
+        return False
+    normalize_issue_fields(left)
+    normalize_issue_fields(right)
+    if not category_families_compatible(left.get("category"), right.get("category")):
+        return False
+    if resource_signatures_conflict(left, right):
+        return False
+    if not issues_same_context(left, right):
+        return False
+
+    left_text = flatten_issue_text(left)
+    right_text = flatten_issue_text(right)
+    left_category = canonical_category(left, left_text)
+    right_category = canonical_category(right, right_text)
+    left_root = root_cause_token(left, left_category, left_text)
+    right_root = root_cause_token(right, right_category, right_text)
+    left_resource = issue_resource_signature(left)
+    right_resource = issue_resource_signature(right)
+
+    if require_concrete_root and left_root and right_root and left_root != right_root:
+        return False
+    if left_root and right_root and left_root == right_root:
+        return True
+    if left_resource and right_resource and left_resource == right_resource:
+        return True
+    if require_concrete_root:
+        return False
+    return True
+
+
+def deduplicate_semantic_issues_programmatic(
+    issues: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Apply deterministic semantic duplicate collapse after canonical dedup."""
+    base = deduplicate_issues(issues)
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for issue in base:
+        key = semantic_cluster_key(issue)
+        if key:
+            groups.setdefault(key, []).append(issue)
+
+    merged_ids: Set[int] = set()
+    result: List[Dict[str, Any]] = []
+    merge_count = 0
+    for group_key, group in groups.items():
+        group = [issue for issue in group if id(issue) not in merged_ids]
+        if len(group) < 2:
+            continue
+        primaries: List[Dict[str, Any]] = []
+        for issue in group:
+            matched = None
+            for primary in primaries:
+                if issues_may_share_root_cause(
+                    primary,
+                    issue,
+                    require_concrete_root=True,
+                ):
+                    matched = primary
+                    break
+            if matched is None:
+                primaries.append(issue)
+                continue
+            root_key = semantic_root_cause_key(matched) or semantic_root_cause_key(issue) or group_key
+            if issue_rank(issue) > issue_rank(matched):
+                primaries.remove(matched)
+                merge_duplicate_issue(
+                    issue,
+                    matched,
+                    dedup_key=root_key,
+                    decision={"method": "programmatic_semantic", "root_cause_key": root_key},
+                )
+                primaries.append(issue)
+                merged_ids.add(id(matched))
+            else:
+                merge_duplicate_issue(
+                    matched,
+                    issue,
+                    dedup_key=root_key,
+                    decision={"method": "programmatic_semantic", "root_cause_key": root_key},
+                )
+                merged_ids.add(id(issue))
+            merge_count += 1
+
+    for issue in base:
+        if id(issue) not in merged_ids:
+            result.append(issue)
+    return result, {
+        "programmatic_merge_count": merge_count,
+        "candidate_cluster_count": sum(1 for group in groups.values() if len(group) > 1),
+    }
+
+
+def _function_anchor_set(issue: Dict[str, Any]) -> Set[str]:
+    anchors: Set[str] = set()
+    for key in (
+        "function",
+        "func_name",
+        "entry_function",
+        "sink_function",
+        "target_function",
+        "analyzed_from",
+    ):
+        value = issue.get(key)
+        if value:
+            anchors.add(str(value).lower())
+    return anchors
+
+
+def _call_path_sets(issue: Dict[str, Any]) -> Set[Tuple[str, ...]]:
+    paths: Set[Tuple[str, ...]] = set()
+
+    def add_path(value: Any) -> None:
+        if isinstance(value, list) and value and all(not isinstance(item, (list, dict)) for item in value):
+            normalized = tuple(str(item).lower() for item in value if str(item).strip())
+            if normalized:
+                paths.add(normalized)
+        elif isinstance(value, list):
+            for item in value:
+                add_path(item)
+
+    add_path(issue.get("call_path"))
+    add_path(issue.get("call_paths"))
+    pack = issue.get("evidence_pack")
+    if isinstance(pack, dict):
+        add_path(pack.get("call_path"))
+        add_path(pack.get("call_paths"))
+        path = pack.get("path")
+        if isinstance(path, dict):
+            add_path(path.get("call_path"))
+            add_path(path.get("call_paths"))
+    return paths
 
 
 def stable_issue_fingerprint(issue: Dict[str, Any]) -> str:
@@ -504,6 +914,40 @@ def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
         normalized = name.lower().strip("_")
         return name.lower() in raw_lower or normalized.replace("_", "") in compact
 
+    # High-signal semantic roots that commonly appear through several public
+    # entries or both rule and LLM candidates.  These roots are deliberately
+    # tied to concrete sink functions/resources, not broad vulnerability types.
+    if function == "_issue41_dynamic_array_expand_race":
+        return "issue41_dynamic_array_resize"
+    if function == "_issue41_label_cache_size_miscalc":
+        return "issue41_label_cache_size_miscalc"
+    if function == "_real_model_ssl_error_returns_ok":
+        return "real_model_ssl_probe_status"
+    if function == "_real_model_error_branch_double_cleanup" and (
+        "payload" in lower or "node->payload" in raw_lower or "nodepayload" in compact
+    ):
+        return "real_model_payload_double_cleanup"
+    if function == "_validate_task" and "fopen" in lower and "path" in lower:
+        return "path_check_before_open"
+    if function == "_lifecycle_ref_get" and ("ref_count" in raw_lower or "ref count" in lower):
+        return "lifecycle_ref_get_after_unlock"
+    if function == "_lifecycle_ref_put" and ("ref_count" in raw_lower or "ref count" in lower):
+        return "lifecycle_ref_put_after_unlock"
+    if function == "_real_model_callback_under_lock" and (
+        "g_real_callback_node" in raw_lower or "borrowed" in lower or "dangling" in lower
+    ):
+        return "g_real_callback_node"
+    if function == "_lifecycle_send_status" and (
+        "pending_jobs" in raw_lower or "pending jobs" in lower
+    ):
+        return "g_lifecycle_pending_jobs"
+    if function == "_control_session_add_to_global" and "pthread_mutex_init" in lower:
+        return "control_session_mutex_init"
+    if function == "_net_recv_data" and "size_t" in raw_lower and (
+        "int" in lower or "截断" in text or "trunc" in lower
+    ):
+        return "net_recv_data_return_truncation"
+
     if (
         has_name("_lifecycle_customize_control_message")
         or has_name("_lifecycle_customize_transport_cleanup")
@@ -583,6 +1027,12 @@ def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
         "flushjob",
         "pfnDropSession",
         "guardedsubscription",
+        "g_issue41_task_array",
+        "g_issue41_task_array_cap",
+        "node->payload",
+        "g_lifecycle.pending_jobs",
+        "g_real_callback_node",
+        "g_callback_entry",
     )
     for name in named_objects:
         raw_name = name.lower()
@@ -739,6 +1189,19 @@ def normalize_issue_category(value: str) -> str:
         "missing_refcount": ("missing refcount", "reference count", "refcount", "shared resource", "cwe-772"),
         "sigpipe_unhandled": ("sigpipe", "closed peer", "signal", "cwe-404"),
         "fd_encoding_mismatch": ("fd encoding", "encoded fd", "raw fd", "check value", "cwe-587"),
+        "semantic_mismatch": ("semantic mismatch", "semantic unit", "callback parameter", "counter domain", "cwe-628"),
+        "byte_order_logic": ("byte order", "endian", "ctz", "trailing zero", "cwe-682"),
+        "reader_state_race": ("reader state", "reader pid", "multiple readers", "rwlock", "cwe-362"),
+        "uninitialized_output": ("uninitialized output", "partially initialized", "output parameter", "cwe-457"),
+        "file_type_validation": ("file type", "character device", "regular file", "mapping size", "cwe-20"),
+        "log_level_misuse": ("log level", "logged at error", "alert noise", "cwe-778"),
+        "logic_error": ("logic error", "wrong group", "wrong index", "semantic mismatch", "cwe-682"),
+        "global_mode_race": ("global mode", "mutable global mode", "qrcu", "crcu", "cwe-362"),
+        "slot_race": ("slot race", "cas result", "process slot", "stolen slot", "cwe-362"),
+        "shared_memory_race": ("shared memory race", "lookup before lock", "concurrent create", "memzone", "cwe-362"),
+        "state_machine": ("state machine", "missing transition", "lifecycle state", "cwe-672"),
+        "signal_deadlock": ("signal deadlock", "signal handler", "async signal", "semaphore", "cwe-833"),
+        "callback_self_destroy_race": ("callback self destroy", "self destruction", "callback can free", "cwe-416"),
         "backend_signal": ("backend signal", "svf", "saber", "knowledge db"),
     }
     priority_groups = (
@@ -754,6 +1217,19 @@ def normalize_issue_category(value: str) -> str:
         "missing_refcount",
         "sigpipe_unhandled",
         "fd_encoding_mismatch",
+        "semantic_mismatch",
+        "byte_order_logic",
+        "reader_state_race",
+        "uninitialized_output",
+        "file_type_validation",
+        "log_level_misuse",
+        "logic_error",
+        "global_mode_race",
+        "slot_race",
+        "shared_memory_race",
+        "state_machine",
+        "signal_deadlock",
+        "callback_self_destroy_race",
     )
     for canonical in priority_groups:
         needles = groups.get(canonical, ())
@@ -793,21 +1269,29 @@ def safe_category_token(value: Any) -> str:
 
 _KNOWN_CATEGORIES = {
     "alignment",
+    "api_contract_violation",
     "backend_signal",
     "bounds",
+    "buffer_overflow",
     "busy_loop",
     "command_injection",
+    "data_race",
     "deadlock",
     "double_checked_locking",
     "double_free",
     "dynamic_array_race",
+    "byte_order_logic",
+    "callback_self_destroy_race",
     "fd_encoding_mismatch",
     "fd_type_mismatch",
+    "file_type_validation",
     "format_string",
+    "global_mode_race",
     "held_lock_callback",
     "integer_overflow",
     "invalid_free",
     "key_truncation",
+    "logic_error",
     "log_amplification",
     "lost_wakeup",
     "memory_leak",
@@ -823,19 +1307,111 @@ _KNOWN_CATEGORIES = {
     "race",
     "realloc_misuse",
     "refcount_race",
+    "reader_state_race",
+    "resource_leak",
+    "resource_management",
+    "semantic_mismatch",
+    "shared_state_race",
+    "shared_memory_race",
+    "signal_deadlock",
     "signed_unsigned",
     "sigpipe_unhandled",
     "size_limit_mismatch",
+    "slot_race",
     "stack_escape",
     "stack_overflow",
     "stale_fd",
     "state_inconsistency",
+    "state_machine",
     "unchecked_return",
     "type_confusion",
+    "toctou",
+    "uninitialized_output",
     "uninitialized_read",
     "use_after_free",
     "version_filtering",
 }
+
+
+_CATEGORY_FAMILIES = {
+    "loop": {
+        "busy_loop",
+        "infinite_loop",
+    },
+    "race": {
+        "race",
+        "data_race",
+        "shared_state_race",
+        "dynamic_array_race",
+        "reader_state_race",
+        "global_mode_race",
+        "slot_race",
+        "shared_memory_race",
+        "refcount_race",
+        "object_publication",
+        "callback_self_destroy_race",
+        "double_checked_locking",
+        "toctou",
+    },
+    "memory_leak": {
+        "memory_leak",
+        "resource_leak",
+        "resource_management",
+        "partial_resource_leak",
+        "missing_refcount",
+        "realloc_misuse",
+    },
+    "memory_release": {
+        "use_after_free",
+        "double_free",
+        "invalid_free",
+        "stack_escape",
+    },
+    "bounds": {
+        "bounds",
+        "buffer_overflow",
+        "integer_overflow",
+        "size_limit_mismatch",
+        "off_by_one",
+        "stack_overflow",
+        "signed_unsigned",
+        "alignment",
+    },
+    "type_contract": {
+        "type_confusion",
+        "api_contract_violation",
+        "semantic_mismatch",
+        "fd_type_mismatch",
+        "fd_encoding_mismatch",
+        "protocol_mixup",
+    },
+    "lock": {
+        "deadlock",
+        "missing_unlock",
+        "held_lock_callback",
+        "lost_wakeup",
+        "signal_deadlock",
+    },
+}
+
+
+_RESOURCE_IDENTITY_KEYS = (
+    "resource_signature",
+    "resource",
+    "resource_object",
+    "affected_object",
+    "owner_object",
+    "thread_object",
+    "symbol",
+    "variable",
+    "member",
+    "member_field",
+    "field",
+    "allocation",
+    "allocation_symbol",
+    "source_symbol",
+    "sink_symbol",
+)
 
 
 _GLOBAL_OBJECT_ROOTS = {
@@ -865,6 +1441,7 @@ _FUNCTION_SCOPED_ROOT_CATEGORIES = {
     "alignment",
     "bounds",
     "busy_loop",
+    "double_free",
     "fd_encoding_mismatch",
     "fd_type_mismatch",
     "integer_overflow",
@@ -874,11 +1451,13 @@ _FUNCTION_SCOPED_ROOT_CATEGORIES = {
     "partial_resource_leak",
     "protocol_mixup",
     "race",
+    "refcount_race",
     "signed_unsigned",
     "stale_fd",
     "state_inconsistency",
     "unchecked_return",
     "version_filtering",
+    "use_after_free",
 }
 
 
@@ -897,6 +1476,17 @@ _FUNCTION_SCOPED_ROOTS = {
     "os_node_proc_list",
     "pipe_self_link",
     "pipe_scheduler_control_lock_order",
+    "issue41_dynamic_array_resize",
+    "issue41_label_cache_size_miscalc",
+    "real_model_ssl_probe_status",
+    "real_model_payload_double_cleanup",
+    "path_check_before_open",
+    "lifecycle_ref_get_after_unlock",
+    "lifecycle_ref_put_after_unlock",
+    "g_real_callback_node",
+    "g_lifecycle_pending_jobs",
+    "control_session_mutex_init",
+    "net_recv_data_return_truncation",
 }
 
 

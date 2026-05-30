@@ -20,7 +20,8 @@ typedef enum {
     TASK_STATUS_PENDING = 0,
     TASK_STATUS_RUNNING = 1,
     TASK_STATUS_COMPLETED = 2,
-    TASK_STATUS_FAILED = 3
+    TASK_STATUS_FAILED = 3,
+    TASK_STATUS_NORMAL = 4
 } task_status_t;
 
 typedef struct {
