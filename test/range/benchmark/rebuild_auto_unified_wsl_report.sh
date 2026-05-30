@@ -20,6 +20,11 @@ if [[ -z "${Z_SCOPE_API_KEY:-}" ]]; then
   exit 2
 fi
 
+export PATH="$HOME/go/bin:/usr/lib/llvm-18/bin:$HOME/.local/svf/SVF-linux-x86_64/bin:$PATH"
+export LD_LIBRARY_PATH="$HOME/.local/svf/SVF-linux-x86_64/lib:$HOME/.local/svf/llvm-18.1.0.obj/lib:${LD_LIBRARY_PATH:-}"
+export LLVM_COMPILER=clang
+export LLVM_CC_NAME=clang-18
+
 run_id="${1:?usage: rebuild_auto_unified_wsl_report.sh <run_id>}"
 run_dir="test/range/benchmark_runs/${run_id}"
 if [[ ! -d "${run_dir}" ]]; then

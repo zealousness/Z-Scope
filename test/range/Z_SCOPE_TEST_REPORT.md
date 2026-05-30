@@ -7,7 +7,7 @@ findings; use `benchmark/ground_truth.json` for scoring and
 
 ## Historical Run
 
-- Target: `test/range` task dispatcher benchmark
+- Target: `test/range` C service-runtime benchmark
 - Mode: Z-SCOPE unified mode under WSL
 - Knowledge backend: clangd plus SVF KnowledgeDB where available
 - Report scorer: `benchmark/evaluate_zscope_report.py`

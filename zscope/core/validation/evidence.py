@@ -365,6 +365,27 @@ def category_validation_requirements(issue: Dict[str, Any]) -> List[str]:
         "race": [
             "Macro-guarded locks must be evaluated under all configured compilation branches; a no-op lock branch does not protect shared state.",
         ],
+        "reader_state_race": [
+            "For reader-state races, atomic reader-count operations do not protect side fields such as reader identity unless that side field is also atomic or protected by the rwlock protocol.",
+        ],
+        "global_mode_race": [
+            "For global-mode races, registration, mode selection, and callback dispatch must be protected by a common lock or immutable mode snapshot.",
+        ],
+        "slot_race": [
+            "For slot-claim races, an ignored CAS/compare-exchange result is a concrete bug when field writes continue after a failed claim could leave the slot owned by another thread.",
+        ],
+        "shared_memory_race": [
+            "For create-if-absent shared resources, lookup and insertion must be atomic under the same lock; a pre-lock lookup is not sufficient.",
+        ],
+        "callback_self_destroy_race": [
+            "For callback self-destruction, validate whether the callback receives the current object as context and can release it before the caller resumes dereferencing it.",
+        ],
+        "lost_wakeup": [
+            "For wakeup bugs, publishing an event/list node is not enough; require a signal, trigger, scheduler kick, or documented polling guarantee for the consumer.",
+        ],
+        "signal_deadlock": [
+            "For signal/exception handlers, locks, semaphores, formatting, and logging are unsafe when the path can run asynchronously or re-enter code holding the same primitive.",
+        ],
         "held_lock_callback": [
             "Calling a callback/function pointer while holding a non-recursive lock is a lock-order and reentrancy risk when the callback is externally supplied, stored globally, or can evolve independently of the current no-op sample.",
             "Do not reject solely because the currently registered callback body is empty; validate the callback registration contract and whether callers control the callback.",
@@ -401,6 +422,27 @@ def category_validation_requirements(issue: Dict[str, Any]) -> List[str]:
         "fd_encoding_mismatch": [
             "Raw fd indexes must not be passed to validators expecting encoded/check-value fds unless code constructs the encoded representation first.",
             "Do not reject solely because the mixed representation fails closed in one local branch; the finding is the reachable API-contract mismatch between raw fd indexes and encoded/check-value fd validators.",
+        ],
+        "semantic_mismatch": [
+            "For semantic-contract mismatches, type compatibility is not enough; compare the unit/domain promised by the caller with the callee's documented or inferred contract.",
+        ],
+        "byte_order_logic": [
+            "For byte-order logic, copying wire bytes into host integers and using bit-index operations requires explicit endian normalization or a byte-order-independent scan.",
+        ],
+        "uninitialized_output": [
+            "For output-parameter structs, require memset/zero initialization or assignments for all externally visible fields before copying the temporary object to the caller.",
+        ],
+        "file_type_validation": [
+            "For mapping/file validation, regular files, character devices, shared memory, and anonymous mappings can require different size/existence checks.",
+        ],
+        "log_level_misuse": [
+            "For log-level findings, verify that the branch represents a normal/idempotent state and returns success; ERROR logs in such paths can create alert pollution rather than a functional failure.",
+        ],
+        "logic_error": [
+            "For traversal logic errors, compare the index used to select a parent/group object with the index used to access the member; cached traversal state can go stale across loop iterations.",
+        ],
+        "state_machine": [
+            "For state-machine findings, every successful publication branch must transition the shared lifecycle state consistently with the identity/data fields it publishes.",
         ],
     }
     return list(requirements_by_category.get(category, []))

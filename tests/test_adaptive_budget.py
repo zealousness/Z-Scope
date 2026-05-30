@@ -123,6 +123,25 @@ def test_adaptive_budget_uses_separate_risk_signals_per_budget_type() -> None:
     ]
 
 
+def test_adaptive_budget_expands_thin_protocol_facades() -> None:
+    planner = _planner()
+    state = {
+        "impl_result": {
+            "code": "int api_schedule(int fast) { return runtime_dispatch_event_cycle(fast); }",
+            "callees": ["runtime_dispatch_event_cycle"],
+        },
+        "agent_context": {
+            "code": "int api_schedule(int fast) { return runtime_dispatch_event_cycle(fast); }"
+        },
+    }
+
+    budget = planner.plan(state)
+
+    assert budget.premodel_depth >= 2
+    assert budget.graph_depth >= 2
+    assert "thin_public_facade_requires_callee_context" in budget.risk_reasons["premodel_depth"]
+
+
 def test_subagent_ticket_budget_scales_with_candidate_diversity() -> None:
     planner = _planner()
     state = {

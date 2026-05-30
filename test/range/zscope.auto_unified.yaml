@@ -75,7 +75,7 @@ project:
       llm_ref: smart_model
       can_spawn_subagents: true
       task: >
-        Audit this C task dispatcher benchmark for memory corruption,
+        Audit this C service-runtime benchmark for memory corruption,
         integer/bounds mistakes, ownership/lifetime bugs, command/file security
         flaws, and concurrency defects. Use source evidence and call paths.
         Do not rely on benchmark answer-key files.

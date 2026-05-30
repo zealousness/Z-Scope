@@ -1,9 +1,11 @@
 from zscope.common.issue_identity import (
     canonical_issue_key,
+    deduplicate_semantic_issues_programmatic,
     deduplicate_issues,
     normalize_issue_category,
     normalize_issue_fields,
 )
+from zscope.core.analysis.analyzer import Analyzer
 
 
 def test_dedup_merges_chinese_needs_review_with_rule_finding() -> None:
@@ -370,6 +372,144 @@ def test_structured_issue41_candidates_merge_across_entry_roots() -> None:
     assert deduped[0]["duplicate_count"] == 1
 
 
+def test_issue41_dynamic_array_variants_merge_across_entries_and_sources() -> None:
+    free_form = {
+        "id": "ISSUE_2",
+        "function": "_issue41_dynamic_array_expand_race",
+        "location": "src/lifecycle.c:1767-1780",
+        "category": "dynamic_array_race",
+        "validation_status": "validated",
+        "description": "Global task array resize updates g_issue41_task_array without a lock.",
+        "sink": "g_issue41_task_array = new_array; safe_free(old_array);",
+    }
+    structured = {
+        "id": "CLANG_CFG_DYNAMIC_ARRAY_RACE_eec7b80104",
+        "candidate_id": "CLANG_CFG_DYNAMIC_ARRAY_RACE_eec7b80104",
+        "candidate_source": "clang_ast_cfg",
+        "rule": "clang_cfg_global_dynamic_array_resize_without_lock",
+        "function": "_issue41_dynamic_array_expand_race",
+        "location": "src/lifecycle.c:1767",
+        "category": "dynamic_array_race",
+        "entry_function": "_td_issue41_worker",
+        "description": "Global dynamic array `g_issue41_task_array` is resized and old storage is freed.",
+        "sink": "g_issue41_task_array = new_array",
+    }
+
+    deduped = deduplicate_issues([free_form, structured])
+
+    assert len(deduped) == 1
+    assert deduped[0]["dedup_key"] == (
+        "dynamic_array_race|src/lifecycle.c|_issue41_dynamic_array_expand_race|"
+        "issue41_dynamic_array_resize"
+    )
+    assert deduped[0]["duplicate_count"] == 1
+
+
+def test_real_model_unchecked_return_variants_merge_across_entry_roots() -> None:
+    direct = {
+        "id": "CLANG_CFG_UNCHECKED_RETURN_5b8e279112",
+        "candidate_id": "CLANG_CFG_UNCHECKED_RETURN_5b8e279112",
+        "candidate_source": "clang_ast_cfg",
+        "rule": "clang_cfg_probe_error_branch_can_return_success_status",
+        "function": "_real_model_ssl_error_returns_ok",
+        "location": "src/lifecycle.c:1442",
+        "category": "unchecked_return",
+        "entry_function": "td_handle_real_protocol_message",
+        "description": "Probe failure branch logs an error but returns ret.",
+        "sink": "return ret;",
+    }
+    worker = {
+        **direct,
+        "entry_function": "_td_real_protocol_worker",
+        "description": "Probe failure returns the transport status instead of an explicit error.",
+        "sink": "function returns ret to caller",
+    }
+
+    deduped = deduplicate_issues([direct, worker])
+
+    assert len(deduped) == 1
+    assert deduped[0]["dedup_key"] == (
+        "unchecked_return|src/lifecycle.c|_real_model_ssl_error_returns_ok|"
+        "real_model_ssl_probe_status"
+    )
+
+
+def test_path_check_before_open_variants_merge_across_public_entries() -> None:
+    command = {
+        "id": "CLANG_CFG_TOCTOU_e4d912f50a",
+        "candidate_id": "CLANG_CFG_TOCTOU_e4d912f50a",
+        "candidate_source": "clang_ast_cfg",
+        "rule": "clang_cfg_path_check_before_open",
+        "function": "_validate_task",
+        "location": "src/parser.c:361",
+        "category": "sigpipe_unhandled",
+        "entry_function": "td_execute_command",
+        "description": "A pathname is checked separately from a later open/use operation.",
+        "sink": "FILE* fp = fopen(path, \"r\");",
+    }
+    submit = {
+        **command,
+        "entry_function": "td_submit_task",
+        "sink": "fopen(path, \"r\")",
+    }
+
+    deduped = deduplicate_issues([command, submit])
+
+    assert len(deduped) == 1
+    assert deduped[0]["dedup_key"] == (
+        "path_check_use|src/parser.c|_validate_task|path_check_before_open"
+    )
+
+
+def test_issue41_size_limit_and_integer_overflow_variants_merge_by_numeric_root() -> None:
+    size_limit = {
+        "id": "CLANG_CFG_SIZE_LIMIT_MISMATCH_1967cce365",
+        "candidate_id": "CLANG_CFG_SIZE_LIMIT_MISMATCH_1967cce365",
+        "candidate_source": "clang_ast_cfg",
+        "rule": "clang_cfg_fixed_byte_limit_mismatch",
+        "function": "_issue41_label_cache_size_miscalc",
+        "location": "src/lifecycle.c:1677",
+        "category": "size_limit_mismatch",
+        "description": "label_len is constrained before element_count is checked.",
+        "sink": "label_len = element_count * sizeof(label)",
+    }
+    overflow = {
+        "id": "ISSUE_5",
+        "function": "_issue41_label_cache_size_miscalc",
+        "location": "src/lifecycle.c:1677",
+        "category": "integer_overflow",
+        "description": "element_count multiplication can overflow before allocation.",
+        "sink": "_safe_calloc(label_len + 1, 1)",
+    }
+
+    deduped = deduplicate_issues([size_limit, overflow])
+
+    assert len(deduped) == 1
+    assert deduped[0]["dedup_key"] == (
+        "numeric_size_mismatch|src/lifecycle.c|_issue41_label_cache_size_miscalc|"
+        "issue41_label_cache_size_miscalc"
+    )
+
+
+def test_same_function_same_file_distinct_resources_still_do_not_merge() -> None:
+    thread_ids = {
+        "function": "td_init",
+        "location": "src/main.c:187",
+        "category": "memory_leak",
+        "description": "thread_ids is heap allocated and never released.",
+    }
+    queue_tasks = {
+        "function": "td_init",
+        "location": "src/main.c:187",
+        "category": "memory_leak",
+        "description": "g_dispatcher.queue.tasks is allocated and not freed on error.",
+    }
+
+    deduped = deduplicate_issues([thread_ids, queue_tasks])
+
+    assert len(deduped) == 2
+
+
 def test_td_init_distinct_memory_leaks_remain_separate() -> None:
     thread_ids = {
         "function": "td_init",
@@ -393,3 +533,117 @@ def test_td_init_distinct_memory_leaks_remain_separate() -> None:
         "memory_leak|src/main.c|thread_ids",
         "memory_leak|src/main.c|td_init|g_dispatcher.queue.tasks",
     }
+
+
+def test_semantic_dedup_merges_loop_aliases_by_concrete_root() -> None:
+    busy = {
+        "id": "BUSY",
+        "function": "_real_model_recv_busy_loop",
+        "location": "src/lifecycle.c:1500",
+        "category": "busy_loop",
+        "description": "recv retry path spins without timeout.",
+    }
+    infinite = {
+        "id": "INF",
+        "function": "_real_model_recv_busy_loop",
+        "location": "src/lifecycle.c:1501",
+        "category": "infinite_loop",
+        "description": "The same recv retry path can spin in an infinite loop.",
+    }
+
+    deduped, summary = deduplicate_semantic_issues_programmatic([busy, infinite])
+
+    assert len(deduped) == 1
+    assert deduped[0]["duplicate_count"] == 1
+    assert summary["programmatic_merge_count"] == 1
+
+
+def test_semantic_dedup_merges_race_aliases_only_for_same_resource() -> None:
+    dynamic = {
+        "id": "DYNAMIC",
+        "function": "_peer_expand_task_table",
+        "location": "src/lifecycle.c:1767",
+        "category": "dynamic_array_race",
+        "description": "g_issue41_task_array is resized and swapped without a lock.",
+    }
+    shared = {
+        "id": "SHARED",
+        "function": "_peer_expand_task_table",
+        "location": "src/lifecycle.c:1772",
+        "category": "shared_state_race",
+        "description": "Concurrent readers can observe g_issue41_task_array while it is replaced.",
+    }
+    other = {
+        "id": "OTHER",
+        "function": "_peer_expand_task_table",
+        "location": "src/lifecycle.c:1778",
+        "category": "race_condition",
+        "description": "g_other_table is also updated without synchronization.",
+    }
+
+    deduped, _summary = deduplicate_semantic_issues_programmatic([dynamic, shared, other])
+
+    assert len(deduped) == 2
+    assert any(issue.get("duplicate_count") == 1 for issue in deduped)
+
+
+def test_llm_dedup_guard_rejects_distinct_resources() -> None:
+    thread_ids = {
+        "id": "A",
+        "function": "td_init",
+        "location": "src/main.c:187",
+        "category": "memory_leak",
+        "description": "thread_ids is allocated and not freed.",
+    }
+    queue_tasks = {
+        "id": "B",
+        "function": "td_init",
+        "location": "src/main.c:160",
+        "category": "memory_leak",
+        "description": "g_dispatcher.queue.tasks is allocated and not freed.",
+    }
+    decision = {
+        "duplicate_groups": [
+            {
+                "primary_issue_id": "A",
+                "duplicate_issue_ids": ["B"],
+                "root_cause_key": "bad-merge",
+                "confidence": 0.99,
+                "reasoning": "LLM incorrectly merged different resources.",
+            }
+        ],
+        "must_keep_distinct_issue_ids": [],
+    }
+
+    applied, rejected = Analyzer._apply_llm_dedup_decision(
+        decision,
+        {"A": thread_ids, "B": queue_tasks},
+        set(),
+        threshold=0.85,
+    )
+
+    assert applied == 0
+    assert rejected == 1
+
+
+def test_programmatic_semantic_dedup_keeps_distinct_concrete_roots() -> None:
+    detach_leak = {
+        "id": "DETACH",
+        "function": "_control_session_detach_without_release",
+        "location": "src/lifecycle.c:536",
+        "category": "memory_leak",
+        "description": "DETACH removes ControlSession from the global list but does not free it.",
+    }
+    mesh_cleanup = {
+        "id": "MESH",
+        "function": "_control_session_detach_without_release",
+        "location": "src/lifecycle.c:538",
+        "category": "memory_leak",
+        "description": "pfnDropSession mesh cleanup hook loses ownership of the session and its guard mutex.",
+        "sink": "ControlSession* session pointer is lost after the detach helper returns.",
+    }
+
+    deduped, summary = deduplicate_semantic_issues_programmatic([detach_leak, mesh_cleanup])
+
+    assert len(deduped) == 2
+    assert summary["programmatic_merge_count"] == 0

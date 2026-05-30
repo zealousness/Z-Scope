@@ -299,6 +299,167 @@ def test_graph_candidates_detect_self_referential_pipe_log_amplification() -> No
     assert drifted["normalized_category"] == "log_amplification"
 
 
+def test_graph_candidates_expand_thin_runtime_fanout_at_depth_cap() -> None:
+    class FakeIndex:
+        def get_function_impl(self, name: str, warn_missing: bool = False):
+            impls = {
+                "api_schedule": {
+                    "file": "src/lifecycle.c",
+                    "code": "1 | int api_schedule(int same_core) { return runtime_cycle(same_core); }",
+                    "callees": ["runtime_cycle"],
+                },
+                "runtime_cycle": {
+                    "file": "src/lifecycle.c",
+                    "code": """
+10 | int runtime_cycle(int same_core) {
+11 |     int rc = 0;
+12 |     rc |= queue_flush(same_core);
+13 |     rc |= cancel_timer();
+14 |     rc |= finish_event();
+15 |     return rc;
+16 | }
+""",
+                    "callees": ["queue_flush", "cancel_timer", "finish_event"],
+                },
+                "queue_flush": {
+                    "file": "src/lifecycle.c",
+                    "code": """
+20 | int queue_flush(int same_core) {
+21 |     RuntimeEvent ev;
+22 |     memset(&ev, 0, sizeof(ev));
+23 |     if (same_core) {
+24 |         ev.next = g_runtime_event_base.level_trigger_list;
+25 |         g_runtime_event_base.level_trigger_list = &ev;
+26 |         return 0;
+27 |     }
+28 |     return -1;
+29 | }
+""",
+                    "callees": [],
+                },
+                "cancel_timer": {"file": "src/lifecycle.c", "code": "30 | int cancel_timer(void) { return 0; }", "callees": []},
+                "finish_event": {"file": "src/lifecycle.c", "code": "40 | int finish_event(void) { return 0; }", "callees": []},
+            }
+            return impls.get(name)
+
+    generator = GraphCandidateGenerator(FakeIndex(), LocalPatternSemantics())
+    issues = generator.generate_for_entry(
+        "api_schedule",
+        FakeIndex().get_function_impl("api_schedule"),
+        max_depth=1,
+        max_functions=16,
+    )
+
+    assert any(issue["category"] == "lost_wakeup" and issue["function"] == "queue_flush" for issue in issues)
+
+
+def test_graph_candidates_detect_protocol_contract_variants() -> None:
+    generator = GraphCandidateGenerator(object(), LocalPatternSemantics())
+    bitmap = _graph_view(
+        generator,
+        "find_bitmap_delta",
+        """
+10 | size_t find_bitmap_delta(const unsigned char* input, size_t len) {
+11 |     uint64_t left = 0;
+12 |     uint64_t right = 0;
+13 |     memcpy(&left, input + 1, sizeof(left));
+14 |     memcpy(&right, input + 9, sizeof(right));
+15 |     uint64_t diff = left ^ right;
+16 |     return (size_t)(__builtin_ctzll(diff) >> 3);
+17 | }
+""",
+    )
+    output = _graph_view(
+        generator,
+        "query_usage",
+        """
+20 | int query_usage(UseInfo* out) {
+21 |     if (!out) return -1;
+22 |     UseInfo tmp;
+23 |     tmp.total_size = 4096;
+24 |     tmp.used_size = 1024;
+25 |     *out = tmp;
+26 |     return 0;
+27 | }
+""",
+    )
+
+    issues = generator.generate_for_views([bitmap, output])
+    categories = {issue["category"] for issue in issues}
+
+    assert "byte_order_logic" in categories
+    assert "uninitialized_output" in categories
+
+
+def test_graph_candidates_detect_callback_self_destroy_and_role_contract() -> None:
+    generator = GraphCandidateGenerator(object(), LocalPatternSemantics())
+    callback = _graph_view(
+        generator,
+        "_completion_callback",
+        """
+10 | static int _completion_callback(void* arg, uint32_t* result) {
+11 |     RuntimeEvent* event = (RuntimeEvent*)arg;
+12 |     if (result) *result = 0;
+13 |     SAFE_FREE(event);
+14 |     return 0;
+15 | }
+""",
+    )
+    caller = _graph_view(
+        generator,
+        "finish_event",
+        """
+20 | int finish_event(int destroy) {
+21 |     RuntimeEvent* event = (RuntimeEvent*)_safe_calloc(1, sizeof(RuntimeEvent));
+22 |     event->callback_arg = event;
+23 |     event->callback = destroy ? _completion_callback : NULL;
+24 |     if (event->callback) {
+25 |         event->callback(event->callback_arg, NULL);
+26 |     }
+27 |     event->running = 0;
+28 |     SAFE_FREE(event);
+29 |     return 0;
+30 | }
+""",
+    )
+    role_release = _graph_view(
+        generator,
+        "release_channel",
+        """
+40 | int release_channel(Node* node, int role) {
+41 |     node->role = role;
+42 |     service_release_by_role(node, 0);
+43 |     SAFE_FREE(node);
+44 |     return 0;
+45 | }
+""",
+    )
+
+    issues = generator.generate_for_views([caller, callback, role_release])
+    categories = {issue["category"] for issue in issues}
+
+    assert "callback_self_destroy_race" in categories
+    assert any(issue["rule"] == "role_specific_release_uses_hardcoded_role" for issue in issues)
+
+
+def test_graph_candidates_detect_fd_type_contract() -> None:
+    generator = GraphCandidateGenerator(object(), LocalPatternSemantics())
+    bridge = _graph_view(
+        generator,
+        "bridge_descriptor",
+        """
+10 | int bridge_descriptor(int reliable_fd) {
+11 |     return lower_is_inter_fd(reliable_fd);
+12 | }
+""",
+        signature="int bridge_descriptor(int reliable_fd)",
+    )
+
+    issues = generator.generate_for_views([bridge])
+
+    assert any(issue["category"] == "fd_type_mismatch" for issue in issues)
+
+
 def test_lifted_internal_sink_dedup_merges_entry_paths() -> None:
     first = {
         "candidate_id": "a",
@@ -520,6 +681,31 @@ def test_trivial_snapshot_keeps_security_contract_points_auditable() -> None:
         assert any(point["category"] == category for point in snapshot["suspicious_points"])
 
     assert not Analyzer._is_trivial_function(cases[-1][2], max_lines_threshold=10)
+
+
+def test_trivial_snapshot_marks_facade_forwarding_as_auditable() -> None:
+    snapshot = Analyzer._build_trivial_snapshot(
+        "td_runtime_apply_shared_memory_event",
+        {
+            "file": "src/main.c",
+            "start_line": 100,
+            "end_line": 106,
+            "signature": "int td_runtime_apply_shared_memory_event(...)",
+            "code": """
+100 | int td_runtime_apply_shared_memory_event(int fd, const unsigned char* wire) {
+101 |     return _runtime_accept_session_frame(fd, wire);
+102 | }
+""",
+            "callees": ["_runtime_accept_session_frame"],
+        },
+        "src/main.c:100",
+    )
+
+    assert any(
+        point["type"] == "facade_forwarding_contract"
+        and point["category"] == "entry_forwarding"
+        for point in snapshot["suspicious_points"]
+    )
 
 
 def test_validation_evidence_pack_preserves_entry_reachability_context() -> None:

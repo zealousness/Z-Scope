@@ -1,5 +1,5 @@
 {
-  "description": "Fixed Z-SCOPE benchmark entry list for the task dispatcher fixture. Entries intentionally omit custom prompts so the benchmark measures generic analysis behavior. Includes high-tier REAL-* and ISSUE41-* entries derived from real-project abstract models, and ISSUE42 shared-memory/runtime models.",
+  "description": "Fixed Z-SCOPE benchmark entry list for the C service-runtime fixture. Entries intentionally omit custom prompts so the benchmark measures generic analysis behavior. Includes high-tier service and shared-memory/runtime models.",
   "functions": [
     {
       "function_name": "td_init",
@@ -98,7 +98,7 @@
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_lifecycle_fire_callback_under_lock",
+      "function_name": "_lifecycle_notify_entry_callback",
       "file_path": "src/lifecycle.c"
     },
     {
@@ -142,7 +142,7 @@
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_lifecycle_decode_unaligned_id",
+      "function_name": "_lifecycle_decode_packet_id",
       "file_path": "src/lifecycle.c"
     },
     {
@@ -190,11 +190,11 @@
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_lifecycle_register_guarded_subscription",
+      "function_name": "_lifecycle_register_topic_subscription",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_lifecycle_unregister_guarded_subscription",
+      "function_name": "_lifecycle_unregister_topic_subscription",
       "file_path": "src/lifecycle.c"
     },
     {
@@ -238,139 +238,139 @@
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_lifecycle_macro_guarded_counter_update",
+      "function_name": "_lifecycle_update_counter_slot",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_module_cleanup_race",
+      "function_name": "_runtime_remove_module_record",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_osnode_remove_race",
+      "function_name": "_runtime_remove_system_node",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_error_branch_double_cleanup",
+      "function_name": "_runtime_apply_component_stage",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_comp_destroy_detach_leak",
+      "function_name": "_runtime_detach_component_record",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_unregister_file_leak",
+      "function_name": "_runtime_remove_file_record",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_activation_rollback_gap",
+      "function_name": "_runtime_activate_service_path",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_reader_channel_role_leak",
+      "function_name": "_runtime_release_reader_channel",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_log_buffer_leak",
+      "function_name": "_runtime_flush_log_buffer",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_init_sequence_publication",
+      "function_name": "_runtime_publish_init_sequence",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_message_alignment_overread",
+      "function_name": "_runtime_message_header_probe",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_patch_unload_member_leak",
+      "function_name": "_runtime_unload_patch_member",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_avl_insert_unchecked_return",
+      "function_name": "_runtime_insert_policy_node",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_protocol_length_miscalc",
+      "function_name": "_runtime_protocol_frame_length",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_magic64_missing_check",
+      "function_name": "_runtime_read_control_magic",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_resource_table_unload_leak",
+      "function_name": "_runtime_unload_resource_table",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_atomic_order_flag_race",
+      "function_name": "_runtime_read_service_flag",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_patch_tree_child_leak",
+      "function_name": "_runtime_prune_patch_tree",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_peak_stats_leak",
+      "function_name": "_runtime_query_peak_stats",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_recv_busy_loop",
+      "function_name": "_runtime_read_peer_record",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_ssl_error_returns_ok",
+      "function_name": "_runtime_read_tls_record",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_hardcoded_role_release",
+      "function_name": "_runtime_release_channel_role",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_syscall_state_not_restored",
+      "function_name": "_runtime_switch_io_mode",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_missing_unlock_after_alloc",
+      "function_name": "_runtime_link_allocated_node",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_refcount_after_unlock",
+      "function_name": "_runtime_release_shared_node",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_callback_under_lock",
+      "function_name": "_runtime_notify_registry_listener",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_detached_stack_job",
+      "function_name": "_runtime_submit_background_work",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_realloc_lost_pointer",
+      "function_name": "_runtime_resize_message_buffer",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_signed_recv_to_size",
+      "function_name": "_runtime_receive_record_payload",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_stale_fd_after_close",
+      "function_name": "_runtime_reopen_cached_descriptor",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_key_truncation_route",
+      "function_name": "_runtime_route_by_partition_key",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_real_model_macro_guarded_counter",
+      "function_name": "_runtime_update_metric_counter",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "td_handle_real_protocol_message",
+      "function_name": "td_handle_protocol_message",
       "file_path": "src/main.c"
     },
     {
-      "function_name": "_real_model_process_protocol_task",
+      "function_name": "_runtime_process_protocol_task",
       "file_path": "src/lifecycle.c"
     },
     {
@@ -378,175 +378,212 @@
       "file_path": "src/main.c"
     },
     {
-      "function_name": "_issue41_process_cs_message",
+      "function_name": "_peer_process_session_message",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue41_label_cache_size_miscalc",
+      "function_name": "_peer_prepare_label_cache",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue41_header_length_not_validated",
+      "function_name": "_peer_decode_header_window",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue41_recv_retry_without_timeout",
+      "function_name": "_peer_receive_session_frame",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue41_reliable_fd_to_raw_interface",
+      "function_name": "_peer_bridge_descriptor",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue41_lax_protocol_mismatch",
+      "function_name": "_peer_route_protocol_context",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue41_partial_resource_leak_on_retry",
+      "function_name": "_peer_prepare_retry_context",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue41_dynamic_array_expand_race",
+      "function_name": "_peer_expand_task_table",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue41_missing_version_filter",
+      "function_name": "_peer_select_version_window",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue41_missing_reference_count",
+      "function_name": "_peer_publish_shared_session",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue41_sigpipe_not_handled",
+      "function_name": "_peer_send_control_reply",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue41_raw_fd_missing_encode",
+      "function_name": "_peer_export_descriptor_token",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "td_handle_issue42_shared_memory_message",
+      "function_name": "td_runtime_apply_shared_memory_event",
       "file_path": "src/main.c"
     },
     {
-      "function_name": "_issue42_process_shared_memory_message",
+      "function_name": "td_runtime_refresh_cache"
+    },
+    {
+      "function_name": "td_runtime_configure_memory"
+    },
+    {
+      "function_name": "td_runtime_configure_pool"
+    },
+    {
+      "function_name": "td_runtime_publish_process_state"
+    },
+    {
+      "function_name": "td_runtime_schedule_event"
+    },
+    {
+      "function_name": "td_runtime_handle_signal"
+    },
+    {
+      "function_name": "td_runtime_shutdown_session"
+    },
+    {
+      "function_name": "_runtime_accept_session_frame"
+    },
+    {
+      "function_name": "_runtime_refresh_worker_context"
+    },
+    {
+      "function_name": "_runtime_apply_memory_plan"
+    },
+    {
+      "function_name": "_runtime_apply_pool_plan"
+    },
+    {
+      "function_name": "_runtime_publish_process_record"
+    },
+    {
+      "function_name": "_runtime_dispatch_event_cycle"
+    },
+    {
+      "function_name": "_runtime_handle_fault_signal"
+    },
+    {
+      "function_name": "_runtime_shutdown_local_session"
+    },
+    {
+      "function_name": "_runtime_init_sleep_window",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_init_sleep_busyflag_misuse",
+      "function_name": "_runtime_close_thread_cache",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_thread_cache_destroy_leak",
+      "function_name": "_runtime_find_bitmap_delta",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_big_endian_ctz_offset",
+      "function_name": "_runtime_read_lock_owner",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_shared_rwlock_readerpid_race",
+      "function_name": "_runtime_release_packet_pool",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_pbuf_pool_premature_destroy",
+      "function_name": "_runtime_read_timer_ticks",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_pmdtimer_lcore_oob",
+      "function_name": "_runtime_prepare_worker_label",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_thread_name_overflow",
+      "function_name": "_runtime_query_arena_usage",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_gmem_arena_uninitialized_output",
+      "function_name": "_runtime_enqueue_rcu_batch",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_crcu_multi_writer_race",
+      "function_name": "_runtime_rebuild_available_list",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_mmpool_temporary_array_mismatch",
+      "function_name": "_runtime_map_reserved_region",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_reserved_file_size_check_bypass",
+      "function_name": "_runtime_register_pool_ops",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_inappropriate_error_level_logging",
+      "function_name": "_runtime_count_pool_cache",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_fixpool_ops_register_race",
+      "function_name": "_runtime_walk_arena_groups",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_fixpool_count_cache_oob",
+      "function_name": "_runtime_schedule_rcu_release",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_shmdbg_arena_group_repeated_get",
+      "function_name": "_runtime_claim_process_slot",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_qrcu_version_switch_race",
+      "function_name": "_runtime_open_named_segment",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_pcm_process_slot_race",
+      "function_name": "_runtime_capture_signal_stack",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_namedpipe_shm_permission",
+      "function_name": "_runtime_queue_local_flush",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_signal_stack_race",
+      "function_name": "_runtime_create_shared_zone",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_flushjob_same_core_wakeup",
+      "function_name": "_runtime_cleanup_tls_reserve",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_smmap_concurrent_create",
+      "function_name": "_runtime_map_linked_segment",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_tlscb_prealloc_cleanup_gap",
+      "function_name": "_runtime_release_hash_node",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_shm_get_addr_by_path_race",
+      "function_name": "_runtime_mark_process_online",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_lfhash_alloc_free_type_mismatch",
+      "function_name": "_runtime_make_shared_key",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_pcm_server_state_missing",
+      "function_name": "_runtime_cancel_wheel_timer",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_ftok_concurrent_key_race",
+      "function_name": "_runtime_write_exception_record",
       "file_path": "src/lifecycle.c"
     },
     {
-      "function_name": "_issue42_wheel_timer_self_destruct_deadlock",
-      "file_path": "src/lifecycle.c"
-    },
-    {
-      "function_name": "_issue42_signal_handler_sem_interrupt",
-      "file_path": "src/lifecycle.c"
-    },
-    {
-      "function_name": "_issue42_work_self_destruction_race",
+      "function_name": "_runtime_finish_current_event",
       "file_path": "src/lifecycle.c"
     },
     {

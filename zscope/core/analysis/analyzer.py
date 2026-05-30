@@ -1,9 +1,10 @@
-"""
+﻿"""
 Main analyzer logic for Z-SCOPE.
 Orchestrates the analysis process using LLM, CodeIndex, and SnapshotStore.
 """
 
 import json
+import hashlib
 import logging
 import time
 import datetime
@@ -97,12 +98,19 @@ from ...agents.vulnerability_analyzer.agent import VulnerabilityAnalyzer
 from ...reporting.report import FinalReport, Issue, ReportGenerator
 from ...common.issue_identity import (
     canonical_issue_key,
+    deduplicate_semantic_issues_programmatic,
     deduplicate_issues,
     flatten_issue_text,
+    issue_resource_signature,
     issue_rank,
+    issues_may_share_root_cause,
     normalize_issue_category,
     normalize_issue_key_part,
     parse_issue_location,
+    semantic_category_family,
+    semantic_cluster_key,
+    semantic_root_cause_key,
+    merge_duplicate_issue,
 )
 from ...reporting.assembler import ReportAssembler
 from ...orchestration.workflow_runner import WorkflowRunner
@@ -185,6 +193,7 @@ class Analyzer:
             self.snapshot_store,
             resolve_issue_locations=self._resolve_issue_locations,
             deduplicate_observations=self._deduplicate_candidate_issues,
+            deduplicate_report_issues=self._deduplicate_report_issues,
             metadata_factory=self._build_workflow_metadata,
         )
         self.tools_runtime = ToolsRuntime(
@@ -213,6 +222,7 @@ class Analyzer:
         )
         self._clang_tooling_provider: Optional[ClangToolingEvidenceProvider] = None
         self._clang_tooling_evidence_cache: Dict[tuple[str, str, int, int], Dict[str, Any]] = {}
+        self._semantic_dedup_llm_cache: Dict[str, Dict[str, Any]] = {}
         self.workflow_progress: List[Dict[str, Any]] = []
         self.current_workflow_step: Optional[str] = None
         self.workflow_step_handlers: Dict[str, WorkflowStepHandler] = (
@@ -272,11 +282,16 @@ class Analyzer:
         if user_config_context:
             agent_context["user_config_context"] = user_config_context
 
+        diff_focus = getattr(self.config.project, "entry_diff_focus", None)
+        if isinstance(diff_focus, dict) and diff_focus:
+            agent_context["diff_focus"] = self._build_diff_focus_agent_context(diff_focus)
+
         state = {
             "entry_func": entry_func,
             "run_id": uuid.uuid4().hex,
             "impl_result": impl_result,
             "agent_context": agent_context,
+            "diff_focus": deepcopy(diff_focus) if isinstance(diff_focus, dict) else {},
             "notes": [],
             "issues": [],
             "observations": [],
@@ -309,6 +324,48 @@ class Analyzer:
         }
         self._refresh_effective_budget(state, "initial")
         return state
+
+    def _build_diff_focus_agent_context(self, diff_focus: Dict[str, Any]) -> Dict[str, Any]:
+        """Attach deterministic diff targets so analysis does not rely on free exploration."""
+        context = deepcopy(diff_focus)
+        snippets: List[Dict[str, Any]] = []
+        seen = set()
+        for item in context.get("changed_functions") or []:
+            if not isinstance(item, dict):
+                continue
+            func_name = str(item.get("function_name") or "")
+            if not func_name or func_name in seen:
+                continue
+            seen.add(func_name)
+            impl = self.code_index.get_function_impl(
+                func_name,
+                max_lines=min(200, self.config.analysis.max_function_lines),
+                include_context=False,
+                warn_missing=False,
+            )
+            if impl:
+                snippets.append(
+                    {
+                        "function_name": func_name,
+                        "file": impl.get("file", item.get("file_path", "")),
+                        "start_line": impl.get("start_line", item.get("start_line", 0)),
+                        "end_line": impl.get("end_line", item.get("end_line", 0)),
+                        "changed_lines": list(item.get("changed_lines") or []),
+                        "code": self._trim_code(str(impl.get("code") or ""), max_lines=80),
+                    }
+                )
+            if len(snippets) >= 12:
+                context.setdefault("notes", []).append(
+                    "Changed function snippets truncated to the first 12 functions."
+                )
+                break
+        context["changed_function_snippets"] = snippets
+        context["analysis_requirements"] = [
+            "Inspect changed_function_snippets and affected_paths before concluding.",
+            "Do not rely on caller exploration depth alone to decide whether changed code is relevant.",
+            "Keep findings even when they appear pre-existing; mark diff relevance in reasoning.",
+        ]
+        return context
 
     def _refresh_effective_budget(
         self,
@@ -348,6 +405,8 @@ class Analyzer:
         budget = state.get("effective_budget")
         if isinstance(budget, dict):
             return budget
+        if not hasattr(self, "budget_planner"):
+            return {}
         return self._refresh_effective_budget(state, "late_init").to_dict()
 
     def _selected_workflow_steps(self) -> List[WorkflowStep]:
@@ -574,13 +633,13 @@ class Analyzer:
                 agent_context["location"],
             )
             logger.info(
-                "Successfully modeled function: %s (ctx 鈮?%s tokens)",
+                "Successfully modeled function: %s (ctx 閳?%s tokens)",
                 state["entry_func"],
                 f"{sm_tokens:,}",
             )
             state["notes"].append(f"Successfully modeled function: {state['entry_func']}")
         else:
-            logger.warning("Semantic modeling failed: %s (ctx 鈮?%s tokens)", response.error, f"{sm_tokens:,}")
+            logger.warning("Semantic modeling failed: %s (ctx 閳?%s tokens)", response.error, f"{sm_tokens:,}")
             state["notes"].append(f"Semantic modeling failed: {response.error}")
 
     def _step_focused_subagent_planning(self, state: Dict[str, Any]) -> None:
@@ -913,7 +972,7 @@ class Analyzer:
                 state["total_context_tokens"] += va_ctx_tokens
                 self._accumulate_cumulative_token_metadata(state, response.metadata if response.metadata else {})
                 logger.info(
-                    "Vulnerability Analyzer found %d issue(s) for task: %s (ctx 鈮?%s tokens)",
+                    "Vulnerability Analyzer found %d issue(s) for task: %s (ctx 閳?%s tokens)",
                     len(raw_new_issues),
                     agent_cfg.task,
                     f"{va_ctx_tokens:,}",
@@ -1001,11 +1060,19 @@ class Analyzer:
         code = str(impl.get("code") or "")
         file_path = str(impl.get("file") or "")
         profile = self._candidate_backend_profile()
+        callee_scan = self._direct_callee_rule_scan_budget(state)
         issues: List[Dict[str, Any]] = []
         if profile == "regex":
             generator = RegexCandidateGenerator(self._get_local_pattern_semantics())
             issues.extend(generator.generate_issues(entry_func, code, file_path))
-            issues.extend(self._detect_direct_callee_rule_candidates(impl, generator, entry_func=entry_func))
+            issues.extend(
+                self._detect_direct_callee_rule_candidates(
+                    impl,
+                    generator,
+                    entry_func=entry_func,
+                    **callee_scan,
+                )
+            )
         if profile in {"clang", "unified"}:
             clang_generator = ClangAstCfgCandidateGenerator(
                 self._get_local_pattern_semantics(),
@@ -1025,7 +1092,14 @@ class Analyzer:
                     ),
                 )
             )
-            issues.extend(self._detect_direct_callee_rule_candidates(impl, clang_generator, entry_func=entry_func))
+            issues.extend(
+                self._detect_direct_callee_rule_candidates(
+                    impl,
+                    clang_generator,
+                    entry_func=entry_func,
+                    **callee_scan,
+                )
+            )
         issues = dedupe_rule_candidates(issues)
         return self._annotate_candidate_issues(
             issues,
@@ -1088,6 +1162,7 @@ class Analyzer:
         entry_func = state["entry_func"]
         impl = state.get("impl_result") or {}
         profile = self._candidate_backend_profile()
+        callee_scan = self._direct_callee_rule_scan_budget(state)
         generator: Optional[RegexCandidateGenerator] = None
         clang_generator: Optional[ClangAstCfgCandidateGenerator] = None
         issues: List[Dict[str, Any]] = []
@@ -1107,6 +1182,7 @@ class Analyzer:
                     generator,
                     entry_func=entry_func,
                     allowed_skills=allowed_skills,
+                    **callee_scan,
                 )
             )
         if profile in {"clang", "unified"}:
@@ -1142,6 +1218,7 @@ class Analyzer:
                     clang_generator,
                     entry_func=entry_func,
                     allowed_skills=allowed_skills,
+                    **callee_scan,
                 )
             )
         if not issues:
@@ -1158,6 +1235,27 @@ class Analyzer:
             else (generator or RegexCandidateGenerator(self._get_local_pattern_semantics())).issue_to_ticket(issue)
             for issue in issues
         ]
+
+    def _direct_callee_rule_scan_budget(self, state: Dict[str, Any]) -> Dict[str, int]:
+        budget = self._current_effective_budget(state)
+        hard_caps = budget.get("hard_caps") if isinstance(budget.get("hard_caps"), dict) else {}
+        analysis_config = getattr(getattr(self, "config", None), "analysis", None)
+        configured_breadth = int(
+            budget.get("premodel_callees")
+            or hard_caps.get("max_premodel_callees")
+            or getattr(analysis_config, "max_premodel_callees", 16)
+            or 16
+        )
+        configured_depth = int(
+            budget.get("premodel_depth")
+            or hard_caps.get("max_premodel_depth")
+            or getattr(analysis_config, "max_premodel_depth", 2)
+            or 2
+        )
+        limit = max(16, min(64, configured_breadth))
+        max_depth = max(2, min(4, configured_depth))
+        total_limit = max(80, min(256, limit * max_depth * 4))
+        return {"limit": limit, "max_depth": max_depth, "total_limit": total_limit}
 
     def _detect_direct_callee_rule_candidates(
         self,
@@ -1234,7 +1332,10 @@ class Analyzer:
             )
             expand_dispatcher_siblings = (
                 depth >= max_depth
-                and self._looks_like_dispatcher_function(callee, callee_impl)
+                and (
+                    self._looks_like_dispatcher_function(callee, callee_impl)
+                    or self._looks_like_boundary_fanout_function(callee, callee_impl)
+                )
             )
             if depth >= max_depth and not expand_dispatcher_siblings:
                 continue
@@ -1261,6 +1362,30 @@ class Analyzer:
         switch_hint = "switch" in code or len(re.findall(r"\bcase\b|\bdefault\s*:", code)) >= 2
         branch_hint = len(re.findall(r"\b(?:if|else\s+if)\s*\(", code)) >= 3
         return bool(switch_hint or (name_hint and branch_hint))
+
+    @staticmethod
+    def _looks_like_boundary_fanout_function(func_name: str, impl: Dict[str, Any]) -> bool:
+        code = str(impl.get("code") or "")
+        callees = impl.get("callees") or []
+        if not callees:
+            return False
+        if len(callees) == 1 and re.search(r"\breturn\s+[A-Za-z_]\w+\s*\(", code):
+            return True
+        call_statements = len(
+            [
+                token
+                for token in re.findall(r"\b([A-Za-z_]\w*)\s*\(", code)
+                if token not in {"if", "for", "while", "switch", "return", "sizeof"}
+            ]
+        )
+        if len(callees) >= 3 and call_statements >= 3:
+            return True
+        name_hint = re.search(
+            r"(?:apply|configure|publish|schedule|refresh|accept|cycle|plan|record|maintenance|cases|worker|runtime)",
+            func_name,
+            re.I,
+        )
+        return bool(name_hint and len(callees) >= 2 and call_statements >= 2)
 
     @staticmethod
     def _lift_internal_sink_candidate(
@@ -2542,6 +2667,276 @@ class Analyzer:
         """Merge candidate findings that point at the same root-cause sink."""
         return deduplicate_issues(issues)
 
+    def _deduplicate_report_issues(
+        self,
+        issues: List[Dict[str, Any]],
+        state: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Apply final-report semantic dedup before report views are built."""
+        semantic_cfg = getattr(getattr(self.config, "reporting", None), "semantic_dedup", None)
+        if semantic_cfg is None or not getattr(semantic_cfg, "enabled", True):
+            deduped = deduplicate_issues(issues)
+            state["semantic_dedup_summary"] = {
+                "enabled": False,
+                "input_issue_count": len(issues),
+                "output_issue_count": len(deduped),
+            }
+            return deduped
+
+        deduped, summary = deduplicate_semantic_issues_programmatic(issues)
+        summary.update(
+            {
+                "enabled": True,
+                "llm_enabled": bool(getattr(semantic_cfg, "llm_enabled", False)),
+                "input_issue_count": len(issues),
+                "after_programmatic_issue_count": len(deduped),
+            }
+        )
+        if getattr(semantic_cfg, "llm_enabled", False):
+            deduped, llm_summary = self._deduplicate_report_clusters_with_llm(
+                deduped,
+                semantic_cfg=semantic_cfg,
+            )
+            summary.update(llm_summary)
+        summary["output_issue_count"] = len(deduped)
+        state["semantic_dedup_summary"] = summary
+        return deduped
+
+    def _deduplicate_report_clusters_with_llm(
+        self,
+        issues: List[Dict[str, Any]],
+        *,
+        semantic_cfg: Any,
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        max_cluster_size = max(2, int(getattr(semantic_cfg, "max_cluster_size", 8) or 8))
+        threshold = float(getattr(semantic_cfg, "llm_confidence_threshold", 0.85) or 0.85)
+        clusters: Dict[str, List[Dict[str, Any]]] = {}
+        for issue in issues:
+            key = semantic_cluster_key(issue)
+            if key:
+                clusters.setdefault(key, []).append(issue)
+
+        candidate_clusters = [
+            group
+            for group in clusters.values()
+            if 1 < len(group) <= max_cluster_size
+        ]
+        summary: Dict[str, Any] = {
+            "llm_candidate_cluster_count": len(candidate_clusters),
+            "llm_clusters_called": 0,
+            "llm_cache_hits": 0,
+            "llm_merge_count": 0,
+            "llm_rejected_merge_count": 0,
+            "llm_failed_cluster_count": 0,
+        }
+        if not candidate_clusters:
+            return issues, summary
+
+        recon_agent = self._make_issue_reconciler_agent()
+        if recon_agent is None:
+            summary["llm_disabled_reason"] = "no_issue_reconciler_llm_client"
+            return issues, summary
+
+        by_issue_id: Dict[str, Dict[str, Any]] = {}
+        issue_order: List[str] = []
+        issue_indices = {id(issue): index for index, issue in enumerate(issues)}
+        for index, issue in enumerate(issues):
+            issue_id = self._semantic_dedup_issue_id(issue, index)
+            by_issue_id[issue_id] = issue
+            issue_order.append(issue_id)
+
+        removed: Set[str] = set()
+        for cluster in candidate_clusters:
+            active_cluster = [
+                issue
+                for issue in cluster
+                if self._semantic_dedup_issue_id(issue, issue_indices.get(id(issue), 0)) not in removed
+            ]
+            if len(active_cluster) < 2:
+                continue
+            cluster_payload = self._semantic_dedup_cluster_payload(active_cluster, issue_indices)
+            cluster_fingerprint = self._semantic_dedup_cluster_fingerprint(cluster_payload)
+            decision = self._semantic_dedup_llm_cache.get(cluster_fingerprint)
+            if decision is not None:
+                summary["llm_cache_hits"] += 1
+            else:
+                response = recon_agent.run(cluster_payload)
+                summary["llm_clusters_called"] += 1
+                if not response.success or not isinstance(response.data, dict):
+                    summary["llm_failed_cluster_count"] += 1
+                    continue
+                decision = response.data
+                self._semantic_dedup_llm_cache[cluster_fingerprint] = decision
+
+            applied, rejected = self._apply_llm_dedup_decision(
+                decision,
+                by_issue_id,
+                removed,
+                threshold=threshold,
+            )
+            summary["llm_merge_count"] += applied
+            summary["llm_rejected_merge_count"] += rejected
+
+        return [issue for issue_id, issue in zip(issue_order, issues) if issue_id not in removed], summary
+
+    def _make_issue_reconciler_agent(self) -> Any:
+        recon_agent_cfg = next(
+            (a for a in self.config.project.agents if a.name == "issue_reconciler_agent"),
+            None,
+        )
+        recon_llm_ref = recon_agent_cfg.llm_ref if recon_agent_cfg and recon_agent_cfg.llm_ref else "default"
+        recon_client = self.llm_clients.get(recon_llm_ref, self.llm_clients.get("default"))
+        if recon_client is None:
+            logger.warning("Semantic LLM dedup requested but no issue_reconciler_agent LLM client is configured.")
+            return None
+        from ...agents.issue_reconciler.agent import IssueReconcilerAgent
+
+        return IssueReconcilerAgent(
+            recon_client,
+            tool_policy=self._tool_policy_for_agent("issue_reconciler_agent"),
+        )
+
+    @staticmethod
+    def _semantic_dedup_issue_id(issue: Dict[str, Any], index: int) -> str:
+        return str(
+            issue.get("id")
+            or issue.get("candidate_id")
+            or issue.get("dedup_key")
+            or f"semantic_issue_{index}"
+        )
+
+    def _semantic_dedup_cluster_payload(
+        self,
+        cluster: List[Dict[str, Any]],
+        issue_indices: Dict[int, int],
+    ) -> Dict[str, Any]:
+        compact_issues = []
+        files = set()
+        functions = set()
+        resources = set()
+        families = set()
+        for issue in cluster:
+            issue_id = self._semantic_dedup_issue_id(issue, issue_indices.get(id(issue), 0))
+            compact = self._compact_issue_for_semantic_dedup(issue, issue_id)
+            compact_issues.append(compact)
+            if compact.get("file"):
+                files.add(compact["file"])
+            if compact.get("function"):
+                functions.add(compact["function"])
+            if compact.get("resource_signature"):
+                resources.add(compact["resource_signature"])
+            if compact.get("category_family"):
+                families.add(compact["category_family"])
+        cluster_id = self._semantic_dedup_cluster_fingerprint(
+            {"issues": compact_issues, "mode": "deduplicate_cluster"}
+        )
+        return {
+            "mode": "deduplicate_cluster",
+            "cluster_id": cluster_id,
+            "issues": compact_issues,
+            "deterministic_hints": {
+                "category_families": sorted(families),
+                "same_file": len(files) <= 1,
+                "same_function": len(functions) <= 1,
+                "resource_signatures": sorted(resources),
+            },
+        }
+
+    @staticmethod
+    def _compact_issue_for_semantic_dedup(issue: Dict[str, Any], issue_id: str) -> Dict[str, Any]:
+        location = str(issue.get("location") or issue.get("file") or "")
+        file_path, _line = parse_issue_location(location)
+        category = str(issue.get("category") or issue.get("subcategory") or "")
+        return {
+            "id": issue_id,
+            "category": category,
+            "category_family": semantic_category_family(category),
+            "function": issue.get("function") or issue.get("func_name"),
+            "file": file_path,
+            "location": location,
+            "root_cause": issue.get("root_cause"),
+            "description": issue.get("description"),
+            "positive_evidence": issue.get("positive_evidence"),
+            "candidate_source": issue.get("candidate_source") or issue.get("finding_kind"),
+            "resource_signature": issue_resource_signature(issue),
+            "root_cause_key": semantic_root_cause_key(issue),
+            "source": issue.get("source"),
+            "sink": issue.get("sink") or issue.get("sink_function"),
+            "call_path": issue.get("call_path"),
+        }
+
+    @staticmethod
+    def _semantic_dedup_cluster_fingerprint(payload: Dict[str, Any]) -> str:
+        stable = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(stable.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _apply_llm_dedup_decision(
+        decision: Dict[str, Any],
+        by_issue_id: Dict[str, Dict[str, Any]],
+        removed: Set[str],
+        *,
+        threshold: float,
+    ) -> tuple[int, int]:
+        applied = 0
+        rejected = 0
+        keep_distinct = {
+            str(issue_id)
+            for issue_id in decision.get("must_keep_distinct_issue_ids", [])
+            if issue_id
+        }
+        groups = decision.get("duplicate_groups")
+        if not isinstance(groups, list):
+            return 0, 0
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            primary_id = str(group.get("primary_issue_id") or "")
+            primary = by_issue_id.get(primary_id)
+            if primary is None or primary_id in removed:
+                rejected += 1
+                continue
+            try:
+                confidence = float(group.get("confidence", 0) or 0)
+            except (TypeError, ValueError):
+                confidence = 0.0
+            for duplicate_id in group.get("duplicate_issue_ids", []) or []:
+                duplicate_id = str(duplicate_id or "")
+                duplicate = by_issue_id.get(duplicate_id)
+                if (
+                    not duplicate_id
+                    or duplicate is None
+                    or duplicate_id == primary_id
+                    or duplicate_id in removed
+                    or duplicate_id in keep_distinct
+                    or primary_id in keep_distinct
+                ):
+                    rejected += 1
+                    continue
+                if not issues_may_share_root_cause(
+                    primary,
+                    duplicate,
+                    confidence=confidence,
+                    threshold=threshold,
+                ):
+                    rejected += 1
+                    continue
+                root_key = str(group.get("root_cause_key") or "") or semantic_root_cause_key(primary)
+                merge_duplicate_issue(
+                    primary,
+                    duplicate,
+                    dedup_key=root_key,
+                    decision={
+                        "method": "issue_reconciler_agent",
+                        "root_cause_key": root_key,
+                        "confidence": confidence,
+                        "reasoning": group.get("reasoning"),
+                    },
+                )
+                removed.add(duplicate_id)
+                applied += 1
+        return applied, rejected
+
     def _build_validation_evidence_pack(
         self,
         issue: Dict[str, Any],
@@ -2628,11 +3023,13 @@ class Analyzer:
             "subagent_reports": self._compact_subagent_reports(state.get("subagent_reports", [])),
             "candidate_ledger_summary": dict(state.get("candidate_ledger_summary", {})),
             "candidate_signal_summary": dict(state.get("candidate_signal_summary", {})),
+            "semantic_dedup_summary": dict(state.get("semantic_dedup_summary", {})),
             "budget_stage": state.get("budget_stage", ""),
             "budget_hard_caps": dict(state.get("budget_hard_caps", {})),
             "effective_budget": dict(state.get("effective_budget", {})),
             "budget_scores": dict(state.get("budget_scores", {})),
             "budget_reasons": dict(state.get("budget_reasons", {})),
+            "diff_focus": dict(state.get("diff_focus", {})),
             "audit_observation_count": len(state.get("observations", [])),
             "audit_observations": list(state.get("observations", [])),
         }
@@ -3082,7 +3479,7 @@ class Analyzer:
         Returns:
             (modeled_count, skipped_count, total_context_tokens)
         """
-        # 1. BFS 鏀堕泦鍙揪 callee 鍥?
+        # 1. BFS 閺€鍫曟肠閸欘垵鎻?callee 閸?
         callee_graph: Dict[str, List[str]] = {}
         visited: Set[str] = set()
         scheduled: Set[str] = {entry_func}
@@ -3166,7 +3563,7 @@ class Analyzer:
                 )
                 last_progress_log = now
 
-        # 2. 閫嗘嫇鎵戞帓搴忥細鍙跺瓙鍑芥暟浼樺厛
+        # 2. 闁棙瀚囬幍鎴炲笓鎼村骏绱伴崣璺虹摍閸戣姤鏆熸导妯哄帥
         if capped_depths:
             logger.info(
                 "[premodel] Breadth cap reached for '%s' at depth(s): %s",
@@ -3175,7 +3572,7 @@ class Analyzer:
             )
 
         order = self._topo_sort(callee_graph, entry_func)
-        # 杩囨护鎺夊叆鍙ｅ嚱鏁版湰韬紙鐢变富娴佺▼寤烘ā锛?
+        # 鏉╁洦鎶ら幒澶婂弳閸欙絽鍤遍弫鐗堟拱闊偓绱欓悽鍙樺瘜濞翠胶鈻煎鐑樐侀敍?
         order = [f for f in order if f != entry_func]
 
         if not order:
@@ -3183,7 +3580,7 @@ class Analyzer:
 
         logger.info(f"[premodel] {len(order)} reachable callees to pre-model for '{entry_func}'")
 
-        # 3. 閫愪釜寤烘ā
+        # 3. 闁劒閲滃鐑樐?
         semantic_agent = SemanticModeler(
             sm_client,
             self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
@@ -3194,13 +3591,13 @@ class Analyzer:
         total_tokens = 0
 
         for func in order:
-            # 蹇€熸鏌ワ細宸叉湁蹇収鍒欒烦杩?
+            # 韫囶偊鈧喐顥呴弻銉窗瀹稿弶婀佽箛顐ゅ弾閸掓瑨鐑︽潻?
             existing = self.snapshot_store.load_snapshot(func)
             if existing is not None:
                 skipped += 1
                 continue
 
-            # 璺ㄧ嚎绋嬮攣淇濇姢
+            # 鐠恒劎鍤庣粙瀣敚娣囨繃濮?
             status = self.snapshot_store.lock_manager.acquire(func, timeout=120.0)
             if status == "done":
                 skipped += 1
@@ -3209,7 +3606,7 @@ class Analyzer:
                 logger.warning(f"[premodel] Timeout waiting for '{func}', skipping.")
                 continue
 
-            # status == "acquired"锛氱敱褰撳墠 Worker 寤烘ā
+            # status == "acquired"閿涙氨鏁辫ぐ鎾冲 Worker 瀵ょ儤膩
             try:
                 impl = impl_cache.get(func) or self.code_index.get_function_impl(
                     func,
@@ -3230,26 +3627,11 @@ class Analyzer:
                     modeled += 1
                     continue
 
-                # 楂樻晥鎷︽埅锛氬钩鍑″嚱鏁颁笉闇€瑕佽澶фā鍨嬬湅
+                # 妤傛ɑ鏅ラ幏锔藉焻閿涙艾閽╅崙鈥冲毐閺侀绗夐棁鈧憰浣筋唨婢堆勀侀崹瀣箙
                 if self._is_trivial_function(impl["code"], self.config.analysis.trivial_function_max_lines):
-                    logger.info(f"[premodel] Auto-skipping trivial function '{func}'")
-                    fake_snapshot = {
-                        "type": "function_snapshot",
-                        "func_name": func,
-                        "location": location,
-                        "summary": "[Auto-Skipped] Trivial Function (鏋佺畝鐩撮€氱粨鏋勶紝鏈皟鐢?LLM)",
-                        "inputs": [],
-                        "outputs": [],
-                        "resources": {},
-                        "error_handling": {},
-                        "concurrency": {},
-                        "semantic_fingerprint": {"key_semantics": ["trivial representation"]},
-                        "suspicious_points": [],
-                        "callees": impl.get("callees", []),
-                        "is_trivial": True
-                    }
-                    fake_snapshot = self._build_trivial_snapshot(func, impl, location)
-                    self.snapshot_store.save_snapshot(func, fake_snapshot, impl["code"], location)
+                    logger.info(f"[premodel] Auto-summarizing trivial function '{func}'")
+                    snapshot = self._build_trivial_snapshot(func, impl, location)
+                    self.snapshot_store.save_snapshot(func, snapshot, impl["code"], location)
                     self.snapshot_store.lock_manager.release(func, success=True)
                     modeled += 1
                     continue
@@ -3286,7 +3668,7 @@ class Analyzer:
                 self.snapshot_store.lock_manager.release(func, success=False)
                 logger.error(f"[premodel] Error modeling '{func}': {e}")
 
-        logger.info(f"[premodel] Done: {modeled} modeled, {skipped} reused from cache (ctx 鈮?{total_tokens:,} tokens)")
+        logger.info(f"[premodel] Done: {modeled} modeled, {skipped} reused from cache (ctx 閳?{total_tokens:,} tokens)")
         return modeled, skipped, total_tokens
 
     @staticmethod

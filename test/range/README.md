@@ -132,7 +132,7 @@ Cleanup and shutdown the dispatcher.
 
 ## Security Testing
 
-This project contains intentionally planted security vulnerabilities for testing purposes. The current benchmark contains 122 scored findings. See `GROUND_TRUTH.md` for complete documentation and `benchmark/PATTERN_COVERAGE.md` for the C memory/concurrency pattern matrix.
+This project contains intentionally planted security vulnerabilities for testing purposes. The current benchmark contains 121 scored findings. See `GROUND_TRUTH.md` for complete documentation and `benchmark/PATTERN_COVERAGE.md` for the C memory/concurrency pattern matrix.
 
 ### Vulnerability Categories
 

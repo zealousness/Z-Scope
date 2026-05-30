@@ -1,8 +1,8 @@
 {
-  "benchmark": "zscope-range-task-dispatcher",
-  "version": 11,
-  "total_vulnerabilities": 122,
-  "notes": "Canonical scorer truth. Do not expose to Z-SCOPE analysis context. Version 10 promotes manually verified extra findings from the auto_unified_wsl_structured_20260520_2 run and adds alternate public-wrapper anchors; version 9 refreshes line anchors after public-header and wrapper entry refactors; version 8 adds a high-tier ISSUE41-* suite derived from GitHub issue #41 distributed C/S messaging and task-creation models; version 11 adds the GitHub issue #42 shared-memory/runtime callback model suite.",
+  "benchmark": "zscope-range-service-runtime",
+  "version": 13,
+  "total_vulnerabilities": 121,
+  "notes": "Canonical scorer truth. Do not expose to Z-SCOPE analysis context. Version 13 removes ISSUE42-012/log_level_misuse as a code-style-only case and strengthens issue #41/#42 models with concrete impact chains; version 12 neutralizes benchmark function names, refreshes ISSUE42 to natural runtime API flows, and adds wrapper/evidence anchors for scoring; version 11 adds the GitHub issue #42 shared-memory/runtime callback model suite; version 10 promotes manually verified extra findings from the auto_unified_wsl_structured_20260520_2 run and adds alternate public-wrapper anchors.",
   "vulnerabilities": [
     {
       "id": "RANGE-001",
@@ -384,7 +384,7 @@
       "category": "held_lock_callback",
       "title": "Lifecycle callback is invoked while holding the cache mutex",
       "file": "src/lifecycle.c",
-      "function": "_lifecycle_fire_callback_under_lock",
+      "function": "_lifecycle_notify_entry_callback",
       "line": 225,
       "end_line": 230,
       "severity": "medium",
@@ -594,7 +594,7 @@
       "category": "alignment",
       "title": "Protocol decoder casts packet + 1 to uint32_t pointer and dereferences it",
       "file": "src/lifecycle.c",
-      "function": "_lifecycle_decode_unaligned_id",
+      "function": "_lifecycle_decode_packet_id",
       "line": 364,
       "end_line": 370,
       "severity": "medium",
@@ -720,13 +720,13 @@
       "line": 566,
       "end_line": 568,
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_control_session_detach_without_release",
+      "secondary_function": "_control_session_detach_local",
       "secondary_line": 526,
       "secondary_end_line": 541,
       "severity": "high",
       "keywords": [
         "DETACH",
-        "_control_session_detach_without_release",
+        "_control_session_detach_local",
         "UNLOCK",
         "owner",
         "leak"
@@ -736,18 +736,18 @@
       "id": "RANGE-040",
       "cwe": "CWE-772",
       "category": "memory_leak",
-      "title": "Guarded subscription unregister frees the node without destroying its nested mutex resource",
+      "title": "Topic subscription unregister frees the node without destroying its nested mutex resource",
       "file": "src/lifecycle.c",
-      "function": "_lifecycle_unregister_guarded_subscription",
+      "function": "_lifecycle_unregister_topic_subscription",
       "line": 629,
       "end_line": 644,
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_lifecycle_register_guarded_subscription",
+      "secondary_function": "_lifecycle_register_topic_subscription",
       "secondary_line": 609,
       "secondary_end_line": 626,
       "severity": "medium",
       "keywords": [
-        "GuardedSubscription",
+        "TopicSubscription",
         "pthread_mutex_init",
         "SAFE_FREE",
         "pthread_mutex_destroy",
@@ -810,7 +810,7 @@
       "severity": "medium",
       "keywords": [
         "LOG_ERROR",
-        "poison_marker",
+        "diagnostic_marker",
         "pipe = pipe->next",
         "self",
         "resource exhaustion"
@@ -852,6 +852,14 @@
       "secondary_line": 794,
       "secondary_end_line": 820,
       "severity": "high",
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_update_os_policy",
+          "line": 420,
+          "end_line": 428
+        }
+      ],
       "keywords": [
         "OSNode",
         "ProcNode",
@@ -870,13 +878,13 @@
       "line": 878,
       "end_line": 898,
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_policy_avl_find_full_key",
+      "secondary_function": "_policy_avl_find_route_key",
       "secondary_line": 857,
       "secondary_end_line": 867,
       "severity": "medium",
       "keywords": [
         "strcmp",
-        "full_key",
+        "route_key",
         "strncpy",
         "POLICY_AVL_KEY_LIMIT",
         "truncated"
@@ -898,7 +906,7 @@
       "severity": "high",
       "keywords": [
         "_route_avl_insert_node",
-        "fail_after_insert",
+        "route_flags",
         "free(node)",
         "duplicate_next",
         "use-after-free"
@@ -910,15 +918,15 @@
       "category": "race",
       "title": "Shared counter locking is compiled out on non-64-bit builds while the resource remains shared",
       "file": "src/lifecycle.c",
-      "function": "_lifecycle_macro_guarded_counter_update",
+      "function": "_lifecycle_update_counter_slot",
       "line": 960,
       "end_line": 972,
       "severity": "medium",
       "keywords": [
-        "MACRO_GUARDED_LOCK",
+        "COUNTER_SLOT_LOCK",
         "__x86_64__",
         "do { } while",
-        "g_macro_guarded_counter",
+        "g_lifecycle_counter_slot",
         "race"
       ]
     },
@@ -1072,7 +1080,7 @@
       "category": "race",
       "title": "Module cleanup unlinks a node under the registry lock then frees members after releasing the lock",
       "file": "src/lifecycle.c",
-      "function": "_real_model_module_cleanup_race",
+      "function": "_runtime_remove_module_record",
       "line": 1176,
       "end_line": 1191,
       "severity": "critical",
@@ -1097,7 +1105,7 @@
       "category": "memory_leak",
       "title": "OS node removal frees the parent while child ProcNode-style records remain linked and uncollected",
       "file": "src/lifecycle.c",
-      "function": "_real_model_osnode_remove_race",
+      "function": "_runtime_remove_system_node",
       "line": 1193,
       "end_line": 1208,
       "severity": "critical",
@@ -1121,7 +1129,7 @@
       "category": "double_free",
       "title": "Shared rollback path frees the same payload twice when the second initialization stage fails",
       "file": "src/lifecycle.c",
-      "function": "_real_model_error_branch_double_cleanup",
+      "function": "_runtime_apply_component_stage",
       "line": 1210,
       "end_line": 1227,
       "severity": "critical",
@@ -1144,7 +1152,7 @@
       "category": "memory_leak",
       "title": "Component destroy detaches a node but returns on configuration removal failure before releasing it",
       "file": "src/lifecycle.c",
-      "function": "_real_model_comp_destroy_detach_leak",
+      "function": "_runtime_detach_component_record",
       "line": 1229,
       "end_line": 1247,
       "severity": "critical",
@@ -1167,7 +1175,7 @@
       "category": "memory_leak",
       "title": "System file unregister frees the wrapper node while leaking its dynamically allocated path payload",
       "file": "src/lifecycle.c",
-      "function": "_real_model_unregister_file_leak",
+      "function": "_runtime_remove_file_record",
       "line": 1249,
       "end_line": 1257,
       "severity": "high",
@@ -1190,7 +1198,7 @@
       "category": "memory_leak",
       "title": "Activation failure rollback unlinks a globally registered node but drops nested session resources",
       "file": "src/lifecycle.c",
-      "function": "_real_model_activation_rollback_gap",
+      "function": "_runtime_activate_service_path",
       "line": 1259,
       "end_line": 1278,
       "severity": "critical",
@@ -1214,7 +1222,7 @@
       "category": "memory_leak",
       "title": "Reader-channel cleanup ignores the stored role and invokes the creator-only release path",
       "file": "src/lifecycle.c",
-      "function": "_real_model_reader_channel_role_leak",
+      "function": "_runtime_release_reader_channel",
       "line": 1280,
       "end_line": 1294,
       "severity": "critical",
@@ -1238,7 +1246,7 @@
       "category": "memory_leak",
       "title": "Error logging path allocates a formatted message copy and returns without releasing it",
       "file": "src/lifecycle.c",
-      "function": "_real_model_log_buffer_leak",
+      "function": "_runtime_flush_log_buffer",
       "line": 1296,
       "end_line": 1307,
       "severity": "high",
@@ -1261,7 +1269,7 @@
       "category": "object_publication",
       "title": "Initialization publishes a registry node before mutex and payload initialization complete",
       "file": "src/lifecycle.c",
-      "function": "_real_model_init_sequence_publication",
+      "function": "_runtime_publish_init_sequence",
       "line": 1309,
       "end_line": 1323,
       "severity": "critical",
@@ -1285,7 +1293,7 @@
       "category": "alignment",
       "title": "Message decoder casts an unaligned packet offset to uint32_t after only a two-byte length check",
       "file": "src/lifecycle.c",
-      "function": "_real_model_message_alignment_overread",
+      "function": "_runtime_message_header_probe",
       "line": 1325,
       "end_line": 1331,
       "severity": "high",
@@ -1300,12 +1308,12 @@
         "packet + 1",
         "uint32_t",
         "overread",
-        "td_handle_real_protocol_message",
-        "_real_model_process_protocol_task",
+        "td_handle_protocol_message",
+        "_runtime_process_protocol_task",
         "protocol dispatch"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_real_model_decode_protocol_header",
+      "secondary_function": "_service_decode_protocol_header",
       "secondary_line": 1591,
       "secondary_end_line": 1610,
       "flow": "real_protocol_message_flow"
@@ -1316,7 +1324,7 @@
       "category": "memory_leak",
       "title": "Patch unload frees the primary patch node but misses the table-node child allocation",
       "file": "src/lifecycle.c",
-      "function": "_real_model_patch_unload_member_leak",
+      "function": "_runtime_unload_patch_member",
       "line": 1333,
       "end_line": 1343,
       "severity": "high",
@@ -1339,7 +1347,7 @@
       "category": "memory_leak",
       "title": "AVL insertion failure is ignored after linking the node, losing ownership and cleanup state",
       "file": "src/lifecycle.c",
-      "function": "_real_model_avl_insert_unchecked_return",
+      "function": "_runtime_insert_policy_node",
       "line": 1345,
       "end_line": 1352,
       "severity": "critical",
@@ -1363,7 +1371,7 @@
       "category": "bounds",
       "title": "Protocol length calculation trusts a packet unit count and can copy beyond the supplied frame",
       "file": "src/lifecycle.c",
-      "function": "_real_model_protocol_length_miscalc",
+      "function": "_runtime_protocol_frame_length",
       "line": 1354,
       "end_line": 1365,
       "severity": "high",
@@ -1379,12 +1387,12 @@
         "units * 8",
         "memcpy",
         "bounds",
-        "td_handle_real_protocol_message",
-        "_real_model_process_protocol_task",
+        "td_handle_protocol_message",
+        "_runtime_process_protocol_task",
         "protocol dispatch"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_real_model_dispatch_protocol_message",
+      "secondary_function": "_service_dispatch_protocol_message",
       "secondary_line": 1612,
       "secondary_end_line": 1637,
       "flow": "real_protocol_message_flow"
@@ -1395,7 +1403,7 @@
       "category": "bounds",
       "title": "Offline parser reads record count before validating the expected 64-bit magic value",
       "file": "src/lifecycle.c",
-      "function": "_real_model_magic64_missing_check",
+      "function": "_runtime_read_control_magic",
       "line": 1367,
       "end_line": 1374,
       "severity": "high",
@@ -1411,12 +1419,12 @@
         "parser",
         "count",
         "validation",
-        "td_handle_real_protocol_message",
-        "_real_model_process_protocol_task",
+        "td_handle_protocol_message",
+        "_runtime_process_protocol_task",
         "protocol dispatch"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_real_model_decode_protocol_header",
+      "secondary_function": "_service_decode_protocol_header",
       "secondary_line": 1591,
       "secondary_end_line": 1610,
       "flow": "real_protocol_message_flow"
@@ -1427,7 +1435,7 @@
       "category": "memory_leak",
       "title": "Resource-table unload releases the table shell without walking nested bucket records",
       "file": "src/lifecycle.c",
-      "function": "_real_model_resource_table_unload_leak",
+      "function": "_runtime_unload_resource_table",
       "line": 1376,
       "end_line": 1387,
       "severity": "high",
@@ -1450,7 +1458,7 @@
       "category": "object_publication",
       "title": "Ready flag is set before the shared node reaches its final initialized state",
       "file": "src/lifecycle.c",
-      "function": "_real_model_atomic_order_flag_race",
+      "function": "_runtime_read_service_flag",
       "line": 1389,
       "end_line": 1398,
       "severity": "critical",
@@ -1473,7 +1481,7 @@
       "category": "memory_leak",
       "title": "Patch tree cleanup frees the root record while leaking left and right child records",
       "file": "src/lifecycle.c",
-      "function": "_real_model_patch_tree_child_leak",
+      "function": "_runtime_prune_patch_tree",
       "line": 1400,
       "end_line": 1411,
       "severity": "high",
@@ -1496,7 +1504,7 @@
       "category": "memory_leak",
       "title": "Peak-stat query allocates a PID statistics buffer and returns copied data without releasing it",
       "file": "src/lifecycle.c",
-      "function": "_real_model_peak_stats_leak",
+      "function": "_runtime_query_peak_stats",
       "line": 1413,
       "end_line": 1423,
       "severity": "high",
@@ -1519,7 +1527,7 @@
       "category": "busy_loop",
       "title": "Network header receive loop spins on repeated receive failures with no delay or exit path",
       "file": "src/lifecycle.c",
-      "function": "_real_model_recv_busy_loop",
+      "function": "_runtime_read_peer_record",
       "line": 1425,
       "end_line": 1435,
       "severity": "high",
@@ -1534,12 +1542,12 @@
         "continue",
         "no delay",
         "CPU DoS",
-        "td_handle_real_protocol_message",
-        "_real_model_process_protocol_task",
+        "td_handle_protocol_message",
+        "_runtime_process_protocol_task",
         "protocol dispatch"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_real_model_receive_protocol_frame",
+      "secondary_function": "_service_receive_protocol_frame",
       "secondary_line": 1560,
       "secondary_end_line": 1589,
       "flow": "real_protocol_message_flow"
@@ -1550,7 +1558,7 @@
       "category": "unchecked_return",
       "title": "Secure-channel probe returns a successful status when the receive-based classifier fails",
       "file": "src/lifecycle.c",
-      "function": "_real_model_ssl_error_returns_ok",
+      "function": "_runtime_read_tls_record",
       "line": 1437,
       "end_line": 1448,
       "severity": "high",
@@ -1564,12 +1572,12 @@
         "receive failure",
         "return OK",
         "error handling",
-        "td_handle_real_protocol_message",
-        "_real_model_process_protocol_task",
+        "td_handle_protocol_message",
+        "_runtime_process_protocol_task",
         "protocol dispatch"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_real_model_dispatch_protocol_message",
+      "secondary_function": "_service_dispatch_protocol_message",
       "secondary_line": 1612,
       "secondary_end_line": 1637,
       "flow": "real_protocol_message_flow"
@@ -1580,7 +1588,7 @@
       "category": "memory_leak",
       "title": "Client cleanup sends a hardcoded role parameter even though the channel role is available",
       "file": "src/lifecycle.c",
-      "function": "_real_model_hardcoded_role_release",
+      "function": "_runtime_release_channel_role",
       "line": 1450,
       "end_line": 1459,
       "severity": "critical",
@@ -1595,12 +1603,12 @@
         "member",
         "server release",
         "leak",
-        "td_handle_real_protocol_message",
-        "_real_model_process_protocol_task",
+        "td_handle_protocol_message",
+        "_runtime_process_protocol_task",
         "protocol dispatch"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_real_model_dispatch_protocol_message",
+      "secondary_function": "_service_dispatch_protocol_message",
       "secondary_line": 1612,
       "secondary_end_line": 1637,
       "flow": "real_protocol_message_flow"
@@ -1611,7 +1619,7 @@
       "category": "state_inconsistency",
       "title": "System-call failure leaves local registry state changed instead of restoring the previous value",
       "file": "src/lifecycle.c",
-      "function": "_real_model_syscall_state_not_restored",
+      "function": "_runtime_switch_io_mode",
       "line": 1461,
       "end_line": 1469,
       "severity": "high",
@@ -1633,7 +1641,7 @@
       "category": "missing_unlock",
       "title": "Allocation failure path returns while still holding the auxiliary lifecycle lock",
       "file": "src/lifecycle.c",
-      "function": "_real_model_missing_unlock_after_alloc",
+      "function": "_runtime_link_allocated_node",
       "line": 1471,
       "end_line": 1482,
       "severity": "critical",
@@ -1655,7 +1663,7 @@
       "category": "refcount_race",
       "title": "Reference count is incremented after the lookup lock has been dropped",
       "file": "src/lifecycle.c",
-      "function": "_real_model_refcount_after_unlock",
+      "function": "_runtime_release_shared_node",
       "line": 1484,
       "end_line": 1493,
       "severity": "critical",
@@ -1678,7 +1686,7 @@
       "category": "held_lock_callback",
       "title": "External callback is invoked while the global registry lock is held",
       "file": "src/lifecycle.c",
-      "function": "_real_model_callback_under_lock",
+      "function": "_runtime_notify_registry_listener",
       "line": 1495,
       "end_line": 1504,
       "severity": "high",
@@ -1700,7 +1708,7 @@
       "category": "stack_escape",
       "title": "Detached async worker receives the address of a stack-allocated job descriptor",
       "file": "src/lifecycle.c",
-      "function": "_real_model_detached_stack_job",
+      "function": "_runtime_submit_background_work",
       "line": 1506,
       "end_line": 1517,
       "severity": "critical",
@@ -1722,7 +1730,7 @@
       "category": "realloc_misuse",
       "title": "Metrics resize overwrites the only global pointer with the realloc result",
       "file": "src/lifecycle.c",
-      "function": "_real_model_realloc_lost_pointer",
+      "function": "_runtime_resize_message_buffer",
       "line": 1519,
       "end_line": 1526,
       "severity": "high",
@@ -1744,7 +1752,7 @@
       "category": "signed_unsigned",
       "title": "Negative receive result is cast to size_t and used as a memcpy length",
       "file": "src/lifecycle.c",
-      "function": "_real_model_signed_recv_to_size",
+      "function": "_runtime_receive_record_payload",
       "line": 1528,
       "end_line": 1537,
       "severity": "critical",
@@ -1758,12 +1766,12 @@
         "size_t",
         "memcpy",
         "signed unsigned",
-        "td_handle_real_protocol_message",
-        "_real_model_process_protocol_task",
+        "td_handle_protocol_message",
+        "_runtime_process_protocol_task",
         "protocol dispatch"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_real_model_dispatch_protocol_message",
+      "secondary_function": "_service_dispatch_protocol_message",
       "secondary_line": 1612,
       "secondary_end_line": 1637,
       "flow": "real_protocol_message_flow"
@@ -1774,7 +1782,7 @@
       "category": "stale_fd",
       "title": "Closed descriptor remains globally watched and is reused for later receive dispatch",
       "file": "src/lifecycle.c",
-      "function": "_real_model_stale_fd_after_close",
+      "function": "_runtime_reopen_cached_descriptor",
       "line": 1539,
       "end_line": 1543,
       "severity": "high",
@@ -1788,12 +1796,12 @@
         "stale fd",
         "watched fd",
         "recv",
-        "td_handle_real_protocol_message",
-        "_real_model_process_protocol_task",
+        "td_handle_protocol_message",
+        "_runtime_process_protocol_task",
         "protocol dispatch"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_real_model_dispatch_protocol_message",
+      "secondary_function": "_service_dispatch_protocol_message",
       "secondary_line": 1612,
       "secondary_end_line": 1637,
       "flow": "real_protocol_message_flow"
@@ -1804,7 +1812,7 @@
       "category": "key_truncation",
       "title": "Policy route lookup uses the full key while insertion stores a truncated key",
       "file": "src/lifecycle.c",
-      "function": "_real_model_key_truncation_route",
+      "function": "_runtime_route_by_partition_key",
       "line": 1545,
       "end_line": 1558,
       "severity": "high",
@@ -1818,12 +1826,12 @@
         "truncated key",
         "strncpy",
         "lookup insert mismatch",
-        "td_handle_real_protocol_message",
-        "_real_model_process_protocol_task",
+        "td_handle_protocol_message",
+        "_runtime_process_protocol_task",
         "protocol dispatch"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_real_model_dispatch_protocol_message",
+      "secondary_function": "_service_dispatch_protocol_message",
       "secondary_line": 1612,
       "secondary_end_line": 1637,
       "flow": "real_protocol_message_flow"
@@ -1832,9 +1840,9 @@
       "id": "REAL-031",
       "cwe": "CWE-362",
       "category": "race",
-      "title": "Macro-guarded shared counter update compiles to a no-op lock outside strict builds",
+      "title": "Conditionally guarded shared counter update compiles to a no-op lock outside strict builds",
       "file": "src/lifecycle.c",
-      "function": "_real_model_macro_guarded_counter",
+      "function": "_runtime_update_metric_counter",
       "line": 1976,
       "end_line": 1982,
       "severity": "high",
@@ -1844,7 +1852,7 @@
       "source_model": "VM-MACRO",
       "keywords": [
         "issue-40",
-        "macro guarded",
+        "conditional lock",
         "no-op lock",
         "shared counter",
         "race"
@@ -1856,7 +1864,7 @@
       "category": "signed_unsigned",
       "title": "Resource-case wrapper casts negative mode values to huge unsigned allocation sizes",
       "file": "src/main.c",
-      "function": "td_run_real_resource_cases",
+      "function": "td_run_service_resource_cases",
       "line": 514,
       "end_line": 515,
       "severity": "high",
@@ -1870,11 +1878,11 @@
         "uint32_t",
         "negative",
         "signed unsigned",
-        "_real_model_peak_stats_leak",
+        "_runtime_query_peak_stats",
         "calloc"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_real_model_peak_stats_leak",
+      "secondary_function": "_runtime_query_peak_stats",
       "secondary_line": 1413,
       "secondary_end_line": 1423,
       "notes": "mode is a signed public API parameter; mode=-2 wraps to UINT32_MAX after mode+1, causing area+1 to wrap in the downstream allocation path before pid_list[0] is written."
@@ -1885,9 +1893,9 @@
       "category": "size_limit_mismatch",
       "title": "Collection label cache uses a fixed byte limit smaller than the stated element-count specification",
       "file": "src/lifecycle.c",
-      "function": "_issue41_label_cache_size_miscalc",
-      "line": 1676,
-      "end_line": 1689,
+      "function": "_peer_prepare_label_cache",
+      "line": 1684,
+      "end_line": 1697,
       "severity": "high",
       "tier": "real_project_issue41",
       "weight": 3,
@@ -1900,12 +1908,12 @@
         "spec max elements",
         "size miscalculation",
         "td_handle_distributed_cs_message",
-        "_issue41_process_cs_message"
+        "_peer_process_session_message"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue41_dispatch_cs_task",
-      "secondary_line": 1922,
-      "secondary_end_line": 1945,
+      "secondary_function": "_peer_dispatch_task",
+      "secondary_line": 1937,
+      "secondary_end_line": 1962,
       "flow": "distributed_cs_message_flow"
     },
     {
@@ -1914,9 +1922,9 @@
       "category": "bounds",
       "title": "C/S protocol receive path trusts the message length after checking only the magic field",
       "file": "src/lifecycle.c",
-      "function": "_issue41_header_length_not_validated",
-      "line": 1691,
-      "end_line": 1709,
+      "function": "_peer_decode_header_window",
+      "line": 1699,
+      "end_line": 1717,
       "severity": "critical",
       "tier": "real_project_issue41",
       "weight": 3,
@@ -1929,12 +1937,12 @@
         "length",
         "buffer overflow",
         "receive frame",
-        "_issue41_receive_cs_frame"
+        "_peer_receive_frame"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue41_receive_cs_frame",
-      "secondary_line": 1853,
-      "secondary_end_line": 1883,
+      "secondary_function": "_peer_receive_frame",
+      "secondary_line": 1868,
+      "secondary_end_line": 1898,
       "flow": "distributed_cs_message_flow"
     },
     {
@@ -1943,9 +1951,9 @@
       "category": "busy_loop",
       "title": "Receive retry loop repeats EAGAIN and EINTR forever without timeout or retry budget",
       "file": "src/lifecycle.c",
-      "function": "_issue41_recv_retry_without_timeout",
-      "line": 1711,
-      "end_line": 1725,
+      "function": "_peer_receive_session_frame",
+      "line": 1719,
+      "end_line": 1733,
       "severity": "critical",
       "tier": "real_project_issue41",
       "weight": 3,
@@ -1958,12 +1966,12 @@
         "retry",
         "timeout",
         "busy loop",
-        "_issue41_process_cs_message"
+        "_peer_process_session_message"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue41_process_cs_message",
-      "secondary_line": 1947,
-      "secondary_end_line": 1966,
+      "secondary_function": "_peer_process_session_message",
+      "secondary_line": 1964,
+      "secondary_end_line": 1983,
       "flow": "distributed_cs_message_flow"
     },
     {
@@ -1972,9 +1980,9 @@
       "category": "fd_type_mismatch",
       "title": "Reliable fd with high check bits is passed to a lower-layer interface that expects a raw fd",
       "file": "src/lifecycle.c",
-      "function": "_issue41_reliable_fd_to_raw_interface",
-      "line": 1727,
-      "end_line": 1729,
+      "function": "_peer_bridge_descriptor",
+      "line": 1735,
+      "end_line": 1744,
       "severity": "high",
       "tier": "real_project_issue41",
       "weight": 3,
@@ -1986,12 +1994,12 @@
         "raw fd",
         "high check bits",
         "mismatched parameter type",
-        "_issue41_dispatch_cs_task"
+        "_peer_dispatch_task"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue41_dispatch_cs_task",
-      "secondary_line": 1922,
-      "secondary_end_line": 1945,
+      "secondary_function": "_peer_dispatch_task",
+      "secondary_line": 1937,
+      "secondary_end_line": 1962,
       "flow": "distributed_cs_message_flow"
     },
     {
@@ -2000,9 +2008,9 @@
       "category": "protocol_mixup",
       "title": "Protocol mismatch is detected but accepted under default non-strict authentication mode",
       "file": "src/lifecycle.c",
-      "function": "_issue41_lax_protocol_mismatch",
-      "line": 1731,
-      "end_line": 1739,
+      "function": "_peer_route_protocol_context",
+      "line": 1746,
+      "end_line": 1754,
       "severity": "high",
       "tier": "real_project_issue41",
       "weight": 3,
@@ -2017,9 +2025,9 @@
         "CS protocol"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue41_dispatch_cs_task",
-      "secondary_line": 1922,
-      "secondary_end_line": 1945,
+      "secondary_function": "_peer_dispatch_task",
+      "secondary_line": 1937,
+      "secondary_end_line": 1962,
       "flow": "distributed_cs_message_flow"
     },
     {
@@ -2028,9 +2036,9 @@
       "category": "partial_resource_leak",
       "title": "Multi-step C/S initialization leaks a partition on failure and retry can use an uninitialized tag",
       "file": "src/lifecycle.c",
-      "function": "_issue41_partial_resource_leak_on_retry",
-      "line": 1741,
-      "end_line": 1764,
+      "function": "_peer_prepare_retry_context",
+      "line": 1756,
+      "end_line": 1779,
       "severity": "critical",
       "tier": "real_project_issue41",
       "weight": 3,
@@ -2043,12 +2051,12 @@
         "partition",
         "uninitialized",
         "tag",
-        "_issue41_process_cs_message"
+        "_peer_process_session_message"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue41_dispatch_cs_task",
-      "secondary_line": 1922,
-      "secondary_end_line": 1945,
+      "secondary_function": "_peer_dispatch_task",
+      "secondary_line": 1937,
+      "secondary_end_line": 1962,
       "flow": "distributed_cs_message_flow"
     },
     {
@@ -2057,9 +2065,9 @@
       "category": "dynamic_array_race",
       "title": "Task array expansion updates a global pointer and frees the old array without synchronization",
       "file": "src/lifecycle.c",
-      "function": "_issue41_dynamic_array_expand_race",
-      "line": 1766,
-      "end_line": 1788,
+      "function": "_peer_expand_task_table",
+      "line": 1781,
+      "end_line": 1803,
       "severity": "high",
       "tier": "real_project_issue41",
       "weight": 3,
@@ -2075,9 +2083,9 @@
         "task creation"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue41_create_task_from_cs_frame",
-      "secondary_line": 1885,
-      "secondary_end_line": 1908,
+      "secondary_function": "_peer_create_task_from_frame",
+      "secondary_line": 1900,
+      "secondary_end_line": 1923,
       "flow": "distributed_cs_message_flow"
     },
     {
@@ -2086,9 +2094,9 @@
       "category": "version_filtering",
       "title": "High-version subscriber processes low-version state reports without filtering version zero",
       "file": "src/lifecycle.c",
-      "function": "_issue41_missing_version_filter",
-      "line": 1790,
-      "end_line": 1802,
+      "function": "_peer_select_version_window",
+      "line": 1805,
+      "end_line": 1817,
       "severity": "high",
       "tier": "real_project_issue41",
       "weight": 3,
@@ -2101,12 +2109,12 @@
         "low version",
         "state report",
         "missing filter",
-        "_issue41_dispatch_cs_task"
+        "_peer_dispatch_task"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue41_dispatch_cs_task",
-      "secondary_line": 1922,
-      "secondary_end_line": 1945,
+      "secondary_function": "_peer_dispatch_task",
+      "secondary_line": 1937,
+      "secondary_end_line": 1962,
       "flow": "distributed_cs_message_flow"
     },
     {
@@ -2115,9 +2123,9 @@
       "category": "missing_refcount",
       "title": "Shared listener resource is closed and freed without checking outstanding references",
       "file": "src/lifecycle.c",
-      "function": "_issue41_missing_reference_count",
-      "line": 1804,
-      "end_line": 1829,
+      "function": "_peer_publish_shared_session",
+      "line": 1819,
+      "end_line": 1844,
       "severity": "high",
       "tier": "real_project_issue41",
       "weight": 3,
@@ -2132,9 +2140,9 @@
         "resource residual"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue41_dispatch_cs_task",
-      "secondary_line": 1922,
-      "secondary_end_line": 1945,
+      "secondary_function": "_peer_dispatch_task",
+      "secondary_line": 1937,
+      "secondary_end_line": 1962,
       "flow": "distributed_cs_message_flow"
     },
     {
@@ -2143,9 +2151,9 @@
       "category": "sigpipe_unhandled",
       "title": "Client write to a closed peer can raise SIGPIPE because the C/S send path never masks the signal",
       "file": "src/lifecycle.c",
-      "function": "_issue41_sigpipe_not_handled",
-      "line": 1831,
-      "end_line": 1841,
+      "function": "_peer_send_control_reply",
+      "line": 1846,
+      "end_line": 1856,
       "severity": "high",
       "tier": "real_project_issue41",
       "weight": 3,
@@ -2161,9 +2169,9 @@
         "CS send"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue41_dispatch_cs_task",
-      "secondary_line": 1922,
-      "secondary_end_line": 1945,
+      "secondary_function": "_peer_dispatch_task",
+      "secondary_line": 1937,
+      "secondary_end_line": 1962,
       "flow": "distributed_cs_message_flow"
     },
     {
@@ -2172,9 +2180,9 @@
       "category": "fd_encoding_mismatch",
       "title": "Work fd attribute setup passes raw fd indexes to validation code that expects encoded fds",
       "file": "src/lifecycle.c",
-      "function": "_issue41_raw_fd_missing_encode",
-      "line": 1843,
-      "end_line": 1851,
+      "function": "_peer_export_descriptor_token",
+      "line": 1858,
+      "end_line": 1866,
       "severity": "high",
       "tier": "real_project_issue41",
       "weight": 3,
@@ -2187,12 +2195,12 @@
         "check value",
         "fd validation",
         "missing encode",
-        "_issue41_dispatch_cs_task"
+        "_peer_dispatch_task"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue41_dispatch_cs_task",
-      "secondary_line": 1922,
-      "secondary_end_line": 1945,
+      "secondary_function": "_peer_dispatch_task",
+      "secondary_line": 1937,
+      "secondary_end_line": 1962,
       "flow": "distributed_cs_message_flow"
     },
     {
@@ -2201,9 +2209,9 @@
       "category": "semantic_mismatch",
       "title": "INIT sleep callback receives busy-work count where packet count is required",
       "file": "src/lifecycle.c",
-      "function": "_issue42_init_sleep_busyflag_misuse",
-      "line": 2244,
-      "end_line": 2248,
+      "function": "_runtime_init_sleep_window",
+      "line": 2270,
+      "end_line": 2274,
       "severity": "high",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2215,22 +2223,26 @@
         "packet count",
         "callback parameter",
         "init sleep",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "_runtime_accept_session_frame"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_accept_session_frame",
+      "secondary_line": 2852,
+      "secondary_end_line": 2880,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_session_frame_flow",
+      "related_functions": [
+        "td_runtime_apply_shared_memory_event",
+        "_runtime_accept_session_frame"
+      ]
     },
     {
       "id": "ISSUE42-002",
@@ -2238,9 +2250,9 @@
       "category": "thread_cache_leak",
       "title": "Thread-local cache destroy releases only the TLS wrapper and leaks cached blocks",
       "file": "src/lifecycle.c",
-      "function": "_issue42_thread_cache_destroy_leak",
-      "line": 2250,
-      "end_line": 2262,
+      "function": "_runtime_close_thread_cache",
+      "line": 2276,
+      "end_line": 2288,
       "severity": "high",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2252,22 +2264,33 @@
         "TLS",
         "destroy",
         "memory leak",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_refresh_cache",
+        "_runtime_refresh_worker_context"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
+      "secondary_function": "_runtime_refresh_worker_context",
+      "secondary_line": 2882,
       "secondary_end_line": 2890,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_refresh_cache",
+          "line": 706,
+          "end_line": 710
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_worker_cache_flow",
+      "related_functions": [
+        "td_runtime_refresh_cache",
+        "_runtime_refresh_worker_context"
+      ]
     },
     {
       "id": "ISSUE42-003",
@@ -2275,9 +2298,9 @@
       "category": "byte_order_logic",
       "title": "Big-endian byte-difference search uses little-endian ctz offset semantics",
       "file": "src/lifecycle.c",
-      "function": "_issue42_big_endian_ctz_offset",
-      "line": 2264,
-      "end_line": 2283,
+      "function": "_runtime_find_bitmap_delta",
+      "line": 2290,
+      "end_line": 2309,
       "severity": "medium",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2289,22 +2312,26 @@
         "ctz",
         "byte order",
         "compression",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "_runtime_accept_session_frame"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_accept_session_frame",
+      "secondary_line": 2852,
+      "secondary_end_line": 2880,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_session_frame_flow",
+      "related_functions": [
+        "td_runtime_apply_shared_memory_event",
+        "_runtime_accept_session_frame"
+      ]
     },
     {
       "id": "ISSUE42-004",
@@ -2312,9 +2339,9 @@
       "category": "reader_state_race",
       "title": "Shared rwlock stores multiple readers in a single unsynchronized readerPid field",
       "file": "src/lifecycle.c",
-      "function": "_issue42_shared_rwlock_readerpid_race",
-      "line": 2285,
-      "end_line": 2295,
+      "function": "_runtime_read_lock_owner",
+      "line": 2320,
+      "end_line": 2334,
       "severity": "medium",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2326,22 +2353,26 @@
         "readerPid",
         "multiple readers",
         "race",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "_runtime_accept_session_frame"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_accept_session_frame",
+      "secondary_line": 2852,
+      "secondary_end_line": 2880,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_session_frame_flow",
+      "related_functions": [
+        "td_runtime_apply_shared_memory_event",
+        "_runtime_accept_session_frame"
+      ]
     },
     {
       "id": "ISSUE42-005",
@@ -2349,9 +2380,9 @@
       "category": "premature_destroy",
       "title": "Pbuf pool can be destroyed while active tasks still reference it",
       "file": "src/lifecycle.c",
-      "function": "_issue42_pbuf_pool_premature_destroy",
-      "line": 2297,
-      "end_line": 2315,
+      "function": "_runtime_release_packet_pool",
+      "line": 2336,
+      "end_line": 2354,
       "severity": "critical",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2363,22 +2394,33 @@
         "active tasks",
         "premature destroy",
         "use-after-free",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_refresh_cache",
+        "_runtime_refresh_worker_context"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
+      "secondary_function": "_runtime_refresh_worker_context",
+      "secondary_line": 2882,
       "secondary_end_line": 2890,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_refresh_cache",
+          "line": 706,
+          "end_line": 710
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_worker_cache_flow",
+      "related_functions": [
+        "td_runtime_refresh_cache",
+        "_runtime_refresh_worker_context"
+      ]
     },
     {
       "id": "ISSUE42-006",
@@ -2386,9 +2428,9 @@
       "category": "bounds",
       "title": "PMD timer lcore id indexes the per-core control array without validating the maximum core count",
       "file": "src/lifecycle.c",
-      "function": "_issue42_pmdtimer_lcore_oob",
-      "line": 2317,
-      "end_line": 2323,
+      "function": "_runtime_read_timer_ticks",
+      "line": 2356,
+      "end_line": 2362,
       "severity": "high",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2400,22 +2442,33 @@
         "timer control",
         "array index",
         "out-of-bounds",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_publish_process_state",
+        "_runtime_publish_process_record"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_publish_process_record",
+      "secondary_line": 2932,
+      "secondary_end_line": 2940,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_publish_process_state",
+          "line": 721,
+          "end_line": 724
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_process_state_flow",
+      "related_functions": [
+        "td_runtime_publish_process_state",
+        "_runtime_publish_process_record"
+      ]
     },
     {
       "id": "ISSUE42-007",
@@ -2423,9 +2476,9 @@
       "category": "stack_overflow",
       "title": "Thread name composition copies an unbounded external name into the 16-byte pthread name buffer",
       "file": "src/lifecycle.c",
-      "function": "_issue42_thread_name_overflow",
-      "line": 2325,
-      "end_line": 2336,
+      "function": "_runtime_prepare_worker_label",
+      "line": 2364,
+      "end_line": 2375,
       "severity": "high",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2437,22 +2490,33 @@
         "16 bytes",
         "memcpy",
         "overflow",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_refresh_cache",
+        "_runtime_refresh_worker_context"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
+      "secondary_function": "_runtime_refresh_worker_context",
+      "secondary_line": 2882,
       "secondary_end_line": 2890,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_refresh_cache",
+          "line": 706,
+          "end_line": 710
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_worker_cache_flow",
+      "related_functions": [
+        "td_runtime_refresh_cache",
+        "_runtime_refresh_worker_context"
+      ]
     },
     {
       "id": "ISSUE42-008",
@@ -2460,9 +2524,9 @@
       "category": "uninitialized_output",
       "title": "Arena usage query copies partially initialized statistics fields to the caller",
       "file": "src/lifecycle.c",
-      "function": "_issue42_gmem_arena_uninitialized_output",
-      "line": 2338,
-      "end_line": 2350,
+      "function": "_runtime_query_arena_usage",
+      "line": 2377,
+      "end_line": 2389,
       "severity": "medium",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2474,22 +2538,26 @@
         "output parameter",
         "uninitialized",
         "cleanSize",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "_runtime_accept_session_frame"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_accept_session_frame",
+      "secondary_line": 2852,
+      "secondary_end_line": 2880,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_session_frame_flow",
+      "related_functions": [
+        "td_runtime_apply_shared_memory_event",
+        "_runtime_accept_session_frame"
+      ]
     },
     {
       "id": "ISSUE42-009",
@@ -2497,9 +2565,9 @@
       "category": "check_then_act_race",
       "title": "CRCU writer checks nextPending outside the lock and can schedule duplicate batches or leak callbacks",
       "file": "src/lifecycle.c",
-      "function": "_issue42_crcu_multi_writer_race",
-      "line": 2352,
-      "end_line": 2367,
+      "function": "_runtime_enqueue_rcu_batch",
+      "line": 2391,
+      "end_line": 2406,
       "severity": "high",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2511,22 +2579,33 @@
         "nextPending",
         "multi writer",
         "memory leak",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_configure_pool",
+        "_runtime_apply_pool_plan"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_apply_pool_plan",
+      "secondary_line": 2923,
+      "secondary_end_line": 2930,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_configure_pool",
+          "line": 717,
+          "end_line": 719
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_pool_plan_flow",
+      "related_functions": [
+        "td_runtime_configure_pool",
+        "_runtime_apply_pool_plan"
+      ]
     },
     {
       "id": "ISSUE42-010",
@@ -2534,9 +2613,9 @@
       "category": "bounds",
       "title": "Memory-pool temporary freelist array is fixed at 64 entries while the configured lcore count can be larger",
       "file": "src/lifecycle.c",
-      "function": "_issue42_mmpool_temporary_array_mismatch",
-      "line": 2369,
-      "end_line": 2377,
+      "function": "_runtime_rebuild_available_list",
+      "line": 2408,
+      "end_line": 2416,
       "severity": "high",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2548,22 +2627,33 @@
         "freelist",
         "configured lcores",
         "array mismatch",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_configure_pool",
+        "_runtime_apply_pool_plan"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_apply_pool_plan",
+      "secondary_line": 2923,
+      "secondary_end_line": 2930,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_configure_pool",
+          "line": 717,
+          "end_line": 719
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_pool_plan_flow",
+      "related_functions": [
+        "td_runtime_configure_pool",
+        "_runtime_apply_pool_plan"
+      ]
     },
     {
       "id": "ISSUE42-011",
@@ -2571,9 +2661,9 @@
       "category": "file_type_validation",
       "title": "Reserved-memory mapping applies regular-file size validation semantics to character-device backings",
       "file": "src/lifecycle.c",
-      "function": "_issue42_reserved_file_size_check_bypass",
-      "line": 2379,
-      "end_line": 2391,
+      "function": "_runtime_map_reserved_region",
+      "line": 2418,
+      "end_line": 2442,
       "severity": "medium",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2585,59 +2675,33 @@
         "character device",
         "file size",
         "mmap",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_configure_memory",
+        "_runtime_apply_memory_plan"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_apply_memory_plan",
+      "secondary_line": 2892,
+      "secondary_end_line": 2902,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
-        }
-      ],
-      "flow": "issue42_shared_memory_runtime_flow"
-    },
-    {
-      "id": "ISSUE42-012",
-      "cwe": "CWE-778",
-      "category": "log_level_misuse",
-      "title": "Normal already-initialized states are logged at ERROR level and can pollute alerts",
-      "file": "src/lifecycle.c",
-      "function": "_issue42_inappropriate_error_level_logging",
-      "line": 2393,
-      "end_line": 2400,
-      "severity": "low",
-      "tier": "real_project_issue42",
-      "weight": 3,
-      "source_issue": "https://github.com/zealousness/Z-Scope/issues/42",
-      "source_model": "VM-010 Inappropriate Error Level Logging",
-      "keywords": [
-        "issue-42",
-        "LOG_ERROR",
-        "already initialized",
-        "log level",
-        "alert noise",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
-      ],
-      "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
-      "additional_locations": [
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_configure_memory",
+          "line": 712,
+          "end_line": 715
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_memory_plan_flow",
+      "related_functions": [
+        "td_runtime_configure_memory",
+        "_runtime_apply_memory_plan"
+      ]
     },
     {
       "id": "ISSUE42-013",
@@ -2645,9 +2709,9 @@
       "category": "registration_race",
       "title": "FixPool ops registration checks the global ops slot outside the registration lock before updating it",
       "file": "src/lifecycle.c",
-      "function": "_issue42_fixpool_ops_register_race",
-      "line": 2402,
-      "end_line": 2420,
+      "function": "_runtime_register_pool_ops",
+      "line": 2453,
+      "end_line": 2471,
       "severity": "high",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2659,22 +2723,33 @@
         "registration",
         "check then act",
         "race",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_configure_pool",
+        "_runtime_apply_pool_plan"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_apply_pool_plan",
+      "secondary_line": 2923,
+      "secondary_end_line": 2930,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_configure_pool",
+          "line": 717,
+          "end_line": 719
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_pool_plan_flow",
+      "related_functions": [
+        "td_runtime_configure_pool",
+        "_runtime_apply_pool_plan"
+      ]
     },
     {
       "id": "ISSUE42-014",
@@ -2682,9 +2757,9 @@
       "category": "bounds",
       "title": "FixPool availability counter iterates local_cache by LCORES_MAX instead of the actual cache array size",
       "file": "src/lifecycle.c",
-      "function": "_issue42_fixpool_count_cache_oob",
-      "line": 2422,
-      "end_line": 2435,
+      "function": "_runtime_count_pool_cache",
+      "line": 2473,
+      "end_line": 2486,
       "severity": "high",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2696,22 +2771,33 @@
         "local_cache",
         "LCORES_MAX",
         "out-of-bounds",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_configure_pool",
+        "_runtime_apply_pool_plan"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_apply_pool_plan",
+      "secondary_line": 2923,
+      "secondary_end_line": 2930,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_configure_pool",
+          "line": 717,
+          "end_line": 719
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_pool_plan_flow",
+      "related_functions": [
+        "td_runtime_configure_pool",
+        "_runtime_apply_pool_plan"
+      ]
     },
     {
       "id": "ISSUE42-015",
@@ -2719,9 +2805,9 @@
       "category": "logic_error",
       "title": "Shared-memory debug traversal repeatedly reacquires arena groups based on ptNoIdx instead of group identity",
       "file": "src/lifecycle.c",
-      "function": "_issue42_shmdbg_arena_group_repeated_get",
-      "line": 2437,
-      "end_line": 2451,
+      "function": "_runtime_walk_arena_groups",
+      "line": 2488,
+      "end_line": 2502,
       "severity": "low",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2733,22 +2819,33 @@
         "arena group",
         "ptNoIdx",
         "logic error",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_configure_pool",
+        "_runtime_apply_pool_plan"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_apply_pool_plan",
+      "secondary_line": 2923,
+      "secondary_end_line": 2930,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_configure_pool",
+          "line": 717,
+          "end_line": 719
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_pool_plan_flow",
+      "related_functions": [
+        "td_runtime_configure_pool",
+        "_runtime_apply_pool_plan"
+      ]
     },
     {
       "id": "ISSUE42-016",
@@ -2756,9 +2853,9 @@
       "category": "global_mode_race",
       "title": "QRCU/CRCU release path reads a mutable global algorithm mode without locking across registration and enqueue",
       "file": "src/lifecycle.c",
-      "function": "_issue42_qrcu_version_switch_race",
-      "line": 2453,
-      "end_line": 2467,
+      "function": "_runtime_schedule_rcu_release",
+      "line": 2504,
+      "end_line": 2516,
       "severity": "high",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2770,22 +2867,33 @@
         "CRCU",
         "global mode",
         "callback registration",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_configure_pool",
+        "_runtime_apply_pool_plan"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_apply_pool_plan",
+      "secondary_line": 2923,
+      "secondary_end_line": 2930,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_configure_pool",
+          "line": 717,
+          "end_line": 719
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_pool_plan_flow",
+      "related_functions": [
+        "td_runtime_configure_pool",
+        "_runtime_apply_pool_plan"
+      ]
     },
     {
       "id": "ISSUE42-017",
@@ -2793,9 +2901,9 @@
       "category": "slot_race",
       "title": "PCM process slot assignment ignores CAS failure and writes pid/name into a possibly stolen slot",
       "file": "src/lifecycle.c",
-      "function": "_issue42_pcm_process_slot_race",
-      "line": 2469,
-      "end_line": 2491,
+      "function": "_runtime_claim_process_slot",
+      "line": 2518,
+      "end_line": 2540,
       "severity": "high",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2807,22 +2915,33 @@
         "process slot",
         "CAS",
         "race",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_publish_process_state",
+        "_runtime_publish_process_record"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_publish_process_record",
+      "secondary_line": 2932,
+      "secondary_end_line": 2940,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_publish_process_state",
+          "line": 721,
+          "end_line": 724
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_process_state_flow",
+      "related_functions": [
+        "td_runtime_publish_process_state",
+        "_runtime_publish_process_record"
+      ]
     },
     {
       "id": "ISSUE42-018",
@@ -2830,9 +2949,9 @@
       "category": "permission",
       "title": "NamedPipe shared-memory backing is created with hard-coded product name and overly strict 0660 permissions",
       "file": "src/lifecycle.c",
-      "function": "_issue42_namedpipe_shm_permission",
-      "line": 2493,
-      "end_line": 2505,
+      "function": "_runtime_open_named_segment",
+      "line": 2542,
+      "end_line": 2554,
       "severity": "medium",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2844,22 +2963,26 @@
         "shared memory",
         "chmod",
         "0660",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "_runtime_accept_session_frame"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_accept_session_frame",
+      "secondary_line": 2852,
+      "secondary_end_line": 2880,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_session_frame_flow",
+      "related_functions": [
+        "td_runtime_apply_shared_memory_event",
+        "_runtime_accept_session_frame"
+      ]
     },
     {
       "id": "ISSUE42-019",
@@ -2867,9 +2990,9 @@
       "category": "signal_race",
       "title": "Callstack signal handler updates shared callstack state and logs from signal context",
       "file": "src/lifecycle.c",
-      "function": "_issue42_signal_stack_race",
-      "line": 2507,
-      "end_line": 2532,
+      "function": "_runtime_capture_signal_stack",
+      "line": 2556,
+      "end_line": 2581,
       "severity": "high",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2881,22 +3004,33 @@
         "callstack",
         "LOG_ERROR",
         "async-signal-safe",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_handle_signal",
+        "_runtime_handle_fault_signal"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_handle_fault_signal",
+      "secondary_line": 2951,
+      "secondary_end_line": 2956,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_handle_signal",
+          "line": 732,
+          "end_line": 734
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_signal_flow",
+      "related_functions": [
+        "td_runtime_handle_signal",
+        "_runtime_handle_fault_signal"
+      ]
     },
     {
       "id": "ISSUE42-020",
@@ -2904,9 +3038,9 @@
       "category": "lost_wakeup",
       "title": "Trigger-mode flushJob same-core wake path queues the event but does not trigger local work scheduling",
       "file": "src/lifecycle.c",
-      "function": "_issue42_flushjob_same_core_wakeup",
-      "line": 2534,
-      "end_line": 2553,
+      "function": "_runtime_queue_local_flush",
+      "line": 2583,
+      "end_line": 2602,
       "severity": "medium",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2918,22 +3052,33 @@
         "same core",
         "trigger mode",
         "lost wakeup",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_schedule_event",
+        "_runtime_dispatch_event_cycle"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_dispatch_event_cycle",
+      "secondary_line": 2942,
+      "secondary_end_line": 2949,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_schedule_event",
+          "line": 726,
+          "end_line": 730
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_event_cycle_flow",
+      "related_functions": [
+        "td_runtime_schedule_event",
+        "_runtime_dispatch_event_cycle"
+      ]
     },
     {
       "id": "ISSUE42-021",
@@ -2941,9 +3086,9 @@
       "category": "shared_memory_race",
       "title": "Smmap zone creation checks for an existing name before taking the insert lock",
       "file": "src/lifecycle.c",
-      "function": "_issue42_smmap_concurrent_create",
-      "line": 2564,
-      "end_line": 2585,
+      "function": "_runtime_create_shared_zone",
+      "line": 2613,
+      "end_line": 2634,
       "severity": "high",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2955,22 +3100,33 @@
         "memzone",
         "shared memory",
         "concurrent create",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_configure_memory",
+        "_runtime_apply_memory_plan"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_apply_memory_plan",
+      "secondary_line": 2892,
+      "secondary_end_line": 2902,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_configure_memory",
+          "line": 712,
+          "end_line": 715
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_memory_plan_flow",
+      "related_functions": [
+        "td_runtime_configure_memory",
+        "_runtime_apply_memory_plan"
+      ]
     },
     {
       "id": "ISSUE42-022",
@@ -2978,9 +3134,9 @@
       "category": "optimization_resource_lifecycle",
       "title": "TLSCB virtual-memory preallocation cleanup returns early when the TLS control block is absent and leaks the reserved space",
       "file": "src/lifecycle.c",
-      "function": "_issue42_tlscb_prealloc_cleanup_gap",
-      "line": 2587,
-      "end_line": 2603,
+      "function": "_runtime_cleanup_tls_reserve",
+      "line": 2636,
+      "end_line": 2652,
       "severity": "low",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2992,22 +3148,33 @@
         "preallocation",
         "reserved virtual memory",
         "cleanup gap",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_shutdown_session",
+        "_runtime_shutdown_local_session"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_shutdown_local_session",
+      "secondary_line": 2958,
+      "secondary_end_line": 2966,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_shutdown_session",
+          "line": 736,
+          "end_line": 739
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_session_shutdown_flow",
+      "related_functions": [
+        "td_runtime_shutdown_session",
+        "_runtime_shutdown_local_session"
+      ]
     },
     {
       "id": "ISSUE42-023",
@@ -3015,9 +3182,9 @@
       "category": "toctou",
       "title": "Shared-memory path attach retries link/EEXIST then opens a path that may be deleted or replaced concurrently",
       "file": "src/lifecycle.c",
-      "function": "_issue42_shm_get_addr_by_path_race",
-      "line": 2605,
-      "end_line": 2625,
+      "function": "_runtime_map_linked_segment",
+      "line": 2654,
+      "end_line": 2674,
       "severity": "high",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -3029,22 +3196,26 @@
         "link",
         "EEXIST",
         "TOCTOU",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "_runtime_accept_session_frame"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_accept_session_frame",
+      "secondary_line": 2852,
+      "secondary_end_line": 2880,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_session_frame_flow",
+      "related_functions": [
+        "td_runtime_apply_shared_memory_event",
+        "_runtime_accept_session_frame"
+      ]
     },
     {
       "id": "ISSUE42-024",
@@ -3052,9 +3223,9 @@
       "category": "alloc_free_mismatch",
       "title": "Lfhash nodes are allocated and freed through user-provided callbacks without enforcing allocator pairing",
       "file": "src/lifecycle.c",
-      "function": "_issue42_lfhash_alloc_free_type_mismatch",
-      "line": 2640,
-      "end_line": 2651,
+      "function": "_runtime_release_hash_node",
+      "line": 2689,
+      "end_line": 2700,
       "severity": "high",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -3066,22 +3237,33 @@
         "mem_alloc_func",
         "mem_free_func",
         "allocator mismatch",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_shutdown_session",
+        "_runtime_shutdown_local_session"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_shutdown_local_session",
+      "secondary_line": 2958,
+      "secondary_end_line": 2966,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_shutdown_session",
+          "line": 736,
+          "end_line": 739
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_session_shutdown_flow",
+      "related_functions": [
+        "td_runtime_shutdown_session",
+        "_runtime_shutdown_local_session"
+      ]
     },
     {
       "id": "ISSUE42-025",
@@ -3089,9 +3271,9 @@
       "category": "state_machine",
       "title": "PCM client initialization misses the transition to NORMAL state in the shared process table",
       "file": "src/lifecycle.c",
-      "function": "_issue42_pcm_server_state_missing",
-      "line": 2653,
-      "end_line": 2662,
+      "function": "_runtime_mark_process_online",
+      "line": 2710,
+      "end_line": 2719,
       "severity": "medium",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -3103,22 +3285,33 @@
         "client init",
         "procState",
         "state missing",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_publish_process_state",
+        "_runtime_publish_process_record"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_publish_process_record",
+      "secondary_line": 2932,
+      "secondary_end_line": 2940,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_publish_process_state",
+          "line": 721,
+          "end_line": 724
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_process_state_flow",
+      "related_functions": [
+        "td_runtime_publish_process_state",
+        "_runtime_publish_process_record"
+      ]
     },
     {
       "id": "ISSUE42-026",
@@ -3126,9 +3319,9 @@
       "category": "key_generation_race",
       "title": "ftok-style key generation checks path state separately from key creation and registration",
       "file": "src/lifecycle.c",
-      "function": "_issue42_ftok_concurrent_key_race",
-      "line": 2664,
-      "end_line": 2676,
+      "function": "_runtime_make_shared_key",
+      "line": 2721,
+      "end_line": 2733,
       "severity": "medium",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -3140,22 +3333,33 @@
         "System V",
         "key collision",
         "concurrent",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_shutdown_session",
+        "_runtime_shutdown_local_session"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_shutdown_local_session",
+      "secondary_line": 2958,
+      "secondary_end_line": 2966,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_shutdown_session",
+          "line": 736,
+          "end_line": 739
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_session_shutdown_flow",
+      "related_functions": [
+        "td_runtime_shutdown_session",
+        "_runtime_shutdown_local_session"
+      ]
     },
     {
       "id": "ISSUE42-027",
@@ -3163,9 +3367,9 @@
       "category": "deadlock",
       "title": "Wheel timer callback can delete its own timer while holding instance lock and re-enter the delete lock order",
       "file": "src/lifecycle.c",
-      "function": "_issue42_wheel_timer_self_destruct_deadlock",
-      "line": 2689,
-      "end_line": 2699,
+      "function": "_runtime_cancel_wheel_timer",
+      "line": 2746,
+      "end_line": 2756,
       "severity": "critical",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -3177,22 +3381,33 @@
         "self delete",
         "lock order",
         "deadlock",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_schedule_event",
+        "_runtime_dispatch_event_cycle"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_dispatch_event_cycle",
+      "secondary_line": 2942,
+      "secondary_end_line": 2949,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_schedule_event",
+          "line": 726,
+          "end_line": 730
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_event_cycle_flow",
+      "related_functions": [
+        "td_runtime_schedule_event",
+        "_runtime_dispatch_event_cycle"
+      ]
     },
     {
       "id": "ISSUE42-028",
@@ -3200,9 +3415,9 @@
       "category": "signal_deadlock",
       "title": "Exception signal path performs semaphore-protected logging and formatting from a signal handler",
       "file": "src/lifecycle.c",
-      "function": "_issue42_signal_handler_sem_interrupt",
-      "line": 2711,
-      "end_line": 2719,
+      "function": "_runtime_write_exception_record",
+      "line": 2768,
+      "end_line": 2776,
       "severity": "high",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -3214,22 +3429,41 @@
         "semaphore",
         "exception record",
         "deadlock",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_handle_signal",
+        "_runtime_handle_fault_signal",
+        "_signal_handler",
+        "async signal"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_handle_fault_signal",
+      "secondary_line": 2951,
+      "secondary_end_line": 2956,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "_signal_handler",
+          "line": 51,
+          "end_line": 54
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_handle_signal",
+          "line": 732,
+          "end_line": 734
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_signal_flow",
+      "related_functions": [
+        "td_runtime_handle_signal",
+        "_runtime_handle_fault_signal"
+      ]
     },
     {
       "id": "ISSUE42-029",
@@ -3237,9 +3471,9 @@
       "category": "callback_self_destroy_race",
       "title": "Trigger-mode work callback can destroy the current event before the processor reacquires the base lock",
       "file": "src/lifecycle.c",
-      "function": "_issue42_work_self_destruction_race",
-      "line": 2730,
-      "end_line": 2760,
+      "function": "_runtime_finish_current_event",
+      "line": 2787,
+      "end_line": 2817,
       "severity": "critical",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -3251,22 +3485,33 @@
         "self destruction",
         "callback",
         "use-after-free",
-        "td_handle_issue42_shared_memory_message",
-        "_issue42_process_shared_memory_message"
+        "td_runtime_apply_shared_memory_event",
+        "td_runtime_schedule_event",
+        "_runtime_dispatch_event_cycle"
       ],
       "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_issue42_process_shared_memory_message",
-      "secondary_line": 2795,
-      "secondary_end_line": 2890,
+      "secondary_function": "_runtime_dispatch_event_cycle",
+      "secondary_line": 2942,
+      "secondary_end_line": 2949,
       "additional_locations": [
         {
           "file": "src/main.c",
-          "function": "td_handle_issue42_shared_memory_message",
-          "line": 696,
-          "end_line": 703
+          "function": "td_runtime_apply_shared_memory_event",
+          "line": 697,
+          "end_line": 704
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_schedule_event",
+          "line": 726,
+          "end_line": 730
         }
       ],
-      "flow": "issue42_shared_memory_runtime_flow"
+      "flow": "runtime_event_cycle_flow",
+      "related_functions": [
+        "td_runtime_schedule_event",
+        "_runtime_dispatch_event_cycle"
+      ]
     }
   ],
   "excluded_vulnerabilities": [
@@ -3284,6 +3529,11 @@
       "id": "RANGE-010",
       "former_title": "Plugin dispatch and executor task path acquire lock_a/lock_b in opposite order",
       "reason": "_plugin_dispatch locks g_shared_resources.lock_b then lock_a, while _executor_execute_task locks g_exec_resources.lock_a then lock_b. These are different mutex objects, so the original lock-order deadlock claim is not concrete in the current fixture."
+    },
+    {
+      "id": "ISSUE42-012",
+      "former_title": "Normal already-initialized states are logged at ERROR level and can pollute alerts",
+      "reason": "Retired in benchmark v13 because the fixture modeled code style / observability hygiene rather than a concrete security vulnerability with an exploitable or security-impacting path."
     }
   ],
   "tiers": {

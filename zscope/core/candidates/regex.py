@@ -134,6 +134,19 @@ class RegexCandidateGenerator:
         "missing_refcount": "CWE-772",
         "sigpipe_unhandled": "CWE-404",
         "fd_encoding_mismatch": "CWE-587",
+        "semantic_mismatch": "CWE-628",
+        "byte_order_logic": "CWE-682",
+        "reader_state_race": "CWE-362",
+        "uninitialized_output": "CWE-457",
+        "file_type_validation": "CWE-20",
+        "log_level_misuse": "CWE-778",
+        "logic_error": "CWE-682",
+        "global_mode_race": "CWE-362",
+        "slot_race": "CWE-362",
+        "shared_memory_race": "CWE-362",
+        "state_machine": "CWE-672",
+        "signal_deadlock": "CWE-833",
+        "callback_self_destroy_race": "CWE-416",
     }
 
     _SKILL_BY_CLASS = {
@@ -176,6 +189,19 @@ class RegexCandidateGenerator:
         "missing_refcount": "resource_lifecycle",
         "sigpipe_unhandled": "resource_lifecycle",
         "fd_encoding_mismatch": "ownership_contract",
+        "semantic_mismatch": "ownership_contract",
+        "byte_order_logic": "bounds_and_integer",
+        "reader_state_race": "shared_state_race",
+        "uninitialized_output": "bounds_and_integer",
+        "file_type_validation": "ownership_contract",
+        "log_level_misuse": "null_and_failure",
+        "logic_error": "ownership_contract",
+        "global_mode_race": "shared_state_race",
+        "slot_race": "shared_state_race",
+        "shared_memory_race": "shared_state_race",
+        "state_machine": "ownership_contract",
+        "signal_deadlock": "concurrency_lock_order",
+        "callback_self_destroy_race": "temporal_memory",
     }
 
     _RESOURCE_BY_CLASS = {
@@ -218,6 +244,19 @@ class RegexCandidateGenerator:
         "missing_refcount": "resource_lifecycle",
         "sigpipe_unhandled": "signal",
         "fd_encoding_mismatch": "handle",
+        "semantic_mismatch": "protocol",
+        "byte_order_logic": "protocol",
+        "reader_state_race": "shared_state",
+        "uninitialized_output": "memory",
+        "file_type_validation": "file",
+        "log_level_misuse": "logging",
+        "logic_error": "protocol",
+        "global_mode_race": "shared_state",
+        "slot_race": "shared_state",
+        "shared_memory_race": "shared_memory",
+        "state_machine": "shared_state",
+        "signal_deadlock": "signal",
+        "callback_self_destroy_race": "callback_lifetime",
     }
 
     def generate_issues(

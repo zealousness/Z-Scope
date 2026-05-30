@@ -174,6 +174,52 @@ def test_score_report_emits_auditable_identity_records() -> None:
     assert scored["false_positive_issue_records"][0]["baseline_match_strategy"] == "dedup_key"
 
 
+def test_score_report_classifies_duplicate_of_matched_separately() -> None:
+    truth = {
+        "benchmark": "unit_suite",
+        "suite": "unit",
+        "vulnerabilities": [
+            {
+                "id": "BUG-1",
+                "category": "memory_leak",
+                "function": "leaky",
+                "file": "src/demo.c",
+                "line": 10,
+            }
+        ],
+    }
+    report = {
+        "issues": [
+            {
+                "category": "memory_leak",
+                "function": "leaky",
+                "location": "src/demo.c:10",
+                "description": "memory leak on handle",
+            },
+            {
+                "category": "resource_leak",
+                "function": "leaky",
+                "location": "src/demo.c:11",
+                "description": "same memory leak on handle reported by another source",
+            },
+        ]
+    }
+
+    scored = score_report(report, truth, line_tolerance=2)
+    raw_scored = score_report(
+        report,
+        truth,
+        line_tolerance=2,
+        count_duplicate_of_matched_as_fp=True,
+    )
+
+    assert scored["true_positives"] == 1
+    assert scored["false_positives_raw"] == 1
+    assert scored["false_positives"] == 0
+    assert scored["duplicate_of_matched_count"] == 1
+    assert raw_scored["false_positives"] == 1
+
+
 def test_issue_matches_additional_function_and_location_anchor() -> None:
     truth = {
         "id": "RANGE-016",
@@ -200,6 +246,75 @@ def test_issue_matches_additional_function_and_location_anchor() -> None:
     }
 
     assert issue_matches(issue, truth, line_tolerance=3)
+
+
+def test_issue_matches_nested_evidence_location_anchor() -> None:
+    truth = {
+        "id": "RANGE-045",
+        "category": "memory_leak",
+        "function": "_lifecycle_delete_os_node",
+        "file": "src/lifecycle.c",
+        "line": 825,
+        "end_line": 839,
+        "additional_locations": [
+            {
+                "file": "src/main.c",
+                "function": "td_update_os_policy",
+                "line": 420,
+                "end_line": 428,
+            }
+        ],
+        "keywords": ["OSNode", "ProcNode", "child list leak"],
+    }
+    issue = {
+        "category": "memory_leak",
+        "function": "td_update_os_policy",
+        "location": "src/main.c:12",
+        "description": "OSNode delete path leaves ProcNode children attached.",
+        "evidence_pack": {
+            "sink": {
+                "function": "_lifecycle_delete_os_node",
+                "location": "src/lifecycle.c:831",
+            },
+            "entry": {
+                "function": "td_update_os_policy",
+                "location": "src/main.c:424",
+            },
+        },
+    }
+
+    assert issue_matches(issue, truth, line_tolerance=4)
+
+
+def test_issue_matches_race_when_report_describes_dangling_unmap() -> None:
+    truth = {
+        "id": "RANGE-053",
+        "category": "race",
+        "function": "_lifecycle_map_rules",
+        "file": "src/lifecycle.c",
+        "line": 405,
+        "end_line": 411,
+        "secondary_function": "_lifecycle_unload_rules",
+        "secondary_line": 415,
+        "secondary_end_line": 418,
+        "additional_locations": [
+            {
+                "file": "src/lifecycle.c",
+                "function": "_lifecycle_match_rule_byte",
+                "line": 422,
+                "end_line": 428,
+            }
+        ],
+        "keywords": ["g_rules_map", "munmap", "global state"],
+    }
+    issue = {
+        "category": "use_after_free",
+        "function": "_lifecycle_match_rule_byte",
+        "location": "src/lifecycle.c:427",
+        "description": "Reader can dereference dangling g_rules_map after concurrent munmap of global state.",
+    }
+
+    assert issue_matches(issue, truth, line_tolerance=4)
 
 
 def test_issue_matches_sibling_role_release_location_anchor() -> None:
