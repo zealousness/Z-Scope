@@ -67,18 +67,27 @@ def merge_duplicate_issue(
     duplicate_extra_count = int(duplicate.get("duplicate_count", 0) or 0)
     primary["duplicate_count"] = int(primary.get("duplicate_count", 0) or 0) + 1 + duplicate_extra_count
 
-    sources = primary.setdefault("duplicate_sources", [])
+    sources = primary.get("duplicate_sources")
+    if not isinstance(sources, list):
+        sources = []
+        primary["duplicate_sources"] = sources
     for source in _duplicate_source_records(duplicate):
         if source not in sources:
             sources.append(source)
 
-    alternate = primary.setdefault("alternate_evidence", [])
+    alternate = primary.get("alternate_evidence")
+    if not isinstance(alternate, list):
+        alternate = []
+        primary["alternate_evidence"] = alternate
     for evidence in _alternate_evidence_records(duplicate):
         if evidence not in alternate:
             alternate.append(evidence)
 
     if decision:
-        decisions = primary.setdefault("dedup_decisions", [])
+        decisions = primary.get("dedup_decisions")
+        if not isinstance(decisions, list):
+            decisions = []
+            primary["dedup_decisions"] = decisions
         compact_decision = {
             key: value
             for key, value in decision.items()

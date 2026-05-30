@@ -6,9 +6,9 @@ from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
 
 
 class FakeCodeIndex:
-    def __init__(self, root: Path, functions, callers=None, headers=None):
+    def __init__(self, root: Path, functions, callers=None, headers=None, source_root=None):
         self.project_root = root
-        self.source_root = root
+        self.source_root = source_root or root
         self._function_index = {
             name: {
                 "file": data["file"],
@@ -29,7 +29,10 @@ class FakeCodeIndex:
         path = Path(file_path)
         if path.is_absolute():
             return path
-        return self.source_root / path
+        source_candidate = self.source_root / path
+        if source_candidate.exists():
+            return source_candidate
+        return self.project_root / path
 
     def get_function_impl(self, name, *args, **kwargs):
         data = self.functions.get(name)
@@ -123,6 +126,50 @@ def test_seeded_discovery_keeps_all_external_entries(tmp_path: Path):
         "ApiA": ["ApiA", "Guard", "Changed"],
         "ApiB": ["ApiB", "Guard", "Changed"],
     }
+
+
+def test_diff_mapping_handles_git_root_paths_when_source_root_is_nested(tmp_path: Path):
+    project_root = tmp_path / "repo"
+    source_root = project_root / "src"
+    source_root.mkdir(parents=True)
+    (source_root / "api.c").write_text(
+        "int Api(void) { return Changed(); }\n"
+        "int Changed(void) {\n"
+        "  return 2;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    functions = {
+        "Api": {
+            "file": "api.c",
+            "start_line": 1,
+            "end_line": 1,
+            "code": "int Api(void) { return Changed(); }",
+        },
+        "Changed": {
+            "file": "api.c",
+            "start_line": 2,
+            "end_line": 4,
+            "code": "int Changed(void) { return 2; }",
+        },
+    }
+    planner = StaticDiffPlanner(
+        FakeCodeIndex(
+            project_root,
+            functions,
+            callers={"Changed": ["Api"]},
+            headers=[{"name": "Api", "filename": "src/api.h", "lineNumber": 1}],
+            source_root=source_root,
+        ),
+        repo_root=source_root,
+        base_ref="base",
+        changed_ranges=[ChangedLineRange("src/api.c", 3, 3)],
+    )
+
+    plan = planner.plan()
+
+    assert [func.function_name for func in plan.changed_functions] == ["Changed"]
+    assert [entry.function_name for entry in plan.entries] == ["Api"]
 
 
 def test_overlapping_changed_functions_share_one_entry_with_all_paths(tmp_path: Path):
