@@ -37,7 +37,7 @@ normalization, stale tree-node, and macro-gated lock coverage.
 | Alignment / strict-aliasing-sensitive cast | RANGE-034 | Wire bytes cast from `packet + 1` to `uint32_t*`. |
 | Format string | RANGE-004 | Global log buffer used as the `printf` format string. |
 | Infinite loop / algorithmic DoS | RANGE-042, RANGE-043, ISSUE41-003 | Self-referential list node traps traversal, repeated error logging, and receive retry with no timeout. |
-| Key truncation / lookup-insert mismatch | RANGE-046 | AVL lookup compares full strings while insertion stores only a truncated key. |
+| Key normalization / lookup-insert mismatch | RANGE-046 | AVL lookup and insertion use different route-key representations. |
 
 ## Concurrency Patterns
 
@@ -92,7 +92,7 @@ normalization, stale tree-node, and macro-gated lock coverage.
 | --- | --- | --- |
 | ABBA lock inversion | RANGE-041 | Dispatch holds `g_pipe_scheduler.sched_lock` then waits for `ctrl_lock`; close holds `ctrl_lock` then waits for scheduler lock. |
 | Self-referential list node | RANGE-042 | Close unlinks a pipe and writes `pipe->next = pipe`, creating a cycle for later traversals. |
-| Log amplification in liveness failure | RANGE-043 | Dispatch logs every time it sees the poisoned self-linked node, turning the loop into resource exhaustion. |
+| Log amplification in liveness failure | RANGE-043 | Dispatch logs every time it sees the parked self-linked node, turning the loop into resource exhaustion. |
 | Cascade wait through timer callback | RANGE-044 | Timer callback waits for `ctrl_lock` while close can be stuck holding it and waiting for the scheduler lock. |
 
 ## Nested Containers And AVL Variants Added In v6
@@ -100,9 +100,9 @@ normalization, stale tree-node, and macro-gated lock coverage.
 | Variant | Covered by | Notes |
 | --- | --- | --- |
 | Primary node delete misses secondary list | RANGE-045 | `_lifecycle_delete_os_node` removes and frees `OSNode` but never walks `OSNode.proc_head` to release `ProcNode` children. |
-| Full-key lookup vs truncated-key insert | RANGE-046 | `_policy_avl_find_full_key` compares caller full keys against stored keys, while upsert inserts only `POLICY_AVL_KEY_LIMIT` bytes. |
+| Route-key lookup vs bounded-key insert | RANGE-046 | `_policy_avl_find_route_key` compares caller route keys against stored keys, while upsert inserts only `POLICY_AVL_KEY_LIMIT` bytes. |
 | AVL insert failure leaves stale freed node | RANGE-047 | `_lifecycle_avl_register_route` inserts before later failure cleanup, then frees the node without removing AVL or duplicate-list links. |
-| Macro-gated locking | RANGE-048 | `MACRO_GUARDED_LOCK` protects shared state only on selected 64-bit build macros and is a no-op otherwise. |
+| Conditional locking | RANGE-048 | `COUNTER_SLOT_LOCK` protects shared state only on selected build macros and is a no-op otherwise. |
 
 ## Real Project Issue #40 Tier Added In v7
 
@@ -111,14 +111,14 @@ normalization, stale tree-node, and macro-gated lock coverage.
 | Global registry lifecycle and cleanup races | REAL-001, REAL-002, REAL-004, REAL-006, REAL-011, REAL-015, REAL-017, REAL-018 | Issue-derived node/list/tree cleanup cases with unlink-before-free, nested member leaks, rollback gaps, and query-time allocation leaks. |
 | Role/path/state-sensitive release mistakes | REAL-007, REAL-021, REAL-022 | Models client/server role-parameter mismatches and system-call failure paths that leave local state changed. |
 | Initialization, publication, and memory-order failures | REAL-009, REAL-016, REAL-024, REAL-025, REAL-026, REAL-031 | Covers premature publication, refcount-after-unlock, callback-under-lock, stack async jobs, and macro-gated synchronization. |
-| Parser, protocol, and wire-format defects | REAL-010, REAL-013, REAL-014, REAL-019, REAL-020, REAL-028, REAL-029, REAL-030 | Routed through `td_handle_real_protocol_message` and `_real_model_process_protocol_task`: receive frame, decode header, dispatch by message type, then hit alignment, length miscalculation, missing magic checks, busy receive loops, wrong success returns, signed length casts, stale fd reuse, and key truncation. |
+| Parser, protocol, and wire-format defects | REAL-010, REAL-013, REAL-014, REAL-019, REAL-020, REAL-028, REAL-029, REAL-030 | Routed through `td_handle_protocol_message` and `_runtime_process_protocol_task`: receive frame, decode header, dispatch by message type, then hit alignment, length miscalculation, missing magic checks, busy receive loops, wrong success returns, signed length casts, stale fd reuse, and key truncation. |
 | Error-path resource ownership mistakes | REAL-003, REAL-005, REAL-008, REAL-012, REAL-023, REAL-027 | Covers double cleanup, unregister leaks, log-path leaks, unchecked insert results, missing unlocks, and realloc pointer loss. |
 
 ## Distributed C/S Issue #41 Tier Added In v8
 
 | Variant family | Covered by | Notes |
 | --- | --- | --- |
-| C/S receive and protocol validation | ISSUE41-002, ISSUE41-003, ISSUE41-005, ISSUE41-010 | Routed through `td_handle_distributed_cs_message` and `_issue41_process_cs_message`: receive a peer frame, trust an unchecked length after magic validation, retry EAGAIN/EINTR without timeout, accept protocol mismatch in non-strict auth mode, and write to closed peers without SIGPIPE mitigation. |
+| C/S receive and protocol validation | ISSUE41-002, ISSUE41-003, ISSUE41-005, ISSUE41-010 | Routed through `td_handle_distributed_cs_message` and `_peer_process_session_message`: receive a peer frame, trust an unchecked length after magic validation, retry EAGAIN/EINTR without timeout, accept protocol mismatch in non-strict auth mode, and write to closed peers without SIGPIPE mitigation. |
 | Task creation and task-index lifecycle | ISSUE41-006, ISSUE41-007, ISSUE41-009 | Task creation and retry paths exercise partial initialization leaks, dynamic global task-array expansion races, and resource cleanup without reference-count checks. |
 | Wire compatibility and fd conversion | ISSUE41-004, ISSUE41-008, ISSUE41-011 | Models reliable-fd/raw-fd type confusion, missing cross-version filtering, and raw work-fd values passed to validators expecting encoded fds. |
 | Spec-vs-runtime capacity mismatch | ISSUE41-001 | Collection registration and label-cache replacement model a hidden fixed byte cap that is lower than the declared element-count specification. |
@@ -131,7 +131,7 @@ normalization, stale tree-node, and macro-gated lock coverage.
 | Runtime callbacks, event loops, timers, and work items | ISSUE42-001, ISSUE42-020, ISSUE42-027, ISSUE42-029 | Models callback parameter semantic mismatch, flushJob same-core wake gaps, wheel-timer self-delete deadlock, and WORK self-destruction race. |
 | Allocator/cache/resource management | ISSUE42-002, ISSUE42-005, ISSUE42-009, ISSUE42-022, ISSUE42-024 | Covers thread-cache leaks, pbuf premature destroy, CRCU pending-batch race/leak, TLSCB preallocation cleanup, and Lfhash allocator/free mismatch. |
 | Bounds, formatting, byte order, and output state | ISSUE42-003, ISSUE42-006, ISSUE42-007, ISSUE42-008, ISSUE42-010, ISSUE42-014 | Covers big-endian `ctz`, lcore index OOB, thread-name overflow, uninitialized arena outputs, freelist size mismatch, and FixPool cache-count OOB. |
-| Runtime global state and signal safety | ISSUE42-004, ISSUE42-012, ISSUE42-013, ISSUE42-015, ISSUE42-016, ISSUE42-017, ISSUE42-019, ISSUE42-028 | Covers single-field multi-reader state, log-level misuse, ops registration race, arena traversal logic, QRCU mode race, PCM slot race, callstack signal race, and semaphore work from signal handlers. |
+| Runtime global state and signal safety | ISSUE42-004, ISSUE42-013, ISSUE42-015, ISSUE42-016, ISSUE42-017, ISSUE42-019, ISSUE42-028 | Covers single-field multi-reader state with downstream owner checks, ops registration race, arena traversal logic, QRCU mode race, PCM slot race, callstack signal race, and semaphore work from signal handlers. |
 
 ## Deliberately Not Scored In v3
 

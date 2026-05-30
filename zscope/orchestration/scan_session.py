@@ -17,12 +17,14 @@ from .parallel_analyzer import ParallelAnalysisResult, ParallelAnalyzer
 from ..snapshots.store import SnapshotStore
 from ..retrieval.code_index import CodeIndex
 from .entry_discovery import EntryDiscovery
+from .diff_impact import DiffImpactPlanner
 from .specs import SpecRegistry, WorkflowStep
 from .workflow_executor import WorkflowExecutor, WorkflowStepHandler
 
 logger = logging.getLogger(__name__)
 
 DISCOVERED_ENTRY_FUNCTIONS_FILENAME = "entry_functions_list.json"
+DIFF_ENTRY_FUNCTIONS_FILENAME = "entry_functions_diff.json"
 
 
 @dataclass
@@ -48,12 +50,19 @@ class ScanSessionRunner:
         resume: bool = False,
         maintain: bool = False,
         discover_entries: bool = False,
+        diff_base: Optional[str] = None,
+        diff_head: str = "HEAD",
+        diff_repo_root: Optional[Path] = None,
         emit: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.config = config
         self.resume = resume
         self.maintain = maintain
         self.discover_entries = discover_entries
+        self.diff_base = diff_base
+        self.diff_head = diff_head or "HEAD"
+        self.diff_repo_root = Path(diff_repo_root).resolve() if diff_repo_root else config.project.source_root
+        self.diff_scope_name = config.project.source_root.name or config.project.project_root.name or "default"
         self.emit = emit or (lambda message: None)
         self.spec_registry = SpecRegistry(project_root=config.project.project_root)
         self.workflow_spec = self.spec_registry.get_workflow(config.analysis.workflow_name)
@@ -79,6 +88,7 @@ class ScanSessionRunner:
     def run(self) -> ScanSessionResult:
         state = self._create_state()
         try:
+            self._plan_diff_impact_entries(state)
             steps = self._selected_workflow_steps()
             self.session_executor.execute(state, steps)
             self._ensure_batch_entries(state)
@@ -104,6 +114,7 @@ class ScanSessionRunner:
             "parallel_analyzer": None,
             "merged_skipped_reports": 0,
             "discovery_result": None,
+            "diff_impact_result": None,
         }
 
     def _workflow_name(self) -> str:
@@ -128,6 +139,9 @@ class ScanSessionRunner:
         }
 
     def _handle_discover_entries(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
+        if self.diff_base:
+            logger.info("Skipping full entry discovery because diff impact mode is active.")
+            return False
         should_discover = self.discover_entries or self.config.project.entry_discovery.enabled
         if not should_discover:
             return False
@@ -163,6 +177,38 @@ class ScanSessionRunner:
         if not discovered_entries and self.config.project.entry_function:
             self.emit("No discovered entries found; falling back to configured entry_function.")
         return False
+
+    def _plan_diff_impact_entries(self, state: Dict[str, Any]) -> None:
+        if not self.diff_base or state.get("diff_impact_result"):
+            return
+
+        self.emit(
+            f"Planning diff impact entries for {self.diff_scope_name}: "
+            f"{self.diff_base}..{self.diff_head}"
+        )
+        code_index = self._ensure_code_index(state, defer_svf=True)
+        discovery_cfg = self.config.project.entry_discovery
+        planner = DiffImpactPlanner(
+            code_index,
+            repo_root=self.diff_repo_root,
+            base_ref=self.diff_base,
+            head_ref=self.diff_head,
+            component=self.diff_scope_name,
+            header_files=discovery_cfg.header_files or None,
+            synthetic_depth_threshold=max(1, int(self.config.analysis.max_recursion_depth or 3)),
+        )
+        plan = planner.plan()
+        entry_list_path = self.config.project.project_root / DIFF_ENTRY_FUNCTIONS_FILENAME
+        planner.write_entry_functions_file(entry_list_path, plan)
+        self.config.project.entry_functions_list = entry_list_path
+        state["diff_impact_result"] = plan.to_entry_functions_payload().get("diff_impact", {})
+        state["discovered_entry_functions_list"] = str(entry_list_path)
+        self.emit(
+            "Diff impact planning: "
+            f"{len(plan.changed_functions)} changed function(s), "
+            f"{len(plan.entries)} entry candidate(s)."
+        )
+        self.emit(f"Diff impact entry function list written to: {entry_list_path}")
 
     def _write_discovered_entry_functions_list(
         self,

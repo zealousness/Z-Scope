@@ -275,7 +275,7 @@ class EntryDiscovery:
 
     def _discover_header_api(self) -> List[EntryCandidate]:
         candidates: List[EntryCandidate] = []
-        for item in self.code_index.get_header_declared_functions(None):
+        for item in self.code_index.get_header_declared_functions():
             name = item.get("name")
             if not name:
                 continue

@@ -8,11 +8,12 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from zscope.config.config import IndexingConfig
+from zscope.config.config import AnalysisConfig, IndexingConfig
 from zscope.common.issue_identity import deduplicate_issues
 from zscope.core.analysis.analyzer import Analyzer
 from zscope.core.candidates.graph import GraphCandidateGenerator
 from zscope.core.candidates.regex import RegexCandidateGenerator
+from zscope.orchestration.budget import RiskBudgetPlanner
 from zscope.retrieval.code_index import CodeIndex
 from zscope.semantics.models import LocalPatternSemantics
 
@@ -82,6 +83,7 @@ def _candidate_report(project_root: Path, entries_path: Path, *, backend: str = 
     analyzer._semantic_overlay = overlay
     analyzer._clang_tooling_provider = None
     analyzer._clang_tooling_evidence_cache = {}
+    analyzer.budget_planner = RiskBudgetPlanner(AnalysisConfig())
     analyzer._candidate_backend_profile = lambda: backend  # type: ignore[method-assign]
     graph_generator = GraphCandidateGenerator(index, semantics, semantic_overlay=overlay)
     issues: List[Dict[str, Any]] = []

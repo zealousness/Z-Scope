@@ -24,3 +24,8 @@ Build an ordered list of locks per path. Check that every acquisition is
 released on all exits, that nested lock order is consistent across functions,
 and that callbacks or callees do not acquire conflicting locks. Include
 condition-variable waits only if the associated lock protocol is wrong.
+
+For timer, callback, signal, or exception paths, treat re-entrant helper calls
+and async-signal-unsafe locking/logging as lock-order evidence. A self-delete
+timer callback or a signal handler that probes a mutex/semaphore can deadlock
+even when the direct function body has only one visible lock.

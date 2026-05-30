@@ -6,11 +6,14 @@ must not be included in Z-SCOPE analysis prompts.
 
 ## Overview
 
-The current benchmark contains 122 valid vulnerabilities. Version 11 adds
-the GitHub issue #42 shared-memory/runtime callback model suite. Version 10 promotes
-manually verified extra findings from the
-`auto_unified_wsl_structured_20260520_2` benchmark run and adds alternate
-public-wrapper anchors for already-known issues.
+The current benchmark contains 121 valid vulnerabilities. Version 13 removes
+the ISSUE42-012 log-level style-only case and strengthens the issue #41/#42
+impact chains. Version 12 neutralizes benchmark function names and refreshes
+issue #42 to natural runtime API flows. Version 11 adds the GitHub issue #42
+shared-memory/runtime callback model suite. Version 10 promotes manually
+verified extra findings from the `auto_unified_wsl_structured_20260520_2`
+benchmark run and adds alternate public-wrapper anchors for already-known
+issues.
 
 `benchmark/ground_truth.json` remains the scoring source of truth. This Markdown
 file is a human-readable maintenance view.
@@ -38,7 +41,7 @@ file is a human-readable maintenance view.
 | RANGE-020 | CWE-416 | use_after_free | `src/lifecycle.c:140-144`, `src/lifecycle.c:152-159` | `_lifecycle_get_value` returns a borrowed value after unlocking while `_lifecycle_remove_entry` can free it. |
 | RANGE-021 | CWE-362 | refcount_race | `src/lifecycle.c:174-181`, `src/lifecycle.c:190-199` | `_lifecycle_ref_get` and `_lifecycle_ref_put` update `ref_count` after dropping the cache lock. |
 | RANGE-022 | CWE-416 | use_after_free | `src/lifecycle.c:209-221`, `src/lifecycle.c:152-159` | Callback registration stores a cache-entry context that can later be removed and freed. |
-| RANGE-023 | CWE-667 | held_lock_callback | `src/lifecycle.c:225-230` | `_lifecycle_fire_callback_under_lock` invokes an externally supplied callback while holding the cache mutex. |
+| RANGE-023 | CWE-667 | held_lock_callback | `src/lifecycle.c:225-230` | `_lifecycle_notify_entry_callback` invokes an externally supplied callback while holding the cache mutex. |
 | RANGE-024 | CWE-562 | stack_escape | `src/lifecycle.c:247-259`, `src/lifecycle.c:234-238` | `_lifecycle_schedule_flush` passes the address of a stack `FlushJob` to a detached worker thread. |
 | RANGE-025 | CWE-667 | missing_unlock | `src/lifecycle.c:263-267` | `_lifecycle_reload_config` returns on allocation failure while still holding `g_config_lock`. |
 | RANGE-026 | CWE-362 | double_checked_locking | `src/lifecycle.c:277-285` | `_lifecycle_get_config_length` checks `g_active_config` outside the mutex before lazy initialization. |
@@ -49,7 +52,7 @@ file is a human-readable maintenance view.
 | RANGE-031 | CWE-457 | uninitialized_read | `src/lifecycle.c:338-342` | `_lifecycle_send_status` sends a partially initialized stack struct, including padding and unset fields. |
 | RANGE-032 | CWE-590 | invalid_free | `src/lifecycle.c:350-354` | `_lifecycle_release_value_slice` frees a pointer into the middle of the caller's buffer. |
 | RANGE-033 | CWE-121 | stack_overflow | `src/lifecycle.c:358-361` | `_lifecycle_parse_frame` uses an attacker-controlled VLA size on the stack. |
-| RANGE-034 | CWE-704 | alignment | `src/lifecycle.c:364-370` | `_lifecycle_decode_unaligned_id` casts `packet + 1` to `uint32_t*` and dereferences it. |
+| RANGE-034 | CWE-704 | alignment | `src/lifecycle.c:364-370` | `_lifecycle_decode_packet_id` casts `packet + 1` to `uint32_t*` and dereferences it. |
 | RANGE-035 | CWE-672 | stale_fd | `src/lifecycle.c:373-383`, `src/lifecycle.c:388-392` | `_lifecycle_close_connection` closes a watched descriptor without clearing the global fd used by later event dispatch. |
 | RANGE-036 | CWE-416 | use_after_free | `src/lifecycle.c:415-418`, `src/lifecycle.c:422-428` | `_lifecycle_unload_rules` unmaps the rules table without clearing the global pointer used by later rule matching. |
 
@@ -66,47 +69,48 @@ entry path, source/sink, and distinct root cause.
 | RANGE-051 | CWE-78 | command_injection | `src/platform_linux.c:30-37`, `src/platform_windows.c:38-55` | `platform_execute_task` forwards caller-controlled task strings directly to `system`/`CreateProcess`. |
 | RANGE-052 | CWE-362 | race | `src/main.c:216-233`, `src/main.c:627-642` | `g_ready` is read by submit paths while cleanup can concurrently tear down dispatcher queue state. |
 | RANGE-053 | CWE-362 | race | `src/lifecycle.c:405-418`, `src/lifecycle.c:422-428`, `src/main.c:381-385` | Rule-map globals are mapped, unmapped, and read without synchronization across public `td_configure_rules` callers. |
-| REAL-032 | CWE-195/CWE-190 | signed_unsigned | `src/main.c:514-515`, `src/lifecycle.c:1413-1423` | `td_run_real_resource_cases` casts negative `mode` values to huge unsigned counts before the peak-stat allocation path. |
+| REAL-032 | CWE-195/CWE-190 | signed_unsigned | `src/main.c:514-515`, `src/lifecycle.c:1413-1423` | `td_run_service_resource_cases` casts negative `mode` values to huge unsigned counts before the peak-stat allocation path. |
 
-## Version 11 Additions
+## Version 11-13 Additions
 
-GitHub issue #42 contributes 29 shared-memory, runtime callback, signal, timer,
-allocator, and process-table models. They are routed through the public
-`td_handle_issue42_shared_memory_message` entry and the internal
-`_issue42_process_shared_memory_message` dispatcher, while each helper remains a
-direct benchmark entry.
+GitHub issue #42 now contributes 28 scored shared-memory, runtime callback,
+signal, timer, allocator, and process-table models. ISSUE42-012 was retired in
+version 13 as code-style-only logging behavior. They are routed through natural
+runtime public APIs such as `td_runtime_apply_shared_memory_event`,
+`td_runtime_configure_memory`, `td_runtime_configure_pool`,
+`td_runtime_publish_process_state`, and `td_runtime_handle_signal`, while each
+helper remains a direct benchmark entry.
 
 | ID | CWE | Category | Location | Summary |
 | --- | --- | --- | --- | --- |
-| ISSUE42-001 | CWE-252 | semantic_mismatch | `src/lifecycle.c:2244-2248` | INIT sleep uses busy-work count as packet count through a callback parameter. |
-| ISSUE42-002 | CWE-772 | thread_cache_leak | `src/lifecycle.c:2250-2262` | Thread-cache destroy frees only the TLS wrapper and leaks cached blocks. |
-| ISSUE42-003 | CWE-682 | byte_order_logic | `src/lifecycle.c:2264-2283` | Big-endian byte comparison uses little-endian `ctz` offset semantics. |
-| ISSUE42-004 | CWE-362 | reader_state_race | `src/lifecycle.c:2285-2295` | Shared rwlock records multiple readers in one unsynchronized `reader_pid`. |
-| ISSUE42-005 | CWE-416 | premature_destroy | `src/lifecycle.c:2297-2315` | Pbuf pool can be destroyed while active tasks still reference it. |
-| ISSUE42-006 | CWE-129 | bounds | `src/lifecycle.c:2317-2323` | PMD timer lcore id indexes the per-core array without a bounds check. |
-| ISSUE42-007 | CWE-120 | stack_overflow | `src/lifecycle.c:2325-2336` | External thread name is copied into a 16-byte name buffer without limiting length. |
-| ISSUE42-008 | CWE-457 | uninitialized_output | `src/lifecycle.c:2338-2350` | Arena usage query returns partially initialized output fields. |
-| ISSUE42-009 | CWE-362/CWE-401 | check_then_act_race | `src/lifecycle.c:2352-2367` | CRCU writer checks `nextPending` outside the lock and can duplicate batches. |
-| ISSUE42-010 | CWE-129 | bounds | `src/lifecycle.c:2369-2377` | Mempool freelist scratch array is fixed at 64 entries while configured lcores may exceed it. |
-| ISSUE42-011 | CWE-20 | file_type_validation | `src/lifecycle.c:2379-2391` | Reserved-memory mapping applies regular-file size semantics to character devices. |
-| ISSUE42-012 | CWE-778 | log_level_misuse | `src/lifecycle.c:2393-2400` | Normal already-initialized state is logged as an error. |
-| ISSUE42-013 | CWE-362 | registration_race | `src/lifecycle.c:2402-2420` | FixPool ops registration checks the global slot outside the update lock. |
-| ISSUE42-014 | CWE-129 | bounds | `src/lifecycle.c:2422-2435` | FixPool count iterates `local_cache` by external lcore limit rather than array size. |
-| ISSUE42-015 | CWE-664 | logic_error | `src/lifecycle.c:2437-2451` | ShmDbg arena traversal reacquires groups based on partition index logic. |
-| ISSUE42-016 | CWE-362 | global_mode_race | `src/lifecycle.c:2453-2467` | QRCU/CRCU release reads mutable global algorithm mode without a stable lock. |
-| ISSUE42-017 | CWE-362 | slot_race | `src/lifecycle.c:2469-2491` | PCM slot assignment ignores CAS failure before writing pid and name. |
-| ISSUE42-018 | CWE-732 | permission | `src/lifecycle.c:2493-2505` | NamedPipe shared memory uses hard-coded name and restrictive 0660 permissions. |
-| ISSUE42-019 | CWE-479 | signal_race | `src/lifecycle.c:2507-2532` | Signal callstack path logs and mutates shared callstack state from signal context. |
-| ISSUE42-020 | CWE-366 | lost_wakeup | `src/lifecycle.c:2534-2553` | Trigger-mode flushJob same-core wake queues the event but does not schedule work. |
-| ISSUE42-021 | CWE-362/CWE-401 | shared_memory_race | `src/lifecycle.c:2564-2585` | Smmap zone creation performs name lookup before taking the insert lock. |
-| ISSUE42-022 | CWE-772 | optimization_resource_lifecycle | `src/lifecycle.c:2587-2603` | TLSCB preallocation cleanup can return before releasing reserved virtual space. |
-| ISSUE42-023 | CWE-367 | toctou | `src/lifecycle.c:2605-2625` | Shared-memory path attach opens a link path after an EEXIST check that can race. |
-| ISSUE42-024 | CWE-762 | alloc_free_mismatch | `src/lifecycle.c:2640-2651` | Lfhash accepts allocator/free callbacks without enforcing pairing. |
-| ISSUE42-025 | CWE-664 | state_machine | `src/lifecycle.c:2653-2662` | PCM client initialization misses the NORMAL process-state transition. |
-| ISSUE42-026 | CWE-362 | key_generation_race | `src/lifecycle.c:2664-2676` | `ftok`-style key generation checks path state separately from key creation. |
-| ISSUE42-027 | CWE-833 | deadlock | `src/lifecycle.c:2689-2699` | Wheel timer callback can self-delete while holding the instance lock. |
-| ISSUE42-028 | CWE-479/CWE-667 | signal_deadlock | `src/lifecycle.c:2711-2719` | Exception signal path performs semaphore-protected work from a signal handler. |
-| ISSUE42-029 | CWE-362/CWE-416 | callback_self_destroy_race | `src/lifecycle.c:2730-2760` | Trigger-mode WORK callback can destroy the current event before post-callback state updates. |
+| ISSUE42-001 | CWE-252 | semantic_mismatch | `src/lifecycle.c:2270-2274` | INIT sleep uses busy-work count as packet count through a callback parameter. |
+| ISSUE42-002 | CWE-772 | thread_cache_leak | `src/lifecycle.c:2276-2288` | Thread-cache destroy frees only the TLS wrapper and leaks cached blocks. |
+| ISSUE42-003 | CWE-682 | byte_order_logic | `src/lifecycle.c:2290-2309` | Big-endian byte comparison uses little-endian `ctz` offset semantics. |
+| ISSUE42-004 | CWE-362 | reader_state_race | `src/lifecycle.c:2320-2334` | Shared rwlock records multiple readers in one unsynchronized `reader_pid`. |
+| ISSUE42-005 | CWE-416 | premature_destroy | `src/lifecycle.c:2336-2354` | Pbuf pool can be destroyed while active tasks still reference it. |
+| ISSUE42-006 | CWE-129 | bounds | `src/lifecycle.c:2356-2362` | PMD timer lcore id indexes the per-core array without a bounds check. |
+| ISSUE42-007 | CWE-120 | stack_overflow | `src/lifecycle.c:2364-2375` | External thread name is copied into a 16-byte name buffer without limiting length. |
+| ISSUE42-008 | CWE-457 | uninitialized_output | `src/lifecycle.c:2377-2389` | Arena usage query returns partially initialized output fields. |
+| ISSUE42-009 | CWE-362/CWE-401 | check_then_act_race | `src/lifecycle.c:2391-2406` | CRCU writer checks `nextPending` outside the lock and can duplicate batches. |
+| ISSUE42-010 | CWE-129 | bounds | `src/lifecycle.c:2408-2416` | Mempool freelist scratch array is fixed at 64 entries while configured lcores may exceed it. |
+| ISSUE42-011 | CWE-20 | file_type_validation | `src/lifecycle.c:2418-2442` | Reserved-memory mapping applies regular-file size semantics to character devices. |
+| ISSUE42-013 | CWE-362 | registration_race | `src/lifecycle.c:2453-2471` | FixPool ops registration checks the global slot outside the update lock. |
+| ISSUE42-014 | CWE-129 | bounds | `src/lifecycle.c:2473-2486` | FixPool count iterates `local_cache` by external lcore limit rather than array size. |
+| ISSUE42-015 | CWE-664 | logic_error | `src/lifecycle.c:2488-2502` | ShmDbg arena traversal reacquires groups based on partition index logic. |
+| ISSUE42-016 | CWE-362 | global_mode_race | `src/lifecycle.c:2504-2516` | QRCU/CRCU release reads mutable global algorithm mode without a stable lock. |
+| ISSUE42-017 | CWE-362 | slot_race | `src/lifecycle.c:2518-2540` | PCM slot assignment ignores CAS failure before writing pid and name. |
+| ISSUE42-018 | CWE-732 | permission | `src/lifecycle.c:2542-2554` | NamedPipe shared memory uses hard-coded name and restrictive 0660 permissions. |
+| ISSUE42-019 | CWE-479 | signal_race | `src/lifecycle.c:2556-2581` | Signal callstack path logs and mutates shared callstack state from signal context. |
+| ISSUE42-020 | CWE-366 | lost_wakeup | `src/lifecycle.c:2583-2602` | Trigger-mode flushJob same-core wake queues the event but does not schedule work. |
+| ISSUE42-021 | CWE-362/CWE-401 | shared_memory_race | `src/lifecycle.c:2613-2634` | Smmap zone creation performs name lookup before taking the insert lock. |
+| ISSUE42-022 | CWE-772 | optimization_resource_lifecycle | `src/lifecycle.c:2636-2652` | TLSCB preallocation cleanup can return before releasing reserved virtual space. |
+| ISSUE42-023 | CWE-367 | toctou | `src/lifecycle.c:2654-2674` | Shared-memory path attach opens a link path after an EEXIST check that can race. |
+| ISSUE42-024 | CWE-762 | alloc_free_mismatch | `src/lifecycle.c:2689-2700` | Lfhash accepts allocator/free callbacks without enforcing pairing. |
+| ISSUE42-025 | CWE-664 | state_machine | `src/lifecycle.c:2710-2719` | PCM client initialization misses the NORMAL process-state transition. |
+| ISSUE42-026 | CWE-362 | key_generation_race | `src/lifecycle.c:2721-2733` | `ftok`-style key generation checks path state separately from key creation. |
+| ISSUE42-027 | CWE-833 | deadlock | `src/lifecycle.c:2746-2756` | Wheel timer callback can self-delete while holding the instance lock. |
+| ISSUE42-028 | CWE-479/CWE-667 | signal_deadlock | `src/lifecycle.c:2768-2776` | Exception signal path performs semaphore-protected work from a signal handler. |
+| ISSUE42-029 | CWE-362/CWE-416 | callback_self_destroy_race | `src/lifecycle.c:2787-2817` | Trigger-mode WORK callback can destroy the current event before post-callback state updates. |
 
 ## Retired Findings
 
@@ -119,6 +123,7 @@ purposes, but they are no longer scored:
 | RANGE-003 | The post-multiplication check `total_size < size` catches unsigned wrap for multiplication by 2, and `_allocate_buffer` is not currently reachable from benchmark entry paths. |
 | RANGE-008 | `_validate_task` validates a freshly parsed task before it is queued to workers; the fixture does not provide a concrete concurrent writer for `task->payload.command.command`. |
 | RANGE-010 | `_plugin_dispatch` and `_executor_execute_task` acquire opposite field names, but on different mutex objects (`g_shared_resources` vs. `g_exec_resources`), so the deadlock is not concrete. |
+| ISSUE42-012 | The log-level fixture modeled code style / observability hygiene rather than a concrete security vulnerability with an exploitable or security-impacting path. |
 
 ## Maintenance Notes
 

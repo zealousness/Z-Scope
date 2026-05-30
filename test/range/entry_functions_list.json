@@ -3,7 +3,7 @@
   "discovery": {
     "exposure_kind": "mixed_api_and_communication",
     "summary": {
-      "api": 54,
+      "api": 62,
       "thread": 7,
       "communication": 7,
       "other_user_input": 5
@@ -19,7 +19,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 138,
+      "line": 149,
       "confidence": 0.9
     },
     {
@@ -140,7 +140,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 62,
+      "line": 61,
       "confidence": 0.9
     },
     {
@@ -228,7 +228,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 10,
+      "line": 9,
       "confidence": 0.9
     },
     {
@@ -239,7 +239,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 177,
+      "line": 189,
       "confidence": 0.9
     },
     {
@@ -320,7 +320,7 @@
       "confidence": 0.9
     },
     {
-      "function_name": "td_handle_real_protocol_message",
+      "function_name": "td_handle_protocol_message",
       "file_path": "include/task_dispatcher.h",
       "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
       "exposure": "api",
@@ -360,7 +360,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 116,
+      "line": 115,
       "confidence": 0.9
     },
     {
@@ -371,7 +371,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 159,
+      "line": 171,
       "confidence": 0.9
     },
     {
@@ -419,40 +419,106 @@
       "confidence": 0.9
     },
     {
-      "function_name": "td_run_issue41_cases",
+      "function_name": "td_run_peer_session_cases",
       "file_path": "include/task_dispatcher.h",
       "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
       "exposure": "api",
       "reasons": [
         "declared_in_header"
       ],
-      "line": 148,
+      "line": 159,
       "confidence": 0.9
     },
     {
-      "function_name": "td_run_issue42_cases",
+      "function_name": "td_run_protocol_cases",
       "file_path": "include/task_dispatcher.h",
       "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
       "exposure": "api",
       "reasons": [
         "declared_in_header"
       ],
-      "line": 150,
+      "line": 156,
       "confidence": 0.9
     },
     {
-      "function_name": "td_run_real_cleanup_cases",
+      "function_name": "td_run_runtime_maintenance",
       "file_path": "include/task_dispatcher.h",
       "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
       "exposure": "api",
       "reasons": [
         "declared_in_header"
       ],
-      "line": 140,
+      "line": 162,
       "confidence": 0.9
     },
     {
-      "function_name": "td_run_real_concurrency_cases",
+      "function_name": "td_run_service_cleanup_cases",
+      "file_path": "include/task_dispatcher.h",
+      "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
+      "exposure": "api",
+      "reasons": [
+        "declared_in_header"
+      ],
+      "line": 151,
+      "confidence": 0.9
+    },
+    {
+      "function_name": "td_run_service_coordination_cases",
+      "file_path": "include/task_dispatcher.h",
+      "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
+      "exposure": "api",
+      "reasons": [
+        "declared_in_header"
+      ],
+      "line": 154,
+      "confidence": 0.9
+    },
+    {
+      "function_name": "td_run_service_resource_cases",
+      "file_path": "include/task_dispatcher.h",
+      "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
+      "exposure": "api",
+      "reasons": [
+        "declared_in_header"
+      ],
+      "line": 153,
+      "confidence": 0.9
+    },
+    {
+      "function_name": "td_runtime_apply_shared_memory_event",
+      "file_path": "include/task_dispatcher.h",
+      "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
+      "exposure": "api",
+      "reasons": [
+        "declared_in_header"
+      ],
+      "line": 128,
+      "confidence": 0.9
+    },
+    {
+      "function_name": "td_runtime_configure_memory",
+      "file_path": "include/task_dispatcher.h",
+      "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
+      "exposure": "api",
+      "reasons": [
+        "declared_in_header"
+      ],
+      "line": 135,
+      "confidence": 0.9
+    },
+    {
+      "function_name": "td_runtime_configure_pool",
+      "file_path": "include/task_dispatcher.h",
+      "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
+      "exposure": "api",
+      "reasons": [
+        "declared_in_header"
+      ],
+      "line": 137,
+      "confidence": 0.9
+    },
+    {
+      "function_name": "td_runtime_handle_signal",
       "file_path": "include/task_dispatcher.h",
       "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
       "exposure": "api",
@@ -463,25 +529,47 @@
       "confidence": 0.9
     },
     {
-      "function_name": "td_run_real_protocol_cases",
+      "function_name": "td_runtime_publish_process_state",
       "file_path": "include/task_dispatcher.h",
       "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
       "exposure": "api",
       "reasons": [
         "declared_in_header"
       ],
-      "line": 144,
+      "line": 138,
       "confidence": 0.9
     },
     {
-      "function_name": "td_run_real_resource_cases",
+      "function_name": "td_runtime_refresh_cache",
       "file_path": "include/task_dispatcher.h",
       "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
       "exposure": "api",
       "reasons": [
         "declared_in_header"
       ],
-      "line": 141,
+      "line": 133,
+      "confidence": 0.9
+    },
+    {
+      "function_name": "td_runtime_schedule_event",
+      "file_path": "include/task_dispatcher.h",
+      "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
+      "exposure": "api",
+      "reasons": [
+        "declared_in_header"
+      ],
+      "line": 140,
+      "confidence": 0.9
+    },
+    {
+      "function_name": "td_runtime_shutdown_session",
+      "file_path": "include/task_dispatcher.h",
+      "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
+      "exposure": "api",
+      "reasons": [
+        "declared_in_header"
+      ],
+      "line": 143,
       "confidence": 0.9
     },
     {
@@ -492,7 +580,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 108,
+      "line": 107,
       "confidence": 0.9
     },
     {
@@ -518,36 +606,36 @@
       "confidence": 0.9
     },
     {
-      "function_name": "td_start_issue41_worker",
+      "function_name": "td_start_peer_session_worker",
       "file_path": "include/task_dispatcher.h",
       "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
       "exposure": "api",
       "reasons": [
         "declared_in_header"
       ],
-      "line": 149,
+      "line": 161,
       "confidence": 0.9
     },
     {
-      "function_name": "td_start_issue42_worker",
+      "function_name": "td_start_protocol_worker",
       "file_path": "include/task_dispatcher.h",
       "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
       "exposure": "api",
       "reasons": [
         "declared_in_header"
       ],
-      "line": 151,
+      "line": 158,
       "confidence": 0.9
     },
     {
-      "function_name": "td_start_real_protocol_worker",
+      "function_name": "td_start_runtime_worker",
       "file_path": "include/task_dispatcher.h",
       "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
       "exposure": "api",
       "reasons": [
         "declared_in_header"
       ],
-      "line": 146,
+      "line": 163,
       "confidence": 0.9
     },
     {
@@ -569,7 +657,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 167,
+      "line": 179,
       "confidence": 0.9
     },
     {
@@ -580,7 +668,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 133,
+      "line": 145,
       "confidence": 0.9
     },
     {
@@ -628,7 +716,7 @@
       "confidence": 0.88
     },
     {
-      "function_name": "_real_model_async_worker",
+      "function_name": "_service_async_worker",
       "file_path": "src/lifecycle.c",
       "custom_prompt": "Thread entry or thread creator. Audit stack lifetime, shared state, lock ordering, and handoff ownership.",
       "exposure": "thread",
@@ -639,7 +727,7 @@
       "confidence": 0.88
     },
     {
-      "function_name": "_td_issue41_worker",
+      "function_name": "_td_peer_session_worker",
       "file_path": "src/main.c",
       "custom_prompt": "Thread entry or thread creator. Audit stack lifetime, shared state, lock ordering, and handoff ownership.",
       "exposure": "thread",
@@ -650,18 +738,7 @@
       "confidence": 0.88
     },
     {
-      "function_name": "_td_issue42_worker",
-      "file_path": "src/main.c",
-      "custom_prompt": "Thread entry or thread creator. Audit stack lifetime, shared state, lock ordering, and handoff ownership.",
-      "exposure": "thread",
-      "reasons": [
-        "thread_entry:VOS_TaskCreate"
-      ],
-      "line": 738,
-      "confidence": 0.88
-    },
-    {
-      "function_name": "_td_real_protocol_worker",
+      "function_name": "_td_protocol_worker",
       "file_path": "src/main.c",
       "custom_prompt": "Thread entry or thread creator. Audit stack lifetime, shared state, lock ordering, and handoff ownership.",
       "exposure": "thread",
@@ -669,6 +746,17 @@
         "thread_entry:VOS_TaskCreate"
       ],
       "line": 467,
+      "confidence": 0.88
+    },
+    {
+      "function_name": "_td_runtime_worker",
+      "file_path": "src/main.c",
+      "custom_prompt": "Thread entry or thread creator. Audit stack lifetime, shared state, lock ordering, and handoff ownership.",
+      "exposure": "thread",
+      "reasons": [
+        "thread_entry:VOS_TaskCreate"
+      ],
+      "line": 779,
       "confidence": 0.88
     },
     {
@@ -681,17 +769,6 @@
       ],
       "line": 55,
       "confidence": 0.88
-    },
-    {
-      "function_name": "_issue41_sigpipe_not_handled",
-      "file_path": "src/lifecycle.c",
-      "custom_prompt": "Communication or IPC entry. Treat bytes read from peers/shared channels as untrusted. Audit framing, length checks, return-value handling, and trust boundaries before parsing, dispatch, copies, indexing, or deserialization. If the received data or derived length is returned, written through an out-parameter, stored in shared/session state, or otherwise consumed by callers, use get_callers to inspect caller-side parsing and validation instead of stopping at the low-level read wrapper.",
-      "exposure": "communication",
-      "reasons": [
-        "calls:write"
-      ],
-      "line": 1831,
-      "confidence": 0.85
     },
     {
       "function_name": "_lifecycle_map_rules",
@@ -762,6 +839,17 @@
       "confidence": 0.85
     },
     {
+      "function_name": "_peer_send_control_reply",
+      "file_path": "src/lifecycle.c",
+      "custom_prompt": "Communication or IPC entry. Treat bytes read from peers/shared channels as untrusted. Audit framing, length checks, return-value handling, and trust boundaries before parsing, dispatch, copies, indexing, or deserialization. If the received data or derived length is returned, written through an out-parameter, stored in shared/session state, or otherwise consumed by callers, use get_callers to inspect caller-side parsing and validation instead of stopping at the low-level read wrapper.",
+      "exposure": "communication",
+      "reasons": [
+        "calls:write"
+      ],
+      "line": 1831,
+      "confidence": 0.85
+    },
+    {
       "function_name": "_executor_build_command_args",
       "file_path": "src/executor.c",
       "custom_prompt": "User-controlled input entry. Treat file, environment, CLI, device, and stdin data as untrusted. Audit parsing, size conversion, range checks, termination, and resource cleanup before the data feeds copies, indexing, allocation sizes, dispatch, paths, or commands. If the input buffer, string, parsed value, or derived length is returned, written through an out-parameter, stored globally, or consumed by callers, use get_callers to inspect caller-side validation and sinks.",
@@ -785,7 +873,7 @@
       "confidence": 0.7
     },
     {
-      "function_name": "_issue42_shm_get_addr_by_path_race",
+      "function_name": "_runtime_map_linked_segment",
       "file_path": "src/lifecycle.c",
       "custom_prompt": "User-controlled input entry. Treat file, environment, CLI, device, and stdin data as untrusted. Audit parsing, size conversion, range checks, termination, and resource cleanup before the data feeds copies, indexing, allocation sizes, dispatch, paths, or commands. If the input buffer, string, parsed value, or derived length is returned, written through an out-parameter, stored globally, or consumed by callers, use get_callers to inspect caller-side validation and sinks.",
       "exposure": "other_user_input",

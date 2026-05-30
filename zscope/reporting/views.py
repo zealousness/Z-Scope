@@ -12,6 +12,7 @@ from ..common.issue_identity import (
     flatten_issue_text,
     normalize_issue_fields,
     parse_issue_location,
+    report_cluster_category,
     root_cause_token,
 )
 
@@ -107,7 +108,17 @@ def _same_category(default_issue: Dict[str, Any], review_issue: Dict[str, Any]) 
     review_text = flatten_issue_text(review_issue)
     default_category = canonical_category(default_issue, default_text)
     review_category = canonical_category(review_issue, review_text)
-    return bool(default_category and default_category == review_category)
+    if default_category and default_category == review_category:
+        return True
+
+    default_root = root_cause_token(default_issue, default_category, default_text)
+    review_root = root_cause_token(review_issue, review_category, review_text)
+    if default_root and default_root == review_root:
+        return report_cluster_category(default_category, default_root) == report_cluster_category(
+            review_category,
+            review_root,
+        )
+    return False
 
 
 def _same_path_attribution(default_issue: Dict[str, Any], review_issue: Dict[str, Any]) -> bool:

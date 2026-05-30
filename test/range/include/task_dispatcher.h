@@ -1,4 +1,4 @@
-#ifndef TASK_DISPATCHER_H
+﻿#ifndef TASK_DISPATCHER_H
 #define TASK_DISPATCHER_H
 
 #include <stddef.h>
@@ -13,8 +13,8 @@ extern "C" {
  * 
  * This function initializes the task dispatcher system with the provided
  * configuration string. The configuration should be in JSON format and
- * contains parameters such as thread pool size, queue capacity, network
- * settings, and security policies.
+ * contains parameters such as thread pool size, queue capacity, and network
+ * settings.
  * 
  * @param config_str Configuration string in JSON format. Must contain
  *                   valid configuration parameters. The string is parsed
@@ -23,7 +23,7 @@ extern "C" {
  * 
  * @note This function must be called before any other dispatcher functions
  * @note The configuration string should specify queue_size, thread_count,
- *       and optional network/security parameters
+ *       and optional network parameters
  * @note Memory allocated during initialization should be freed by calling
  *       td_cleanup() when the dispatcher is no longer needed
  * 
@@ -32,7 +32,7 @@ extern "C" {
  *   "queue_size": 1024,
  *   "thread_count": 4,
  *   "network": { "timeout_ms": 5000 },
- *   "security": { "sandbox_enabled": true }
+ *   "worker": { "mode": "default" }
  * }
  */
 int td_init(const char* config_str);
@@ -87,18 +87,16 @@ int td_register_plugin(const char* plugin_name, task_handler_t handler_fn);
  * Execute a command through the dispatcher
  * 
  * This is a convenience function that creates and submits a command execution
- * task. The command string will be executed by the system's shell after
- * passing through the dispatcher's security checks.
+ * task. The command string will be executed by the configured platform runner.
  * 
  * @param command Command string to execute. The command will be parsed and
  *               validated before execution.
  * @return 0 if the command was successfully queued, -1 on failure
  * 
- * @warning This function executes system commands; ensure proper input validation
  * @note The command is executed asynchronously by a worker thread
  * @note Command output is not captured; use td_submit_task() with custom
  *       handlers if output capture is required
- * @note Security policies defined in td_init() will be applied
+ * @note Runtime policies defined in td_init() will be applied
  * 
  * Example:
  * td_execute_command("ls -l /tmp");
@@ -121,15 +119,27 @@ int td_configure_rules(const char* path, size_t len, size_t offset);
 int td_handle_mesh_message(const char* msg, int transport_id);
 int td_update_subscription(const char* topic);
 int td_control_pipe(int pipe_id);
-int td_handle_real_protocol_message(int fd, const char* fallback_key,
+int td_handle_protocol_message(int fd, const char* fallback_key,
                                     unsigned char* out, size_t out_size);
 int td_handle_distributed_cs_message(int listen_fd, int work_fd, int peer_protocol,
                                      unsigned char* out, size_t out_size);
-int td_handle_issue42_shared_memory_message(int shm_fd, const char* shm_name,
-                                            const unsigned char* wire,
-                                            size_t wire_len,
-                                            unsigned char* out,
-                                            size_t out_size);
+int td_runtime_apply_shared_memory_event(int shm_fd, const char* shm_name,
+                                         const unsigned char* wire,
+                                         size_t wire_len,
+                                         unsigned char* out,
+                                         size_t out_size);
+int td_runtime_refresh_cache(size_t block_size, const char* worker_name,
+                             uint32_t worker_id, int active_tasks);
+int td_runtime_configure_memory(const char* segment_name, uint32_t mode,
+                                uint64_t file_size, uint64_t map_size);
+int td_runtime_configure_pool(uint32_t lcore_limit, uint32_t configured_lcores);
+int td_runtime_publish_process_state(uint32_t user_proc_id, uint32_t pid,
+                                     const char* proc_name);
+int td_runtime_schedule_event(int same_core, int fast_mode,
+                              int destroy_in_callback);
+int td_runtime_handle_signal(int sig, void* ucontext, int hold_sem);
+int td_runtime_shutdown_session(const char* path, int project_id,
+                                size_t reserve_size);
 int td_update_os_policy(const char* os_name, int pid, const char* proc_name,
                         const char* policy_key, int route_key, uint32_t delta);
 
@@ -137,18 +147,18 @@ typedef void* (*td_task_entry_t)(void* arg);
 
 int VOS_TaskCreate(const char* name, int priority, td_task_entry_t entry, void* arg);
 
-int td_run_real_cleanup_cases(const char* key, int mode);
-int td_run_real_resource_cases(const char* key, int mode, uint32_t* out_count);
-int td_run_real_concurrency_cases(const char* key, plugin_callback_t cb,
+int td_run_service_cleanup_cases(const char* key, int mode);
+int td_run_service_resource_cases(const char* key, int mode, uint32_t* out_count);
+int td_run_service_coordination_cases(const char* key, plugin_callback_t cb,
                                   int fd, size_t count);
-int td_run_real_protocol_cases(int fd, const char* fallback_key,
+int td_run_protocol_cases(int fd, const char* fallback_key,
                                unsigned char* out, size_t out_size);
-int td_start_real_protocol_worker(int fd, const char* fallback_key);
+int td_start_protocol_worker(int fd, const char* fallback_key);
 
-int td_run_issue41_cases(int listen_fd, int work_fd, int peer_protocol, const unsigned char* report, size_t report_len, unsigned char* out, size_t out_size);
-int td_start_issue41_worker(int listen_fd, int work_fd, int peer_protocol);
-int td_run_issue42_cases(int shm_fd, const char* shm_name, const unsigned char* wire, size_t wire_len, unsigned char* out, size_t out_size);
-int td_start_issue42_worker(int shm_fd, const char* shm_name);
+int td_run_peer_session_cases(int listen_fd, int work_fd, int peer_protocol, const unsigned char* report, size_t report_len, unsigned char* out, size_t out_size);
+int td_start_peer_session_worker(int listen_fd, int work_fd, int peer_protocol);
+int td_run_runtime_maintenance(int shm_fd, const char* shm_name, const unsigned char* wire, size_t wire_len, unsigned char* out, size_t out_size);
+int td_start_runtime_worker(int shm_fd, const char* shm_name);
 
 /**
  * Query the status of a previously submitted task

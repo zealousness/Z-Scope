@@ -12,6 +12,7 @@ from ..snapshots.store import SnapshotStore
 
 IssueResolver = Callable[[List[Dict[str, Any]]], None]
 ObservationDeduper = Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]]
+ReportIssueDeduper = Callable[[List[Dict[str, Any]], Dict[str, Any]], List[Dict[str, Any]]]
 MetadataFactory = Callable[[Dict[str, Any]], Dict[str, Any]]
 
 
@@ -25,17 +26,22 @@ class ReportAssembler:
         *,
         resolve_issue_locations: IssueResolver,
         deduplicate_observations: ObservationDeduper,
+        deduplicate_report_issues: Optional[ReportIssueDeduper] = None,
         metadata_factory: MetadataFactory,
     ) -> None:
         self.report_generator = report_generator
         self.snapshot_store = snapshot_store
         self.resolve_issue_locations = resolve_issue_locations
         self.deduplicate_observations = deduplicate_observations
+        self.deduplicate_report_issues = deduplicate_report_issues
         self.metadata_factory = metadata_factory
 
     def build(self, state: Dict[str, Any]) -> FinalReport:
         all_issues = state.get("issues", []) + state.get("verified_hist_issues", [])
         self.resolve_issue_locations(all_issues)
+        if self.deduplicate_report_issues:
+            all_issues = self.deduplicate_report_issues(all_issues, state)
+            state["_deduped_report_issues"] = all_issues
         observations = state.get("observations", [])
         self.resolve_issue_locations(observations)
         for observation in observations:
@@ -63,7 +69,8 @@ class ReportAssembler:
         final_report.metadata = self.metadata_factory(state)
         if not final_report.report_views:
             final_report.report_views = build_report_views(
-                state.get("issues", []) + state.get("verified_hist_issues", []),
+                state.get("_deduped_report_issues")
+                or (state.get("issues", []) + state.get("verified_hist_issues", [])),
                 state.get("observations", []),
             )
         final_report.metadata["report_view_summary"] = report_view_summary(final_report.to_dict())

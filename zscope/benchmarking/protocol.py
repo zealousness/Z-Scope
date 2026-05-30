@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 
 from zscope._version import __version__
-from zscope.common.issue_identity import stable_issue_fingerprint
+from zscope.common.issue_identity import issues_may_share_root_cause, stable_issue_fingerprint
 
 
 SCHEMA_VERSION = "zscope.benchmark.v3"
@@ -109,6 +109,7 @@ def score_report(
     *,
     view: str = "default",
     line_tolerance: int = 8,
+    count_duplicate_of_matched_as_fp: bool = False,
 ) -> Dict[str, Any]:
     issues = report_issues(report, view)
     vulns = [item for item in truth.get("vulnerabilities", []) if isinstance(item, dict)]
@@ -140,6 +141,7 @@ def score_report(
         )
     )
     matched_truth_indices: Set[int] = set()
+    matched_issue_by_truth_index: Dict[int, int] = {}
     for pair in potential_pairs:
         truth_index = int(pair.get("truth_index") or 0)
         issue_index = int(pair.get("issue_index") or 0)
@@ -149,6 +151,7 @@ def score_report(
         matched_truth_indices.add(truth_index)
         matched_truth[truth_id] = issue_index
         matched_issues.add(issue_index)
+        matched_issue_by_truth_index[truth_index] = issue_index
         issue = pair.get("issue") if isinstance(pair.get("issue"), dict) else issues[issue_index]
         matched_pairs.append(
             {
@@ -171,19 +174,41 @@ def score_report(
         )
     )
 
+    duplicate_of_matched_indices = _duplicate_of_matched_indices(
+        issues,
+        potential_pairs,
+        matched_issues,
+        matched_truth_indices,
+        matched_issue_by_truth_index,
+    )
+    raw_fp = max(0, len(issues) - len(matched_issues))
+    effective_fp = raw_fp if count_duplicate_of_matched_as_fp else max(0, raw_fp - len(duplicate_of_matched_indices))
+
     tp = len(matched_truth)
-    fp = max(0, len(issues) - len(matched_issues))
+    fp = effective_fp
     fn = max(0, len(vulns) - tp)
     precision = tp / (tp + fp) if tp + fp else 0.0
     recall = tp / len(vulns) if vulns else 0.0
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
     issue_ids = [issue_identity(issue) for issue in issues]
     issue_records = [issue_identity_record(issue) for issue in issues]
-    fp_issue_ids = [
-        identity for index, identity in enumerate(issue_ids) if index not in matched_issues
+    raw_fp_indices = [
+        index for index, _identity in enumerate(issue_ids) if index not in matched_issues
     ]
-    fp_issue_records = [
-        record for index, record in enumerate(issue_records) if index not in matched_issues
+    effective_fp_indices = [
+        index for index in raw_fp_indices if index not in duplicate_of_matched_indices
+    ]
+    fp_issue_ids = [issue_ids[index] for index in effective_fp_indices]
+    fp_issue_records = [issue_records[index] for index in effective_fp_indices]
+    raw_fp_issue_ids = [issue_ids[index] for index in raw_fp_indices]
+    raw_fp_issue_records = [issue_records[index] for index in raw_fp_indices]
+    duplicate_records = [
+        {
+            **issue_records[index],
+            "issue_index": index,
+            "duplicate_of_matched": True,
+        }
+        for index in sorted(duplicate_of_matched_indices)
     ]
     return {
         "schema_version": SCHEMA_VERSION,
@@ -195,6 +220,9 @@ def score_report(
         "safe_entry_count": len(truth.get("safe_entries", [])),
         "true_positives": tp,
         "false_positives": fp,
+        "false_positives_raw": raw_fp,
+        "false_positives_effective": effective_fp,
+        "duplicate_of_matched_count": len(duplicate_of_matched_indices),
         "false_negatives": fn,
         "precision": round(precision, 4),
         "false_positive_rate": round(fp / (tp + fp), 4) if tp + fp else 0.0,
@@ -213,8 +241,12 @@ def score_report(
         "true_positive_truth_ids": sorted(matched_truth),
         "false_positive_issue_identities": fp_issue_ids,
         "false_positive_issue_records": fp_issue_records,
+        "false_positive_issue_identities_raw": raw_fp_issue_ids,
+        "false_positive_issue_records_raw": raw_fp_issue_records,
+        "duplicate_of_matched_issue_records": duplicate_records,
         "scoring_contract": {
             "line_tolerance": line_tolerance,
+            "count_duplicate_of_matched_as_fp": count_duplicate_of_matched_as_fp,
             "function_anchors": [
                 "function",
                 "secondary_function",
@@ -229,11 +261,46 @@ def score_report(
     }
 
 
+def _duplicate_of_matched_indices(
+    issues: List[Dict[str, Any]],
+    potential_pairs: List[Dict[str, Any]],
+    matched_issues: Set[int],
+    matched_truth_indices: Set[int],
+    matched_issue_by_truth_index: Dict[int, int],
+) -> Set[int]:
+    """Classify unmatched report issues that duplicate an already matched TP."""
+    duplicates: Set[int] = set()
+    potentials_by_issue: Dict[int, List[Dict[str, Any]]] = {}
+    for pair in potential_pairs:
+        issue_index = int(pair.get("issue_index") or 0)
+        potentials_by_issue.setdefault(issue_index, []).append(pair)
+
+    for issue_index, issue in enumerate(issues):
+        if issue_index in matched_issues:
+            continue
+        direct_pairs = potentials_by_issue.get(issue_index, [])
+        if any(int(pair.get("truth_index") or 0) in matched_truth_indices for pair in direct_pairs):
+            duplicates.add(issue_index)
+            continue
+        for matched_index in matched_issue_by_truth_index.values():
+            if matched_index >= len(issues):
+                continue
+            if issues_may_share_root_cause(
+                issues[matched_index],
+                issue,
+                require_concrete_root=True,
+            ):
+                duplicates.add(issue_index)
+                break
+    return duplicates
+
+
 def score_report_views(
     report: Dict[str, Any],
     truth: Dict[str, Any],
     *,
     line_tolerance: int = 8,
+    count_duplicate_of_matched_as_fp: bool = False,
 ) -> Dict[str, Dict[str, Any]]:
     return {
         "default": score_report(
@@ -241,12 +308,14 @@ def score_report_views(
             truth,
             view="default",
             line_tolerance=line_tolerance,
+            count_duplicate_of_matched_as_fp=count_duplicate_of_matched_as_fp,
         ),
         "with_needs_review": score_report(
             report,
             truth,
             view="with_needs_review",
             line_tolerance=line_tolerance,
+            count_duplicate_of_matched_as_fp=count_duplicate_of_matched_as_fp,
         ),
     }
 
@@ -652,7 +721,23 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
         "signed_unsigned": ["signed", "unsigned", "negative", "cwe-195"],
         "off_by_one": ["off by one", "off-by-one", "one byte", "cwe-193"],
         "uninitialized_read": ["uninitialized", "padding", "cwe-457"],
-        "race": ["race", "data race", "toctou", "cwe-362", "cwe-367"],
+        "race": [
+            "race",
+            "data race",
+            "toctou",
+            "unsynchronized",
+            "without synchronization",
+            "missing lock",
+            "concurrent",
+            "use after free",
+            "use-after-free",
+            "uaf",
+            "dangling",
+            "unmap",
+            "munmap",
+            "cwe-362",
+            "cwe-367",
+        ],
         "data_race": ["data race", "race", "cwe-362"],
         "object_publication": [
             "object publication",
@@ -691,6 +776,19 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
         "sigpipe_unhandled": ["sigpipe", "signal", "closed peer", "not handled", "cwe-404"],
         "fd_encoding_mismatch": ["encoded fd", "fd encoding", "check value", "raw fd", "cwe-587"],
         "type_confusion": ["type confusion", "wrong type", "invalid mutex", "sharedresources", "cwe-843"],
+        "semantic_mismatch": ["semantic mismatch", "callback parameter", "counter domain", "busy work", "cwe-628"],
+        "byte_order_logic": ["byte order", "endian", "ctz", "trailing zero", "cwe-682"],
+        "reader_state_race": ["reader state", "reader pid", "multiple readers", "rwlock", "race", "cwe-362"],
+        "uninitialized_output": ["uninitialized output", "partially initialized", "output parameter", "cwe-457"],
+        "file_type_validation": ["file type", "character device", "regular file", "mapping size", "cwe-20"],
+        "log_level_misuse": ["log level", "logged at error", "alert noise", "cwe-778"],
+        "logic_error": ["logic error", "wrong group", "wrong index", "cwe-682"],
+        "global_mode_race": ["global mode", "qrcu", "crcu", "race", "cwe-362"],
+        "slot_race": ["slot race", "cas result", "process slot", "race", "cwe-362"],
+        "shared_memory_race": ["shared memory race", "lookup before lock", "concurrent create", "memzone", "cwe-362"],
+        "state_machine": ["state machine", "missing transition", "lifecycle state", "cwe-672"],
+        "signal_deadlock": ["signal deadlock", "signal handler", "semaphore", "deadlock", "cwe-833"],
+        "callback_self_destroy_race": ["callback self destroy", "self destruction", "callback can free", "use after free", "cwe-416"],
     }
     aliases = builtins.get(category_key, [category_key.replace("_", " ")])
     if cwe:
@@ -861,13 +959,13 @@ def _line_match_reason(
     expected_ranges = _truth_line_ranges(truth)
     if not expected_ranges:
         return "no_expected_line"
-    actual_range = _location_line_range(issue)
-    if actual_range is None:
+    actual_ranges = _issue_line_ranges(issue)
+    if not actual_ranges:
         return "no_issue_line"
-    actual_start, actual_end = actual_range
-    for label, start, end in expected_ranges:
-        if start - line_tolerance <= actual_end and actual_start <= end + line_tolerance:
-            return f"{label}:within_tolerance"
+    for actual_start, actual_end in actual_ranges:
+        for label, start, end in expected_ranges:
+            if start - line_tolerance <= actual_end and actual_start <= end + line_tolerance:
+                return f"{label}:within_tolerance"
     return ""
 
 
@@ -923,29 +1021,59 @@ def _location_line(issue: Dict[str, Any]) -> Optional[int]:
 
 
 def _location_line_range(issue: Dict[str, Any]) -> Optional[tuple[int, int]]:
-    for key in ("line", "start_line"):
-        value = issue.get(key)
-        if isinstance(value, int):
-            end_value = issue.get("end_line")
-            end = end_value if isinstance(end_value, int) else value
-            return value, max(value, int(end))
-        if isinstance(value, str) and value.isdigit():
-            start = int(value)
-            end_value = issue.get("end_line")
-            if isinstance(end_value, int):
-                return start, max(start, end_value)
-            if isinstance(end_value, str) and end_value.isdigit():
-                return start, max(start, int(end_value))
-            return start, start
-    location = str(issue.get("location") or issue.get("file") or "")
-    for token in location.split(":")[1:]:
-        match = re.match(r"\s*(\d+)(?:\s*-\s*(\d+))?", token)
-        if match:
-            start = int(match.group(1))
-            end = int(match.group(2) or start)
-            return start, max(start, end)
-    return None
+    ranges = _issue_line_ranges(issue)
+    return ranges[0] if ranges else None
 
+
+def _issue_line_ranges(issue: Dict[str, Any]) -> List[tuple[int, int]]:
+    ranges: List[tuple[int, int]] = []
+    seen: Set[tuple[int, int]] = set()
+
+    def add_range(start_value: Any, end_value: Any = None) -> None:
+        try:
+            start = int(start_value)
+        except (TypeError, ValueError):
+            return
+        if start <= 0:
+            return
+        try:
+            end = int(end_value) if end_value not in (None, "") else start
+        except (TypeError, ValueError):
+            end = start
+        span = (start, max(start, end))
+        if span not in seen:
+            seen.add(span)
+            ranges.append(span)
+
+    def add_location(value: Any) -> None:
+        if not isinstance(value, str):
+            return
+        for token in value.split(":")[1:]:
+            match = re.match(r"\s*(\d+)(?:\s*-\s*(\d+))?", token)
+            if match:
+                add_range(match.group(1), match.group(2) or match.group(1))
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            if "line" in value or "start_line" in value:
+                add_range(value.get("line") or value.get("start_line"), value.get("end_line"))
+            for key in (
+                "location",
+                "file",
+                "source_location",
+                "sink_location",
+                "primary_location",
+                "secondary_location",
+            ):
+                add_location(value.get(key))
+            for nested in value.values():
+                walk(nested)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(issue)
+    return ranges
 
 def _short_text(issue: Dict[str, Any]) -> str:
     text = str(issue.get("description") or issue.get("message") or issue.get("title") or "")

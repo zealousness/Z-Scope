@@ -180,6 +180,32 @@ def trivial_suspicious_points(
             confidence=0.7,
         )
 
+    callees = [
+        str(callee)
+        for callee in (impl.get("callees") or [])
+        if str(callee).strip()
+    ]
+    if callees and re.search(r"\breturn\s+[A-Za-z_]\w*\s*\(", text):
+        points.append(
+            {
+                "type": "facade_forwarding_contract",
+                "category": "entry_forwarding",
+                "description": (
+                    "Short entry facade forwards caller-controlled state to source callees; "
+                    "audit the callee path instead of treating the facade as a terminal helper."
+                ),
+                "reason": (
+                    "Trivial functions are stored without LLM modeling, but API and message "
+                    "facades still define reachability and trust boundaries."
+                ),
+                "location": location,
+                "line": start_line,
+                "confidence": 0.8,
+                "source": "trivial_syntactic_contract",
+                "callees": callees,
+            }
+        )
+
     return points
 
 

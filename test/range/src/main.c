@@ -1,4 +1,4 @@
-#include "../include/task_dispatcher.h"
+﻿#include "../include/task_dispatcher.h"
 #include "../include/common.h"
 #include "../internal/network.ph"
 #include "../internal/parser.ph"
@@ -50,6 +50,7 @@ static void _free_task(Task* task) {
 
 static void _signal_handler(int signum) {
     g_running = 0;
+    td_runtime_handle_signal(signum, (void*)&g_receiver_server_fd, 1);
 }
 
 static void* _worker_thread(void* arg) {
@@ -345,7 +346,7 @@ int td_process_control_message(const char* msg, int transport_id) {
     _lifecycle_ref_put(key);
     _lifecycle_register_entry_callback(key, _public_lifecycle_callback);
     _lifecycle_fire_registered_callback();
-    _lifecycle_fire_callback_under_lock();
+    _lifecycle_notify_entry_callback();
     _lifecycle_mesh_control_message(msg, transport_id);
     _lifecycle_remove_entry(key);
     free(key);
@@ -367,7 +368,7 @@ int td_format_and_parse_frame(const char* prefix, uint32_t id, char* out, size_t
     snprintf(line, sizeof(line), "%s=value", prefix ? prefix : "topic");
     _lifecycle_format_topic(prefix, id, out, out_size);
     _lifecycle_parse_frame((size_t)id);
-    _lifecycle_decode_unaligned_id(packet, sizeof(packet));
+    _lifecycle_decode_packet_id(packet, sizeof(packet));
     _lifecycle_release_value_slice(line);
     return 0;
 }
@@ -394,8 +395,8 @@ int td_handle_mesh_message(const char* msg, int transport_id) {
 }
 
 int td_update_subscription(const char* topic) {
-    _lifecycle_register_guarded_subscription(topic);
-    return _lifecycle_unregister_guarded_subscription(topic);
+    _lifecycle_register_topic_subscription(topic);
+    return _lifecycle_unregister_topic_subscription(topic);
 }
 
 int td_control_pipe(int pipe_id) {
@@ -406,14 +407,14 @@ int td_control_pipe(int pipe_id) {
     return _lifecycle_dispatch_pipe_tick(pipe_id);
 }
 
-int td_handle_real_protocol_message(int fd, const char* fallback_key,
+int td_handle_protocol_message(int fd, const char* fallback_key,
                                     unsigned char* out, size_t out_size) {
-    return _real_model_process_protocol_task(fd, fallback_key, out, out_size);
+    return _runtime_process_protocol_task(fd, fallback_key, out, out_size);
 }
 
 int td_handle_distributed_cs_message(int listen_fd, int work_fd, int peer_protocol,
                                      unsigned char* out, size_t out_size) {
-    return _issue41_process_cs_message(listen_fd, work_fd, peer_protocol,
+    return _peer_process_session_message(listen_fd, work_fd, peer_protocol,
                                        out, out_size);
 }
 
@@ -425,7 +426,7 @@ int td_update_os_policy(const char* os_name, int pid, const char* proc_name,
     _lifecycle_avl_policy_upsert(policy_key, pid);
     _lifecycle_avl_register_route(route_key, 1);
     _lifecycle_avl_walk_duplicate_routes(16);
-    _lifecycle_macro_guarded_counter_update(delta);
+    _lifecycle_update_counter_slot(delta);
     return 0;
 }
 
@@ -464,74 +465,74 @@ static TdRangeWorkerArgs* _td_alloc_worker_args(const char* key) {
     return args;
 }
 
-static void* _td_real_protocol_worker(void* arg) {
+static void* _td_protocol_worker(void* arg) {
     TdRangeWorkerArgs* args = (TdRangeWorkerArgs*)arg;
     if (!args) {
         return NULL;
     }
-    td_run_real_protocol_cases(args->fd, args->key, args->out, sizeof(args->out));
+    td_run_protocol_cases(args->fd, args->key, args->out, sizeof(args->out));
     SAFE_FREE(args);
     return NULL;
 }
 
-static void* _td_issue41_worker(void* arg) {
+static void* _td_peer_session_worker(void* arg) {
     TdRangeWorkerArgs* args = (TdRangeWorkerArgs*)arg;
     if (!args) {
         return NULL;
     }
-    td_run_issue41_cases(args->listen_fd, args->work_fd, args->peer_protocol,
+    td_run_peer_session_cases(args->listen_fd, args->work_fd, args->peer_protocol,
                          args->report, args->report_len, args->out,
                          sizeof(args->out));
     SAFE_FREE(args);
     return NULL;
 }
 
-int td_run_real_cleanup_cases(const char* key, int mode) {
-    const char* stable_key = key ? key : "range-real";
+int td_run_service_cleanup_cases(const char* key, int mode) {
+    const char* stable_key = key ? key : "range-service";
     int rc = 0;
 
-    rc |= _real_model_module_cleanup_race(stable_key);
-    rc |= _real_model_osnode_remove_race(stable_key);
-    rc |= _real_model_error_branch_double_cleanup(stable_key, mode);
-    rc |= _real_model_comp_destroy_detach_leak(stable_key, mode);
-    rc |= _real_model_unregister_file_leak(stable_key);
-    rc |= _real_model_activation_rollback_gap(stable_key, mode);
-    rc |= _real_model_reader_channel_role_leak(stable_key, mode);
-    rc |= _real_model_log_buffer_leak(stable_key, mode);
+    rc |= _runtime_remove_module_record(stable_key);
+    rc |= _runtime_remove_system_node(stable_key);
+    rc |= _runtime_apply_component_stage(stable_key, mode);
+    rc |= _runtime_detach_component_record(stable_key, mode);
+    rc |= _runtime_remove_file_record(stable_key);
+    rc |= _runtime_activate_service_path(stable_key, mode);
+    rc |= _runtime_release_reader_channel(stable_key, mode);
+    rc |= _runtime_flush_log_buffer(stable_key, mode);
     return rc;
 }
 
-int td_run_real_resource_cases(const char* key, int mode, uint32_t* out_count) {
-    const char* stable_key = key ? key : "range-real";
+int td_run_service_resource_cases(const char* key, int mode, uint32_t* out_count) {
+    const char* stable_key = key ? key : "range-service";
     uint32_t local_count = 0;
     int rc = 0;
 
-    rc |= _real_model_init_sequence_publication(stable_key, "payload");
-    rc |= _real_model_patch_unload_member_leak(stable_key);
-    rc |= _real_model_avl_insert_unchecked_return(stable_key);
-    rc |= _real_model_resource_table_unload_leak(stable_key, mode);
-    rc |= _real_model_patch_tree_child_leak(stable_key);
-    rc |= _real_model_peak_stats_leak((uint32_t)(mode + 1), out_count ? out_count : &local_count);
-    rc |= (int)_real_model_macro_guarded_counter((uint32_t)(mode + 1));
+    rc |= _runtime_publish_init_sequence(stable_key, "payload");
+    rc |= _runtime_unload_patch_member(stable_key);
+    rc |= _runtime_insert_policy_node(stable_key);
+    rc |= _runtime_unload_resource_table(stable_key, mode);
+    rc |= _runtime_prune_patch_tree(stable_key);
+    rc |= _runtime_query_peak_stats((uint32_t)(mode + 1), out_count ? out_count : &local_count);
+    rc |= (int)_runtime_update_metric_counter((uint32_t)(mode + 1));
     return rc;
 }
 
-int td_run_real_concurrency_cases(const char* key, plugin_callback_t cb,
+int td_run_service_coordination_cases(const char* key, plugin_callback_t cb,
                                   int fd, size_t count) {
-    const char* stable_key = key ? key : "range-real";
+    const char* stable_key = key ? key : "range-service";
     int rc = 0;
 
-    rc |= _real_model_atomic_order_flag_race(stable_key);
-    rc |= _real_model_syscall_state_not_restored(fd);
-    rc |= _real_model_missing_unlock_after_alloc(stable_key);
-    rc |= _real_model_refcount_after_unlock(stable_key);
-    rc |= _real_model_callback_under_lock(stable_key, cb);
-    rc |= _real_model_detached_stack_job(stable_key);
-    rc |= _real_model_realloc_lost_pointer(count);
+    rc |= _runtime_read_service_flag(stable_key);
+    rc |= _runtime_switch_io_mode(fd);
+    rc |= _runtime_link_allocated_node(stable_key);
+    rc |= _runtime_release_shared_node(stable_key);
+    rc |= _runtime_notify_registry_listener(stable_key, cb);
+    rc |= _runtime_submit_background_work(stable_key);
+    rc |= _runtime_resize_message_buffer(count);
     return rc;
 }
 
-int td_run_real_protocol_cases(int fd, const char* fallback_key,
+int td_run_protocol_cases(int fd, const char* fallback_key,
                                unsigned char* out, size_t out_size) {
     unsigned char packet[32] = {0};
     unsigned char local_out[256] = {0};
@@ -539,34 +540,34 @@ int td_run_real_protocol_cases(int fd, const char* fallback_key,
     size_t response_len = out ? out_size : sizeof(local_out);
     int rc = 0;
 
-    rc |= (int)_real_model_message_alignment_overread(packet, sizeof(packet));
-    rc |= _real_model_protocol_length_miscalc(packet, sizeof(packet),
+    rc |= (int)_runtime_message_header_probe(packet, sizeof(packet));
+    rc |= _runtime_protocol_frame_length(packet, sizeof(packet),
                                               response, response_len);
-    rc |= (int)_real_model_magic64_missing_check(packet, sizeof(packet));
-    rc |= _real_model_recv_busy_loop(fd, packet, sizeof(packet));
-    rc |= _real_model_ssl_error_returns_ok(fd, 0);
-    rc |= _real_model_hardcoded_role_release(fallback_key ? fallback_key : "route", 0);
-    rc |= _real_model_signed_recv_to_size(fd, response, response_len);
-    rc |= _real_model_stale_fd_after_close(fd, response, response_len);
-    rc |= _real_model_key_truncation_route(fallback_key ? fallback_key : "route", 1);
-    rc |= _real_model_process_protocol_task(fd, fallback_key, response, response_len);
+    rc |= (int)_runtime_read_control_magic(packet, sizeof(packet));
+    rc |= _runtime_read_peer_record(fd, packet, sizeof(packet));
+    rc |= _runtime_read_tls_record(fd, 0);
+    rc |= _runtime_release_channel_role(fallback_key ? fallback_key : "route", 0);
+    rc |= _runtime_receive_record_payload(fd, response, response_len);
+    rc |= _runtime_reopen_cached_descriptor(fd, response, response_len);
+    rc |= _runtime_route_by_partition_key(fallback_key ? fallback_key : "route", 1);
+    rc |= _runtime_process_protocol_task(fd, fallback_key, response, response_len);
     return rc;
 }
 
-int td_start_real_protocol_worker(int fd, const char* fallback_key) {
+int td_start_protocol_worker(int fd, const char* fallback_key) {
     TdRangeWorkerArgs* args = _td_alloc_worker_args(fallback_key);
     if (!args) {
         return -1;
     }
     args->fd = fd;
-    if (VOS_TaskCreate("range-real-protocol", 0, _td_real_protocol_worker, args) != 0) {
+    if (VOS_TaskCreate("range-protocol", 0, _td_protocol_worker, args) != 0) {
         SAFE_FREE(args);
         return -1;
     }
     return 0;
 }
 
-int td_run_issue41_cases(int listen_fd, int work_fd, int peer_protocol,
+int td_run_peer_session_cases(int listen_fd, int work_fd, int peer_protocol,
                          const unsigned char* report, size_t report_len,
                          unsigned char* out, size_t out_size) {
     unsigned char local_report[128] = {0};
@@ -577,24 +578,24 @@ int td_run_issue41_cases(int listen_fd, int work_fd, int peer_protocol,
     size_t response_len = out ? out_size : sizeof(local_out);
     int rc = 0;
 
-    rc |= _issue41_label_cache_size_miscalc((unsigned int)wire_len);
-    rc |= _issue41_header_length_not_validated(wire, wire_len, response, response_len);
-    rc |= _issue41_recv_retry_without_timeout(work_fd, response, response_len);
-    rc |= _issue41_reliable_fd_to_raw_interface(work_fd);
-    rc |= _issue41_lax_protocol_mismatch(peer_protocol, 0);
-    rc |= _issue41_partial_resource_leak_on_retry(peer_protocol);
-    rc |= _issue41_dynamic_array_expand_race(wire_len);
-    rc |= _issue41_missing_version_filter(wire, wire_len);
-    rc |= _issue41_missing_reference_count(work_fd, peer_protocol);
-    rc |= _issue41_sigpipe_not_handled(work_fd, wire, wire_len);
-    rc |= _issue41_raw_fd_missing_encode(listen_fd, work_fd);
-    rc |= _issue41_process_cs_message(listen_fd, work_fd, peer_protocol,
+    rc |= _peer_prepare_label_cache((unsigned int)wire_len);
+    rc |= _peer_decode_header_window(wire, wire_len, response, response_len);
+    rc |= _peer_receive_session_frame(work_fd, response, response_len);
+    rc |= _peer_bridge_descriptor(work_fd);
+    rc |= _peer_route_protocol_context(peer_protocol, 0);
+    rc |= _peer_prepare_retry_context(peer_protocol);
+    rc |= _peer_expand_task_table(wire_len);
+    rc |= _peer_select_version_window(wire, wire_len);
+    rc |= _peer_publish_shared_session(work_fd, peer_protocol);
+    rc |= _peer_send_control_reply(work_fd, wire, wire_len);
+    rc |= _peer_export_descriptor_token(listen_fd, work_fd);
+    rc |= _peer_process_session_message(listen_fd, work_fd, peer_protocol,
                                       response, response_len);
     return rc;
 }
 
-int td_start_issue41_worker(int listen_fd, int work_fd, int peer_protocol) {
-    TdRangeWorkerArgs* args = _td_alloc_worker_args("issue41");
+int td_start_peer_session_worker(int listen_fd, int work_fd, int peer_protocol) {
+    TdRangeWorkerArgs* args = _td_alloc_worker_args("peer-session");
     if (!args) {
         return -1;
     }
@@ -602,7 +603,7 @@ int td_start_issue41_worker(int listen_fd, int work_fd, int peer_protocol) {
     args->work_fd = work_fd;
     args->peer_protocol = peer_protocol;
     args->report_len = sizeof(args->report);
-    if (VOS_TaskCreate("range-issue41", 0, _td_issue41_worker, args) != 0) {
+    if (VOS_TaskCreate("range-peer-session", 0, _td_peer_session_worker, args) != 0) {
         SAFE_FREE(args);
         return -1;
     }
@@ -685,75 +686,116 @@ int main(int argc, __attribute__((unused)) char** argv) {
 
 typedef struct {
     uint32_t magic;
-    uint16_t opcode;
+    uint16_t family;
     uint16_t flags;
     uint32_t size;
     uint32_t mode;
     uint64_t value;
     char name[64];
-} TdIssue42RuntimeHeader;
+} TdRuntimeMessageHeader;
 
-int td_handle_issue42_shared_memory_message(int shm_fd, const char* shm_name,
-                                            const unsigned char* wire,
-                                            size_t wire_len,
-                                            unsigned char* out,
-                                            size_t out_size) {
-    return _issue42_process_shared_memory_message(shm_fd, shm_name, wire,
-                                                  wire_len, out, out_size);
+int td_runtime_apply_shared_memory_event(int shm_fd, const char* shm_name,
+                                         const unsigned char* wire,
+                                         size_t wire_len,
+                                         unsigned char* out,
+                                         size_t out_size) {
+    return _runtime_accept_session_frame(shm_fd, shm_name, wire, wire_len,
+                                         out, out_size);
 }
 
-int td_run_issue42_cases(int shm_fd, const char* shm_name,
+int td_runtime_refresh_cache(size_t block_size, const char* worker_name,
+                             uint32_t worker_id, int active_tasks) {
+    return _runtime_refresh_worker_context(block_size, worker_name, worker_id,
+                                           active_tasks);
+}
+
+int td_runtime_configure_memory(const char* segment_name, uint32_t mode,
+                                uint64_t file_size, uint64_t map_size) {
+    return _runtime_apply_memory_plan(segment_name, mode, file_size, map_size);
+}
+
+int td_runtime_configure_pool(uint32_t lcore_limit, uint32_t configured_lcores) {
+    return _runtime_apply_pool_plan(lcore_limit, configured_lcores);
+}
+
+int td_runtime_publish_process_state(uint32_t user_proc_id, uint32_t pid,
+                                     const char* proc_name) {
+    return _runtime_publish_process_record(user_proc_id, pid, proc_name);
+}
+
+int td_runtime_schedule_event(int same_core, int fast_mode,
+                              int destroy_in_callback) {
+    return _runtime_dispatch_event_cycle(same_core, fast_mode,
+                                         destroy_in_callback);
+}
+
+int td_runtime_handle_signal(int sig, void* ucontext, int hold_sem) {
+    return _runtime_handle_fault_signal(sig, ucontext, hold_sem);
+}
+
+int td_runtime_shutdown_session(const char* path, int project_id,
+                                size_t reserve_size) {
+    return _runtime_shutdown_local_session(path, project_id, reserve_size);
+}
+
+int td_run_runtime_maintenance(int shm_fd, const char* shm_name,
                          const unsigned char* wire, size_t wire_len,
                          unsigned char* out, size_t out_size) {
-    unsigned char local_wire[sizeof(TdIssue42RuntimeHeader) + 32] = {0};
+    unsigned char local_wire[sizeof(TdRuntimeMessageHeader) + 32] = {0};
     unsigned char local_out[256] = {0};
     unsigned char* response = out ? out : local_out;
     size_t response_len = out ? out_size : sizeof(local_out);
     const char* stable_name = shm_name ? shm_name : "product-namedpipe";
+    TdRuntimeMessageHeader* header = (TdRuntimeMessageHeader*)local_wire;
     int rc = 0;
 
-    if (wire && wire_len >= sizeof(TdIssue42RuntimeHeader)) {
-        rc |= td_handle_issue42_shared_memory_message(
+    if (wire && wire_len >= sizeof(TdRuntimeMessageHeader)) {
+        rc |= td_runtime_apply_shared_memory_event(
             shm_fd, stable_name, wire, wire_len, response, response_len);
     }
 
-    for (uint16_t opcode = 0; opcode < 29u; opcode++) {
-        TdIssue42RuntimeHeader* header = (TdIssue42RuntimeHeader*)local_wire;
-        memset(local_wire, 0, sizeof(local_wire));
-        header->magic = 0x493432u;
-        header->opcode = opcode;
-        header->flags = 0;
-        header->size = 128;
-        header->mode = 0020000u;
-        header->value = (uint64_t)(opcode + 1u);
-        STR_COPY(header->name, stable_name);
-        rc |= td_handle_issue42_shared_memory_message(
-            shm_fd, stable_name, local_wire, sizeof(local_wire),
-            response, response_len);
-    }
+    memset(local_wire, 0, sizeof(local_wire));
+    header->magic = 0x493432u;
+    header->family = 1;
+    header->flags = 1;
+    header->size = 128;
+    header->mode = 0020000u;
+    header->value = 17;
+    STR_COPY(header->name, stable_name);
+
+    rc |= td_runtime_apply_shared_memory_event(
+        shm_fd, stable_name, local_wire, sizeof(local_wire),
+        response, response_len);
+    rc |= td_runtime_refresh_cache(128, stable_name, 42, 1);
+    rc |= td_runtime_configure_memory(stable_name, 0020000u, 64, 128);
+    rc |= td_runtime_configure_pool(128, 96);
+    rc |= td_runtime_publish_process_state(7, (uint32_t)shm_fd, stable_name);
+    rc |= td_runtime_schedule_event(1, 1, 1);
+    rc |= td_runtime_handle_signal(11, response, 1);
+    rc |= td_runtime_shutdown_session(stable_name, 3, 4096);
 
     return rc;
 }
 
-static void* _td_issue42_worker(void* arg) {
+static void* _td_runtime_worker(void* arg) {
     TdRangeWorkerArgs* args = (TdRangeWorkerArgs*)arg;
     if (!args) {
         return NULL;
     }
-    td_run_issue42_cases(args->fd, args->key, args->report,
+    td_run_runtime_maintenance(args->fd, args->key, args->report,
                          args->report_len, args->out, sizeof(args->out));
     SAFE_FREE(args);
     return NULL;
 }
 
-int td_start_issue42_worker(int shm_fd, const char* shm_name) {
-    TdRangeWorkerArgs* args = _td_alloc_worker_args(shm_name ? shm_name : "issue42");
+int td_start_runtime_worker(int shm_fd, const char* shm_name) {
+    TdRangeWorkerArgs* args = _td_alloc_worker_args(shm_name ? shm_name : "runtime");
     if (!args) {
         return -1;
     }
     args->fd = shm_fd;
     args->report_len = sizeof(args->report);
-    if (VOS_TaskCreate("range-issue42", 0, _td_issue42_worker, args) != 0) {
+    if (VOS_TaskCreate("range-runtime", 0, _td_runtime_worker, args) != 0) {
         SAFE_FREE(args);
         return -1;
     }

@@ -287,36 +287,96 @@ class CodeIndex:
     def _extract_functions_regex(self, file_path: Union[str, Path], content: str) -> None:
         """Extract function definitions using regex."""
         lines = content.split("\n")
-        in_function = False
-        func_start = 0
-        func_name = ""
-        brace_count = 0
-        for line_no, line in enumerate(lines, start=1):
-            clean_line = re.sub(r"//.*$", "", line)
-            clean_line = re.sub(r"/\*.*?\*/", "", clean_line)
+        pending_signature: List[str] = []
+        pending_start = 0
+        in_block_comment = False
+        line_no = 1
+        while line_no <= len(lines):
+            raw_line = lines[line_no - 1]
+            clean_line = raw_line
+            if in_block_comment:
+                if "*/" in clean_line:
+                    clean_line = clean_line.split("*/", 1)[1]
+                    in_block_comment = False
+                else:
+                    line_no += 1
+                    continue
+            while "/*" in clean_line:
+                before, after = clean_line.split("/*", 1)
+                if "*/" in after:
+                    clean_line = before + after.split("*/", 1)[1]
+                else:
+                    clean_line = before
+                    in_block_comment = True
+                    break
+            clean_line = re.sub(r"//.*$", "", clean_line)
+
+            stripped = clean_line.strip()
+            if not pending_signature:
+                if (
+                    not stripped
+                    or stripped.startswith("#")
+                    or stripped.startswith("typedef")
+                    or re.match(r"^(?:if|while|for|switch|return)\b", stripped)
+                ):
+                    line_no += 1
+                    continue
+                pending_start = line_no
+            pending_signature.append(clean_line)
+            signature_text = "\n".join(pending_signature)
+
+            if ";" in signature_text and "{" not in signature_text:
+                pending_signature = []
+                line_no += 1
+                continue
+            if "{" not in signature_text:
+                if len(pending_signature) > 12:
+                    pending_signature = []
+                line_no += 1
+                continue
+
+            before_brace = signature_text.split("{", 1)[0]
             match = re.search(
-                r"^(?:(?:static|inline|extern)\s+)*"
+                r"(?:(?:static|inline|extern)\s+)*"
                 r"(?:(?:const|volatile|struct|enum|union|unsigned|signed|long|short)\s+)*"
-                r"[A-Za-z_]\w*(?:\s*\*)*\s+(\w+)\s*\([^;]*\)\s*\{",
-                clean_line.strip(),
+                r"[A-Za-z_]\w*(?:\s*\*)*\s+"
+                r"(?P<name>[A-Za-z_]\w*)\s*\([^;{}]*\)\s*$",
+                before_brace,
+                re.DOTALL,
             )
-            if match and not in_function:
-                in_function = True
-                func_start = line_no
-                func_name = match.group(1)
-                brace_count = clean_line.count("{") - clean_line.count("}")
-            elif in_function:
-                brace_count += clean_line.count("{") - clean_line.count("}")
-                if brace_count == 0:
-                    path = Path(file_path)
-                    with self._cache_lock:
-                        self._function_index[func_name] = {
-                            "file": str(path),
-                            "start_line": func_start,
-                            "end_line": line_no,
-                            "signature": func_name + "(...)",
-                        }
-                    in_function = False
+            if not match:
+                pending_signature = []
+                line_no += 1
+                continue
+
+            func_name = match.group("name")
+            brace_count = 0
+            started = False
+            end_line = line_no
+            scan_line = line_no
+            while scan_line <= len(lines):
+                scan_raw = lines[scan_line - 1]
+                for char in scan_raw:
+                    if char == "{":
+                        brace_count += 1
+                        started = True
+                    elif char == "}":
+                        brace_count -= 1
+                if started and brace_count == 0:
+                    end_line = scan_line
+                    break
+                scan_line += 1
+
+            path = Path(file_path)
+            with self._cache_lock:
+                self._function_index[func_name] = {
+                    "file": str(path),
+                    "start_line": pending_start,
+                    "end_line": end_line,
+                    "signature": func_name + "(...)",
+                }
+            pending_signature = []
+            line_no = end_line + 1
 
     def _numbered_code(self, lines: Sequence[str], start_idx: int) -> str:
         """Format source lines with the line-number prefix used by tool outputs."""
@@ -702,16 +762,41 @@ class CodeIndex:
 
     def get_header_declared_functions(self, header_files: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """Get functions declared in header files (public API)."""
+        results: List[Dict[str, Any]] = []
         if self._backend:
-            return self._backend.get_header_declared_functions(header_files)
-        return self._get_header_funcs_regex(header_files)
+            try:
+                results.extend(self._backend.get_header_declared_functions(header_files))
+            except Exception as exc:
+                logger.debug("Backend header declaration lookup failed: %s", exc)
+        results.extend(self._get_header_funcs_regex(header_files))
+
+        deduped: Dict[tuple[str, str], Dict[str, Any]] = {}
+        for item in results:
+            name = str(item.get("name") or "")
+            filename = str(item.get("filename") or "").replace("\\", "/")
+            try:
+                line_no = int(item.get("lineNumber") or 0)
+            except (TypeError, ValueError):
+                line_no = 0
+            if not name:
+                continue
+            key = (name, filename)
+            previous = deduped.get(key)
+            if previous and int(previous.get("lineNumber") or 0) > 0:
+                continue
+            deduped[key] = {"name": name, "filename": filename, "lineNumber": line_no}
+        return list(deduped.values())
 
     def _get_header_funcs_regex(self, header_files: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         func_decl_re = re.compile(
-            r"^\s*(?:extern\s+)?(?:\w+[\s*]+)+(\w+)\s*\([^)]*\)\s*;", re.MULTILINE
+            r"^\s*(?:extern\s+)?"
+            r"(?:(?:const|volatile|struct|enum|union|unsigned|signed|long|short)\s+)*"
+            r"[A-Za-z_]\w*(?:\s*\*)*\s+"
+            r"(?P<name>[A-Za-z_]\w*)\s*\([^;{}]*\)\s*;",
+            re.MULTILINE | re.DOTALL,
         )
         results = []
-        globs = [f"*{h}" for h in header_files] if header_files else ["*.h", "*.hpp"]
+        globs = self._header_globs(header_files)
         for pattern in globs:
             for fp in self.source_root.rglob(pattern):
                 try:
@@ -719,7 +804,7 @@ class CodeIndex:
                 except Exception:
                     continue
                 for m in func_decl_re.finditer(content):
-                    name = m.group(1)
+                    name = m.group("name")
                     if name in self._function_index:
                         results.append({
                             "name": name,
@@ -727,6 +812,23 @@ class CodeIndex:
                             "lineNumber": content[:m.start()].count("\n") + 1,
                         })
         return results
+
+    @staticmethod
+    def _header_globs(header_files: Optional[List[str]]) -> List[str]:
+        if not header_files:
+            return ["*.h", "*.hpp"]
+        globs = []
+        for header in header_files:
+            pattern = str(header or "").strip().replace("\\", "/")
+            if not pattern:
+                continue
+            if any(ch in pattern for ch in "*?["):
+                globs.append(pattern)
+            elif "/" in pattern:
+                globs.append(pattern)
+            else:
+                globs.append(f"*{pattern}")
+        return globs or ["*.h", "*.hpp"]
 
     # ── Macro and path helpers ──
 

@@ -310,7 +310,7 @@ int _parse_arguments(char* cmd, char** args, int max_args) {
 void* _allocate_buffer(size_t size) {
     size_t total_size = size * 2;
     if (total_size < size) {
-        LOG_ERROR("Integer overflow in buffer allocation");
+        LOG_ERROR("Buffer allocation size rejected");
         return NULL;
     }
     

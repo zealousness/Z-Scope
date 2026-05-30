@@ -25,3 +25,9 @@ inconsistent protection. Look for races that corrupt state, lose updates, create
 UAF through unsynchronized lifetime changes, or violate reference-count
 protocols. Do not report single-threaded state without a plausible concurrent
 caller.
+
+Also check protocol races that are not plain read/write pairs: lookup before
+insert-lock create-if-absent paths, ignored CAS/compare-exchange slot claims,
+mutable global mode used to select callbacks, RCU registration/enqueue handoff,
+lost wakeups after queue publication, and callbacks that can destroy their own
+context before the caller resumes using it.

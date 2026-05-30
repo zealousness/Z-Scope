@@ -117,6 +117,23 @@ class AnalysisConfig:
 
 
 @dataclass
+class SemanticDedupConfig:
+    """Configuration for final-report semantic duplicate handling."""
+
+    enabled: bool = True
+    llm_enabled: bool = True
+    llm_confidence_threshold: float = 0.85
+    max_cluster_size: int = 8
+
+
+@dataclass
+class ReportingConfig:
+    """Configuration for report assembly and presentation."""
+
+    semantic_dedup: SemanticDedupConfig = field(default_factory=SemanticDedupConfig)
+
+
+@dataclass
 class ProjectConfig:
     """Configuration for the C project being analyzed."""
 
@@ -126,6 +143,7 @@ class ProjectConfig:
     agents: List[AgentConfig] = field(default_factory=list)
     compile_commands_path: Optional[Path] = None
     entry_functions_list: Optional[Path] = None  # Path to JSON file for batch mode
+    entry_diff_focus: Optional[Dict[str, Any]] = None
     include_paths: List[str] = field(default_factory=list)
     exclude_paths: List[str] = field(default_factory=list)
     entry_discovery: EntryDiscoveryConfig = field(default_factory=EntryDiscoveryConfig)
@@ -211,6 +229,7 @@ class ZScopeConfig:
     indexing: IndexingConfig
     analysis: AnalysisConfig
     project: ProjectConfig
+    reporting: ReportingConfig = field(default_factory=ReportingConfig)
 
 
 class ConfigLoader:
@@ -410,6 +429,19 @@ class ConfigLoader:
                 tool_audit_log=analysis_data.get("tool_audit_log", ""),
             )
 
+            reporting_data = raw_config.get("reporting", {}) or {}
+            semantic_dedup_data = reporting_data.get("semantic_dedup", {}) or {}
+            reporting_config = ReportingConfig(
+                semantic_dedup=SemanticDedupConfig(
+                    enabled=semantic_dedup_data.get("enabled", True),
+                    llm_enabled=semantic_dedup_data.get("llm_enabled", True),
+                    llm_confidence_threshold=float(
+                        semantic_dedup_data.get("llm_confidence_threshold", 0.85)
+                    ),
+                    max_cluster_size=int(semantic_dedup_data.get("max_cluster_size", 8)),
+                )
+            )
+
             # Project config
             project_data = raw_config.get("project", {})
             if not project_data:
@@ -484,6 +516,7 @@ class ConfigLoader:
                 indexing=indexing_config,
                 analysis=analysis_config,
                 project=project_config,
+                reporting=reporting_config,
             )
 
         except KeyError as e:
