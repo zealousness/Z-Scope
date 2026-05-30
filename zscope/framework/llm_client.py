@@ -3,12 +3,16 @@ Enhanced LLM client with model fallback support.
 """
 
 import ast
+from collections import deque
+from dataclasses import dataclass, field
+from email.utils import parsedate_to_datetime
 import random
 import re
 import json
 import logging
+import threading
 import time
-from typing import Any, Callable, Dict, Iterable, List, Optional, cast
+from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Sequence, Union, cast
 
 import requests
 
@@ -16,6 +20,14 @@ from ..common.utils import extract_json_blocks
 from .conversation_recorder import ConversationSession, get_conversation_recorder
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _BaseUrlState:
+    url: str
+    requests_started: Deque[float] = field(default_factory=deque)
+    in_flight: int = 0
+    cooldown_until: float = 0.0
 
 
 class LLMClient:
@@ -74,28 +86,33 @@ class LLMClient:
     def __init__(
         self,
         api_key: str,
-        base_url: str,
+        base_url: Union[str, Sequence[str]],
         models: List[str],
         timeout: int = 120,
         max_retries: int = 2,
-        max_tokens: int = 4096
+        max_tokens: int = 4096,
+        base_url_rate_limit_per_minute: int = 0,
     ):
         """
         Initialize LLM client.
         
         Args:
             api_key: API key
-            base_url: API base URL
+            base_url: API base URL or ordered list of API base URLs
             models: List of model names in order of priority
             timeout: Request timeout in seconds
             max_retries: Retries per model
         """
         self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
+        self.base_urls = self._normalize_base_urls(base_url)
+        self.base_url = self.base_urls[0]
         self.models = models
         self.timeout = timeout
         self.max_retries = max_retries
         self.max_tokens = max_tokens
+        self.base_url_rate_limit_per_minute = max(0, int(base_url_rate_limit_per_minute or 0))
+        self._base_url_states = [_BaseUrlState(url=url) for url in self.base_urls]
+        self._base_url_lock = threading.Lock()
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -103,6 +120,104 @@ class LLMClient:
                 "Content-Type": "application/json",
             }
         )
+
+    @staticmethod
+    def _normalize_base_urls(base_url: Union[str, Sequence[str]]) -> List[str]:
+        if isinstance(base_url, str):
+            candidates: Sequence[Any] = [base_url]
+        else:
+            candidates = base_url
+
+        urls: List[str] = []
+        for candidate in candidates:
+            cleaned = str(candidate).strip().rstrip("/")
+            if cleaned and cleaned not in urls:
+                urls.append(cleaned)
+        if not urls:
+            raise ValueError("At least one LLM base_url must be configured.")
+        return urls
+
+    @staticmethod
+    def _chat_completion_url(base_url: str) -> str:
+        if "/chat/completions" in base_url:
+            return base_url
+        return f"{base_url}/chat/completions"
+
+    def _select_base_url(self) -> _BaseUrlState:
+        while True:
+            now = time.monotonic()
+            with self._base_url_lock:
+                for state in self._base_url_states:
+                    self._prune_recent_requests(state, now)
+
+                candidates = [
+                    state
+                    for state in self._base_url_states
+                    if state.cooldown_until <= now and self._has_minute_capacity(state)
+                ]
+                if candidates:
+                    selected = min(
+                        candidates,
+                        key=lambda state: (len(state.requests_started), state.in_flight),
+                    )
+                    selected.requests_started.append(now)
+                    selected.in_flight += 1
+                    return selected
+
+                wait_until = min(
+                    self._next_available_at(state, now) for state in self._base_url_states
+                )
+
+            wait_time = max(0.05, min(wait_until - now, 10.0))
+            logger.warning(
+                "All LLM base_urls are at capacity or cooling down; waiting %.1fs...",
+                wait_time,
+            )
+            time.sleep(wait_time)
+
+    def _release_base_url(self, state: _BaseUrlState) -> None:
+        with self._base_url_lock:
+            state.in_flight = max(0, state.in_flight - 1)
+
+    def _mark_base_url_cooldown(self, state: _BaseUrlState, seconds: float) -> None:
+        if seconds <= 0:
+            return
+        until = time.monotonic() + seconds
+        with self._base_url_lock:
+            state.cooldown_until = max(state.cooldown_until, until)
+
+    def _prune_recent_requests(self, state: _BaseUrlState, now: float) -> None:
+        while state.requests_started and now - state.requests_started[0] >= 60.0:
+            state.requests_started.popleft()
+
+    def _has_minute_capacity(self, state: _BaseUrlState) -> bool:
+        if self.base_url_rate_limit_per_minute <= 0:
+            return True
+        return len(state.requests_started) < self.base_url_rate_limit_per_minute
+
+    def _next_available_at(self, state: _BaseUrlState, now: float) -> float:
+        available_at = max(state.cooldown_until, now)
+        if (
+            self.base_url_rate_limit_per_minute > 0
+            and len(state.requests_started) >= self.base_url_rate_limit_per_minute
+        ):
+            available_at = max(available_at, state.requests_started[0] + 60.0)
+        return available_at
+
+    @staticmethod
+    def _retry_after_seconds(response: requests.Response) -> Optional[float]:
+        retry_after = response.headers.get("Retry-After")
+        if not retry_after:
+            return None
+        try:
+            return max(0.0, float(retry_after))
+        except ValueError:
+            pass
+        try:
+            retry_at = parsedate_to_datetime(retry_after)
+            return max(0.0, retry_at.timestamp() - time.time())
+        except (TypeError, ValueError, OverflowError):
+            return None
 
     def chat_completion(
         self,
@@ -142,11 +257,11 @@ class LLMClient:
             # Force streaming to bypass middle-proxy timeouts (e.g. 504 on 120s limit)
             payload["stream"] = True
 
-            for attempt in range(self.max_retries + 1):
+            total_attempts = (self.max_retries + 1) * max(1, len(self._base_url_states))
+            for attempt in range(total_attempts):
+                endpoint = self._select_base_url()
                 try:
-                    url = self.base_url
-                    if "/chat/completions" not in url:
-                        url = f"{self.base_url}/chat/completions"
+                    url = self._chat_completion_url(endpoint.url)
                     
                     response = self.session.post(
                         url, json=payload, timeout=self.timeout, stream=True
@@ -197,13 +312,25 @@ class LLMClient:
                         }
                     
                     error_msg = f"HTTP {response.status_code}: {response.text}"
-                    logger.warning(f"Model {model} failed (attempt {attempt + 1}): {error_msg}")
+                    logger.warning(
+                        "Model %s via %s failed (attempt %d/%d): %s",
+                        model,
+                        endpoint.url,
+                        attempt + 1,
+                        total_attempts,
+                        error_msg,
+                    )
                     
                     if response.status_code >= 500 or response.status_code == 429:
-                        # Capped exponential backoff with jitter
-                        wait_time = min(2**attempt, 10) + random.uniform(0, 3)
-                        logger.warning(f"Rate limited or server error, waiting {wait_time:.1f}s...")
-                        time.sleep(wait_time)
+                        retry_after = self._retry_after_seconds(response)
+                        wait_time = retry_after or min(2**attempt, 10) + random.uniform(0, 3)
+                        self._mark_base_url_cooldown(endpoint, wait_time)
+                        logger.warning(
+                            "Rate limited or server error on %s; cooling it down for %.1fs...",
+                            endpoint.url,
+                            wait_time,
+                        )
+                        last_error = error_msg
                         continue
                     else:
                         last_error = error_msg
@@ -211,14 +338,32 @@ class LLMClient:
                         
                 except Exception as e:
                     wait_time = min(2**attempt, 10) + random.uniform(0, 3)
-                    is_last = attempt >= self.max_retries
+                    self._mark_base_url_cooldown(endpoint, wait_time)
+                    is_last = attempt >= total_attempts - 1
                     if is_last:
-                        logger.warning(f"Model {model} request error (attempt {attempt + 1}/{self.max_retries + 1}, final): {e}")
+                        logger.warning(
+                            "Model %s via %s request error (attempt %d/%d, final): %s",
+                            model,
+                            endpoint.url,
+                            attempt + 1,
+                            total_attempts,
+                            e,
+                        )
                     else:
-                        logger.warning(f"Model {model} request error (attempt {attempt + 1}/{self.max_retries + 1}, retrying in {wait_time:.1f}s): {e}")
+                        logger.warning(
+                            "Model %s via %s request error "
+                            "(attempt %d/%d, retrying after %.1fs): %s",
+                            model,
+                            endpoint.url,
+                            attempt + 1,
+                            total_attempts,
+                            wait_time,
+                            e,
+                        )
                     last_error = str(e)
-                    time.sleep(wait_time)
                     continue
+                finally:
+                    self._release_base_url(endpoint)
             
             logger.info(f"Falling back from model {model}...")
             

@@ -137,6 +137,11 @@ indexing:                                  # 代码索引和确定性后端配�
   svf_fallback: full                       # full | skip；entry scope 无法安全裁剪时的回退策略
   svf_always_include: []                   # 可选：无论入口可达性如何都纳入的源码目录/路径片段
   svf_symbol_closure: true                 # 是否用 llvm-nm 根据 undefined symbol 自动补齐依赖 .bc
+  # svf_exclusive_pools:                   # 可选：互斥包池，避免同名强符号被链接进同一个 SVF bitcode
+  #   - name: normal
+  #     paths: ["src/pool/normal/**"]
+  #   - name: compat
+  #     paths: ["src/pool/compat/**"]
 
 analysis:                                  # 分析流程和缓存行为配置
   max_recursion_depth: 3                   # 函数调用递归分析最大深度

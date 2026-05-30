@@ -150,6 +150,7 @@ class CodeIndex:
                 svf_fallback=cfg.svf_fallback if cfg else "full",
                 svf_always_include=cfg.svf_always_include if cfg else [],
                 svf_symbol_closure=cfg.svf_symbol_closure if cfg else True,
+                svf_exclusive_pools=cfg.svf_exclusive_pools if cfg else [],
             )
             cc_path = str(self.compile_commands_path) if self.compile_commands_path else None
             ok = ub.initialize(

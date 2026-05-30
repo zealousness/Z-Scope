@@ -20,6 +20,33 @@ yaml: Any = _yaml
 logger = logging.getLogger(__name__)
 
 
+def _normalize_llm_base_urls(value: Any, default: str = "https://api.openai.com/v1") -> List[str]:
+    if value is None:
+        raw_items: List[Any] = [default]
+    elif isinstance(value, str):
+        raw_items = [value]
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = [value]
+
+    urls: List[str] = []
+    for item in raw_items:
+        if isinstance(item, dict):
+            item = item.get("url") or item.get("base_url")
+        cleaned = str(item or "").strip().rstrip("/")
+        if cleaned and cleaned not in urls:
+            urls.append(cleaned)
+    return urls or [default.rstrip("/")]
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class LLMConfig:
     """Configuration for LLM client."""
@@ -27,11 +54,20 @@ class LLMConfig:
     provider: str = "openai"  # 预留字段，当前未在运行时使用
     api_key: str = ""
     base_url: str = "https://api.openai.com/v1"
+    base_urls: List[str] = field(default_factory=list)
+    base_url_rate_limit_per_minute: int = 0
     models: List[str] = field(default_factory=list)
     temperature: float = 0.1
     max_tokens: int = 4096
     timeout: int = 120
     max_retries: int = 2
+
+    def __post_init__(self) -> None:
+        self.base_urls = _normalize_llm_base_urls(self.base_urls or self.base_url)
+        self.base_url = self.base_urls[0]
+        self.base_url_rate_limit_per_minute = max(
+            0, _safe_int(self.base_url_rate_limit_per_minute, 0)
+        )
 
 
 @dataclass
@@ -89,6 +125,7 @@ class IndexingConfig:
     svf_fallback: str = "full"  # full | skip
     svf_always_include: List[str] = field(default_factory=list)
     svf_symbol_closure: bool = True
+    svf_exclusive_pools: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -323,10 +360,26 @@ class ConfigLoader:
                 if not models and llm_data.get("model"):
                     models = [llm_data.get("model")]
                 if models:
+                    base_urls = _normalize_llm_base_urls(
+                        llm_data.get(
+                            "base_urls",
+                            llm_data.get("base_url", "https://api.openai.com/v1"),
+                        )
+                    )
                     default_llm_config = LLMConfig(
                         provider=llm_data.get("provider", "openai"),
                         api_key=llm_data.get("api_key", ""),
-                        base_url=llm_data.get("base_url", "https://api.openai.com/v1"),
+                        base_url=base_urls[0],
+                        base_urls=base_urls,
+                        base_url_rate_limit_per_minute=_safe_int(
+                            llm_data.get(
+                                "base_url_rate_limit_per_minute",
+                                llm_data.get(
+                                    "base_url_rpm",
+                                    llm_data.get("requests_per_minute", 0),
+                                ),
+                            )
+                        ),
                         models=models,
                         temperature=llm_data.get("temperature", 0.1),
                         max_tokens=llm_data.get("max_tokens", 4096),
@@ -343,10 +396,26 @@ class ConfigLoader:
                 if not models:
                     logger.warning(f"Skipping LLM config '{name}' due to missing models")
                     continue
+                base_urls = _normalize_llm_base_urls(
+                    data.get(
+                        "base_urls",
+                        data.get("base_url", "https://api.openai.com/v1"),
+                    )
+                )
                 cfg = LLMConfig(
                     provider=data.get("provider", "openai"),
                     api_key=data.get("api_key", ""),
-                    base_url=data.get("base_url", "https://api.openai.com/v1"),
+                    base_url=base_urls[0],
+                    base_urls=base_urls,
+                    base_url_rate_limit_per_minute=_safe_int(
+                        data.get(
+                            "base_url_rate_limit_per_minute",
+                            data.get(
+                                "base_url_rpm",
+                                data.get("requests_per_minute", 0),
+                            ),
+                        )
+                    ),
                     models=models,
                     temperature=data.get("temperature", 0.1),
                     max_tokens=data.get("max_tokens", 4096),
@@ -391,6 +460,7 @@ class ConfigLoader:
                 svf_fallback=indexing_data.get("svf_fallback", "full"),
                 svf_always_include=indexing_data.get("svf_always_include", []) or [],
                 svf_symbol_closure=indexing_data.get("svf_symbol_closure", True),
+                svf_exclusive_pools=indexing_data.get("svf_exclusive_pools", []) or [],
             )
 
             # Analysis config
