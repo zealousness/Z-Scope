@@ -66,6 +66,10 @@ class DiffImpactPlan:
 
     component: str
     repo_root: str
+    git_root: str
+    source_root: str
+    project_root: str
+    requested_repo_root: str
     base_ref: str
     head_ref: str
     entries: List[FunctionEntry]
@@ -80,6 +84,10 @@ class DiffImpactPlan:
             "diff_impact": {
                 "component": self.component,
                 "repo_root": self.repo_root,
+                "git_root": self.git_root,
+                "source_root": self.source_root,
+                "project_root": self.project_root,
+                "requested_repo_root": self.requested_repo_root,
                 "base_ref": self.base_ref,
                 "head_ref": self.head_ref,
                 "changed_files": self.changed_files,
@@ -117,7 +125,19 @@ class DiffImpactPlanner:
         synthetic_depth_threshold: int = 3,
     ) -> None:
         self.code_index = code_index
-        self.repo_root = Path(repo_root).resolve()
+        self.requested_repo_root = Path(repo_root).resolve()
+        self.source_root = Path(
+            getattr(code_index, "source_root", None) or self.requested_repo_root
+        ).resolve()
+        self.project_root = Path(
+            getattr(code_index, "project_root", None) or self.source_root
+        ).resolve()
+        self.git_root = (
+            self._detect_git_root(self.requested_repo_root)
+            or self._detect_git_root(self.source_root)
+            or self.requested_repo_root
+        )
+        self.repo_root = self.git_root
         self.base_ref = base_ref
         self.head_ref = head_ref or "HEAD"
         self.component = component or "default"
@@ -125,12 +145,11 @@ class DiffImpactPlanner:
         self.max_call_depth = max_call_depth
         self.caller_limit = caller_limit
         self.synthetic_depth_threshold = synthetic_depth_threshold
-        self.git_root = self._detect_git_root(self.repo_root)
         self._entry_discovery = EntryDiscovery(
             code_index,
             header_files=self.header_files or None,
-            project_root=getattr(code_index, "project_root", None),
-            source_root=getattr(code_index, "source_root", None),
+            project_root=self.project_root,
+            source_root=self.source_root,
         )
         self._header_declarations: Optional[Dict[str, List[Dict[str, Any]]]] = None
 
@@ -147,11 +166,16 @@ class DiffImpactPlanner:
             notes.append("No new-version source line changes were found in the requested diff.")
         if changed_ranges and not changed_functions:
             notes.append("Diff contained source changes, but no changed functions were mapped.")
+            notes.extend(self._changed_function_mapping_diagnostics(changed_files))
         if not entries and changed_functions:
             notes.append("Changed functions were found, but no scan entries could be generated.")
         return DiffImpactPlan(
             component=self.component,
             repo_root=str(self.repo_root),
+            git_root=str(self.git_root),
+            source_root=str(self.source_root),
+            project_root=str(self.project_root),
+            requested_repo_root=str(self.requested_repo_root),
             base_ref=self.base_ref,
             head_ref=self.head_ref,
             entries=entries,
@@ -189,7 +213,7 @@ class DiffImpactPlanner:
         cmd = [
             "git",
             "-C",
-            str(self.repo_root),
+            str(self.git_root),
             "diff",
             "--unified=0",
             "--find-renames",
@@ -201,10 +225,10 @@ class DiffImpactPlanner:
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
         except OSError as exc:
-            raise RuntimeError(f"Failed to run git diff in {self.repo_root}: {exc}") from exc
+            raise RuntimeError(f"Failed to run git diff in {self.git_root}: {exc}") from exc
         if proc.returncode != 0:
             stderr = proc.stderr.strip() or proc.stdout.strip()
-            raise RuntimeError(f"git diff failed in {self.repo_root}: {stderr}")
+            raise RuntimeError(f"git diff failed in {self.git_root}: {stderr}")
         return self._parse_git_diff(proc.stdout)
 
     @staticmethod
@@ -517,6 +541,10 @@ class DiffImpactPlanner:
                 "mode": "diff_impact",
                 "component": self.component,
                 "repo_root": str(self.repo_root),
+                "git_root": str(self.git_root),
+                "source_root": str(self.source_root),
+                "project_root": str(self.project_root),
+                "requested_repo_root": str(self.requested_repo_root),
                 "base_ref": self.base_ref,
                 "head_ref": self.head_ref,
                 "entry_function": function_name,
@@ -637,36 +665,53 @@ class DiffImpactPlanner:
         return declarations[0] if declarations else None
 
     def _resolve_indexed_file(self, file_path: str) -> Path:
+        resolved = self._resolve_existing_candidate_file(file_path)
+        if resolved:
+            return resolved
         resolver = getattr(self.code_index, "_resolve_file_path", None)
         if callable(resolver):
-            return Path(resolver(file_path)).resolve()
+            resolved = Path(resolver(file_path)).resolve()
+            if resolved.exists():
+                return resolved
         return self._resolve_candidate_file(file_path)
 
     def _resolve_candidate_file(self, file_path: str) -> Path:
+        resolved = self._resolve_existing_candidate_file(file_path)
+        if resolved:
+            return resolved
+        candidates = self._candidate_files(file_path)
+        if candidates:
+            return candidates[0]
+        return (self.repo_root / file_path).resolve()
+
+    def _resolve_existing_candidate_file(self, file_path: str) -> Optional[Path]:
+        for candidate in self._candidate_files(file_path):
+            if candidate.exists():
+                return candidate
+        return None
+
+    def _candidate_files(self, file_path: str) -> List[Path]:
         path = Path(file_path)
         if path.is_absolute():
-            return path.resolve()
-        for base in (
-            getattr(self.code_index, "source_root", None),
-            getattr(self.code_index, "project_root", None),
-            self.repo_root,
-        ):
-            if base is None:
+            return [path.resolve()]
+
+        candidates: List[Path] = []
+        seen: set[str] = set()
+        for base in self._path_roots():
+            candidate = (base / path).resolve()
+            key = self._abs_key(candidate)
+            if key in seen:
                 continue
-            candidate = Path(base) / path
-            if candidate.exists():
-                return candidate.resolve()
-        return (self.repo_root / path).resolve()
+            candidates.append(candidate)
+            seen.add(key)
+        return candidates
 
     def _diff_file_abs_keys(self, file_path: str) -> List[str]:
-        path = Path(file_path)
-        if path.is_absolute():
-            return [self._abs_key(path)]
-
         keys: List[str] = []
         seen: set[str] = set()
-        for base in self._diff_file_roots():
-            candidate = (base / path).resolve()
+        for candidate in self._candidate_files(file_path):
+            if not candidate.exists():
+                continue
             key = self._abs_key(candidate)
             if key in seen:
                 continue
@@ -674,14 +719,16 @@ class DiffImpactPlanner:
             seen.add(key)
         return keys
 
-    def _diff_file_roots(self) -> List[Path]:
+    def _path_roots(self) -> List[Path]:
         roots: List[Path] = []
         seen: set[str] = set()
+        source_parent = self.source_root.parent if self.source_root else None
         for base in (
             self.git_root,
-            self.repo_root,
-            getattr(self.code_index, "source_root", None),
-            getattr(self.code_index, "project_root", None),
+            self.source_root,
+            self.project_root,
+            source_parent,
+            self.requested_repo_root,
         ):
             if base is None:
                 continue
@@ -693,20 +740,55 @@ class DiffImpactPlanner:
             seen.add(key)
         return roots
 
+    def _changed_function_mapping_diagnostics(self, changed_files: Sequence[str]) -> List[str]:
+        notes = [
+            "Diff path diagnostics: "
+            f"git_root={self.git_root}, "
+            f"source_root={self.source_root}, "
+            f"project_root={self.project_root}, "
+            f"requested_repo_root={self.requested_repo_root}."
+        ]
+
+        path_notes: List[str] = []
+        for file_path in list(changed_files)[:5]:
+            candidates = [
+                f"{candidate} exists={str(candidate.exists()).lower()}"
+                for candidate in self._candidate_files(file_path)[:5]
+            ]
+            path_notes.append(f"{file_path} -> [{'; '.join(candidates) or 'no candidates'}]")
+        if path_notes:
+            notes.append("Changed file candidate paths: " + " | ".join(path_notes))
+
+        samples = self._indexed_function_file_samples(limit=8)
+        if samples:
+            notes.append("Indexed function file samples: " + ", ".join(samples))
+        else:
+            notes.append("Indexed function file samples: none.")
+        return notes
+
+    def _indexed_function_file_samples(self, limit: int = 8) -> List[str]:
+        samples: List[str] = []
+        seen: set[str] = set()
+        for _name, info in self._iter_indexed_functions():
+            file_path = str(info.get("file") or "")
+            if not file_path or file_path in seen:
+                continue
+            samples.append(file_path)
+            seen.add(file_path)
+            if len(samples) >= limit:
+                break
+        return samples
+
     def _normalize_file(self, file_path: Path) -> str:
-        source_root = getattr(self.code_index, "source_root", None)
-        project_root = getattr(self.code_index, "project_root", None)
-        if source_root is not None:
-            try:
-                return normalize_path(file_path, Path(source_root))
-            except Exception:
-                pass
-        if project_root is not None:
-            try:
-                return normalize_path(file_path, Path(project_root))
-            except Exception:
-                pass
-        return normalize_path(file_path, self.repo_root)
+        try:
+            return normalize_path(file_path, self.source_root).replace("\\", "/")
+        except Exception:
+            pass
+        try:
+            return normalize_path(file_path, self.project_root).replace("\\", "/")
+        except Exception:
+            pass
+        return normalize_path(file_path, self.repo_root).replace("\\", "/")
 
     @staticmethod
     def _abs_key(path: Path) -> str:

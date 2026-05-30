@@ -33,6 +33,12 @@ from ..orchestration.scan_session import ScanSessionRunner
 @click.option("--discover-entries", is_flag=True, default=False, help="Discover public API, communication, thread, and other input entries before scanning.")
 @click.option("--diff-base", default=None, help="Base git ref for diff impact mode.")
 @click.option("--diff-head", default="HEAD", show_default=True, help="Head git ref for diff impact mode.")
+@click.option(
+    "--diff-repo-root",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+    default=None,
+    help="Optional git worktree root for diff impact mode. Defaults to project.source_root auto-detection.",
+)
 @click.option("--infer-user-config", is_flag=True, default=False, help="Infer/update the human-editable user_config.xlsx and exit.")
 @click.option("--mcp-stdio", is_flag=True, default=False, help="Run Z-SCOPE local MCP server over stdio.")
 @click.option("--mcp-http", is_flag=True, default=False, help="Run experimental remote MCP server over Streamable HTTP.")
@@ -56,6 +62,7 @@ def main(
     discover_entries: bool,
     diff_base: Optional[str],
     diff_head: str,
+    diff_repo_root: Optional[Path],
     infer_user_config: bool,
     mcp_stdio: bool,
     mcp_http: bool,
@@ -340,7 +347,7 @@ def main(
             discover_entries=discover_entries,
             diff_base=diff_base,
             diff_head=diff_head,
-            diff_repo_root=zscope_config.project.source_root,
+            diff_repo_root=diff_repo_root,
             emit=click.echo,
         )
         session_result = session_runner.run()
