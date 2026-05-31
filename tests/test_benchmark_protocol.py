@@ -6,6 +6,9 @@ from pathlib import Path
 from scripts import external_benchmark
 from zscope.benchmarking.protocol import (
     CONDITION_CANDIDATES,
+    FP_AUDIT_DUPLICATE_OF_GT,
+    FP_AUDIT_FALSE_POSITIVE_SUPPRESS,
+    FP_AUDIT_TRUE_EXTRA_ADD_GT,
     SCHEMA_VERSION,
     aggregate_trial_summaries,
     build_trial_summary,
@@ -13,6 +16,7 @@ from zscope.benchmarking.protocol import (
     issue_identity,
     issue_identity_record,
     issue_matches,
+    classify_false_positive_record,
     score_report,
     score_report_views,
 )
@@ -218,6 +222,33 @@ def test_score_report_classifies_duplicate_of_matched_separately() -> None:
     assert scored["false_positives"] == 0
     assert scored["duplicate_of_matched_count"] == 1
     assert raw_scored["false_positives"] == 1
+    assert scored["false_positive_audit"]["counts"][FP_AUDIT_DUPLICATE_OF_GT] == 1
+
+
+def test_false_positive_audit_classifies_suppress_duplicate_and_true_extra() -> None:
+    suppress = classify_false_positive_record(
+        {
+            "identity": "v1|api_contract_violation|src/main.c|td_query_status|audit_observation",
+            "dedup_key": "api_contract_violation|src/main.c|613|return status",
+        }
+    )
+    duplicate = classify_false_positive_record(
+        {
+            "identity": "v1|insufficient_validation|src/executor.c|_executor_validate_command|verified_vulnerability|task command",
+            "dedup_key": "insufficient_validation|src/executor.c|207|system(full_command)",
+        }
+    )
+    true_extra = classify_false_positive_record(
+        {
+            "identity": "v1|busy_wait_loop|src/network.c|_net_send_data|needs_review|send returns EAGAIN forever",
+            "dedup_key": "busy_wait_loop|src/network.c|104|send loop",
+            "candidate_source": "needs_review",
+        }
+    )
+
+    assert suppress["fp_audit_classification"] == FP_AUDIT_FALSE_POSITIVE_SUPPRESS
+    assert duplicate["fp_audit_classification"] == FP_AUDIT_DUPLICATE_OF_GT
+    assert true_extra["fp_audit_classification"] == FP_AUDIT_TRUE_EXTRA_ADD_GT
 
 
 def test_issue_matches_additional_function_and_location_anchor() -> None:

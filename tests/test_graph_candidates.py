@@ -24,8 +24,8 @@ def test_graph_candidates_cover_cross_function_protocols() -> None:
             "_plugin_unregister",
             "td_cleanup",
             "td_init",
-            "_lifecycle_register_guarded_subscription",
-            "_lifecycle_unregister_guarded_subscription",
+            "_lifecycle_register_topic_subscription",
+            "_lifecycle_unregister_topic_subscription",
             "_lifecycle_attach_proc_node",
             "_lifecycle_delete_os_node",
         ]
@@ -92,6 +92,70 @@ def test_graph_candidates_cover_liveness_and_lock_order_shapes() -> None:
     cascade = timer["evidence_pack"]["cascade_wait"]
     assert cascade["holder"]["function"] == "_lifecycle_close_pipe"
     assert cascade["scheduler_holder"]["function"] == "_lifecycle_dispatch_pipe_tick"
+
+
+def test_graph_candidates_cover_issue41_42_system_protocol_shapes() -> None:
+    index = _range_index()
+    generator = GraphCandidateGenerator(index, _range_semantics())
+    issues = generator.generate_for_functions(
+        [
+            "_peer_send_control_reply",
+            "_peer_bridge_descriptor",
+            "_runtime_release_packet_pool",
+            "_runtime_read_timer_ticks",
+            "_runtime_capture_signal_stack",
+            "_runtime_rebuild_available_list",
+            "_runtime_register_pool_ops",
+            "_runtime_schedule_rcu_release",
+            "_runtime_release_hash_node",
+            "_runtime_make_shared_key",
+            "_runtime_insert_policy_node",
+            "_peer_route_protocol_context",
+        ]
+    )
+
+    rules = {str(issue.get("rule")) for issue in issues}
+    assert "peer_write_without_sigpipe_handling" in rules
+    assert "encoded_or_reliable_fd_passed_to_raw_fd_contract" in rules
+    assert "destroy_shared_pool_while_active_tasks_remain" in rules
+    assert "unchecked_param_indexes_fixed_global_array" in rules
+    assert "signal_path_mutates_shared_state_or_logs" in rules
+    assert "caller_limit_indexes_fixed_local_array" in rules
+    assert "global_registration_slot_checked_before_lock" in rules
+    assert "mutable_global_mode_drives_callback_without_lock" in rules
+    assert "callback_allocator_pair_not_enforced" in rules
+    assert "path_state_checked_separately_from_key_generation" in rules
+    assert "unchecked_ownership_transfer_return_loses_node" in rules
+    assert "protocol_mismatch_accepted_under_non_strict_auth" in rules
+
+    premature = next(
+        issue
+        for issue in issues
+        if issue.get("rule") == "destroy_shared_pool_while_active_tasks_remain"
+    )
+    assert "published to shared/global state" in "\n".join(premature["positive_evidence"])
+
+    bridge_rules = {
+        issue.get("rule")
+        for issue in issues
+        if issue.get("function") == "_peer_bridge_descriptor"
+    }
+    assert "unchecked_param_indexes_fixed_global_array" not in bridge_rules
+
+
+def test_graph_candidates_lift_callee_key_generation_race() -> None:
+    index = _range_index()
+    generator = GraphCandidateGenerator(index, _range_semantics())
+    issues = generator.generate_for_functions(["_runtime_shutdown_local_session"])
+
+    lifted = next(
+        issue
+        for issue in issues
+        if issue.get("rule") == "callee_path_state_checked_separately_from_key_generation"
+    )
+    assert lifted["function"] == "_runtime_shutdown_local_session"
+    assert "_runtime_make_shared_key" in lifted["source"]
+    assert "_runtime_make_shared_key" in lifted["sink"]
 
 
 def _function_view(generator: GraphCandidateGenerator, name: str, code: str) -> FunctionView:

@@ -541,6 +541,30 @@ def test_clang_ast_cfg_detects_range_unified_missed_patterns() -> None:
         assert expected_rule in rules
 
 
+def test_clang_ast_cfg_detects_unchecked_param_global_array_index() -> None:
+    vulnerable = """
+10 | uint64_t demo(uint32_t lcore_id) {
+11 |     RuntimeTimerControl* ctrl = g_runtime_timer_ctrl[lcore_id];
+12 |     return ctrl ? ctrl->ticks : 0;
+13 | }
+"""
+    guarded = """
+20 | int demo(int reliable_fd) {
+21 |     if (!_peer_is_inter_fd(reliable_fd)) {
+22 |         return -1;
+23 |     }
+24 |     g_peer_descriptor_slots[reliable_fd].fd = reliable_fd;
+25 |     return 0;
+26 | }
+"""
+
+    vulnerable_rules = {issue["rule"] for issue in _rules(vulnerable)}
+    guarded_rules = {issue["rule"] for issue in _rules(guarded)}
+
+    assert "clang_cfg_unchecked_param_indexes_fixed_global_array" in vulnerable_rules
+    assert "clang_cfg_unchecked_param_indexes_fixed_global_array" not in guarded_rules
+
+
 def test_clang_ast_cfg_detects_unchecked_strchr_result() -> None:
     code = """
 90 | char* demo(const char* msg) {

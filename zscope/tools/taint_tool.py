@@ -1,7 +1,9 @@
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, TYPE_CHECKING
 from ..framework.base import BaseTool
-from ..retrieval.code_index import CodeIndex
+
+if TYPE_CHECKING:
+    from ..retrieval.code_index import CodeIndex
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +13,7 @@ class FollowTaintTool(BaseTool):
     Requires an underlying graph backend like SVF or Joern.
     """
 
-    def __init__(self, code_index: CodeIndex):
+    def __init__(self, code_index: "CodeIndex"):
         super().__init__(
             name="follow_taint",
             description="Follows the data flow (taint) of a specific variable backward or forward across function calls."

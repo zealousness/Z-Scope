@@ -99,6 +99,19 @@ def test_default_svf_scope_uses_active_entries(tmp_path: Path) -> None:
     assert captured["entries"] == ["api_b"]
 
 
+def test_interrupted_entry_names_are_missing_result_entries(tmp_path: Path) -> None:
+    runner = ScanSessionRunner(_config(tmp_path), resume=False)
+    entries = [
+        FunctionEntry("api_a"),
+        FunctionEntry("api_b"),
+        FunctionEntry("api_c", file_path="src/api.c"),
+    ]
+
+    missing = runner._interrupted_entry_names(entries, {"api_a": object()})
+
+    assert missing == ["api_b", "api_c"]
+
+
 def test_resume_with_no_remaining_entries_defers_svf_initialization(
     tmp_path: Path,
     monkeypatch,

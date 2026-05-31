@@ -294,6 +294,7 @@ def test_graph_candidates_detect_self_referential_pipe_log_amplification() -> No
     assert amplification["function"] == "_lifecycle_dump_pipe_chain"
     assert amplification["location"] == "src/lifecycle.c:62"
     assert normalize_issue_category("busy loop from log amplification resource exhaustion") == "log_amplification"
+    assert normalize_issue_category("CWE-479 signal handler shared state race") == "signal_race"
     drifted = {"category": "busy_loop", "description": "self-referential traversal causes log amplification"}
     normalize_issue_fields(drifted)
     assert drifted["normalized_category"] == "log_amplification"
