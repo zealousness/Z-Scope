@@ -12,7 +12,7 @@ from ..retrieval.code_index import CodeIndex
 from ..common.utils import setup_logging
 from ..config.config import ConfigLoader
 from ..framework.conversation_recorder import enable_conversation_recording
-from ..orchestration.scan_session import ScanSessionRunner
+from ..orchestration.scan_session import ScanSessionResult, ScanSessionRunner
 
 @click.command()
 @click.option(
@@ -380,6 +380,8 @@ def main(
             click.echo(f"Total issues found: {session_result.issues_count}")
             click.echo(f"needs_review issues: {session_result.needs_review_count}")
             click.echo(f"Reports saved: {reports}")
+            for line in _batch_interruption_lines(session_result):
+                click.echo(line)
             if export_sarif:
                 click.echo(f"SARIF saved: {export_sarif}")
             if session_result.interrupted:
@@ -417,6 +419,25 @@ def _resolve_user_config_workbook_path(zscope_config) -> Path:
     if raw_path.exists() and raw_path.is_file():
         raise ValueError("analysis.user_config_db must point to an .xlsx workbook or a directory.")
     return raw_path / "user_config.xlsx"
+
+
+def _batch_interruption_lines(session_result: ScanSessionResult) -> list[str]:
+    interrupted_entries = list(getattr(session_result, "interrupted_entries", []) or [])
+    if interrupted_entries:
+        preview_limit = 10
+        preview = ", ".join(interrupted_entries[:preview_limit])
+        if len(interrupted_entries) > preview_limit:
+            preview = f"{preview}, ... (+{len(interrupted_entries) - preview_limit} more)"
+        return [
+            f"Interrupted entries: {len(interrupted_entries)} ({preview})",
+            "Use --resume to continue from the last checkpoint.",
+        ]
+    if getattr(session_result, "interrupted", False):
+        return [
+            "Interrupted entries: unknown (scan stopped before all workers reported status).",
+            "Use --resume to continue from the last checkpoint.",
+        ]
+    return ["Interrupted entries: none."]
 
 
 if __name__ == "__main__":

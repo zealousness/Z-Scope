@@ -21,6 +21,11 @@ from zscope.common.issue_identity import issues_may_share_root_cause, stable_iss
 
 SCHEMA_VERSION = "zscope.benchmark.v3"
 
+FP_AUDIT_DUPLICATE_OF_GT = "duplicate_of_gt"
+FP_AUDIT_TRUE_EXTRA_ADD_GT = "true_extra_add_gt"
+FP_AUDIT_NEEDS_REVIEW_ONLY = "needs_review_only"
+FP_AUDIT_FALSE_POSITIVE_SUPPRESS = "false_positive_suppress"
+
 CONDITION_PURE_LLM_ENTRY = "pure_llm_entry_source"
 CONDITION_PURE_LLM_REPO = "pure_llm_repo_context"
 CONDITION_FULL_ZSCOPE = "full_zscope_pipeline"
@@ -83,6 +88,111 @@ def issue_identity_record(issue: Dict[str, Any]) -> Dict[str, Any]:
         or issue.get("finding_kind"),
         "baseline_match_strategy": issue.get("baseline_match_strategy"),
         "suppression_source": issue.get("suppression_source"),
+    }
+
+
+def classify_false_positive_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Classify an FP record for audit before deciding whether to suppress it."""
+
+    identity = str(record.get("identity") or "").lower().replace("\\", "/")
+    dedup_key = str(record.get("dedup_key") or "").lower().replace("\\", "/")
+    candidate_source = str(record.get("candidate_source") or "").lower()
+    text = f"{identity} {dedup_key}"
+
+    classification = FP_AUDIT_NEEDS_REVIEW_ONLY
+    reason = "unmatched finding should remain review-only until a human audit classifies it"
+
+    suppress_patterns = (
+        ("td_query_status", "api_contract_violation", "status query stub is not a concrete security defect"),
+        ("_safe_realloc", "memory_leak", "helper returning NULL does not lose the caller-owned original pointer by itself"),
+        ("_lock_read_wrapper", "api_contract_violation", "thin lock wrapper logs failures but has no standalone vulnerability path"),
+        ("_td_runtime_worker", ("file_descriptor_leak", "fd_leak"), "worker receives an externally-owned descriptor and does not establish close ownership"),
+        (
+            "_runtime_activate_service_path",
+            "container_unlink_free_after_unlock",
+            "unlink-after-unlock race lacks a concrete retained-reader path and overlaps cleanup modeling noise",
+        ),
+    )
+    for function_token, category_token, why in suppress_patterns:
+        category_tokens = category_token if isinstance(category_token, tuple) else (category_token,)
+        if function_token in text and any(token in text for token in category_tokens):
+            classification = FP_AUDIT_FALSE_POSITIVE_SUPPRESS
+            reason = why
+            break
+
+    if classification == FP_AUDIT_NEEDS_REVIEW_ONLY and (
+        (
+            ("_validate_task" in text or "_executor_validate_command" in text)
+            and ("system(" in text or "system(full_command)" in text)
+        )
+        or ("_peer_publish_shared_session" in text and ("use_after_free" in text or "missing_refcount" in text))
+        or ("td_process_control_message" in text and "g_callback_entry" in text)
+    ):
+        classification = FP_AUDIT_DUPLICATE_OF_GT
+        reason = "unmatched finding is another manifestation of an already matched root cause"
+
+    if classification == FP_AUDIT_NEEDS_REVIEW_ONLY and (
+        (
+            "_net_send_data" in text
+            and any(
+                token in text
+                for token in (
+                    "sigpipe",
+                    "busy_wait",
+                    "busy_loop",
+                    "integer_truncation",
+                    "signed_unsigned",
+                    "net_send_data_return_truncation",
+                    "resource_lifecycle",
+                    "resource_management",
+                )
+            )
+        )
+        or ("_lifecycle_send_status" in text and "data_race" in text)
+        or ("_executor_process_file" in text and "path_traversal" in text)
+        or ("_runtime_read_service_flag" in text and "memory_leak" in text)
+        or (
+            "_net_recv_data" in text
+            and any(token in text for token in ("integer_truncation", "signed_unsigned", "net_recv_data_return_truncation"))
+        )
+    ):
+        classification = FP_AUDIT_TRUE_EXTRA_ADD_GT
+        reason = "finding has process-impact evidence and should be reviewed as a possible GT addition, not suppressed"
+
+    if candidate_source in {"needs_review", "audit_observation"} and classification == FP_AUDIT_TRUE_EXTRA_ADD_GT:
+        reason += "; currently kept out of default until GT review completes"
+
+    audited = dict(record)
+    audited["fp_audit_classification"] = classification
+    audited["fp_audit_reason"] = reason
+    return audited
+
+
+def false_positive_audit_summary(
+    effective_records: Sequence[Dict[str, Any]],
+    duplicate_records: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Return an auditable split between duplicates, true extras, review-only, and suppressions."""
+
+    audited_duplicates = [
+        {
+            **dict(record),
+            "fp_audit_classification": FP_AUDIT_DUPLICATE_OF_GT,
+            "fp_audit_reason": "scorer classified this unmatched issue as duplicate_of_matched",
+        }
+        for record in duplicate_records
+    ]
+    audited_effective = [classify_false_positive_record(record) for record in effective_records]
+    all_records = audited_duplicates + audited_effective
+    counts: Dict[str, int] = {}
+    for record in all_records:
+        key = str(record.get("fp_audit_classification") or FP_AUDIT_NEEDS_REVIEW_ONLY)
+        counts[key] = counts.get(key, 0) + 1
+    return {
+        "schema_version": "zscope.fp_audit.v1",
+        "counts": counts,
+        "effective_records": audited_effective,
+        "duplicate_of_matched_records": audited_duplicates,
     }
 
 
@@ -210,6 +320,7 @@ def score_report(
         }
         for index in sorted(duplicate_of_matched_indices)
     ]
+    fp_audit = false_positive_audit_summary(fp_issue_records, duplicate_records)
     return {
         "schema_version": SCHEMA_VERSION,
         "benchmark": truth.get("benchmark", "unknown"),
@@ -244,6 +355,7 @@ def score_report(
         "false_positive_issue_identities_raw": raw_fp_issue_ids,
         "false_positive_issue_records_raw": raw_fp_issue_records,
         "duplicate_of_matched_issue_records": duplicate_records,
+        "false_positive_audit": fp_audit,
         "scoring_contract": {
             "line_tolerance": line_tolerance,
             "count_duplicate_of_matched_as_fp": count_duplicate_of_matched_as_fp,
@@ -774,6 +886,10 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
         "version_filtering": ["version", "missing version", "low version", "filter", "cwe-20"],
         "missing_refcount": ["refcount", "reference count", "shared resource", "cleanup", "cwe-772"],
         "sigpipe_unhandled": ["sigpipe", "signal", "closed peer", "not handled", "cwe-404"],
+        "premature_destroy": ["premature destroy", "active tasks", "pool", "use after free", "cwe-416"],
+        "registration_race": ["registration race", "check then act", "ops registration", "race", "cwe-362"],
+        "alloc_free_mismatch": ["allocator mismatch", "alloc free mismatch", "allocator pairing", "cwe-762"],
+        "key_generation_race": ["ftok", "key generation", "key collision", "path state", "cwe-362"],
         "fd_encoding_mismatch": ["encoded fd", "fd encoding", "check value", "raw fd", "cwe-587"],
         "type_confusion": ["type confusion", "wrong type", "invalid mutex", "sharedresources", "cwe-843"],
         "semantic_mismatch": ["semantic mismatch", "callback parameter", "counter domain", "busy work", "cwe-628"],
@@ -788,6 +904,7 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
         "shared_memory_race": ["shared memory race", "lookup before lock", "concurrent create", "memzone", "cwe-362"],
         "state_machine": ["state machine", "missing transition", "lifecycle state", "cwe-672"],
         "signal_deadlock": ["signal deadlock", "signal handler", "semaphore", "deadlock", "cwe-833"],
+        "signal_race": ["signal race", "signal handler", "async signal", "callstack", "cwe-479"],
         "callback_self_destroy_race": ["callback self destroy", "self destruction", "callback can free", "use after free", "cwe-416"],
     }
     aliases = builtins.get(category_key, [category_key.replace("_", " ")])

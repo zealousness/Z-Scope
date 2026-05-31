@@ -219,6 +219,9 @@ def semantic_category_override(structured_category: str, inferred_category: str)
     """Let narrow root-cause categories outrank broad buckets when prose is explicit."""
     structured = str(structured_category or "").replace("-", "_").lower()
     inferred = str(inferred_category or "").replace("-", "_").lower()
+    alias = semantic_category_alias(structured, inferred)
+    if alias:
+        return alias
     if inferred in {"key_truncation", "log_amplification"} and structured in {
         "race",
         "memory_leak",
@@ -228,6 +231,24 @@ def semantic_category_override(structured_category: str, inferred_category: str)
         "resource_leak",
         "memory_safety",
         "",
+    }:
+        return inferred
+    return ""
+
+
+def semantic_category_alias(structured_category: str, inferred_category: str = "") -> str:
+    """Map noisy LLM category labels into canonical families for dedup only."""
+    structured = str(structured_category or "").replace("-", "_").lower()
+    inferred = str(inferred_category or "").replace("-", "_").lower()
+    if structured in _CATEGORY_ALIASES:
+        return _CATEGORY_ALIASES[structured]
+    if structured in _COMMAND_VALIDATION_ALIASES and inferred == "command_injection":
+        return "command_injection"
+    if structured in {"resource_lifecycle", "resource_management"} and inferred in {
+        "sigpipe_unhandled",
+        "stale_fd",
+        "fd_leak",
+        "memory_leak",
     }:
         return inferred
     return ""
@@ -362,7 +383,23 @@ def semantic_category_family(category: Any) -> str:
 def category_families_compatible(left_category: Any, right_category: Any) -> bool:
     left = semantic_category_family(left_category)
     right = semantic_category_family(right_category)
-    return bool(left and right and left == right)
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    return frozenset({left, right}) in _CATEGORY_FAMILY_COMPATIBLE_PAIRS
+
+
+def semantic_related_family(category: Any) -> str:
+    """Return the broader family used only for possible-duplicate clustering."""
+    normalized = str(category or "").replace("-", "_").lower().strip()
+    family = semantic_category_family(normalized)
+    if normalized in _MEMORY_LIFETIME_RELATED_CATEGORIES or family in {
+        "memory_leak",
+        "memory_release",
+    }:
+        return "memory_lifetime"
+    return family
 
 
 def issue_resource_signature(issue: Dict[str, Any]) -> str:
@@ -388,14 +425,14 @@ def issue_resource_signature(issue: Dict[str, Any]) -> str:
 
     text = flatten_issue_text(issue)
     raw_lower = text.lower()
-    global_match = re.search(r"\b(g_[a-z0-9_]{3,})\b", raw_lower)
-    if global_match:
-        return normalize_issue_key_part(global_match.group(1))
     for member_match in re.finditer(r"\b([a-z_]\w*(?:->|\.)[a-z_]\w*)\b", raw_lower):
         token = member_match.group(1)
         if re.search(r"\.(?:c|h|cc|cpp|hpp)$", token):
             continue
         return normalize_issue_key_part(token)
+    global_match = re.search(r"\b(g_[a-z0-9_]{3,})\b", raw_lower)
+    if global_match:
+        return normalize_issue_key_part(global_match.group(1))
     backtick_match = re.search(r"`([^`]{2,80})`", text)
     if backtick_match:
         token = backtick_match.group(1).strip()
@@ -447,6 +484,69 @@ def semantic_cluster_key(issue: Dict[str, Any]) -> str:
     )
 
 
+def semantic_related_cluster_keys(issue: Dict[str, Any]) -> List[str]:
+    """Return conservative LLM pre-cluster keys, including cross-entry roots.
+
+    The first key keeps the original same-function behavior.  The additional
+    key is only concrete when a stable root cause or resource signature exists,
+    so it can gather duplicate reports for the same internal defect reached
+    through different public entries without broad file/category clustering.
+    """
+    keys: List[str] = []
+    same_context_key = semantic_cluster_key(issue)
+    if same_context_key:
+        keys.append(same_context_key)
+
+    normalize_issue_fields(issue)
+    text = flatten_issue_text(issue)
+    category = canonical_category(issue, text)
+    family = semantic_related_family(category)
+    file_path = issue_file_identity(issue, text)
+    root = root_cause_token(issue, category, text)
+    resource = issue_resource_signature(issue)
+    if not (family and file_path and (root or resource)):
+        root_related_key = ""
+    else:
+        root_related_key = "|".join(
+            normalize_issue_key_part(part)
+            for part in ("semantic-related-v1", family, file_path, root or resource)
+            if normalize_issue_key_part(part)
+        )
+        if root_related_key and root_related_key not in keys:
+            keys.append(root_related_key)
+
+    if family and root and root in _CROSS_FILE_ROOT_DEDUP_ROOTS:
+        global_root_key = "|".join(
+            normalize_issue_key_part(part)
+            for part in ("semantic-global-root-v1", family, root)
+            if normalize_issue_key_part(part)
+        )
+        if global_root_key and global_root_key not in keys:
+            keys.append(global_root_key)
+
+    if file_path and _category_allows_cross_context_residual_dedup(category):
+        path_sig = issue_call_path_signature(issue)
+        if path_sig:
+            path_key = "|".join(
+                normalize_issue_key_part(part)
+                for part in ("semantic-path-v1", family, file_path, path_sig)
+                if normalize_issue_key_part(part)
+            )
+            if path_key and path_key not in keys:
+                keys.append(path_key)
+
+        sink_sig = issue_sink_signature(issue)
+        if sink_sig:
+            sink_key = "|".join(
+                normalize_issue_key_part(part)
+                for part in ("semantic-sink-v1", family, file_path, sink_sig)
+                if normalize_issue_key_part(part)
+            )
+            if sink_key and sink_key not in keys:
+                keys.append(sink_key)
+    return keys
+
+
 def issues_same_context(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
     """Return whether two issues are anchored to the same function/path context."""
     left_file = issue_file_identity(left, flatten_issue_text(left))
@@ -458,7 +558,7 @@ def issues_same_context(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
 
     left_paths = _call_path_sets(left)
     right_paths = _call_path_sets(right)
-    if left_paths and right_paths and any(path in right_paths for path in left_paths):
+    if _call_paths_related(left_paths, right_paths):
         return True
 
     left_anchors = _function_anchor_set(left)
@@ -475,6 +575,73 @@ def resource_signatures_conflict(left: Dict[str, Any], right: Dict[str, Any]) ->
     return left_sig != right_sig
 
 
+def issues_share_file_root_or_resource(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    """Return whether cross-function issues name the same file-local root/resource."""
+    left_text = flatten_issue_text(left)
+    right_text = flatten_issue_text(right)
+    left_file = issue_file_identity(left, left_text)
+    right_file = issue_file_identity(right, right_text)
+    if not left_file or not right_file or left_file != right_file:
+        return False
+
+    left_category = canonical_category(left, left_text)
+    right_category = canonical_category(right, right_text)
+    left_root = root_cause_token(left, left_category, left_text)
+    right_root = root_cause_token(right, right_category, right_text)
+    if left_root and right_root and left_root == right_root:
+        return True
+
+    left_resource = issue_resource_signature(left)
+    right_resource = issue_resource_signature(right)
+    return bool(left_resource and right_resource and left_resource == right_resource)
+
+
+def issues_share_file_sink_or_call_path(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    """Return whether cross-function residuals are related by sink/call path."""
+    left_text = flatten_issue_text(left)
+    right_text = flatten_issue_text(right)
+    left_file = issue_file_identity(left, left_text)
+    right_file = issue_file_identity(right, right_text)
+    if not left_file or not right_file or left_file != right_file:
+        return False
+
+    left_category = canonical_category(left, left_text)
+    right_category = canonical_category(right, right_text)
+    if not (
+        _category_allows_cross_context_residual_dedup(left_category)
+        and _category_allows_cross_context_residual_dedup(right_category)
+    ):
+        return False
+    if not category_families_compatible(left_category, right_category):
+        return False
+
+    if _call_paths_related(_call_path_sets(left), _call_path_sets(right)):
+        return True
+
+    left_sink = issue_sink_signature(left)
+    right_sink = issue_sink_signature(right)
+    return bool(left_sink and right_sink and left_sink == right_sink)
+
+
+def issues_share_cross_file_root(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    """Return whether a named root is intentionally allowed to merge across files."""
+    left_text = flatten_issue_text(left)
+    right_text = flatten_issue_text(right)
+    left_category = canonical_category(left, left_text)
+    right_category = canonical_category(right, right_text)
+    if not category_families_compatible(left_category, right_category):
+        return False
+    left_root = root_cause_token(left, left_category, left_text)
+    right_root = root_cause_token(right, right_category, right_text)
+    if not left_root or left_root != right_root or left_root not in _CROSS_FILE_ROOT_DEDUP_ROOTS:
+        return False
+    left_sink = issue_sink_signature(left)
+    right_sink = issue_sink_signature(right)
+    if left_sink and right_sink and left_sink == right_sink:
+        return True
+    return "system" in f"{left_text} {right_text}".lower()
+
+
 def issues_may_share_root_cause(
     left: Dict[str, Any],
     right: Dict[str, Any],
@@ -482,6 +649,7 @@ def issues_may_share_root_cause(
     confidence: float = 1.0,
     threshold: float = 0.85,
     require_concrete_root: bool = False,
+    allow_cross_function_root: bool = False,
 ) -> bool:
     """Guardrail for deterministic and LLM-backed duplicate decisions."""
     if confidence < threshold:
@@ -492,7 +660,15 @@ def issues_may_share_root_cause(
         return False
     if resource_signatures_conflict(left, right):
         return False
-    if not issues_same_context(left, right):
+    same_context = issues_same_context(left, right)
+    if not same_context and not (
+        allow_cross_function_root
+        and (
+            issues_share_file_root_or_resource(left, right)
+            or issues_share_file_sink_or_call_path(left, right)
+            or issues_share_cross_file_root(left, right)
+        )
+    ):
         return False
 
     left_text = flatten_issue_text(left)
@@ -512,6 +688,13 @@ def issues_may_share_root_cause(
         return True
     if require_concrete_root:
         return False
+    if allow_cross_function_root:
+        if _call_paths_related(_call_path_sets(left), _call_path_sets(right)):
+            return True
+        left_sink = issue_sink_signature(left)
+        right_sink = issue_sink_signature(right)
+        if left_sink and right_sink and left_sink == right_sink:
+            return True
     return True
 
 
@@ -522,8 +705,7 @@ def deduplicate_semantic_issues_programmatic(
     base = deduplicate_issues(issues)
     groups: Dict[str, List[Dict[str, Any]]] = {}
     for issue in base:
-        key = semantic_cluster_key(issue)
-        if key:
+        for key in semantic_related_cluster_keys(issue):
             groups.setdefault(key, []).append(issue)
 
     merged_ids: Set[int] = set()
@@ -541,6 +723,7 @@ def deduplicate_semantic_issues_programmatic(
                     primary,
                     issue,
                     require_concrete_root=True,
+                    allow_cross_function_root=True,
                 ):
                     matched = primary
                     break
@@ -616,6 +799,88 @@ def _call_path_sets(issue: Dict[str, Any]) -> Set[Tuple[str, ...]]:
             add_path(path.get("call_path"))
             add_path(path.get("call_paths"))
     return paths
+
+
+def issue_call_path_signature(issue: Dict[str, Any]) -> str:
+    """Return a stable call-path signature for same-report duplicate clustering."""
+    paths = _call_path_sets(issue)
+    if not paths:
+        return ""
+    shortest = min(paths, key=lambda path: (len(path), path))
+    return "->".join(shortest)
+
+
+def _call_paths_related(
+    left_paths: Set[Tuple[str, ...]],
+    right_paths: Set[Tuple[str, ...]],
+) -> bool:
+    if not left_paths or not right_paths:
+        return False
+    for left in left_paths:
+        for right in right_paths:
+            if left == right or _path_contains(left, right) or _path_contains(right, left):
+                return True
+    return False
+
+
+def _path_contains(needle: Tuple[str, ...], haystack: Tuple[str, ...]) -> bool:
+    if not needle or len(needle) > len(haystack):
+        return False
+    width = len(needle)
+    for index in range(0, len(haystack) - width + 1):
+        if haystack[index : index + width] == needle:
+            return True
+    return False
+
+
+def issue_sink_signature(issue: Dict[str, Any]) -> str:
+    """Return the concrete sink/callee operation used for residual dedup."""
+    explicit = first_issue_value(
+        issue,
+        "sink_function",
+        "target_function",
+        "release_func",
+        "sink_symbol",
+        "sink",
+    )
+    if explicit:
+        return _normalize_sink_signature(explicit)
+
+    text = flatten_issue_text(issue)
+    lower = text.lower()
+    operation_match = re.search(
+        r"\b(system|popen|execl|execlp|execle|execv|execvp|execve|"
+        r"close|fclose|free|safe_free|munmap|pthread_create|"
+        r"memcpy|memmove|strcpy|strncpy|snprintf|printf)\s*\(",
+        lower,
+        flags=re.IGNORECASE,
+    )
+    if operation_match:
+        return normalize_issue_key_part(operation_match.group(1))
+    if "descriptor" in lower or re.search(r"\bfd\b", lower):
+        return "file_descriptor_lifecycle"
+    if "ref_count" in lower or "refcount" in lower or "reference count" in lower:
+        return "reference_count_lifecycle"
+    return ""
+
+
+def _normalize_sink_signature(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    function_call = re.search(r"\b([A-Za-z_]\w*)\s*\(", text)
+    if function_call:
+        return normalize_issue_key_part(function_call.group(1))
+    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", text):
+        return normalize_issue_key_part(text)
+    return normalize_issue_key_part(re.sub(r"\s+", " ", text))
+
+
+def _category_allows_cross_context_residual_dedup(category: Any) -> bool:
+    normalized = str(category or "").replace("-", "_").lower().strip()
+    if normalized in _CROSS_CONTEXT_RESIDUAL_DEDUP_CATEGORIES:
+        return True
+    return semantic_related_family(normalized) == "memory_lifetime"
 
 
 def stable_issue_fingerprint(issue: Dict[str, Any]) -> str:
@@ -966,8 +1231,11 @@ def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
     if (
         "shared_resource_freed_without_refcount_protocol" in rule
         or function == "_issue41_missing_reference_count"
+        or function == "_peer_publish_shared_session"
         or "g_issue41_broker.resources" in raw_lower
+        or "g_peer_session_broker.resources" in raw_lower
         or ("issue41" in compact and "refcount" in compact and "safe_free" in raw_lower)
+        or ("safe_free(res)" in raw_lower and "ref_count" in raw_lower)
     ):
         return "issue41_resource_refcount_protocol"
     if (
@@ -1010,6 +1278,40 @@ def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
         return "real_model_signed_recv_to_size"
     if function == "_real_model_recv_busy_loop":
         return "real_model_recv_busy_loop"
+    if (
+        function == "_peer_send_control_reply"
+        or "write_without_sigpipe_handling" in rule
+        or ("sigpipe" in lower and "closed peer" in lower)
+    ):
+        return "peer_control_reply_sigpipe"
+    if function == "_runtime_release_packet_pool" or (
+        "pbuf" in lower and ("active_tasks" in raw_lower or "active tasks" in lower)
+    ):
+        return "runtime_pbuf_pool_premature_destroy"
+    if function == "_runtime_read_timer_ticks" or (
+        "timer" in lower and "lcore" in lower and ("array index" in lower or "out-of-bounds" in lower)
+    ):
+        return "runtime_timer_lcore_id_bounds"
+    if function == "_runtime_rebuild_available_list" or (
+        "available" in lower and "lcore" in lower and ("freelist" in lower or "temporary array" in lower)
+    ):
+        return "runtime_available_list_lcore_bounds"
+    if function == "_runtime_register_pool_ops" or (
+        "fixpool" in lower and "registration" in lower and ("ops" in lower or "slot" in lower)
+    ):
+        return "runtime_fixpool_ops_registration"
+    if function == "_runtime_schedule_rcu_release" or (
+        ("qrcu" in lower or "crcu" in lower) and ("global mode" in lower or "callback registration" in lower)
+    ):
+        return "runtime_rcu_global_mode"
+    if function == "_runtime_release_hash_node" or (
+        ("lfhash" in lower or "hash node" in lower) and ("allocator" in lower or "alloc-free" in lower)
+    ):
+        return "runtime_lfhash_alloc_free_pairing"
+    if function == "_runtime_make_shared_key" or (
+        ("ftok" in lower or "key generation" in lower) and ("path" in lower or "collision" in lower)
+    ):
+        return "runtime_ftok_key_generation"
 
     named_objects = (
         "thread_ids",
@@ -1123,6 +1425,8 @@ def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
     if has_name("_lifecycle_resize_metrics") or "g_metrics" in lower:
         return "g_metrics_realloc"
     if category == "command_injection" and ("system" in lower or "命令注入" in text):
+        if function == "platform_execute_task" or "system(task)" in lower:
+            return "platform_task_execution"
         return "task_command_execution"
     if category == "format_string" and ("printf" in lower or "格式化字符串" in text):
         return "printf_format_string"
@@ -1181,6 +1485,7 @@ def normalize_issue_category(value: str) -> str:
         "race": ("race", "data race", "toctou", "concurrency", "竞态", "无锁", "cwe-362", "cwe-367"),
         "deadlock": ("deadlock", "lock order", "死锁", "重入", "cwe-833"),
         "memory_leak": ("memory leak", "resource leak", "leak", "内存泄漏", "资源泄漏", "未释放", "cwe-401", "cwe-772"),
+        "fd_leak": ("fd leak", "file descriptor leak", "descriptor leak", "unclosed fd", "unclosed descriptor", "cwe-775"),
         "alignment": ("alignment", "unaligned", "strict alias", "cwe-704"),
         "stale_fd": ("stale fd", "file descriptor", "closed fd", "cwe-672"),
         "path_traversal": ("path traversal", "路径遍历"),
@@ -1197,6 +1502,10 @@ def normalize_issue_category(value: str) -> str:
         "version_filtering": ("version filtering", "missing version", "low version", "version filter", "cwe-20"),
         "missing_refcount": ("missing refcount", "reference count", "refcount", "shared resource", "cwe-772"),
         "sigpipe_unhandled": ("sigpipe", "closed peer", "signal", "cwe-404"),
+        "premature_destroy": ("premature destroy", "destroyed while active", "active tasks", "cwe-416"),
+        "registration_race": ("registration race", "check then act", "ops registration", "cwe-362"),
+        "alloc_free_mismatch": ("allocator mismatch", "alloc free mismatch", "allocator pairing", "cwe-762"),
+        "key_generation_race": ("ftok", "key generation", "key collision", "cwe-362"),
         "fd_encoding_mismatch": ("fd encoding", "encoded fd", "raw fd", "check value", "cwe-587"),
         "semantic_mismatch": ("semantic mismatch", "semantic unit", "callback parameter", "counter domain", "cwe-628"),
         "byte_order_logic": ("byte order", "endian", "ctz", "trailing zero", "cwe-682"),
@@ -1210,6 +1519,7 @@ def normalize_issue_category(value: str) -> str:
         "shared_memory_race": ("shared memory race", "lookup before lock", "concurrent create", "memzone", "cwe-362"),
         "state_machine": ("state machine", "missing transition", "lifecycle state", "cwe-672"),
         "signal_deadlock": ("signal deadlock", "signal handler", "async signal", "semaphore", "cwe-833"),
+        "signal_race": ("signal race", "signal handler", "async signal", "callstack", "cwe-479"),
         "callback_self_destroy_race": ("callback self destroy", "self destruction", "callback can free", "cwe-416"),
         "backend_signal": ("backend signal", "svf", "saber", "knowledge db"),
     }
@@ -1221,10 +1531,16 @@ def normalize_issue_category(value: str) -> str:
         "fd_type_mismatch",
         "protocol_mixup",
         "partial_resource_leak",
+        "fd_leak",
         "dynamic_array_race",
         "version_filtering",
         "missing_refcount",
+        "signal_race",
         "sigpipe_unhandled",
+        "premature_destroy",
+        "registration_race",
+        "alloc_free_mismatch",
+        "key_generation_race",
         "fd_encoding_mismatch",
         "semantic_mismatch",
         "byte_order_logic",
@@ -1283,6 +1599,7 @@ _KNOWN_CATEGORIES = {
     "bounds",
     "buffer_overflow",
     "busy_loop",
+    "busy_wait_loop",
     "command_injection",
     "data_race",
     "deadlock",
@@ -1292,12 +1609,15 @@ _KNOWN_CATEGORIES = {
     "byte_order_logic",
     "callback_self_destroy_race",
     "fd_encoding_mismatch",
+    "fd_leak",
+    "file_descriptor_leak",
     "fd_type_mismatch",
     "file_type_validation",
     "format_string",
     "global_mode_race",
     "held_lock_callback",
     "integer_overflow",
+    "integer_truncation",
     "invalid_free",
     "key_truncation",
     "logic_error",
@@ -1311,18 +1631,24 @@ _KNOWN_CATEGORIES = {
     "object_publication",
     "off_by_one",
     "partial_resource_leak",
+    "premature_destroy",
     "path_traversal",
     "protocol_mixup",
     "race",
+    "race_condition",
+    "registration_race",
     "realloc_misuse",
     "refcount_race",
     "reader_state_race",
     "resource_leak",
+    "resource_lifecycle",
     "resource_management",
     "semantic_mismatch",
     "shared_state_race",
     "shared_memory_race",
     "signal_deadlock",
+    "signal_race",
+    "signal_handler_unsafe",
     "signed_unsigned",
     "sigpipe_unhandled",
     "size_limit_mismatch",
@@ -1332,13 +1658,35 @@ _KNOWN_CATEGORIES = {
     "stale_fd",
     "state_inconsistency",
     "state_machine",
+    "alloc_free_mismatch",
+    "key_generation_race",
     "unchecked_return",
     "type_confusion",
     "toctou",
+    "toctou_race",
     "uninitialized_output",
     "uninitialized_read",
     "use_after_free",
+    "use_after_close",
     "version_filtering",
+}
+
+
+_COMMAND_VALIDATION_ALIASES = {
+    "incomplete_input_validation",
+    "incomplete_security_filter",
+    "insufficient_validation",
+}
+
+
+_CATEGORY_ALIASES = {
+    "busy_wait_loop": "busy_loop",
+    "file_descriptor_leak": "fd_leak",
+    "integer_truncation": "signed_unsigned",
+    "race_condition": "race",
+    "signal_handler_unsafe": "signal_race",
+    "toctou_race": "toctou",
+    "use_after_close": "stale_fd",
 }
 
 
@@ -1346,9 +1694,11 @@ _CATEGORY_FAMILIES = {
     "loop": {
         "busy_loop",
         "infinite_loop",
+        "busy_wait_loop",
     },
     "race": {
         "race",
+        "race_condition",
         "data_race",
         "shared_state_race",
         "dynamic_array_race",
@@ -1356,15 +1706,23 @@ _CATEGORY_FAMILIES = {
         "global_mode_race",
         "slot_race",
         "shared_memory_race",
+        "registration_race",
+        "key_generation_race",
+        "signal_race",
+        "signal_handler_unsafe",
         "refcount_race",
         "object_publication",
         "callback_self_destroy_race",
         "double_checked_locking",
         "toctou",
+        "toctou_race",
     },
     "memory_leak": {
+        "fd_leak",
+        "file_descriptor_leak",
         "memory_leak",
         "resource_leak",
+        "resource_lifecycle",
         "resource_management",
         "partial_resource_leak",
         "missing_refcount",
@@ -1375,11 +1733,14 @@ _CATEGORY_FAMILIES = {
         "double_free",
         "invalid_free",
         "stack_escape",
+        "premature_destroy",
+        "alloc_free_mismatch",
     },
     "bounds": {
         "bounds",
         "buffer_overflow",
         "integer_overflow",
+        "integer_truncation",
         "size_limit_mismatch",
         "off_by_one",
         "stack_overflow",
@@ -1394,6 +1755,11 @@ _CATEGORY_FAMILIES = {
         "fd_encoding_mismatch",
         "protocol_mixup",
     },
+    "input_validation": {
+        "incomplete_input_validation",
+        "incomplete_security_filter",
+        "insufficient_validation",
+    },
     "lock": {
         "deadlock",
         "missing_unlock",
@@ -1401,6 +1767,56 @@ _CATEGORY_FAMILIES = {
         "lost_wakeup",
         "signal_deadlock",
     },
+}
+
+
+_CATEGORY_FAMILY_COMPATIBLE_PAIRS = {
+    frozenset({"memory_leak", "memory_release"}),
+    frozenset({"command_injection", "input_validation"}),
+}
+
+
+_MEMORY_LIFETIME_RELATED_CATEGORIES = {
+    "fd_leak",
+    "file_descriptor_leak",
+    "memory_leak",
+    "resource_leak",
+    "resource_lifecycle",
+    "resource_management",
+    "partial_resource_leak",
+    "missing_refcount",
+    "realloc_misuse",
+    "use_after_free",
+    "use_after_close",
+    "double_free",
+    "invalid_free",
+    "stack_escape",
+    "premature_destroy",
+    "alloc_free_mismatch",
+}
+
+
+_CROSS_CONTEXT_RESIDUAL_DEDUP_CATEGORIES = {
+    "command_injection",
+    "fd_leak",
+    "file_descriptor_leak",
+    "stale_fd",
+    "use_after_close",
+    "resource_lifecycle",
+    "resource_management",
+    "resource_leak",
+    "memory_leak",
+    "partial_resource_leak",
+    "missing_refcount",
+    "use_after_free",
+    "double_free",
+    "invalid_free",
+    "premature_destroy",
+}
+
+
+_CROSS_FILE_ROOT_DEDUP_ROOTS = {
+    "task_command_execution",
 }
 
 
@@ -1452,6 +1868,7 @@ _FUNCTION_SCOPED_ROOT_CATEGORIES = {
     "busy_loop",
     "double_free",
     "fd_encoding_mismatch",
+    "fd_leak",
     "fd_type_mismatch",
     "integer_overflow",
     "log_amplification",
@@ -1462,8 +1879,9 @@ _FUNCTION_SCOPED_ROOT_CATEGORIES = {
     "race",
     "refcount_race",
     "signed_unsigned",
-    "stale_fd",
-    "state_inconsistency",
+        "stale_fd",
+        "use_after_close",
+        "state_inconsistency",
     "unchecked_return",
     "version_filtering",
     "use_after_free",

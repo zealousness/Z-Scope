@@ -1,12 +1,14 @@
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
 from ..framework.base import BaseTool
-from ..retrieval.code_index import CodeIndex
+
+if TYPE_CHECKING:
+    from ..retrieval.code_index import CodeIndex
 
 
 class ListFunctionsTool(BaseTool):
     """Tool to list functions in the project (supports regex pattern)."""
 
-    def __init__(self, code_index: CodeIndex):
+    def __init__(self, code_index: "CodeIndex"):
         super().__init__(
             name="list_known_functions",
             description="List functions in the project index, optionally filtered by regex pattern.",
@@ -39,7 +41,7 @@ class ListFunctionsTool(BaseTool):
 class GetFileSnippetTool(BaseTool):
     """Tool to retrieve file snippets."""
 
-    def __init__(self, code_index: CodeIndex):
+    def __init__(self, code_index: "CodeIndex"):
         super().__init__(
             name="get_file_snippet",
             description="Retrieve a specific line range from a source file.",
@@ -77,7 +79,7 @@ class GetFileSnippetTool(BaseTool):
 class GetCallersTool(BaseTool):
     """Tool to find callers of a function via CPG."""
 
-    def __init__(self, code_index: CodeIndex):
+    def __init__(self, code_index: "CodeIndex"):
         super().__init__(
             name="get_callers",
             description="Find functions that call the given function. Useful for assessing vulnerability reachability.",
@@ -112,7 +114,7 @@ class GetCallersTool(BaseTool):
 class GetTypeInfoTool(BaseTool):
     """Tool to retrieve struct/union/enum definitions via CPG."""
 
-    def __init__(self, code_index: CodeIndex):
+    def __init__(self, code_index: "CodeIndex"):
         super().__init__(
             name="get_type_info",
             description="Retrieve struct/union/enum definition and its members by type name.",
@@ -146,7 +148,7 @@ class GetTypeInfoTool(BaseTool):
 class GetCallGraphTool(BaseTool):
     """Tool to get call graph around a function via CPG."""
 
-    def __init__(self, code_index: CodeIndex):
+    def __init__(self, code_index: "CodeIndex"):
         super().__init__(
             name="get_call_graph",
             description="Get the call graph (callers and callees) around a function.",
@@ -212,7 +214,7 @@ class GetCallGraphTool(BaseTool):
 class GetDataFlowTool(BaseTool):
     """Tool for taint tracking / data flow analysis via CPG."""
 
-    def __init__(self, code_index: CodeIndex):
+    def __init__(self, code_index: "CodeIndex"):
         super().__init__(
             name="get_data_flow",
             description="Trace data flow from a source function parameter to a sink pattern (taint analysis).",
@@ -249,7 +251,7 @@ class GetDataFlowTool(BaseTool):
 class FindFunctionPointersTool(BaseTool):
     """Tool to find function pointer assignments and callback registrations."""
 
-    def __init__(self, code_index: CodeIndex):
+    def __init__(self, code_index: "CodeIndex"):
         super().__init__(
             name="find_function_pointers",
             description="Find where a function is assigned as a pointer or registered as a callback.",
@@ -282,7 +284,7 @@ class FindFunctionPointersTool(BaseTool):
 class QueryPointerAliasTool(BaseTool):
     """Tool to retrieve SVF-resolved indirect callees."""
 
-    def __init__(self, code_index: CodeIndex):
+    def __init__(self, code_index: "CodeIndex"):
         super().__init__(
             name="query_pointer_alias",
             description="Query SVF Andersen-resolved indirect call targets for a function.",
@@ -320,7 +322,7 @@ class QueryPointerAliasTool(BaseTool):
 class VerifyTaintReachabilityTool(BaseTool):
     """Tool to retrieve SVF/Saber memory findings already imported into KnowledgeDB."""
 
-    def __init__(self, code_index: CodeIndex):
+    def __init__(self, code_index: "CodeIndex"):
         super().__init__(
             name="verify_taint_reachability",
             description="Query SVF/Saber memory bug signatures such as leaks, UAF, and double free.",
@@ -357,7 +359,7 @@ class VerifyTaintReachabilityTool(BaseTool):
 class GetDeepCallContextTool(BaseTool):
     """Tool returning a compact aggregate of calls, indirect calls, and taint hints."""
 
-    def __init__(self, code_index: CodeIndex):
+    def __init__(self, code_index: "CodeIndex"):
         super().__init__(
             name="get_deep_call_context",
             description="Get callers, callees, indirect callees, taint hints, and method info in one call.",

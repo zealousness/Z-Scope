@@ -63,7 +63,9 @@ class GraphCandidateGenerator:
         "log_amplification": "CWE-400",
         "key_truncation": "CWE-187",
         "use_after_free": "CWE-416",
+        "premature_destroy": "CWE-416",
         "race": "CWE-362",
+        "registration_race": "CWE-362",
         "semantic_mismatch": "CWE-628",
         "byte_order_logic": "CWE-682",
         "reader_state_race": "CWE-362",
@@ -78,9 +80,14 @@ class GraphCandidateGenerator:
         "shared_memory_race": "CWE-362",
         "state_machine": "CWE-672",
         "signal_deadlock": "CWE-833",
+        "signal_race": "CWE-479",
+        "sigpipe_unhandled": "CWE-404",
         "callback_self_destroy_race": "CWE-416",
         "object_publication": "CWE-362",
         "fd_type_mismatch": "CWE-628",
+        "alloc_free_mismatch": "CWE-762",
+        "key_generation_race": "CWE-362",
+        "protocol_mixup": "CWE-346",
     }
 
     def __init__(
@@ -208,6 +215,8 @@ class GraphCandidateGenerator:
             self._rule_tree_and_liveness_protocols(view, issues)
             self._rule_publication_and_lifetime_order(view, issues)
             self._rule_protocol_state_contracts(view, issues)
+            self._rule_unchecked_ownership_transfer_return(view, issues)
+            self._rule_callee_key_generation_race(view, by_name, issues)
 
         self._rule_paired_lifecycle_protocols(views, issues)
         self._rule_paired_member_cleanup_protocols(views, issues)
@@ -740,41 +749,56 @@ class GraphCandidateGenerator:
                         view=view,
                         line=line,
                         description=f"`{obj}->next` is set to `{obj}`, creating a self-referential list node.",
-                        root_cause="Later traversal that follows next pointers can loop forever on the removed/poisoned node.",
+                        root_cause=(
+                            "Later traversal, or a concurrent walker that retained the node before unlink, "
+                            "can follow the poisoned next pointer back to the same node forever."
+                        ),
                         suggested_fix="Use NULL or a non-traversable poison value and ensure later walkers detect removed nodes.",
                         source=obj,
                         sink=line.text.strip(),
                         confidence=0.84,
                         impact_level="high",
-                        positive=[f"line {line.number}: self-link assignment `{line.text.strip()}`"],
+                        positive=[
+                            f"line {line.number}: self-link assignment `{line.text.strip()}`",
+                            "self-link poisoning is unsafe when any sibling traversal can hold a stale iterator",
+                        ],
+                        negative=["Validator must reason about stale/current iterators, not only a fresh traversal from the current head."],
                     )
                 )
 
         text = "\n".join(line.text for line in view.lines)
-        if re.search(r"LOG_(?:ERROR|WARN|INFO)", text) and re.search(r"=\s*[A-Za-z_]\w*->next", text) and re.search(r"poison|self", text, re.I):
+        if re.search(r"LOG_(?:ERROR|WARN|INFO)", text) and re.search(r"=\s*[A-Za-z_]\w*->next", text) and re.search(
+            r"poison|self|diagnostic_marker|parked|marker",
+            text,
+            re.I,
+        ):
             line = self._first_line_matching(view, re.compile(r"LOG_(?:ERROR|WARN|INFO)")) or view.lines[0]
+            marker_kind = "poison marker" if re.search(r"poison|self", text, re.I) else "diagnostic/parked marker"
             issues.append(
                 self._issue(
                     defect_class="log_amplification",
                     rule="log_inside_poisoned_traversal",
                     view=view,
                     line=line,
-                    description="A traversal over poisoned nodes emits logs inside the loop.",
-                    root_cause="A liveness failure can amplify into repeated logging and resource exhaustion.",
-                    suggested_fix="Break traversal on poison markers and rate-limit or suppress loop-internal error logs.",
+                    description="A traversal over poisoned or parked nodes emits logs inside the loop.",
+                    root_cause="A liveness failure can keep traversal progress on the same element while the loop emits repeated logs.",
+                    suggested_fix="Break traversal on poison/park markers and rate-limit or suppress loop-internal error logs.",
                     source="poisoned traversal",
                     sink=line.text.strip(),
-                    confidence=0.76,
+                    confidence=0.8,
                     impact_level="medium",
                     positive=[
                         "loop follows next pointers",
                         f"line {line.number}: log call occurs inside traversal",
-                        "poison marker appears in the traversal logic",
+                        f"{marker_kind} appears in the traversal logic",
                     ],
                 )
             )
 
-        if re.search(r"\bstrncpy\s*\([^;]*(?:KEY_LIMIT|KEY_MAX|MAX_KEY|LIMIT)", text) and re.search(r"full_key|strcmp", text):
+        if re.search(r"\bstrncpy\s*\([^;]*(?:KEY_LIMIT|KEY_MAX|MAX_KEY|LIMIT)", text) and re.search(
+            r"full_key|strcmp|find_[A-Za-z_0-9]*key",
+            text,
+        ):
             line = self._first_line_matching(view, re.compile(r"\bstrncpy\s*\(")) or view.lines[0]
             issues.append(
                 self._issue(
@@ -1042,6 +1066,42 @@ class GraphCandidateGenerator:
                 )
             )
 
+        protocol_mismatch = self._first_line_matching(
+            view,
+            re.compile(r"\bif\s*\([^)]*(?:protocol|proto)[^)]*!=[^)]*(?:PROTOCOL|PROTO)[^)]*\)", re.I),
+        )
+        if (
+            protocol_mismatch
+            and re.search(r"\bauth[A-Za-z_0-9]*", text, re.I)
+            and "STRICT" in text.upper()
+            and re.search(r"\breturn\s+0\s*;", text)
+            and re.search(r"\breturn\s+-1\s*;", text)
+        ):
+            issues.append(
+                self._issue(
+                    defect_class="protocol_mixup",
+                    rule="protocol_mismatch_accepted_under_non_strict_auth",
+                    view=view,
+                    line=protocol_mismatch,
+                    description="A protocol mismatch can be accepted when the authentication mode is not strict.",
+                    root_cause=(
+                        "The protocol boundary detects an unexpected protocol value but a non-strict "
+                        "auth branch still returns success, allowing messages to cross protocol contexts."
+                    ),
+                    suggested_fix="Reject protocol mismatches before auth relaxation, or require strict authentication for cross-protocol routing.",
+                    source=protocol_mismatch.text.strip(),
+                    sink="non-strict authentication branch returns success",
+                    confidence=0.84,
+                    impact_level="high",
+                    positive=[
+                        f"line {protocol_mismatch.number}: protocol mismatch is explicitly detected",
+                        "auth/STRICT branch is used to decide whether the mismatch is fatal",
+                        "the same function has a success return in the mismatch handling path",
+                    ],
+                    negative=["Validator must confirm the success return is reachable from the mismatch branch."],
+                )
+            )
+
         stack_line = self._first_line_matching(
             view,
             re.compile(r"\bmem(?:cpy|move)\s*\([^;]*\b[A-Za-z_]\w*\.name\s*,\s*[A-Za-z_]\w+\s*,\s*strlen\s*\(", re.I),
@@ -1101,6 +1161,12 @@ class GraphCandidateGenerator:
         self._emit_signal_handler_candidate(view, issues)
         self._emit_role_release_candidate(view, issues)
         self._emit_fd_contract_candidate(view, issues)
+        self._emit_sigpipe_unhandled_candidate(view, issues)
+        self._emit_direct_index_bound_candidate(view, issues)
+        self._emit_premature_destroy_candidate(view, issues)
+        self._emit_registration_race_candidate(view, issues)
+        self._emit_alloc_free_mismatch_candidate(view, issues)
+        self._emit_key_generation_race_candidate(view, issues)
 
     def _emit_uninitialized_output_candidate(
         self,
@@ -1161,9 +1227,20 @@ class GraphCandidateGenerator:
         view: FunctionView,
         issues: List[Dict[str, Any]],
     ) -> None:
+        local_arrays: Dict[str, Tuple[str, GraphLine]] = {}
+        for line in view.lines:
+            match = re.search(
+                r"\b(?:[A-Za-z_]\w*\s+)+(?P<name>[A-Za-z_]\w*)\s*"
+                r"\[\s*(?P<limit>[A-Z][A-Z0-9_]*(?:LIMIT|MAX|SIZE|COUNT|NUM)[A-Z0-9_]*)\s*\]",
+                line.text,
+            )
+            if match:
+                local_arrays[match.group("name")] = (match.group("limit"), line)
+
         for idx, line in enumerate(view.lines):
             loop = re.search(
-                r"\bfor\s*\([^;]*\b(?P<idx>[A-Za-z_]\w*)\s*=\s*[^;]*;\s*(?P=idx)\s*<\s*(?P<limit>[A-Za-z_]\w*)",
+                r"\bfor\s*\([^;]*\b(?P<idx>[A-Za-z_]\w*)\s*=\s*[^;]*;\s*"
+                r"(?P=idx)\s*<\s*(?P<limit>[A-Za-z_]\w*)\s*(?=;|\)|&&|\|\|)",
                 line.text,
             )
             if not loop:
@@ -1181,7 +1258,50 @@ class GraphCandidateGenerator:
                 None,
             )
             if not access_line:
-                continue
+                local_access = next(
+                    (
+                        item
+                        for item in window
+                        for array_name in local_arrays
+                        if re.search(rf"\b{re.escape(array_name)}\s*\[\s*{re.escape(idx_name)}\s*\]", item.text)
+                    ),
+                    None,
+                )
+                if not local_access:
+                    continue
+                array_name = next(
+                    name
+                    for name in local_arrays
+                    if re.search(rf"\b{re.escape(name)}\s*\[\s*{re.escape(idx_name)}\s*\]", local_access.text)
+                )
+                array_limit, array_line = local_arrays[array_name]
+                guard_text = "\n".join(item.text for item in view.lines[max(0, idx - 8) : idx + 1])
+                if "ARRAY_SIZE" in guard_text or re.search(
+                    rf"\b{re.escape(limit_name)}\s*<=\s*(?:{re.escape(array_limit)}|ARRAY_SIZE|sizeof)",
+                    guard_text,
+                ):
+                    continue
+                issues.append(
+                    self._issue(
+                        defect_class="bounds",
+                        rule="caller_limit_indexes_fixed_local_array",
+                        view=view,
+                        line=local_access,
+                        description="A caller-controlled limit indexes a fixed local array without proving it is within the local capacity.",
+                        root_cause="The loop bound comes from configuration or a function argument, while the temporary array has a smaller fixed capacity.",
+                        suggested_fix="Clamp the configured limit to the local array length before indexing.",
+                        source=f"{idx_name} < {limit_name}",
+                        sink=local_access.text.strip(),
+                        confidence=0.84,
+                        impact_level="high",
+                        positive=[
+                            f"line {array_line.number}: local array `{array_name}` has fixed capacity `{array_limit}`",
+                            f"line {line.number}: loop uses `{limit_name}` as the bound",
+                            f"line {local_access.number}: `{array_name}` is indexed by `{idx_name}`",
+                        ],
+                    )
+                )
+                return
             guard_text = "\n".join(item.text for item in view.lines[max(0, idx - 5) : idx + 1])
             if "ARRAY_SIZE" in guard_text or re.search(rf"\b{re.escape(limit_name)}\s*<=\s*(?:ARRAY_SIZE|sizeof)", guard_text):
                 continue
@@ -1441,6 +1561,40 @@ class GraphCandidateGenerator:
         lock_line = self._first_line_matching(view, re.compile(r"\b(?:pthread_mutex_trylock|LOCK)\s*\([^;]*(?:sem|signal|exception)", re.I))
         log_line = self._first_line_matching(view, re.compile(r"\b(?:snprintf|LOG_ERROR|printf)\s*\("))
         if not (lock_line and log_line):
+            shared_write = self._first_line_matching(
+                view,
+                re.compile(r"\bg_[A-Za-z_0-9]+(?:->|\.)[A-Za-z_]\w+\s*=|__atomic_store_n\s*\(\s*&\s*g_", re.I),
+            )
+            alloc_line = self._first_line_matching(
+                view,
+                re.compile(r"\b(?:_safe_calloc|_safe_malloc|calloc|malloc)\s*\(", re.I),
+            )
+            unsafe_line = log_line or alloc_line or shared_write
+            if not (unsafe_line and shared_write):
+                return
+            issues.append(
+                self._issue(
+                    defect_class="signal_race",
+                    rule="signal_path_mutates_shared_state_or_logs",
+                    view=view,
+                    line=unsafe_line,
+                    description="A signal/exception path mutates shared global state and/or performs non-async-signal-safe work.",
+                    root_cause=(
+                        "The asynchronous signal path writes shared callstack/runtime state and performs logging/allocation "
+                        "without a signal-safe handoff protocol."
+                    ),
+                    suggested_fix="Capture only atomic/minimal signal-safe data and defer allocation, logging, and shared-state updates to a normal thread.",
+                    source="signal/exception handler path",
+                    sink=shared_write.text.strip(),
+                    confidence=0.84,
+                    impact_level="high",
+                    positive=[
+                        f"line {unsafe_line.number}: signal path performs logging/allocation/shared-state work",
+                        f"line {shared_write.number}: signal path writes shared global runtime state",
+                        "no signal-safe queue or common lock protects the shared state mutation",
+                    ],
+                )
+            )
             return
         issues.append(
             self._issue(
@@ -1529,6 +1683,410 @@ class GraphCandidateGenerator:
                 ],
             )
         )
+
+    def _emit_sigpipe_unhandled_candidate(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        text = "\n".join(line.text for line in view.lines)
+        if "SIGPIPE" in text or "MSG_NOSIGNAL" in text:
+            return
+        line = self._first_line_matching(view, re.compile(r"\b(?:write|send)\s*\("))
+        if not line:
+            return
+        if not re.search(r"(?:peer|socket|sock|fd|conn|control|reply)", view.signature + "\n" + line.text, re.I):
+            return
+        issues.append(
+            self._issue(
+                defect_class="sigpipe_unhandled",
+                rule="peer_write_without_sigpipe_handling",
+                view=view,
+                line=line,
+                description="Peer write is issued without visible SIGPIPE suppression or handling.",
+                root_cause="Writing to a closed peer can raise SIGPIPE before normal error handling returns.",
+                suggested_fix="Use send(..., MSG_NOSIGNAL), ignore/handle SIGPIPE, or use platform-specific no-signal flags.",
+                source=line.text.strip(),
+                sink="closed peer write",
+                confidence=0.84,
+                impact_level="high",
+                positive=[
+                    f"line {line.number}: peer/control fd is written with `{line.text.strip()}`",
+                    "no SIGPIPE handler, ignore policy, or MSG_NOSIGNAL flag is visible in the function",
+                ],
+            )
+        )
+
+    def _emit_direct_index_bound_candidate(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        params = set(self._signature_param_names(view.signature))
+        if not params:
+            return
+        for line in view.lines:
+            match = re.search(
+                r"\b(?P<array>g_[A-Za-z_0-9]+)\s*\[\s*(?P<idx>[A-Za-z_]\w*)\s*\]",
+                line.text,
+            )
+            if not match or match.group("idx") not in params:
+                continue
+            array_name = match.group("array")
+            idx_name = match.group("idx")
+            guard_text = "\n".join(item.text for item in view.lines[: line.index + 1])
+            if re.search(
+                rf"\b{re.escape(idx_name)}\s*(?:<|<=)\s*(?:ARRAY_SIZE\s*\(\s*{re.escape(array_name)}\s*\)|[A-Z][A-Z0-9_]*(?:MAX|LIMIT|COUNT|NUM)[A-Z0-9_]*)",
+                guard_text,
+            ) or re.search(
+                rf"\b{re.escape(idx_name)}\s*>?=\s*(?:ARRAY_SIZE\s*\(\s*{re.escape(array_name)}\s*\)|[A-Z][A-Z0-9_]*(?:MAX|LIMIT|COUNT|NUM)[A-Z0-9_]*)",
+                guard_text,
+            ) or re.search(
+                rf"\b[A-Za-z_]\w*(?:is|valid|validate|check)[A-Za-z_0-9]*(?:fd|index|slot|core|bound)[A-Za-z_0-9]*\s*\(\s*{re.escape(idx_name)}\s*\)",
+                guard_text,
+                re.I,
+            ):
+                continue
+            issues.append(
+                self._issue(
+                    defect_class="bounds",
+                    rule="unchecked_param_indexes_fixed_global_array",
+                    view=view,
+                    line=line,
+                    description="A public or caller-supplied index directly indexes a fixed global array without a visible upper-bound check.",
+                    root_cause="The function trusts an index parameter before proving it is within the backing global array capacity.",
+                    suggested_fix="Reject or clamp the index against ARRAY_SIZE/the concrete maximum before indexing.",
+                    source=idx_name,
+                    sink=line.text.strip(),
+                    confidence=0.86,
+                    impact_level="high",
+                    positive=[
+                        f"function signature exposes index parameter `{idx_name}`",
+                        f"line {line.number}: `{array_name}` is indexed by `{idx_name}`",
+                        "no prior ARRAY_SIZE or maximum-core guard is visible",
+                    ],
+                )
+            )
+            return
+
+    def _emit_premature_destroy_candidate(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        text = "\n".join(line.text for line in view.lines)
+        if not re.search(r"\bactive_[A-Za-z_0-9]*\b|active tasks", text, re.I):
+            return
+        condition_line = self._first_line_matching(view, re.compile(r"\bif\s*\([^)]*active[A-Za-z_0-9]*\s*>\s*0", re.I))
+        if not condition_line:
+            return
+        free_line = next(
+            (
+                line
+                for line in view.lines
+                if line.index > condition_line.index
+                and re.search(r"\b(?:SAFE_FREE|free|destroy|release)[A-Za-z_0-9]*\s*\([^;]*(?:pool|pbuf|g_[A-Za-z_0-9]+)", line.text, re.I)
+            ),
+            None,
+        )
+        if not free_line:
+            return
+        publish_line = next(
+            (
+                line
+                for line in view.lines
+                if line.index < condition_line.index
+                and re.search(r"\bg_[A-Za-z_0-9.]*\s*=\s*[A-Za-z_]\w+\s*;", line.text)
+            ),
+            None,
+        )
+        dangling_line = next(
+            (
+                line
+                for line in view.lines
+                if line.index > condition_line.index
+                and re.search(r"\b(?:SAFE_FREE|free)\s*\(\s*g_[A-Za-z_0-9.]+", line.text, re.I)
+            ),
+            None,
+        )
+        issues.append(
+            self._issue(
+                defect_class="premature_destroy",
+                rule="destroy_shared_pool_while_active_tasks_remain",
+                view=view,
+                line=condition_line,
+                description="A shared pool object can be destroyed even when the active-task count indicates users still exist.",
+                root_cause=(
+                    "The destroy path publishes a shared pool pointer and then frees the global pool/buffer "
+                    "in the active-tasks branch, leaving active users with a dangling shared object."
+                ),
+                suggested_fix="Refcount the pool or reject/defer destruction while active tasks are non-zero.",
+                source=condition_line.text.strip(),
+                sink=free_line.text.strip(),
+                confidence=0.86,
+                impact_level="critical",
+                positive=[
+                    f"line {publish_line.number}: pool pointer is published to shared/global state" if publish_line else "pool pointer is shared before the active-task branch",
+                    f"line {condition_line.number}: active task count is checked as non-zero",
+                    f"line {free_line.number}: pool storage is released on that branch",
+                    f"line {dangling_line.number}: release uses the shared/global pool pointer" if dangling_line else "shared pool lifetime is ended while users remain",
+                ],
+            )
+        )
+
+    def _emit_registration_race_candidate(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        check_line = self._first_line_matching(
+            view,
+            re.compile(r"\bif\s*\([^)]*g_[A-Za-z_0-9]+\s*\[[^]]+\]\s*!=\s*NULL", re.I),
+        )
+        if not check_line:
+            return
+        prior_text = "\n".join(line.text for line in view.lines[: check_line.index + 1])
+        if self._lock_call_re.search(prior_text):
+            return
+        lock_line = next((line for line in view.lines if line.index > check_line.index and self._lock_arg(line.text)), None)
+        update_line = next(
+            (
+                line
+                for line in view.lines
+                if lock_line
+                and line.index > lock_line.index
+                and re.search(r"\bg_[A-Za-z_0-9]+\s*\[[^]]+\]\s*=|->\s*(?:enqueue|dequeue|ops)\s*=", line.text)
+            ),
+            None,
+        )
+        if not update_line:
+            return
+        issues.append(
+            self._issue(
+                defect_class="registration_race",
+                rule="global_registration_slot_checked_before_lock",
+                view=view,
+                line=check_line,
+                description="A global registration slot is checked before taking the lock that protects slot updates.",
+                root_cause="Concurrent registrants can observe or update the same ops slot across a check-then-act window.",
+                suggested_fix="Hold the registration lock across validation, lookup, and update of the slot.",
+                source=check_line.text.strip(),
+                sink=update_line.text.strip(),
+                confidence=0.86,
+                impact_level="high",
+                positive=[
+                    f"line {check_line.number}: global ops slot is read before lock acquisition",
+                    f"line {lock_line.number}: registration lock is taken later",
+                    f"line {update_line.number}: slot or old ops are updated after the delayed lock",
+                ],
+            )
+        )
+
+    def _emit_alloc_free_mismatch_candidate(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        text = "\n".join(line.text for line in view.lines)
+        if not ("mem_alloc_func" in text and "mem_free_func" in text):
+            return
+        alloc_assign = self._first_line_matching(view, re.compile(r"\b[A-Za-z_]\w*\.mem_alloc_func\s*="))
+        free_assign = self._first_line_matching(view, re.compile(r"\b[A-Za-z_]\w*\.mem_free_func\s*="))
+        alloc_call = self._first_line_matching(view, re.compile(r"\b[A-Za-z_]\w*\s*=\s*[A-Za-z_]\w*\.mem_alloc_func\s*\("))
+        free_call = self._first_line_matching(view, re.compile(r"\b[A-Za-z_]\w*\.mem_free_func\s*\("))
+        if not (alloc_assign and free_assign and alloc_call and free_call):
+            return
+        if not re.search(r"\?|noop|free|header|pool|custom", text, re.I):
+            return
+        issues.append(
+            self._issue(
+                defect_class="alloc_free_mismatch",
+                rule="callback_allocator_pair_not_enforced",
+                view=view,
+                line=alloc_assign,
+                description="Allocation and free callbacks are selected independently without enforcing allocator pairing.",
+                root_cause="A node allocated by one callback family can be released through an incompatible callback/no-op/free path.",
+                suggested_fix="Store allocator identity with the allocation or register allocator/free callbacks as an atomic validated pair.",
+                source=f"{alloc_assign.text.strip()} / {free_assign.text.strip()}",
+                sink=free_call.text.strip(),
+                confidence=0.84,
+                impact_level="high",
+                positive=[
+                    f"line {alloc_assign.number}: allocator callback is selected",
+                    f"line {free_assign.number}: free callback is selected separately",
+                    f"line {alloc_call.number}: allocation uses the selected callback",
+                    f"line {free_call.number}: release uses the selected free callback",
+                ],
+            )
+        )
+
+    def _emit_key_generation_race_candidate(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        text = "\n".join(line.text for line in view.lines)
+        path_check = self._first_line_matching(view, re.compile(r"\b(?:_file_exists|access|stat|lstat)\s*\("))
+        key_line = self._first_line_matching(view, re.compile(r"\b(?:ftok|_hash_string)\s*\("))
+        if not (path_check and key_line):
+            return
+        lock_line = self._first_line_matching(view, self._lock_call_re)
+        if lock_line and lock_line.index < path_check.index:
+            return
+        if "path" not in text:
+            return
+        issues.append(
+            self._issue(
+                defect_class="key_generation_race",
+                rule="path_state_checked_separately_from_key_generation",
+                view=view,
+                line=path_check,
+                description="A file path is checked separately from ftok-style key generation and later synchronization.",
+                root_cause="Path existence/state can change between the check and key derivation, creating unstable or colliding shared keys.",
+                suggested_fix="Generate/register the key under a single lock using a stable opened file descriptor or reject changing path state.",
+                source=path_check.text.strip(),
+                sink=key_line.text.strip(),
+                confidence=0.82,
+                impact_level="medium",
+                positive=[
+                    f"line {path_check.number}: path state is checked",
+                    f"line {key_line.number}: key is derived after the separate check",
+                    "no lock covers both path check and key derivation",
+                ],
+            )
+        )
+
+    def _rule_unchecked_ownership_transfer_return(
+        self,
+        view: FunctionView,
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        allocs = self._local_allocated_variables(view)
+        if not allocs:
+            return
+        text = "\n".join(line.text for line in view.lines)
+        for var, alloc_line in allocs.items():
+            transfer_line = None
+            transfer_callee = ""
+            for line in view.lines:
+                if line.index <= alloc_line.index:
+                    continue
+                call = re.search(
+                    rf"\b(?P<callee>[A-Za-z_]\w*(?:insert|link|register|publish|add)[A-Za-z_0-9]*)\s*\([^;]*\b{re.escape(var)}\b",
+                    line.text,
+                    re.I,
+                )
+                if not call:
+                    continue
+                transfer_line = line
+                transfer_callee = call.group("callee")
+                break
+            if not transfer_line:
+                continue
+            if re.search(r"^\s*(?:return|if|while|for)\b|=", transfer_line.text):
+                continue
+            callee_view = self._view_for(transfer_callee)
+            if callee_view and re.match(r"\s*(?:static\s+)?void\b", callee_view.signature):
+                continue
+            if re.search(rf"\b(?:SAFE_FREE|free|destroy|release|cleanup|delete)[A-Za-z_0-9]*\s*\([^;]*\b{re.escape(var)}\b", text, re.I):
+                continue
+            success_after_transfer = any(
+                line.index > transfer_line.index and re.search(r"\breturn\s+0\s*;", line.text)
+                for line in view.lines
+            )
+            if not success_after_transfer:
+                continue
+            issues.append(
+                self._issue(
+                    defect_class="memory_leak",
+                    rule="unchecked_ownership_transfer_return_loses_node",
+                    view=view,
+                    line=transfer_line,
+                    description="An allocated object is handed to an insert/register-style ownership API while the API return is ignored.",
+                    root_cause=(
+                        "The transfer helper may fail after linking or partially accepting the object; "
+                        "because the caller ignores the return and has no cleanup path, ownership and registry state can be lost."
+                    ),
+                    suggested_fix="Check the transfer API return value and roll back or destroy the allocated object on failure.",
+                    source=alloc_line.text.strip(),
+                    sink=transfer_line.text.strip(),
+                    confidence=0.82,
+                    impact_level="high",
+                    positive=[
+                        f"line {alloc_line.number}: `{var}` is allocated",
+                        f"line {transfer_line.number}: `{var}` is passed to an ownership-transfer API as an unchecked expression statement",
+                        "a later success return is visible and no cleanup of the transferred object is present",
+                    ],
+                    negative=["Validator must confirm the callee can fail or partially link the object before failure."],
+                    evidence={
+                        "path": {
+                            "function": view.name,
+                            "source_line": alloc_line.number,
+                            "sink_line": transfer_line.number,
+                            "complete_in_function": True,
+                            "path_constraints": ["unchecked ownership-transfer return"],
+                        }
+                    },
+                )
+            )
+            return
+
+    def _rule_callee_key_generation_race(
+        self,
+        view: FunctionView,
+        by_name: Dict[str, FunctionView],
+        issues: List[Dict[str, Any]],
+    ) -> None:
+        for callee in view.callees:
+            if callee in by_name:
+                continue
+            callee_view = self._view_for(callee)
+            if not callee_view:
+                continue
+            callee_text = "\n".join(line.text for line in callee_view.lines)
+            path_check = self._first_line_matching(callee_view, re.compile(r"\b(?:_file_exists|access|stat|lstat)\s*\("))
+            key_line = self._first_line_matching(callee_view, re.compile(r"\b(?:ftok|_hash_string)\s*\("))
+            if not (path_check and key_line and "path" in callee_text):
+                continue
+            lock_line = self._first_line_matching(callee_view, self._lock_call_re)
+            if lock_line and lock_line.index < path_check.index:
+                continue
+            call_line = self._first_line_matching(view, re.compile(rf"\b{re.escape(callee)}\s*\("))
+            if not call_line:
+                continue
+            issues.append(
+                self._issue(
+                    defect_class="key_generation_race",
+                    rule="callee_path_state_checked_separately_from_key_generation",
+                    view=view,
+                    line=call_line,
+                    description="The caller reaches a helper that checks path state separately from ftok-style key generation.",
+                    root_cause=(
+                        "A path/key helper derives a shared key after an unlocked path-state check, "
+                        "so callers inherit a non-atomic key-generation race."
+                    ),
+                    suggested_fix="Make the helper perform path check, key derivation, and registration under one lock or use a stable opened file descriptor.",
+                    source=f"{callee}:{path_check.text.strip()}",
+                    sink=f"{callee}:{key_line.text.strip()}",
+                    confidence=0.8,
+                    impact_level="medium",
+                    positive=[
+                        f"{view.name} line {call_line.number}: caller invokes `{callee}`",
+                        f"{callee} line {path_check.number}: path state is checked",
+                        f"{callee} line {key_line.number}: key is derived after the separate check",
+                    ],
+                    evidence={
+                        "path": {
+                            "caller_function": view.name,
+                            "callee_function": callee,
+                            "source_line": path_check.number,
+                            "sink_line": key_line.number,
+                            "complete_in_function": False,
+                            "path_constraints": ["caller reaches non-atomic key generation helper"],
+                        }
+                    },
+                )
+            )
 
     @staticmethod
     def _local_allocated_variables(view: FunctionView) -> Dict[str, GraphLine]:
@@ -2506,6 +3064,26 @@ class GraphCandidateGenerator:
             if func_name in clean and "(" in clean:
                 return clean.rstrip("{").strip()
         return signature or f"{func_name}(...)"
+
+    @staticmethod
+    def _signature_param_names(signature: str) -> List[str]:
+        match = re.search(r"\((?P<params>.*)\)", str(signature or ""))
+        if not match:
+            return []
+        names: List[str] = []
+        for raw_param in match.group("params").split(","):
+            param = raw_param.strip()
+            if not param or param == "void" or "..." in param:
+                continue
+            param = re.sub(r"\[[^]]*\]", "", param)
+            tokens = re.findall(r"\b[A-Za-z_]\w*\b", param)
+            if not tokens:
+                continue
+            candidate = tokens[-1]
+            if candidate in {"const", "volatile", "unsigned", "signed", "struct", "enum"}:
+                continue
+            names.append(candidate)
+        return names
 
     @classmethod
     def _called_names(cls, text: str) -> List[str]:

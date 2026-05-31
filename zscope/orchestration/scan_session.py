@@ -37,6 +37,7 @@ class ScanSessionResult:
     functions_analyzed: int = 0
     verdict: str = "unknown"
     interrupted: bool = False
+    interrupted_entries: List[str] = field(default_factory=list)
     project_root: Optional[Path] = None
 
 
@@ -433,6 +434,10 @@ class ScanSessionRunner:
 
         total_issues = combined_report["summary"]["total_issues"]
         functions_analyzed = combined_report["summary"]["functions_analyzed"]
+        interrupted_entries = self._interrupted_entry_names(entries, state["results"])
+        interrupted = bool(getattr(parallel_analyzer, "_interrupted", False)) or bool(
+            interrupted_entries
+        )
         return ScanSessionResult(
             is_batch=True,
             exit_code=1 if total_issues > 0 else 0,
@@ -440,7 +445,8 @@ class ScanSessionRunner:
             issues_count=total_issues,
             needs_review_count=self._needs_review_count_from_report(combined_report),
             functions_analyzed=functions_analyzed,
-            interrupted=bool(getattr(parallel_analyzer, "_interrupted", False)),
+            interrupted=interrupted,
+            interrupted_entries=interrupted_entries,
             project_root=self.config.project.project_root,
         )
 
@@ -482,6 +488,24 @@ class ScanSessionRunner:
             if isinstance(with_review, dict):
                 return int(with_review.get("included_needs_review_count") or 0)
         return 0
+
+    @staticmethod
+    def _interrupted_entry_names(
+        entries: List[FunctionEntry],
+        results: Dict[str, ParallelAnalysisResult],
+    ) -> List[str]:
+        missing: List[str] = []
+        seen = set()
+        for entry in entries:
+            entry_key = ParallelAnalyzer._entry_result_key(entry)
+            if entry_key in results:
+                continue
+            name = entry.function_name
+            if name in seen:
+                continue
+            seen.add(name)
+            missing.append(name)
+        return missing
 
     def _backup_existing_batch_report(self, json_report_path: Path) -> None:
         if not json_report_path.exists():

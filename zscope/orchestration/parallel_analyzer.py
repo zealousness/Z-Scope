@@ -84,6 +84,7 @@ class ParallelAnalyzer:
         self.snapshot_store = SnapshotStore(Path(config.analysis.snapshot_dir))
         db_dir = Path(config.analysis.user_config_db) if config.analysis.user_config_db else Path(config.analysis.snapshot_dir)
         self.user_config = user_config or UserConfigStore(db_dir)
+        self._interrupted = False
         self._shared_local_pattern_semantics: Optional[LocalPatternSemantics] = None
         self._shared_semantic_overlay: Optional[Dict[str, Any]] = None
         self._shared_semantics_lock = threading.Lock()

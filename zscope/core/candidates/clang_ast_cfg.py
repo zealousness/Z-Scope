@@ -893,6 +893,14 @@ class ClangAstCfgCandidateGenerator:
                 allowed_skills,
                 line,
             )
+            self._maybe_emit_unchecked_param_global_array_index(
+                issues,
+                func_name,
+                file_path,
+                lines,
+                allowed_skills,
+                line,
+            )
 
             if self._match_lock(text):
                 held_locks.append(line)
@@ -1517,6 +1525,71 @@ class ClangAstCfgCandidateGenerator:
                     self._event("protocol_version_ignored", ignored, var, "", ignored.text),
                 ],
                 [line.number, ignored.number],
+            ),
+        )
+
+    def _maybe_emit_unchecked_param_global_array_index(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        params = set(self._signature_param_names(lines))
+        if not params:
+            return
+        match = re.search(
+            r"\b(?P<array>g_[A-Za-z_0-9]+)\s*\[\s*(?P<idx>[A-Za-z_]\w*)\s*\]",
+            line.text,
+        )
+        if not match:
+            return
+        idx_name = match.group("idx")
+        if idx_name not in params:
+            return
+        array_name = match.group("array")
+        guard_window = "\n".join(item.text for item in lines[: line.index + 1])
+        explicit_bound = re.search(
+            rf"\b{re.escape(idx_name)}\s*(?:<|<=|>=|>)\s*"
+            rf"(?:ARRAY_SIZE\s*\(\s*{re.escape(array_name)}\s*\)|"
+            r"[A-Z][A-Z0-9_]*(?:MAX|LIMIT|COUNT|NUM|CORES|SIZE)[A-Z0-9_]*)",
+            guard_window,
+        )
+        validator_guard = re.search(
+            rf"\b[A-Za-z_]\w*(?:is|valid|validate|check)[A-Za-z_0-9]*(?:fd|index|slot|core|bound)[A-Za-z_0-9]*\s*\(\s*{re.escape(idx_name)}\s*\)",
+            guard_window,
+            re.I,
+        )
+        if explicit_bound or validator_guard:
+            return
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="bounds",
+            rule="clang_cfg_unchecked_param_indexes_fixed_global_array",
+            line=line,
+            description="A caller-supplied index parameter directly indexes a fixed global array without a visible upper-bound check.",
+            root_cause="The function trusts an index parameter before proving it is within the backing global array capacity.",
+            suggested_fix="Reject or clamp the index against ARRAY_SIZE or the concrete global-array capacity before indexing.",
+            source=idx_name,
+            sink=line.text,
+            confidence=0.86,
+            impact_level="high",
+            positive=[
+                f"function signature exposes index parameter `{idx_name}`",
+                f"line {line.number}: `{array_name}` is indexed by `{idx_name}`",
+                "no prior ARRAY_SIZE/concrete-capacity guard or index validator is visible",
+            ],
+            negative=[],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [self._event("global_array_index", line, idx_name, array_name, line.text)],
+                [line.number],
             ),
         )
 
@@ -3672,6 +3745,34 @@ class ClangAstCfgCandidateGenerator:
             if pattern.search(line.text):
                 return line
         return None
+
+    @staticmethod
+    def _signature_param_names(lines: Sequence[ClangCfgLine]) -> List[str]:
+        signature = next(
+            (
+                line.text
+                for line in lines[:8]
+                if "(" in line.text and not re.match(r"^(?:if|for|while|switch)\b", line.text)
+            ),
+            "",
+        )
+        match = re.search(r"\((?P<params>.*)\)", signature)
+        if not match:
+            return []
+        names: List[str] = []
+        for raw_param in match.group("params").split(","):
+            param = raw_param.strip()
+            if not param or param == "void" or "..." in param:
+                continue
+            param = re.sub(r"\[[^]]*\]", "", param)
+            tokens = re.findall(r"\b[A-Za-z_]\w*\b", param)
+            if not tokens:
+                continue
+            candidate = tokens[-1]
+            if candidate in {"const", "volatile", "unsigned", "signed", "struct", "enum"}:
+                continue
+            names.append(candidate)
+        return names
 
     @staticmethod
     def _split_args(args: str) -> List[str]:

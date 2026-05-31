@@ -1,11 +1,13 @@
-from typing import Dict, Any
+from typing import Dict, Any, TYPE_CHECKING
 from ..framework.base import BaseTool
-from ..retrieval.code_index import CodeIndex
+
+if TYPE_CHECKING:
+    from ..retrieval.code_index import CodeIndex
 
 class GetFunctionImplTool(BaseTool):
     """Tool to retrieve function implementation."""
     
-    def __init__(self, code_index: CodeIndex, user_config=None):
+    def __init__(self, code_index: "CodeIndex", user_config=None):
         super().__init__(
             name="get_function_impl",
             description="Retrieve the source code implementation of a specific C function by name."
