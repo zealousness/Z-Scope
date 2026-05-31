@@ -3,7 +3,12 @@ import socketserver
 from zscope.web.dashboard_server import DashboardHttpServer
 
 
-def test_dashboard_server_display_url_for_all_interfaces(tmp_path) -> None:
+def test_dashboard_server_display_url_for_all_interfaces(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        DashboardHttpServer,
+        "_detect_local_ip",
+        staticmethod(lambda: "192.0.2.10"),
+    )
     server = DashboardHttpServer(
         handler_class=socketserver.BaseRequestHandler,
         web_dir=tmp_path,
@@ -11,7 +16,11 @@ def test_dashboard_server_display_url_for_all_interfaces(tmp_path) -> None:
         port=9000,
     )
 
-    assert server.display_url() == "http://localhost:9000 (bound to all interfaces)"
+    assert server.display_urls() == ["http://localhost:9000", "http://192.0.2.10:9000"]
+    assert (
+        server.display_url()
+        == "http://localhost:9000, http://192.0.2.10:9000 (bound to all interfaces)"
+    )
 
 
 def test_dashboard_server_display_url_for_explicit_host(tmp_path) -> None:

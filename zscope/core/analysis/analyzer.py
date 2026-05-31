@@ -101,14 +101,16 @@ from ...common.issue_identity import (
     deduplicate_semantic_issues_programmatic,
     deduplicate_issues,
     flatten_issue_text,
+    issue_call_path_signature,
     issue_resource_signature,
     issue_rank,
+    issue_sink_signature,
     issues_may_share_root_cause,
     normalize_issue_category,
     normalize_issue_key_part,
     parse_issue_location,
     semantic_category_family,
-    semantic_cluster_key,
+    semantic_related_cluster_keys,
     semantic_root_cause_key,
     merge_duplicate_issue,
 )
@@ -2668,7 +2670,8 @@ class Analyzer:
         self, issues: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """Merge candidate findings that point at the same root-cause sink."""
-        return deduplicate_issues(issues)
+        deduped, _summary = deduplicate_semantic_issues_programmatic(issues)
+        return deduped
 
     def _deduplicate_report_issues(
         self,
@@ -2715,15 +2718,20 @@ class Analyzer:
         threshold = float(getattr(semantic_cfg, "llm_confidence_threshold", 0.85) or 0.85)
         clusters: Dict[str, List[Dict[str, Any]]] = {}
         for issue in issues:
-            key = semantic_cluster_key(issue)
-            if key:
+            for key in semantic_related_cluster_keys(issue):
                 clusters.setdefault(key, []).append(issue)
 
-        candidate_clusters = [
-            group
-            for group in clusters.values()
-            if 1 < len(group) <= max_cluster_size
-        ]
+        candidate_clusters: List[List[Dict[str, Any]]] = []
+        seen_cluster_sets: Set[tuple[int, ...]] = set()
+        for group in clusters.values():
+            for candidate_group in self._split_semantic_dedup_cluster(group, max_cluster_size):
+                if len(candidate_group) < 2:
+                    continue
+                cluster_ids = tuple(sorted(id(issue) for issue in candidate_group))
+                if cluster_ids in seen_cluster_sets:
+                    continue
+                seen_cluster_sets.add(cluster_ids)
+                candidate_clusters.append(candidate_group)
         summary: Dict[str, Any] = {
             "llm_candidate_cluster_count": len(candidate_clusters),
             "llm_clusters_called": 0,
@@ -2781,6 +2789,33 @@ class Analyzer:
             summary["llm_rejected_merge_count"] += rejected
 
         return [issue for issue_id, issue in zip(issue_order, issues) if issue_id not in removed], summary
+
+    @staticmethod
+    def _split_semantic_dedup_cluster(
+        group: List[Dict[str, Any]],
+        max_cluster_size: int,
+    ) -> List[List[Dict[str, Any]]]:
+        if len(group) <= max_cluster_size:
+            return [group]
+
+        buckets: Dict[str, List[Dict[str, Any]]] = {}
+        for issue in group:
+            bucket_key = (
+                issue_resource_signature(issue)
+                or issue_sink_signature(issue)
+                or semantic_root_cause_key(issue)
+                or str(issue.get("function") or issue.get("func_name") or "")
+                or "fallback"
+            )
+            buckets.setdefault(bucket_key, []).append(issue)
+
+        split: List[List[Dict[str, Any]]] = []
+        for bucket in buckets.values():
+            for start in range(0, len(bucket), max_cluster_size):
+                chunk = bucket[start : start + max_cluster_size]
+                if len(chunk) > 1:
+                    split.append(chunk)
+        return split
 
     def _make_issue_reconciler_agent(self) -> Any:
         recon_agent_cfg = next(
@@ -2866,6 +2901,8 @@ class Analyzer:
             "source": issue.get("source"),
             "sink": issue.get("sink") or issue.get("sink_function"),
             "call_path": issue.get("call_path"),
+            "call_path_signature": issue_call_path_signature(issue),
+            "sink_signature": issue_sink_signature(issue),
         }
 
     @staticmethod
@@ -2921,6 +2958,7 @@ class Analyzer:
                     duplicate,
                     confidence=confidence,
                     threshold=threshold,
+                    allow_cross_function_root=True,
                 ):
                     rejected += 1
                     continue

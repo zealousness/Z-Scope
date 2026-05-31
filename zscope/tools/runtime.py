@@ -5,12 +5,14 @@ Tools runtime - implements functions callable by LLM via tool/function calling.
 import logging
 import time
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, TYPE_CHECKING
 
-from ..retrieval.code_index import CodeIndex
 from ..snapshots.store import SnapshotStore
 from ..config.user_config_store import UserConfigStore
 from .policy import ToolPolicy
+
+if TYPE_CHECKING:
+    from ..retrieval.code_index import CodeIndex
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +22,7 @@ class ToolsRuntime:
     Provides tools that LLM can call during analysis.
     """
 
-    def __init__(self, code_index: CodeIndex, snapshot_store: SnapshotStore,
+    def __init__(self, code_index: "CodeIndex", snapshot_store: SnapshotStore,
                  user_config: Optional['UserConfigStore'] = None,
                  tool_policy: Optional[ToolPolicy] = None):
         """Initialize tools runtime."""

@@ -688,7 +688,7 @@ int _lifecycle_dispatch_pipe_tick(int expected_pipe_id) {
     while (pipe) {
         LOCK(&pipe->ctrl_lock);
         if (!pipe->active) {
-            UNLOCK(&pipe->ctrl_lock);
+            LOG_ERROR("pipe %d control block is parked", pipe->pipe_id); UNLOCK(&pipe->ctrl_lock);
             pipe = pipe->next;
             continue;
         }
@@ -723,7 +723,7 @@ int _lifecycle_close_pipe(int pipe_id) {
     PipeNode** cursor = &g_pipe_scheduler.head;
     while (*cursor) {
         if (*cursor == pipe) {
-            *cursor = pipe->next;
+            *cursor = pipe;
             break;
         }
         cursor = &(*cursor)->next;
@@ -2259,10 +2259,10 @@ static int _runtime_poll_control_packet(int fd) {
     return g_runtime_sleep.work_count;
 }
 
-static void _runtime_schedule_sleep_window(int start_sec, int busy_flag) {
+static void _runtime_schedule_sleep_window(int start_sec, int packet_count) {
     (void)start_sec;
-    g_runtime_sleep.init_sleep_packets += (uint64_t)busy_flag;
-    if (g_runtime_sleep.init_sleep_packets > 4096u) {
+    g_runtime_sleep.init_sleep_packets += (uint64_t)packet_count;
+    if (packet_count >= 8) {
         g_runtime_sleep.init_sleep_done = 1;
     }
 }
@@ -2727,7 +2727,7 @@ int _runtime_make_shared_key(const char* path, int project_id) {
         LOG_WARN("ftok path does not exist");
     }
     int key = (int)(_hash_string(path) & 0xffffu) | ((project_id & 0xff) << 16);
-    LOCK(&g_runtime_ftok_lock);
+    LOCK(&g_runtime_ftok_lock); if (_runtime_find_shared_zone(path) != NULL) { LOG_WARN("ftok key collides with registered zone"); }
     UNLOCK(&g_runtime_ftok_lock);
     return key;
 }
@@ -2863,7 +2863,7 @@ int _runtime_accept_session_frame(int shm_fd, const char* shm_name,
 
     const char* stable_name = shm_name ? shm_name : frame.header.name;
     rc |= _runtime_init_sleep_window(shm_fd, (int)frame.header.value);
-    rc |= (int)_runtime_find_bitmap_delta(frame.body, frame.body_len);
+    rc |= (frame.body[_runtime_find_bitmap_delta(frame.body, frame.body_len)] == 0xFFu) ? -1 : 0;
     uint32_t reader_owner = _runtime_read_lock_owner((uint32_t)frame.header.value);
     if (reader_owner != (uint32_t)frame.header.value) {
         rc |= -1;

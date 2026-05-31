@@ -146,6 +146,7 @@ class RegexCandidateGenerator:
         "shared_memory_race": "CWE-362",
         "state_machine": "CWE-672",
         "signal_deadlock": "CWE-833",
+        "signal_race": "CWE-479",
         "callback_self_destroy_race": "CWE-416",
     }
 
@@ -201,6 +202,7 @@ class RegexCandidateGenerator:
         "shared_memory_race": "shared_state_race",
         "state_machine": "ownership_contract",
         "signal_deadlock": "concurrency_lock_order",
+        "signal_race": "shared_state_race",
         "callback_self_destroy_race": "temporal_memory",
     }
 
@@ -256,6 +258,7 @@ class RegexCandidateGenerator:
         "shared_memory_race": "shared_memory",
         "state_machine": "shared_state",
         "signal_deadlock": "signal",
+        "signal_race": "signal",
         "callback_self_destroy_race": "callback_lifetime",
     }
 

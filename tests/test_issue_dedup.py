@@ -4,6 +4,7 @@ from zscope.common.issue_identity import (
     deduplicate_issues,
     normalize_issue_category,
     normalize_issue_fields,
+    semantic_related_cluster_keys,
 )
 from zscope.core.analysis.analyzer import Analyzer
 
@@ -587,6 +588,146 @@ def test_semantic_dedup_merges_race_aliases_only_for_same_resource() -> None:
     assert any(issue.get("duplicate_count") == 1 for issue in deduped)
 
 
+def test_semantic_related_keys_cluster_cross_function_same_sink_and_path() -> None:
+    direct = {
+        "id": "A",
+        "function": "_validate_task",
+        "location": "src/parser.c:361",
+        "category": "command_injection",
+        "description": "user command reaches shell execution",
+        "sink": "system(command)",
+        "call_path": ["td_execute_command", "_validate_task", "system"],
+    }
+    wrapper = {
+        "id": "B",
+        "function": "_submit_task_frame",
+        "location": "src/parser.c:420",
+        "category": "command_injection",
+        "description": "the submit path forwards the same command to system",
+        "sink": "system(command)",
+        "call_path": ["td_submit_task", "_submit_task_frame", "_validate_task", "system"],
+    }
+
+    direct_keys = set(semantic_related_cluster_keys(direct))
+    wrapper_keys = set(semantic_related_cluster_keys(wrapper))
+
+    assert any(key.startswith("semantic-sink-v1|command_injection|src/parser.c|system") for key in direct_keys)
+    assert direct_keys.intersection(wrapper_keys)
+
+
+def test_llm_dedup_guard_allows_cross_function_command_injection_same_sink() -> None:
+    direct = {
+        "id": "A",
+        "function": "_validate_task",
+        "location": "src/parser.c:361",
+        "category": "command_injection",
+        "description": "The command reaches system without shell escaping.",
+        "sink": "system(command)",
+    }
+    wrapper = {
+        "id": "B",
+        "function": "_submit_task_frame",
+        "location": "src/parser.c:420",
+        "category": "command_injection",
+        "description": "The submit path forwards the same command to the shell.",
+        "sink": "system(command)",
+    }
+    decision = {
+        "duplicate_groups": [
+            {
+                "primary_issue_id": "A",
+                "duplicate_issue_ids": ["B"],
+                "root_cause_key": "task_command_execution",
+                "confidence": 0.92,
+                "reasoning": "Both findings describe the same command execution sink.",
+            }
+        ],
+        "must_keep_distinct_issue_ids": [],
+    }
+
+    applied, rejected = Analyzer._apply_llm_dedup_decision(
+        decision,
+        {"A": direct, "B": wrapper},
+        set(),
+        threshold=0.85,
+    )
+
+    assert applied == 1
+    assert rejected == 0
+    assert direct["duplicate_count"] == 1
+
+
+def test_llm_dedup_guard_rejects_cross_function_same_sink_distinct_resources() -> None:
+    admin = {
+        "id": "A",
+        "function": "_run_admin_task",
+        "location": "src/parser.c:500",
+        "category": "command_injection",
+        "description": "admin command reaches system",
+        "sink": "system(command)",
+        "resource_signature": "admin_command",
+    }
+    user = {
+        "id": "B",
+        "function": "_run_user_task",
+        "location": "src/parser.c:540",
+        "category": "command_injection",
+        "description": "user command reaches system",
+        "sink": "system(command)",
+        "resource_signature": "user_command",
+    }
+    decision = {
+        "duplicate_groups": [
+            {
+                "primary_issue_id": "A",
+                "duplicate_issue_ids": ["B"],
+                "root_cause_key": "bad-merge",
+                "confidence": 0.99,
+                "reasoning": "Both call system.",
+            }
+        ],
+        "must_keep_distinct_issue_ids": [],
+    }
+
+    applied, rejected = Analyzer._apply_llm_dedup_decision(
+        decision,
+        {"A": admin, "B": user},
+        set(),
+        threshold=0.85,
+    )
+
+    assert applied == 0
+    assert rejected == 1
+
+
+def test_programmatic_semantic_dedup_merges_missing_refcount_and_uaf_same_resource() -> None:
+    refcount = {
+        "id": "REF",
+        "function": "_issue41_missing_reference_count",
+        "location": "src/lifecycle.c:1822",
+        "category": "missing_refcount",
+        "description": "Shared resource in g_issue41_broker.resources is freed without refcount protocol.",
+        "resource_signature": "g_issue41_broker.resources",
+        "sink": "SAFE_FREE(res)",
+    }
+    uaf = {
+        "id": "UAF",
+        "function": "_td_issue41_worker",
+        "location": "src/lifecycle.c:1830",
+        "category": "use_after_free",
+        "description": "Worker reaches the same g_issue41_broker.resources node after SAFE_FREE(res).",
+        "resource_signature": "g_issue41_broker.resources",
+        "sink": "res->ref_count",
+        "call_path": ["td_run_issue41_cases", "_td_issue41_worker", "_issue41_missing_reference_count"],
+    }
+
+    deduped, summary = deduplicate_semantic_issues_programmatic([refcount, uaf])
+
+    assert len(deduped) == 1
+    assert deduped[0]["duplicate_count"] == 1
+    assert summary["programmatic_merge_count"] == 1
+
+
 def test_llm_dedup_guard_rejects_distinct_resources() -> None:
     thread_ids = {
         "id": "A",
@@ -626,6 +767,87 @@ def test_llm_dedup_guard_rejects_distinct_resources() -> None:
     assert rejected == 1
 
 
+def test_llm_dedup_guard_rejects_td_init_distinct_allocation_members() -> None:
+    dispatcher_threads = {
+        "id": "A",
+        "function": "td_init",
+        "location": "src/main.c:185",
+        "category": "memory_leak",
+        "description": "g_dispatcher.threads allocation failure leaves earlier dispatcher resources allocated.",
+    }
+    thread_ids = {
+        "id": "B",
+        "function": "td_init",
+        "location": "src/main.c:191",
+        "category": "memory_leak",
+        "description": "thread_ids allocation failure leaks the previously allocated thread argument array.",
+    }
+    decision = {
+        "duplicate_groups": [
+            {
+                "primary_issue_id": "A",
+                "duplicate_issue_ids": ["B"],
+                "root_cause_key": "partial_cleanup_failure|src/main.c|td_init|g_dispatcher",
+                "confidence": 0.92,
+                "reasoning": "Both are cleanup failures in td_init.",
+            }
+        ],
+        "must_keep_distinct_issue_ids": [],
+    }
+
+    applied, rejected = Analyzer._apply_llm_dedup_decision(
+        decision,
+        {"A": dispatcher_threads, "B": thread_ids},
+        set(),
+        threshold=0.85,
+    )
+
+    assert applied == 0
+    assert rejected == 1
+
+
+def test_llm_dedup_guard_allows_same_file_root_across_functions() -> None:
+    callee = {
+        "id": "A",
+        "function": "_peer_expand_task_table",
+        "location": "src/lifecycle.c:1789",
+        "category": "dynamic_array_race",
+        "description": "g_issue41_task_array is resized and the old array is freed without synchronization.",
+        "sink": "g_issue41_task_array = new_array",
+    }
+    wrapper = {
+        "id": "B",
+        "function": "_peer_create_task_from_frame",
+        "location": "src/lifecycle.c:1922",
+        "category": "shared_state_race",
+        "description": "The task creation path reaches the same unsynchronized g_issue41_task_array resize.",
+        "sink": "g_issue41_task_array old storage can race with readers",
+    }
+    decision = {
+        "duplicate_groups": [
+            {
+                "primary_issue_id": "A",
+                "duplicate_issue_ids": ["B"],
+                "root_cause_key": "issue41_dynamic_array_resize",
+                "confidence": 0.93,
+                "reasoning": "Both reports describe the same global task array resize root cause.",
+            }
+        ],
+        "must_keep_distinct_issue_ids": [],
+    }
+
+    applied, rejected = Analyzer._apply_llm_dedup_decision(
+        decision,
+        {"A": callee, "B": wrapper},
+        set(),
+        threshold=0.85,
+    )
+
+    assert applied == 1
+    assert rejected == 0
+    assert callee["duplicate_count"] == 1
+
+
 def test_programmatic_semantic_dedup_keeps_distinct_concrete_roots() -> None:
     detach_leak = {
         "id": "DETACH",
@@ -647,3 +869,76 @@ def test_programmatic_semantic_dedup_keeps_distinct_concrete_roots() -> None:
 
     assert len(deduped) == 2
     assert summary["programmatic_merge_count"] == 0
+
+
+def test_semantic_dedup_merges_command_validation_aliases_across_files() -> None:
+    parser_filter = {
+        "id": "PARSER",
+        "function": "_validate_task",
+        "location": "src/parser.c:341",
+        "category": "incomplete_input_validation",
+        "description": "td_submit_task data reaches src/executor.c:87 system(full_command).",
+        "sink": "system(full_command)",
+    }
+    executor_filter = {
+        "id": "EXEC",
+        "function": "_executor_validate_command",
+        "location": "src/executor.c:207",
+        "category": "insufficient_validation",
+        "description": "task->payload.command.command and TASK_ENV reach system(full_command).",
+        "sink": "system(full_command)",
+    }
+
+    deduped, summary = deduplicate_semantic_issues_programmatic([parser_filter, executor_filter])
+
+    assert len(deduped) == 1
+    assert deduped[0]["duplicate_count"] == 1
+    assert summary["programmatic_merge_count"] == 1
+
+
+def test_semantic_dedup_keeps_distinct_platform_command_root() -> None:
+    task_command = {
+        "id": "TASK",
+        "function": "_executor_validate_command",
+        "location": "src/executor.c:207",
+        "category": "command_injection",
+        "description": "task command reaches system(full_command).",
+        "sink": "system(full_command)",
+    }
+    platform_command = {
+        "id": "PLATFORM",
+        "function": "platform_execute_task",
+        "location": "src/platform_linux.c:30",
+        "category": "command_injection",
+        "description": "platform task reaches system(task).",
+        "sink": "system(task)",
+    }
+
+    deduped, summary = deduplicate_semantic_issues_programmatic([task_command, platform_command])
+
+    assert len(deduped) == 2
+    assert summary["programmatic_merge_count"] == 0
+
+
+def test_semantic_dedup_merges_peer_publish_uaf_with_refcount_root() -> None:
+    refcount = {
+        "id": "REF",
+        "function": "_peer_publish_shared_session",
+        "location": "src/lifecycle.c:1819",
+        "category": "missing_refcount",
+        "description": "g_peer_session_broker.resources shared listener is freed without checking ref_count.",
+        "sink": "SAFE_FREE(res)",
+    }
+    uaf = {
+        "id": "UAF",
+        "function": "_peer_publish_shared_session",
+        "location": "src/lifecycle.c:1835",
+        "category": "use_after_free",
+        "description": "safe_free(res) leaves g_peer_session_broker.resources linked and later readers dereference res->next.",
+        "sink": "res->next",
+    }
+
+    deduped, summary = deduplicate_semantic_issues_programmatic([refcount, uaf])
+
+    assert len(deduped) == 1
+    assert summary["programmatic_merge_count"] == 1

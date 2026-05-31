@@ -114,6 +114,13 @@ def is_entry_root_contract_scope_rejection(
         "busy_loop",
         "dynamic_array_race",
         "memory_leak",
+        "premature_destroy",
+        "fd_type_mismatch",
+        "semantic_mismatch",
+        "byte_order_logic",
+        "key_generation_race",
+        "signal_race",
+        "infinite_loop",
     }:
         return False
     if not _has_strong_structured_evidence(evidence_pack):
@@ -357,6 +364,11 @@ def category_validation_requirements(issue: Dict[str, Any]) -> List[str]:
             "A role-specific release helper only proves cleanup for the role it actually receives; compare stored role and release argument.",
             "If the candidate names a member/child allocation as the leaked resource, do not reject it merely because the parent container is freed.",
             "If an insert/link helper can attach an object to a global structure and then return failure, an ignored return value can lose rollback and cleanup ownership; global reachability alone does not prove a valid cleanup protocol.",
+            "Do not reinterpret a negative helper return as success unless a documented or enforced contract proves that negative status is an expected non-failure mode.",
+        ],
+        "infinite_loop": [
+            "For poisoned/self-linked list nodes, evaluate concurrent or stale iterators that may already hold the node before unlink; a fresh traversal from the current head is not sufficient to disprove the loop.",
+            "A self-link used as a poison marker needs a visible traversal guard; otherwise any walker that follows next pointers can spin on the same node.",
         ],
         "log_amplification": [
             "A self-referential or poisoned traversal with a loop-internal log/error emission can be a resource-exhaustion defect even without memory corruption.",
@@ -371,6 +383,12 @@ def category_validation_requirements(issue: Dict[str, Any]) -> List[str]:
         "global_mode_race": [
             "For global-mode races, registration, mode selection, and callback dispatch must be protected by a common lock or immutable mode snapshot.",
         ],
+        "registration_race": [
+            "For registration races, a pre-lock check of a global slot/list followed by a later locked update is still a race; validation must require one lock covering check and update.",
+        ],
+        "key_generation_race": [
+            "For ftok-style key generation, path existence/state checks and key derivation/registration must be atomic with respect to path changes or use a stable opened object.",
+        ],
         "slot_race": [
             "For slot-claim races, an ignored CAS/compare-exchange result is a concrete bug when field writes continue after a failed claim could leave the slot owned by another thread.",
         ],
@@ -380,11 +398,25 @@ def category_validation_requirements(issue: Dict[str, Any]) -> List[str]:
         "callback_self_destroy_race": [
             "For callback self-destruction, validate whether the callback receives the current object as context and can release it before the caller resumes dereferencing it.",
         ],
+        "premature_destroy": [
+            "For premature-destroy findings, freeing a shared pool/object while an active task/refcount branch says users remain is a concrete lifetime bug unless the code first waits, refcounts, or marks all users stopped.",
+            "Publishing a global/shared pointer and then freeing that same global object in the active-user branch leaves a dangling shared reference even if allocation happened in the same function.",
+        ],
+        "alloc_free_mismatch": [
+            "For allocator/free mismatch, allocation and release callbacks must be registered and selected as a validated pair; a no-op/free callback paired with a custom/header allocator is not safe by type compatibility alone.",
+        ],
+        "sigpipe_unhandled": [
+            "For peer writes, write/send paths to sockets or peer fds need SIGPIPE suppression or handling; checking the negative return value is insufficient if the process can receive SIGPIPE first.",
+        ],
         "lost_wakeup": [
             "For wakeup bugs, publishing an event/list node is not enough; require a signal, trigger, scheduler kick, or documented polling guarantee for the consumer.",
         ],
         "signal_deadlock": [
             "For signal/exception handlers, locks, semaphores, formatting, and logging are unsafe when the path can run asynchronously or re-enter code holding the same primitive.",
+        ],
+        "signal_race": [
+            "For signal/exception handlers, allocation, logging, and writes to shared global state are unsafe unless the code uses an async-signal-safe handoff such as writing minimal data to a pipe or atomic flag.",
+            "Do not reject signal shared-state findings solely because writes are local to the handler; the handler can asynchronously interleave with normal code that owns or reads the same global state.",
         ],
         "held_lock_callback": [
             "Calling a callback/function pointer while holding a non-recursive lock is a lock-order and reentrancy risk when the callback is externally supplied, stored globally, or can evolve independently of the current no-op sample.",
@@ -403,6 +435,7 @@ def category_validation_requirements(issue: Dict[str, Any]) -> List[str]:
         ],
         "fd_type_mismatch": [
             "Reliable/encoded descriptors and raw file descriptors are distinct API contracts; passing one representation to the other validator is a concrete misuse even if both are integers.",
+            "A representation mismatch remains valid when the raw-fd helper fails closed or rejects the encoded value; the issue is the reachable API-contract break and lost descriptor operation, not only memory corruption.",
         ],
         "protocol_mixup": [
             "Protocol mismatch accepted on a non-strict/auth fallback is a boundary validation issue, not a harmless style choice.",
@@ -425,9 +458,11 @@ def category_validation_requirements(issue: Dict[str, Any]) -> List[str]:
         ],
         "semantic_mismatch": [
             "For semantic-contract mismatches, type compatibility is not enough; compare the unit/domain promised by the caller with the callee's documented or inferred contract.",
+            "A callee parameter name, accumulator field, threshold, or downstream side effect can establish the expected unit even when the C type is only int.",
         ],
         "byte_order_logic": [
             "For byte-order logic, copying wire bytes into host integers and using bit-index operations requires explicit endian normalization or a byte-order-independent scan.",
+            "If the computed byte/bit offset influences a later decision, index, copy, or status value, treat the host-order-dependent offset as a concrete semantic sink.",
         ],
         "uninitialized_output": [
             "For output-parameter structs, require memset/zero initialization or assignments for all externally visible fields before copying the temporary object to the caller.",
