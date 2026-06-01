@@ -524,6 +524,7 @@ class ParallelAnalyzer:
         with_review_view = report_views.get("with_needs_review", {})
         
         diff_relevance_summary = self._diff_relevance_summary(unique_issues, unique_observations)
+        diff_coverage = self._diff_coverage_metadata()
         batch_wall_seconds = round(float(getattr(self, "_last_batch_wall_seconds", 0.0) or 0.0), 2)
         effective_speedup = (total_duration / batch_wall_seconds) if batch_wall_seconds > 0 else 0.0
         worker_utilization = (
@@ -554,6 +555,7 @@ class ParallelAnalyzer:
                 "parallel_speedup": f"{effective_speedup:.2f}x observed (using {self.max_workers} workers)",
                 "parallel_worker_utilization": round(worker_utilization, 4),
                 "diff_relevance": diff_relevance_summary["issues"],
+                "diff_coverage": diff_coverage.get("coverage_summary", {}),
             },
             "function_results": function_summaries,
             "issues": unique_issues,
@@ -566,6 +568,7 @@ class ParallelAnalyzer:
                 "audit_observations": unique_observations,
                 "report_view_summary": view_summary,
                 "diff_relevance_summary": diff_relevance_summary,
+                "diff_impact_coverage": diff_coverage,
                 "context_tokens": sum(r.context_tokens for r in results.values()),
                 "cumulative_prompt_tokens": sum(r.cumulative_prompt_tokens for r in results.values()),
                 "cumulative_completion_tokens": sum(r.cumulative_completion_tokens for r in results.values()),
@@ -702,6 +705,30 @@ class ParallelAnalyzer:
 
         return {"issues": count(issues), "audit_observations": count(observations)}
 
+    def _diff_coverage_metadata(self) -> Dict[str, Any]:
+        if not hasattr(self, "base_config"):
+            return {}
+        project = getattr(self.base_config, "project", None)
+        entry_list = getattr(project, "entry_functions_list", None)
+        if not entry_list:
+            return {}
+        path = Path(entry_list)
+        if not path.exists() or not path.is_file():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.debug("Unable to read diff coverage metadata from %s: %s", path, exc)
+            return {}
+        diff_impact = data.get("diff_impact") if isinstance(data, dict) else None
+        if not isinstance(diff_impact, dict):
+            return {}
+        return {
+            "coverage_summary": diff_impact.get("coverage_summary") or {},
+            "function_coverage": diff_impact.get("function_coverage") or [],
+            "analysis_obligations": diff_impact.get("analysis_obligations") or [],
+        }
+
     def generate_combined_markdown_report(
         self, 
         results: Dict[str, ParallelAnalysisResult], 
@@ -736,12 +763,57 @@ class ParallelAnalyzer:
             f"- **Errors**: {summary['error']}",
             f"- **Total Issues Detected**: {summary['total_issues']}",
             f"- **Audit Observations**: {summary['audit_observations']}",
-            "",
-            "## Function Details",
-            "",
-            "| Function | Verdict | Issues | Needs Review / Audit | Duration |",
-            "| :--- | :--- | :--- | :--- | :--- |"
         ]
+
+        diff_coverage = self._diff_coverage_metadata()
+        coverage_summary = diff_coverage.get("coverage_summary") if isinstance(diff_coverage, dict) else {}
+        if isinstance(coverage_summary, dict) and coverage_summary:
+            md.extend(
+                [
+                    "",
+                    "## Diff Impact Coverage",
+                    f"- **Changed Functions**: {coverage_summary.get('changed_total', 0)}",
+                    f"- **Scan Entries**: {coverage_summary.get('scan_entry_count', 0)}",
+                    f"- **Covered By Scan**: {coverage_summary.get('covered_by_scan', 0)}",
+                    f"- **Context Only**: {coverage_summary.get('context_only', 0)}",
+                    f"- **Triage Only**: {coverage_summary.get('triage_only', 0)}",
+                    f"- **Unresolved**: {coverage_summary.get('unresolved', 0)}",
+                ]
+            )
+            not_root = [
+                item
+                for item in diff_coverage.get("function_coverage", [])
+                if isinstance(item, dict)
+                and str(item.get("coverage_status") or "") != "scanned_as_root"
+            ]
+            if not_root:
+                md.extend(
+                    [
+                        "",
+                        "| Function | Coverage | Scan Entry | Reason |",
+                        "| :--- | :--- | :--- | :--- |",
+                    ]
+                )
+                for item in not_root[:20]:
+                    md.append(
+                        "| "
+                        f"`{item.get('function_name', '')}` | "
+                        f"{item.get('coverage_status', '')} | "
+                        f"`{item.get('scan_entry', '')}` | "
+                        f"{item.get('reason', '')} |"
+                    )
+                if len(not_root) > 20:
+                    md.append(f"| ... | ... | ... | +{len(not_root) - 20} more |")
+
+        md.extend(
+            [
+                "",
+                "## Function Details",
+                "",
+                "| Function | Verdict | Issues | Needs Review / Audit | Duration |",
+                "| :--- | :--- | :--- | :--- | :--- |",
+            ]
+        )
         
         for name, res in sorted(results.items()):
             duration_str = f"{res.duration_seconds:.1f}s" if res.duration_seconds else "N/A"

@@ -9,7 +9,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ..common.utils import matches_configured_path, normalize_path
 from ..config.function_entry import FunctionEntry
@@ -24,6 +24,58 @@ HEADER_EXTENSIONS = {".h", ".hpp", ".ph", ".inc", ".inl"}
 HUNK_RE = re.compile(
     r"^@@\s+-\d+(?:,\d+)?\s+\+(?P<start>\d+)(?:,(?P<count>\d+))?\s+@@"
 )
+CALL_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
+INPUT_RE = re.compile(
+    r"\b(?:recv|recvfrom|recvmsg|read|readv|fread|fgets|getline|getenv|"
+    r"secure_getenv|scanf|fscanf|sscanf|ioctl|argv|stdin|SSL_read|BIO_read)\b",
+    re.IGNORECASE,
+)
+THREAD_RE = re.compile(
+    r"\b(?:pthread_create|CreateThread|_beginthread|thrd_create|callback|register_callback|workqueue|worker)\b",
+    re.IGNORECASE,
+)
+DISPATCH_RE = re.compile(
+    r"\b(?:dispatch|dispatcher|handler|opcode|message|msg|cmd|command|event|state|switch|case)\b",
+    re.IGNORECASE,
+)
+ACQUIRE_RE = re.compile(
+    r"\b(?:malloc|calloc|realloc|alloc|create|new|init|open|acquire|get|ref|register|insert|add|attach|publish)\b",
+    re.IGNORECASE,
+)
+RELEASE_RE = re.compile(
+    r"\b(?:free|dealloc|release|destroy|close|unregister|remove|delete|cleanup|put|unref|detach|drop)\b",
+    re.IGNORECASE,
+)
+LOCK_RE = re.compile(r"\b(?:lock|mutex_lock|spin_lock|rwlock)\b", re.IGNORECASE)
+UNLOCK_RE = re.compile(r"\b(?:unlock|mutex_unlock|spin_unlock|rwlock_unlock)\b", re.IGNORECASE)
+SINK_RE = re.compile(
+    r"\b(?:memcpy|memmove|strcpy|strncpy|snprintf|sprintf|copy|parse|decode|index|offset|length|size)\b",
+    re.IGNORECASE,
+)
+TRANSFER_RE = re.compile(
+    r"\b(?:out|owner|ownership|transfer|handoff|register|insert|add|attach|publish|store|global|list|map|table)\b",
+    re.IGNORECASE,
+)
+TRIVIAL_LINE_RE = re.compile(r"^\s*(?:\d+\s*\|\s*)?(?:[{};]|return\s+[-A-Za-z_0-9]+;?)\s*$")
+
+FORWARD_INTENTS = {
+    "new_external_api",
+    "resource_acquire_change",
+    "input_boundary_change",
+    "dispatcher_route_change",
+    "thread_or_callback_entry_change",
+}
+BACKWARD_INTENTS = {
+    "resource_release_change",
+    "sink_or_check_change",
+    "lock_release_change",
+    "destroy_or_unregister_change",
+}
+BIDIRECTIONAL_INTENTS = {
+    "ownership_transfer_change",
+    "container_registration_change",
+    "lifecycle_contract_change",
+}
 
 
 @dataclass
@@ -76,6 +128,9 @@ class DiffImpactPlan:
     changed_functions: List[ChangedFunction]
     changed_files: List[str]
     changed_headers: List[str]
+    analysis_obligations: List[Dict[str, Any]] = field(default_factory=list)
+    function_coverage: List[Dict[str, Any]] = field(default_factory=list)
+    coverage_summary: Dict[str, Any] = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
 
     def to_entry_functions_payload(self) -> Dict[str, Any]:
@@ -93,6 +148,9 @@ class DiffImpactPlan:
                 "changed_files": self.changed_files,
                 "changed_headers": self.changed_headers,
                 "changed_functions": [func.to_dict() for func in self.changed_functions],
+                "analysis_obligations": self.analysis_obligations,
+                "coverage_summary": self.coverage_summary,
+                "function_coverage": self.function_coverage,
                 "entry_count": len(self.entries),
                 "notes": self.notes,
             },
@@ -120,6 +178,10 @@ class DiffImpactPlanner:
         head_ref: str = "HEAD",
         component: str = "default",
         header_files: Optional[Sequence[str]] = None,
+        strategy: str = "semantic_obligation",
+        llm_triage: str = "on_demand",
+        llm_triage_selector: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
+        caller_search_depth_by_intent: Optional[Dict[str, int]] = None,
         max_call_depth: int = 12,
         caller_limit: int = 200,
         synthetic_depth_threshold: int = 3,
@@ -142,6 +204,10 @@ class DiffImpactPlanner:
         self.head_ref = head_ref or "HEAD"
         self.component = component or "default"
         self.header_files = list(header_files or [])
+        self.strategy = strategy or "semantic_obligation"
+        self.llm_triage = llm_triage or "on_demand"
+        self.llm_triage_selector = llm_triage_selector
+        self.caller_search_depth_by_intent = dict(caller_search_depth_by_intent or {})
         self.max_call_depth = max_call_depth
         self.caller_limit = caller_limit
         self.synthetic_depth_threshold = synthetic_depth_threshold
@@ -160,7 +226,8 @@ class DiffImpactPlanner:
             file_path for file_path in changed_files if Path(file_path).suffix in HEADER_EXTENSIONS
         )
         changed_functions = self._map_changed_functions(changed_ranges)
-        entries = self._build_entries(changed_functions)
+        selection = self._build_semantic_selection(changed_functions)
+        entries = selection["entries"]
         notes: List[str] = []
         if not changed_ranges:
             notes.append("No new-version source line changes were found in the requested diff.")
@@ -182,6 +249,9 @@ class DiffImpactPlanner:
             changed_functions=changed_functions,
             changed_files=changed_files,
             changed_headers=changed_headers,
+            analysis_obligations=selection["analysis_obligations"],
+            function_coverage=selection["function_coverage"],
+            coverage_summary=selection["coverage_summary"],
             notes=notes,
         )
 
@@ -357,7 +427,99 @@ class DiffImpactPlanner:
                 )
         return changed
 
+    def _build_semantic_selection(self, changed_functions: Sequence[ChangedFunction]) -> Dict[str, Any]:
+        entries_by_key: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        obligations: List[Dict[str, Any]] = []
+        coverage: List[Dict[str, Any]] = []
+
+        for changed in changed_functions:
+            intent = self._classify_change_intent(changed)
+            selection = self._select_semantic_root(changed, intent)
+            obligation_id = f"DIFF_OBLIGATION_{len(obligations) + 1}"
+            obligation = {
+                "id": obligation_id,
+                "direction": self._intent_direction(intent),
+                "intent": intent,
+                "changed_functions": [changed.to_dict()],
+                "root_function": selection.get("root_function", ""),
+                "root_kind": selection.get("root_kind", ""),
+                "context_functions": selection.get("context_functions", []),
+                "covered_paths": selection.get("paths", []),
+                "stop_reason": selection.get("stop_reason", ""),
+                "selection_reason": selection.get("selection_reason", ""),
+                "llm_triage": selection.get(
+                    "llm_triage",
+                    {
+                        "mode": self.llm_triage,
+                        "status": "not_invoked",
+                    },
+                ),
+            }
+            obligations.append(obligation)
+
+            if selection.get("candidate"):
+                self._merge_entry(
+                    entries_by_key,
+                    selection["candidate"],
+                    changed,
+                    selection.get("primary_path") or [selection["candidate"]["function_name"]],
+                    fallback_reason=str(selection.get("fallback_reason") or ""),
+                    intent=intent,
+                    obligation_id=obligation_id,
+                    context_callers=selection.get("context_callers") or [],
+                    selection_reason=str(selection.get("selection_reason") or ""),
+                    root_kind=str(selection.get("root_kind") or ""),
+                )
+
+            coverage.append(
+                self._coverage_record(
+                    changed,
+                    intent,
+                    selection,
+                )
+            )
+
+        entries: List[FunctionEntry] = []
+        for item in sorted(entries_by_key.values(), key=lambda value: value["sort_key"]):
+            focus = item["focus"]
+            focus["changed_functions"] = sorted(
+                focus["changed_functions"],
+                key=lambda value: (value.get("file_path", ""), value.get("function_name", "")),
+            )
+            focus["affected_paths"] = sorted(
+                focus["affected_paths"],
+                key=lambda value: (
+                    value.get("changed_function", ""),
+                    len(value.get("path") or []),
+                    "/".join(value.get("path") or []),
+                ),
+            )
+            focus["context_callers"] = sorted(
+                focus.get("context_callers") or [],
+                key=lambda value: (value.get("function_name", ""), "/".join(value.get("path") or [])),
+            )
+            entries.append(
+                FunctionEntry(
+                    function_name=item["function_name"],
+                    file_path=item["file_path"],
+                    custom_prompt=self._custom_prompt(item["base_prompt"], focus),
+                    diff_focus=focus,
+                    exposure=str(focus.get("entry_exposure") or ""),
+                    reasons=list(focus.get("entry_reasons") or []),
+                )
+            )
+        return {
+            "entries": entries,
+            "analysis_obligations": obligations,
+            "function_coverage": coverage,
+            "coverage_summary": self._coverage_summary(coverage, len(entries)),
+        }
+
     def _build_entries(self, changed_functions: Sequence[ChangedFunction]) -> List[FunctionEntry]:
+        """Compatibility wrapper for tests and callers that only need entries."""
+        return self._build_semantic_selection(changed_functions)["entries"]
+
+    def _build_legacy_entries(self, changed_functions: Sequence[ChangedFunction]) -> List[FunctionEntry]:
         entries_by_key: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
         for changed in changed_functions:
             external_paths = self._find_external_entry_paths(changed)
@@ -401,6 +563,692 @@ class DiffImpactPlanner:
                 )
             )
         return entries
+
+    def _classify_change_intent(self, changed: ChangedFunction) -> str:
+        if changed.change_kind == "header_declaration":
+            declaration = self._first_header_declaration(changed.function_name)
+            if declaration:
+                return "new_external_api"
+            return "declaration_or_contract_change"
+
+        impl = self._get_impl(changed.function_name) or {}
+        code = str(impl.get("code") or "")
+        name = changed.function_name
+        stripped = EntryDiscovery._strip_code_for_call_search(code)
+        semantic_text = f"{name}\n{stripped}"
+
+        if self._looks_trivial_code(stripped):
+            return "comment_or_trivial_change"
+        if INPUT_RE.search(semantic_text):
+            return "input_boundary_change"
+        if THREAD_RE.search(semantic_text):
+            return "thread_or_callback_entry_change"
+        if DISPATCH_RE.search(semantic_text):
+            return "dispatcher_route_change"
+        if UNLOCK_RE.search(semantic_text):
+            return "lock_release_change"
+        if RELEASE_RE.search(semantic_text):
+            return "destroy_or_unregister_change" if re.search(r"destroy|unregister|remove|delete|cleanup", semantic_text, re.I) else "resource_release_change"
+        if LOCK_RE.search(semantic_text):
+            return "lifecycle_contract_change"
+        if ACQUIRE_RE.search(semantic_text):
+            if TRANSFER_RE.search(semantic_text):
+                return "ownership_transfer_change"
+            return "resource_acquire_change"
+        if TRANSFER_RE.search(semantic_text):
+            return "container_registration_change"
+        if SINK_RE.search(semantic_text):
+            return "sink_or_check_change"
+        return "local_logic_change"
+
+    def _select_semantic_root(self, changed: ChangedFunction, intent: str) -> Dict[str, Any]:
+        if intent == "comment_or_trivial_change":
+            return {
+                "coverage_status": "triage_only",
+                "reason": "local_logic_low_risk",
+                "selection_reason": "Trivial or comment-only looking change recorded for coverage without a scan root.",
+                "stop_reason": "trivial_change",
+                "paths": [[changed.function_name]],
+            }
+
+        external_paths = self._find_external_entry_paths(changed)
+        if intent in FORWARD_INTENTS or intent in BIDIRECTIONAL_INTENTS:
+            candidate = self._external_or_synthetic_candidate(changed, intent)
+            context_callers = self._context_callers_for_candidate(candidate["function_name"], external_paths)
+            return {
+                "candidate": candidate,
+                "root_function": candidate["function_name"],
+                "root_kind": self._root_kind_for_intent(intent, candidate),
+                "coverage_status": "scanned_as_root" if candidate["function_name"] == changed.function_name else "covered_by_entry",
+                "reason": "scanned_as_semantic_root" if candidate["function_name"] == changed.function_name else "covered_by_semantic_root",
+                "selection_reason": self._selection_reason_for_intent(intent),
+                "stop_reason": "forward_semantic_root",
+                "primary_path": [candidate["function_name"], changed.function_name] if candidate["function_name"] != changed.function_name else [changed.function_name],
+                "paths": self._paths_or_default(external_paths, changed.function_name),
+                "context_callers": context_callers,
+                "context_functions": self._context_function_names(context_callers),
+            }
+
+        root = self._find_best_upstream_root(changed, intent)
+        triage_meta = self._run_llm_triage_if_needed(changed, intent, external_paths, root)
+        triage_selection = self._selection_from_llm_triage(
+            changed,
+            intent,
+            external_paths,
+            triage_meta,
+        )
+        if triage_selection:
+            return triage_selection
+        if root:
+            candidate = root["candidate"]
+            context_callers = self._context_callers_for_candidate(candidate["function_name"], external_paths)
+            if root.get("path"):
+                context_callers.extend(self._context_callers_above_root(root["path"], candidate["function_name"]))
+            return {
+                "candidate": candidate,
+                "root_function": candidate["function_name"],
+                "root_kind": root.get("root_kind", "semantic_root"),
+                "coverage_status": "scanned_as_root" if candidate["function_name"] == changed.function_name else "covered_by_entry",
+                "reason": root.get("reason", "covered_by_semantic_root"),
+                "selection_reason": root.get("selection_reason", "Selected nearest semantic root for changed sink."),
+                "stop_reason": root.get("stop_reason", "upstream_semantic_root"),
+                "primary_path": root.get("path") or [candidate["function_name"], changed.function_name],
+                "paths": [root.get("path") or [candidate["function_name"], changed.function_name]],
+                "context_callers": self._dedupe_context_callers(context_callers),
+                "context_functions": self._context_function_names(context_callers),
+                "llm_triage": triage_meta or {
+                    "mode": self.llm_triage,
+                    "status": "not_invoked",
+                },
+            }
+
+        candidate = self._synthetic_candidate(changed)
+        return {
+            "candidate": candidate,
+            "root_function": candidate["function_name"],
+            "root_kind": "synthetic_internal_diff_entry",
+            "coverage_status": "scanned_as_root",
+            "reason": "semantic_root_unresolved",
+            "selection_reason": "No owner/source root was proven; scanning the changed function directly.",
+            "stop_reason": "no_semantic_root_found",
+            "fallback_reason": "no_semantic_root_found",
+            "primary_path": [changed.function_name],
+            "paths": [[changed.function_name]],
+            "context_callers": self._context_callers_for_candidate(changed.function_name, external_paths),
+            "context_functions": [],
+            "llm_triage": triage_meta or {
+                "mode": self.llm_triage,
+                "status": "not_invoked",
+            },
+        }
+
+    def _find_best_upstream_root(self, changed: ChangedFunction, intent: str) -> Optional[Dict[str, Any]]:
+        max_depth = self._max_depth_for_intent(intent)
+        queue: List[Tuple[str, List[str], int]] = [(changed.function_name, [changed.function_name], 0)]
+        visited = {changed.function_name}
+        candidates: List[Dict[str, Any]] = []
+
+        while queue:
+            current, changed_to_current_path, depth = queue.pop(0)
+            root_score = self._semantic_root_score(current, intent)
+            if root_score > 0:
+                path = list(reversed(changed_to_current_path))
+                candidate = self._candidate_for_root(current, intent)
+                candidates.append(
+                    {
+                        "candidate": candidate,
+                        "path": path,
+                        "score": root_score,
+                        "depth": depth,
+                        "root_kind": candidate.get("exposure") or "semantic_root",
+                        "reason": self._coverage_reason_for_root(candidate, intent),
+                        "selection_reason": self._selection_reason_for_root(candidate, intent),
+                        "stop_reason": "nearest_semantic_root",
+                    }
+                )
+            if depth >= max_depth:
+                continue
+            for caller in self._get_callers(current):
+                caller_name = str(caller.get("name") or "")
+                if not caller_name or caller_name in visited:
+                    continue
+                visited.add(caller_name)
+                queue.append((caller_name, changed_to_current_path + [caller_name], depth + 1))
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: (-int(item["score"]), int(item["depth"]), item["candidate"]["function_name"]))
+        return candidates[0]
+
+    def _run_llm_triage_if_needed(
+        self,
+        changed: ChangedFunction,
+        intent: str,
+        external_paths: Sequence[Tuple[Dict[str, Any], List[str]]],
+        current_root: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        if not self._needs_llm_triage(intent, external_paths, current_root):
+            return {}
+        trigger = self._llm_triage_trigger(intent, external_paths, current_root)
+        base_meta = {
+            "mode": self.llm_triage,
+            "status": "skipped_no_selector",
+            "trigger": trigger,
+            "expected_schema": [
+                "intent",
+                "direction",
+                "recommended_root",
+                "context_functions",
+                "confidence",
+                "stop_reason",
+            ],
+        }
+        if not callable(self.llm_triage_selector):
+            return base_meta
+
+        request = {
+            "changed_function": changed.to_dict(),
+            "intent": intent,
+            "direction": self._intent_direction(intent),
+            "trigger": trigger,
+            "current_root": self._triage_root_summary(current_root),
+            "external_paths": [
+                {
+                    "candidate": {
+                        "function_name": candidate.get("function_name", ""),
+                        "file_path": candidate.get("file_path", ""),
+                        "exposure": candidate.get("exposure", ""),
+                        "reasons": candidate.get("reasons", []),
+                    },
+                    "path": list(path),
+                }
+                for candidate, path in external_paths[:50]
+            ],
+        }
+        try:
+            result = self.llm_triage_selector(request) or {}
+        except Exception as exc:
+            logger.debug("Diff impact LLM triage selector failed for %s: %s", changed.function_name, exc)
+            failed = dict(base_meta)
+            failed.update({"status": "failed", "error": str(exc)})
+            return failed
+        if not isinstance(result, dict):
+            invalid = dict(base_meta)
+            invalid.update({"status": "invalid_result"})
+            return invalid
+        return {
+            "mode": self.llm_triage,
+            "status": "invoked",
+            "trigger": trigger,
+            "intent": str(result.get("intent") or intent),
+            "direction": str(result.get("direction") or self._intent_direction(intent)),
+            "recommended_root": str(result.get("recommended_root") or ""),
+            "context_functions": [
+                str(item)
+                for item in (result.get("context_functions") or [])
+                if str(item).strip()
+            ],
+            "confidence": float(result.get("confidence") or 0.0),
+            "stop_reason": str(result.get("stop_reason") or "llm_triage"),
+        }
+
+    def _selection_from_llm_triage(
+        self,
+        changed: ChangedFunction,
+        intent: str,
+        external_paths: Sequence[Tuple[Dict[str, Any], List[str]]],
+        triage_meta: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        if not triage_meta or triage_meta.get("status") != "invoked":
+            return None
+        confidence = float(triage_meta.get("confidence") or 0.0)
+        root_name = str(triage_meta.get("recommended_root") or "")
+        if not root_name or confidence < 0.5:
+            return None
+        if not self._get_impl(root_name):
+            return None
+        triage_intent = str(triage_meta.get("intent") or intent)
+        candidate = self._candidate_for_root(root_name, triage_intent)
+        path = self._path_from_root_to_changed(root_name, changed, external_paths)
+        context_callers = self._context_callers_for_candidate(root_name, external_paths)
+        context_callers.extend(
+            self._context_callers_from_triage(
+                triage_meta.get("context_functions") or [],
+                root_name,
+                path,
+            )
+        )
+        context_callers = self._dedupe_context_callers(context_callers)
+        return {
+            "candidate": candidate,
+            "root_function": candidate["function_name"],
+            "root_kind": candidate.get("exposure") or "llm_triage_root",
+            "coverage_status": "scanned_as_root"
+            if candidate["function_name"] == changed.function_name
+            else "covered_by_entry",
+            "reason": "llm_triage_recommended_root"
+            if candidate["function_name"] != changed.function_name
+            else "scanned_as_semantic_root",
+            "selection_reason": (
+                "LLM triage selected this root for high fan-out or ambiguous static evidence; "
+                "the triage result only guides scan-root selection."
+            ),
+            "stop_reason": str(triage_meta.get("stop_reason") or "llm_triage"),
+            "primary_path": path,
+            "paths": [path],
+            "context_callers": context_callers,
+            "context_functions": self._context_function_names(context_callers),
+            "llm_triage": triage_meta,
+        }
+
+    def _needs_llm_triage(
+        self,
+        intent: str,
+        external_paths: Sequence[Tuple[Dict[str, Any], List[str]]],
+        current_root: Optional[Dict[str, Any]],
+    ) -> bool:
+        mode = str(self.llm_triage or "").strip().lower()
+        if mode in {"", "off", "false", "disabled", "none", "no", "0"}:
+            return False
+        unique_external_roots = {
+            str(candidate.get("function_name") or "")
+            for candidate, _path in external_paths
+            if str(candidate.get("function_name") or "")
+        }
+        root_score = int((current_root or {}).get("score") or 0)
+        high_fanout = len(unique_external_roots) >= 25
+        static_evidence_weak = current_root is None or root_score < 80
+        return high_fanout and static_evidence_weak and intent not in FORWARD_INTENTS
+
+    @staticmethod
+    def _llm_triage_trigger(
+        intent: str,
+        external_paths: Sequence[Tuple[Dict[str, Any], List[str]]],
+        current_root: Optional[Dict[str, Any]],
+    ) -> str:
+        root_score = int((current_root or {}).get("score") or 0)
+        external_count = len(
+            {
+                str(candidate.get("function_name") or "")
+                for candidate, _path in external_paths
+                if str(candidate.get("function_name") or "")
+            }
+        )
+        if current_root is None:
+            return f"high_fanout_no_static_root:{intent}:{external_count}"
+        return f"high_fanout_weak_static_root:{intent}:{external_count}:score_{root_score}"
+
+    @staticmethod
+    def _triage_root_summary(root: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not root:
+            return {}
+        candidate = root.get("candidate") or {}
+        return {
+            "function_name": candidate.get("function_name", ""),
+            "file_path": candidate.get("file_path", ""),
+            "root_kind": root.get("root_kind", ""),
+            "score": root.get("score", 0),
+            "path": root.get("path", []),
+            "reason": root.get("reason", ""),
+        }
+
+    def _path_from_root_to_changed(
+        self,
+        root_name: str,
+        changed: ChangedFunction,
+        external_paths: Sequence[Tuple[Dict[str, Any], List[str]]],
+    ) -> List[str]:
+        if root_name == changed.function_name:
+            return [changed.function_name]
+        for _candidate, path in external_paths:
+            if root_name in path:
+                return list(path[path.index(root_name):])
+
+        queue: List[Tuple[str, List[str], int]] = [(changed.function_name, [changed.function_name], 0)]
+        visited = {changed.function_name}
+        while queue:
+            current, changed_to_current_path, depth = queue.pop(0)
+            if depth >= self.max_call_depth:
+                continue
+            for caller in self._get_callers(current):
+                caller_name = str(caller.get("name") or "")
+                if not caller_name or caller_name in visited:
+                    continue
+                path = changed_to_current_path + [caller_name]
+                if caller_name == root_name:
+                    return list(reversed(path))
+                visited.add(caller_name)
+                queue.append((caller_name, path, depth + 1))
+        return [root_name, changed.function_name]
+
+    @staticmethod
+    def _context_callers_from_triage(
+        context_functions: Sequence[str],
+        root_name: str,
+        path: Sequence[str],
+    ) -> List[Dict[str, Any]]:
+        context: List[Dict[str, Any]] = []
+        for name in context_functions:
+            clean_name = str(name).strip()
+            if not clean_name or clean_name == root_name:
+                continue
+            context.append(
+                {
+                    "function_name": clean_name,
+                    "path": list(path),
+                    "exposure": "llm_triage_context",
+                    "reason": "llm_triage_context_function",
+                }
+            )
+        return context
+
+    def _semantic_root_score(self, func_name: str, intent: str) -> int:
+        impl = self._get_impl(func_name) or {}
+        code = str(impl.get("code") or "")
+        text = f"{func_name}\n{EntryDiscovery._strip_code_for_call_search(code)}"
+        external = self._classify_external_entry(func_name)
+        score = 0
+
+        if ACQUIRE_RE.search(text):
+            score = max(score, 100 if intent in {"resource_release_change", "destroy_or_unregister_change", "ownership_transfer_change"} else 70)
+        if TRANSFER_RE.search(text):
+            score = max(score, 92 if intent in {"resource_release_change", "ownership_transfer_change", "container_registration_change"} else 70)
+        if INPUT_RE.search(text):
+            score = max(score, 95 if intent == "sink_or_check_change" else 72)
+        if THREAD_RE.search(text):
+            score = max(score, 88 if intent in {"lock_release_change", "destroy_or_unregister_change"} else 70)
+        if DISPATCH_RE.search(text):
+            score = max(score, 82 if intent == "dispatcher_route_change" else 42)
+        if LOCK_RE.search(text):
+            score = max(score, 78 if intent == "lock_release_change" else 60)
+
+        if external:
+            exposure = str(external.get("exposure") or "")
+            if "communication" in exposure or "other_user_input" in exposure:
+                score = max(score, 90 if intent in {"sink_or_check_change", "input_boundary_change"} else 68)
+            elif "thread" in exposure:
+                score = max(score, 84)
+            elif "api" in exposure:
+                score = max(score, 55)
+
+        if self._looks_like_thin_facade(func_name, impl) and score < 90:
+            score = min(score, 20)
+        return score
+
+    def _candidate_for_root(self, func_name: str, intent: str) -> Dict[str, Any]:
+        external = self._classify_external_entry(func_name)
+        if external:
+            return external
+        impl = self._get_impl(func_name) or {}
+        semantic_kind = self._semantic_kind_for_function(func_name, impl)
+        return {
+            "function_name": func_name,
+            "file_path": str(impl.get("file") or ""),
+            "exposure": semantic_kind or self._root_kind_for_intent(intent, {}),
+            "reasons": [f"semantic_root:{intent}"] + ([semantic_kind] if semantic_kind else []),
+            "base_prompt": self._semantic_root_prompt(intent),
+            "confidence": 0.76,
+        }
+
+    def _external_or_synthetic_candidate(self, changed: ChangedFunction, intent: str) -> Dict[str, Any]:
+        external = self._classify_external_entry(changed.function_name)
+        if external:
+            return external
+        impl = self._get_impl(changed.function_name) or {}
+        return {
+            "function_name": changed.function_name,
+            "file_path": str(impl.get("file") or changed.file_path),
+            "exposure": self._root_kind_for_intent(intent, {}),
+            "reasons": [f"semantic_root:{intent}"],
+            "base_prompt": self._semantic_root_prompt(intent),
+            "confidence": 0.72,
+        }
+
+    def _root_kind_for_intent(self, intent: str, candidate: Dict[str, Any]) -> str:
+        exposure = str(candidate.get("exposure") or "")
+        if exposure:
+            return exposure
+        if intent in {"resource_acquire_change", "resource_release_change", "destroy_or_unregister_change"}:
+            return "resource_owner"
+        if intent in {"ownership_transfer_change", "container_registration_change"}:
+            return "ownership_transfer"
+        if intent == "input_boundary_change" or intent == "sink_or_check_change":
+            return "input_or_sink_root"
+        if intent == "lock_release_change" or intent == "lifecycle_contract_change":
+            return "concurrency_root"
+        if intent == "dispatcher_route_change":
+            return "dispatcher"
+        return "synthetic_internal_diff_entry"
+
+    def _semantic_kind_for_function(self, func_name: str, impl: Optional[Dict[str, Any]] = None) -> str:
+        impl = impl if impl is not None else (self._get_impl(func_name) or {})
+        text = f"{func_name}\n{EntryDiscovery._strip_code_for_call_search(str(impl.get('code') or ''))}"
+        if INPUT_RE.search(text):
+            return "communication"
+        if THREAD_RE.search(text):
+            return "thread"
+        if DISPATCH_RE.search(text):
+            return "dispatcher"
+        if ACQUIRE_RE.search(text):
+            return "resource_owner"
+        if LOCK_RE.search(text) or UNLOCK_RE.search(text):
+            return "concurrency_root"
+        return ""
+
+    def _semantic_root_prompt(self, intent: str) -> str:
+        if intent in {"resource_acquire_change", "resource_release_change", "destroy_or_unregister_change"}:
+            return (
+                "Diff semantic root for resource lifecycle. Audit ownership creation, transfer, "
+                "failure paths, and paired release/destroy behavior around the changed function."
+            )
+        if intent in {"input_boundary_change", "sink_or_check_change"}:
+            return "Diff semantic root for input/data-flow impact. Audit source validation, size checks, parsing, and sink reachability."
+        if intent in {"lock_release_change", "lifecycle_contract_change", "thread_or_callback_entry_change"}:
+            return "Diff semantic root for concurrency/lifecycle impact. Audit lock pairing, callback/thread reachability, and shared-state ownership."
+        if intent == "dispatcher_route_change":
+            return "Diff semantic root for dispatcher/routing impact. Audit branch selection, handler resource contracts, and state transitions."
+        return "Diff semantic root. Audit the changed behavior and its nearest relevant callers/callees."
+
+    def _selection_reason_for_intent(self, intent: str) -> str:
+        if intent == "new_external_api":
+            return "Changed declaration is externally visible; scan the API itself as a forward root."
+        if intent == "resource_acquire_change":
+            return "Changed function appears to acquire or create a resource; scan it as the ownership root."
+        if intent == "input_boundary_change":
+            return "Changed function appears to receive untrusted input; scan it as the input boundary."
+        if intent == "dispatcher_route_change":
+            return "Changed function appears to route handlers or state; scan it as a dispatcher root."
+        if intent == "thread_or_callback_entry_change":
+            return "Changed function appears to create thread/callback execution; scan it as a concurrency root."
+        if intent in BIDIRECTIONAL_INTENTS:
+            return "Changed function appears to transfer ownership or register state; scan the transfer root with lifecycle context."
+        return "Changed function is the nearest semantic root for this obligation."
+
+    def _selection_reason_for_root(self, candidate: Dict[str, Any], intent: str) -> str:
+        root = str(candidate.get("function_name") or "")
+        if intent in {"resource_release_change", "destroy_or_unregister_change"}:
+            return f"Selected `{root}` as the nearest resource owner/acquire root for a changed release/destroy path."
+        if intent == "sink_or_check_change":
+            return f"Selected `{root}` as the nearest input/source root for a changed sink/check path."
+        if intent == "lock_release_change":
+            return f"Selected `{root}` as the nearest concurrency root for a changed unlock/release path."
+        return f"Selected `{root}` as the nearest semantic root."
+
+    def _coverage_reason_for_root(self, candidate: Dict[str, Any], intent: str) -> str:
+        exposure = str(candidate.get("exposure") or "")
+        if "communication" in exposure or "other_user_input" in exposure:
+            return "covered_by_input_boundary"
+        if "thread" in exposure:
+            return "covered_by_concurrency_root"
+        if "api" in exposure and intent not in {"new_external_api", "sink_or_check_change"}:
+            return "covered_by_public_api_context"
+        if intent in {"resource_release_change", "destroy_or_unregister_change"}:
+            return "merged_into_owner_root"
+        if intent == "sink_or_check_change":
+            return "covered_by_input_boundary"
+        if intent == "lock_release_change":
+            return "covered_by_concurrency_root"
+        return "covered_by_semantic_root"
+
+    def _coverage_record(
+        self,
+        changed: ChangedFunction,
+        intent: str,
+        selection: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "function_name": changed.function_name,
+            "file_path": changed.file_path,
+            "change_kind": changed.change_kind,
+            "intent": intent,
+            "coverage_status": selection.get("coverage_status", "unresolved"),
+            "scan_entry": selection.get("root_function", ""),
+            "reason": selection.get("reason", "semantic_root_unresolved"),
+            "paths": selection.get("paths") or [[changed.function_name]],
+        }
+
+    @staticmethod
+    def _coverage_summary(coverage: Sequence[Dict[str, Any]], entry_count: int) -> Dict[str, Any]:
+        statuses = {
+            "scanned_as_root": 0,
+            "covered_by_entry": 0,
+            "context_only": 0,
+            "triage_only": 0,
+            "unresolved": 0,
+        }
+        for item in coverage:
+            status = str(item.get("coverage_status") or "unresolved")
+            if status not in statuses:
+                status = "unresolved"
+            statuses[status] += 1
+        return {
+            "changed_total": len(coverage),
+            "scan_entry_count": entry_count,
+            "covered_by_scan": statuses["scanned_as_root"] + statuses["covered_by_entry"],
+            "context_only": statuses["context_only"],
+            "triage_only": statuses["triage_only"],
+            "unresolved": statuses["unresolved"],
+            "by_status": statuses,
+        }
+
+    def _max_depth_for_intent(self, intent: str) -> int:
+        raw = self.caller_search_depth_by_intent.get(intent, self.max_call_depth)
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return self.max_call_depth
+
+    @staticmethod
+    def _intent_direction(intent: str) -> str:
+        if intent in FORWARD_INTENTS:
+            return "forward"
+        if intent in BACKWARD_INTENTS:
+            return "backward"
+        if intent in BIDIRECTIONAL_INTENTS:
+            return "bidirectional"
+        return "local"
+
+    @staticmethod
+    def _paths_or_default(
+        external_paths: Sequence[Tuple[Dict[str, Any], List[str]]],
+        changed_name: str,
+    ) -> List[List[str]]:
+        paths = [list(path) for _candidate, path in external_paths if path]
+        return paths or [[changed_name]]
+
+    @staticmethod
+    def _context_function_names(context_callers: Sequence[Dict[str, Any]]) -> List[str]:
+        names: List[str] = []
+        for item in context_callers:
+            name = str(item.get("function_name") or "")
+            if name and name not in names:
+                names.append(name)
+        return names
+
+    def _context_callers_for_candidate(
+        self,
+        root_name: str,
+        external_paths: Sequence[Tuple[Dict[str, Any], List[str]]],
+    ) -> List[Dict[str, Any]]:
+        context: List[Dict[str, Any]] = []
+        for candidate, path in external_paths:
+            if not path:
+                continue
+            entry = str(candidate.get("function_name") or "")
+            if not entry or entry == root_name:
+                continue
+            reason = "external_reachability_context"
+            if root_name in path:
+                idx = path.index(root_name)
+                if idx > 0:
+                    reason = "caller_above_selected_root"
+            context.append(
+                {
+                    "function_name": entry,
+                    "path": list(path),
+                    "exposure": candidate.get("exposure", ""),
+                    "reason": reason,
+                }
+            )
+        return self._dedupe_context_callers(context)
+
+    @staticmethod
+    def _context_callers_above_root(path: Sequence[str], root_name: str) -> List[Dict[str, Any]]:
+        if root_name not in path:
+            return []
+        idx = list(path).index(root_name)
+        return [
+            {
+                "function_name": name,
+                "path": list(path),
+                "exposure": "caller_context",
+                "reason": "caller_above_selected_root",
+            }
+            for name in path[:idx]
+            if name and name != root_name
+        ]
+
+    @staticmethod
+    def _dedupe_context_callers(context_callers: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        result: List[Dict[str, Any]] = []
+        seen: set[Tuple[str, Tuple[str, ...]]] = set()
+        for item in context_callers:
+            name = str(item.get("function_name") or "")
+            path = tuple(str(node) for node in (item.get("path") or []) if str(node))
+            key = (name, path)
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            result.append(dict(item))
+        return result
+
+    def _looks_like_thin_facade(self, func_name: str, impl: Dict[str, Any]) -> bool:
+        code = EntryDiscovery._strip_code_for_call_search(str(impl.get("code") or ""))
+        call_names = [name for name in CALL_RE.findall(code) if name not in {"if", "for", "while", "switch", "return", "sizeof"}]
+        if len(set(call_names)) <= 1 and re.search(r"\breturn\s+[A-Za-z_]\w+\s*\(", code):
+            return True
+        nonempty = [
+            line.strip()
+            for line in code.splitlines()
+            if line.strip() and not line.strip().startswith(("/*", "*", "//"))
+        ]
+        return len(nonempty) <= 4 and len(set(call_names)) <= 1 and not any(
+            pattern.search(code)
+            for pattern in (INPUT_RE, THREAD_RE, DISPATCH_RE, ACQUIRE_RE, RELEASE_RE, LOCK_RE, UNLOCK_RE)
+        )
+
+    @staticmethod
+    def _looks_trivial_code(code: str) -> bool:
+        lines = [
+            line.strip()
+            for line in EntryDiscovery._strip_code_for_call_search(code).splitlines()
+            if line.strip() and not line.strip().startswith(("/*", "*", "//"))
+        ]
+        if not lines:
+            return True
+        if len(lines) <= 3 and all(TRIVIAL_LINE_RE.match(line) for line in lines):
+            return True
+        return False
 
     def _find_external_entry_paths(
         self,
@@ -540,6 +1388,11 @@ class DiffImpactPlanner:
         path: List[str],
         *,
         fallback_reason: str,
+        intent: str = "",
+        obligation_id: str = "",
+        context_callers: Optional[Sequence[Dict[str, Any]]] = None,
+        selection_reason: str = "",
+        root_kind: str = "",
     ) -> None:
         function_name = str(candidate.get("function_name") or changed.function_name)
         file_path = str(candidate.get("file_path") or changed.file_path)
@@ -561,6 +1414,11 @@ class DiffImpactPlanner:
                 "entry_exposure": candidate.get("exposure", ""),
                 "entry_reasons": list(candidate.get("reasons") or []),
                 "fallback_reasons": [],
+                "analysis_obligation_ids": [],
+                "intents": [],
+                "context_callers": [],
+                "selection_reasons": [],
+                "root_kind": root_kind or candidate.get("exposure", ""),
                 "changed_functions": [],
                 "affected_paths": [],
             }
@@ -593,6 +1451,31 @@ class DiffImpactPlanner:
             item["path_keys"].add(path_key)
         if fallback_reason and fallback_reason not in focus["fallback_reasons"]:
             focus["fallback_reasons"].append(fallback_reason)
+        if intent and intent not in focus["intents"]:
+            focus["intents"].append(intent)
+        if obligation_id and obligation_id not in focus["analysis_obligation_ids"]:
+            focus["analysis_obligation_ids"].append(obligation_id)
+        if selection_reason and selection_reason not in focus["selection_reasons"]:
+            focus["selection_reasons"].append(selection_reason)
+        existing_context_keys = {
+            (
+                str(item.get("function_name") or ""),
+                tuple(str(node) for node in (item.get("path") or [])),
+            )
+            for item in focus.get("context_callers") or []
+            if isinstance(item, dict)
+        }
+        for item in context_callers or []:
+            if not isinstance(item, dict):
+                continue
+            key = (
+                str(item.get("function_name") or ""),
+                tuple(str(node) for node in (item.get("path") or [])),
+            )
+            if not key[0] or key in existing_context_keys:
+                continue
+            focus["context_callers"].append(dict(item))
+            existing_context_keys.add(key)
 
     def _custom_prompt(self, base_prompt: str, focus: Dict[str, Any]) -> str:
         changed_names = ", ".join(

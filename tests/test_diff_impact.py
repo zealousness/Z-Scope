@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+from zscope.config.config import ConfigLoader
 from zscope.config.function_entry import FunctionEntry
 from zscope.orchestration.diff_impact import ChangedLineRange, DiffImpactPlanner
 from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
@@ -181,7 +182,7 @@ def test_explicit_diff_repo_root_takes_precedence_over_source_root_git(tmp_path:
     assert calls[-1][1:] == ("utf-8", "replace")
 
 
-def test_seeded_discovery_keeps_all_external_entries(tmp_path: Path):
+def test_seeded_discovery_keeps_representative_external_entry_with_context(tmp_path: Path):
     _write_numbered_file(tmp_path, "api.c")
     functions = {
         "ApiA": {"file": "api.c", "start_line": 1, "end_line": 3, "code": "int ApiA(void) { return Guard(); }"},
@@ -206,16 +207,13 @@ def test_seeded_discovery_keeps_all_external_entries(tmp_path: Path):
 
     plan = planner.plan()
 
-    assert [entry.function_name for entry in plan.entries] == ["ApiA", "ApiB"]
+    assert [entry.function_name for entry in plan.entries] == ["ApiA"]
     assert all(entry.diff_focus for entry in plan.entries)
-    paths = {
-        entry.function_name: entry.diff_focus["affected_paths"][0]["path"]
-        for entry in plan.entries
-    }
-    assert paths == {
-        "ApiA": ["ApiA", "Guard", "Changed"],
-        "ApiB": ["ApiB", "Guard", "Changed"],
-    }
+    focus = plan.entries[0].diff_focus
+    assert focus["affected_paths"][0]["path"] == ["ApiA", "Guard", "Changed"]
+    assert any(item["function_name"] == "ApiB" for item in focus["context_callers"])
+    assert plan.coverage_summary["changed_total"] == 1
+    assert plan.function_coverage[0]["scan_entry"] == "ApiA"
 
 
 def test_diff_mapping_handles_git_root_paths_when_source_root_is_nested(tmp_path: Path):
@@ -428,7 +426,7 @@ def test_overlapping_changed_functions_share_one_entry_with_all_paths(tmp_path: 
     assert [item["changed_function"] for item in focus["affected_paths"]] == ["A", "B"]
 
 
-def test_deep_path_adds_synthetic_changed_function_fallback(tmp_path: Path):
+def test_deep_path_keeps_single_representative_entry_with_coverage(tmp_path: Path):
     _write_numbered_file(tmp_path, "api.c")
     functions = {
         "Api": {"file": "api.c", "start_line": 1, "end_line": 3, "code": "int Api(void) { return Mid(); }"},
@@ -450,9 +448,9 @@ def test_deep_path_adds_synthetic_changed_function_fallback(tmp_path: Path):
 
     plan = planner.plan()
 
-    assert [entry.function_name for entry in plan.entries] == ["Api", "Changed"]
-    fallback = next(entry for entry in plan.entries if entry.function_name == "Changed")
-    assert fallback.diff_focus["fallback_reasons"] == ["deep_path_exceeds_model_depth"]
+    assert [entry.function_name for entry in plan.entries] == ["Api"]
+    assert plan.function_coverage[0]["coverage_status"] == "covered_by_entry"
+    assert plan.function_coverage[0]["scan_entry"] == "Api"
 
 
 def test_thread_worker_is_selected_when_changed_callee_is_under_worker(tmp_path: Path):
@@ -527,3 +525,296 @@ def test_diff_entry_result_key_includes_component_and_file_path():
     )
 
     assert ParallelAnalyzer._entry_result_key(entry) == "repo_a:helper@src/a.c"
+
+
+def test_many_public_wrappers_merge_into_changed_owner_root(tmp_path: Path):
+    _write_numbered_file(tmp_path, "api.c", line_count=140)
+    wrappers = {
+        f"Api{idx}": {
+            "file": "api.c",
+            "start_line": idx + 1,
+            "end_line": idx + 1,
+            "code": f"void *Api{idx}(void) {{ return OwnerCreate(); }}",
+        }
+        for idx in range(100)
+    }
+    functions = {
+        **wrappers,
+        "OwnerCreate": {
+            "file": "api.c",
+            "start_line": 120,
+            "end_line": 124,
+            "code": "void *OwnerCreate(void) { void *p = malloc(16); return p; }",
+        },
+    }
+    planner = StaticDiffPlanner(
+        FakeCodeIndex(
+            tmp_path,
+            functions,
+            callers={"OwnerCreate": list(wrappers)},
+            headers=[
+                {"name": name, "filename": "api.h", "lineNumber": idx + 1}
+                for idx, name in enumerate(wrappers)
+            ],
+        ),
+        repo_root=tmp_path,
+        base_ref="base",
+        changed_ranges=[ChangedLineRange("api.c", 122, 122)],
+    )
+
+    plan = planner.plan()
+
+    assert [entry.function_name for entry in plan.entries] == ["OwnerCreate"]
+    focus = plan.entries[0].diff_focus
+    assert len(focus["context_callers"]) == 100
+    assert plan.function_coverage[0]["coverage_status"] == "scanned_as_root"
+
+
+def test_parent_child_entries_merge_to_nearest_context_root(tmp_path: Path):
+    _write_numbered_file(tmp_path, "api.c")
+    functions = {
+        "ApiTop": {"file": "api.c", "start_line": 1, "end_line": 3, "code": "int ApiTop(void) { return ApiMid(); }"},
+        "ApiMid": {"file": "api.c", "start_line": 5, "end_line": 7, "code": "int ApiMid(void) { return Changed(); }"},
+        "Changed": {"file": "api.c", "start_line": 9, "end_line": 11, "code": "int Changed(void) { int x = 1; return x; }"},
+    }
+    planner = StaticDiffPlanner(
+        FakeCodeIndex(
+            tmp_path,
+            functions,
+            callers={"Changed": ["ApiMid"], "ApiMid": ["ApiTop"]},
+            headers=[
+                {"name": "ApiTop", "filename": "api.h", "lineNumber": 1},
+                {"name": "ApiMid", "filename": "api.h", "lineNumber": 2},
+            ],
+        ),
+        repo_root=tmp_path,
+        base_ref="base",
+        changed_ranges=[ChangedLineRange("api.c", 10, 10)],
+    )
+
+    plan = planner.plan()
+
+    assert [entry.function_name for entry in plan.entries] == ["ApiMid"]
+    assert any(item["function_name"] == "ApiTop" for item in plan.entries[0].diff_focus["context_callers"])
+
+
+def test_unique_input_boundary_is_kept_as_scan_root(tmp_path: Path):
+    _write_numbered_file(tmp_path, "api.c")
+    functions = {
+        "ApiTop": {
+            "file": "api.c",
+            "start_line": 1,
+            "end_line": 5,
+            "code": "int ApiTop(int fd, char *buf) { read(fd, buf, 32); return ApiMid(buf); }",
+        },
+        "ApiMid": {"file": "api.c", "start_line": 7, "end_line": 8, "code": "int ApiMid(char *buf) { return Changed(buf); }"},
+        "Changed": {"file": "api.c", "start_line": 10, "end_line": 12, "code": "int Changed(char *buf) { return buf[0]; }"},
+    }
+    planner = StaticDiffPlanner(
+        FakeCodeIndex(
+            tmp_path,
+            functions,
+            callers={"Changed": ["ApiMid"], "ApiMid": ["ApiTop"]},
+        ),
+        repo_root=tmp_path,
+        base_ref="base",
+        changed_ranges=[ChangedLineRange("api.c", 11, 11)],
+    )
+
+    plan = planner.plan()
+
+    assert [entry.function_name for entry in plan.entries] == ["ApiTop"]
+    assert plan.function_coverage[0]["reason"] == "covered_by_input_boundary"
+
+
+def test_release_change_selects_owner_root_not_plain_dispatcher(tmp_path: Path):
+    _write_numbered_file(tmp_path, "api.c")
+    functions = {
+        "Dispatcher": {"file": "api.c", "start_line": 1, "end_line": 5, "code": "int Dispatcher(int msg) { switch (msg) { case 1: return OwnerCreate(); } return 0; }"},
+        "OwnerCreate": {"file": "api.c", "start_line": 7, "end_line": 10, "code": "int OwnerCreate(void) { void *p = malloc(16); return Cleanup(p); }"},
+        "Cleanup": {"file": "api.c", "start_line": 12, "end_line": 14, "code": "int Cleanup(void *p) { ReleaseChanged(p); return 0; }"},
+        "ReleaseChanged": {"file": "api.c", "start_line": 16, "end_line": 18, "code": "void ReleaseChanged(void *p) { free(p); }"},
+    }
+    planner = StaticDiffPlanner(
+        FakeCodeIndex(
+            tmp_path,
+            functions,
+            callers={
+                "ReleaseChanged": ["Cleanup"],
+                "Cleanup": ["OwnerCreate"],
+                "OwnerCreate": ["Dispatcher"],
+            },
+        ),
+        repo_root=tmp_path,
+        base_ref="base",
+        changed_ranges=[ChangedLineRange("api.c", 17, 17)],
+    )
+
+    plan = planner.plan()
+
+    assert [entry.function_name for entry in plan.entries] == ["OwnerCreate"]
+    assert plan.function_coverage[0]["reason"] == "merged_into_owner_root"
+
+
+def test_header_declaration_change_keeps_public_api_root(tmp_path: Path):
+    _write_numbered_file(tmp_path, "api.c")
+    (tmp_path / "api.h").write_text("int NewApi(void);\n", encoding="utf-8")
+    functions = {
+        "NewApi": {"file": "api.c", "start_line": 1, "end_line": 3, "code": "int NewApi(void) { return 0; }"},
+    }
+    planner = StaticDiffPlanner(
+        FakeCodeIndex(
+            tmp_path,
+            functions,
+            headers=[{"name": "NewApi", "filename": "api.h", "lineNumber": 1}],
+        ),
+        repo_root=tmp_path,
+        base_ref="base",
+        changed_ranges=[ChangedLineRange("api.h", 1, 1)],
+    )
+
+    plan = planner.plan()
+
+    assert [entry.function_name for entry in plan.entries] == ["NewApi"]
+    assert plan.analysis_obligations[0]["intent"] == "new_external_api"
+    assert plan.function_coverage[0]["coverage_status"] == "scanned_as_root"
+
+
+def test_dispatcher_change_keeps_dispatcher_root(tmp_path: Path):
+    _write_numbered_file(tmp_path, "api.c")
+    functions = {
+        "DispatchChanged": {
+            "file": "api.c",
+            "start_line": 1,
+            "end_line": 5,
+            "code": "int DispatchChanged(int msg) { switch (msg) { case 7: return Handler(); } return 0; }",
+        },
+        "Handler": {"file": "api.c", "start_line": 7, "end_line": 8, "code": "int Handler(void) { return 0; }"},
+    }
+    planner = StaticDiffPlanner(
+        FakeCodeIndex(tmp_path, functions),
+        repo_root=tmp_path,
+        base_ref="base",
+        changed_ranges=[ChangedLineRange("api.c", 3, 3)],
+    )
+
+    plan = planner.plan()
+
+    assert [entry.function_name for entry in plan.entries] == ["DispatchChanged"]
+    assert plan.analysis_obligations[0]["intent"] == "dispatcher_route_change"
+
+
+def test_diff_coverage_records_all_changed_functions(tmp_path: Path):
+    _write_numbered_file(tmp_path, "api.c")
+    functions = {
+        "Api": {"file": "api.c", "start_line": 1, "end_line": 2, "code": "int Api(void) { return A() + B(); }"},
+        "A": {"file": "api.c", "start_line": 4, "end_line": 5, "code": "int A(void) { return 1; }"},
+        "B": {"file": "api.c", "start_line": 7, "end_line": 8, "code": "int B(void) { return 2; }"},
+    }
+    planner = StaticDiffPlanner(
+        FakeCodeIndex(
+            tmp_path,
+            functions,
+            callers={"A": ["Api"], "B": ["Api"]},
+            headers=[{"name": "Api", "filename": "api.h", "lineNumber": 1}],
+        ),
+        repo_root=tmp_path,
+        base_ref="base",
+        changed_ranges=[ChangedLineRange("api.c", 4, 4), ChangedLineRange("api.c", 7, 7)],
+    )
+
+    plan = planner.plan()
+
+    assert {item["function_name"] for item in plan.function_coverage} == {"A", "B"}
+    assert plan.coverage_summary["changed_total"] == 2
+    assert plan.coverage_summary["covered_by_scan"] == 2
+    assert all(item["scan_entry"] for item in plan.function_coverage)
+    assert plan.analysis_obligations[0]["llm_triage"]["status"] == "not_invoked"
+
+
+def test_high_fanout_weak_static_evidence_uses_llm_triage_selector(tmp_path: Path):
+    _write_numbered_file(tmp_path, "api.c", line_count=80)
+    wrappers = {
+        f"Api{idx}": {
+            "file": "api.c",
+            "start_line": idx + 1,
+            "end_line": idx + 1,
+            "code": f"int Api{idx}(int x) {{ return Changed(x); }}",
+        }
+        for idx in range(30)
+    }
+    functions = {
+        **wrappers,
+        "Changed": {
+            "file": "api.c",
+            "start_line": 60,
+            "end_line": 64,
+            "code": "int Changed(int x) { int y = x + 1; return y * 2; }",
+        },
+    }
+    triage_requests = []
+
+    def triage_selector(request):
+        triage_requests.append(request)
+        return {
+            "intent": request["intent"],
+            "direction": request["direction"],
+            "recommended_root": "Api17",
+            "context_functions": ["Api0"],
+            "confidence": 0.81,
+            "stop_reason": "mock_selected_representative_boundary",
+        }
+
+    planner = StaticDiffPlanner(
+        FakeCodeIndex(
+            tmp_path,
+            functions,
+            callers={"Changed": list(wrappers)},
+            headers=[
+                {"name": name, "filename": "api.h", "lineNumber": idx + 1}
+                for idx, name in enumerate(wrappers)
+            ],
+        ),
+        repo_root=tmp_path,
+        base_ref="base",
+        changed_ranges=[ChangedLineRange("api.c", 62, 62)],
+        llm_triage_selector=triage_selector,
+    )
+
+    plan = planner.plan()
+
+    assert [entry.function_name for entry in plan.entries] == ["Api17"]
+    assert triage_requests and triage_requests[0]["trigger"].startswith("high_fanout_weak_static_root")
+    assert plan.analysis_obligations[0]["llm_triage"]["status"] == "invoked"
+    assert plan.analysis_obligations[0]["llm_triage"]["recommended_root"] == "Api17"
+    assert plan.function_coverage[0]["reason"] == "llm_triage_recommended_root"
+
+
+def test_diff_impact_config_defaults_and_overrides(tmp_path: Path):
+    config_path = tmp_path / "zscope.yaml"
+    config_path.write_text(
+        f"""
+llms:
+  default:
+    api_key: test
+    base_url: http://localhost
+    models: [test-model]
+project:
+  root: {str(tmp_path).replace(chr(92), "/")}
+  diff_impact:
+    strategy: semantic_obligation
+    llm_triage: off
+    caller_search_depth_by_intent:
+      resource_release_change: 9
+indexing:
+  backend: regex
+""",
+        encoding="utf-8",
+    )
+
+    cfg = ConfigLoader.load(str(config_path))
+
+    assert cfg.project.diff_impact.strategy == "semantic_obligation"
+    assert cfg.project.diff_impact.llm_triage == "off"
+    assert cfg.project.diff_impact.caller_search_depth_by_intent["resource_release_change"] == 9
+    assert cfg.project.diff_impact.caller_search_depth_by_intent["new_external_api"] == 3
