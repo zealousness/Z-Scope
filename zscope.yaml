@@ -4,7 +4,7 @@
 # - 本文件字段来自 zscope/config/config.py 的 ConfigLoader.load()。
 # - 字符串支持环境变量展开，例如 ${Z_SCOPE_API_KEY}。
 # - analysis.workflow_name 是运行时内部字段，请不要写入 zscope.yaml；需要切换工作流时使用 CLI 的 --resume / --maintain。
-# - v1.1 新增 diff impact 扫描、报告语义去重、Deep Worker 工单控制和工具审计配置；diff 扫描通过 CLI 参数启用，不写入 YAML。
+# - v1.1 新增 diff impact 扫描、报告语义去重、Deep Worker 工单控制和工具审计配置；diff 扫描通过 CLI 参数启用，语义收敛策略可在 project.diff_impact 配置。
 
 # llm:                                      # 兼容旧版单模型配置；推荐使用下面的 llms 多模型配置
 #   provider: openai                        # LLM 服务类型预留字段，当前按 OpenAI 兼容接口调用
@@ -57,6 +57,26 @@ project:                                  # 被分析项目配置
     # search_root: /absolute/path/to/src   # 限制入口发现范围；必须是已存在的绝对目录
     # root: /absolute/path/to/src          # search_root 的兼容别名；不建议新配置使用
     # discovery_root: /absolute/path/to/src # search_root 的兼容别名；不建议新配置使用
+
+  diff_impact:                             # diff 模式入口语义收敛配置；不使用全局入口硬上限
+    strategy: semantic_obligation          # 按变更语义生成审计义务，再选择最小必要扫描根
+    llm_triage: on_demand                  # on_demand | off；仅在高 fan-out、所有权不清或候选根冲突时用于选根
+    caller_search_depth_by_intent:         # 按变更意图控制反向/双向调用图搜索深度
+      new_external_api: 3                  # 新增外部 API：保留 API 自身作为正向 root
+      resource_acquire_change: 4           # 资源申请/创建：保留 owner/acquire root，并覆盖释放责任上下文
+      input_boundary_change: 4             # 输入边界：保留唯一不可信输入来源
+      dispatcher_route_change: 3           # dispatcher/路由：仅在影响 handler/resource/state 分支时保留
+      thread_or_callback_entry_change: 4   # 线程或 callback 入口：保留并发/生命周期 root
+      resource_release_change: 6           # 资源释放：向上找 owner/acquire/transfer root，不停在纯 dispatcher
+      sink_or_check_change: 5              # sink/check：向上找输入/source root
+      lock_release_change: 5               # unlock/release lock：向上找并发责任 root
+      destroy_or_unregister_change: 6      # destroy/unregister：向上找 owner/lifecycle root
+      ownership_transfer_change: 5         # 所有权转移：双向找 source/root 与 consumer/release
+      container_registration_change: 5     # 容器注册/发布：双向找注册方和消费方
+      lifecycle_contract_change: 5         # 生命周期契约：双向找创建、转移、释放责任
+      local_logic_change: 2                # 低语义局部逻辑：优先轻量覆盖，不强行枚举外部入口
+      comment_or_trivial_change: 1         # 注释/平凡变更：记录 coverage，可仅 triage
+      declaration_or_contract_change: 3    # 声明/契约变更：有限向上找公开边界
 
   # compile_commands_path: build/compile_commands.json # Clang/unified/SVF 后端使用的编译数据库；相对路径基于 project.root 解析
   # compile_commands: build/compile_commands.json      # compile_commands_path 的兼容别名；不建议新配置使用
