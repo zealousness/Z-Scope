@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
+
+
+logger = logging.getLogger(__name__)
+_RECORDER_LOCK_LOG_THRESHOLD_SECONDS = 0.05
+_RECORDER_WRITE_LOG_THRESHOLD_SECONDS = 0.50
 
 
 @dataclass(frozen=True)
@@ -37,12 +44,14 @@ class _ConversationSessionState:
     iterations: Optional[int] = None
     context_tokens: Optional[int] = None
     truncated: bool = False
+    dirty: bool = False
+    last_write_monotonic: float = 0.0
 
 
 class ConversationRecorder:
-    """Compact Markdown and JSONL recorder split by Python thread."""
+    """Compact Markdown and JSONL recorder split by LLM session."""
 
-    def __init__(self, output_root: Path):
+    def __init__(self, output_root: Path, flush_interval_seconds: Optional[float] = None):
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         self.run_dir = Path(output_root) / f"run_{timestamp}_{os.getpid()}"
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -50,7 +59,15 @@ class ConversationRecorder:
         self._thread_session_counts: Dict[str, int] = {}
         self._agent_session_counts: Dict[tuple[str, str], int] = {}
         self._session_states: Dict[str, _ConversationSessionState] = {}
-        self._thread_session_ids: Dict[Path, List[str]] = {}
+        if flush_interval_seconds is None:
+            try:
+                flush_interval_seconds = float(
+                    os.environ.get("Z_SCOPE_CONVERSATION_FLUSH_INTERVAL_SECONDS", "0")
+                    or 0
+                )
+            except ValueError:
+                flush_interval_seconds = 0.0
+        self.flush_interval_seconds = max(0.0, float(flush_interval_seconds or 0.0))
 
     def begin_session(
         self,
@@ -61,16 +78,16 @@ class ConversationRecorder:
         safe_thread = self._safe_filename(thread_name)
         agent = agent_name or "unknown_agent"
         safe_agent = self._safe_filename(agent)
-        md_path = self.run_dir / f"{safe_thread}.md"
-        jsonl_path = self.run_dir / f"{safe_thread}.jsonl"
 
-        with self._lock:
+        with self._locked("begin_session"):
             thread_index = self._thread_session_counts.get(thread_name, 0) + 1
             self._thread_session_counts[thread_name] = thread_index
             agent_key = (thread_name, agent)
             agent_index = self._agent_session_counts.get(agent_key, 0) + 1
             self._agent_session_counts[agent_key] = agent_index
             session_id = f"{safe_thread}-{safe_agent}-{thread_index:04d}"
+            md_path = self.run_dir / f"{session_id}.md"
+            jsonl_path = self.run_dir / f"{session_id}.jsonl"
             session = ConversationSession(
                 id=session_id,
                 thread_name=thread_name,
@@ -85,9 +102,9 @@ class ConversationRecorder:
                 session=session,
                 started_at=self._now(),
             )
-            self._thread_session_ids.setdefault(md_path, []).append(session.id)
-            self._rewrite_thread_files(session)
-            return session
+            state = self._state_for(session)
+        self._rewrite_session_files(state, force=True)
+        return session
 
     def record_exchange(
         self,
@@ -100,7 +117,7 @@ class ConversationRecorder:
         prompt_tokens: Optional[int],
         completion_tokens: Optional[int],
     ) -> None:
-        with self._lock:
+        with self._locked("record_exchange", session):
             state = self._state_for(session)
             state.latest_exchange = {
                 "event": "exchange",
@@ -114,7 +131,8 @@ class ConversationRecorder:
                 "request_messages": request_messages,
                 "response_message": response_message,
             }
-            self._rewrite_thread_files(session)
+            state.dirty = True
+        self._rewrite_session_files(state)
 
     def record_tool_result(
         self,
@@ -125,7 +143,7 @@ class ConversationRecorder:
         result: Dict[str, Any],
         error: Optional[str] = None,
     ) -> None:
-        with self._lock:
+        with self._locked("record_tool_result", session):
             state = self._state_for(session)
             state.tool_result_count += 1
             state.last_tool_result_summary = self._tool_result_summary(
@@ -136,7 +154,8 @@ class ConversationRecorder:
                 result,
                 error,
             )
-            self._rewrite_thread_files(session)
+            state.dirty = True
+        self._rewrite_session_files(state)
 
     def record_session_end(
         self,
@@ -145,13 +164,14 @@ class ConversationRecorder:
         context_tokens: int,
         truncated: bool = False,
     ) -> None:
-        with self._lock:
+        with self._locked("record_session_end", session):
             state = self._state_for(session)
             state.ended_at = self._now()
             state.iterations = iterations
             state.context_tokens = context_tokens
             state.truncated = truncated
-            self._rewrite_thread_files(session)
+            state.dirty = True
+        self._rewrite_session_files(state, force=True)
 
     @staticmethod
     def _now() -> str:
@@ -190,16 +210,56 @@ class ConversationRecorder:
         except KeyError as exc:
             raise ValueError(f"Unknown conversation session: {session.id}") from exc
 
-    def _rewrite_thread_files(self, session: ConversationSession) -> None:
-        states = [
-            self._session_states[session_id]
-            for session_id in self._thread_session_ids.get(session.md_path, [])
-        ]
-        self._write_text(session.md_path, "".join(self._format_session_snapshot(s) for s in states))
-        self._write_jsonl(
-            session.jsonl_path,
-            [event for state in states for event in self._jsonl_events(state)],
-        )
+    @contextmanager
+    def _locked(
+        self,
+        context: str,
+        session: Optional[ConversationSession] = None,
+    ) -> Iterator[None]:
+        started = time.monotonic()
+        session_id = session.id if session else ""
+        if self._lock.locked():
+            logger.info(
+                "[recorder-lock] waiting context=%s session=%s",
+                context,
+                session_id,
+            )
+        self._lock.acquire()
+        waited = time.monotonic() - started
+        if waited >= _RECORDER_LOCK_LOG_THRESHOLD_SECONDS:
+            logger.info(
+                "[recorder-lock] outcome context=%s session=%s waited=%.2fs",
+                context,
+                session_id,
+                waited,
+            )
+        try:
+            yield
+        finally:
+            self._lock.release()
+
+    def _rewrite_session_files(self, state: _ConversationSessionState, *, force: bool = False) -> None:
+        if not force:
+            if not state.dirty or self.flush_interval_seconds <= 0:
+                return
+            elapsed = time.monotonic() - float(state.last_write_monotonic or 0.0)
+            if elapsed < self.flush_interval_seconds:
+                return
+        started = time.monotonic()
+        session = state.session
+        self._write_text(session.md_path, self._format_session_snapshot(state))
+        self._write_jsonl(session.jsonl_path, self._jsonl_events(state))
+        state.dirty = False
+        state.last_write_monotonic = time.monotonic()
+        duration = time.monotonic() - started
+        if duration >= _RECORDER_WRITE_LOG_THRESHOLD_SECONDS:
+            logger.info(
+                "[recorder] write session=%s md=%s jsonl=%s duration=%.2fs",
+                session.id,
+                session.md_path,
+                session.jsonl_path,
+                duration,
+            )
 
     def _format_session_snapshot(self, state: _ConversationSessionState) -> str:
         parts = [self._format_session_header(state)]

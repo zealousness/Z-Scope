@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from ...agents.validator_agent.agent import ValidatorAgent
@@ -21,6 +23,26 @@ from .evidence import (
 from .pipeline import ValidationPipeline
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _PreparedValidation:
+    index: int
+    raw_issue: Dict[str, Any]
+    issue_func: str
+    issue_code: str
+    evidence_pack: Dict[str, Any]
+
+
+@dataclass
+class _ValidationWorkerResult:
+    index: int
+    raw_issue: Dict[str, Any]
+    issue_func: str
+    success: bool
+    val_data: Dict[str, Any] = field(default_factory=dict)
+    error: Any = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 class ValidationRunner:
@@ -72,11 +94,75 @@ class ValidationRunner:
             state["pending_new_issues"] = []
             return
 
-        validator_agent = self._build_validator_agent()
-        for raw_issue in new_issues:
-            self._validate_one_issue(state, raw_issue, validator_agent)
+        prepared = []
+        for index, raw_issue in enumerate(new_issues):
+            item = self._prepare_issue_for_validation(state, raw_issue, index)
+            if item is not None:
+                prepared.append(item)
+
+        validation_workers = self._validation_worker_count(len(prepared))
+        if validation_workers <= 1:
+            validator_agent = self._build_validator_agent() if prepared else None
+            for item in prepared:
+                result = self._validate_prepared_issue(item, validator_agent=validator_agent)
+                self._apply_validation_worker_result(state, result)
+        elif prepared:
+            logger.info(
+                "Validating %d issue(s) with %d validator worker(s).",
+                len(prepared),
+                validation_workers,
+            )
+            results: Dict[int, _ValidationWorkerResult] = {}
+            with ThreadPoolExecutor(
+                max_workers=validation_workers,
+                thread_name_prefix="zscope-validator",
+            ) as executor:
+                future_to_item = {
+                    executor.submit(self._validate_prepared_issue, item): item
+                    for item in prepared
+                }
+                for future in as_completed(future_to_item):
+                    item = future_to_item[future]
+                    try:
+                        results[item.index] = future.result()
+                    except Exception as exc:
+                        logger.exception(
+                            "Validation worker crashed for issue %s in function %s.",
+                            item.raw_issue.get("id"),
+                            item.issue_func,
+                        )
+                        results[item.index] = _ValidationWorkerResult(
+                            index=item.index,
+                            raw_issue=item.raw_issue,
+                            issue_func=item.issue_func,
+                            success=False,
+                            error=str(exc),
+                        )
+            for item in prepared:
+                self._apply_validation_worker_result(state, results[item.index])
 
         state["pending_new_issues"] = []
+
+    def _validation_worker_count(self, issue_count: int) -> int:
+        if issue_count <= 1:
+            return 1
+        analysis_cfg = getattr(self.config, "analysis", None)
+        if analysis_cfg is None:
+            return 1
+        configured = getattr(analysis_cfg, "validation_parallel_workers", 0)
+        try:
+            configured_workers = int(configured or 0)
+        except (TypeError, ValueError):
+            configured_workers = 0
+        if configured_workers > 0:
+            return max(1, min(issue_count, configured_workers))
+
+        try:
+            entry_workers = int(getattr(analysis_cfg, "parallel_workers", 1) or 1)
+        except (TypeError, ValueError):
+            entry_workers = 1
+        auto_cap = 2 if entry_workers > 1 else 4
+        return max(1, min(issue_count, auto_cap))
 
     def _mark_unvalidated(self, state: Dict[str, Any], new_issues: List[Dict[str, Any]]) -> None:
         logger.info("Validator agent disabled, marking %d issue(s) unvalidated.", len(new_issues))
@@ -93,6 +179,18 @@ class ValidationRunner:
                 state[outcome.report_bucket].append(raw_issue)
 
     def _validate_one_issue(self, state: Dict[str, Any], raw_issue: Dict[str, Any], validator_agent: Any) -> None:
+        prepared = self._prepare_issue_for_validation(state, raw_issue, 0)
+        if prepared is None:
+            return
+        result = self._validate_prepared_issue(prepared, validator_agent=validator_agent)
+        self._apply_validation_worker_result(state, result)
+
+    def _prepare_issue_for_validation(
+        self,
+        state: Dict[str, Any],
+        raw_issue: Dict[str, Any],
+        index: int,
+    ) -> Optional[_PreparedValidation]:
         issue_func = self._issue_function(raw_issue, state)
         logger.info("Validating issue: %s in %s", raw_issue.get("id", "unknown"), issue_func)
 
@@ -101,25 +199,68 @@ class ValidationRunner:
             logger.info("Issue %s suppressed by %s.", raw_issue.get("id"), decision.rejection_source)
             if decision.report_bucket:
                 state[decision.report_bucket].append(raw_issue)
-            return
+            return None
 
         issue_code = self._issue_code(issue_func, state)
         evidence_pack = self._build_evidence_pack(raw_issue, state, issue_code)
-        val_resp = validator_agent.run(self._validator_input(raw_issue, issue_code, evidence_pack))
-        self._accumulate_token_metadata(state, getattr(val_resp, "metadata", {}) or {})
+        return _PreparedValidation(
+            index=index,
+            raw_issue=raw_issue,
+            issue_func=issue_func,
+            issue_code=issue_code,
+            evidence_pack=evidence_pack,
+        )
+
+    def _validate_prepared_issue(
+        self,
+        item: _PreparedValidation,
+        *,
+        validator_agent: Optional[Any] = None,
+    ) -> _ValidationWorkerResult:
+        validator_agent = validator_agent or self._build_validator_agent()
+        token_metadata = self._empty_token_metadata()
+        val_resp = validator_agent.run(
+            self._validator_input(item.raw_issue, item.issue_code, item.evidence_pack)
+        )
+        self._merge_response_metadata(token_metadata, getattr(val_resp, "metadata", {}) or {})
 
         if not val_resp.success:
-            self._handle_validation_failure(state, raw_issue, issue_func, val_resp.error)
-            return
+            return _ValidationWorkerResult(
+                index=item.index,
+                raw_issue=item.raw_issue,
+                issue_func=item.issue_func,
+                success=False,
+                error=val_resp.error,
+                metadata=token_metadata,
+            )
 
-        val_data = self._normalize_successful_response(
-            raw_issue,
-            issue_code,
-            evidence_pack,
+        val_data = self._normalize_worker_response(
+            item,
             validator_agent,
             val_resp.data,
-            state,
+            token_metadata,
         )
+        return _ValidationWorkerResult(
+            index=item.index,
+            raw_issue=item.raw_issue,
+            issue_func=item.issue_func,
+            success=True,
+            val_data=val_data,
+            metadata=token_metadata,
+        )
+
+    def _apply_validation_worker_result(
+        self,
+        state: Dict[str, Any],
+        result: _ValidationWorkerResult,
+    ) -> None:
+        self._accumulate_token_metadata(state, result.metadata)
+        raw_issue = result.raw_issue
+        if not result.success:
+            self._handle_validation_failure(state, raw_issue, result.issue_func, result.error)
+            return
+
+        val_data = result.val_data
         verdict = validation_verdict(val_data)
         score_data = self.validation_pipeline.score_components(raw_issue, val_data)
         outcome = self.validation_pipeline.apply_validator_result(
@@ -133,6 +274,112 @@ class ValidationRunner:
         if outcome.memory_status:
             self.remember_validation_result(raw_issue, outcome.memory_status)
         self._log_validation_outcome(raw_issue, val_data, verdict, outcome.final_score)
+
+    def _normalize_worker_response(
+        self,
+        item: _PreparedValidation,
+        validator_agent: Any,
+        val_data: Dict[str, Any],
+        token_metadata: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if is_entry_root_dead_code_rejection(val_data, item.evidence_pack):
+            val_data = self._retry_entry_root_rejection_for_worker(
+                item,
+                validator_agent,
+                val_data,
+                token_metadata,
+            )
+        if is_entry_root_contract_scope_rejection(val_data, item.evidence_pack):
+            val_data = dict(val_data)
+            val_data["verdict"] = "uncertain"
+            val_data["is_valid"] = False
+            val_data["finding_kind"] = "needs_review"
+            val_data["reasoning"] = (
+                str(val_data.get("reasoning") or "")
+                + " Validator rejection is narrower than the selected external entry contract; "
+                "the concrete entry-to-sink path remains reachable, so the finding is retained "
+                "as needs_review instead of being discarded."
+            ).strip()
+        return val_data
+
+    def _retry_entry_root_rejection_for_worker(
+        self,
+        item: _PreparedValidation,
+        validator_agent: Any,
+        val_data: Dict[str, Any],
+        token_metadata: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        raw_issue = item.raw_issue
+        logger.info(
+            "Retrying validation for issue %s because rejection conflicts with entry-root evidence.",
+            raw_issue.get("id"),
+        )
+        retry_pack = dict(item.evidence_pack)
+        retry_pack["mode"] = "tri_state_exploitability_validation_entry_root_retry"
+        retry_pack["prior_validator_result"] = val_data
+        retry_requirements = list(retry_pack.get("validation_requirements") or [])
+        retry_requirements.insert(
+            0,
+            "Retry directive: the previous rejection used absence of callers/main/worker above the scan root as dead-code evidence. Re-evaluate only the concrete entry-to-sink path; do not require callers above current_analysis_entry.",
+        )
+        retry_pack["validation_requirements"] = retry_requirements
+        retry_resp = validator_agent.run(self._validator_input(raw_issue, item.issue_code, retry_pack))
+        self._merge_response_metadata(token_metadata, getattr(retry_resp, "metadata", {}) or {})
+        if not retry_resp.success:
+            logger.warning(
+                "Entry-root validation retry failed for issue %s: %s",
+                raw_issue.get("id"),
+                retry_resp.error,
+            )
+            return val_data
+
+        retry_data = retry_resp.data
+        if is_entry_root_dead_code_rejection(retry_data, retry_pack):
+            retry_data = dict(retry_data)
+            retry_data["verdict"] = "uncertain"
+            retry_data["is_valid"] = False
+            retry_data["finding_kind"] = "needs_review"
+            retry_data["reasoning"] = (
+                str(retry_data.get("reasoning") or "")
+                + " Validator rejection conflicts with header/API scan-root evidence; "
+                "zero callers above the selected entry cannot by itself prove dead code, "
+                "so the finding is retained as needs_review."
+            ).strip()
+        return retry_data
+
+    @staticmethod
+    def _empty_token_metadata() -> Dict[str, int]:
+        return {
+            "context_tokens": 0,
+            "cumulative_prompt_tokens": 0,
+            "cumulative_completion_tokens": 0,
+            "cumulative_total_tokens": 0,
+        }
+
+    @staticmethod
+    def _merge_response_metadata(target: Dict[str, Any], metadata: Dict[str, Any]) -> None:
+        if not isinstance(metadata, dict):
+            return
+
+        def token_value(key: str, fallback_key: Optional[str] = None) -> int:
+            value = metadata.get(key)
+            if value is None and fallback_key:
+                value = metadata.get(fallback_key)
+            try:
+                return int(value or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        target["context_tokens"] = int(target.get("context_tokens", 0) or 0) + token_value("context_tokens")
+        target["cumulative_prompt_tokens"] = int(
+            target.get("cumulative_prompt_tokens", 0) or 0
+        ) + token_value("cumulative_prompt_tokens")
+        target["cumulative_completion_tokens"] = int(
+            target.get("cumulative_completion_tokens", 0) or 0
+        ) + token_value("cumulative_completion_tokens")
+        target["cumulative_total_tokens"] = int(
+            target.get("cumulative_total_tokens", 0) or 0
+        ) + token_value("cumulative_total_tokens", "context_tokens")
 
     def _normalize_successful_response(
         self,

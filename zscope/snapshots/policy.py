@@ -14,6 +14,7 @@ LIGHTWEIGHT_MACRO_RE = re.compile(
 LIGHTWEIGHT_WRAPPER_RE = re.compile(
     r"^_(?:log|lock|unlock|lock_read|lock_write)_wrapper$"
 )
+LIGHTWEIGHT_ALLOCATOR_WRAPPER_RE = re.compile(r"^_safe_(?:malloc|calloc|realloc)$")
 
 
 def build_trivial_snapshot(
@@ -221,7 +222,37 @@ def is_lightweight_snapshot_candidate(func_name: str, impl: Dict[str, Any]) -> b
         )
     if LIGHTWEIGHT_WRAPPER_RE.match(func_name):
         return True
+    if _looks_like_checked_allocator_wrapper(func_name, impl):
+        return True
     return False
+
+
+def _looks_like_checked_allocator_wrapper(func_name: str, impl: Dict[str, Any]) -> bool:
+    if not LIGHTWEIGHT_ALLOCATOR_WRAPPER_RE.match(func_name):
+        return False
+    code = str(impl.get("code") or "")
+    cleaned_lines = [
+        re.sub(r"^\s*\d+\s*\|\s*", "", line).strip()
+        for line in code.splitlines()
+    ]
+    logic_lines = [line for line in cleaned_lines if line and line not in {"{", "}"}]
+    if len(logic_lines) > 14:
+        return False
+
+    allocator_name = {
+        "_safe_malloc": "malloc",
+        "_safe_calloc": "calloc",
+        "_safe_realloc": "realloc",
+    }.get(func_name)
+    if not allocator_name:
+        return False
+    body = "\n".join(logic_lines)
+    if not re.search(rf"\b{allocator_name}\s*\(", body):
+        return False
+    if not re.search(r"\breturn\s+[A-Za-z_]\w*\s*;", body):
+        return False
+    disallowed_side_effects = r"\b(?:memcpy|memmove|strcpy|strncpy|strcat|strncat|pthread_|socket|send|recv|read|write|open|fopen)\b"
+    return not re.search(disallowed_side_effects, body)
 
 
 def build_lightweight_snapshot(
@@ -258,6 +289,27 @@ def build_lightweight_snapshot(
         summary = "Guard/control-flow macro. Analyze the caller's guarded path."
         error_handling = {"control_flow": "guard macro expands to return/goto"}
         key_semantics.append("guard macro")
+    elif _looks_like_checked_allocator_wrapper(func_name, impl):
+        allocator = func_name.removeprefix("_safe_")
+        summary = (
+            f"Checked {allocator} wrapper. Treat the returned pointer as caller-owned; "
+            "callers must handle NULL before dereference, copy, or ownership transfer."
+        )
+        resources = {
+            "allocation": allocator,
+            "ownership": "returned pointer is owned by the caller on success",
+        }
+        error_handling = {
+            "failure": "returns NULL when the underlying allocator fails for a nonzero request",
+            "caller_obligation": "caller must check the returned pointer before use",
+        }
+        key_semantics.extend(
+            [
+                "allocator wrapper",
+                "failure is signaled by NULL",
+                "audit unchecked use at call sites rather than inside this wrapper",
+            ]
+        )
 
     return {
         "type": "function_snapshot",

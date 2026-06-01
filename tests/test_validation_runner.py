@@ -1,3 +1,5 @@
+import json
+import threading
 from types import SimpleNamespace
 
 from zscope.core.validation.pipeline import ValidationPipeline
@@ -48,9 +50,17 @@ class FakeValidatorAgent:
         return self.responses.pop(0)
 
 
-def _runner(agent, *, enabled=True, memory=None):
+def _runner(
+    agent,
+    *,
+    enabled=True,
+    memory=None,
+    analysis=None,
+    validator_agent_factory=None,
+):
     memory = memory if memory is not None else []
     config = SimpleNamespace(
+        analysis=analysis,
         project=SimpleNamespace(
             agents=[SimpleNamespace(name="validator_agent", enabled=enabled, llm_ref="default")]
         )
@@ -65,7 +75,7 @@ def _runner(agent, *, enabled=True, memory=None):
         tool_policy_for_agent=lambda agent_name: None,
         attach_agent_contract=lambda context, agent_name: context.update({"agent_contract": agent_name}),
         remember_validation_result=lambda issue, status: memory.append((issue["id"], status)),
-        validator_agent_factory=lambda *args, **kwargs: agent,
+        validator_agent_factory=validator_agent_factory or (lambda *args, **kwargs: agent),
     )
 
 
@@ -308,3 +318,54 @@ def test_validation_runner_recovers_uncertain_observation_location_from_evidence
     assert observation["start_line"] == 77
     assert observation["end_line"] == 79
     assert observation["source_loc"] == "src/recovered.c:70"
+
+
+def test_validation_runner_parallel_workers_preserve_order_and_token_totals() -> None:
+    calls = []
+
+    class PerIssueValidatorAgent:
+        def run(self, input_data):
+            finding = json.loads(input_data["finding"])
+            issue_id = finding["id"]
+            calls.append((threading.current_thread().name, issue_id))
+            return AgentResponse(
+                success=True,
+                data={
+                    "verdict": "verified",
+                    "reasoning": f"{issue_id} reachable",
+                    "confidence_score": 1.0,
+                    "source": "arg",
+                    "sink": "free",
+                },
+                metadata={
+                    "context_tokens": 10,
+                    "cumulative_prompt_tokens": 20,
+                    "cumulative_completion_tokens": 5,
+                    "cumulative_total_tokens": 25,
+                },
+            )
+
+    issues = [
+        _issue(
+            id=f"ISSUE_{idx}",
+            location=f"src/demo_{idx}.c:{10 + idx}",
+            dedup_key=f"parallel-validation-{idx}",
+        )
+        for idx in range(1, 4)
+    ]
+    state = _state(issues[0])
+    state["pending_new_issues"] = issues
+
+    runner = _runner(
+        None,
+        analysis=SimpleNamespace(parallel_workers=12, validation_parallel_workers=2),
+        validator_agent_factory=lambda *args, **kwargs: PerIssueValidatorAgent(),
+    )
+    runner.run(state)
+
+    assert [issue["id"] for issue in state["issues"]] == ["ISSUE_1", "ISSUE_2", "ISSUE_3"]
+    assert state["total_context_tokens"] == 30
+    assert state["total_cumulative_prompt_tokens"] == 60
+    assert state["total_cumulative_completion_tokens"] == 15
+    assert state["total_cumulative_total_tokens"] == 75
+    assert all(thread_name.startswith("zscope-validator") for thread_name, _issue_id in calls)

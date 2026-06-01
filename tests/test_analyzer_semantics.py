@@ -709,6 +709,41 @@ def test_trivial_snapshot_marks_facade_forwarding_as_auditable() -> None:
     )
 
 
+def test_checked_allocator_wrappers_use_lightweight_snapshots() -> None:
+    code = """
+13 | void* _safe_malloc(size_t size) {
+14 |     void* ptr = malloc(size);
+15 |     if (!ptr && size > 0) {
+16 |         LOG_ERROR("Memory allocation failed: %zu bytes", size);
+17 |         return NULL;
+18 |     }
+19 |     return ptr;
+20 | }
+"""
+    impl = {
+        "file": "src/utils.c",
+        "start_line": 13,
+        "end_line": 20,
+        "signature": "void* _safe_malloc(size_t size)",
+        "code": code,
+        "callees": ["malloc", "LOG_ERROR"],
+    }
+
+    assert not Analyzer._is_trivial_function(code, max_lines_threshold=10)
+    assert Analyzer._is_lightweight_snapshot_candidate("_safe_malloc", impl)
+
+    snapshot = Analyzer._build_lightweight_snapshot(
+        "_safe_malloc",
+        impl,
+        "src/utils.c:13",
+    )
+
+    assert snapshot["snapshot_kind"] == "lightweight"
+    assert snapshot["resources"]["allocation"] == "malloc"
+    assert snapshot["error_handling"]["caller_obligation"]
+    assert snapshot["suspicious_points"] == []
+
+
 def test_validation_evidence_pack_preserves_entry_reachability_context() -> None:
     class FakeIndex:
         def get_file_snippet(self, path: str, start: int, end: int):

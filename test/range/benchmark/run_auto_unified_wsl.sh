@@ -57,6 +57,7 @@ path = Path(sys.argv[1])
 cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
 backend = ((cfg.get("indexing") or {}).get("backend") or "").lower()
 entry_cfg = (cfg.get("project") or {}).get("entry_discovery") or {}
+semantic_dedup = ((cfg.get("reporting") or {}).get("semantic_dedup") or {})
 entry_discovery = bool(entry_cfg.get("enabled"))
 header_files = entry_cfg.get("header_files") or []
 max_candidates = int(entry_cfg.get("max_candidates") or 0)
@@ -74,11 +75,16 @@ if max_functions < 1000:
     raise SystemExit(f"[range] ERROR: expected project.entry_discovery.max_functions>=1000, got {max_functions!r}")
 if clangd_path != "clangd":
     raise SystemExit(f"[range] ERROR: WSL config must use clangd_path=clangd, got {clangd_path!r}")
-print("[range] config preflight passed: unified backend + automatic entry discovery + *.h headers")
+if semantic_dedup.get("enabled", True) is not True:
+    raise SystemExit("[range] ERROR: expected reporting.semantic_dedup.enabled to default to true")
+if semantic_dedup.get("llm_enabled", True) is not True:
+    raise SystemExit("[range] ERROR: expected reporting.semantic_dedup.llm_enabled to default to true")
+print("[range] config preflight passed: unified backend + automatic entry discovery + *.h headers + LLM semantic dedup")
 PY
 
 echo "[range] clean generated WSL benchmark state"
 rm -rf test/range/.zscope_snapshots_auto_unified_wsl test/range/.zscope_knowledge_auto_unified_wsl
+rm -rf test/range/test/range/.zscope_knowledge_auto_unified_wsl
 rm -f test/range/zscope_batch_report.json test/range/zscope_batch_report.md test/range/entry_functions_list.json
 
 echo "[range] configure CMake"

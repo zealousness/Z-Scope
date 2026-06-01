@@ -4,7 +4,7 @@ Function entry configuration for batch analysis.
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -26,6 +26,8 @@ class FunctionEntry:
     custom_prompt: Optional[str] = None
     file_path: Optional[str] = None
     diff_focus: Optional[Dict[str, Any]] = None
+    exposure: Optional[str] = None
+    reasons: List[str] = field(default_factory=list)
     
     def __post_init__(self):
         if not self.function_name:
@@ -88,6 +90,12 @@ class FunctionListLoader:
                     custom_prompt=func_data.get('custom_prompt'),
                     file_path=func_data.get('file_path'),
                     diff_focus=func_data.get('diff_focus') if isinstance(func_data.get('diff_focus'), dict) else None,
+                    exposure=func_data.get('exposure'),
+                    reasons=[
+                        str(reason)
+                        for reason in (func_data.get('reasons') or [])
+                        if str(reason).strip()
+                    ],
                 )
                 entries.append(entry)
                 logger.debug(f"Loaded function entry: {entry.function_name}")

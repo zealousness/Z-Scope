@@ -70,6 +70,35 @@ def test_report_assembler_builds_views_and_persists(tmp_path: Path) -> None:
     assert resolved == [1, 2]
 
 
+def test_report_assembler_can_skip_root_report_files(tmp_path: Path) -> None:
+    snapshot_store = FakeSnapshotStore()
+    assembler = ReportAssembler(
+        ReportGenerator(tmp_path),
+        snapshot_store,
+        resolve_issue_locations=lambda items: None,
+        deduplicate_observations=lambda items: items,
+        metadata_factory=lambda state: {"run_id": state["run_id"]},
+    )
+    state = {
+        "run_id": "RUN_BATCH",
+        "entry_func": "entry",
+        "agent_context": {"location": "src/demo.c:1"},
+        "issues": [],
+        "verified_hist_issues": [],
+        "observations": [],
+        "notes": [],
+        "any_failure": False,
+    }
+
+    assembler.build(state)
+    saved = assembler.persist(state, write_root_reports=False)
+
+    assert saved["entry_function"] == "entry"
+    assert not (tmp_path / "report.json").exists()
+    assert not (tmp_path / "report.md").exists()
+    assert snapshot_store.saved["entry_func"] == "entry"
+
+
 def test_report_assembler_preserves_returned_report_metadata(tmp_path: Path) -> None:
     assembler = ReportAssembler(
         ReportGenerator(tmp_path),

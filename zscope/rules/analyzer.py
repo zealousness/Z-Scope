@@ -49,6 +49,9 @@ class RuleDrivenAnalyzer:
                 base_url_rate_limit_per_minute=getattr(
                     llm_cfg, "base_url_rate_limit_per_minute", 0
                 ),
+                base_url_max_concurrent_requests=getattr(
+                    llm_cfg, "base_url_max_concurrent_requests", 0
+                ),
             )
         self.report_generator = ReportGenerator(config.project.project_root)
 

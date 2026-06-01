@@ -26,8 +26,18 @@ logger = logging.getLogger(__name__)
 class _BaseUrlState:
     url: str
     requests_started: Deque[float] = field(default_factory=deque)
-    in_flight: int = 0
     cooldown_until: float = 0.0
+
+
+@dataclass
+class _EndpointCapacityState:
+    url: str
+    max_concurrent_requests: int = 0
+    in_flight: int = 0
+
+
+_ENDPOINT_CAPACITY_CONDITION = threading.Condition()
+_ENDPOINT_CAPACITY_STATES: Dict[str, _EndpointCapacityState] = {}
 
 
 class LLMClient:
@@ -92,6 +102,7 @@ class LLMClient:
         max_retries: int = 2,
         max_tokens: int = 4096,
         base_url_rate_limit_per_minute: int = 0,
+        base_url_max_concurrent_requests: int = 0,
     ):
         """
         Initialize LLM client.
@@ -111,15 +122,54 @@ class LLMClient:
         self.max_retries = max_retries
         self.max_tokens = max_tokens
         self.base_url_rate_limit_per_minute = max(0, int(base_url_rate_limit_per_minute or 0))
+        self.base_url_max_concurrent_requests = max(0, int(base_url_max_concurrent_requests or 0))
         self._base_url_states = [_BaseUrlState(url=url) for url in self.base_urls]
-        self._base_url_lock = threading.Lock()
-        self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            }
-        )
+        self._endpoint_capacity_states = {
+            url: self._shared_endpoint_capacity_state(
+                url,
+                self.base_url_max_concurrent_requests,
+            )
+            for url in self.base_urls
+        }
+        self._base_url_condition = _ENDPOINT_CAPACITY_CONDITION
+        self._last_concurrency_wait_log_at = 0.0
+        self._last_rate_wait_log_at = 0.0
+        self._session_headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        self._thread_local = threading.local()
+        self.session = self._new_session()
+        self._thread_local.session = self.session
+
+    @staticmethod
+    def _shared_endpoint_capacity_state(
+        url: str,
+        max_concurrent_requests: int,
+    ) -> _EndpointCapacityState:
+        with _ENDPOINT_CAPACITY_CONDITION:
+            state = _ENDPOINT_CAPACITY_STATES.get(url)
+            if state is None:
+                state = _EndpointCapacityState(url=url)
+                _ENDPOINT_CAPACITY_STATES[url] = state
+            if max_concurrent_requests > 0:
+                state.max_concurrent_requests = max(
+                    state.max_concurrent_requests,
+                    max_concurrent_requests,
+                )
+            return state
+
+    def _new_session(self) -> requests.Session:
+        session = requests.Session()
+        session.headers.update(self._session_headers)
+        return session
+
+    def _session_for_thread(self) -> requests.Session:
+        session = getattr(self._thread_local, "session", None)
+        if session is None:
+            session = self._new_session()
+            self._thread_local.session = session
+        return cast(requests.Session, session)
 
     @staticmethod
     def _normalize_base_urls(base_url: Union[str, Sequence[str]]) -> List[str]:
@@ -146,45 +196,83 @@ class LLMClient:
     def _select_base_url(self) -> _BaseUrlState:
         while True:
             now = time.monotonic()
-            with self._base_url_lock:
+            with self._base_url_condition:
                 for state in self._base_url_states:
                     self._prune_recent_requests(state, now)
 
                 candidates = [
                     state
                     for state in self._base_url_states
-                    if state.cooldown_until <= now and self._has_minute_capacity(state)
+                    if (
+                        state.cooldown_until <= now
+                        and self._has_minute_capacity(state)
+                        and self._has_concurrent_capacity(self._endpoint_capacity_states[state.url])
+                    )
                 ]
                 if candidates:
                     selected = min(
                         candidates,
-                        key=lambda state: (len(state.requests_started), state.in_flight),
+                        key=lambda state: (
+                            len(state.requests_started),
+                            self._endpoint_capacity_states[state.url].in_flight,
+                        ),
                     )
                     selected.requests_started.append(now)
-                    selected.in_flight += 1
+                    self._endpoint_capacity_states[selected.url].in_flight += 1
                     return selected
 
+                blocked_by_concurrency_only = any(
+                    state.cooldown_until <= now
+                    and self._has_minute_capacity(state)
+                    and not self._has_concurrent_capacity(self._endpoint_capacity_states[state.url])
+                    for state in self._base_url_states
+                )
                 wait_until = min(
                     self._next_available_at(state, now) for state in self._base_url_states
                 )
 
-            wait_time = max(0.05, min(wait_until - now, 10.0))
-            logger.warning(
-                "All LLM base_urls are at capacity or cooling down; waiting %.1fs...",
-                wait_time,
-            )
-            time.sleep(wait_time)
+                wait_time = max(0.05, min(wait_until - now, 10.0))
+                self._log_base_url_wait(blocked_by_concurrency_only, wait_time, now)
+                self._base_url_condition.wait(timeout=wait_time)
 
     def _release_base_url(self, state: _BaseUrlState) -> None:
-        with self._base_url_lock:
-            state.in_flight = max(0, state.in_flight - 1)
+        with self._base_url_condition:
+            endpoint = self._endpoint_capacity_states.get(state.url)
+            if endpoint is not None:
+                endpoint.in_flight = max(0, endpoint.in_flight - 1)
+            self._base_url_condition.notify_all()
 
     def _mark_base_url_cooldown(self, state: _BaseUrlState, seconds: float) -> None:
         if seconds <= 0:
             return
         until = time.monotonic() + seconds
-        with self._base_url_lock:
+        with self._base_url_condition:
             state.cooldown_until = max(state.cooldown_until, until)
+            self._base_url_condition.notify_all()
+
+    def _log_base_url_wait(
+        self,
+        blocked_by_concurrency_only: bool,
+        wait_time: float,
+        now: float,
+    ) -> None:
+        if blocked_by_concurrency_only:
+            if now - self._last_concurrency_wait_log_at < 5.0:
+                return
+            self._last_concurrency_wait_log_at = now
+            logger.debug(
+                "All LLM base_urls are at configured concurrency capacity; waiting %.1fs...",
+                wait_time,
+            )
+            return
+
+        if now - self._last_rate_wait_log_at < 5.0:
+            return
+        self._last_rate_wait_log_at = now
+        logger.warning(
+            "All LLM base_urls are at rate capacity or cooling down; waiting %.1fs...",
+            wait_time,
+        )
 
     def _prune_recent_requests(self, state: _BaseUrlState, now: float) -> None:
         while state.requests_started and now - state.requests_started[0] >= 60.0:
@@ -195,6 +283,11 @@ class LLMClient:
             return True
         return len(state.requests_started) < self.base_url_rate_limit_per_minute
 
+    def _has_concurrent_capacity(self, state: _EndpointCapacityState) -> bool:
+        if state.max_concurrent_requests <= 0:
+            return True
+        return state.in_flight < state.max_concurrent_requests
+
     def _next_available_at(self, state: _BaseUrlState, now: float) -> float:
         available_at = max(state.cooldown_until, now)
         if (
@@ -202,6 +295,8 @@ class LLMClient:
             and len(state.requests_started) >= self.base_url_rate_limit_per_minute
         ):
             available_at = max(available_at, state.requests_started[0] + 60.0)
+        if not self._has_concurrent_capacity(self._endpoint_capacity_states[state.url]):
+            available_at = max(available_at, now + 0.5)
         return available_at
 
     @staticmethod
@@ -260,10 +355,11 @@ class LLMClient:
             total_attempts = (self.max_retries + 1) * max(1, len(self._base_url_states))
             for attempt in range(total_attempts):
                 endpoint = self._select_base_url()
+                post_attempt_delay = 0.0
                 try:
                     url = self._chat_completion_url(endpoint.url)
                     
-                    response = self.session.post(
+                    response = self._session_for_thread().post(
                         url, json=payload, timeout=self.timeout, stream=True
                     )
 
@@ -338,8 +434,8 @@ class LLMClient:
                         
                 except Exception as e:
                     wait_time = min(2**attempt, 10) + random.uniform(0, 3)
-                    self._mark_base_url_cooldown(endpoint, wait_time)
                     is_last = attempt >= total_attempts - 1
+                    post_attempt_delay = 0.0 if is_last else wait_time
                     if is_last:
                         logger.warning(
                             "Model %s via %s request error (attempt %d/%d, final): %s",
@@ -364,6 +460,8 @@ class LLMClient:
                     continue
                 finally:
                     self._release_base_url(endpoint)
+                    if post_attempt_delay > 0:
+                        time.sleep(post_attempt_delay)
             
             logger.info(f"Falling back from model {model}...")
             
