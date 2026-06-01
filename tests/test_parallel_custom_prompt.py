@@ -8,7 +8,7 @@ from zscope.config.config import (
     ProjectConfig,
     ZScopeConfig,
 )
-from zscope.config.function_entry import FunctionEntry
+from zscope.config.function_entry import FunctionEntry, FunctionListLoader
 from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
 
 
@@ -51,3 +51,77 @@ def test_custom_prompt_does_not_append_to_vulnerability_task() -> None:
 
     assert agent_cfg.task == "general security audit"
     assert agent_cfg.entry_custom_prompt == "Focus on async handoff"
+
+
+def test_parallel_scheduler_prioritizes_heavy_input_entries() -> None:
+    class FakeCodeIndex:
+        def get_function_impl(self, func_name, **kwargs):
+            if func_name == "entry_a":
+                code = "\n".join(
+                    f"{idx} | if (argc) {{ recv(fd, buf, sizeof(buf)); process_message(buf); }}"
+                    for idx in range(1, 80)
+                )
+            else:
+                code = "1 | return 0;"
+            return {"code": code}
+
+    analyzer = object.__new__(ParallelAnalyzer)
+    analyzer.base_config = _config_with_task("general security audit")
+    analyzer.code_index = FakeCodeIndex()
+
+    entries = [
+        FunctionEntry("small_api", exposure="api", reasons=["declared_in_header"]),
+        FunctionEntry("entry_a", exposure="other_user_input", reasons=["input:argv"]),
+        FunctionEntry("entry_b", exposure="thread", reasons=["thread_entry:pthread_create"]),
+    ]
+
+    prioritized = analyzer._prioritize_entries_for_execution(entries)
+
+    assert [entry.function_name for entry in prioritized][:2] == ["entry_a", "entry_b"]
+
+
+def test_parallel_scheduler_does_not_score_function_names() -> None:
+    class FakeCodeIndex:
+        def get_function_impl(self, func_name, **kwargs):
+            return {"code": "1 | int x = 0;\n2 | return x;"}
+
+    analyzer = object.__new__(ParallelAnalyzer)
+    analyzer.base_config = _config_with_task("general security audit")
+    analyzer.code_index = FakeCodeIndex()
+
+    entries = [
+        FunctionEntry("main"),
+        FunctionEntry("runtime_worker_dispatch"),
+        FunctionEntry("plain_entry"),
+    ]
+
+    prioritized = analyzer._prioritize_entries_for_execution(entries)
+
+    assert [entry.function_name for entry in prioritized] == [
+        "main",
+        "runtime_worker_dispatch",
+        "plain_entry",
+    ]
+
+
+def test_function_list_loader_preserves_entry_discovery_metadata(tmp_path) -> None:
+    path = tmp_path / "entries.json"
+    path.write_text(
+        """
+        {
+          "functions": [
+            {
+              "function_name": "main",
+              "exposure": "other_user_input",
+              "reasons": ["input:argv"]
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    entries = FunctionListLoader.load(path)
+
+    assert entries[0].exposure == "other_user_input"
+    assert entries[0].reasons == ["input:argv"]

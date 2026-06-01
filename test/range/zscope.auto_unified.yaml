@@ -13,6 +13,7 @@ llms:
     max_tokens: 8192
     max_retries: 2
     timeout: 120
+    base_url_max_concurrent_requests: 4
 
   smart_model:
     provider: openai
@@ -24,6 +25,7 @@ llms:
     max_tokens: 8192
     max_retries: 2
     timeout: 120
+    base_url_max_concurrent_requests: 12
 
 project:
   root: test/range
@@ -95,7 +97,7 @@ indexing:
   joern_server_port: 8080
   joern_heap_size: 4g
   clangd_path: clangd
-  knowledge_db_path: test/range/.zscope_knowledge_auto_unified_wsl/code_knowledge.db
+  knowledge_db_path: .zscope_knowledge_auto_unified_wsl/code_knowledge.db
   batch_size: 50
   max_clangd_threads: 8
   gclang_path: gclang

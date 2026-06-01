@@ -84,3 +84,38 @@ def test_recorder_keeps_only_latest_exchange_and_summarizes_tools(tmp_path):
     assert "EARLY_TOOL_ARG_BIG_PAYLOAD" not in jsonl_text
     assert "EARLY_TOOL_RESULT_BIG_PAYLOAD" not in jsonl_text
     assert "LATEST_TOOL_RESULT_BIG_PAYLOAD" not in jsonl_text
+
+
+def test_recorder_writes_each_session_to_independent_files(tmp_path):
+    recorder = ConversationRecorder(tmp_path)
+    first = recorder.begin_session(agent_name="agent", label="first")
+    second = recorder.begin_session(agent_name="agent", label="second")
+
+    recorder.record_exchange(
+        first,
+        iteration=1,
+        request_messages=[{"role": "user", "content": "FIRST_REQUEST"}],
+        response_message={"role": "assistant", "content": "FIRST_RESPONSE"},
+        finish_reason="stop",
+        model="model-a",
+        prompt_tokens=1,
+        completion_tokens=2,
+    )
+    recorder.record_session_end(first, iterations=1, context_tokens=3)
+    recorder.record_exchange(
+        second,
+        iteration=1,
+        request_messages=[{"role": "user", "content": "SECOND_REQUEST"}],
+        response_message={"role": "assistant", "content": "SECOND_RESPONSE"},
+        finish_reason="stop",
+        model="model-a",
+        prompt_tokens=3,
+        completion_tokens=4,
+    )
+    recorder.record_session_end(second, iterations=1, context_tokens=7)
+
+    assert first.md_path != second.md_path
+    assert first.jsonl_path != second.jsonl_path
+    assert "FIRST_REQUEST" in first.md_path.read_text(encoding="utf-8")
+    assert "SECOND_REQUEST" not in first.md_path.read_text(encoding="utf-8")
+    assert "SECOND_REQUEST" in second.md_path.read_text(encoding="utf-8")

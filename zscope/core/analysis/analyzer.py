@@ -148,8 +148,11 @@ class Analyzer:
                  maintain_mode: bool = False,
                  candidate_ledger: Optional[CandidateLedger] = None,
                  shared_local_pattern_semantics: Optional[LocalPatternSemantics] = None,
-                 shared_semantic_overlay: Optional[Dict[str, Any]] = None):
+                 shared_semantic_overlay: Optional[Dict[str, Any]] = None,
+                 llm_clients: Optional[Dict[str, LLMClient]] = None,
+                 write_root_reports: bool = True):
         self.config = config
+        self.write_root_reports = write_root_reports
         self.code_index = code_index or CodeIndex(
             config.project.project_root,
             config.project.compile_commands_path,
@@ -178,19 +181,25 @@ class Analyzer:
             budget_refresher=self._refresh_effective_budget,
             candidate_persister=self._persist_candidate_ir_records,
         )
-        self.llm_clients: Dict[str, LLMClient] = {}
-        for name, llm_cfg in config.llms.items():
-            self.llm_clients[name] = LLMClient(
-                api_key=llm_cfg.api_key,
-                base_url=getattr(llm_cfg, "base_urls", None) or llm_cfg.base_url,
-                models=llm_cfg.models,
-                timeout=llm_cfg.timeout,
-                max_retries=llm_cfg.max_retries,
-                max_tokens=llm_cfg.max_tokens,
-                base_url_rate_limit_per_minute=getattr(
-                    llm_cfg, "base_url_rate_limit_per_minute", 0
-                ),
-            )
+        if llm_clients is not None:
+            self.llm_clients = llm_clients
+        else:
+            self.llm_clients: Dict[str, LLMClient] = {}
+            for name, llm_cfg in config.llms.items():
+                self.llm_clients[name] = LLMClient(
+                    api_key=llm_cfg.api_key,
+                    base_url=getattr(llm_cfg, "base_urls", None) or llm_cfg.base_url,
+                    models=llm_cfg.models,
+                    timeout=llm_cfg.timeout,
+                    max_retries=llm_cfg.max_retries,
+                    max_tokens=llm_cfg.max_tokens,
+                    base_url_rate_limit_per_minute=getattr(
+                        llm_cfg, "base_url_rate_limit_per_minute", 0
+                    ),
+                    base_url_max_concurrent_requests=getattr(
+                        llm_cfg, "base_url_max_concurrent_requests", 0
+                    ),
+                )
         self.validation_runner = self._make_validation_runner()
         self.report_generator = ReportGenerator(config.project.project_root)
         self.report_assembler = ReportAssembler(
@@ -268,7 +277,15 @@ class Analyzer:
             return {"error": "No entry function configured"}
         self.user_config.clear_config_warnings()
 
+        lookup_started = time.monotonic()
+        logger.info("[code-index] lookup start entry=%s", entry_func)
         impl_result = self.code_index.get_function_impl(entry_func)
+        logger.info(
+            "[code-index] lookup end entry=%s found=%s duration=%.2fs",
+            entry_func,
+            bool(impl_result),
+            time.monotonic() - lookup_started,
+        )
         if not impl_result:
             return {"error": "Entry function not found"}
 
@@ -3122,7 +3139,10 @@ class Analyzer:
         return str(version or "")
 
     def _persist_final_report(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        return self.report_assembler.persist(state)
+        return self.report_assembler.persist(
+            state,
+            write_root_reports=self.write_root_reports,
+        )
 
     def _finalize_returned_report(self, state: Dict[str, Any]) -> Dict[str, Any]:
         return self.report_assembler.finalize_returned_report(state)
@@ -3337,7 +3357,21 @@ class Analyzer:
                 }
             self.snapshot_store.lock_manager.invalidate(func_name)
 
+        lock_started = time.monotonic()
+        logger.info(
+            "[snapshot-lock] waiting context=on_demand func=%s file=%s",
+            func_name,
+            file_path or "",
+        )
         status = self.snapshot_store.lock_manager.acquire(func_name, timeout=120.0)
+        lock_wait = time.monotonic() - lock_started
+        logger.info(
+            "[snapshot-lock] outcome context=on_demand func=%s file=%s status=%s waited=%.2fs",
+            func_name,
+            file_path or "",
+            status,
+            lock_wait,
+        )
         if status == "done":
             snapshot = self.snapshot_store.load_snapshot(func_name, file_path=file_path)
             return {
@@ -3639,7 +3673,21 @@ class Analyzer:
                 continue
 
             # 鐠恒劎鍤庣粙瀣敚娣囨繃濮?
+            lock_started = time.monotonic()
+            logger.info(
+                "[snapshot-lock] waiting context=premodel entry=%s func=%s",
+                entry_func,
+                func,
+            )
             status = self.snapshot_store.lock_manager.acquire(func, timeout=120.0)
+            lock_wait = time.monotonic() - lock_started
+            logger.info(
+                "[snapshot-lock] outcome context=premodel entry=%s func=%s status=%s waited=%.2fs",
+                entry_func,
+                func,
+                status,
+                lock_wait,
+            )
             if status == "done":
                 skipped += 1
                 continue
