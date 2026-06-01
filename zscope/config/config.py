@@ -101,6 +101,33 @@ class EntryDiscoveryConfig:
 
 
 @dataclass
+class DiffImpactConfig:
+    """Configuration for diff-impact entry planning."""
+
+    strategy: str = "semantic_obligation"
+    llm_triage: str = "on_demand"
+    caller_search_depth_by_intent: Dict[str, int] = field(
+        default_factory=lambda: {
+            "new_external_api": 3,
+            "resource_acquire_change": 4,
+            "input_boundary_change": 4,
+            "dispatcher_route_change": 3,
+            "thread_or_callback_entry_change": 4,
+            "resource_release_change": 6,
+            "sink_or_check_change": 5,
+            "lock_release_change": 5,
+            "destroy_or_unregister_change": 6,
+            "ownership_transfer_change": 5,
+            "container_registration_change": 5,
+            "lifecycle_contract_change": 5,
+            "local_logic_change": 2,
+            "comment_or_trivial_change": 1,
+            "declaration_or_contract_change": 3,
+        }
+    )
+
+
+@dataclass
 class IndexingConfig:
     """Configuration for code indexing."""
 
@@ -190,6 +217,7 @@ class ProjectConfig:
     include_paths: List[str] = field(default_factory=list)
     exclude_paths: List[str] = field(default_factory=list)
     entry_discovery: EntryDiscoveryConfig = field(default_factory=EntryDiscoveryConfig)
+    diff_impact: DiffImpactConfig = field(default_factory=DiffImpactConfig)
 
     def __post_init__(self):
         self.project_root = Path(self.project_root).resolve()
@@ -315,6 +343,27 @@ class ConfigLoader:
         if not isinstance(value, dict):
             return {}
         return {str(key): str(val) for key, val in value.items() if str(key).strip() and str(val).strip()}
+
+    @staticmethod
+    def _int_dict(value: Any, default: Optional[Dict[str, int]] = None) -> Dict[str, int]:
+        result = dict(default or {})
+        if not isinstance(value, dict):
+            return result
+        for key, val in value.items():
+            clean_key = str(key).strip()
+            if not clean_key:
+                continue
+            result[clean_key] = max(0, _safe_int(val, result.get(clean_key, 0)))
+        return result
+
+    @staticmethod
+    def _config_string(value: Any, default: str) -> str:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return "on" if value else "off"
+        cleaned = str(value).strip()
+        return cleaned or default
 
     @staticmethod
     def load(config_path: Optional[str] = None) -> ZScopeConfig:
@@ -562,6 +611,22 @@ class ConfigLoader:
                     or entry_discovery_data.get("discovery_root")
                 ),
             )
+            diff_impact_data = project_data.get("diff_impact") or {}
+            diff_impact_defaults = DiffImpactConfig()
+            diff_impact_config = DiffImpactConfig(
+                strategy=ConfigLoader._config_string(
+                    diff_impact_data.get("strategy"),
+                    diff_impact_defaults.strategy,
+                ),
+                llm_triage=ConfigLoader._config_string(
+                    diff_impact_data.get("llm_triage"),
+                    diff_impact_defaults.llm_triage,
+                ),
+                caller_search_depth_by_intent=ConfigLoader._int_dict(
+                    diff_impact_data.get("caller_search_depth_by_intent"),
+                    diff_impact_defaults.caller_search_depth_by_intent,
+                ),
+            )
             # Parse Agents
             agents_data = project_data.get("agents", [])
             agents = []
@@ -604,6 +669,7 @@ class ConfigLoader:
                 include_paths=project_data.get("include_paths", []),
                 exclude_paths=project_data.get("exclude_paths", []),
                 entry_discovery=entry_discovery_config,
+                diff_impact=diff_impact_config,
             )
 
             return ZScopeConfig(
