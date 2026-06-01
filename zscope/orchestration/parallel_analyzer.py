@@ -6,6 +6,7 @@ Supports concurrent analysis of multiple functions using thread pool.
 import concurrent.futures
 import json
 import logging
+import re
 import threading
 import time
 from pathlib import Path
@@ -17,6 +18,7 @@ from ..config.function_entry import FunctionEntry
 from ..config.user_config_store import UserConfigStore
 from ..core.candidates.evidence import SemanticOverlayCompiler
 from ..core.analysis.analyzer import Analyzer
+from ..framework.llm_client import LLMClient
 from ..semantics.inference import LocalPatternSemanticBuilder
 from ..semantics.models import LocalPatternSemantics
 from ..snapshots.store import SnapshotStore
@@ -35,6 +37,21 @@ from ..common.issue_identity import (
 from ..reporting.views import build_report_views, report_view_summary
 
 logger = logging.getLogger(__name__)
+
+_ENTRY_CALL_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
+_ENTRY_CONTROL_RE = re.compile(r"\b(if|for|while|switch|case|goto)\b")
+_ENTRY_HEAVY_TEXT_RE = re.compile(
+    r"(pthread|thread|callback|worker|recv|send|read|write|open|fopen|mmap|"
+    r"malloc|calloc|realloc|free|lock|unlock|shared|global|argv|getenv|protocol|"
+    r"message|runtime|dispatch|session)",
+    re.IGNORECASE,
+)
+_ENTRY_EXPOSURE_WEIGHTS = {
+    "other_user_input": 420,
+    "communication": 380,
+    "thread": 360,
+    "api": 140,
+}
 
 
 @dataclass
@@ -69,6 +86,7 @@ class ParallelAnalyzer:
         self.max_workers = config.analysis.parallel_workers
         self.force_ignore_history = force_ignore_history
         self.maintain_mode = maintain_mode
+        self._shared_llm_clients = self._build_shared_llm_clients(config)
 
         if code_index:
             self.code_index = code_index
@@ -88,6 +106,7 @@ class ParallelAnalyzer:
         self._shared_local_pattern_semantics: Optional[LocalPatternSemantics] = None
         self._shared_semantic_overlay: Optional[Dict[str, Any]] = None
         self._shared_semantics_lock = threading.Lock()
+        self._last_batch_wall_seconds = 0.0
 
     @staticmethod
     def _normalize_md_text(value: Any) -> str:
@@ -114,17 +133,27 @@ class ParallelAnalyzer:
         results = {}
         total = len(entries)
         completed = 0
+        batch_started = time.time()
         
         logger.info(f"Starting parallel analysis of {total} function entries with {self.max_workers} workers")
         if total and not self.maintain_mode:
+            semantics_started = time.time()
+            logger.info("[entry-worker] shared-semantics start entries=%d", total)
             self._prepare_shared_semantics()
+            logger.info(
+                "[entry-worker] shared-semantics end entries=%d duration=%.2fs",
+                total,
+                time.time() - semantics_started,
+            )
+
+        scheduled_entries = self._prioritize_entries_for_execution(entries)
         
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
         try:
             # Submit all analysis tasks
             future_to_entry = {
                 executor.submit(self._analyze_single_entry, entry): entry
-                for entry in entries
+                for entry in scheduled_entries
             }
             
             # Collect results as they complete
@@ -162,6 +191,7 @@ class ParallelAnalyzer:
                 return results
 
         finally:
+            self._last_batch_wall_seconds = time.time() - batch_started
             # Under normal successful execution, properly wait and clean up resources
             if executor and not getattr(self, '_interrupted', False):
                 try:
@@ -170,6 +200,98 @@ class ParallelAnalyzer:
                     pass
                     
         return results
+
+    @staticmethod
+    def _build_shared_llm_clients(config: ZScopeConfig) -> Dict[str, LLMClient]:
+        clients: Dict[str, LLMClient] = {}
+        for name, llm_cfg in config.llms.items():
+            clients[name] = LLMClient(
+                api_key=llm_cfg.api_key,
+                base_url=getattr(llm_cfg, "base_urls", None) or llm_cfg.base_url,
+                models=llm_cfg.models,
+                timeout=llm_cfg.timeout,
+                max_retries=llm_cfg.max_retries,
+                max_tokens=llm_cfg.max_tokens,
+                base_url_rate_limit_per_minute=getattr(
+                    llm_cfg, "base_url_rate_limit_per_minute", 0
+                ),
+                base_url_max_concurrent_requests=getattr(
+                    llm_cfg, "base_url_max_concurrent_requests", 0
+                ),
+            )
+        return clients
+
+    def _prioritize_entries_for_execution(self, entries: List[FunctionEntry]) -> List[FunctionEntry]:
+        """Schedule likely long-running entries first to reduce batch tail idle time."""
+        if len(entries) <= 1:
+            return list(entries)
+
+        scored = [
+            (self._entry_scheduling_score(entry), index, entry)
+            for index, entry in enumerate(entries)
+        ]
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        prioritized = [entry for _score, _index, entry in scored]
+        if [entry.function_name for entry in prioritized] != [entry.function_name for entry in entries]:
+            preview = ", ".join(
+                f"{entry.function_name}:{score}"
+                for score, _index, entry in scored[: min(8, len(scored))]
+            )
+            logger.info("[entry-worker] prioritized entry schedule top=%s", preview)
+        return prioritized
+
+    def _entry_scheduling_score(self, entry: FunctionEntry) -> int:
+        score = 0
+        exposure = str(getattr(entry, "exposure", "") or "").strip().lower()
+        score += _ENTRY_EXPOSURE_WEIGHTS.get(exposure, 0)
+        reason_text = " ".join(str(reason) for reason in getattr(entry, "reasons", []) or [])
+        metadata_text = " ".join(
+            part
+            for part in (
+                str(entry.custom_prompt or ""),
+                exposure,
+                reason_text,
+            )
+            if part
+        )
+        if _ENTRY_HEAVY_TEXT_RE.search(metadata_text):
+            score += 80
+
+        try:
+            impl = self.code_index.get_function_impl(
+                entry.function_name,
+                max_lines=self.base_config.analysis.max_function_lines,
+                include_context=False,
+                warn_missing=False,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Unable to estimate scheduling cost for '%s': %s",
+                entry.function_name,
+                exc,
+            )
+            impl = None
+
+        if isinstance(impl, dict):
+            code = str(impl.get("code") or "")
+            code_without_entry_name = re.sub(
+                rf"\b{re.escape(entry.function_name)}\b",
+                "",
+                code,
+            )
+            line_count = max(0, len(code.splitlines()))
+            score += min(600, line_count * 4)
+            call_names = {
+                name
+                for name in _ENTRY_CALL_RE.findall(code_without_entry_name)
+                if name
+                and name
+                not in {"if", "for", "while", "switch", "return", "sizeof"}
+            }
+            score += min(360, len(call_names) * 18)
+            score += min(220, len(_ENTRY_CONTROL_RE.findall(code_without_entry_name)) * 12)
+            score += min(260, len(_ENTRY_HEAVY_TEXT_RE.findall(code_without_entry_name)) * 18)
+        return int(score)
 
     @staticmethod
     def _entry_result_key(entry: FunctionEntry) -> str:
@@ -203,12 +325,27 @@ class ParallelAnalyzer:
     def _analyze_single_entry(self, entry: FunctionEntry) -> ParallelAnalysisResult:
         """Analyze a single function entry with optional custom prompt."""
         start_time = time.time()
+        entry_key = self._entry_result_key(entry)
+        logger.info(
+            "[entry-worker] start entry=%s key=%s file=%s",
+            entry.function_name,
+            entry_key,
+            entry.file_path or "",
+        )
         
         try:
             # Create a config copy with this function as entry point and custom prompt
+            phase_started = time.time()
             config_copy = self._create_config_for_entry(entry)
+            logger.info(
+                "[entry-worker] config-ready entry=%s key=%s duration=%.2fs",
+                entry.function_name,
+                entry_key,
+                time.time() - phase_started,
+            )
             
             # Create analyzer and run with shared components
+            phase_started = time.time()
             analyzer = Analyzer(
                  config_copy,
                  code_index=self.code_index,
@@ -223,10 +360,38 @@ class ParallelAnalyzer:
                  shared_semantic_overlay=(
                      None if self.maintain_mode else self._get_shared_semantic_overlay()
                  ),
+                 llm_clients=self._shared_llm_clients,
+                 write_root_reports=False,
+            )
+            logger.info(
+                "[entry-worker] analyzer-ready entry=%s key=%s duration=%.2fs",
+                entry.function_name,
+                entry_key,
+                time.time() - phase_started,
+            )
+            run_started = time.time()
+            logger.info(
+                "[entry-worker] run-start entry=%s key=%s",
+                entry.function_name,
+                entry_key,
             )
             report_dict = analyzer.run()
+            logger.info(
+                "[entry-worker] run-end entry=%s key=%s duration=%.2fs",
+                entry.function_name,
+                entry_key,
+                time.time() - run_started,
+            )
             
             duration = time.time() - start_time
+            logger.info(
+                "[entry-worker] end entry=%s key=%s verdict=%s issues=%d duration=%.2fs",
+                entry.function_name,
+                entry_key,
+                report_dict.get("overall_verdict", "unknown"),
+                len(report_dict.get("issues", [])),
+                duration,
+            )
             
             return ParallelAnalysisResult(
                 function_name=entry.function_name,
@@ -243,6 +408,12 @@ class ParallelAnalyzer:
             
         except Exception as e:
             duration = time.time() - start_time
+            logger.exception(
+                "[entry-worker] error entry=%s key=%s duration=%.2fs",
+                entry.function_name,
+                entry_key,
+                duration,
+            )
             return ParallelAnalysisResult(
                 function_name=entry.function_name,
                 verdict="error",
@@ -353,6 +524,13 @@ class ParallelAnalyzer:
         with_review_view = report_views.get("with_needs_review", {})
         
         diff_relevance_summary = self._diff_relevance_summary(unique_issues, unique_observations)
+        batch_wall_seconds = round(float(getattr(self, "_last_batch_wall_seconds", 0.0) or 0.0), 2)
+        effective_speedup = (total_duration / batch_wall_seconds) if batch_wall_seconds > 0 else 0.0
+        worker_utilization = (
+            effective_speedup / max(1, int(self.max_workers or 1))
+            if batch_wall_seconds > 0
+            else 0.0
+        )
 
         combined_report = {
             "type": "parallel_analysis_report",
@@ -368,11 +546,13 @@ class ParallelAnalyzer:
                     with_review_view.get("issue_count") or len(with_review_view.get("issues", []))
                 ),
                 "total_duration_seconds": round(total_duration, 2),
+                "batch_wall_seconds": batch_wall_seconds,
                 "total_context_tokens": sum(r.context_tokens for r in results.values()),
                 "total_cumulative_prompt_tokens": sum(r.cumulative_prompt_tokens for r in results.values()),
                 "total_cumulative_completion_tokens": sum(r.cumulative_completion_tokens for r in results.values()),
                 "total_cumulative_total_tokens": sum(r.cumulative_total_tokens for r in results.values()),
-                "parallel_speedup": f"{len(results)}x potential (using {self.max_workers} workers)",
+                "parallel_speedup": f"{effective_speedup:.2f}x observed (using {self.max_workers} workers)",
+                "parallel_worker_utilization": round(worker_utilization, 4),
                 "diff_relevance": diff_relevance_summary["issues"],
             },
             "function_results": function_summaries,
@@ -691,7 +871,7 @@ class ParallelAnalyzer:
     
     def _deduplicate_issues(self, issues: List[Dict]) -> List[Dict]:
         """Remove duplicate issues based on canonical sink/root-cause evidence."""
-        semantic_cfg = getattr(getattr(getattr(self, "config", None), "reporting", None), "semantic_dedup", None)
+        semantic_cfg = getattr(getattr(getattr(self, "base_config", None), "reporting", None), "semantic_dedup", None)
         if semantic_cfg is not None and getattr(semantic_cfg, "enabled", True):
             deduped, _summary = deduplicate_semantic_issues_programmatic(issues)
             return deduped

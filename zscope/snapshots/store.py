@@ -6,8 +6,9 @@ import json
 import logging
 import sqlite3
 import threading
+import copy
 from pathlib import Path
-from typing import Optional, Dict, Any, cast
+from typing import Optional, Dict, Any, Tuple, cast
 
 from ..common.utils import compute_code_hash, compute_semantic_fingerprint
 
@@ -91,7 +92,30 @@ class SnapshotStore:
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.snapshot_dir / "snapshots.db"
         self.lock_manager = SnapshotLockManager()
+        self._snapshot_cache: Dict[Tuple[str, Optional[str]], Dict[str, Any]] = {}
+        self._snapshot_cache_lock = threading.Lock()
         self._init_db()
+
+    def _cached_snapshot(self, func_name: str, file_path: Optional[str]) -> Optional[Dict[str, Any]]:
+        with self._snapshot_cache_lock:
+            snapshot = self._snapshot_cache.get((func_name, file_path))
+            if snapshot is None:
+                return None
+            return cast(Dict[str, Any], copy.deepcopy(snapshot))
+
+    def _cache_snapshot(self, func_name: str, file_path: Optional[str], snapshot: Dict[str, Any]) -> None:
+        with self._snapshot_cache_lock:
+            self._snapshot_cache[(func_name, file_path)] = cast(Dict[str, Any], copy.deepcopy(snapshot))
+
+    def _invalidate_snapshot_cache(self, func_name: str, file_path: Optional[str] = None) -> None:
+        with self._snapshot_cache_lock:
+            self._snapshot_cache.pop((func_name, None), None)
+            if file_path is None:
+                for key in list(self._snapshot_cache):
+                    if key[0] == func_name:
+                        self._snapshot_cache.pop(key, None)
+            else:
+                self._snapshot_cache.pop((func_name, file_path), None)
 
     def _connect(self) -> sqlite3.Connection:
         """Create a configured SQLite connection."""
@@ -237,6 +261,8 @@ class SnapshotStore:
                 (func_name, file_path, code_hash, semantic_hash, location, snapshot_file),
             )
             conn.commit()
+            self._invalidate_snapshot_cache(func_name, file_path)
+            self._cache_snapshot(func_name, file_path, snapshot)
             logger.info(f"Saved snapshot for function '{func_name}' at '{file_path}'")
         finally:
             conn.close()
@@ -283,8 +309,14 @@ class SnapshotStore:
         Returns:
             Snapshot data or None if not found
         """
+        cached = self._cached_snapshot(func_name, file_path)
+        if cached is not None:
+            return cached
+
         conn = self._connect()
         try:
+            selected_file_path = file_path
+            ambiguous = False
             if file_path:
                 # Exact match query
                 cursor = conn.execute(
@@ -306,11 +338,13 @@ class SnapshotStore:
             if not file_path:
                 all_rows = [row] + cursor.fetchall()
                 if len(all_rows) > 1:
+                    ambiguous = True
                     paths = [r[1] for r in all_rows]
                     logger.warning(
                         f"Multiple snapshots found for '{func_name}' in {paths}. "
                         f"Using first match. Specify file_path for exact match."
                     )
+                selected_file_path = row[1]
 
             snapshot_path = self.snapshot_dir / row[0]
             if not snapshot_path.exists():
@@ -318,7 +352,12 @@ class SnapshotStore:
                 return None
 
             with open(snapshot_path, "r", encoding="utf-8") as f:
-                return cast(Dict[str, Any], json.load(f))
+                snapshot = cast(Dict[str, Any], json.load(f))
+            if selected_file_path:
+                self._cache_snapshot(func_name, selected_file_path, snapshot)
+            if not file_path and not ambiguous:
+                self._cache_snapshot(func_name, None, snapshot)
+            return cast(Dict[str, Any], copy.deepcopy(snapshot))
         finally:
             conn.close()
 
@@ -456,6 +495,7 @@ class SnapshotStore:
                         (func_name, file_path)
                     )
                 conn.commit()
+                self._invalidate_snapshot_cache(func_name, file_path)
                 logger.info(f"Deleted snapshot for '{func_name}' at '{file_path}'")
             else:
                 # Delete all snapshots
@@ -471,6 +511,7 @@ class SnapshotStore:
                         if final_path.exists(): final_path.unlink()
                 conn.execute("DELETE FROM snapshots WHERE func_name = ?", (func_name,))
                 conn.commit()
+                self._invalidate_snapshot_cache(func_name)
                 logger.info(f"Deleted all snapshots for '{func_name}'")
         finally:
             conn.close()

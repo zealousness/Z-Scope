@@ -75,11 +75,12 @@ class ReportAssembler:
             )
         final_report.metadata["report_view_summary"] = report_view_summary(final_report.to_dict())
 
-    def persist(self, state: Dict[str, Any]) -> Dict[str, Any]:
+    def persist(self, state: Dict[str, Any], *, write_root_reports: bool = True) -> Dict[str, Any]:
         final_report = state["final_report"]
         self.refresh(final_report, state)
-        self.report_generator.save_json_report(final_report)
-        self.report_generator.save_markdown_report(final_report)
+        if write_root_reports:
+            self.report_generator.save_json_report(final_report)
+            self.report_generator.save_markdown_report(final_report)
 
         report_dict = cast(Dict[str, Any], final_report.to_dict())
         if self.snapshot_store:

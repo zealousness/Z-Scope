@@ -213,6 +213,9 @@ def main(
                 base_url_rate_limit_per_minute=getattr(
                     llm_cfg, "base_url_rate_limit_per_minute", 0
                 ),
+                base_url_max_concurrent_requests=getattr(
+                    llm_cfg, "base_url_max_concurrent_requests", 0
+                ),
             )
             generated, llm_stats = filter_user_config_rows_with_llm(
                 generated,
@@ -317,6 +320,9 @@ def main(
                 max_tokens=llm_cfg.max_tokens,
                 base_url_rate_limit_per_minute=getattr(
                     llm_cfg, "base_url_rate_limit_per_minute", 0
+                ),
+                base_url_max_concurrent_requests=getattr(
+                    llm_cfg, "base_url_max_concurrent_requests", 0
                 ),
             )
             db_dir = (

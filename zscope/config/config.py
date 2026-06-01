@@ -56,6 +56,7 @@ class LLMConfig:
     base_url: str = "https://api.openai.com/v1"
     base_urls: List[str] = field(default_factory=list)
     base_url_rate_limit_per_minute: int = 0
+    base_url_max_concurrent_requests: int = 0
     models: List[str] = field(default_factory=list)
     temperature: float = 0.1
     max_tokens: int = 4096
@@ -67,6 +68,9 @@ class LLMConfig:
         self.base_url = self.base_urls[0]
         self.base_url_rate_limit_per_minute = max(
             0, _safe_int(self.base_url_rate_limit_per_minute, 0)
+        )
+        self.base_url_max_concurrent_requests = max(
+            0, _safe_int(self.base_url_max_concurrent_requests, 0)
         )
 
 
@@ -148,6 +152,7 @@ class AnalysisConfig:
     max_subagent_tickets: int = 4
     subagent_max_turns: int = 20  # Per-ticket tool/LLM turn budget for focused workers.
     subagent_ticket_timeout: float = 0.0  # Seconds per focused worker ticket; 0 disables timeout.
+    validation_parallel_workers: int = 0  # 0 auto; set 1 to keep validator calls serial per entry.
     subagent_spawn_allowlist: List[str] = field(default_factory=lambda: ["deep_worker"])
     subagent_skill_llm_refs: Dict[str, str] = field(default_factory=dict)
     subagent_skill_efforts: Dict[str, str] = field(default_factory=dict)
@@ -381,6 +386,15 @@ class ConfigLoader:
                                 ),
                             )
                         ),
+                        base_url_max_concurrent_requests=_safe_int(
+                            llm_data.get(
+                                "base_url_max_concurrent_requests",
+                                llm_data.get(
+                                    "base_url_max_in_flight",
+                                    llm_data.get("max_concurrent_requests", 0),
+                                ),
+                            )
+                        ),
                         models=models,
                         temperature=llm_data.get("temperature", 0.1),
                         max_tokens=llm_data.get("max_tokens", 4096),
@@ -414,6 +428,15 @@ class ConfigLoader:
                             data.get(
                                 "base_url_rpm",
                                 data.get("requests_per_minute", 0),
+                            ),
+                        )
+                    ),
+                    base_url_max_concurrent_requests=_safe_int(
+                        data.get(
+                            "base_url_max_concurrent_requests",
+                            data.get(
+                                "base_url_max_in_flight",
+                                data.get("max_concurrent_requests", 0),
                             ),
                         )
                     ),
@@ -488,6 +511,7 @@ class ConfigLoader:
                 max_subagent_tickets=analysis_data.get("max_subagent_tickets", 4),
                 subagent_max_turns=analysis_data.get("subagent_max_turns", 20),
                 subagent_ticket_timeout=analysis_data.get("subagent_ticket_timeout", 0.0),
+                validation_parallel_workers=analysis_data.get("validation_parallel_workers", 0),
                 subagent_spawn_allowlist=ConfigLoader._string_list(
                     analysis_data.get("subagent_spawn_allowlist"),
                     default=["deep_worker"],
