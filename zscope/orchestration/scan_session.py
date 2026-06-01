@@ -196,6 +196,13 @@ class ScanSessionRunner:
             head_ref=self.diff_head,
             component=self.diff_scope_name,
             header_files=discovery_cfg.header_files or None,
+            strategy=getattr(self.config.project.diff_impact, "strategy", "semantic_obligation"),
+            llm_triage=getattr(self.config.project.diff_impact, "llm_triage", "on_demand"),
+            caller_search_depth_by_intent=getattr(
+                self.config.project.diff_impact,
+                "caller_search_depth_by_intent",
+                {},
+            ),
             synthetic_depth_threshold=max(1, int(self.config.analysis.max_recursion_depth or 3)),
         )
         plan = planner.plan()

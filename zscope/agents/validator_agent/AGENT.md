@@ -89,6 +89,8 @@ Output exactly one JSON block and no extra prose:
 ```
 
 Field requirements:
+- The top-level JSON object must be the validation result itself; do not wrap it
+  under keys such as `result`, `data`, or `validation_result`.
 - `type` must be `validation_result`.
 - `verdict` must be one of `verified`, `rejected`, or `uncertain`.
 - `is_valid` must be true only when `verdict` is `verified`; keep it for
