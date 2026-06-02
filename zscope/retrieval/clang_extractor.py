@@ -427,8 +427,10 @@ class ClangExtractor:
         db: KnowledgeDB,
         func_rows: List[Tuple[Any, ...]],
         call_rows: List[Tuple[Any, ...]],
+        scope: Optional[List[str]] = None,
     ):
         """递归处理单个 LSP DocumentSymbol 节点。"""
+        scope = list(scope or [])
         kind = sym.get("kind", 0)
         name = sym.get("name", "")
         range_info = sym.get("range", sym.get("location", {}).get("range", {}))
@@ -437,6 +439,7 @@ class ClangExtractor:
         detail = sym.get("detail", "")
 
         if kind in (self.SK_FUNCTION, self.SK_METHOD, self.SK_CONSTRUCTOR):
+            stored_name = self._qualify_cpp_symbol_name(name, scope)
             signature = f"{detail} {name}" if detail else f"{name}(...)"
             is_static = "static" in detail if detail else False
             is_inline = "inline" in detail if detail else False
@@ -448,7 +451,7 @@ class ClangExtractor:
             )
             func_rows.append(
                 (
-                    name,
+                    stored_name,
                     rel_path,
                     start_line,
                     end_line,
@@ -461,7 +464,7 @@ class ClangExtractor:
             )
             # 通过 hover 提取调用边
             self._extract_call_edges(
-                file_path, name, rel_path, start_line, end_line, call_rows, sym
+                file_path, stored_name, rel_path, start_line, end_line, call_rows, sym
             )
 
         elif kind in (self.SK_STRUCT, self.SK_CLASS, self.SK_ENUM):
@@ -485,8 +488,26 @@ class ClangExtractor:
             )
 
         # 递归处理子符号
+        child_scope = scope
+        if kind in (self.SK_STRUCT, self.SK_CLASS):
+            child_scope = scope + [name]
         for child in sym.get("children", []):
-            self._process_symbol(child, file_path, rel_path, tu_id, db, func_rows, call_rows)
+            self._process_symbol(
+                child,
+                file_path,
+                rel_path,
+                tu_id,
+                db,
+                func_rows,
+                call_rows,
+                child_scope,
+            )
+
+    def _qualify_cpp_symbol_name(self, name: str, scope: List[str]) -> str:
+        clean_name = str(name or "").strip()
+        if not clean_name or "::" in clean_name or not scope:
+            return clean_name
+        return "::".join(scope + [clean_name])
 
     def _extract_call_edges_legacy_regex(
         self,
@@ -674,7 +695,6 @@ class ClangExtractor:
                     if (
                         not is_likely_function_call_identifier(callee)
                         or callee == caller_name
-                        or self._looks_like_member_name(callee)
                     ):
                         continue
                     callee_file = self._uri_to_project_path(target.get("uri", ""))
@@ -714,7 +734,6 @@ class ClangExtractor:
                 if (
                     not is_likely_function_call_identifier(callee)
                     or callee == caller_name
-                    or self._looks_like_member_call(masked_body, m.start(1))
                 ):
                     continue
 

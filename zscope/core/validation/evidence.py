@@ -64,26 +64,6 @@ def is_entry_root_dead_code_rejection(
         "调用图为空",
         "worker",
         "start wrapper",
-        "test case",
-        "test code",
-        "测试代码",
-        "测试用例",
-        "demo code",
-        "example code",
-        "model code",
-        "模型代码",
-        "benchmark",
-        "fixture",
-        "validation fixture",
-        "real_model",
-        "issue41",
-        "td_run",
-        "not production code",
-        "non-production code",
-        "非生产",
-        "intentionally constructed",
-        "intentionally vulnerable",
-        "故意构造",
         "死代码",
         "不可达",
     )
@@ -94,7 +74,9 @@ def is_entry_root_contract_scope_rejection(
     val_data: Dict[str, Any],
     evidence_pack: Dict[str, Any],
 ) -> bool:
-    """Keep contract-sensitive reachable findings for review when validation is too local."""
+    """Legacy no-op: validator rejections are not rewritten as observations."""
+    return False
+
     if validation_verdict(val_data) != "rejected":
         return False
     if not _entry_root_reachable(evidence_pack):
@@ -541,8 +523,7 @@ def _base_validation_requirements() -> List[str]:
         "When this evidence pack names a current analysis entry, treat that configured/header-discovered entry as the public trigger for internal callee findings.",
         "The current_analysis_entry is the root selected for this scan. It is normal for a header/configured root to have zero repository callers, to be absent from main, or to have no separate worker/start wrapper; do not use those facts alone as dead-code evidence.",
         "When entry_is_external_root is true and reachable_from_entry/call_path evidence connects the entry to the sink, validate triggerability from an external invocation of the entry and its parameters, task payload, received bytes, or callback contract; do not require an additional repository-internal caller above the entry.",
-        "Do not reject an internal callee solely because its direct caller list is empty, its name looks like a test/demo/model, or it contains words such as real_model, issue, leak, race, or td_run; rely on entry exposure and call-path evidence instead.",
-        "When the configured scan root is a benchmark, fixture, model, or validation corpus, treat files under that configured project root as the code under audit; names indicating a modeled bug are not a reason to reject a reachable defect.",
+        "Do not reject an internal callee solely because its direct caller list is empty; rely on entry exposure and call-path evidence instead.",
         "If reachable_from_entry, complete_to_entry, call_path, or entry_function evidence is present, reject reachability only when code evidence disproves that specific path.",
         "If the only negative reachability evidence is zero callers for current_analysis_entry, absence from main, or absence of a worker creator, choose uncertain instead of rejected unless code disproves the entry-to-sink path.",
     ]

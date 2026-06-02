@@ -39,6 +39,11 @@ from ..orchestration.scan_session import ScanSessionResult, ScanSessionRunner
     default=None,
     help="Optional git worktree root for diff impact mode. Defaults to project.source_root auto-detection.",
 )
+@click.option(
+    "--diff-path",
+    multiple=True,
+    help="Limit diff impact mode to changed files under this path. Repeat for multiple paths.",
+)
 @click.option("--infer-user-config", is_flag=True, default=False, help="Infer/update the human-editable user_config.xlsx and exit.")
 @click.option("--mcp-stdio", is_flag=True, default=False, help="Run Z-SCOPE local MCP server over stdio.")
 @click.option("--mcp-http", is_flag=True, default=False, help="Run experimental remote MCP server over Streamable HTTP.")
@@ -63,6 +68,7 @@ def main(
     diff_base: Optional[str],
     diff_head: str,
     diff_repo_root: Optional[Path],
+    diff_path: tuple[str, ...],
     infer_user_config: bool,
     mcp_stdio: bool,
     mcp_http: bool,
@@ -139,6 +145,9 @@ def main(
             sys.exit(1)
         if diff_base and (resume or maintain):
             click.echo("Error: --diff-base cannot be combined with --resume or --maintain.")
+            sys.exit(1)
+        if diff_path and not diff_base:
+            click.echo("Error: --diff-path requires --diff-base.")
             sys.exit(1)
         if mcp_stdio and mcp_http:
             click.echo("Error: --mcp-stdio and --mcp-http cannot be used together.")
@@ -360,6 +369,7 @@ def main(
             diff_base=diff_base,
             diff_head=diff_head,
             diff_repo_root=diff_repo_root,
+            diff_paths=diff_path,
             emit=click.echo,
         )
         session_result = session_runner.run()

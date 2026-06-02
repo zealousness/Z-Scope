@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from zscope.config.config import (
     AnalysisConfig,
     IndexingConfig,
@@ -54,6 +56,88 @@ def test_diff_repo_root_can_be_overridden(tmp_path: Path) -> None:
     runner = ScanSessionRunner(cfg, diff_base="base", diff_repo_root=git_root)
 
     assert runner.diff_repo_root == git_root.resolve()
+
+
+def test_diff_paths_are_passed_to_diff_impact_planner(tmp_path: Path, monkeypatch) -> None:
+    captured = {}
+
+    class FakeCodeIndex:
+        pass
+
+    class FakePlan:
+        changed_functions = [object()]
+        entries = [FunctionEntry("api")]
+
+        def to_entry_functions_payload(self):
+            return {"diff_impact": {"entry_count": 1}, "functions": [{"function_name": "api"}]}
+
+    class FakePlanner:
+        def __init__(self, *args, **kwargs):
+            captured["diff_paths"] = kwargs.get("diff_paths")
+
+        def plan(self):
+            return FakePlan()
+
+        def write_entry_functions_file(self, path, plan):
+            path.write_text('{"functions":[{"function_name":"api"}]}', encoding="utf-8")
+            captured["entry_list_path"] = path
+            return path
+
+    monkeypatch.setattr(scan_session_module, "DiffImpactPlanner", FakePlanner)
+    runner = ScanSessionRunner(
+        _config(tmp_path),
+        diff_base="base",
+        diff_paths=["src/net", "src/fs"],
+    )
+    state = runner._create_state()
+    state["code_index"] = FakeCodeIndex()
+
+    runner._plan_diff_impact_entries(state)
+
+    assert captured["diff_paths"] == ["src/net", "src/fs"]
+    assert captured["entry_list_path"].exists()
+    assert state["discovered_entry_functions_list"] == str(captured["entry_list_path"])
+
+
+def test_empty_diff_path_result_stops_before_single_entry_fallback(tmp_path: Path, monkeypatch) -> None:
+    captured = {}
+
+    class FakeCodeIndex:
+        pass
+
+    class FakePlan:
+        changed_functions = []
+        entries = []
+
+        def to_entry_functions_payload(self):
+            return {"diff_impact": {"entry_count": 0}, "functions": []}
+
+    class FakePlanner:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def plan(self):
+            return FakePlan()
+
+        def write_entry_functions_file(self, path, plan):
+            path.write_text('{"diff_impact":{"entry_count":0},"functions":[]}', encoding="utf-8")
+            captured["entry_list_path"] = path
+            return path
+
+    monkeypatch.setattr(scan_session_module, "DiffImpactPlanner", FakePlanner)
+    runner = ScanSessionRunner(
+        _config(tmp_path),
+        diff_base="base",
+        diff_paths=["src/no-match"],
+    )
+    state = runner._create_state()
+    state["code_index"] = FakeCodeIndex()
+
+    with pytest.raises(RuntimeError, match="produced no scan entries"):
+        runner._plan_diff_impact_entries(state)
+
+    assert captured["entry_list_path"].exists()
+    assert runner.config.project.entry_functions_list == captured["entry_list_path"]
 
 
 def test_resume_svf_scope_uses_original_entry_list(tmp_path: Path) -> None:

@@ -1580,8 +1580,14 @@ class RegexCandidateGenerator:
                 )
                 break
 
-        if "ISSUE41_LABEL_CACHE_LIMIT" in text and "ISSUE41_SPEC_MAX_ELEMENTS" in text:
-            line = self._first_line_matching(lines, re.compile(r"ISSUE41_LABEL_CACHE_LIMIT"))
+        impl_limit_re = re.compile(
+            r"\b[A-Z][A-Z0-9_]*(?:LABEL|CACHE)[A-Z0-9_]*LIMIT\b"
+        )
+        spec_limit_re = re.compile(
+            r"\b[A-Z][A-Z0-9_]*SPEC[A-Z0-9_]*(?:MAX|LIMIT|ELEMENTS|COUNT)[A-Z0-9_]*\b"
+        )
+        if impl_limit_re.search(text) and spec_limit_re.search(text):
+            line = self._first_line_matching(lines, impl_limit_re)
             if line:
                 emit(
                     defect_class="size_limit_mismatch",
@@ -1776,8 +1782,11 @@ class RegexCandidateGenerator:
                 positive=[f"line {raw_fd.number}: raw fd value is derived", "same function validates it as encoded fd"],
             )
 
-        if "g_issue41_task_array" in text and "old_array" in text and "SAFE_FREE(old_array)" in text:
-            line = self._first_line_matching(lines, re.compile(r"g_issue41_task_array\s*="))
+        global_array_assign_re = re.compile(
+            r"\bg_[A-Za-z_0-9]*(?:array|table|list|tasks|items)[A-Za-z_0-9]*\s*=\s*new_array\s*;"
+        )
+        if global_array_assign_re.search(text) and "old_array" in text and "SAFE_FREE(old_array)" in text:
+            line = self._first_line_matching(lines, global_array_assign_re)
             if line:
                 emit(
                     defect_class="dynamic_array_race",

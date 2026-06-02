@@ -186,12 +186,24 @@ class UnifiedBackend(CodeBackend):
     def find_function_pointers(self, func_name: str) -> List[Dict[str, Any]]:
         return self._clang.find_function_pointers(func_name)
 
-    def get_callers(self, func_name: str, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_callers(
+        self,
+        func_name: str,
+        limit: int = 20,
+        callee_file: str = "",
+    ) -> List[Dict[str, Any]]:
         db = self.db
         if not db:
             return []
-        direct = cast(List[Dict[str, Any]], db.get_callers(func_name, limit=limit))
-        indirect = cast(List[Dict[str, Any]], db.get_indirect_callers(func_name, limit=limit))
+        direct = cast(
+            List[Dict[str, Any]],
+            db.get_callers(func_name, limit=limit, callee_file=callee_file),
+        )
+        indirect = (
+            []
+            if callee_file
+            else cast(List[Dict[str, Any]], db.get_indirect_callers(func_name, limit=limit))
+        )
         seen = {d["name"] for d in direct}
         for ic in indirect:
             if ic["name"] not in seen:

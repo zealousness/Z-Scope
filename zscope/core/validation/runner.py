@@ -15,7 +15,6 @@ from .evidence import (
     build_validation_evidence_pack,
     compact_validation_evidence_pack,
     compact_validation_finding,
-    is_entry_root_contract_scope_rejection,
     is_entry_root_dead_code_rejection,
     trim_code,
     validation_verdict,
@@ -289,17 +288,6 @@ class ValidationRunner:
                 val_data,
                 token_metadata,
             )
-        if is_entry_root_contract_scope_rejection(val_data, item.evidence_pack):
-            val_data = dict(val_data)
-            val_data["verdict"] = "uncertain"
-            val_data["is_valid"] = False
-            val_data["finding_kind"] = "needs_review"
-            val_data["reasoning"] = (
-                str(val_data.get("reasoning") or "")
-                + " Validator rejection is narrower than the selected external entry contract; "
-                "the concrete entry-to-sink path remains reachable, so the finding is retained "
-                "as needs_review instead of being discarded."
-            ).strip()
         return val_data
 
     def _retry_entry_root_rejection_for_worker(
@@ -334,17 +322,6 @@ class ValidationRunner:
             return val_data
 
         retry_data = retry_resp.data
-        if is_entry_root_dead_code_rejection(retry_data, retry_pack):
-            retry_data = dict(retry_data)
-            retry_data["verdict"] = "uncertain"
-            retry_data["is_valid"] = False
-            retry_data["finding_kind"] = "needs_review"
-            retry_data["reasoning"] = (
-                str(retry_data.get("reasoning") or "")
-                + " Validator rejection conflicts with header/API scan-root evidence; "
-                "zero callers above the selected entry cannot by itself prove dead code, "
-                "so the finding is retained as needs_review."
-            ).strip()
         return retry_data
 
     @staticmethod
@@ -392,17 +369,6 @@ class ValidationRunner:
     ) -> Dict[str, Any]:
         if is_entry_root_dead_code_rejection(val_data, evidence_pack):
             val_data = self._retry_entry_root_rejection(raw_issue, issue_code, evidence_pack, validator_agent, val_data, state)
-        if is_entry_root_contract_scope_rejection(val_data, evidence_pack):
-            val_data = dict(val_data)
-            val_data["verdict"] = "uncertain"
-            val_data["is_valid"] = False
-            val_data["finding_kind"] = "needs_review"
-            val_data["reasoning"] = (
-                str(val_data.get("reasoning") or "")
-                + " Validator rejection is narrower than the selected external entry contract; "
-                "the concrete entry-to-sink path remains reachable, so the finding is retained "
-                "as needs_review instead of being discarded."
-            ).strip()
         return val_data
 
     def _retry_entry_root_rejection(
@@ -438,17 +404,6 @@ class ValidationRunner:
             return val_data
 
         retry_data = retry_resp.data
-        if is_entry_root_dead_code_rejection(retry_data, retry_pack):
-            retry_data = dict(retry_data)
-            retry_data["verdict"] = "uncertain"
-            retry_data["is_valid"] = False
-            retry_data["finding_kind"] = "needs_review"
-            retry_data["reasoning"] = (
-                str(retry_data.get("reasoning") or "")
-                + " Validator rejection conflicts with header/API scan-root evidence; "
-                "zero callers above the selected entry cannot by itself prove dead code, "
-                "so the finding is retained as needs_review."
-            ).strip()
         return retry_data
 
     @staticmethod
@@ -562,23 +517,49 @@ class ValidationRunner:
         verdict: str,
         final_score: float,
     ) -> None:
-        if raw_issue["validation_status"] in {"validated", "needs_review"}:
+        status = str(raw_issue.get("validation_status") or "")
+        validator_confidence = raw_issue.get("confidence", val_data.get("confidence_score"))
+        if status == "validated":
             logger.info(
-                "Issue %s VALIDATED with confidence %s",
+                "Issue %s VALIDATED by Validator; report_bucket=issues, "
+                "validator_verdict=%s, validator_confidence=%s, final_score=%.2f.",
                 raw_issue.get("id"),
-                raw_issue["confidence"],
-            )
-        elif raw_issue["validation_status"] == "uncertain" and verdict == "verified":
-            logger.info(
-                "Issue %s verified by validator but final_score %.2f is below report threshold.",
-                raw_issue.get("id"),
+                verdict,
+                validator_confidence,
                 final_score,
             )
-        elif raw_issue["validation_status"] == "uncertain":
-            logger.info("Issue %s marked UNCERTAIN by Validator; kept as observation.", raw_issue.get("id"))
+        elif status == "needs_review":
+            logger.info(
+                "Issue %s kept as NEEDS_REVIEW by Validator; report_bucket=observations, "
+                "validator_verdict=%s, validator_confidence=%s, final_score=%.2f.",
+                raw_issue.get("id"),
+                verdict,
+                validator_confidence,
+                final_score,
+            )
+        elif status == "uncertain" and verdict == "verified":
+            logger.info(
+                "Issue %s verified by Validator but kept as audit observation; "
+                "report_bucket=observations, validator_confidence=%s, final_score=%.2f.",
+                raw_issue.get("id"),
+                validator_confidence,
+                final_score,
+            )
+        elif status == "uncertain":
+            logger.info(
+                "Issue %s marked UNCERTAIN by Validator; report_bucket=observations, "
+                "validator_confidence=%s, final_score=%.2f.",
+                raw_issue.get("id"),
+                validator_confidence,
+                final_score,
+            )
         else:
             logger.info(
-                "Issue %s REJECTED by Validator, discarding. Reason: %s",
+                "Issue %s REJECTED by Validator; report_bucket=discarded, "
+                "validator_verdict=%s, validator_confidence=%s, final_score=%.2f. Reason: %s",
                 raw_issue.get("id"),
+                verdict,
+                validator_confidence,
+                final_score,
                 str(val_data.get("reasoning") or "")[:500],
             )

@@ -210,6 +210,7 @@ class ProjectConfig:
     project_root: Path
     source_root: Path
     entry_function: Optional[str] = None
+    entry_file_path: Optional[str] = None
     agents: List[AgentConfig] = field(default_factory=list)
     compile_commands_path: Optional[Path] = None
     entry_functions_list: Optional[Path] = None  # Path to JSON file for batch mode
@@ -597,6 +598,7 @@ class ConfigLoader:
                 raise ValueError("Missing 'project.root'")
 
             entry_function = project_data.get("entry_function")
+            entry_file_path = project_data.get("entry_file_path")
             entry_functions_list = project_data.get("entry_functions_list")
 
             entry_discovery_data = project_data.get("entry_discovery") or {}
@@ -663,6 +665,7 @@ class ConfigLoader:
                 project_root=Path(project_root),
                 source_root=Path(project_data.get("source_root", project_root)),
                 entry_function=entry_function,
+                entry_file_path=entry_file_path,
                 agents=agents,
                 compile_commands_path=compile_commands_path,
                 entry_functions_list=Path(entry_functions_list) if entry_functions_list else None,

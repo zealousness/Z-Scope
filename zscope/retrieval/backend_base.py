@@ -76,7 +76,12 @@ class CodeBackend(ABC):
     # ── 查询方法 ──
 
     @abstractmethod
-    def get_callers(self, func_name: str, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_callers(
+        self,
+        func_name: str,
+        limit: int = 20,
+        callee_file: str = "",
+    ) -> List[Dict[str, Any]]:
         """获取调用指定函数的函数列表。"""
         ...
 
