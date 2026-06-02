@@ -180,7 +180,11 @@ class BitcodeBuilder:
         results: Dict[str, Path] = {}
         # 为每组过滤并合并 bc 文件
         for group_name, exclude_list in groups.items():
-            logger.info("Linking group '%s' (excluding %d pattern(s))", group_name, len(exclude_list))
+            logger.info(
+                "Preparing bitcode group '%s' (excluding %d pattern(s))",
+                group_name,
+                len(exclude_list),
+            )
             previous_selected_bcs = self._load_previous_scope_plan_bcs(
                 group_name,
                 Path(project_root or self.source_root),
@@ -202,7 +206,9 @@ class BitcodeBuilder:
                 continue
             candidate_group_bcs = list(group_bcs)
 
-            selected_items: List[tuple[str, List[Path], Optional[BitcodeScopePlan], Optional[set[str]]]] = []
+            selected_items: List[
+                tuple[str, List[Path], Optional[BitcodeScopePlan], Optional[set[str]], bool]
+            ] = []
             if selector and auto_entry_clusters:
                 cluster_prefix = (
                     "entry_cluster"
@@ -226,7 +232,7 @@ class BitcodeBuilder:
                         else "",
                     )
                     selected_items.append(
-                        (cluster.group_name, cluster.selected_bcs, cluster.plan, None)
+                        (cluster.group_name, cluster.selected_bcs, cluster.plan, None, True)
                     )
             elif selector:
                 selected_bcs, plan = selector.select(
@@ -242,24 +248,30 @@ class BitcodeBuilder:
                     len(group_bcs),
                     f" (fallback={plan.fallback_reason})" if plan.fallback_reason else "",
                 )
-                selected_items.append((group_name, selected_bcs, plan, previous_selected_bcs))
+                selected_items.append((group_name, selected_bcs, plan, previous_selected_bcs, False))
             elif scope_config and pool_classifier.enabled:
                 plan = self._full_scope_plan(group_name, scope_entry_names, group_bcs)
-                selected_items.append((group_name, group_bcs, plan, previous_selected_bcs))
+                selected_items.append((group_name, group_bcs, plan, previous_selected_bcs, False))
             else:
-                selected_items.append((group_name, group_bcs, None, previous_selected_bcs))
+                selected_items.append((group_name, group_bcs, None, previous_selected_bcs, False))
 
             if saber_full_group and group_name == "default":
-                selected_items.append(("saber_full", candidate_group_bcs, None, None))
+                selected_items.append(("saber_full", candidate_group_bcs, None, None, True))
 
-            for selected_group_name, selected_bcs, plan, reuse_bcs in selected_items:
+            for selected_group_name, selected_bcs, plan, reuse_bcs, direct_link in selected_items:
                 if not selected_bcs:
                     logger.warning("No .bc files selected for group '%s'", selected_group_name)
                     continue
-                if selected_group_name == "saber_full":
-                    merged = self._link_all(selected_bcs, "saber_full")
+                if direct_link:
+                    merged = self._link_all(
+                        selected_bcs,
+                        selected_group_name,
+                        previous_selected_bcs=reuse_bcs,
+                    )
                     if merged:
-                        results["saber_full"] = merged
+                        results[selected_group_name] = merged
+                    if plan:
+                        self._write_scope_plan(plan)
                     continue
                 link_variants, duplicate_symbols = self._exclusive_pool_link_variants(
                     group_name=selected_group_name,
@@ -1029,6 +1041,11 @@ class BitcodeBuilder:
         # 尝试一次性链接
         try:
             cmd = [self.llvm_link, "-o", str(merged_path)] + [str(p) for p in bc_files]
+            logger.info(
+                "Running llvm-link for group '%s' with %d .bc file(s)",
+                group_name,
+                len(bc_files),
+            )
             proc = subprocess.run(
                 cmd, timeout=self.timeout, capture_output=True, text=True, check=True,
             )
