@@ -6,6 +6,7 @@ import json
 import logging
 import shutil
 import subprocess
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set
@@ -308,6 +309,14 @@ class EntryBitcodeSelector:
             pools=self.config.exclusive_pools,
             shared_pools=self.config.shared_pools,
         )
+        self._function_cache: Dict[tuple[str, str], Optional[Dict[str, Any]]] = {}
+        self._functions_by_name_cache: Dict[str, List[Dict[str, Any]]] = {}
+        self._callees_cache: Dict[tuple[str, str], List[Dict[str, Any]]] = {}
+        self._symbol_cache: Dict[Path, BitcodeSymbols] = {}
+        self._seed_dependency_cache: Dict[
+            tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]],
+            Dict[str, Any],
+        ] = {}
 
     def select(
         self,
@@ -316,6 +325,23 @@ class EntryBitcodeSelector:
         candidate_bcs: Sequence[Path],
         bc_to_src: Mapping[Path, Path],
         entries: Sequence[Any],
+    ) -> tuple[List[Path], BitcodeScopePlan]:
+        return self._select(
+            group_name=group_name,
+            candidate_bcs=candidate_bcs,
+            bc_to_src=bc_to_src,
+            entries=entries,
+            apply_symbol_closure=True,
+        )
+
+    def _select(
+        self,
+        *,
+        group_name: str,
+        candidate_bcs: Sequence[Path],
+        bc_to_src: Mapping[Path, Path],
+        entries: Sequence[Any],
+        apply_symbol_closure: bool,
     ) -> tuple[List[Path], BitcodeScopePlan]:
         entry_records = self._entry_records(entries)
         entry_names = [record["name"] for record in entry_records]
@@ -347,7 +373,12 @@ class EntryBitcodeSelector:
             selected_bcs = self._fallback_bcs(all_bcs)
 
         symbol_added: Set[Path] = set()
-        if self.config.symbol_closure and selected_bcs and len(selected_bcs) < len(all_bcs):
+        if (
+            apply_symbol_closure
+            and self.config.symbol_closure
+            and selected_bcs
+            and len(selected_bcs) < len(all_bcs)
+        ):
             symbol_added = self._expand_symbol_closure(selected_bcs, all_bcs, bc_to_src)
             selected_bcs.update(symbol_added)
 
@@ -380,10 +411,17 @@ class EntryBitcodeSelector:
         related public APIs mostly touch the same translation units.
         """
         entry_records = self._entry_records(entries)
+        all_bcs = [Path(p).resolve() for p in candidate_bcs]
+        bc_to_src_norm = {
+            Path(bc).resolve(): self._resolve_source_path(str(src))
+            for bc, src in bc_to_src.items()
+        }
+        bc_to_src_norm = {bc: src for bc, src in bc_to_src_norm.items() if src}
+        source_to_bcs = self._source_to_bcs(all_bcs, bc_to_src)
         if not entry_records:
             selected, plan = self.select(
                 group_name=group_prefix,
-                candidate_bcs=candidate_bcs,
+                candidate_bcs=all_bcs,
                 bc_to_src=bc_to_src,
                 entries=entries,
             )
@@ -396,31 +434,61 @@ class EntryBitcodeSelector:
                 )
             ]
 
-        by_name = {record["name"]: entry for record, entry in zip(entry_records, entries)}
-        seeds: List[Dict[str, Any]] = []
-        for record in entry_records:
-            entry = by_name.get(record["name"], record["name"])
-            selected, plan = self.select(
-                group_name=f"{group_prefix}_{self._safe_group_suffix(record['name'])}",
-                candidate_bcs=candidate_bcs,
-                bc_to_src=bc_to_src,
-                entries=[entry],
+        entry_objects = self._entry_object_map(entries)
+        seeds_by_bc: Dict[Path, Dict[str, Any]] = {}
+        unresolved_entries: Set[str] = set()
+        logger.info(
+            "SVF entry clustering '%s': locating %d entry seed(s) from %d .bc",
+            group_prefix,
+            len(entry_records),
+            len(all_bcs),
+        )
+        for idx, record in enumerate(entry_records, start=1):
+            if idx == 1 or idx % 25 == 0 or idx == len(entry_records):
+                logger.info(
+                    "SVF entry clustering '%s': locating seed %d/%d (%s%s)",
+                    group_prefix,
+                    idx,
+                    len(entry_records),
+                    record["name"],
+                    f" @ {record.get('file_path')}" if record.get("file_path") else "",
+                )
+            entry = entry_objects.get(
+                (record["name"], record.get("file_path", "")),
+                record["name"],
             )
-            selected_set = {Path(path).resolve() for path in selected}
-            if not selected_set:
+            entry_bcs, entry_source = self._entry_initial_bcs(record, source_to_bcs)
+            if not entry_bcs:
+                unresolved_entries.add(record["name"])
                 continue
-            seeds.append(
-                {
-                    "entries": [entry],
-                    "selected": selected_set,
-                    "plan": plan,
-                }
-            )
+            for entry_bc in entry_bcs:
+                seed = seeds_by_bc.setdefault(
+                    entry_bc,
+                    {
+                        "entries": [],
+                        "entry_records": [],
+                        "initial_bcs": {entry_bc},
+                        "entry_sources": set(),
+                    },
+                )
+                seed["entries"].append(entry)
+                seed["entry_records"].append(record)
+                if entry_source:
+                    seed["entry_sources"].add(entry_source)
+            if idx == 1 or idx % 25 == 0 or idx == len(entry_records):
+                logger.info(
+                    "SVF entry clustering '%s': located seed %d/%d -> %d .bc%s",
+                    group_prefix,
+                    idx,
+                    len(entry_records),
+                    len(entry_bcs),
+                    f" ({entry_source.as_posix()})" if entry_source else "",
+                )
 
-        if not seeds:
+        if not seeds_by_bc:
             selected, plan = self.select(
                 group_name=group_prefix,
-                candidate_bcs=candidate_bcs,
+                candidate_bcs=all_bcs,
                 bc_to_src=bc_to_src,
                 entries=entries,
             )
@@ -433,12 +501,49 @@ class EntryBitcodeSelector:
                 )
             ] if selected else []
 
+        seeds: List[Dict[str, Any]] = []
+        logger.info(
+            "SVF entry clustering '%s': expanding dependencies for %d .bc seed(s)",
+            group_prefix,
+            len(seeds_by_bc),
+        )
+        for idx, seed in enumerate(seeds_by_bc.values(), start=1):
+            logger.info(
+                "SVF entry clustering '%s': expanding seed %d/%d (%d entr%s, %d initial .bc)",
+                group_prefix,
+                idx,
+                len(seeds_by_bc),
+                len(seed["entries"]),
+                "y" if len(seed["entries"]) == 1 else "ies",
+                len(seed["initial_bcs"]),
+            )
+            expanded = self._expand_seed_dependencies(
+                initial_bcs=seed["initial_bcs"],
+                entry_records=seed["entry_records"],
+                all_bcs=all_bcs,
+                bc_to_src=bc_to_src,
+                source_to_bcs=source_to_bcs,
+            )
+            seed.update(expanded)
+            seed["unresolved"].update(unresolved_entries)
+            seeds.append(seed)
+            logger.info(
+                "SVF entry clustering '%s': expanded seed %d/%d -> %d selected .bc, %d reachable function(s)",
+                group_prefix,
+                idx,
+                len(seeds_by_bc),
+                len(seed["selected"]),
+                len(seed["reachable"]),
+            )
+
         clusters: List[Dict[str, Any]] = []
         max_tus = self.config.max_selected_tus
         for seed in seeds:
             best_idx = -1
             best_overlap = 0.0
             for idx, cluster in enumerate(clusters):
+                if not self._seed_pools_compatible(cluster["seed_pools"], seed["seed_pools"]):
+                    continue
                 union = set(cluster["selected"]) | set(seed["selected"])
                 if max_tus > 0 and len(union) > max_tus:
                     continue
@@ -448,23 +553,63 @@ class EntryBitcodeSelector:
                     best_overlap = overlap
             if best_idx >= 0:
                 clusters[best_idx]["entries"].extend(seed["entries"])
+                clusters[best_idx]["entry_records"].extend(seed["entry_records"])
+                clusters[best_idx]["initial_bcs"].update(seed["initial_bcs"])
+                clusters[best_idx]["entry_sources"].update(seed["entry_sources"])
                 clusters[best_idx]["selected"].update(seed["selected"])
+                clusters[best_idx]["selected_sources"].update(seed["selected_sources"])
+                clusters[best_idx]["reachable"].update(seed["reachable"])
+                clusters[best_idx]["unresolved"].update(seed["unresolved"])
+                clusters[best_idx]["allowed_bcs"].update(seed["allowed_bcs"])
+                clusters[best_idx]["seed_pools"].update(seed["seed_pools"])
             else:
                 clusters.append(
                     {
                         "entries": list(seed["entries"]),
+                        "entry_records": list(seed["entry_records"]),
+                        "initial_bcs": set(seed["initial_bcs"]),
+                        "entry_sources": set(seed["entry_sources"]),
                         "selected": set(seed["selected"]),
+                        "selected_sources": set(seed["selected_sources"]),
+                        "reachable": set(seed["reachable"]),
+                        "unresolved": set(seed["unresolved"]),
+                        "allowed_bcs": set(seed["allowed_bcs"]),
+                        "seed_pools": set(seed["seed_pools"]),
                     }
                 )
 
+        logger.info(
+            "SVF entry clustering '%s': formed %d cluster(s) from %d seed(s)",
+            group_prefix,
+            len(clusters),
+            len(seeds),
+        )
         result: List[EntryBitcodeCluster] = []
         for idx, cluster in enumerate(clusters):
             group_name = f"{group_prefix}_{idx + 1}"
-            selected, plan = self.select(
+            logger.info(
+                "SVF entry clustering '%s': finalizing cluster %d/%d (%d entr%s, %d selected .bc)",
+                group_prefix,
+                idx + 1,
+                len(clusters),
+                len(cluster["entries"]),
+                "y" if len(cluster["entries"]) == 1 else "ies",
+                len(cluster["selected"]),
+            )
+            selected, plan = self._finalize_entry_cluster(
                 group_name=group_name,
-                candidate_bcs=candidate_bcs,
+                cluster=cluster,
+                all_bcs=all_bcs,
                 bc_to_src=bc_to_src,
-                entries=cluster["entries"],
+            )
+            logger.info(
+                "SVF entry clustering '%s': finalized cluster %d/%d as '%s' with %d .bc%s",
+                group_prefix,
+                idx + 1,
+                len(clusters),
+                group_name,
+                len(selected),
+                f" (fallback={plan.fallback_reason})" if plan.fallback_reason else "",
             )
             if selected:
                 result.append(
@@ -477,6 +622,289 @@ class EntryBitcodeSelector:
                 )
         return result
 
+    def _entry_initial_bcs(
+        self,
+        record: Mapping[str, str],
+        source_to_bcs: Mapping[Path, List[Path]],
+    ) -> tuple[List[Path], Optional[Path]]:
+        logger.debug(
+            "SVF entry seed: resolving entry '%s'%s",
+            record.get("name", ""),
+            f" with hint {record.get('file_path')}" if record.get("file_path") else "",
+        )
+        func = self._entry_function(record, set(source_to_bcs))
+        source = self._resolve_source_path(
+            str((func or {}).get("file_path") or (func or {}).get("file") or record.get("file_path") or "")
+        )
+        if not source:
+            logger.info(
+                "SVF entry seed: unresolved entry '%s'%s",
+                record.get("name", ""),
+                f" with hint {record.get('file_path')}" if record.get("file_path") else "",
+            )
+            return [], None
+        entry_bcs = [Path(bc).resolve() for bc in source_to_bcs.get(source, [])]
+        if not entry_bcs:
+            logger.info(
+                "SVF entry seed: entry '%s' resolved to %s but no candidate .bc matched",
+                record.get("name", ""),
+                source.as_posix(),
+            )
+        return entry_bcs, source
+
+    def _entry_function(
+        self,
+        record: Mapping[str, str],
+        allowed_sources: Set[Path],
+    ) -> Optional[Dict[str, Any]]:
+        name = str(record.get("name") or "")
+        file_hint = str(record.get("file_path") or "")
+        logger.debug("SVF entry seed: querying function '%s' hint='%s'", name, file_hint)
+        func = self._get_function(name, file_hint)
+        if func:
+            func_source = self._resolve_source_path(
+                str(func.get("file_path") or func.get("file") or "")
+            )
+            if not allowed_sources or (func_source and func_source in allowed_sources):
+                return func
+            logger.info(
+                "SVF entry seed: function '%s' first match %s is outside candidate .bc set; trying alternatives",
+                name,
+                func_source.as_posix() if func_source else "",
+            )
+        return self._best_callee_function(name, file_hint, allowed_sources=allowed_sources)
+
+    def _expand_seed_dependencies(
+        self,
+        *,
+        initial_bcs: Set[Path],
+        entry_records: Sequence[Mapping[str, str]],
+        all_bcs: Sequence[Path],
+        bc_to_src: Mapping[Path, Path],
+        source_to_bcs: Mapping[Path, List[Path]],
+    ) -> Dict[str, Any]:
+        entry_names = self._entry_names_from_records(entry_records)
+        logger.info(
+            "SVF seed dependency: start entries=%d initial_bcs=%d candidates=%d",
+            len(entry_names),
+            len(initial_bcs),
+            len(all_bcs),
+        )
+        pool_by_bc = self._pool_by_bc(all_bcs, bc_to_src)
+        shared_conflicts_by_bc = self._shared_conflicts_by_bc(all_bcs, bc_to_src)
+        seed_pools = {
+            pool_by_bc.get(Path(bc).resolve(), "")
+            for bc in initial_bcs
+            if pool_by_bc.get(Path(bc).resolve(), "")
+        }
+        logger.info(
+            "SVF seed dependency: seed pools=%s",
+            ",".join(sorted(seed_pools)) if seed_pools else "<none>",
+        )
+        allowed_bcs = {
+            Path(bc).resolve()
+            for bc in all_bcs
+            if self._bc_compatible_with_seed_pools(
+                Path(bc).resolve(),
+                seed_pools,
+                pool_by_bc,
+                shared_conflicts_by_bc,
+            )
+        }
+        cache_key = (
+            tuple(sorted(Path(bc).resolve().as_posix() for bc in initial_bcs)),
+            tuple(sorted(seed_pools)),
+            tuple(sorted(Path(bc).resolve().as_posix() for bc in allowed_bcs)),
+        )
+        if cache_key in self._seed_dependency_cache:
+            cached = self._seed_dependency_cache[cache_key]
+            logger.info(
+                "SVF seed dependency: cache hit -> %d selected .bc, %d reachable function(s)",
+                len(cached["selected"]),
+                len(cached["reachable"]),
+            )
+            return {
+                "selected": set(cached["selected"]),
+                "selected_sources": set(cached["selected_sources"]),
+                "reachable": set(cached["reachable"]),
+                "unresolved": set(cached["unresolved"]),
+                "allowed_bcs": set(cached["allowed_bcs"]),
+                "seed_pools": set(cached["seed_pools"]),
+            }
+
+        allowed_sources = {
+            self._resolve_source_path(str(bc_to_src.get(Path(bc).resolve(), "")))
+            for bc in allowed_bcs
+        }
+        allowed_sources = {src for src in allowed_sources if src}
+        logger.info(
+            "SVF seed dependency: allowed candidates=%d .bc / %d source file(s)",
+            len(allowed_bcs),
+            len(allowed_sources),
+        )
+        reachable, selected_sources, unresolved = self._reachable_sources(
+            entry_records,
+            allowed_sources=allowed_sources,
+        )
+        selected_sources.update(
+            src for src in self._always_include_sources(allowed_sources) if src in allowed_sources
+        )
+        selected_bcs = {Path(bc).resolve() for bc in initial_bcs if Path(bc).resolve() in allowed_bcs}
+        for src in selected_sources:
+            for bc in source_to_bcs.get(src, []):
+                resolved_bc = Path(bc).resolve()
+                if resolved_bc in allowed_bcs:
+                    selected_bcs.add(resolved_bc)
+
+        data = {
+            "selected": selected_bcs,
+            "selected_sources": selected_sources,
+            "reachable": reachable,
+            "unresolved": unresolved,
+            "allowed_bcs": allowed_bcs,
+            "seed_pools": seed_pools,
+        }
+        self._seed_dependency_cache[cache_key] = {
+            key: set(value) for key, value in data.items()
+        }
+        logger.info(
+            "SVF seed dependency: completed -> %d selected .bc, %d reachable function(s), %d unresolved entr%s",
+            len(selected_bcs),
+            len(reachable),
+            len(unresolved),
+            "y" if len(unresolved) == 1 else "ies",
+        )
+        return data
+
+    def _finalize_entry_cluster(
+        self,
+        *,
+        group_name: str,
+        cluster: Mapping[str, Any],
+        all_bcs: Sequence[Path],
+        bc_to_src: Mapping[Path, Path],
+    ) -> tuple[List[Path], BitcodeScopePlan]:
+        allowed_bcs = {Path(bc).resolve() for bc in cluster["allowed_bcs"]}
+        selected_bcs = {Path(bc).resolve() for bc in cluster["selected"] if Path(bc).resolve() in allowed_bcs}
+        fallback_reason = ""
+        if not selected_bcs:
+            fallback_reason = "no_bitcode_selected"
+            selected_bcs = self._fallback_bcs_for_allowed(allowed_bcs)
+        if (
+            self.config.max_selected_tus > 0
+            and len(selected_bcs) > self.config.max_selected_tus
+        ):
+            fallback_reason = (
+                f"selected_tu_count_exceeded:{len(selected_bcs)}>"
+                f"{self.config.max_selected_tus}"
+            )
+            selected_bcs = self._fallback_bcs_for_allowed(allowed_bcs)
+
+        ordered_allowed_bcs = self._ordered_subset(all_bcs, allowed_bcs)
+        symbol_added: Set[Path] = set()
+        if (
+            self.config.symbol_closure
+            and selected_bcs
+            and len(selected_bcs) < len(ordered_allowed_bcs)
+        ):
+            symbol_added = self._expand_symbol_closure(selected_bcs, ordered_allowed_bcs, bc_to_src)
+            selected_bcs.update(symbol_added)
+            if (
+                self.config.max_selected_tus > 0
+                and len(selected_bcs) > self.config.max_selected_tus
+            ):
+                fallback_reason = (
+                    f"symbol_closure_tu_count_exceeded:{len(selected_bcs)}>"
+                    f"{self.config.max_selected_tus}"
+                )
+                selected_bcs = self._fallback_bcs_for_allowed(allowed_bcs)
+                symbol_added = set()
+
+        ordered_bcs = self._ordered_subset(all_bcs, selected_bcs)
+        entry_names = self._entry_names_from_records(cluster["entry_records"])
+        plan = BitcodeScopePlan(
+            group_name=group_name,
+            mode=self.config.mode,
+            entries=entry_names,
+            selected_sources=self._format_paths(cluster["selected_sources"]),
+            selected_bcs=self._format_paths(ordered_bcs),
+            reachable_functions=sorted(cluster["reachable"]),
+            unresolved_entries=sorted(cluster["unresolved"]),
+            symbol_closure_added=self._format_paths(symbol_added),
+            fallback_reason=fallback_reason,
+            exclusive_pool=next(iter(cluster["seed_pools"]), "") if len(cluster["seed_pools"]) == 1 else "",
+        )
+        return ordered_bcs, plan
+
+    def _fallback_bcs_for_allowed(self, allowed_bcs: Set[Path]) -> Set[Path]:
+        if self.config.fallback == "skip":
+            return set()
+        return {Path(bc).resolve() for bc in allowed_bcs}
+
+    @staticmethod
+    def _seed_pools_compatible(left: Set[str], right: Set[str]) -> bool:
+        left_pools = {pool for pool in left if pool}
+        right_pools = {pool for pool in right if pool}
+        return not left_pools or not right_pools or left_pools == right_pools
+
+    def _pool_by_bc(
+        self,
+        all_bcs: Sequence[Path],
+        bc_to_src: Mapping[Path, Path],
+    ) -> Dict[Path, str]:
+        return {
+            Path(bc).resolve(): self.pool_classifier.pool_for_bc(Path(bc).resolve(), bc_to_src)
+            for bc in all_bcs
+        }
+
+    def _shared_conflicts_by_bc(
+        self,
+        all_bcs: Sequence[Path],
+        bc_to_src: Mapping[Path, Path],
+    ) -> Dict[Path, Set[str]]:
+        return {
+            Path(bc).resolve(): self.pool_classifier.shared_conflicts_for_bc(
+                Path(bc).resolve(),
+                bc_to_src,
+            )
+            for bc in all_bcs
+        }
+
+    @staticmethod
+    def _bc_compatible_with_seed_pools(
+        bc: Path,
+        seed_pools: Set[str],
+        pool_by_bc: Mapping[Path, str],
+        shared_conflicts_by_bc: Mapping[Path, Set[str]],
+    ) -> bool:
+        pool = pool_by_bc.get(Path(bc).resolve(), "")
+        if pool:
+            return pool in seed_pools
+        conflicts = shared_conflicts_by_bc.get(Path(bc).resolve(), set())
+        return not any(pool_name in conflicts for pool_name in seed_pools)
+
+    @staticmethod
+    def _entry_object_map(entries: Sequence[Any]) -> Dict[tuple[str, str], Any]:
+        result: Dict[tuple[str, str], Any] = {}
+        for entry in entries:
+            name = getattr(entry, "function_name", entry)
+            if not name:
+                continue
+            key = (str(name), str(getattr(entry, "file_path", "") or ""))
+            result.setdefault(key, entry)
+        return result
+
+    @staticmethod
+    def _entry_names_from_records(records: Sequence[Mapping[str, str]]) -> List[str]:
+        names: List[str] = []
+        seen: Set[str] = set()
+        for record in records:
+            name = str(record.get("name") or "")
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+        return names
+
     def write_plan(self, plan: BitcodeScopePlan, output_dir: Path) -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
         plan_path = output_dir / f"bitcode_scope_{plan.group_name}.json"
@@ -488,56 +916,81 @@ class EntryBitcodeSelector:
     def _reachable_sources(
         self,
         entry_records: Sequence[Dict[str, str]],
+        *,
+        allowed_sources: Optional[Set[Path]] = None,
     ) -> tuple[Set[str], Set[Path], Set[str]]:
         reachable: Set[str] = set()
         selected_sources: Set[Path] = set()
         unresolved: Set[str] = set()
-        queue: List[tuple[str, int, str]] = [
+        queue = deque([
             (record["name"], 0, record.get("file_path", "")) for record in entry_records
-        ]
+        ])
         entry_file_hints = {
             record["name"]: record.get("file_path", "")
             for record in entry_records
             if record.get("file_path")
         }
+        logger.info(
+            "SVF reachable sources: start from %d entr%s, depth=%d, allowed_sources=%d",
+            len(entry_records),
+            "y" if len(entry_records) == 1 else "ies",
+            self.config.entry_depth,
+            len(allowed_sources) if allowed_sources is not None else -1,
+        )
+        processed = 0
 
         while queue:
-            func_name, depth, file_hint = queue.pop(0)
+            func_name, depth, file_hint = queue.popleft()
             reachable_key = f"{func_name}\0{file_hint}"
             if reachable_key in reachable:
                 continue
+            processed += 1
+            if processed == 1 or processed % 500 == 0:
+                logger.info(
+                    "SVF reachable sources: processed %d function state(s), queue=%d, selected_sources=%d",
+                    processed,
+                    len(queue),
+                    len(selected_sources),
+                )
             hinted_file = self._resolve_source_path(file_hint or entry_file_hints.get(func_name, ""))
             if hinted_file:
                 selected_sources.add(hinted_file)
-            try:
-                func = (
-                    self.db.get_function(func_name, file_path=file_hint)
-                    if file_hint
-                    else self.db.get_function(func_name)
+            func = self._get_function(func_name, file_hint)
+            func_source = self._resolve_source_path(
+                str((func or {}).get("file_path") or (func or {}).get("file") or "")
+            )
+            if func and allowed_sources is not None and (
+                not func_source or func_source not in allowed_sources
+            ):
+                func = self._best_callee_function(
+                    func_name,
+                    file_hint,
+                    allowed_sources=allowed_sources,
                 )
-            except TypeError:
-                func = self.db.get_function(func_name)
             if not func:
                 if depth == 0:
                     unresolved.add(func_name)
                 continue
             reachable.add(reachable_key)
             file_path = self._resolve_source_path(str(func.get("file_path") or func.get("file") or ""))
+            if allowed_sources is not None and file_path and file_path not in allowed_sources:
+                continue
             if file_path:
                 selected_sources.add(file_path)
 
             if depth >= self.config.entry_depth:
                 continue
             caller_file = str(func.get("file_path") or func.get("file") or file_hint or "")
-            try:
-                callees = self.db.get_callees(func_name, limit=10000, caller_file=caller_file)
-            except TypeError:
-                callees = self.db.get_callees(func_name, limit=10000)
+            callees = self._get_callees(func_name, caller_file)
             for callee in callees:
                 callee_name = str(callee.get("name") or "")
                 callee_file_hint = str(callee.get("filename") or "")
                 if not callee_file_hint:
-                    callee_func = self._best_callee_function(callee_name, caller_file)
+                    callee_func = self._best_callee_function(
+                        callee_name,
+                        caller_file,
+                        allowed_sources=allowed_sources,
+                    )
                     if not callee_func:
                         continue
                     callee_file_hint = str(callee_func.get("file_path") or callee_func.get("file") or "")
@@ -545,10 +998,21 @@ class EntryBitcodeSelector:
                 if not callee_name or callee_key in reachable:
                     continue
                 callee_file = self._resolve_source_path(callee_file_hint)
+                if allowed_sources is not None and (
+                    not callee_file or callee_file not in allowed_sources
+                ):
+                    continue
                 if callee_file:
                     selected_sources.add(callee_file)
                 queue.append((callee_name, depth + 1, callee_file_hint))
 
+        logger.info(
+            "SVF reachable sources: completed processed=%d reachable=%d selected_sources=%d unresolved=%d",
+            processed,
+            len(reachable),
+            len(selected_sources),
+            len(unresolved),
+        )
         return {item.split("\0", 1)[0] for item in reachable}, selected_sources, unresolved
 
     def _always_include_sources(self, sources: Iterable[Path]) -> Set[Path]:
@@ -585,30 +1049,43 @@ class EntryBitcodeSelector:
         all_bcs: Sequence[Path],
         bc_to_src: Mapping[Path, Path],
     ) -> Set[Path]:
-        symbol_cache: Dict[Path, BitcodeSymbols] = {}
         providers: Dict[str, List[Path]] = {}
+        logger.info(
+            "SVF symbol closure: scanning symbols for %d/%d selected .bc file(s)",
+            len(selected_bcs),
+            len(all_bcs),
+        )
         pool_by_bc = {
             Path(bc).resolve(): self.pool_classifier.pool_for_bc(Path(bc).resolve(), bc_to_src)
             for bc in all_bcs
         }
-        for bc in all_bcs:
-            symbols = self._read_symbols_cached(symbol_cache, bc)
+        for idx, bc in enumerate(all_bcs, start=1):
+            if idx == 1 or idx % 100 == 0 or idx == len(all_bcs):
+                logger.info(
+                    "SVF symbol closure: scanned symbol providers %d/%d",
+                    idx,
+                    len(all_bcs),
+                )
+            symbols = self._read_symbols_cached(self._symbol_cache, bc)
             for symbol in symbols.defined:
                 providers.setdefault(symbol, []).append(Path(bc).resolve())
 
         added: Set[Path] = set()
         changed = True
+        iteration = 0
         while changed:
             changed = False
+            iteration += 1
             unresolved_symbols: Set[str] = set()
             for bc in list(selected_bcs):
-                symbols = self._read_symbols_cached(symbol_cache, bc)
+                symbols = self._read_symbols_cached(self._symbol_cache, bc)
                 unresolved_symbols.update(symbols.undefined)
 
             defined_in_selection: Set[str] = set()
             for bc in selected_bcs:
-                defined_in_selection.update(self._read_symbols_cached(symbol_cache, bc).defined)
+                defined_in_selection.update(self._read_symbols_cached(self._symbol_cache, bc).defined)
 
+            before_count = len(selected_bcs)
             for symbol in sorted(unresolved_symbols - defined_in_selection):
                 provider_bcs = [
                     provider for provider in providers.get(symbol, []) if provider not in selected_bcs
@@ -621,7 +1098,18 @@ class EntryBitcodeSelector:
                     selected_bcs.add(provider)
                     added.add(provider)
                     changed = True
+            if changed:
+                logger.info(
+                    "SVF symbol closure: iteration %d added %d .bc file(s), selected=%d",
+                    iteration,
+                    len(selected_bcs) - before_count,
+                    len(selected_bcs),
+                )
 
+        logger.info(
+            "SVF symbol closure: completed with %d added .bc file(s)",
+            len(added),
+        )
         return added
 
     def _allowed_symbol_providers(
@@ -646,15 +1134,11 @@ class EntryBitcodeSelector:
                 if not pool_by_bc.get(Path(provider).resolve(), "")
                 or pool_by_bc.get(Path(provider).resolve(), "") in selected_pools
             ][:1]
-
-        provider_pools = {
-            pool_by_bc.get(Path(provider).resolve(), "")
+        return [
+            Path(provider).resolve()
             for provider in provider_bcs
-            if pool_by_bc.get(Path(provider).resolve(), "")
-        }
-        if len(provider_pools) > 1:
-            return [Path(provider).resolve() for provider in provider_bcs]
-        return [Path(provider_bcs[0]).resolve()]
+            if not pool_by_bc.get(Path(provider).resolve(), "")
+        ][:1]
 
     def _read_symbols_cached(
         self,
@@ -664,6 +1148,30 @@ class EntryBitcodeSelector:
         if bc_path not in cache:
             cache[bc_path] = self.symbol_reader.read_symbols(bc_path)
         return cache[bc_path]
+
+    def _get_function(self, name: str, file_hint: str = "") -> Optional[Dict[str, Any]]:
+        key = (name, file_hint)
+        if key not in self._function_cache:
+            try:
+                func = (
+                    self.db.get_function(name, file_path=file_hint)
+                    if file_hint
+                    else self.db.get_function(name)
+                )
+            except TypeError:
+                func = self.db.get_function(name)
+            self._function_cache[key] = dict(func) if func else None
+        return self._function_cache[key]
+
+    def _get_callees(self, name: str, caller_file: str) -> List[Dict[str, Any]]:
+        key = (name, caller_file)
+        if key not in self._callees_cache:
+            try:
+                callees = self.db.get_callees(name, limit=10000, caller_file=caller_file)
+            except TypeError:
+                callees = self.db.get_callees(name, limit=10000)
+            self._callees_cache[key] = [dict(callee) for callee in callees]
+        return self._callees_cache[key]
 
     def _fallback_bcs(self, all_bcs: Sequence[Path]) -> Set[Path]:
         if self.config.fallback == "skip":
@@ -721,13 +1229,15 @@ class EntryBitcodeSelector:
             if not name:
                 continue
             name = str(name)
-            if name in seen:
+            file_path = str(getattr(entry, "file_path", "") or "")
+            seen_key = f"{name}\0{file_path}"
+            if seen_key in seen:
                 continue
-            seen.add(name)
+            seen.add(seen_key)
             records.append(
                 {
                     "name": name,
-                    "file_path": str(getattr(entry, "file_path", "") or ""),
+                    "file_path": file_path,
                 }
             )
         return records
@@ -744,10 +1254,26 @@ class EntryBitcodeSelector:
         union = left | right
         return (len(left & right) / len(union)) if union else 0.0
 
-    def _best_callee_function(self, callee_name: str, caller_file: str) -> Optional[Dict[str, Any]]:
+    def _best_callee_function(
+        self,
+        callee_name: str,
+        caller_file: str,
+        *,
+        allowed_sources: Optional[Set[Path]] = None,
+    ) -> Optional[Dict[str, Any]]:
         try:
-            get_candidates = getattr(self.db, "get_functions_by_name", None)
-            candidates = get_candidates(callee_name) if callable(get_candidates) else []
+            candidates = self._get_functions_by_name(callee_name)
+            if allowed_sources is not None:
+                candidates = [
+                    candidate
+                    for candidate in candidates
+                    if (
+                        self._resolve_source_path(
+                            str(candidate.get("file_path") or candidate.get("file") or "")
+                        )
+                        in allowed_sources
+                    )
+                ]
             if candidates:
                 return min(
                     candidates,
@@ -759,6 +1285,13 @@ class EntryBitcodeSelector:
             return self.db.get_function(callee_name)
         except TypeError:
             return self.db.get_function(callee_name)
+
+    def _get_functions_by_name(self, name: str) -> List[Dict[str, Any]]:
+        if name not in self._functions_by_name_cache:
+            get_candidates = getattr(self.db, "get_functions_by_name", None)
+            candidates = get_candidates(name) if callable(get_candidates) else []
+            self._functions_by_name_cache[name] = [dict(candidate) for candidate in candidates]
+        return self._functions_by_name_cache[name]
 
     @staticmethod
     def _path_distance(left: str, right: str) -> tuple[int, str]:

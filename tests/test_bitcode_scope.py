@@ -96,6 +96,50 @@ def test_symbol_closure_adds_provider_bitcode(tmp_path: Path) -> None:
     db.close()
 
 
+def test_symbol_closure_reuses_selector_symbol_cache(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source_root = project
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    db.insert_function("entry", "src/entry.c", 1, 5)
+
+    entry_bc = _touch(tmp_path / "bc" / "entry.bc")
+    provider_bc = _touch(tmp_path / "bc" / "provider.bc")
+    bc_to_src = {
+        entry_bc: source_root / "src" / "entry.c",
+        provider_bc: source_root / "src" / "provider.c",
+    }
+    read_counts = {"entry.bc": 0, "provider.bc": 0}
+
+    class FakeSymbolReader:
+        def read_symbols(self, bc_path: Path) -> BitcodeSymbols:
+            read_counts[bc_path.name] += 1
+            if bc_path.name == "entry.bc":
+                return BitcodeSymbols(defined={"entry"}, undefined={"helper_global"})
+            if bc_path.name == "provider.bc":
+                return BitcodeSymbols(defined={"helper_global"}, undefined=set())
+            return BitcodeSymbols()
+
+    selector = EntryBitcodeSelector(
+        db=db,
+        source_root=source_root,
+        project_root=project,
+        config=BitcodeScopeConfig(mode="entry", entry_depth=1, symbol_closure=True),
+        symbol_reader=FakeSymbolReader(),
+    )
+
+    for _ in range(2):
+        selected, _plan = selector.select(
+            group_name="default",
+            candidate_bcs=[entry_bc, provider_bc],
+            bc_to_src=bc_to_src,
+            entries=["entry"],
+        )
+        assert selected == [entry_bc.resolve(), provider_bc.resolve()]
+
+    assert read_counts == {"entry.bc": 1, "provider.bc": 1}
+    db.close()
+
+
 def test_entry_file_path_hint_selects_matching_bitcode(tmp_path: Path) -> None:
     project = tmp_path / "project"
     source_root = project
@@ -203,6 +247,193 @@ def test_entry_clustering_merges_overlapping_entry_scopes(tmp_path: Path) -> Non
         "api.bc",
         "helper.bc",
     }
+    db.close()
+
+
+def test_entry_clustering_seed_selection_skips_symbol_closure(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source_root = project
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    db.insert_function("api_a", "src/api.c", 1, 10)
+    db.insert_function("api_b", "src/api.c", 12, 20)
+    db.insert_function("helper", "src/helper.c", 1, 5)
+    db.insert_call_edge("api_a", "src/api.c", "helper", "src/helper.c", 3)
+    db.insert_call_edge("api_b", "src/api.c", "helper", "src/helper.c", 14)
+
+    api_bc = _touch(tmp_path / "bc" / "api.bc")
+    helper_bc = _touch(tmp_path / "bc" / "helper.bc")
+    provider_bc = _touch(tmp_path / "bc" / "provider.bc")
+    bc_to_src = {
+        api_bc: source_root / "src" / "api.c",
+        helper_bc: source_root / "src" / "helper.c",
+        provider_bc: source_root / "src" / "provider.c",
+    }
+
+    selector = EntryBitcodeSelector(
+        db=db,
+        source_root=source_root,
+        project_root=project,
+        config=BitcodeScopeConfig(mode="entry", entry_depth=1, symbol_closure=True),
+    )
+    closure_calls = []
+
+    def record_symbol_closure(selected_bcs, all_bcs, bc_to_src):
+        closure_calls.append({path.name for path in selected_bcs})
+        return set()
+
+    selector._expand_symbol_closure = record_symbol_closure
+
+    clusters = selector.cluster_entries(
+        group_prefix="entry_cluster",
+        candidate_bcs=[api_bc, helper_bc, provider_bc],
+        bc_to_src=bc_to_src,
+        entries=["api_a", "api_b"],
+    )
+
+    assert len(clusters) == 1
+    assert closure_calls == [{"api.bc", "helper.bc"}]
+    db.close()
+
+
+def test_entry_seed_dependency_cache_reuses_bc_dependency_result(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source_root = project
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    db.insert_function("entry", "src/entry.c", 1, 5)
+    db.insert_function("helper", "src/helper.c", 1, 5)
+    db.insert_call_edge("entry", "src/entry.c", "helper", "src/helper.c", 3)
+
+    entry_bc = _touch(tmp_path / "bc" / "entry.bc")
+    helper_bc = _touch(tmp_path / "bc" / "helper.bc")
+    bc_to_src = {
+        entry_bc: source_root / "src" / "entry.c",
+        helper_bc: source_root / "src" / "helper.c",
+    }
+    original_get_callees = db.get_callees
+    call_count = {"entry": 0}
+
+    def counting_get_callees(func_name, *args, **kwargs):
+        if func_name == "entry":
+            call_count["entry"] += 1
+        return original_get_callees(func_name, *args, **kwargs)
+
+    db.get_callees = counting_get_callees
+
+    selector = EntryBitcodeSelector(
+        db=db,
+        source_root=source_root,
+        project_root=project,
+        config=BitcodeScopeConfig(mode="entry", entry_depth=1, symbol_closure=False),
+    )
+
+    for _ in range(2):
+        clusters = selector.cluster_entries(
+            group_prefix="entry_cluster",
+            candidate_bcs=[entry_bc, helper_bc],
+            bc_to_src=bc_to_src,
+            entries=["entry"],
+        )
+        assert len(clusters) == 1
+        assert {path.name for path in clusters[0].selected_bcs} == {"entry.bc", "helper.bc"}
+
+    assert call_count["entry"] == 1
+    db.close()
+
+
+def test_entry_seed_dependency_respects_exclusive_pool(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source_root = project
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    db.insert_function("entry", "src/pool/normal/entry.c", 1, 5)
+    db.insert_function("normal_helper", "src/pool/normal/helper.c", 1, 5)
+    db.insert_function("compat_helper", "src/pool/compat/helper.c", 1, 5)
+    db.insert_call_edge("entry", "src/pool/normal/entry.c", "normal_helper", "src/pool/normal/helper.c", 3)
+    db.insert_call_edge("entry", "src/pool/normal/entry.c", "compat_helper", "src/pool/compat/helper.c", 4)
+
+    entry_bc = _touch(tmp_path / "bc" / "entry.bc")
+    normal_bc = _touch(tmp_path / "bc" / "normal_helper.bc")
+    compat_bc = _touch(tmp_path / "bc" / "compat_helper.bc")
+    bc_to_src = {
+        entry_bc: source_root / "src" / "pool" / "normal" / "entry.c",
+        normal_bc: source_root / "src" / "pool" / "normal" / "helper.c",
+        compat_bc: source_root / "src" / "pool" / "compat" / "helper.c",
+    }
+
+    selector = EntryBitcodeSelector(
+        db=db,
+        source_root=source_root,
+        project_root=project,
+        config=BitcodeScopeConfig(
+            mode="entry",
+            entry_depth=1,
+            symbol_closure=False,
+            exclusive_pools=[
+                {"name": "normal", "paths": ["src/pool/normal/**"]},
+                {"name": "compat", "paths": ["src/pool/compat/**"]},
+            ],
+        ),
+    )
+
+    clusters = selector.cluster_entries(
+        group_prefix="entry_cluster",
+        candidate_bcs=[entry_bc, normal_bc, compat_bc],
+        bc_to_src=bc_to_src,
+        entries=["entry"],
+    )
+
+    assert len(clusters) == 1
+    assert {path.name for path in clusters[0].selected_bcs} == {"entry.bc", "normal_helper.bc"}
+    assert clusters[0].plan.exclusive_pool == "normal"
+    db.close()
+
+
+def test_symbol_closure_does_not_cross_exclusive_pool(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source_root = project
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    db.insert_function("entry", "src/pool/normal/entry.c", 1, 5)
+
+    entry_bc = _touch(tmp_path / "bc" / "entry.bc")
+    compat_bc = _touch(tmp_path / "bc" / "compat_provider.bc")
+    bc_to_src = {
+        entry_bc: source_root / "src" / "pool" / "normal" / "entry.c",
+        compat_bc: source_root / "src" / "pool" / "compat" / "provider.c",
+    }
+
+    class FakeSymbolReader:
+        def read_symbols(self, bc_path: Path) -> BitcodeSymbols:
+            if bc_path.name == "entry.bc":
+                return BitcodeSymbols(defined={"entry"}, undefined={"shared_symbol"})
+            if bc_path.name == "compat_provider.bc":
+                return BitcodeSymbols(defined={"shared_symbol"}, undefined=set())
+            return BitcodeSymbols()
+
+    selector = EntryBitcodeSelector(
+        db=db,
+        source_root=source_root,
+        project_root=project,
+        config=BitcodeScopeConfig(
+            mode="entry",
+            entry_depth=1,
+            symbol_closure=True,
+            exclusive_pools=[
+                {"name": "normal", "paths": ["src/pool/normal/**"]},
+                {"name": "compat", "paths": ["src/pool/compat/**"]},
+            ],
+        ),
+        symbol_reader=FakeSymbolReader(),
+    )
+
+    clusters = selector.cluster_entries(
+        group_prefix="entry_cluster",
+        candidate_bcs=[entry_bc, compat_bc],
+        bc_to_src=bc_to_src,
+        entries=["entry"],
+    )
+
+    assert len(clusters) == 1
+    assert clusters[0].selected_bcs == [entry_bc.resolve()]
+    assert clusters[0].plan.symbol_closure_added == []
     db.close()
 
 
