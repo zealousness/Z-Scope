@@ -61,6 +61,7 @@ class ZScopeMcpProvider:
             include_paths=config.project.include_paths,
             exclude_paths=config.project.exclude_paths,
             wait_for_cpg=True,
+            svf_parallel_workers=config.analysis.parallel_workers,
         )
         self.snapshot_store = snapshot_store or SnapshotStore(Path(config.analysis.snapshot_dir))
         resolved_policy = tool_policy or ToolPolicy.allow_all(

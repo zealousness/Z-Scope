@@ -6,6 +6,7 @@ import hashlib
 import inspect
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -33,12 +34,13 @@ class SvfAnalyzer:
         timeout: int = 1800,
         scope: str = "auto",
         entry_depth: int = 4,
-        max_selected_tus: int = 300,
+        max_selected_tus: int = 200,
         fallback: str = "full",
         always_include: Optional[List[str]] = None,
         symbol_closure: bool = True,
         exclusive_pools: Optional[List[Dict[str, Any]]] = None,
         shared_pools: Optional[List[Dict[str, Any]]] = None,
+        parallel_workers: int = 1,
     ):
         self._db = db
         self._svf_bin_dir = svf_bin_dir
@@ -58,6 +60,7 @@ class SvfAnalyzer:
             shared_pools=list(shared_pools or []),
         )
         self._results: Dict[str, SvfResult] = {}
+        self._parallel_workers = max(1, int(parallel_workers or 1))
 
     def run(
         self,
@@ -122,6 +125,7 @@ class SvfAnalyzer:
                 groups=groups,
                 scope_entries=scope_entries,
                 project_root=project_root,
+                explicit_groups_config=bool(svf_groups_config),
             )
             failed_tus = list(getattr(builder, "failed_tus", []))
             bitcode_complete = not failed_tus
@@ -179,24 +183,10 @@ class SvfAnalyzer:
                 timeout=self._timeout,
             )
 
-            had_timeout = False
-            for group_name, bc_path in bc_paths.items():
-                logger.info("Running SVF analysis for group '%s' using %s", group_name, bc_path)
-                group_suffix = f"_{group_name}" if group_name != "default" else ""
-                output_dir = project_root / f".zscope_svf{group_suffix}"
-
-                self._results = runner.run_all(bc_path, output_dir)
-                if any(result.timed_out for result in self._results.values()):
-                    had_timeout = True
-
-                self._db.purge_svf_data(group=group_name)
-                mapper = SvfOutputMapper(self._db, svf_group=group_name)
-                ander = self._results.get("ander")
-                if ander and ander.output_file:
-                    mapper.import_callgraph(ander.output_file)
-                saber = self._results.get("saber")
-                if saber and saber.bugs:
-                    mapper.import_saber_bugs(saber.bugs)
+            if not hasattr(runner, "run_ander") or not hasattr(runner, "run_saber"):
+                had_timeout = self._run_legacy_svf(runner, bc_paths, project_root)
+            else:
+                had_timeout = self._run_split_svf(runner, bc_paths, project_root)
 
             if had_timeout:
                 logger.warning("SVF analysis timed out; cache fingerprint will not be updated")
@@ -223,6 +213,7 @@ class SvfAnalyzer:
         groups: Dict[str, List[str]],
         scope_entries: Sequence[Any],
         project_root: Path,
+        explicit_groups_config: bool = False,
     ) -> Dict[str, Path]:
         """Call BitcodeBuilder with scope kwargs when the implementation supports them."""
         try:
@@ -241,7 +232,109 @@ class SvfAnalyzer:
             entry_functions=scope_entries,
             knowledge_db=self._db,
             project_root=project_root,
+            auto_entry_clusters=(
+                self._scope_config.mode != "full"
+                and bool(scope_entries)
+            ),
+            saber_full_group=True,
         )
+
+    def _run_legacy_svf(
+        self,
+        runner: Any,
+        bc_paths: Dict[str, Path],
+        project_root: Path,
+    ) -> bool:
+        had_timeout = False
+        for group_name, bc_path in bc_paths.items():
+            if group_name == "saber_full":
+                continue
+            logger.info("Running SVF analysis for group '%s' using %s", group_name, bc_path)
+            group_suffix = f"_{group_name}" if group_name != "default" else ""
+            output_dir = project_root / f".zscope_svf{group_suffix}"
+
+            self._results = runner.run_all(bc_path, output_dir)
+            if any(result.timed_out for result in self._results.values()):
+                had_timeout = True
+
+            self._db.purge_svf_data(group=group_name)
+            mapper = SvfOutputMapper(self._db, svf_group=group_name)
+            ander = self._results.get("ander")
+            if ander and ander.output_file:
+                mapper.import_callgraph(ander.output_file)
+            saber = self._results.get("saber")
+            if saber and saber.bugs:
+                mapper.import_saber_bugs(saber.bugs)
+        return had_timeout
+
+    def _run_split_svf(
+        self,
+        runner: Any,
+        bc_paths: Dict[str, Path],
+        project_root: Path,
+    ) -> bool:
+        wpa_paths = {name: path for name, path in bc_paths.items() if name != "saber_full"}
+        saber_bc = bc_paths.get("saber_full")
+        if hasattr(self._db, "purge_svf_data_except"):
+            self._db.purge_svf_data_except(set(wpa_paths) | {"saber_full"})
+
+        had_timeout = self._run_wpa_groups(runner, wpa_paths, project_root)
+        if saber_bc:
+            result = runner.run_saber(saber_bc, project_root / ".zscope_svf_saber_full")
+            if result.timed_out:
+                had_timeout = True
+            self._db.purge_svf_data(group="saber_full")
+            mapper = SvfOutputMapper(self._db, svf_group="saber_full")
+            if result.bugs:
+                mapper.import_saber_bugs(result.bugs)
+        return had_timeout
+
+    def _run_wpa_groups(
+        self,
+        runner: Any,
+        wpa_paths: Dict[str, Path],
+        project_root: Path,
+    ) -> bool:
+        if not wpa_paths:
+            return False
+        max_workers = max(1, min(self._parallel_workers, len(wpa_paths)))
+        logger.info("Running %d WPA group(s) with %d worker(s)", len(wpa_paths), max_workers)
+        had_timeout = False
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="zscope-wpa") as executor:
+            futures = {
+                executor.submit(self._run_one_wpa_group, runner, group_name, bc_path, project_root): (
+                    group_name,
+                    bc_path,
+                )
+                for group_name, bc_path in wpa_paths.items()
+            }
+            for future in as_completed(futures):
+                group_name, _bc_path = futures[future]
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    logger.warning("WPA group '%s' failed: %s", group_name, exc)
+                    continue
+                if result.timed_out:
+                    had_timeout = True
+                    continue
+                self._db.purge_svf_data(group=group_name)
+                mapper = SvfOutputMapper(self._db, svf_group=group_name)
+                if result.output_file:
+                    mapper.import_callgraph(result.output_file)
+        return had_timeout
+
+    def _run_one_wpa_group(
+        self,
+        runner: Any,
+        group_name: str,
+        bc_path: Path,
+        project_root: Path,
+    ) -> SvfResult:
+        logger.info("Running WPA analysis for group '%s' using %s", group_name, bc_path)
+        group_suffix = f"_{group_name}" if group_name != "default" else ""
+        output_dir = project_root / f".zscope_svf{group_suffix}"
+        return runner.run_ander(bc_path, output_dir)
 
     @staticmethod
     def _load_groups_config(project_root: Path, svf_groups_config: str) -> Dict[str, List[str]]:
@@ -281,6 +374,8 @@ class SvfAnalyzer:
             "symbol_closure": self._scope_config.symbol_closure,
             "exclusive_pools": self._scope_config.exclusive_pools,
             "shared_pools": self._scope_config.shared_pools,
+            "execution_lanes": "parallel_wpa_full_saber",
+            "parallel_workers": self._parallel_workers,
         }
 
     @staticmethod

@@ -159,3 +159,117 @@ def test_entry_file_path_hint_disambiguates_duplicate_function_names(tmp_path: P
     assert any(path.endswith("src/pool/compat/A.c") for path in selected_sources)
     assert not any(path.endswith("src/pool/normal/A.c") for path in selected_sources)
     db.close()
+
+
+def test_entry_clustering_merges_overlapping_entry_scopes(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source_root = project
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    db.insert_function("api_a", "src/api.c", 1, 10)
+    db.insert_function("api_b", "src/api.c", 12, 20)
+    db.insert_function("helper", "src/helper.c", 1, 5)
+    db.insert_function("api_c", "src/other.c", 1, 10)
+    db.insert_call_edge("api_a", "src/api.c", "helper", "src/helper.c", 3)
+    db.insert_call_edge("api_b", "src/api.c", "helper", "src/helper.c", 14)
+
+    api_bc = _touch(tmp_path / "bc" / "api.bc")
+    helper_bc = _touch(tmp_path / "bc" / "helper.bc")
+    other_bc = _touch(tmp_path / "bc" / "other.bc")
+    bc_to_src = {
+        api_bc: source_root / "src" / "api.c",
+        helper_bc: source_root / "src" / "helper.c",
+        other_bc: source_root / "src" / "other.c",
+    }
+
+    selector = EntryBitcodeSelector(
+        db=db,
+        source_root=source_root,
+        project_root=project,
+        config=BitcodeScopeConfig(mode="entry", entry_depth=1, symbol_closure=False),
+    )
+
+    clusters = selector.cluster_entries(
+        group_prefix="entry_cluster",
+        candidate_bcs=[api_bc, helper_bc, other_bc],
+        bc_to_src=bc_to_src,
+        entries=["api_a", "api_b", "api_c"],
+    )
+
+    assert len(clusters) == 2
+    by_entries = {tuple(cluster.plan.entries): cluster for cluster in clusters}
+    assert ("api_a", "api_b") in by_entries
+    assert ("api_c",) in by_entries
+    assert {path.name for path in by_entries[("api_a", "api_b")].selected_bcs} == {
+        "api.bc",
+        "helper.bc",
+    }
+    db.close()
+
+
+def test_unresolved_external_callee_does_not_expand_scope(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source_root = project
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    db.insert_function("entry", "src/entry.c", 1, 5)
+    db.insert_call_edge("entry", "src/entry.c", "external_api", "", 3)
+
+    entry_bc = _touch(tmp_path / "bc" / "entry.bc")
+    decoy_bc = _touch(tmp_path / "bc" / "decoy.bc")
+    bc_to_src = {
+        entry_bc: source_root / "src" / "entry.c",
+        decoy_bc: source_root / "src" / "decoy.c",
+    }
+
+    selector = EntryBitcodeSelector(
+        db=db,
+        source_root=source_root,
+        project_root=project,
+        config=BitcodeScopeConfig(mode="entry", entry_depth=2, symbol_closure=False),
+    )
+
+    selected, plan = selector.select(
+        group_name="default",
+        candidate_bcs=[entry_bc, decoy_bc],
+        bc_to_src=bc_to_src,
+        entries=["entry"],
+    )
+
+    assert selected == [entry_bc.resolve()]
+    assert plan.reachable_functions == ["entry"]
+    db.close()
+
+
+def test_ambiguous_callee_without_file_hint_prefers_nearby_implementation(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source_root = project
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    db.insert_function("entry", "src/feature/entry.c", 1, 5)
+    db.insert_function("helper", "src/feature/helper.c", 1, 5)
+    db.insert_function("helper", "src/other/helper.c", 1, 5)
+    db.insert_call_edge("entry", "src/feature/entry.c", "helper", "", 3)
+
+    entry_bc = _touch(tmp_path / "bc" / "entry.bc")
+    feature_helper_bc = _touch(tmp_path / "bc" / "feature_helper.bc")
+    other_helper_bc = _touch(tmp_path / "bc" / "other_helper.bc")
+    bc_to_src = {
+        entry_bc: source_root / "src" / "feature" / "entry.c",
+        feature_helper_bc: source_root / "src" / "feature" / "helper.c",
+        other_helper_bc: source_root / "src" / "other" / "helper.c",
+    }
+
+    selector = EntryBitcodeSelector(
+        db=db,
+        source_root=source_root,
+        project_root=project,
+        config=BitcodeScopeConfig(mode="entry", entry_depth=1, symbol_closure=False),
+    )
+
+    selected, _plan = selector.select(
+        group_name="default",
+        candidate_bcs=[entry_bc, feature_helper_bc, other_helper_bc],
+        bc_to_src=bc_to_src,
+        entries=["entry"],
+    )
+
+    assert selected == [entry_bc.resolve(), feature_helper_bc.resolve()]
+    db.close()

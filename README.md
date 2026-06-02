@@ -215,7 +215,7 @@ indexing:
   llvm_link_path: llvm-link       # 或 /usr/lib/llvm-18/bin/llvm-link
   svf_scope: auto                 # full | auto | entry；按入口裁剪 bitcode，必要时保守回退
   svf_entry_depth: 4              # entry scope 沿调用图扩展深度
-  svf_max_selected_tus: 300       # 入口裁剪后最多保留的翻译单元数，0 表示不限制
+  svf_max_selected_tus: 200       # 入口裁剪后最多保留的翻译单元数，0 表示不限制
   svf_fallback: full              # full | skip；裁剪不可靠时的回退策略
   svf_always_include: []          # 总是纳入 SVF 链接的源码路径或片段
   svf_symbol_closure: true        # 使用 llvm-nm 根据 undefined symbol 补齐依赖 bitcode
@@ -323,7 +323,7 @@ indexing:
   # svf_groups_config: svf_groups.json
   svf_scope: auto              # full | auto | entry；按入口裁剪 SVF bitcode
   svf_entry_depth: 4
-  svf_max_selected_tus: 300
+  svf_max_selected_tus: 200
   svf_fallback: full           # full | skip
   svf_always_include: []
   svf_symbol_closure: true
