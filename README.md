@@ -9,7 +9,7 @@ v1.1 是在 v1.0 正式架构上的增量质量版本。它不重排主架构，
 - **多智能体分治与声明式编排**：采用 `AGENT.md` 与 `SKILL.md` 契约定义各智能体与技能。支持 `语义建模 Agent`、`漏洞扫描 Agent`、`Issue Reconciler Agent`、`验证 Agent` 以及隔离上下文的聚焦型 `Deep Worker` 独立协作。分析流程由 `zscope/workflows/*.yaml` 与 `WorkflowRunner` 驱动实际执行步骤，而不是仅作为提示词上下文注入。
 - **Task 驱动的漏洞 Skill 选择**：`vulnerability_analyzer.task` 不只是提示词描述。系统会结合本地关键词规则与可选 LLM 语义路由选择 `resource_lifecycle`、`bounds_and_integer`、`null_and_failure`、`concurrency_lock_order` 等漏洞挖掘 Skill；低置信或冲突判断会保守回退到全量 Skill，避免漏扫。
 - **三种运行模式**：全新扫描（默认）、断点续扫（`--resume`）、增量维护（`--maintain`）。Workflow 选择由 CLI 运行模式控制，不允许在 `zscope.yaml` 中配置。另支持规则驱动模式和告警验证模式。
-- **Diff impact 增量影响扫描**：v1.1 新增 `--diff-base/--diff-head`。系统会从 git diff 的新版本行号映射变更函数，沿反向调用图寻找外部入口、线程入口或合成内部入口，写出 `entry_functions_diff.json`，并在报告中标注 `[增量]`、`[存量]` 或 `[影响待确认]`。
+- **Diff impact 增量影响扫描**：v1.1 新增 `--diff-base/--diff-head`，并支持重复传入 `--diff-path` 只规划特定路径下的变更。系统会从 git diff 映射变更函数，按语义义务选择最小必要扫描 root，写出 `entry_functions_diff.json`、覆盖摘要和 `[增量]` / `[存量]` / `[影响待确认]` 标注。
 - **自动入口发现**：支持基于启发式的智能扫描入口发现（`--discover-entries` 或 `project.entry_discovery.enabled`），自动识别头文件暴露的公共 API、网络收发、线程入口及用户输入点，并把候选写入项目根目录的 `entry_functions_list.json`。若未显式配置 `entry_functions_list`，发现结果会作为本轮批量入口。
 - **可审阅用户配置工作簿**：新增 `user_config.xlsx` 人工配置格式与 `--infer-user-config` 推断命令，可从源码、宏、语义快照中生成 resource/lock/dispatcher/module lifecycle/pointer target/function intent 候选。运行时只注入当前函数真正引用到的用户配置，降低上下文噪声。
 - **证据优先的候选流水线**：`CandidatePipeline` 汇总本地规则、Clang AST/CFG、SVF/Saber、跨函数图候选与 KnowledgeDB/Joern 后端信号。v1.1 进一步覆盖对象发布顺序、语义单位错配、字节序逻辑、reader/global/slot/shared-memory race、lost wakeup、状态机、signal handler deadlock、callback self-destroy 等协议/运行时形态。
@@ -39,7 +39,7 @@ CLI / Web / MCP / SARIF 入口层
     ├─→ 告警验证模式 --mode alert-verify
     ├─→ SARIF 标准导出 --export-sarif
     ├─→ 自动入口发现 --discover-entries
-    ├─→ Diff impact 扫描 --diff-base/--diff-head
+    ├─→ Diff impact 扫描 --diff-base/--diff-head [--diff-path]
     ├─→ 用户配置工作簿推断 --infer-user-config
     └─→ MCP 服务 --mcp-stdio / --mcp-http
           │
@@ -74,7 +74,7 @@ Z-Scope 内置了多层防丢失和可追溯机制：
 3. **证据 IR 留痕**：确定性规则与后端信号产生的候选会将 source/sink、路径切片、资源/锁/共享状态事件写入 `code_knowledge.db` 的 IR 表，便于复查和回归分析。
 4. **人工反馈复用**：Web 仪表盘中的验证状态会持久化为 `finding_suppressions` 与 `finding_baselines`。`ReviewMemory` 会在验证、评分和报告前复用这些状态，后续扫描自动抑制已确认误报，并把历史反馈纳入评分。
 5. **稳定身份、语义去重与标准报告导出**：`stable_issue_fingerprint` 会进入 baseline 匹配、SARIF partial fingerprints 和 benchmark 匹配。v1.1 的最终报告还会保留 `semantic_dedup_summary`、`duplicate_sources`、`alternate_evidence` 与 `dedup_decisions`，便于复核合并原因。Web 前端可导出自包含 HTML 审计报告；CLI 可通过 `--export-sarif` 输出 SARIF v2.1.0，用于脱离仪表盘归档或接入代码扫描平台。
-6. **差异影响留痕**：diff impact 扫描会把 `base_ref`、`head_ref`、变更函数、受影响路径、fallback 原因和报告级 `diff_relevance` 写入结构化 JSON，避免把增量审计结论和存量问题混在一起。
+6. **差异影响留痕**：diff impact 扫描会把 `base_ref`、`head_ref`、路径过滤器、变更函数、分析义务、覆盖摘要、fallback 原因和报告级 `diff_relevance` 写入结构化 JSON，避免把增量审计结论和存量问题混在一起。
 7. **MCP 暴露面约束**：stdio MCP 默认本地使用；HTTP MCP 为实验性能力，远程 bind 需要 `--mcp-auth-token-env` 与 `--mcp-client-allowlist`，工具调用还会经过 `ToolPolicy`。
 
 ## 依赖说明
@@ -399,11 +399,15 @@ Workflow 选择是运行时行为，不是 YAML 配置项。普通 `zscope -c zs
 
 #### Diff impact 增量影响扫描
 
-`--diff-base` 会进入 v1.1 的差异影响扫描模式。`DiffImpactPlanner` 调用 `git diff --unified=0` 获取新版本行号，把变更行映射到当前 `CodeIndex` 中的函数，再沿反向调用图寻找公共 API、通信入口、线程入口或用户输入点。如果没有可证明的外部入口，系统会生成合成内部入口，但会在 `custom_prompt` 和 `diff_focus.fallback_reasons` 中要求 Agent 先验证可达性。
+`--diff-base` 会进入 v1.1 的差异影响扫描模式。`DiffImpactPlanner` 调用 `git diff --unified=0` 获取新版本行号，把变更行映射到当前 `CodeIndex` 中的函数，再按变更语义生成 `analysis_obligations`：新增外部 API、输入边界、资源申请等偏正向扩展；资源释放、sink/check、unlock/destroy 等偏反向寻找 owner/source/acquire/input；所有权转移、生命周期契约等双向收敛。最终扫描入口来自这些义务的最小必要 root，而不是直接枚举所有外部反向路径。
+
+入口选择会做上下文合并：thin wrapper、纯 facade、无额外语义的父级调用会进入 `context_callers`，不重复作为独立 root；唯一不可信输入边界、真正的 owner/acquire root、影响 handler/resource/state 分支的 dispatcher 会保留为扫描入口。所有 changed functions 都会进入 `diff_impact.function_coverage[]`，未独立扫描的函数会标出 `covered_by_entry`、`context_only`、`triage_only` 或 `unresolved` 以及合并/忽略原因。
 
 默认情况下，diff 扫描会从 `project.source_root` 自动推断 git worktree 根目录。若 `source_root` 是仓库子目录且 diff 路径带有上层目录前缀，可用 `--diff-repo-root /path/to/git/root` 显式指定执行 `git diff` 的仓库根。
 
-该模式会写出项目根目录的 `entry_functions_diff.json`，并把每个入口的 `diff_focus` 注入 Agent 上下文。批量报告会给 issue 和 audit observation 标注 `diff_relevance`：`incremental` 表示直接落在变更函数、变更行或受影响路径上；`existing` 表示本轮入口发现到的存量问题；`unknown` 表示需要人工确认变更影响。`--diff-base` 不能与 `--resume` 或 `--maintain` 同时使用。
+可重复传入 `--diff-path` 限定本轮只纳入特定路径下的变更文件，例如 `--diff-path src/net --diff-path src/fs`。相对路径默认按 `project.source_root` 解释；如果 `source_root` 位于 git 根目录的子目录内，会自动转换成 git-root 相对 pathspec；绝对路径必须能归入 git worktree，否则会报出清晰错误。路径过滤只约束 changed files / changed functions，最终扫描 root 仍可位于路径外，例如路径内 release 变更需要路径外 acquire/owner root 才能完整分析时会保留该 root。
+
+该模式会写出项目根目录的 `entry_functions_diff.json`，并把每个入口的 `diff_focus` 注入 Agent 上下文。`diff_impact` 会包含 `path_filters`、`changed_functions`、`analysis_obligations`、`coverage_summary` 和 `function_coverage`。批量报告会给 issue 和 audit observation 标注 `diff_relevance`：`incremental` 表示直接落在变更函数、变更行或受影响路径上；`existing` 表示本轮入口发现到的存量问题；`unknown` 表示需要人工确认变更影响。若路径过滤后没有可扫描入口，系统仍会写出空的 `entry_functions_diff.json`，随后停止并提示过滤条件没有匹配入口，不会回退到 `entry_function: main`。`--diff-base` 不能与 `--resume` 或 `--maintain` 同时使用。
 
 #### 用户配置工作簿与自动推断
 
@@ -451,6 +455,8 @@ zscope -c zscope.yaml --discover-entries
 zscope -c zscope.yaml --diff-base origin/main --diff-head HEAD
 # 若 source_root 是仓库子目录，可显式指定 git worktree 根
 zscope -c zscope.yaml --diff-base origin/main --diff-head HEAD --diff-repo-root /path/to/git/root
+# 只规划 src/net 与 src/fs 下的变更；必要的扫描 root 仍可位于路径外
+zscope -c zscope.yaml --diff-base origin/main --diff-head HEAD --diff-path src/net --diff-path src/fs
 
 # 推断/刷新人工可审阅的用户配置工作簿，然后退出
 zscope -c zscope.yaml --infer-user-config
@@ -489,14 +495,14 @@ zscope --build-cpg -c zscope.yaml
 | `zscope_alert_verify_report.json` | 告警验证模式的验证结果 |
 | `zscope-results.sarif` | `--export-sarif` 指定路径上的 SARIF v2.1.0 导出结果 |
 | `entry_functions_list.json` | `--discover-entries` 或 `project.entry_discovery.enabled` 生成的候选入口列表 |
-| `entry_functions_diff.json` | `--diff-base` 生成的差异影响入口列表，包含 `diff_impact` 总览和每个入口的 `diff_focus` |
+| `entry_functions_diff.json` | `--diff-base` 生成的差异影响入口列表，包含 `diff_impact.path_filters`、`analysis_obligations`、`coverage_summary`、`function_coverage` 和每个入口的 `diff_focus` |
 | `.zscope_snapshots/` | 语义快照缓存（加速重复扫描） |
 | `.zscope_snapshots/user_config.xlsx` | `--infer-user-config` 生成的人工可审阅用户配置工作簿 |
 | `.zscope_snapshots/user_config.state.db` | 配置告警、finding suppression 与 baseline 的旁路状态库（若 `analysis.user_config_db` 指向其他 workbook，则与该 workbook 同名） |
 | `.zscope_knowledge/code_knowledge.db` | 代码索引、SVF/Saber 信号和候选证据 IR |
 | `.zscope_bc/bitcode_scope_<group>.json` | SVF 入口裁剪计划，记录选中的源码、bitcode、可达函数和回退原因；WSL/NTFS 场景可能重定向到 Linux 原生临时目录 |
 
-单函数最终报告的 `metadata` 会记录 `candidate_signal_summary`、`candidate_ledger_summary`、`semantic_dedup_summary`、`effective_budget`、`budget_scores`、`budget_reasons`、`diff_focus`、`report_view_summary`、`audit_observation_count` 和 `audit_observations`。批量 diff impact 报告还会记录 `metadata.diff_relevance_summary`。`report_views.default` 只包含默认可报告问题，`report_views.with_needs_review` 会额外包含需要人工复核的观察项。`issues[]` 中的缺陷会带 `finding_kind`、`final_score`、`score_components`、`source`、`sink`、`positive_evidence`、`negative_evidence`、`duplicate_sources`、`alternate_evidence`、`resource_signature` 等字段。
+单函数最终报告的 `metadata` 会记录 `candidate_signal_summary`、`candidate_ledger_summary`、`semantic_dedup_summary`、`effective_budget`、`budget_scores`、`budget_reasons`、`diff_focus`、`report_view_summary`、`audit_observation_count` 和 `audit_observations`。批量 diff impact 报告还会记录 `metadata.diff_relevance_summary` 和 `metadata.diff_impact_coverage`，Markdown summary 会展示 changed function 覆盖摘要与未独立扫描函数预览。`report_views.default` 只包含默认可报告问题，`report_views.with_needs_review` 会额外包含需要人工复核的观察项。`issues[]` 中的缺陷会带 `finding_kind`、`final_score`、`score_components`、`source`、`sink`、`positive_evidence`、`negative_evidence`、`duplicate_sources`、`alternate_evidence`、`resource_signature` 等字段。
 
 退出码：默认漏洞报告中的 `issues` 非空返回 `1`，无缺陷返回 `0`。`needs_review` / `uncertain` 观察项不会单独拉高退出码，适合 CI/CD 只阻断已验证或高分问题。
 
@@ -596,7 +602,7 @@ python scripts/external_benchmark.py run-prepared --suite-root benchmarks/extern
 
 ### v1.1
 - **版本号刷新**：包版本、README、架构文档、Web 默认展示和根配置样例同步到 `1.1`。
-- **Diff impact 扫描落地**：新增 `--diff-base` / `--diff-head`，从 git diff 映射变更函数，沿反向调用图寻找外部入口或生成合成入口，输出 `entry_functions_diff.json`，并在报告中标注增量、存量和影响待确认。
+- **Diff impact 扫描落地**：新增 `--diff-base` / `--diff-head` / `--diff-path`，从 git diff 映射变更函数，按语义义务选择扫描 root，输出 `entry_functions_diff.json`、覆盖摘要和路径过滤 metadata，并在报告中标注增量、存量和影响待确认。
 - **最终报告语义去重**：`reporting.semantic_dedup` 新增程序化同根因合并和可选 LLM 判重；报告保留 `semantic_dedup_summary`、`duplicate_sources`、`alternate_evidence`、`dedup_decisions`、`category_family` 与 `resource_signature`。
 - **协议/运行时类候选扩展**：候选层新增对象发布顺序、语义单位错配、字节序逻辑、reader/global/slot/shared-memory race、lost wakeup、状态机、signal deadlock、callback self-destroy、文件类型验证和 FD 表示契约等规则。
 - **Deep Worker 与预算控制细化**：新增 `subagent_max_turns`、`subagent_ticket_timeout`、`subagent_spawn_allowlist`、`subagent_skill_llm_refs`、`subagent_skill_efforts` 和 `tool_audit_log` 配置；风险预算会识别 thin facade 与 protocol/runtime callee，扩大必要的直接 callee 扫描。
