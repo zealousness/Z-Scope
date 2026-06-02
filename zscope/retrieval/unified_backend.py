@@ -33,12 +33,13 @@ class UnifiedBackend(CodeBackend):
         svf_groups_config: str = "",
         svf_scope: str = "auto",
         svf_entry_depth: int = 4,
-        svf_max_selected_tus: int = 300,
+        svf_max_selected_tus: int = 200,
         svf_fallback: str = "full",
         svf_always_include: Optional[List[str]] = None,
         svf_symbol_closure: bool = True,
         svf_exclusive_pools: Optional[List[Dict[str, Any]]] = None,
         svf_shared_pools: Optional[List[Dict[str, Any]]] = None,
+        svf_parallel_workers: int = 1,
     ):
         self._clang = ClangBackend(
             clangd_path=clangd_path,
@@ -61,6 +62,7 @@ class UnifiedBackend(CodeBackend):
             symbol_closure=svf_symbol_closure,
             exclusive_pools=list(svf_exclusive_pools or []),
             shared_pools=list(svf_shared_pools or []),
+            parallel_workers=max(1, int(svf_parallel_workers or 1)),
         )
         self._svf_groups_config = svf_groups_config
         self._svf: Optional[SvfAnalyzer] = None

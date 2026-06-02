@@ -22,7 +22,7 @@ class BitcodeScopeConfig:
 
     mode: str = "auto"
     entry_depth: int = 4
-    max_selected_tus: int = 300
+    max_selected_tus: int = 200
     fallback: str = "full"
     always_include: List[str] = field(default_factory=list)
     symbol_closure: bool = True
@@ -69,6 +69,16 @@ class BitcodeScopePlan:
             "link_variants": self.link_variants,
             "skipped_variants": self.skipped_variants,
         }
+
+
+@dataclass
+class EntryBitcodeCluster:
+    """A small WPA analysis group derived from one or more entry functions."""
+
+    group_name: str
+    entries: List[Any]
+    selected_bcs: List[Path]
+    plan: BitcodeScopePlan
 
 
 def normalize_exclusive_pools(raw_pools: Optional[Sequence[Mapping[str, Any]]]) -> List[Dict[str, Any]]:
@@ -355,6 +365,118 @@ class EntryBitcodeSelector:
         )
         return ordered_bcs, plan
 
+    def cluster_entries(
+        self,
+        *,
+        group_prefix: str,
+        candidate_bcs: Sequence[Path],
+        bc_to_src: Mapping[Path, Path],
+        entries: Sequence[Any],
+        min_overlap: float = 0.6,
+    ) -> List[EntryBitcodeCluster]:
+        """Group entries with highly overlapping selected bitcode sets.
+
+        This keeps WPA inputs small without running one SVF process per entry when
+        related public APIs mostly touch the same translation units.
+        """
+        entry_records = self._entry_records(entries)
+        if not entry_records:
+            selected, plan = self.select(
+                group_name=group_prefix,
+                candidate_bcs=candidate_bcs,
+                bc_to_src=bc_to_src,
+                entries=entries,
+            )
+            return [
+                EntryBitcodeCluster(
+                    group_name=group_prefix,
+                    entries=list(entries),
+                    selected_bcs=selected,
+                    plan=plan,
+                )
+            ]
+
+        by_name = {record["name"]: entry for record, entry in zip(entry_records, entries)}
+        seeds: List[Dict[str, Any]] = []
+        for record in entry_records:
+            entry = by_name.get(record["name"], record["name"])
+            selected, plan = self.select(
+                group_name=f"{group_prefix}_{self._safe_group_suffix(record['name'])}",
+                candidate_bcs=candidate_bcs,
+                bc_to_src=bc_to_src,
+                entries=[entry],
+            )
+            selected_set = {Path(path).resolve() for path in selected}
+            if not selected_set:
+                continue
+            seeds.append(
+                {
+                    "entries": [entry],
+                    "selected": selected_set,
+                    "plan": plan,
+                }
+            )
+
+        if not seeds:
+            selected, plan = self.select(
+                group_name=group_prefix,
+                candidate_bcs=candidate_bcs,
+                bc_to_src=bc_to_src,
+                entries=entries,
+            )
+            return [
+                EntryBitcodeCluster(
+                    group_name=group_prefix,
+                    entries=list(entries),
+                    selected_bcs=selected,
+                    plan=plan,
+                )
+            ] if selected else []
+
+        clusters: List[Dict[str, Any]] = []
+        max_tus = self.config.max_selected_tus
+        for seed in seeds:
+            best_idx = -1
+            best_overlap = 0.0
+            for idx, cluster in enumerate(clusters):
+                union = set(cluster["selected"]) | set(seed["selected"])
+                if max_tus > 0 and len(union) > max_tus:
+                    continue
+                overlap = self._jaccard(cluster["selected"], seed["selected"])
+                if overlap >= min_overlap and overlap > best_overlap:
+                    best_idx = idx
+                    best_overlap = overlap
+            if best_idx >= 0:
+                clusters[best_idx]["entries"].extend(seed["entries"])
+                clusters[best_idx]["selected"].update(seed["selected"])
+            else:
+                clusters.append(
+                    {
+                        "entries": list(seed["entries"]),
+                        "selected": set(seed["selected"]),
+                    }
+                )
+
+        result: List[EntryBitcodeCluster] = []
+        for idx, cluster in enumerate(clusters):
+            group_name = f"{group_prefix}_{idx + 1}"
+            selected, plan = self.select(
+                group_name=group_name,
+                candidate_bcs=candidate_bcs,
+                bc_to_src=bc_to_src,
+                entries=cluster["entries"],
+            )
+            if selected:
+                result.append(
+                    EntryBitcodeCluster(
+                        group_name=group_name,
+                        entries=list(cluster["entries"]),
+                        selected_bcs=selected,
+                        plan=plan,
+                    )
+                )
+        return result
+
     def write_plan(self, plan: BitcodeScopePlan, output_dir: Path) -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
         plan_path = output_dir / f"bitcode_scope_{plan.group_name}.json"
@@ -414,6 +536,11 @@ class EntryBitcodeSelector:
             for callee in callees:
                 callee_name = str(callee.get("name") or "")
                 callee_file_hint = str(callee.get("filename") or "")
+                if not callee_file_hint:
+                    callee_func = self._best_callee_function(callee_name, caller_file)
+                    if not callee_func:
+                        continue
+                    callee_file_hint = str(callee_func.get("file_path") or callee_func.get("file") or "")
                 callee_key = f"{callee_name}\0{callee_file_hint}"
                 if not callee_name or callee_key in reachable:
                     continue
@@ -609,6 +736,45 @@ class EntryBitcodeSelector:
     def _ordered_subset(all_bcs: Sequence[Path], selected_bcs: Set[Path]) -> List[Path]:
         selected = {Path(p).resolve() for p in selected_bcs}
         return [Path(bc).resolve() for bc in all_bcs if Path(bc).resolve() in selected]
+
+    @staticmethod
+    def _jaccard(left: Set[Path], right: Set[Path]) -> float:
+        if not left and not right:
+            return 1.0
+        union = left | right
+        return (len(left & right) / len(union)) if union else 0.0
+
+    def _best_callee_function(self, callee_name: str, caller_file: str) -> Optional[Dict[str, Any]]:
+        try:
+            get_candidates = getattr(self.db, "get_functions_by_name", None)
+            candidates = get_candidates(callee_name) if callable(get_candidates) else []
+            if candidates:
+                return min(
+                    candidates,
+                    key=lambda candidate: self._path_distance(
+                        caller_file,
+                        str(candidate.get("file_path") or candidate.get("file") or ""),
+                    ),
+                )
+            return self.db.get_function(callee_name)
+        except TypeError:
+            return self.db.get_function(callee_name)
+
+    @staticmethod
+    def _path_distance(left: str, right: str) -> tuple[int, str]:
+        left_parts = Path(str(left or "").replace("\\", "/")).parts
+        right_parts = Path(str(right or "").replace("\\", "/")).parts
+        common = 0
+        for left_part, right_part in zip(left_parts, right_parts):
+            if left_part != right_part:
+                break
+            common += 1
+        return (max(len(left_parts), len(right_parts)) - common, str(right))
+
+    @staticmethod
+    def _safe_group_suffix(value: str) -> str:
+        cleaned = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(value))
+        return cleaned.strip("._-") or "entry"
 
     def _format_paths(self, paths: Iterable[Path]) -> List[str]:
         formatted: List[str] = []

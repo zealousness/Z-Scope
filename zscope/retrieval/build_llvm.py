@@ -111,6 +111,8 @@ class BitcodeBuilder:
         entry_functions: Optional[Sequence[Any]] = None,
         knowledge_db: Optional[Any] = None,
         project_root: Optional[Path] = None,
+        auto_entry_clusters: bool = False,
+        saber_full_group: bool = False,
     ) -> Dict[str, Path]:
         """执行完整构建流程，返回各分组合并后的 .bc 路径字典。
         
@@ -200,7 +202,33 @@ class BitcodeBuilder:
                 continue
             candidate_group_bcs = list(group_bcs)
 
-            if selector:
+            selected_items: List[tuple[str, List[Path], Optional[BitcodeScopePlan], Optional[set[str]]]] = []
+            if selector and auto_entry_clusters:
+                cluster_prefix = (
+                    "entry_cluster"
+                    if group_name == "default"
+                    else f"{group_name}__entry_cluster"
+                )
+                clusters = selector.cluster_entries(
+                    group_prefix=cluster_prefix,
+                    candidate_bcs=group_bcs,
+                    bc_to_src=self._bc_to_src,
+                    entries=entry_functions or [],
+                )
+                for cluster in clusters:
+                    logger.info(
+                        "SVF bitcode scope for group '%s': %d/%d .bc selected%s",
+                        cluster.group_name,
+                        len(cluster.selected_bcs),
+                        len(group_bcs),
+                        f" (fallback={cluster.plan.fallback_reason})"
+                        if cluster.plan.fallback_reason
+                        else "",
+                    )
+                    selected_items.append(
+                        (cluster.group_name, cluster.selected_bcs, cluster.plan, None)
+                    )
+            elif selector:
                 selected_bcs, plan = selector.select(
                     group_name=group_name,
                     candidate_bcs=group_bcs,
@@ -214,71 +242,92 @@ class BitcodeBuilder:
                     len(group_bcs),
                     f" (fallback={plan.fallback_reason})" if plan.fallback_reason else "",
                 )
-                group_bcs = selected_bcs
+                selected_items.append((group_name, selected_bcs, plan, previous_selected_bcs))
             elif scope_config and pool_classifier.enabled:
                 plan = self._full_scope_plan(group_name, scope_entry_names, group_bcs)
+                selected_items.append((group_name, group_bcs, plan, previous_selected_bcs))
             else:
-                plan = None
+                selected_items.append((group_name, group_bcs, None, previous_selected_bcs))
 
-            if not group_bcs:
-                logger.warning("No .bc files selected for group '%s'", group_name)
-                continue
+            if saber_full_group and group_name == "default":
+                selected_items.append(("saber_full", candidate_group_bcs, None, None))
 
-            link_variants, duplicate_symbols = self._exclusive_pool_link_variants(
-                group_name=group_name,
-                bc_files=group_bcs,
-                all_bcs=candidate_group_bcs,
-                bc_to_src=self._bc_to_src,
-                pool_classifier=pool_classifier,
-                symbol_reader=symbol_reader,
-            )
-            if plan:
-                plan.duplicate_symbols = duplicate_symbols
-
-            for variant in link_variants:
-                variant_name = str(variant["group_name"])
-                variant_bcs = list(variant["bc_files"])
-                if plan:
-                    plan.link_variants.append(
-                        {
-                            "group_name": variant_name,
-                            "exclusive_pool": variant.get("exclusive_pool", ""),
-                            "shared_pools": list(variant.get("shared_pools") or []),
-                            "selected_bcs": self._format_paths(variant_bcs),
-                            "excluded_pools": list(variant.get("excluded_pools") or []),
-                            "dependency_closure_added": list(
-                                variant.get("dependency_closure_added") or []
-                            ),
-                            "excluded_conflicting_bcs": list(
-                                variant.get("excluded_conflicting_bcs") or []
-                            ),
-                        }
-                    )
-                merged = self._link_all(
-                    variant_bcs,
-                    variant_name,
-                    previous_selected_bcs=(
-                        previous_selected_bcs if variant_name == group_name else None
-                    ),
-                )
-                if merged:
-                    results[variant_name] = merged
+            for selected_group_name, selected_bcs, plan, reuse_bcs in selected_items:
+                if not selected_bcs:
+                    logger.warning("No .bc files selected for group '%s'", selected_group_name)
                     continue
+                if selected_group_name == "saber_full":
+                    merged = self._link_all(selected_bcs, "saber_full")
+                    if merged:
+                        results["saber_full"] = merged
+                    continue
+                link_variants, duplicate_symbols = self._exclusive_pool_link_variants(
+                    group_name=selected_group_name,
+                    bc_files=selected_bcs,
+                    all_bcs=candidate_group_bcs,
+                    bc_to_src=self._bc_to_src,
+                    pool_classifier=pool_classifier,
+                    symbol_reader=symbol_reader,
+                )
                 if plan:
-                    plan.skipped_variants.append(
-                        {
-                            "group_name": variant_name,
-                            "exclusive_pool": variant.get("exclusive_pool", ""),
-                            "reason": "llvm-link_failed",
-                            "duplicate_symbols": self._duplicate_external_symbols(
-                                variant_bcs,
-                                symbol_reader,
-                            ),
-                        }
-                    )
+                    plan.duplicate_symbols = duplicate_symbols
 
-            if plan:
-                self._write_scope_plan(plan)
+                for variant in link_variants:
+                    variant_name = str(variant["group_name"])
+                    variant_bcs = list(variant["bc_files"])
+                    if plan:
+                        plan.link_variants.append(
+                            {
+                                "group_name": variant_name,
+                                "exclusive_pool": variant.get("exclusive_pool", ""),
+                                "shared_pools": list(variant.get("shared_pools") or []),
+                                "selected_bcs": self._format_paths(variant_bcs),
+                                "excluded_pools": list(variant.get("excluded_pools") or []),
+                                "dependency_closure_added": list(
+                                    variant.get("dependency_closure_added") or []
+                                ),
+                                "excluded_conflicting_bcs": list(
+                                    variant.get("excluded_conflicting_bcs") or []
+                                ),
+                            }
+                        )
+                    merged = self._link_all(
+                        variant_bcs,
+                        variant_name,
+                        previous_selected_bcs=(
+                            reuse_bcs if variant_name == selected_group_name else None
+                        ),
+                    )
+                    if merged:
+                        results[variant_name] = merged
+                        continue
+                    if plan:
+                        plan.skipped_variants.append(
+                            {
+                                "group_name": variant_name,
+                                "exclusive_pool": variant.get("exclusive_pool", ""),
+                                "reason": "llvm-link_failed",
+                                "duplicate_symbols": self._duplicate_external_symbols(
+                                    variant_bcs,
+                                    symbol_reader,
+                                ),
+                            }
+                        )
+
+                if plan:
+                    self._write_scope_plan(plan)
+
+        if saber_full_group and "saber_full" not in results:
+            all_bcs = [
+                bc_path
+                for bc_path, _src_path in sorted(
+                    self._bc_to_src.items(),
+                    key=lambda item: self._bc_compile_index.get(item[0], len(commands)),
+                )
+            ]
+            merged = self._link_all(all_bcs, "saber_full")
+            if merged:
+                results["saber_full"] = merged
 
         self._save_manifest()
         return results

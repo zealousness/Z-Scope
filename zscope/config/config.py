@@ -152,7 +152,7 @@ class IndexingConfig:
     svf_groups_config: str = ""  # JSON file for multi-group bitcode linking
     svf_scope: str = "auto"  # full | auto | entry
     svf_entry_depth: int = 4
-    svf_max_selected_tus: int = 300
+    svf_max_selected_tus: int = 200
     svf_fallback: str = "full"  # full | skip
     svf_always_include: List[str] = field(default_factory=list)
     svf_symbol_closure: bool = True
@@ -530,7 +530,7 @@ class ConfigLoader:
                 svf_groups_config=indexing_data.get("svf_groups_config", ""),
                 svf_scope=indexing_data.get("svf_scope", "auto"),
                 svf_entry_depth=indexing_data.get("svf_entry_depth", 4),
-                svf_max_selected_tus=indexing_data.get("svf_max_selected_tus", 300),
+                svf_max_selected_tus=indexing_data.get("svf_max_selected_tus", 200),
                 svf_fallback=indexing_data.get("svf_fallback", "full"),
                 svf_always_include=indexing_data.get("svf_always_include", []) or [],
                 svf_symbol_closure=indexing_data.get("svf_symbol_closure", True),

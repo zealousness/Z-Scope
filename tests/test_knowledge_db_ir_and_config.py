@@ -146,6 +146,58 @@ def test_knowledge_db_finds_configured_acquire_without_release(tmp_path: Path) -
         db.close()
 
 
+def test_svf_queries_dedupe_across_groups_with_provenance(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_indirect_call(
+            "caller",
+            "target",
+            source="svf-ander",
+            confidence=0.8,
+            call_file="src/a.c",
+            svf_group="entry_cluster_1",
+        )
+        db.insert_indirect_call(
+            "caller",
+            "target",
+            source="svf-ander",
+            confidence=1.0,
+            call_file="src/a.c",
+            svf_group="entry_cluster_2",
+        )
+        db.insert_taint_signature(
+            "",
+            "",
+            "Double Free",
+            file_path="src/a.c",
+            line=42,
+            tool="saber",
+            svf_group="entry_cluster_1",
+        )
+        db.insert_taint_signature(
+            "",
+            "",
+            "Double Free",
+            file_path="src/a.c",
+            line=42,
+            tool="saber",
+            svf_group="saber_full",
+        )
+        db.commit()
+
+        callees = db.get_indirect_callees("caller")
+        bugs = db.get_taint_bugs("Double Free")
+
+        assert len(callees) == 1
+        assert callees[0]["name"] == "target"
+        assert callees[0]["confidence"] == 1.0
+        assert callees[0]["svf_groups"] == ["entry_cluster_1", "entry_cluster_2"]
+        assert len(bugs) == 1
+        assert bugs[0]["svf_groups"] == ["entry_cluster_1", "saber_full"]
+    finally:
+        db.close()
+
+
 def test_user_config_suppression_and_baseline(tmp_path: Path) -> None:
     store = UserConfigStore(tmp_path)
     store.add_false_positive_suppression(

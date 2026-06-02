@@ -105,6 +105,7 @@ def main(
                 include_paths=zscope_config.project.include_paths,
                 exclude_paths=zscope_config.project.exclude_paths,
                 wait_for_cpg=False,
+                svf_parallel_workers=zscope_config.analysis.parallel_workers,
             )
             db_dir = Path(zscope_config.analysis.user_config_db) if zscope_config.analysis.user_config_db else Path(zscope_config.analysis.snapshot_dir)
             ucs = UserConfigStore(db_dir)
@@ -203,6 +204,7 @@ def main(
                 exclude_paths=zscope_config.project.exclude_paths,
                 wait_for_cpg=True,
                 defer_svf=True,
+                svf_parallel_workers=zscope_config.analysis.parallel_workers,
             )
             workbook_path = _resolve_user_config_workbook_path(zscope_config)
             generated = infer_user_config_rows(
@@ -260,6 +262,7 @@ def main(
                 include_paths=zscope_config.project.include_paths,
                 exclude_paths=zscope_config.project.exclude_paths,
                 wait_for_cpg=True,
+                svf_parallel_workers=zscope_config.analysis.parallel_workers,
             )
             func_count = len(code_index.list_functions())
             click.echo(f"CPG build complete. Indexed {func_count} functions.")
@@ -277,6 +280,7 @@ def main(
                 indexing_config=zscope_config.indexing,
                 include_paths=zscope_config.project.include_paths,
                 exclude_paths=zscope_config.project.exclude_paths,
+                svf_parallel_workers=zscope_config.analysis.parallel_workers,
             )
             rda = RuleDrivenAnalyzer(zscope_config, code_index=code_index)
             result = rda.run()
@@ -301,6 +305,7 @@ def main(
                 indexing_config=zscope_config.indexing,
                 include_paths=zscope_config.project.include_paths,
                 exclude_paths=zscope_config.project.exclude_paths,
+                svf_parallel_workers=zscope_config.analysis.parallel_workers,
             )
             adapter = SarifAdapter(
                 source_root=str(zscope_config.project.source_root),
