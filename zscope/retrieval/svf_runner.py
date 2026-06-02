@@ -95,8 +95,8 @@ class SvfRunner:
     def run_ander(self, bc_path: Path, output_dir: Path) -> SvfResult:
         """运行 Andersen 指针分析，生成调用图和指针别名信息。
 
-        wpa -ander -dump-callgraph -dump-pag
-        输出：callgraph_final.dot, pag_final.dot
+        wpa -ander -dump-callgraph
+        输出：callgraph_final.dot
         """
         output_dir.mkdir(parents=True, exist_ok=True)
         result = SvfResult(tool="wpa-ander")
@@ -105,7 +105,6 @@ class SvfRunner:
             self._tool_path("wpa"),
             "-ander",              # Andersen 包含式指针分析
             "-dump-callgraph",     # 导出间接调用解析后的调用图
-            "-dump-pag",           # 导出 PAG（程序赋值图）
             str(bc_path),
         ]
 

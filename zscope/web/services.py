@@ -740,9 +740,15 @@ class ReportFeedbackService:
         return result
 
     def apply_validation_updates(self, report: Dict[str, Any], updates: list[Any]) -> None:
-        update_map = {issue_key(issue): normalize_validation(issue) for issue in updates}
+        update_map = {
+            issue_key(issue): normalize_validation(issue)
+            for issue in updates
+            if isinstance(issue, dict)
+        }
 
         def update_issue(issue: Dict[str, Any]) -> None:
+            if not isinstance(issue, dict):
+                return
             key = issue_key(issue)
             if key in update_map:
                 status, reasoning = update_map[key]
@@ -912,11 +918,20 @@ def selected_report_view(path: str) -> str:
 
 def issue_key(issue: Dict[str, Any]) -> tuple[Any, Any, Any, Any]:
     return (
-        issue.get("id"),
-        issue.get("function"),
-        issue.get("location"),
-        issue.get("subcategory"),
+        issue_key_part(issue.get("id")),
+        issue_key_part(issue.get("function")),
+        issue_key_part(issue.get("location")),
+        issue_key_part(issue.get("subcategory")),
     )
+
+
+def issue_key_part(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except TypeError:
+        return str(value)
 
 
 def normalize_validation(issue: Dict[str, Any]) -> tuple[str, Any]:
