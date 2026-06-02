@@ -200,6 +200,46 @@ def test_report_feedback_service_saves_validation_feedback(tmp_path: Path) -> No
     assert store.get_finding_baseline("double_free|entry|src/demo.c:42")["status"] == "false_positive"
 
 
+def test_report_feedback_service_accepts_structured_issue_key_fields(tmp_path: Path) -> None:
+    report_path = tmp_path / "report.json"
+    location = {"file": "src/demo.c", "line": 42}
+    report_path.write_text(
+        json.dumps(
+            {
+                "issues": [
+                    {
+                        "id": "ISSUE_1",
+                        "function": "entry",
+                        "location": location,
+                        "subcategory": {"name": "double_free"},
+                        "validation_status": "pending",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = ReportFeedbackService(report_filename=str(report_path))
+
+    payload = service.save_validation_feedback(
+        [
+            {
+                "id": "ISSUE_1",
+                "function": "entry",
+                "location": dict(location),
+                "subcategory": {"name": "double_free"},
+                "validation_status": "validated",
+                "validation_reasoning": "manual confirmation",
+            }
+        ]
+    )
+    saved = service.load_report()
+
+    assert payload["success"] is True
+    assert saved["issues"][0]["validation_status"] == "validated"
+    assert saved["issues"][0]["validation_reasoning"] == "manual confirmation"
+
+
 def test_report_feedback_service_findings_payload_is_lightweight(tmp_path: Path) -> None:
     report_path = tmp_path / "report.json"
     heavy_issue = {
