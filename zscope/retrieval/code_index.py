@@ -47,6 +47,7 @@ class CodeIndex:
         exclude_paths: Optional[Sequence[Union[str, Path]]] = None,
         svf_entry_functions: Optional[Sequence[Any]] = None,
         defer_svf: bool = False,
+        svf_parallel_workers: int = 1,
     ):
         self.project_root = Path(project_root).absolute()
         self.source_root = Path(source_root).absolute() if source_root else self.project_root
@@ -61,6 +62,7 @@ class CodeIndex:
         self._backend: Optional[CodeBackend] = backend
         self._svf_entry_functions = list(svf_entry_functions or [])
         self._defer_svf = defer_svf
+        self._svf_parallel_workers = max(1, int(svf_parallel_workers or 1))
         self._index_ready = False
         self._cache_lock = threading.RLock()
         self._declaration_comment_index_lock = threading.Lock()
@@ -148,12 +150,13 @@ class CodeIndex:
                 svf_groups_config=cfg.svf_groups_config if cfg else "",
                 svf_scope=cfg.svf_scope if cfg else "auto",
                 svf_entry_depth=cfg.svf_entry_depth if cfg else 4,
-                svf_max_selected_tus=cfg.svf_max_selected_tus if cfg else 300,
+                svf_max_selected_tus=cfg.svf_max_selected_tus if cfg else 200,
                 svf_fallback=cfg.svf_fallback if cfg else "full",
                 svf_always_include=cfg.svf_always_include if cfg else [],
                 svf_symbol_closure=cfg.svf_symbol_closure if cfg else True,
                 svf_exclusive_pools=cfg.svf_exclusive_pools if cfg else [],
                 svf_shared_pools=cfg.svf_shared_pools if cfg else [],
+                svf_parallel_workers=self._svf_parallel_workers,
             )
             cc_path = str(self.compile_commands_path) if self.compile_commands_path else None
             ok = ub.initialize(

@@ -161,6 +161,7 @@ class Analyzer:
             include_paths=config.project.include_paths,
             exclude_paths=config.project.exclude_paths,
             svf_entry_functions=[config.project.entry_function] if config.project.entry_function else None,
+            svf_parallel_workers=config.analysis.parallel_workers,
         )
         self.snapshot_store = snapshot_store or SnapshotStore(Path(config.analysis.snapshot_dir))
         self.force_ignore_history = force_ignore_history

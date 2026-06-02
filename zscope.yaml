@@ -153,7 +153,7 @@ indexing:                                  # 代码索引和确定性后端配�
   # svf_groups_config: svf_groups.json     # 可选：按 JSON 分组链接 bitcode
   svf_scope: auto                          # full | auto | entry；auto 会按入口裁剪并在不确定时保守回退
   svf_entry_depth: 4                       # entry scope 从入口沿调用图扩展的最大深度
-  svf_max_selected_tus: 300                # 超过该 TU 数量时按 svf_fallback 策略处理；0 表示不设上限
+  svf_max_selected_tus: 200                # 超过该 TU 数量时按 svf_fallback 策略处理；0 表示不设上限
   svf_fallback: full                       # full | skip；entry scope 无法安全裁剪时的回退策略
   svf_always_include: []                   # 可选：无论入口可达性如何都纳入的源码目录/路径片段
   svf_symbol_closure: true                 # 是否用 llvm-nm 根据 undefined symbol 自动补齐依赖 .bc

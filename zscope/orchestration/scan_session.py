@@ -370,6 +370,7 @@ class ScanSessionRunner:
                 exclude_paths=self.config.project.exclude_paths,
                 svf_entry_functions=svf_entry_functions,
                 defer_svf=defer_svf,
+                svf_parallel_workers=self.config.analysis.parallel_workers,
             )
         return state["code_index"]
 
@@ -423,6 +424,7 @@ class ScanSessionRunner:
                 exclude_paths=self.config.project.exclude_paths,
                 svf_entry_functions=svf_entries,
                 defer_svf=self.resume and not entries,
+                svf_parallel_workers=self.config.analysis.parallel_workers,
             )
             if self.resume and not entries:
                 logger.info("Resume has no remaining entries; SVF initialization deferred.")

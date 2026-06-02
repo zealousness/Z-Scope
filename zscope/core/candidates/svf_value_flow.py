@@ -62,6 +62,11 @@ class SvfValueFlowCandidateGenerator:
         sink_func = str(bug.get("sink_func") or bug_type or "svf_sink")
         tool = str(bug.get("tool") or "saber")
         svf_group = str(bug.get("svf_group") or "default")
+        svf_groups = [
+            str(group)
+            for group in (bug.get("svf_groups") or [svf_group])
+            if str(group)
+        ]
         rule = f"svf_value_flow_{self._normalize_key(bug_type)}"
         candidate_id = self._candidate_id(defect_class, func, file_path, line, rule, source_func, sink_func)
         location = f"{file_path}:{line}" if file_path else f"{func}:{line}"
@@ -83,6 +88,7 @@ class SvfValueFlowCandidateGenerator:
         value_flow = {
             "tool": tool,
             "svf_group": svf_group,
+            "svf_groups": svf_groups,
             "bug_type": bug_type,
             "source_func": source_func,
             "sink_func": sink_func,

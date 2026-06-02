@@ -576,6 +576,25 @@ class KnowledgeDB:
         self._conn.execute("DELETE FROM taint_signatures WHERE svf_group = ?", (group,))
         self._conn.commit()
 
+    def purge_svf_data_except(self, groups: set[str]):
+        """Remove stale SVF rows whose group is not part of the current refresh."""
+        clean_groups = sorted(str(group) for group in groups if str(group))
+        if not clean_groups:
+            self._conn.execute("DELETE FROM indirect_calls")
+            self._conn.execute("DELETE FROM taint_signatures")
+            self._conn.commit()
+            return
+        placeholders = ",".join("?" for _ in clean_groups)
+        self._conn.execute(
+            f"DELETE FROM indirect_calls WHERE svf_group NOT IN ({placeholders})",
+            clean_groups,
+        )
+        self._conn.execute(
+            f"DELETE FROM taint_signatures WHERE svf_group NOT IN ({placeholders})",
+            clean_groups,
+        )
+        self._conn.commit()
+
     # ── Functions ──
 
     def insert_function(self, name: str, file_path: str, start_line: int, end_line: int,
@@ -610,6 +629,14 @@ class KnowledgeDB:
                 if self._paths_match_hint(str(row["file_path"] or ""), file_path):
                     return dict(row)
         return dict(rows[0])
+
+    def get_functions_by_name(self, name: str) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM functions WHERE name = ? AND is_declaration = 0 "
+            "ORDER BY file_path, start_line",
+            (name,),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_all_functions(self) -> Dict[str, Dict[str, Any]]:
         rows = self._conn.execute(
@@ -864,21 +891,32 @@ class KnowledgeDB:
 
     def get_indirect_callees(self, func_name: str, limit: int = 30) -> List[Dict[str, Any]]:
         rows = self._conn.execute(
-            "SELECT callee_name, source, confidence, svf_group, call_file, call_line FROM indirect_calls "
-            "WHERE caller_name = ? ORDER BY confidence DESC LIMIT ?",
+            "SELECT callee_name, source, MAX(confidence) AS confidence, "
+            "GROUP_CONCAT(DISTINCT svf_group) AS svf_groups, "
+            "MAX(call_file) AS call_file, MAX(call_line) AS call_line "
+            "FROM indirect_calls WHERE caller_name = ? "
+            "GROUP BY caller_name, callee_name, source "
+            "ORDER BY confidence DESC LIMIT ?",
             (func_name, limit),
         ).fetchall()
-        return [{"name": r["callee_name"], "source": r["source"],
-                 "confidence": r["confidence"], "svf_group": r["svf_group"],
-                 "call_file": r["call_file"], "call_line": r["call_line"]} for r in rows]
+        result = []
+        for r in rows:
+            groups = self._split_svf_groups(r["svf_groups"])
+            result.append({"name": r["callee_name"], "source": r["source"],
+                           "confidence": r["confidence"], "svf_group": groups[0] if groups else "",
+                           "svf_groups": groups,
+                           "call_file": r["call_file"], "call_line": r["call_line"]})
+        return result
 
     def get_indirect_callers(self, func_name: str, limit: int = 20) -> List[Dict[str, Any]]:
         rows = self._conn.execute(
-            "SELECT caller_name, source FROM indirect_calls "
-            "WHERE callee_name = ? LIMIT ?",
+            "SELECT caller_name, source, GROUP_CONCAT(DISTINCT svf_group) AS svf_groups "
+            "FROM indirect_calls WHERE callee_name = ? "
+            "GROUP BY caller_name, callee_name, source LIMIT ?",
             (func_name, limit),
         ).fetchall()
-        return [{"name": r["caller_name"], "source": r["source"]} for r in rows]
+        return [{"name": r["caller_name"], "source": r["source"],
+                 "svf_groups": self._split_svf_groups(r["svf_groups"])} for r in rows]
 
     # ── Taint Signatures (SVF/Saber) ──
 
@@ -895,14 +933,20 @@ class KnowledgeDB:
     def get_taint_bugs(self, bug_type: str = "", limit: int = 100) -> List[Dict[str, Any]]:
         if bug_type:
             rows = self._conn.execute(
-                "SELECT * FROM taint_signatures WHERE bug_type LIKE ? LIMIT ?",
+                "SELECT source_func, sink_func, bug_type, file_path, line, tool, "
+                "MIN(svf_group) AS svf_group, GROUP_CONCAT(DISTINCT svf_group) AS svf_groups "
+                "FROM taint_signatures WHERE bug_type LIKE ? "
+                "GROUP BY bug_type, file_path, line, tool LIMIT ?",
                 (f"%{bug_type}%", limit),
             ).fetchall()
         else:
             rows = self._conn.execute(
-                "SELECT * FROM taint_signatures LIMIT ?", (limit,),
+                "SELECT source_func, sink_func, bug_type, file_path, line, tool, "
+                "MIN(svf_group) AS svf_group, GROUP_CONCAT(DISTINCT svf_group) AS svf_groups "
+                "FROM taint_signatures GROUP BY bug_type, file_path, line, tool LIMIT ?",
+                (limit,),
             ).fetchall()
-        return [dict(r) for r in rows]
+        return [self._row_with_svf_groups(r) for r in rows]
 
     def find_function_at(self, file_path: str, line: int) -> Optional[Dict[str, Any]]:
         """通过 (file, line) 定位包含该行的函数——Clang/SVF 坐标缝合点。"""
@@ -929,14 +973,30 @@ class KnowledgeDB:
         rows = self._conn.execute(
             f"SELECT t.*, f.name AS func_name, f.signature, "
             f"f.start_line AS func_start, f.end_line AS func_end "
-            f"FROM taint_signatures t "
+            f"FROM ("
+            f"SELECT source_func, sink_func, bug_type, file_path, line, tool, "
+            f"MIN(svf_group) AS svf_group, GROUP_CONCAT(DISTINCT svf_group) AS svf_groups "
+            f"FROM taint_signatures GROUP BY bug_type, file_path, line, tool"
+            f") t "
             f"LEFT JOIN functions f ON f.file_path = t.file_path "
             f"AND f.start_line <= t.line AND f.end_line >= t.line "
             f"AND f.is_declaration = 0 "
             f"WHERE {' AND '.join(where)} LIMIT ?",
             params,
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [self._row_with_svf_groups(r) for r in rows]
+
+    @staticmethod
+    def _split_svf_groups(raw: Any) -> List[str]:
+        return sorted({part for part in str(raw or "").split(",") if part})
+
+    @classmethod
+    def _row_with_svf_groups(cls, row: Any) -> Dict[str, Any]:
+        data = dict(row)
+        data["svf_groups"] = cls._split_svf_groups(data.get("svf_groups"))
+        if not data.get("svf_group") and data["svf_groups"]:
+            data["svf_group"] = data["svf_groups"][0]
+        return data
 
     # ── Utilities ──
 
