@@ -100,6 +100,7 @@ class JoernBackend(CodeBackend):
             if not name or name.startswith("<") or not fname or fname.startswith("<"):
                 continue
             index[name] = {
+                "name": name,
                 "file": fname,
                 "start_line": m.get("lineNumber", -1),
                 "end_line": m.get("lineNumberEnd", -1),
@@ -115,8 +116,17 @@ class JoernBackend(CodeBackend):
     def get_method_callees(self, name: str, limit: int = 30) -> List[Dict[str, Any]]:
         return self._joern.get_method_callees(name, limit=limit)
 
-    def get_callers(self, func_name: str, limit: int = 20) -> List[Dict[str, Any]]:
-        return self._joern.get_method_callers(func_name, limit=limit)
+    def get_callers(
+        self,
+        func_name: str,
+        limit: int = 20,
+        callee_file: str = "",
+    ) -> List[Dict[str, Any]]:
+        return self._joern.get_method_callers(
+            func_name,
+            limit=limit,
+            callee_file=callee_file,
+        )
 
     def get_callees(self, func_name: str, limit: int = 30) -> List[Dict[str, Any]]:
         return self._joern.get_method_callees(func_name, limit=limit)

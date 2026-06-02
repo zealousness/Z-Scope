@@ -148,6 +148,35 @@ int entry(plugin_callback_t cb, void* ctx) {
     assert any(issue.get("rule") == "callback_while_lock_held" for issue in issues)
 
 
+def test_project_limit_and_global_array_rules_are_generic() -> None:
+    code = r"""
+int label(unsigned int element_count) {
+    size_t label_len = (size_t)element_count * PROJECT_ELEMENT_INFO_SIZE;
+    if (label_len > PROJECT_LABEL_CACHE_LIMIT) {
+        return -1;
+    }
+    return (element_count <= PROJECT_SPEC_MAX_ELEMENTS) ? 0 : -1;
+}
+
+int expand(size_t task_index) {
+    if (task_index >= g_project_task_array_cap) {
+        size_t new_cap = ((task_index / 16u) + 1u) * 16u;
+        ProjectTask** new_array = _safe_calloc(new_cap, sizeof(ProjectTask*));
+        ProjectTask** old_array = g_project_task_array;
+        g_project_task_array = new_array;
+        g_project_task_array_cap = new_cap;
+        SAFE_FREE(old_array);
+    }
+    return 0;
+}
+"""
+    issues = RegexCandidateGenerator().generate_issues("entry", code, "src/demo.c")
+    rules = {issue.get("rule") for issue in issues}
+
+    assert "implementation_limit_differs_from_protocol_limit" in rules
+    assert "global_array_resize_without_lock" in rules
+
+
 def test_project_semantics_extend_typedefs_and_custom_memory_apis() -> None:
     semantics = LocalPatternSemantics(
         type_aliases={"VOS_UINT32": "unsigned int"},

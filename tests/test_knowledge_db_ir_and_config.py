@@ -102,6 +102,27 @@ def test_knowledge_db_uses_thread_local_connections_for_parallel_access(tmp_path
         db.close()
 
 
+def test_get_callers_filters_duplicate_callee_names_by_file(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_call_edge("ApiReal", "src/api.c", "B", "src/real_b.c", 5)
+        db.insert_call_edge("A", "src/a.c", "B", "src/decoy_b.c", 7)
+        db.commit()
+
+        callers = db.get_callers("B", callee_file="src/real_b.c")
+
+        assert callers == [
+            {
+                "name": "ApiReal",
+                "filename": "src/api.c",
+                "callee_filename": "src/real_b.c",
+                "lineNumber": 5,
+            }
+        ]
+    finally:
+        db.close()
+
+
 def test_knowledge_db_finds_configured_acquire_without_release(tmp_path: Path) -> None:
     db = KnowledgeDB(str(tmp_path / "knowledge.db"))
     try:

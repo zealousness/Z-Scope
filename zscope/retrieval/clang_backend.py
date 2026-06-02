@@ -255,10 +255,15 @@ class ClangBackend(CodeBackend):
             return []
         return self._db.get_callees(name, limit=limit)
 
-    def get_callers(self, func_name: str, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_callers(
+        self,
+        func_name: str,
+        limit: int = 20,
+        callee_file: str = "",
+    ) -> List[Dict[str, Any]]:
         if not self._db:
             return []
-        return self._db.get_callers(func_name, limit=limit)
+        return self._db.get_callers(func_name, limit=limit, callee_file=callee_file)
 
     def get_callees(self, func_name: str, limit: int = 30) -> List[Dict[str, Any]]:
         if not self._db:

@@ -546,10 +546,24 @@ class JoernClient:
             return cast(Dict[str, Any], result[0])
         return None
 
-    def get_method_callers(self, name: str, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_method_callers(
+        self,
+        name: str,
+        limit: int = 20,
+        callee_file: str = "",
+    ) -> List[Dict[str, Any]]:
         """Get functions that call the given function."""
+        method_query = f'cpg.method.name("{name}")'
+        clean_file = str(callee_file or "").replace("\\", "/").strip()
+        if clean_file:
+            escaped_file = clean_file.replace('"', '\\"')
+            method_query += (
+                f'.filter(m => m.filename == "{escaped_file}" || '
+                f'm.filename.endsWith("/{escaped_file}") || '
+                f'"{escaped_file}".endsWith("/" + m.filename))'
+            )
         result = self.query(
-            f'cpg.method.name("{name}").callIn.method.distinct'
+            f'{method_query}.callIn.method.distinct'
             f'.map(m => Map("name" -> m.name, "filename" -> m.filename, '
             f'"lineNumber" -> m.lineNumber.getOrElse(-1)))'
             f'.take({limit}).l.toJson'

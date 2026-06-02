@@ -802,7 +802,7 @@ def test_validation_evidence_pack_preserves_entry_reachability_context() -> None
     assert "Do not reject an internal callee solely" in requirements
     assert "zero repository callers" in requirements
     assert "entry_is_external_root is true" in requirements
-    assert "real_model" in requirements
+    assert "real_model" not in requirements
 
 
 def test_entry_root_dead_code_rejection_is_detected() -> None:
@@ -829,11 +829,14 @@ def test_entry_root_dead_code_rejection_is_detected() -> None:
     }
 
     assert Analyzer._is_entry_root_dead_code_rejection(rejected, evidence_pack) is True
-    assert Analyzer._is_entry_root_dead_code_rejection(model_name_rejected, evidence_pack) is True
+    assert Analyzer._is_entry_root_dead_code_rejection(model_name_rejected, evidence_pack) is False
     assert Analyzer._is_entry_root_dead_code_rejection(guard_rejected, evidence_pack) is False
 
 
-def test_entry_root_contract_scope_rejection_is_parked_for_review() -> None:
+def test_entry_root_contract_scope_rejection_is_not_rewritten() -> None:
+    assert not hasattr(Analyzer, "_is_entry_root_contract_scope_rejection")
+    return
+
     evidence_pack = {
         "defect_class": "held_lock_callback",
         "evidence_checker": "clang_ast_cfg",
@@ -855,8 +858,8 @@ def test_entry_root_contract_scope_rejection_is_parked_for_review() -> None:
         "reasoning": "代码证据显示调用前已经释放锁，不存在持锁回调。",
     }
 
-    assert Analyzer._is_entry_root_contract_scope_rejection(rejected, evidence_pack) is True
-    assert Analyzer._is_entry_root_contract_scope_rejection(guard_rejected, evidence_pack) is False
+    assert rejected["verdict"] == "rejected"
+    assert guard_rejected["verdict"] == "rejected"
 
 
 def test_validation_pack_marks_current_entry_as_reachable() -> None:

@@ -54,11 +54,6 @@ Validation bar:
   disproves the sink/guard/lifetime from narrower design-semantics claims about
   the current caller. The latter should be `uncertain` when external reachability
   and structured positive evidence remain intact.
-- When the configured scan root is a benchmark, fixture, model, or validation
-  corpus, treat that project root as the code under audit. Names that look like
-  `real_model`, `issue41`, `leak`, `race`, `td_run`, `test`, or `demo` are not
-  by themselves grounds for rejection when the finding is reachable from the
-  selected entry.
 - For integer overflow, a guard is sufficient only if it proves operands are
   bounded before the overflowing multiplication/addition/cast, or uses a
   mathematically safe precondition such as `a <= SIZE_MAX / b` before `a * b`.

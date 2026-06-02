@@ -60,7 +60,7 @@ def test_dedup_keeps_same_helper_pattern_distinct_across_sink_functions() -> Non
         item["dedup_key"] for item in deduped
     } == {
         "signed_unsigned|src/lifecycle.c|_lifecycle_recv_packet|net_recv_data_negative_length",
-        "signed_unsigned|src/lifecycle.c|_real_model_signed_recv_to_size|real_model_signed_recv_to_size",
+        "signed_unsigned|src/lifecycle.c|_real_model_signed_recv_to_size|signed_recv_to_size",
     }
 
 
@@ -307,7 +307,7 @@ def test_issue41_missing_refcount_variants_merge_across_entries_and_sources() ->
     assert len(deduped) == 1
     assert deduped[0]["id"] == "CLANG_CFG_MISSING_REFCOUNT_16af2c1ef0"
     assert deduped[0]["dedup_key"] == (
-        "missing_refcount|src/lifecycle.c|issue41_resource_refcount_protocol"
+        "missing_refcount|src/lifecycle.c|shared_resource_refcount_protocol"
     )
     assert deduped[0]["duplicate_count"] == 1
 
@@ -333,7 +333,7 @@ def test_issue41_partial_retry_symptoms_merge_to_compound_root() -> None:
     assert len(deduped) == 1
     assert deduped[0]["dedup_key"] == (
         "partial_resource_leak|src/lifecycle.c|_issue41_partial_resource_leak_on_retry|"
-        "issue41_partition_retry_cleanup"
+        "partition_retry_cleanup"
     )
 
 
@@ -401,7 +401,7 @@ def test_issue41_dynamic_array_variants_merge_across_entries_and_sources() -> No
     assert len(deduped) == 1
     assert deduped[0]["dedup_key"] == (
         "dynamic_array_race|src/lifecycle.c|_issue41_dynamic_array_expand_race|"
-        "issue41_dynamic_array_resize"
+        "global_dynamic_array_resize"
     )
     assert deduped[0]["duplicate_count"] == 1
 
@@ -431,7 +431,7 @@ def test_real_model_unchecked_return_variants_merge_across_entry_roots() -> None
     assert len(deduped) == 1
     assert deduped[0]["dedup_key"] == (
         "unchecked_return|src/lifecycle.c|_real_model_ssl_error_returns_ok|"
-        "real_model_ssl_probe_status"
+        "ssl_probe_status"
     )
 
 
@@ -488,7 +488,7 @@ def test_issue41_size_limit_and_integer_overflow_variants_merge_by_numeric_root(
     assert len(deduped) == 1
     assert deduped[0]["dedup_key"] == (
         "numeric_size_mismatch|src/lifecycle.c|_issue41_label_cache_size_miscalc|"
-        "issue41_label_cache_size_miscalc"
+        "label_cache_size_miscalc"
     )
 
 
@@ -828,7 +828,7 @@ def test_llm_dedup_guard_allows_same_file_root_across_functions() -> None:
             {
                 "primary_issue_id": "A",
                 "duplicate_issue_ids": ["B"],
-                "root_cause_key": "issue41_dynamic_array_resize",
+                "root_cause_key": "global_dynamic_array_resize",
                 "confidence": 0.93,
                 "reasoning": "Both reports describe the same global task array resize root cause.",
             }

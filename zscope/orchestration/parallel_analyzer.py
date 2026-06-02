@@ -263,6 +263,7 @@ class ParallelAnalyzer:
                 max_lines=self.base_config.analysis.max_function_lines,
                 include_context=False,
                 warn_missing=False,
+                file_path=str(entry.file_path or ""),
             )
         except Exception as exc:
             logger.debug(
@@ -451,6 +452,7 @@ class ParallelAnalyzer:
         from copy import deepcopy
         config = deepcopy(self.base_config)
         config.project.entry_function = entry.function_name
+        config.project.entry_file_path = entry.file_path
         config.project.entry_diff_focus = entry.diff_focus
         
         # Keep entry-specific focus separate from the configured task so skill
@@ -617,10 +619,19 @@ class ParallelAnalyzer:
             if isinstance(item, dict)
         }
         issue_func = str(issue.get("function") or issue.get("func_name") or "")
-        if issue_func and issue_func in changed_names:
-            return "incremental"
-
         issue_file, issue_line = parse_issue_location(str(issue.get("location") or ""))
+        if issue_func:
+            if issue_file:
+                for item in changed_functions:
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("function_name") or "") != issue_func:
+                        continue
+                    if cls._same_report_path(issue_file, str(item.get("file_path") or "")):
+                        return "incremental"
+            elif issue_func in changed_names:
+                return "incremental"
+
         if issue_file and issue_line is not None:
             for item in changed_functions:
                 if not isinstance(item, dict):
@@ -635,13 +646,29 @@ class ParallelAnalyzer:
                     return "incremental"
 
         affected_path_nodes = set()
+        affected_path_pairs = set()
+        saw_path_refs = False
         for path_item in diff_focus.get("affected_paths") or []:
             if not isinstance(path_item, dict):
                 continue
             path = path_item.get("path")
             if isinstance(path, list):
                 affected_path_nodes.update(str(node) for node in path if str(node))
-        if issue_func and issue_func in affected_path_nodes:
+            for ref in path_item.get("path_refs") or []:
+                if not isinstance(ref, dict):
+                    continue
+                saw_path_refs = True
+                ref_name = str(ref.get("function_name") or "")
+                ref_file = str(ref.get("file_path") or "")
+                if ref_name and ref_file:
+                    affected_path_pairs.add((ref_name, ref_file))
+        if issue_func and issue_file and affected_path_pairs:
+            if any(
+                name == issue_func and cls._same_report_path(issue_file, file_path)
+                for name, file_path in affected_path_pairs
+            ):
+                return "incremental"
+        elif issue_func and issue_func in affected_path_nodes and (not issue_file or not saw_path_refs):
             return "incremental"
         if diff_focus.get("fallback_reasons"):
             return "unknown"

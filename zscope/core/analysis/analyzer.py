@@ -75,7 +75,6 @@ from ..validation.evidence import (
     build_validation_evidence_pack,
     category_validation_requirements,
     compact_snapshot,
-    is_entry_root_contract_scope_rejection,
     is_entry_root_dead_code_rejection,
     trim_code,
     validation_verdict,
@@ -275,11 +274,18 @@ class Analyzer:
         entry_func = self.config.project.entry_function
         if not entry_func:
             return {"error": "No entry function configured"}
+        entry_file_path = str(getattr(self.config.project, "entry_file_path", "") or "")
         self.user_config.clear_config_warnings()
 
         lookup_started = time.monotonic()
         logger.info("[code-index] lookup start entry=%s", entry_func)
-        impl_result = self.code_index.get_function_impl(entry_func)
+        try:
+            impl_result = self.code_index.get_function_impl(
+                entry_func,
+                file_path=entry_file_path,
+            )
+        except TypeError:
+            impl_result = self.code_index.get_function_impl(entry_func)
         logger.info(
             "[code-index] lookup end entry=%s found=%s duration=%.2fs",
             entry_func,
@@ -356,20 +362,31 @@ class Analyzer:
             if not isinstance(item, dict):
                 continue
             func_name = str(item.get("function_name") or "")
-            if not func_name or func_name in seen:
+            file_path = str(item.get("file_path") or "")
+            seen_key = (func_name, file_path)
+            if not func_name or seen_key in seen:
                 continue
-            seen.add(func_name)
-            impl = self.code_index.get_function_impl(
-                func_name,
-                max_lines=min(200, self.config.analysis.max_function_lines),
-                include_context=False,
-                warn_missing=False,
-            )
+            seen.add(seen_key)
+            try:
+                impl = self.code_index.get_function_impl(
+                    func_name,
+                    max_lines=min(200, self.config.analysis.max_function_lines),
+                    include_context=False,
+                    warn_missing=False,
+                    file_path=file_path,
+                )
+            except TypeError:
+                impl = self.code_index.get_function_impl(
+                    func_name,
+                    max_lines=min(200, self.config.analysis.max_function_lines),
+                    include_context=False,
+                    warn_missing=False,
+                )
             if impl:
                 snippets.append(
                     {
                         "function_name": func_name,
-                        "file": impl.get("file", item.get("file_path", "")),
+                        "file": impl.get("file", file_path),
                         "start_line": impl.get("start_line", item.get("start_line", 0)),
                         "end_line": impl.get("end_line", item.get("end_line", 0)),
                         "changed_lines": list(item.get("changed_lines") or []),
@@ -2674,14 +2691,6 @@ class Analyzer:
         evidence_pack: Dict[str, Any],
     ) -> bool:
         return is_entry_root_dead_code_rejection(val_data, evidence_pack)
-
-    @classmethod
-    def _is_entry_root_contract_scope_rejection(
-        cls,
-        val_data: Dict[str, Any],
-        evidence_pack: Dict[str, Any],
-    ) -> bool:
-        return is_entry_root_contract_scope_rejection(val_data, evidence_pack)
 
     def _deduplicate_candidate_issues(
         self, issues: List[Dict[str, Any]]

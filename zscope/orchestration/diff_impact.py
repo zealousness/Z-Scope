@@ -112,6 +112,38 @@ class ChangedFunction:
         }
 
 
+@dataclass(frozen=True)
+class FunctionRef:
+    """Precise function identity used while traversing diff impact paths."""
+
+    function_name: str
+    file_path: str = ""
+    start_line: int = 0
+    end_line: int = 0
+    index_name: str = ""
+
+    @property
+    def key(self) -> Tuple[str, str, int, str]:
+        return (
+            self.function_name,
+            self.file_path,
+            self.start_line,
+            self.index_name,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "function_name": self.function_name,
+            "file_path": self.file_path,
+            "start_line": self.start_line,
+            "end_line": self.end_line,
+            "index_name": self.index_name,
+        }
+
+
+ExternalPath = Tuple[Dict[str, Any], List[str], List[Dict[str, Any]]]
+
+
 @dataclass
 class DiffImpactPlan:
     """Batch-entry payload generated from a diff."""
@@ -131,6 +163,7 @@ class DiffImpactPlan:
     analysis_obligations: List[Dict[str, Any]] = field(default_factory=list)
     function_coverage: List[Dict[str, Any]] = field(default_factory=list)
     coverage_summary: Dict[str, Any] = field(default_factory=dict)
+    path_filters: Dict[str, Any] = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
 
     def to_entry_functions_payload(self) -> Dict[str, Any]:
@@ -147,6 +180,7 @@ class DiffImpactPlan:
                 "head_ref": self.head_ref,
                 "changed_files": self.changed_files,
                 "changed_headers": self.changed_headers,
+                "path_filters": self.path_filters,
                 "changed_functions": [func.to_dict() for func in self.changed_functions],
                 "analysis_obligations": self.analysis_obligations,
                 "coverage_summary": self.coverage_summary,
@@ -182,6 +216,7 @@ class DiffImpactPlanner:
         llm_triage: str = "on_demand",
         llm_triage_selector: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
         caller_search_depth_by_intent: Optional[Dict[str, int]] = None,
+        diff_paths: Optional[Sequence[str]] = None,
         max_call_depth: int = 12,
         caller_limit: int = 200,
         synthetic_depth_threshold: int = 3,
@@ -208,6 +243,8 @@ class DiffImpactPlanner:
         self.llm_triage = llm_triage or "on_demand"
         self.llm_triage_selector = llm_triage_selector
         self.caller_search_depth_by_intent = dict(caller_search_depth_by_intent or {})
+        self.diff_paths = self._clean_diff_paths(diff_paths or [])
+        self.diff_pathspecs = self._resolve_diff_pathspecs(self.diff_paths)
         self.max_call_depth = max_call_depth
         self.caller_limit = caller_limit
         self.synthetic_depth_threshold = synthetic_depth_threshold
@@ -252,6 +289,10 @@ class DiffImpactPlanner:
             analysis_obligations=selection["analysis_obligations"],
             function_coverage=selection["function_coverage"],
             coverage_summary=selection["coverage_summary"],
+            path_filters={
+                "raw_paths": list(self.diff_paths),
+                "git_pathspecs": list(self.diff_pathspecs),
+            },
             notes=notes,
         )
 
@@ -294,6 +335,7 @@ class DiffImpactPlanner:
             self.head_ref,
             "--",
         ]
+        cmd.extend(self.diff_pathspecs)
         try:
             proc = subprocess.run(
                 cmd,
@@ -309,6 +351,46 @@ class DiffImpactPlanner:
             stderr = proc.stderr.strip() or proc.stdout.strip()
             raise RuntimeError(f"git diff failed in {self.git_root}: {stderr}")
         return self._parse_git_diff(proc.stdout)
+
+    @staticmethod
+    def _clean_diff_paths(paths: Sequence[str]) -> List[str]:
+        clean_paths: List[str] = []
+        seen: set[str] = set()
+        for item in paths:
+            clean = str(item or "").strip().replace("\\", "/")
+            clean = re.sub(r"/+", "/", clean)
+            if clean.startswith("./"):
+                clean = clean[2:]
+            clean = clean.rstrip("/") if len(clean) > 1 else clean
+            if not clean or clean in seen:
+                continue
+            seen.add(clean)
+            clean_paths.append(clean)
+        return clean_paths
+
+    def _resolve_diff_pathspecs(self, paths: Sequence[str]) -> List[str]:
+        pathspecs: List[str] = []
+        seen: set[str] = set()
+        git_root = self.git_root.resolve()
+        source_root = self.source_root.resolve()
+        for raw in paths:
+            path = Path(raw)
+            if path.is_absolute():
+                abs_path = path.resolve()
+            else:
+                abs_path = (source_root / path).resolve()
+            try:
+                rel_path = abs_path.relative_to(git_root)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Diff path '{raw}' resolves to '{abs_path}', which is outside git root '{git_root}'."
+                ) from exc
+            pathspec = rel_path.as_posix() or "."
+            if pathspec in seen:
+                continue
+            seen.add(pathspec)
+            pathspecs.append(pathspec)
+        return pathspecs
 
     @staticmethod
     def _parse_git_diff(diff_text: str) -> List[ChangedLineRange]:
@@ -354,6 +436,7 @@ class DiffImpactPlanner:
 
         by_key: Dict[Tuple[str, str], ChangedFunction] = {}
         for name, info in self._iter_indexed_functions():
+            display_name = str(info.get("name") or name)
             indexed_file = str(info.get("file") or "")
             start_line = int(info.get("start_line") or 0)
             end_line = int(info.get("end_line") or 0)
@@ -374,8 +457,8 @@ class DiffImpactPlanner:
             if not changed_lines:
                 continue
             rel_file = self._normalize_file(resolved_file)
-            by_key[(name, rel_file)] = ChangedFunction(
-                function_name=name,
+            by_key[(display_name, rel_file)] = ChangedFunction(
+                function_name=display_name,
                 file_path=rel_file,
                 start_line=start_line,
                 end_line=end_line,
@@ -445,6 +528,7 @@ class DiffImpactPlanner:
                 "root_kind": selection.get("root_kind", ""),
                 "context_functions": selection.get("context_functions", []),
                 "covered_paths": selection.get("paths", []),
+                "covered_path_refs": selection.get("path_refs", []),
                 "stop_reason": selection.get("stop_reason", ""),
                 "selection_reason": selection.get("selection_reason", ""),
                 "llm_triage": selection.get(
@@ -463,6 +547,7 @@ class DiffImpactPlanner:
                     selection["candidate"],
                     changed,
                     selection.get("primary_path") or [selection["candidate"]["function_name"]],
+                    path_refs=selection.get("primary_path_refs") or [],
                     fallback_reason=str(selection.get("fallback_reason") or ""),
                     intent=intent,
                     obligation_id=obligation_id,
@@ -524,8 +609,15 @@ class DiffImpactPlanner:
         for changed in changed_functions:
             external_paths = self._find_external_entry_paths(changed)
             needs_synthetic = not external_paths
-            for candidate, path in external_paths:
-                self._merge_entry(entries_by_key, candidate, changed, path, fallback_reason="")
+            for candidate, path, path_refs in external_paths:
+                self._merge_entry(
+                    entries_by_key,
+                    candidate,
+                    changed,
+                    path,
+                    path_refs=path_refs,
+                    fallback_reason="",
+                )
                 if len(path) - 1 > self.synthetic_depth_threshold:
                     needs_synthetic = True
             if needs_synthetic:
@@ -536,6 +628,7 @@ class DiffImpactPlanner:
                     synthetic,
                     changed,
                     [changed.function_name],
+                    path_refs=[self._changed_ref(changed).to_dict()],
                     fallback_reason=reason,
                 )
 
@@ -571,7 +664,7 @@ class DiffImpactPlanner:
                 return "new_external_api"
             return "declaration_or_contract_change"
 
-        impl = self._get_impl(changed.function_name) or {}
+        impl = self._get_impl(changed.function_name, changed.file_path) or {}
         code = str(impl.get("code") or "")
         name = changed.function_name
         stripped = EntryDiscovery._strip_code_for_call_search(code)
@@ -603,18 +696,25 @@ class DiffImpactPlanner:
 
     def _select_semantic_root(self, changed: ChangedFunction, intent: str) -> Dict[str, Any]:
         if intent == "comment_or_trivial_change":
+            changed_ref = self._changed_ref(changed).to_dict()
             return {
                 "coverage_status": "triage_only",
                 "reason": "local_logic_low_risk",
                 "selection_reason": "Trivial or comment-only looking change recorded for coverage without a scan root.",
                 "stop_reason": "trivial_change",
                 "paths": [[changed.function_name]],
+                "path_refs": [[changed_ref]],
             }
 
         external_paths = self._find_external_entry_paths(changed)
         if intent in FORWARD_INTENTS or intent in BIDIRECTIONAL_INTENTS:
             candidate = self._external_or_synthetic_candidate(changed, intent)
-            context_callers = self._context_callers_for_candidate(candidate["function_name"], external_paths)
+            primary_path, primary_path_refs = self._candidate_changed_path(candidate, changed)
+            context_callers = self._context_callers_for_candidate(
+                candidate["function_name"],
+                external_paths,
+                str(candidate.get("file_path") or ""),
+            )
             return {
                 "candidate": candidate,
                 "root_function": candidate["function_name"],
@@ -623,8 +723,10 @@ class DiffImpactPlanner:
                 "reason": "scanned_as_semantic_root" if candidate["function_name"] == changed.function_name else "covered_by_semantic_root",
                 "selection_reason": self._selection_reason_for_intent(intent),
                 "stop_reason": "forward_semantic_root",
-                "primary_path": [candidate["function_name"], changed.function_name] if candidate["function_name"] != changed.function_name else [changed.function_name],
+                "primary_path": primary_path,
+                "primary_path_refs": primary_path_refs,
                 "paths": self._paths_or_default(external_paths, changed.function_name),
+                "path_refs": self._path_refs_or_default(external_paths, changed),
                 "context_callers": context_callers,
                 "context_functions": self._context_function_names(context_callers),
             }
@@ -641,9 +743,19 @@ class DiffImpactPlanner:
             return triage_selection
         if root:
             candidate = root["candidate"]
-            context_callers = self._context_callers_for_candidate(candidate["function_name"], external_paths)
+            context_callers = self._context_callers_for_candidate(
+                candidate["function_name"],
+                external_paths,
+                str(candidate.get("file_path") or ""),
+            )
             if root.get("path"):
-                context_callers.extend(self._context_callers_above_root(root["path"], candidate["function_name"]))
+                context_callers.extend(
+                    self._context_callers_above_root(
+                        root["path"],
+                        candidate["function_name"],
+                        root.get("path_refs") or [],
+                    )
+                )
             return {
                 "candidate": candidate,
                 "root_function": candidate["function_name"],
@@ -653,7 +765,9 @@ class DiffImpactPlanner:
                 "selection_reason": root.get("selection_reason", "Selected nearest semantic root for changed sink."),
                 "stop_reason": root.get("stop_reason", "upstream_semantic_root"),
                 "primary_path": root.get("path") or [candidate["function_name"], changed.function_name],
+                "primary_path_refs": root.get("path_refs") or [],
                 "paths": [root.get("path") or [candidate["function_name"], changed.function_name]],
+                "path_refs": [root.get("path_refs") or []],
                 "context_callers": self._dedupe_context_callers(context_callers),
                 "context_functions": self._context_function_names(context_callers),
                 "llm_triage": triage_meta or {
@@ -663,6 +777,7 @@ class DiffImpactPlanner:
             }
 
         candidate = self._synthetic_candidate(changed)
+        changed_ref = self._changed_ref(changed).to_dict()
         return {
             "candidate": candidate,
             "root_function": candidate["function_name"],
@@ -673,8 +788,14 @@ class DiffImpactPlanner:
             "stop_reason": "no_semantic_root_found",
             "fallback_reason": "no_semantic_root_found",
             "primary_path": [changed.function_name],
+            "primary_path_refs": [changed_ref],
             "paths": [[changed.function_name]],
-            "context_callers": self._context_callers_for_candidate(changed.function_name, external_paths),
+            "path_refs": [[changed_ref]],
+            "context_callers": self._context_callers_for_candidate(
+                changed.function_name,
+                external_paths,
+                changed.file_path,
+            ),
             "context_functions": [],
             "llm_triage": triage_meta or {
                 "mode": self.llm_triage,
@@ -684,20 +805,31 @@ class DiffImpactPlanner:
 
     def _find_best_upstream_root(self, changed: ChangedFunction, intent: str) -> Optional[Dict[str, Any]]:
         max_depth = self._max_depth_for_intent(intent)
-        queue: List[Tuple[str, List[str], int]] = [(changed.function_name, [changed.function_name], 0)]
-        visited = {changed.function_name}
+        changed_ref = self._changed_ref(changed)
+        queue: List[Tuple[FunctionRef, List[FunctionRef], int]] = [(changed_ref, [changed_ref], 0)]
+        visited = {changed_ref.key}
         candidates: List[Dict[str, Any]] = []
 
         while queue:
             current, changed_to_current_path, depth = queue.pop(0)
-            root_score = self._semantic_root_score(current, intent)
+            root_score = self._semantic_root_score(
+                current.function_name,
+                intent,
+                current.file_path,
+            )
             if root_score > 0:
-                path = list(reversed(changed_to_current_path))
-                candidate = self._candidate_for_root(current, intent)
+                path_refs = list(reversed(changed_to_current_path))
+                path = [ref.function_name for ref in path_refs]
+                candidate = self._candidate_for_root(
+                    current.function_name,
+                    intent,
+                    current.file_path,
+                )
                 candidates.append(
                     {
                         "candidate": candidate,
                         "path": path,
+                        "path_refs": self._path_ref_dicts(path_refs),
                         "score": root_score,
                         "depth": depth,
                         "root_kind": candidate.get("exposure") or "semantic_root",
@@ -708,12 +840,12 @@ class DiffImpactPlanner:
                 )
             if depth >= max_depth:
                 continue
-            for caller in self._get_callers(current):
-                caller_name = str(caller.get("name") or "")
-                if not caller_name or caller_name in visited:
+            for caller in self._get_callers(current.function_name, current.file_path):
+                caller_ref = self._caller_ref(caller)
+                if not caller_ref or caller_ref.key in visited:
                     continue
-                visited.add(caller_name)
-                queue.append((caller_name, changed_to_current_path + [caller_name], depth + 1))
+                visited.add(caller_ref.key)
+                queue.append((caller_ref, changed_to_current_path + [caller_ref], depth + 1))
 
         if not candidates:
             return None
@@ -724,7 +856,7 @@ class DiffImpactPlanner:
         self,
         changed: ChangedFunction,
         intent: str,
-        external_paths: Sequence[Tuple[Dict[str, Any], List[str]]],
+        external_paths: Sequence[ExternalPath],
         current_root: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
         if not self._needs_llm_triage(intent, external_paths, current_root):
@@ -761,8 +893,9 @@ class DiffImpactPlanner:
                         "reasons": candidate.get("reasons", []),
                     },
                     "path": list(path),
+                    "path_refs": list(path_refs),
                 }
-                for candidate, path in external_paths[:50]
+                for candidate, path, path_refs in external_paths[:50]
             ],
         }
         try:
@@ -796,7 +929,7 @@ class DiffImpactPlanner:
         self,
         changed: ChangedFunction,
         intent: str,
-        external_paths: Sequence[Tuple[Dict[str, Any], List[str]]],
+        external_paths: Sequence[ExternalPath],
         triage_meta: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
         if not triage_meta or triage_meta.get("status") != "invoked":
@@ -809,8 +942,12 @@ class DiffImpactPlanner:
             return None
         triage_intent = str(triage_meta.get("intent") or intent)
         candidate = self._candidate_for_root(root_name, triage_intent)
-        path = self._path_from_root_to_changed(root_name, changed, external_paths)
-        context_callers = self._context_callers_for_candidate(root_name, external_paths)
+        path, path_refs = self._path_from_root_to_changed(root_name, changed, external_paths)
+        context_callers = self._context_callers_for_candidate(
+            root_name,
+            external_paths,
+            str(candidate.get("file_path") or ""),
+        )
         context_callers.extend(
             self._context_callers_from_triage(
                 triage_meta.get("context_functions") or [],
@@ -835,7 +972,9 @@ class DiffImpactPlanner:
             ),
             "stop_reason": str(triage_meta.get("stop_reason") or "llm_triage"),
             "primary_path": path,
+            "primary_path_refs": path_refs,
             "paths": [path],
+            "path_refs": [path_refs],
             "context_callers": context_callers,
             "context_functions": self._context_function_names(context_callers),
             "llm_triage": triage_meta,
@@ -844,7 +983,7 @@ class DiffImpactPlanner:
     def _needs_llm_triage(
         self,
         intent: str,
-        external_paths: Sequence[Tuple[Dict[str, Any], List[str]]],
+        external_paths: Sequence[ExternalPath],
         current_root: Optional[Dict[str, Any]],
     ) -> bool:
         mode = str(self.llm_triage or "").strip().lower()
@@ -852,7 +991,7 @@ class DiffImpactPlanner:
             return False
         unique_external_roots = {
             str(candidate.get("function_name") or "")
-            for candidate, _path in external_paths
+            for candidate, _path, _path_refs in external_paths
             if str(candidate.get("function_name") or "")
         }
         root_score = int((current_root or {}).get("score") or 0)
@@ -863,14 +1002,14 @@ class DiffImpactPlanner:
     @staticmethod
     def _llm_triage_trigger(
         intent: str,
-        external_paths: Sequence[Tuple[Dict[str, Any], List[str]]],
+        external_paths: Sequence[ExternalPath],
         current_root: Optional[Dict[str, Any]],
     ) -> str:
         root_score = int((current_root or {}).get("score") or 0)
         external_count = len(
             {
                 str(candidate.get("function_name") or "")
-                for candidate, _path in external_paths
+                for candidate, _path, _path_refs in external_paths
                 if str(candidate.get("function_name") or "")
             }
         )
@@ -889,6 +1028,7 @@ class DiffImpactPlanner:
             "root_kind": root.get("root_kind", ""),
             "score": root.get("score", 0),
             "path": root.get("path", []),
+            "path_refs": root.get("path_refs", []),
             "reason": root.get("reason", ""),
         }
 
@@ -896,30 +1036,40 @@ class DiffImpactPlanner:
         self,
         root_name: str,
         changed: ChangedFunction,
-        external_paths: Sequence[Tuple[Dict[str, Any], List[str]]],
-    ) -> List[str]:
+        external_paths: Sequence[ExternalPath],
+    ) -> Tuple[List[str], List[Dict[str, Any]]]:
+        changed_ref = self._changed_ref(changed)
         if root_name == changed.function_name:
-            return [changed.function_name]
-        for _candidate, path in external_paths:
+            return [changed.function_name], [changed_ref.to_dict()]
+        for _candidate, path, path_refs in external_paths:
             if root_name in path:
-                return list(path[path.index(root_name):])
+                idx = path.index(root_name)
+                return list(path[idx:]), list(path_refs[idx:])
 
-        queue: List[Tuple[str, List[str], int]] = [(changed.function_name, [changed.function_name], 0)]
-        visited = {changed.function_name}
+        queue: List[Tuple[FunctionRef, List[FunctionRef], int]] = [(changed_ref, [changed_ref], 0)]
+        visited = {changed_ref.key}
         while queue:
             current, changed_to_current_path, depth = queue.pop(0)
             if depth >= self.max_call_depth:
                 continue
-            for caller in self._get_callers(current):
-                caller_name = str(caller.get("name") or "")
-                if not caller_name or caller_name in visited:
+            for caller in self._get_callers(current.function_name, current.file_path):
+                caller_ref = self._caller_ref(caller)
+                if not caller_ref or caller_ref.key in visited:
                     continue
-                path = changed_to_current_path + [caller_name]
-                if caller_name == root_name:
-                    return list(reversed(path))
-                visited.add(caller_name)
-                queue.append((caller_name, path, depth + 1))
-        return [root_name, changed.function_name]
+                path_refs = changed_to_current_path + [caller_ref]
+                if caller_ref.function_name == root_name:
+                    ordered_refs = list(reversed(path_refs))
+                    return (
+                        [ref.function_name for ref in ordered_refs],
+                        self._path_ref_dicts(ordered_refs),
+                    )
+                visited.add(caller_ref.key)
+                queue.append((caller_ref, path_refs, depth + 1))
+        fallback_path, fallback_refs = self._candidate_changed_path(
+            {"function_name": root_name},
+            changed,
+        )
+        return fallback_path, fallback_refs
 
     @staticmethod
     def _context_callers_from_triage(
@@ -942,11 +1092,11 @@ class DiffImpactPlanner:
             )
         return context
 
-    def _semantic_root_score(self, func_name: str, intent: str) -> int:
-        impl = self._get_impl(func_name) or {}
+    def _semantic_root_score(self, func_name: str, intent: str, file_path: str = "") -> int:
+        impl = self._get_impl(func_name, file_path) or {}
         code = str(impl.get("code") or "")
         text = f"{func_name}\n{EntryDiscovery._strip_code_for_call_search(code)}"
-        external = self._classify_external_entry(func_name)
+        external = self._classify_external_entry(func_name, file_path)
         score = 0
 
         if ACQUIRE_RE.search(text):
@@ -975,11 +1125,16 @@ class DiffImpactPlanner:
             score = min(score, 20)
         return score
 
-    def _candidate_for_root(self, func_name: str, intent: str) -> Dict[str, Any]:
-        external = self._classify_external_entry(func_name)
+    def _candidate_for_root(
+        self,
+        func_name: str,
+        intent: str,
+        file_path: str = "",
+    ) -> Dict[str, Any]:
+        external = self._classify_external_entry(func_name, file_path)
         if external:
             return external
-        impl = self._get_impl(func_name) or {}
+        impl = self._get_impl(func_name, file_path) or {}
         semantic_kind = self._semantic_kind_for_function(func_name, impl)
         return {
             "function_name": func_name,
@@ -991,10 +1146,10 @@ class DiffImpactPlanner:
         }
 
     def _external_or_synthetic_candidate(self, changed: ChangedFunction, intent: str) -> Dict[str, Any]:
-        external = self._classify_external_entry(changed.function_name)
+        external = self._classify_external_entry(changed.function_name, changed.file_path)
         if external:
             return external
-        impl = self._get_impl(changed.function_name) or {}
+        impl = self._get_impl(changed.function_name, changed.file_path) or {}
         return {
             "function_name": changed.function_name,
             "file_path": str(impl.get("file") or changed.file_path),
@@ -1105,6 +1260,7 @@ class DiffImpactPlanner:
             "scan_entry": selection.get("root_function", ""),
             "reason": selection.get("reason", "semantic_root_unresolved"),
             "paths": selection.get("paths") or [[changed.function_name]],
+            "path_refs": selection.get("path_refs") or [[self._changed_ref(changed).to_dict()]],
         }
 
     @staticmethod
@@ -1150,11 +1306,51 @@ class DiffImpactPlanner:
 
     @staticmethod
     def _paths_or_default(
-        external_paths: Sequence[Tuple[Dict[str, Any], List[str]]],
+        external_paths: Sequence[ExternalPath],
         changed_name: str,
     ) -> List[List[str]]:
-        paths = [list(path) for _candidate, path in external_paths if path]
+        paths = [list(path) for _candidate, path, _path_refs in external_paths if path]
         return paths or [[changed_name]]
+
+    def _path_refs_or_default(
+        self,
+        external_paths: Sequence[ExternalPath],
+        changed: ChangedFunction,
+    ) -> List[List[Dict[str, Any]]]:
+        paths = [list(path_refs) for _candidate, _path, path_refs in external_paths if path_refs]
+        return paths or [[self._changed_ref(changed).to_dict()]]
+
+    def _candidate_changed_path(
+        self,
+        candidate: Dict[str, Any],
+        changed: ChangedFunction,
+    ) -> Tuple[List[str], List[Dict[str, Any]]]:
+        candidate_name = str(candidate.get("function_name") or changed.function_name)
+        candidate_file = str(candidate.get("file_path") or "")
+        changed_ref = self._changed_ref(changed)
+        if candidate_name == changed.function_name and (
+            not candidate_file or self._same_report_path(candidate_file, changed.file_path)
+        ):
+            return [changed.function_name], [changed_ref.to_dict()]
+        candidate_ref = self._function_ref(candidate_name, candidate_file)
+        return (
+            [candidate_name, changed.function_name],
+            [candidate_ref.to_dict(), changed_ref.to_dict()],
+        )
+
+    @staticmethod
+    def _same_report_path(left: str, right: str) -> bool:
+        left_norm = str(left or "").replace("\\", "/").lstrip("./")
+        right_norm = str(right or "").replace("\\", "/").lstrip("./")
+        return bool(
+            left_norm
+            and right_norm
+            and (
+                left_norm == right_norm
+                or left_norm.endswith("/" + right_norm)
+                or right_norm.endswith("/" + left_norm)
+            )
+        )
 
     @staticmethod
     def _context_function_names(context_callers: Sequence[Dict[str, Any]]) -> List[str]:
@@ -1168,14 +1364,19 @@ class DiffImpactPlanner:
     def _context_callers_for_candidate(
         self,
         root_name: str,
-        external_paths: Sequence[Tuple[Dict[str, Any], List[str]]],
+        external_paths: Sequence[ExternalPath],
+        root_file: str = "",
     ) -> List[Dict[str, Any]]:
         context: List[Dict[str, Any]] = []
-        for candidate, path in external_paths:
+        for candidate, path, path_refs in external_paths:
             if not path:
                 continue
             entry = str(candidate.get("function_name") or "")
-            if not entry or entry == root_name:
+            entry_file = str(candidate.get("file_path") or "")
+            same_root = entry == root_name and (
+                not root_file or not entry_file or self._same_report_path(entry_file, root_file)
+            )
+            if not entry or same_root:
                 continue
             reason = "external_reachability_context"
             if root_name in path:
@@ -1185,7 +1386,9 @@ class DiffImpactPlanner:
             context.append(
                 {
                     "function_name": entry,
+                    "file_path": entry_file,
                     "path": list(path),
+                    "path_refs": list(path_refs),
                     "exposure": candidate.get("exposure", ""),
                     "reason": reason,
                 }
@@ -1193,29 +1396,48 @@ class DiffImpactPlanner:
         return self._dedupe_context_callers(context)
 
     @staticmethod
-    def _context_callers_above_root(path: Sequence[str], root_name: str) -> List[Dict[str, Any]]:
+    def _context_callers_above_root(
+        path: Sequence[str],
+        root_name: str,
+        path_refs: Sequence[Dict[str, Any]] = (),
+    ) -> List[Dict[str, Any]]:
         if root_name not in path:
             return []
         idx = list(path).index(root_name)
-        return [
-            {
+        refs = [dict(item) for item in path_refs if isinstance(item, dict)]
+        context: List[Dict[str, Any]] = []
+        for pos, name in enumerate(path[:idx]):
+            if not name or name == root_name:
+                continue
+            ref = refs[pos] if pos < len(refs) else {}
+            context.append({
                 "function_name": name,
+                "file_path": str(ref.get("file_path") or ""),
                 "path": list(path),
+                "path_refs": refs,
                 "exposure": "caller_context",
                 "reason": "caller_above_selected_root",
-            }
-            for name in path[:idx]
-            if name and name != root_name
-        ]
+            })
+        return context
 
     @staticmethod
     def _dedupe_context_callers(context_callers: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
         result: List[Dict[str, Any]] = []
-        seen: set[Tuple[str, Tuple[str, ...]]] = set()
+        seen: set[Tuple[str, str, Tuple[str, ...], Tuple[Tuple[str, str, str], ...]]] = set()
         for item in context_callers:
             name = str(item.get("function_name") or "")
+            file_path = str(item.get("file_path") or "")
             path = tuple(str(node) for node in (item.get("path") or []) if str(node))
-            key = (name, path)
+            path_refs = tuple(
+                (
+                    str(ref.get("function_name") or ""),
+                    str(ref.get("file_path") or ""),
+                    str(ref.get("start_line") or ""),
+                )
+                for ref in (item.get("path_refs") or [])
+                if isinstance(ref, dict)
+            )
+            key = (name, file_path, path, path_refs)
             if not name or key in seen:
                 continue
             seen.add(key)
@@ -1253,30 +1475,49 @@ class DiffImpactPlanner:
     def _find_external_entry_paths(
         self,
         changed: ChangedFunction,
-    ) -> List[Tuple[Dict[str, Any], List[str]]]:
-        results: List[Tuple[Dict[str, Any], List[str]]] = []
-        queue: List[Tuple[str, List[str], int]] = [(changed.function_name, [changed.function_name], 0)]
-        visited = {changed.function_name}
+    ) -> List[ExternalPath]:
+        results: List[ExternalPath] = []
+        changed_ref = self._changed_ref(changed)
+        queue: List[Tuple[FunctionRef, List[FunctionRef], int]] = [(changed_ref, [changed_ref], 0)]
+        visited = {changed_ref.key}
         while queue:
             current, changed_to_current_path, depth = queue.pop(0)
-            candidate = self._classify_external_entry(current)
+            candidate = self._classify_external_entry(current.function_name, current.file_path)
             if candidate:
-                results.append((candidate, list(reversed(changed_to_current_path))))
+                path_refs = list(reversed(changed_to_current_path))
+                results.append(
+                    (
+                        candidate,
+                        [ref.function_name for ref in path_refs],
+                        self._path_ref_dicts(path_refs),
+                    )
+                )
             if depth >= self.max_call_depth:
                 continue
-            for caller in self._get_callers(current):
-                caller_name = str(caller.get("name") or "")
-                if not caller_name or caller_name in visited:
+            for caller in self._get_callers(current.function_name, current.file_path):
+                caller_ref = self._caller_ref(caller)
+                if not caller_ref or caller_ref.key in visited:
                     continue
-                thread_candidate = self._thread_entry_candidate(current, caller_name)
+                thread_candidate = self._thread_entry_candidate(current, caller_ref)
                 if thread_candidate:
-                    results.append((thread_candidate, list(reversed(changed_to_current_path))))
-                visited.add(caller_name)
-                queue.append((caller_name, changed_to_current_path + [caller_name], depth + 1))
+                    path_refs = list(reversed(changed_to_current_path))
+                    results.append(
+                        (
+                            thread_candidate,
+                            [ref.function_name for ref in path_refs],
+                            self._path_ref_dicts(path_refs),
+                        )
+                    )
+                visited.add(caller_ref.key)
+                queue.append((caller_ref, changed_to_current_path + [caller_ref], depth + 1))
         return results
 
-    def _thread_entry_candidate(self, target_name: str, creator_name: str) -> Optional[Dict[str, Any]]:
-        creator_impl = self._get_impl(creator_name)
+    def _thread_entry_candidate(
+        self,
+        target_ref: FunctionRef,
+        creator_ref: FunctionRef,
+    ) -> Optional[Dict[str, Any]]:
+        creator_impl = self._get_impl(creator_ref.function_name, creator_ref.file_path)
         if not creator_impl:
             return None
         code = str(creator_impl.get("code") or "")
@@ -1293,23 +1534,27 @@ class DiffImpactPlanner:
             thread_hits,
             code_is_stripped=True,
         ):
-            if target != target_name:
+            if target != target_ref.function_name:
                 continue
-            target_impl = self._get_impl(target_name)
+            target_impl = self._get_impl(target_ref.function_name, target_ref.file_path)
             if not target_impl:
                 return None
             return {
-                "function_name": target_name,
+                "function_name": target_ref.function_name,
                 "file_path": str(target_impl.get("file") or ""),
                 "exposure": "thread",
-                "reasons": [f"thread_entry:{call}", f"thread_creator:{creator_name}"],
+                "reasons": [f"thread_entry:{call}", f"thread_creator:{creator_ref.function_name}"],
                 "base_prompt": THREAD_PROMPT,
                 "confidence": 0.88,
             }
         return None
 
-    def _classify_external_entry(self, func_name: str) -> Optional[Dict[str, Any]]:
-        impl = self._get_impl(func_name)
+    def _classify_external_entry(
+        self,
+        func_name: str,
+        file_path: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        impl = self._get_impl(func_name, file_path)
         if not impl:
             return None
         code = str(impl.get("code") or "")
@@ -1386,6 +1631,7 @@ class DiffImpactPlanner:
         candidate: Dict[str, Any],
         changed: ChangedFunction,
         path: List[str],
+        path_refs: Optional[Sequence[Dict[str, Any]]] = None,
         *,
         fallback_reason: str,
         intent: str = "",
@@ -1438,13 +1684,24 @@ class DiffImpactPlanner:
         if changed_key not in item["changed_keys"]:
             focus["changed_functions"].append(changed.to_dict())
             item["changed_keys"].add(changed_key)
-        path_key = (changed.function_name, tuple(path))
+        path_ref_list = [dict(item) for item in (path_refs or []) if isinstance(item, dict)]
+        path_ref_key = tuple(
+            (
+                str(item.get("function_name") or ""),
+                str(item.get("file_path") or ""),
+                str(item.get("start_line") or ""),
+                str(item.get("index_name") or ""),
+            )
+            for item in path_ref_list
+        )
+        path_key = (changed.function_name, tuple(path), path_ref_key)
         if path_key not in item["path_keys"]:
             focus["affected_paths"].append(
                 {
                     "entry_function": function_name,
                     "changed_function": changed.function_name,
                     "path": path,
+                    "path_refs": path_ref_list,
                     "depth": max(0, len(path) - 1),
                 }
             )
@@ -1460,7 +1717,17 @@ class DiffImpactPlanner:
         existing_context_keys = {
             (
                 str(item.get("function_name") or ""),
+                str(item.get("file_path") or ""),
                 tuple(str(node) for node in (item.get("path") or [])),
+                tuple(
+                    (
+                        str(ref.get("function_name") or ""),
+                        str(ref.get("file_path") or ""),
+                        str(ref.get("start_line") or ""),
+                    )
+                    for ref in (item.get("path_refs") or [])
+                    if isinstance(ref, dict)
+                ),
             )
             for item in focus.get("context_callers") or []
             if isinstance(item, dict)
@@ -1470,7 +1737,17 @@ class DiffImpactPlanner:
                 continue
             key = (
                 str(item.get("function_name") or ""),
+                str(item.get("file_path") or ""),
                 tuple(str(node) for node in (item.get("path") or [])),
+                tuple(
+                    (
+                        str(ref.get("function_name") or ""),
+                        str(ref.get("file_path") or ""),
+                        str(ref.get("start_line") or ""),
+                    )
+                    for ref in (item.get("path_refs") or [])
+                    if isinstance(ref, dict)
+                ),
             )
             if not key[0] or key in existing_context_keys:
                 continue
@@ -1512,26 +1789,83 @@ class DiffImpactPlanner:
                     "end_line": impl.get("end_line"),
                 }
 
-    def _get_impl(self, func_name: str) -> Optional[Dict[str, Any]]:
+    def _get_impl(self, func_name: str, file_path: str = "") -> Optional[Dict[str, Any]]:
+        kwargs = {
+            "include_context": False,
+            "warn_missing": False,
+        }
+        if file_path:
+            kwargs["file_path"] = file_path
         try:
-            return self.code_index.get_function_impl(
-                func_name,
-                include_context=False,
-                warn_missing=False,
-            )
+            return self.code_index.get_function_impl(func_name, **kwargs)
         except TypeError:
             try:
                 return self.code_index.get_function_impl(func_name, warn_missing=False)
             except TypeError:
                 return self.code_index.get_function_impl(func_name)
 
-    def _get_callers(self, func_name: str) -> List[Dict[str, Any]]:
+    def _get_callers(self, func_name: str, file_path: str = "") -> List[Dict[str, Any]]:
         try:
-            callers = self.code_index.get_callers(func_name, limit=self.caller_limit)
+            callers = self.code_index.get_callers(
+                func_name,
+                limit=self.caller_limit,
+                callee_file=file_path,
+            )
+        except TypeError:
+            try:
+                callers = self.code_index.get_callers(func_name, limit=self.caller_limit)
+            except Exception as exc:
+                logger.debug("Failed to get callers for %s: %s", func_name, exc)
+                callers = []
         except Exception as exc:
             logger.debug("Failed to get callers for %s: %s", func_name, exc)
             callers = []
         return [caller for caller in callers if isinstance(caller, dict)]
+
+    def _changed_ref(self, changed: ChangedFunction) -> FunctionRef:
+        return self._function_ref(
+            changed.function_name,
+            changed.file_path,
+            start_line=changed.start_line,
+            end_line=changed.end_line,
+        )
+
+    def _caller_ref(self, caller: Dict[str, Any]) -> Optional[FunctionRef]:
+        name = str(caller.get("name") or caller.get("function_name") or "")
+        if not name:
+            return None
+        file_path = str(
+            caller.get("filename")
+            or caller.get("file_path")
+            or caller.get("caller_file")
+            or ""
+        )
+        return self._function_ref(name, file_path)
+
+    def _function_ref(
+        self,
+        func_name: str,
+        file_path: str = "",
+        *,
+        start_line: int = 0,
+        end_line: int = 0,
+    ) -> FunctionRef:
+        impl = self._get_impl(func_name, file_path=file_path) if func_name else None
+        impl_file = str((impl or {}).get("file") or file_path or "")
+        impl_start = int((impl or {}).get("start_line") or start_line or 0)
+        impl_end = int((impl or {}).get("end_line") or end_line or 0)
+        index_name = str((impl or {}).get("index_name") or (impl or {}).get("func_name") or "")
+        return FunctionRef(
+            function_name=func_name,
+            file_path=impl_file,
+            start_line=impl_start,
+            end_line=impl_end,
+            index_name=index_name,
+        )
+
+    @staticmethod
+    def _path_ref_dicts(path_refs: Sequence[FunctionRef]) -> List[Dict[str, Any]]:
+        return [ref.to_dict() for ref in path_refs]
 
     def _header_declaration_map(self) -> Dict[str, List[Dict[str, Any]]]:
         if self._header_declarations is not None:
