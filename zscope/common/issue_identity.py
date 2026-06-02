@@ -348,10 +348,7 @@ def report_cluster_category(category: str, root: str) -> str:
     """
     normalized = str(category or "").replace("-", "_").lower()
     root_key = str(root or "").replace("-", "_").lower()
-    numeric_roots = {
-        "issue41_label_cache_size_miscalc",
-        "label_cache_size_miscalc",
-    }
+    numeric_roots = {"label_cache_size_miscalc"}
     if root_key in numeric_roots and normalized in {
         "integer_overflow",
         "bounds",
@@ -1191,26 +1188,26 @@ def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
     # High-signal semantic roots that commonly appear through several public
     # entries or both rule and LLM candidates.  These roots are deliberately
     # tied to concrete sink functions/resources, not broad vulnerability types.
-    if function == "_issue41_dynamic_array_expand_race":
-        return "issue41_dynamic_array_resize"
-    if function == "_issue41_label_cache_size_miscalc":
-        return "issue41_label_cache_size_miscalc"
-    if function == "_real_model_ssl_error_returns_ok":
-        return "real_model_ssl_probe_status"
-    if function == "_real_model_error_branch_double_cleanup" and (
+    if "dynamic_array" in function and "expand" in function and "race" in function:
+        return "global_dynamic_array_resize"
+    if "label" in function and "cache" in function and ("miscalc" in function or "size" in function):
+        return "label_cache_size_miscalc"
+    if "ssl" in function and "error" in function and ("returns_ok" in function or "success" in function):
+        return "ssl_probe_status"
+    if "error_branch" in function and "double_cleanup" in function and (
         "payload" in lower or "node->payload" in raw_lower or "nodepayload" in compact
     ):
-        return "real_model_payload_double_cleanup"
+        return "payload_double_cleanup"
     if function == "_validate_task" and "fopen" in lower and "path" in lower:
         return "path_check_before_open"
     if function == "_lifecycle_ref_get" and ("ref_count" in raw_lower or "ref count" in lower):
         return "lifecycle_ref_get_after_unlock"
     if function == "_lifecycle_ref_put" and ("ref_count" in raw_lower or "ref count" in lower):
         return "lifecycle_ref_put_after_unlock"
-    if function == "_real_model_callback_under_lock" and (
-        "g_real_callback_node" in raw_lower or "borrowed" in lower or "dangling" in lower
+    if ("callback_under_lock" in function or "callback_while_lock" in rule) and (
+        "borrowed" in lower or "dangling" in lower or "callback node" in lower
     ):
-        return "g_real_callback_node"
+        return "callback_borrowed_object"
     if function == "_lifecycle_send_status" and (
         "pending_jobs" in raw_lower or "pending jobs" in lower
     ):
@@ -1230,28 +1227,26 @@ def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
 
     if (
         "shared_resource_freed_without_refcount_protocol" in rule
-        or function == "_issue41_missing_reference_count"
+        or "missing_reference_count" in function
         or function == "_peer_publish_shared_session"
-        or "g_issue41_broker.resources" in raw_lower
         or "g_peer_session_broker.resources" in raw_lower
-        or ("issue41" in compact and "refcount" in compact and "safe_free" in raw_lower)
+        or re.search(r"\bg_[a-z0-9_.]*(?:broker|resource|session)[a-z0-9_.]*\.resources\b", raw_lower)
         or ("safe_free(res)" in raw_lower and "ref_count" in raw_lower)
     ):
-        return "issue41_resource_refcount_protocol"
+        return "shared_resource_refcount_protocol"
     if (
-        function == "_issue41_partial_resource_leak_on_retry"
-        or ("issue41" in compact and "partition" in lower and "tag" in lower and ("fail_step" in raw_lower or "retry" in lower))
+        "partial_resource_not_released_on_retry_failure" in rule
+        or ("partial_resource" in function and "retry" in function)
+        or ("partition" in lower and "tag" in lower and ("fail_step" in raw_lower or "retry" in lower))
     ):
-        return "issue41_partition_retry_cleanup"
+        return "partition_retry_cleanup"
     if (
         "parsed_protocol_version_is_ignored" in rule
-        or function == "_issue41_missing_version_filter"
         or ("(void)version" in raw_lower and ("version" in lower or "protocol" in lower))
     ):
         return "parsed_protocol_version_ignored"
     if (
         "raw_fd_revalidated_as_encoded" in rule
-        or function == "_issue41_raw_fd_missing_encode"
         or ("encoded fd" in lower and "raw fd" in lower and ("check value" in lower or "validate" in lower))
     ):
         return "raw_fd_reaches_encoded_fd_validator"
@@ -1263,21 +1258,21 @@ def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
         return "lifecycle_control_message_strchr"
     if (
         "stack_address_passed_to_thread" in rule
-        or function == "_real_model_detached_stack_job"
-        or ("pthread_create" in lower and ("_real_model_async_worker" in raw_lower or "realmodelasyncjob" in compact or "&job" in raw_lower))
+        or "detached_stack_job" in function
+        or ("pthread_create" in lower and ("async_worker" in raw_lower or "asyncjob" in compact or "&job" in raw_lower))
     ):
-        return "real_model_async_stack_job"
+        return "async_stack_job"
     if (
         "protocol_units_length_reaches_copy_without_packet_bound" in rule
-        or function == "_real_model_protocol_length_miscalc"
+        or ("protocol" in function and "length" in function and "miscalc" in function)
     ):
-        return "real_model_protocol_units_length"
-    if "unaligned_integer_pointer_cast" in rule or function == "_real_model_message_alignment_overread":
-        return "real_model_message_alignment"
-    if "negative_length_cast_to_size_t" in rule or function == "_real_model_signed_recv_to_size":
-        return "real_model_signed_recv_to_size"
-    if function == "_real_model_recv_busy_loop":
-        return "real_model_recv_busy_loop"
+        return "protocol_units_length"
+    if "unaligned_integer_pointer_cast" in rule or ("message" in function and "alignment" in function):
+        return "message_alignment"
+    if "negative_length_cast_to_size_t" in rule or ("signed" in function and "recv" in function and "size" in function):
+        return "signed_recv_to_size"
+    if "recv_busy_loop" in function:
+        return "recv_busy_loop"
     if (
         function == "_peer_send_control_reply"
         or "write_without_sigpipe_handling" in rule
@@ -1321,10 +1316,8 @@ def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
         "g_ready",
         "g_running",
         "g_config_lock",
-        "g_real_aux_lock",
         "g_active_config",
         "g_watched_fd",
-        "g_real_watched_fd",
         "g_rules_map",
         "g_rules_len",
         "g_macro_guarded_counter",
@@ -1338,11 +1331,8 @@ def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
         "flushjob",
         "pfnDropSession",
         "guardedsubscription",
-        "g_issue41_task_array",
-        "g_issue41_task_array_cap",
         "node->payload",
         "g_lifecycle.pending_jobs",
-        "g_real_callback_node",
         "g_callback_entry",
     )
     for name in named_objects:
@@ -1903,14 +1893,14 @@ _FUNCTION_SCOPED_ROOTS = {
     "os_node_proc_list",
     "pipe_self_link",
     "pipe_scheduler_control_lock_order",
-    "issue41_dynamic_array_resize",
-    "issue41_label_cache_size_miscalc",
-    "real_model_ssl_probe_status",
-    "real_model_payload_double_cleanup",
+    "global_dynamic_array_resize",
+    "label_cache_size_miscalc",
+    "ssl_probe_status",
+    "payload_double_cleanup",
     "path_check_before_open",
     "lifecycle_ref_get_after_unlock",
     "lifecycle_ref_put_after_unlock",
-    "g_real_callback_node",
+    "callback_borrowed_object",
     "g_lifecycle_pending_jobs",
     "control_session_mutex_init",
     "net_recv_data_return_truncation",

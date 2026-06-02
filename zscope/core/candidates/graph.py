@@ -5,7 +5,7 @@ It looks across function boundaries and protocol-like source shapes that a
 single-line rule tends to miss: helper calls under locks, wrong cleanup
 contracts, container lifecycle gaps, opposite lock order, and stale tree/list
 links.  The output intentionally has the same issue dictionary shape as other
-Z-SCOPE candidates so the existing analyzer, validator, report, and benchmark
+Z-SCOPE candidates so the existing analyzer, validator, and report
 paths can consume it without a special tier.
 """
 

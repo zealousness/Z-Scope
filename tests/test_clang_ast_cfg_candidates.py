@@ -510,21 +510,22 @@ def test_clang_ast_cfg_detects_range_unified_missed_patterns() -> None:
 1448 | }
 """
     refcount_close = """
-1804 | int _issue41_missing_reference_count(int resource_id, int close_now) {
-1805 |     LOCK(&g_issue41_broker.lock);
-1806 |     Issue41Resource* res = _issue41_find_resource(resource_id);
+1804 | int _peer_missing_reference_count(int resource_id, int close_now) {
+1805 |     LOCK(&g_peer_session_broker.lock);
+1806 |     PeerResource* res = _peer_find_resource(resource_id);
 1813 |         res->resource_id = resource_id;
 1814 |         res->ref_count = 2;
 1815 |         res->tag = _str_dup("shared-listener");
-1816 |         res->next = g_issue41_broker.resources;
-1817 |         g_issue41_broker.resources = res;
+1816 |         res->next = g_peer_session_broker.resources;
+1817 |         g_peer_session_broker.resources = res;
 1818 |     }
 1820 |     if (close_now) {
 1821 |         SAFE_FREE(res->tag);
 1822 |         SAFE_FREE(res);
-1823 |         UNLOCK(&g_issue41_broker.lock);
+1823 |         UNLOCK(&g_peer_session_broker.lock);
 1824 |         return 0;
 1825 |     }
+1826 |     return res->ref_count;
 1829 | }
 """
 
@@ -539,6 +540,10 @@ def test_clang_ast_cfg_detects_range_unified_missed_patterns() -> None:
     for expected_rule, code in cases.items():
         rules = {issue["rule"] for issue in _rules(code)}
         assert expected_rule in rules
+
+    refcount_rules = {issue["rule"] for issue in _rules(refcount_close)}
+    assert "clang_cfg_shared_resource_freed_without_refcount_protocol" in refcount_rules
+    assert "clang_cfg_use_after_release" not in refcount_rules
 
 
 def test_clang_ast_cfg_detects_unchecked_param_global_array_index() -> None:
@@ -702,7 +707,7 @@ def test_clang_ast_cfg_detects_state_not_restored_and_ignored_version() -> None:
     assert "clang_cfg_parsed_protocol_version_is_ignored" in version_rules
 
 
-def test_clang_ast_cfg_detects_structured_range_issue41_protocol_shapes() -> None:
+def test_clang_ast_cfg_detects_structured_protocol_shapes() -> None:
     semantics = LocalPatternSemantics()
     semantics.add_api("deallocator", "SAFE_FREE", "user_config")
     code = """
@@ -710,17 +715,17 @@ def test_clang_ast_cfg_detects_structured_range_issue41_protocol_shapes() -> Non
 1368 |     if (!blob || len < 16) {
 1369 |         return 0;
 1370 |     }
-1371 |     uint64_t expected_magic = ISSUE41_MAGIC;
+1371 |     uint64_t expected_magic = PROTOCOL_MAGIC;
 1372 |     uint64_t count = 0;
 1373 |     memcpy(&count, blob + 8, sizeof(count));
 1374 |     return count + expected_magic;
 1375 | }
 1676 | int label(unsigned int element_count) {
-1677 |     size_t label_len = (size_t)element_count * ISSUE41_ELEMENT_INFO_SIZE;
-1678 |     if (label_len > ISSUE41_LABEL_CACHE_LIMIT) {
+1677 |     size_t label_len = (size_t)element_count * PROTOCOL_ELEMENT_INFO_SIZE;
+1678 |     if (label_len > PROJECT_LABEL_CACHE_LIMIT) {
 1679 |         return -1;
 1680 |     }
-1681 |     return (element_count <= ISSUE41_SPEC_MAX_ELEMENTS) ? 0 : -1;
+1681 |     return (element_count <= PROJECT_SPEC_MAX_ELEMENTS) ? 0 : -1;
 1682 | }
 1711 | int recv_loop(int fd, unsigned char* dst, size_t want) {
 1712 |     size_t received = 0;
@@ -737,24 +742,51 @@ def test_clang_ast_cfg_detects_structured_range_issue41_protocol_shapes() -> Non
 1723 |     return 0;
 1724 | }
 1766 | int expand(size_t task_index) {
-1767 |     if (task_index >= g_issue41_task_array_cap) {
+1767 |     if (task_index >= g_task_array_cap) {
 1768 |         size_t new_cap = ((task_index / 16u) + 1u) * 16u;
-1769 |         Issue41CsTask** new_array = (Issue41CsTask**)_safe_calloc(new_cap, sizeof(Issue41CsTask*));
-1770 |         Issue41CsTask** old_array = g_issue41_task_array;
-1771 |         g_issue41_task_array = new_array;
-1772 |         g_issue41_task_array_cap = new_cap;
+1769 |         ProjectTask** new_array = (ProjectTask**)_safe_calloc(new_cap, sizeof(ProjectTask*));
+1770 |         ProjectTask** old_array = g_task_array;
+1771 |         g_task_array = new_array;
+1772 |         g_task_array_cap = new_cap;
 1773 |         SAFE_FREE(old_array);
 1774 |     }
 1775 |     return 0;
 1776 | }
 """
 
-    rules = {issue["rule"] for issue in _rules(code, semantics=semantics)}
+    issues = _rules(code, semantics=semantics)
+    rules = {issue["rule"] for issue in issues}
 
     assert "clang_cfg_wide_count_read_without_magic_guard" in rules
     assert "clang_cfg_fixed_byte_limit_before_spec_count_check" in rules
     assert "clang_cfg_recv_retry_loop_without_timeout_or_budget" in rules
     assert "clang_cfg_global_dynamic_array_resize_without_lock" in rules
+    magic_issue = next(
+        issue for issue in issues if issue["rule"] == "clang_cfg_wide_count_read_without_magic_guard"
+    )
+    assert magic_issue["category"] == "protocol_validation"
+    assert magic_issue["cwe"] == "CWE-20"
+    assert "protocol magic validation" in magic_issue["sink"]
+
+
+def test_clang_ast_cfg_callback_under_lock_is_contract_risk_not_exploit_claim() -> None:
+    code = """
+10 | int demo(plugin_callback_t cb, void *ctx) {
+11 |     pthread_mutex_lock(&g_lock);
+12 |     g_entry_callback(ctx);
+13 |     pthread_mutex_unlock(&g_lock);
+14 |     return 0;
+15 | }
+"""
+
+    issue = next(
+        issue for issue in _rules(code) if issue["rule"] == "clang_cfg_callback_while_lock_held"
+    )
+
+    assert issue["confidence"] == 0.68
+    assert issue["impact_level"] == "medium"
+    assert "if callers can register" in issue["root_cause"]
+    assert "externally controllable" in " ".join(issue["negative_evidence"])
 
 
 def test_clang_ast_cfg_detects_callback_context_and_mapping_lifetime() -> None:

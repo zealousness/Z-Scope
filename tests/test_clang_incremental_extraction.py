@@ -21,6 +21,58 @@ class _FakeDB:
         self.commits += 1
 
 
+class _SymbolDB:
+    def insert_type(self, *args, **kwargs):
+        return 1
+
+    def insert_type_member(self, *args, **kwargs):
+        return None
+
+
+def test_clang_extractor_qualifies_class_scoped_cpp_symbols(tmp_path, monkeypatch) -> None:
+    extractor = ClangExtractor(project_root=tmp_path)
+    monkeypatch.setattr(extractor, "_extract_call_edges", lambda *args, **kwargs: None)
+    func_rows = []
+    call_rows = []
+
+    extractor._process_symbol(
+        {
+            "kind": extractor.SK_CLASS,
+            "name": "Widget",
+            "range": {"start": {"line": 0}, "end": {"line": 5}},
+            "children": [
+                {
+                    "kind": extractor.SK_CONSTRUCTOR,
+                    "name": "Widget",
+                    "range": {"start": {"line": 1}, "end": {"line": 1}},
+                },
+                {
+                    "kind": extractor.SK_METHOD,
+                    "name": "~Widget",
+                    "range": {"start": {"line": 2}, "end": {"line": 2}},
+                },
+                {
+                    "kind": extractor.SK_METHOD,
+                    "name": "reset",
+                    "range": {"start": {"line": 3}, "end": {"line": 4}},
+                },
+            ],
+        },
+        tmp_path / "widget.cpp",
+        "widget.cpp",
+        1,
+        _SymbolDB(),
+        func_rows,
+        call_rows,
+    )
+
+    assert [row[0] for row in func_rows] == [
+        "Widget::Widget",
+        "Widget::~Widget",
+        "Widget::reset",
+    ]
+
+
 def test_run_batch_extraction_uses_prescanned_tus_without_rehashing(
     tmp_path, monkeypatch
 ) -> None:

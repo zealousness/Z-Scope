@@ -64,6 +64,7 @@ class ClangAstCfgCandidateGenerator:
         "realloc_misuse": "CWE-401",
         "bad_parameter_or_api_misuse": "CWE-252",
         "bounds": "CWE-125",
+        "protocol_validation": "CWE-20",
         "integer_overflow": "CWE-190",
         "format_string": "CWE-134",
         "command_injection": "CWE-78",
@@ -100,6 +101,7 @@ class ClangAstCfgCandidateGenerator:
         "realloc_misuse": "resource_lifecycle",
         "bad_parameter_or_api_misuse": "null_and_failure",
         "bounds": "memory",
+        "protocol_validation": "ownership_contract",
         "integer_overflow": "memory",
         "format_string": "memory",
         "command_injection": "string_and_format",
@@ -136,6 +138,7 @@ class ClangAstCfgCandidateGenerator:
         "realloc_misuse": "memory",
         "bad_parameter_or_api_misuse": "resource",
         "bounds": "memory",
+        "protocol_validation": "protocol",
         "integer_overflow": "integer",
         "format_string": "format_string",
         "command_injection": "process",
@@ -1632,18 +1635,18 @@ class ClangAstCfgCandidateGenerator:
             file_path,
             lines,
             allowed_skills,
-            defect_class="bounds",
+            defect_class="protocol_validation",
             rule="clang_cfg_wide_count_read_without_magic_guard",
             line=line,
-            description=f"Wide count field `{copy.group('count')}` is read from `{copy.group('src')} + {offset}` without a visible magic/signature guard.",
-            root_cause="The parser trusts a wide protocol count before proving the record layout with the expected magic value.",
+            description=f"Protocol field `{copy.group('count')}` is read from `{copy.group('src')} + {offset}` without a visible magic/signature guard.",
+            root_cause="The parser uses a dependent protocol field before proving the record layout with the expected magic value.",
             suggested_fix="Decode and validate the magic/signature field before reading dependent count fields.",
             source=line.text,
-            sink=f"{copy.group('count')} parsed before magic guard",
+            sink=f"{copy.group('count')} used before protocol magic validation",
             confidence=0.82,
             impact_level="high",
             positive=[
-                f"line {line.number}: wide count is copied from a wire buffer offset",
+                f"line {line.number}: protocol field is copied from a wire buffer offset",
                 "no magic/signature comparison is visible before the count read",
             ],
             negative=["Validator must confirm whether a caller-side magic check dominates this parser."],
@@ -1790,7 +1793,7 @@ class ClangAstCfgCandidateGenerator:
         if not (global_assign and cap_assign and old_free):
             return
         pre_window = "\n".join(item.text for item in lines[max(0, line.index - 5) : line.index])
-        if re.search(r"\b(?:LOCK|pthread_mutex_lock|spin_lock|mtx_lock|ISSUE41_LOCK)\s*\(", pre_window):
+        if re.search(r"\b(?:LOCK|pthread_mutex_lock|spin_lock|mtx_lock)\s*\(", pre_window):
             return
         assign_line = self._first_line_matching_in(window, re.compile(rf"\b{re.escape(global_assign.group('array'))}\s*=")) or line
         self._emit(
@@ -2801,17 +2804,17 @@ class ClangAstCfgCandidateGenerator:
             rule="clang_cfg_callback_while_lock_held",
             line=line,
             description="Callback/function-pointer style call is made while a lock is held.",
-            root_cause="External callback code can re-enter the same subsystem or acquire conflicting locks.",
+            root_cause="A callback contract can re-enter the same subsystem or acquire conflicting locks if callers can register nontrivial callback code.",
             suggested_fix="Copy required state under the lock, release the lock, then invoke the callback.",
             source=f"lock at line {lock_line.number}",
             sink=line.text,
-            confidence=0.8,
-            impact_level="high",
+            confidence=0.68,
+            impact_level="medium",
             positive=[
                 f"line {lock_line.number}: lock acquired",
                 f"line {line.number}: callback-like call before unlock",
             ],
-            negative=[],
+            negative=["Validator must confirm whether callback registration is externally controllable or can re-enter this lock domain."],
             ast_cfg=self._ast_cfg_pack(
                 lines,
                 [
@@ -3520,6 +3523,11 @@ class ClangAstCfgCandidateGenerator:
         for item in lines[line.index + 1 : line.index + 5]:
             text = item.text.strip()
             if not text or text in {"}", "};"}:
+                continue
+            if re.fullmatch(
+                r"(?:UNLOCK|pthread_mutex_unlock|spin_unlock|mtx_unlock)\s*\([^;]*\)\s*;",
+                text,
+            ):
                 continue
             return bool(re.search(r"\breturn\b", text))
         return False

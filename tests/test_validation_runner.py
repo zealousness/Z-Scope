@@ -1,4 +1,5 @@
 import json
+import logging
 import threading
 from types import SimpleNamespace
 
@@ -139,6 +140,23 @@ def test_validation_runner_validates_issue_and_remembers_outcome() -> None:
     assert agent.inputs[0]["agent_contract"] == "validator_agent"
 
 
+def test_validation_runner_logs_needs_review_without_validated_label(caplog) -> None:
+    caplog.set_level(logging.INFO, logger="zscope.core.validation.runner")
+
+    ValidationRunner._log_validation_outcome(
+        {"id": "ISSUE_NR", "validation_status": "needs_review", "confidence": 0.95},
+        {"confidence_score": 0.95},
+        "verified",
+        0.75,
+    )
+
+    message = "\n".join(record.getMessage() for record in caplog.records)
+    assert "Issue ISSUE_NR kept as NEEDS_REVIEW by Validator" in message
+    assert "report_bucket=observations" in message
+    assert "final_score=0.75" in message
+    assert "VALIDATED" not in message
+
+
 def test_validation_runner_compacts_large_validator_payloads() -> None:
     agent = FakeValidatorAgent(
         [
@@ -182,7 +200,7 @@ def test_validation_runner_compacts_large_validator_payloads() -> None:
     ]
 
 
-def test_validation_runner_retries_entry_root_dead_code_rejection_as_observation() -> None:
+def test_validation_runner_discards_entry_root_dead_code_rejection_after_retry() -> None:
     memory = []
     agent = FakeValidatorAgent(
         [
@@ -203,13 +221,11 @@ def test_validation_runner_retries_entry_root_dead_code_rejection_as_observation
     assert len(agent.inputs) == 2
     assert agent.inputs[1]["evidence_pack"]["mode"] == "tri_state_exploitability_validation_entry_root_retry"
     assert state["issues"] == []
-    assert len(state["observations"]) == 1
-    assert state["observations"][0]["validation_status"] == "needs_review"
-    assert state["observations"][0]["finding_kind"] == "needs_review"
-    assert memory == [("ISSUE_2", "needs_review")]
+    assert state["observations"] == []
+    assert memory == [("ISSUE_2", "rejected")]
 
 
-def test_validation_runner_rewrites_contract_scope_rejection_as_observation() -> None:
+def test_validation_runner_discards_contract_scope_rejection() -> None:
     memory = []
     agent = FakeValidatorAgent(
         [
@@ -233,12 +249,8 @@ def test_validation_runner_rewrites_contract_scope_rejection_as_observation() ->
     _runner(agent, memory=memory).run(state)
 
     assert state["issues"] == []
-    assert len(state["observations"]) == 1
-    observation = state["observations"][0]
-    assert observation["validation_status"] == "needs_review"
-    assert observation["finding_kind"] == "needs_review"
-    assert "external entry contract" in observation["validation_reasoning"]
-    assert memory == [("ISSUE_3", "needs_review")]
+    assert state["observations"] == []
+    assert memory == [("ISSUE_3", "rejected")]
 
 
 def test_validation_runner_keeps_structured_reachable_caller_control_rejection() -> None:
@@ -272,12 +284,8 @@ def test_validation_runner_keeps_structured_reachable_caller_control_rejection()
     _runner(agent, memory=memory).run(state)
 
     assert state["issues"] == []
-    assert len(state["observations"]) == 1
-    observation = state["observations"][0]
-    assert observation["validation_status"] == "needs_review"
-    assert observation["finding_kind"] == "needs_review"
-    assert observation["validator_verdict"] == "uncertain"
-    assert memory == [("ISSUE_5", "needs_review")]
+    assert state["observations"] == []
+    assert memory == [("ISSUE_5", "rejected")]
 
 
 def test_validation_runner_recovers_uncertain_observation_location_from_evidence_pack() -> None:

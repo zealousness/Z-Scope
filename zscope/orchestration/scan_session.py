@@ -8,7 +8,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from ..config.config import ZScopeConfig
 from ..config.function_entry import FunctionEntry, FunctionListLoader
@@ -54,6 +54,7 @@ class ScanSessionRunner:
         diff_base: Optional[str] = None,
         diff_head: str = "HEAD",
         diff_repo_root: Optional[Path] = None,
+        diff_paths: Optional[Sequence[str]] = None,
         emit: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.config = config
@@ -63,6 +64,7 @@ class ScanSessionRunner:
         self.diff_base = diff_base
         self.diff_head = diff_head or "HEAD"
         self.diff_repo_root = Path(diff_repo_root).resolve() if diff_repo_root else config.project.source_root
+        self.diff_paths = [str(path).strip() for path in (diff_paths or []) if str(path).strip()]
         self.diff_scope_name = config.project.source_root.name or config.project.project_root.name or "default"
         self.emit = emit or (lambda message: None)
         self.spec_registry = SpecRegistry(project_root=config.project.project_root)
@@ -187,6 +189,8 @@ class ScanSessionRunner:
             f"Planning diff impact entries for {self.diff_scope_name}: "
             f"{self.diff_base}..{self.diff_head}"
         )
+        if self.diff_paths:
+            self.emit("Diff path filters: " + ", ".join(self.diff_paths))
         code_index = self._ensure_code_index(state, defer_svf=True)
         discovery_cfg = self.config.project.entry_discovery
         planner = DiffImpactPlanner(
@@ -203,6 +207,7 @@ class ScanSessionRunner:
                 "caller_search_depth_by_intent",
                 {},
             ),
+            diff_paths=self.diff_paths,
             synthetic_depth_threshold=max(1, int(self.config.analysis.max_recursion_depth or 3)),
         )
         plan = planner.plan()
@@ -217,6 +222,14 @@ class ScanSessionRunner:
             f"{len(plan.entries)} entry candidate(s)."
         )
         self.emit(f"Diff impact entry function list written to: {entry_list_path}")
+        if not plan.entries:
+            filter_text = ", ".join(self.diff_paths) if self.diff_paths else "none"
+            raise RuntimeError(
+                "Diff impact planning produced no scan entries "
+                f"for {self.diff_base}..{self.diff_head} "
+                f"(path filters: {filter_text}). "
+                f"Entry function list was written to: {entry_list_path}"
+            )
 
     def _write_discovered_entry_functions_list(
         self,

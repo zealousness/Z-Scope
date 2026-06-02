@@ -614,17 +614,32 @@ class KnowledgeDB:
     def get_all_functions(self) -> Dict[str, Dict[str, Any]]:
         rows = self._conn.execute(
             "SELECT name, file_path, start_line, end_line, signature "
-            "FROM functions WHERE is_declaration = 0"
+            "FROM functions WHERE is_declaration = 0 ORDER BY name, file_path, start_line"
         ).fetchall()
         index = {}
         for r in rows:
-            index[r["name"]] = {
+            name = r["name"]
+            key = name
+            if key in index:
+                key = self._function_signature_key(name, r["signature"] or "")
+            if key in index:
+                key = f"{name}@{r['file_path']}:{r['start_line']}"
+            index[key] = {
+                "name": name,
                 "file": r["file_path"],
                 "start_line": r["start_line"],
                 "end_line": r["end_line"],
-                "signature": r["signature"] or f"{r['name']}(...)",
+                "signature": r["signature"] or f"{name}(...)",
             }
         return index
+
+    @staticmethod
+    def _function_signature_key(name: str, signature: str) -> str:
+        if "(" not in signature or ")" not in signature:
+            return name
+        params = signature[signature.find("(") + 1 : signature.rfind(")")].strip()
+        params = " ".join(params.split())
+        return f"{name}({params})"
 
     # ── Type Definitions ──
 
@@ -685,13 +700,31 @@ class KnowledgeDB:
             rows,
         )
 
-    def get_callers(self, func_name: str, limit: int = 20) -> List[Dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT DISTINCT caller_name, caller_file, call_line "
-            "FROM call_edges WHERE callee_name = ? LIMIT ?",
-            (func_name, limit),
-        ).fetchall()
+    def get_callers(
+        self,
+        func_name: str,
+        limit: int = 20,
+        callee_file: str = "",
+    ) -> List[Dict[str, Any]]:
+        if callee_file:
+            all_rows = self._conn.execute(
+                "SELECT DISTINCT caller_name, caller_file, callee_file, call_line "
+                "FROM call_edges WHERE callee_name = ?",
+                (func_name,),
+            ).fetchall()
+            rows = [
+                row
+                for row in all_rows
+                if self._paths_match_hint(str(row["callee_file"] or ""), callee_file)
+            ][:limit]
+        else:
+            rows = self._conn.execute(
+                "SELECT DISTINCT caller_name, caller_file, callee_file, call_line "
+                "FROM call_edges WHERE callee_name = ? LIMIT ?",
+                (func_name, limit),
+            ).fetchall()
         return [{"name": r["caller_name"], "filename": r["caller_file"],
+                 "callee_filename": r["callee_file"],
                  "lineNumber": r["call_line"]} for r in rows]
 
     def get_callees(

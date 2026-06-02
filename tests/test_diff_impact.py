@@ -1,8 +1,11 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from zscope.config.config import ConfigLoader
 from zscope.config.function_entry import FunctionEntry
+from zscope.core.analysis.analyzer import Analyzer
 from zscope.orchestration.diff_impact import ChangedLineRange, DiffImpactPlanner
 from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
 
@@ -11,16 +14,19 @@ class FakeCodeIndex:
     def __init__(self, root: Path, functions, callers=None, headers=None, source_root=None):
         self.project_root = root
         self.source_root = source_root or root
-        self._function_index = {
-            name: {
+        self._function_index = {}
+        self.functions = {}
+        for key, data in functions.items():
+            display_name = str(data.get("name") or key)
+            self._function_index[key] = {
+                "name": display_name,
                 "file": data["file"],
                 "start_line": data["start_line"],
                 "end_line": data["end_line"],
-                "signature": f"{name}(...)",
+                "signature": f"{display_name}(...)",
+                "index_name": key,
             }
-            for name, data in functions.items()
-        }
-        self.functions = functions
+            self.functions[key] = data
         self.callers = callers or {}
         self.headers = headers or []
 
@@ -37,24 +43,70 @@ class FakeCodeIndex:
         return self.project_root / path
 
     def get_function_impl(self, name, *args, **kwargs):
-        data = self.functions.get(name)
+        file_path = str(kwargs.get("file_path") or "")
+        data_key = self._find_function_key(name, file_path)
+        data = self.functions.get(data_key)
         if not data:
             return None
+        display_name = str(data.get("name") or data_key)
         return {
-            "func_name": name,
+            "func_name": data_key,
+            "index_name": data_key,
             "file": data["file"],
             "start_line": data["start_line"],
             "end_line": data["end_line"],
-            "code": data.get("code", f"int {name}(void) {{ return 0; }}"),
+            "code": data.get("code", f"int {display_name}(void) {{ return 0; }}"),
             "callees": data.get("callees", []),
-            "signature": f"{name}(...)",
+            "signature": f"{display_name}(...)",
         }
 
-    def get_callers(self, name, limit=20):
-        return [{"name": caller} for caller in self.callers.get(name, [])][:limit]
+    def get_callers(self, name, limit=20, callee_file=""):
+        key = (name, callee_file)
+        values = self.callers.get(key)
+        if values is None:
+            values = self.callers.get(name, [])
+        rows = []
+        for caller in values:
+            if isinstance(caller, dict):
+                rows.append(dict(caller))
+            else:
+                caller_key = self._find_function_key(str(caller), "")
+                caller_data = self.functions.get(caller_key, {})
+                rows.append({"name": str(caller), "filename": caller_data.get("file", "")})
+        return rows[:limit]
 
     def get_header_declared_functions(self, header_files=None):
         return list(self.headers)
+
+    def _find_function_key(self, name: str, file_path: str) -> str:
+        if name in self.functions and (
+            not file_path or self._same_path(self.functions[name].get("file", ""), file_path)
+        ):
+            return name
+        matches = [
+            key
+            for key, data in self.functions.items()
+            if str(data.get("name") or key) == name
+        ]
+        if file_path:
+            for key in matches:
+                if self._same_path(str(self.functions[key].get("file") or ""), file_path):
+                    return key
+        return matches[0] if matches else name
+
+    @staticmethod
+    def _same_path(left, right):
+        left_norm = str(left or "").replace("\\", "/").lstrip("./")
+        right_norm = str(right or "").replace("\\", "/").lstrip("./")
+        return bool(
+            left_norm
+            and right_norm
+            and (
+                left_norm == right_norm
+                or left_norm.endswith("/" + right_norm)
+                or right_norm.endswith("/" + left_norm)
+            )
+        )
 
 
 class StaticDiffPlanner(DiffImpactPlanner):
@@ -141,6 +193,95 @@ def test_collect_changed_line_ranges_runs_git_diff_from_git_root(tmp_path: Path,
     assert [(item.file_path, item.start_line, item.end_line) for item in ranges] == [
         ("ssp/src/api.c", 2, 2)
     ]
+
+
+def test_collect_changed_line_ranges_passes_diff_pathspecs(tmp_path: Path, monkeypatch):
+    git_root = tmp_path / "repo"
+    git_root.mkdir()
+    calls = []
+
+    def fake_run(cmd, capture_output, text, encoding=None, errors=None, check=False):
+        calls.append(cmd)
+        if cmd[3:] == ["rev-parse", "--show-toplevel"]:
+            return SimpleNamespace(returncode=0, stdout=str(git_root), stderr="")
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "diff --git a/src/net/api.c b/src/net/api.c\n"
+                "--- a/src/net/api.c\n"
+                "+++ b/src/net/api.c\n"
+                "@@ -2 +2 @@\n"
+                "+  return 2;\n"
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr("zscope.orchestration.diff_impact.subprocess.run", fake_run)
+    planner = DiffImpactPlanner(
+        FakeCodeIndex(git_root, {}),
+        repo_root=git_root,
+        base_ref="base",
+        diff_paths=["src/net", "src/fs", "src/net", ""],
+    )
+
+    ranges = planner._collect_changed_line_ranges()
+
+    diff_cmd = calls[-1]
+    assert diff_cmd[diff_cmd.index("--") + 1 :] == ["src/net", "src/fs"]
+    assert planner.diff_pathspecs == ["src/net", "src/fs"]
+    assert [(item.file_path, item.start_line, item.end_line) for item in ranges] == [
+        ("src/net/api.c", 2, 2)
+    ]
+
+
+def test_diff_pathspecs_are_relative_to_git_root_when_source_root_is_nested(
+    tmp_path: Path,
+    monkeypatch,
+):
+    git_root = tmp_path / "repo"
+    source_root = git_root / "ssp"
+    project_root = tmp_path / "AI_Audit"
+    source_root.mkdir(parents=True)
+    project_root.mkdir()
+
+    def fake_run(cmd, capture_output, text, encoding=None, errors=None, check=False):
+        if cmd[3:] == ["rev-parse", "--show-toplevel"]:
+            return SimpleNamespace(returncode=0, stdout=str(git_root), stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("zscope.orchestration.diff_impact.subprocess.run", fake_run)
+
+    planner = DiffImpactPlanner(
+        FakeCodeIndex(project_root, {}, source_root=source_root),
+        repo_root=source_root,
+        base_ref="base",
+        diff_paths=["src/api"],
+    )
+
+    assert planner.diff_pathspecs == ["ssp/src/api"]
+
+
+def test_absolute_diff_path_outside_git_root_is_rejected(tmp_path: Path, monkeypatch):
+    git_root = tmp_path / "repo"
+    source_root = git_root / "src"
+    outside = tmp_path / "outside"
+    source_root.mkdir(parents=True)
+    outside.mkdir()
+
+    def fake_run(cmd, capture_output, text, encoding=None, errors=None, check=False):
+        if cmd[3:] == ["rev-parse", "--show-toplevel"]:
+            return SimpleNamespace(returncode=0, stdout=str(git_root), stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("zscope.orchestration.diff_impact.subprocess.run", fake_run)
+
+    with pytest.raises(ValueError, match="outside git root"):
+        DiffImpactPlanner(
+            FakeCodeIndex(git_root, {}, source_root=source_root),
+            repo_root=source_root,
+            base_ref="base",
+            diff_paths=[str(outside)],
+        )
 
 
 def test_explicit_diff_repo_root_takes_precedence_over_source_root_git(tmp_path: Path, monkeypatch):
@@ -359,6 +500,143 @@ def test_diff_mapping_handles_diff_path_with_source_root_prefix_and_source_relat
     assert [entry.function_name for entry in plan.entries] == ["Api"]
 
 
+def test_diff_path_filter_keeps_external_root_outside_filtered_path(tmp_path: Path, monkeypatch):
+    git_root = tmp_path / "repo"
+    git_root.mkdir()
+    _write_numbered_file(git_root, "src/net/changed.c")
+    _write_numbered_file(git_root, "src/fs/ignored.c")
+    _write_numbered_file(git_root, "core/owner.c")
+    functions = {
+        "Owner": {
+            "file": "core/owner.c",
+            "start_line": 1,
+            "end_line": 4,
+            "code": "void *Owner(void) { void *p = malloc(16); return ChangedNet(p); }",
+        },
+        "ChangedNet": {
+            "file": "src/net/changed.c",
+            "start_line": 2,
+            "end_line": 5,
+            "code": "int ChangedNet(void *p) { int x = 1; return x; }",
+        },
+        "ChangedFs": {
+            "file": "src/fs/ignored.c",
+            "start_line": 2,
+            "end_line": 5,
+            "code": "int ChangedFs(void) { return 0; }",
+        },
+    }
+
+    def fake_run(cmd, capture_output, text, encoding=None, errors=None, check=False):
+        if cmd[3:] == ["rev-parse", "--show-toplevel"]:
+            return SimpleNamespace(returncode=0, stdout=str(git_root), stderr="")
+        assert cmd[cmd.index("--") + 1 :] == ["src/net"]
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "diff --git a/src/net/changed.c b/src/net/changed.c\n"
+                "--- a/src/net/changed.c\n"
+                "+++ b/src/net/changed.c\n"
+                "@@ -3 +3 @@\n"
+                "+  return 2;\n"
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr("zscope.orchestration.diff_impact.subprocess.run", fake_run)
+    planner = DiffImpactPlanner(
+        FakeCodeIndex(
+            git_root,
+            functions,
+            callers={"ChangedNet": ["Owner"], "ChangedFs": ["Owner"]},
+        ),
+        repo_root=git_root,
+        base_ref="base",
+        diff_paths=["src/net"],
+    )
+
+    plan = planner.plan()
+    payload = plan.to_entry_functions_payload()
+
+    assert plan.changed_files == ["src/net/changed.c"]
+    assert [func.function_name for func in plan.changed_functions] == ["ChangedNet"]
+    assert [entry.function_name for entry in plan.entries] == ["Owner"]
+    assert plan.entries[0].file_path == "core/owner.c"
+    assert payload["diff_impact"]["path_filters"] == {
+        "raw_paths": ["src/net"],
+        "git_pathspecs": ["src/net"],
+    }
+
+
+def test_duplicate_function_names_do_not_mix_reverse_call_paths(tmp_path: Path):
+    _write_numbered_file(tmp_path, "src/api.c", line_count=40)
+    _write_numbered_file(tmp_path, "src/real_b.c", line_count=40)
+    _write_numbered_file(tmp_path, "src/decoy_b.c", line_count=40)
+    _write_numbered_file(tmp_path, "src/c.c", line_count=40)
+    functions = {
+        "ApiReal": {
+            "file": "src/api.c",
+            "start_line": 1,
+            "end_line": 6,
+            "code": "void *ApiReal(void) { void *p = malloc(16); B(p); return p; }",
+        },
+        "B_real": {
+            "name": "B",
+            "file": "src/real_b.c",
+            "start_line": 8,
+            "end_line": 10,
+            "code": "int B(void *p) { C(p); return 0; }",
+        },
+        "C": {
+            "file": "src/c.c",
+            "start_line": 12,
+            "end_line": 14,
+            "code": "void C(void *p) { free(p); }",
+        },
+        "A": {
+            "file": "src/a.c",
+            "start_line": 16,
+            "end_line": 20,
+            "code": "int A(void) { return B(); }",
+        },
+        "B_decoy": {
+            "name": "B",
+            "file": "src/decoy_b.c",
+            "start_line": 22,
+            "end_line": 24,
+            "code": "int B(void) { return 0; }",
+        },
+    }
+    planner = StaticDiffPlanner(
+        FakeCodeIndex(
+            tmp_path,
+            functions,
+            callers={
+                ("C", "src/c.c"): [{"name": "B", "filename": "src/real_b.c"}],
+                ("B", "src/real_b.c"): [{"name": "ApiReal", "filename": "src/api.c"}],
+                ("B", "src/decoy_b.c"): [{"name": "A", "filename": "src/a.c"}],
+            },
+            headers=[
+                {"name": "ApiReal", "filename": "api.h", "lineNumber": 1},
+                {"name": "A", "filename": "api.h", "lineNumber": 2},
+            ],
+        ),
+        repo_root=tmp_path,
+        base_ref="base",
+        changed_ranges=[ChangedLineRange("src/c.c", 13, 13)],
+    )
+
+    plan = planner.plan()
+
+    assert [entry.function_name for entry in plan.entries] == ["ApiReal"]
+    focus = plan.entries[0].diff_focus
+    assert focus["affected_paths"][0]["path"] == ["ApiReal", "B", "C"]
+    refs = focus["affected_paths"][0]["path_refs"]
+    assert [ref["file_path"] for ref in refs] == ["src/api.c", "src/real_b.c", "src/c.c"]
+    assert all(item["function_name"] != "A" for item in focus["context_callers"])
+    assert plan.function_coverage[0]["path_refs"][0][1]["file_path"] == "src/real_b.c"
+
+
 def test_empty_changed_function_mapping_emits_path_diagnostics(tmp_path: Path):
     git_root = tmp_path / "dopra_ssp"
     source_root = git_root / "ssp"
@@ -515,6 +793,83 @@ def test_report_diff_relevance_prefixes_incremental_and_existing():
     assert changed_issue["description"].startswith("[增量]")
     assert existing_issue["diff_relevance"] == "existing"
     assert existing_issue["description"].startswith("[存量]")
+
+
+def test_diff_focus_snippets_use_changed_function_file_path(tmp_path: Path):
+    functions = {
+        "Changed_real": {
+            "name": "Changed",
+            "file": "src/real.c",
+            "start_line": 1,
+            "end_line": 3,
+            "code": "int Changed(void) { return 42; /* REAL */ }",
+        },
+        "Changed_decoy": {
+            "name": "Changed",
+            "file": "src/decoy.c",
+            "start_line": 1,
+            "end_line": 3,
+            "code": "int Changed(void) { return 0; /* DECOY */ }",
+        },
+    }
+    analyzer = Analyzer.__new__(Analyzer)
+    analyzer.code_index = FakeCodeIndex(tmp_path, functions)
+    analyzer.config = SimpleNamespace(analysis=SimpleNamespace(max_function_lines=500))
+
+    context = analyzer._build_diff_focus_agent_context(
+        {
+            "changed_functions": [
+                {
+                    "function_name": "Changed",
+                    "file_path": "src/real.c",
+                    "changed_lines": [2],
+                }
+            ]
+        }
+    )
+
+    assert context["changed_function_snippets"][0]["file"] == "src/real.c"
+    assert "REAL" in context["changed_function_snippets"][0]["code"]
+    assert "DECOY" not in context["changed_function_snippets"][0]["code"]
+
+
+def test_diff_relevance_uses_file_path_for_duplicate_function_names():
+    focus = {
+        "mode": "diff_impact",
+        "component": "core",
+        "base_ref": "base",
+        "head_ref": "head",
+        "entry_function": "Api",
+        "changed_functions": [
+            {"function_name": "B", "file_path": "src/real_b.c", "changed_lines": [10]},
+        ],
+        "affected_paths": [
+            {
+                "path": ["Api", "B"],
+                "changed_function": "B",
+                "path_refs": [
+                    {"function_name": "Api", "file_path": "src/api.c", "start_line": 1},
+                    {"function_name": "B", "file_path": "src/real_b.c", "start_line": 8},
+                ],
+            }
+        ],
+    }
+    decoy_issue = {
+        "function": "B",
+        "location": "src/decoy_b.c:10",
+        "description": "pre-existing decoy issue",
+    }
+    real_issue = {
+        "function": "B",
+        "location": "src/real_b.c:10",
+        "description": "real changed issue",
+    }
+
+    ParallelAnalyzer._annotate_diff_relevance(decoy_issue, focus)
+    ParallelAnalyzer._annotate_diff_relevance(real_issue, focus)
+
+    assert decoy_issue["diff_relevance"] == "existing"
+    assert real_issue["diff_relevance"] == "incremental"
 
 
 def test_diff_entry_result_key_includes_component_and_file_path():
