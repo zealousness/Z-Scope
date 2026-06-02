@@ -377,6 +377,70 @@ def test_explicit_svf_group_can_be_entry_clustered(
     assert (output_dir / "merged_alpha__entry_cluster_1.bc").exists()
 
 
+def test_entry_cluster_links_directly_without_exclusive_pool_variants(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root, compile_commands = _write_multi_compile_commands(tmp_path, 2)
+    output_dir = tmp_path / ".zscope_bc"
+    calls: list[str] = []
+    _fake_bitcode_tools(monkeypatch, calls)
+
+    class FakeSelector:
+        def __init__(self, *args, **kwargs):
+            self.symbol_reader = self
+
+        def read_symbols(self, _bc_path):
+            return BitcodeSymbols()
+
+        def cluster_entries(self, *, group_prefix, candidate_bcs, entries, **kwargs):
+            plan = BitcodeScopePlan(
+                group_name=f"{group_prefix}_1",
+                mode="auto",
+                entries=[str(entry) for entry in entries],
+                selected_sources=[],
+                selected_bcs=[str(path) for path in candidate_bcs],
+            )
+            return [
+                EntryBitcodeCluster(
+                    group_name=f"{group_prefix}_1",
+                    entries=list(entries),
+                    selected_bcs=list(candidate_bcs),
+                    plan=plan,
+                )
+            ]
+
+    monkeypatch.setattr("zscope.retrieval.build_llvm.EntryBitcodeSelector", FakeSelector)
+
+    builder = BitcodeBuilder(
+        source_root=source_root,
+        compile_commands_path=compile_commands,
+        output_dir=output_dir,
+        gclang_path="gclang",
+        get_bc_path="get-bc",
+        llvm_link_path="llvm-link",
+    )
+
+    def fail_variants(**_kwargs):
+        raise AssertionError("entry clusters should link directly")
+
+    monkeypatch.setattr(builder, "_exclusive_pool_link_variants", fail_variants)
+
+    result = builder.build(
+        scope_config=BitcodeScopeConfig(
+            mode="auto",
+            exclusive_pools=[{"name": "pool", "paths": ["src/**"]}],
+        ),
+        entry_functions=["api"],
+        knowledge_db=object(),
+        project_root=source_root,
+        auto_entry_clusters=True,
+    )
+
+    assert sorted(result) == ["entry_cluster_1"]
+    assert (output_dir / "merged_entry_cluster_1.bc").exists()
+
+
 def test_exclusive_pool_duplicate_symbols_split_link_variants(
     tmp_path: Path,
     monkeypatch,
