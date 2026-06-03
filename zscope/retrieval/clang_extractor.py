@@ -289,6 +289,20 @@ class ClangExtractor:
         self.send_notification("textDocument/didClose", {"textDocument": {"uri": uri}})
         del self._opened_documents[uri]
 
+    def notify_files_deleted(self, file_paths: List[Path]) -> None:
+        changes = []
+        for file_path in file_paths:
+            try:
+                uri = Path(file_path).resolve().as_uri()
+            except ValueError:
+                continue
+            if uri in self._opened_documents:
+                self.send_notification("textDocument/didClose", {"textDocument": {"uri": uri}})
+                del self._opened_documents[uri]
+            changes.append({"uri": uri, "type": 3})
+        if changes:
+            self.send_notification("workspace/didChangeWatchedFiles", {"changes": changes})
+
     # ── LSP 查询 ──
 
     def get_document_symbols(self, file_path: Path) -> Optional[List[Dict]]:

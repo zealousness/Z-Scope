@@ -320,7 +320,7 @@ def test_split_svf_runs_wpa_groups_in_parallel_and_saber_once(
     paths = {
         "entry_cluster_1": tmp_path / "cluster1.bc",
         "entry_cluster_2": tmp_path / "cluster2.bc",
-        "saber_full": tmp_path / "saber_full.bc",
+        "saber:default": tmp_path / "saber_default.bc",
     }
     for path in paths.values():
         path.write_text("bitcode\n", encoding="utf-8")
@@ -339,7 +339,7 @@ def test_split_svf_runs_wpa_groups_in_parallel_and_saber_once(
 
         def build(self, **kwargs):
             assert kwargs["auto_entry_clusters"] is True
-            assert kwargs["saber_full_group"] is True
+            assert kwargs["saber_groups"] is True
             return dict(paths)
 
     class FakeSvfRunner:
@@ -377,7 +377,7 @@ def test_split_svf_runs_wpa_groups_in_parallel_and_saber_once(
         entry_functions=["api_a", "api_b"],
     ) is True
     assert sorted(calls["ander"]) == ["cluster1.bc", "cluster2.bc"]
-    assert calls["saber"] == ["saber_full.bc"]
+    assert calls["saber"] == ["saber_default.bc"]
     assert calls["max_active"] == 2
     db.close()
 
@@ -392,7 +392,7 @@ def test_explicit_svf_groups_still_enable_entry_clustering(
     db = KnowledgeDB(str(tmp_path / "knowledge.db"))
     paths = {
         "alpha__entry_cluster_1": tmp_path / "alpha_cluster.bc",
-        "saber_full": tmp_path / "saber_full.bc",
+        "saber:alpha": tmp_path / "saber_alpha.bc",
     }
     for path in paths.values():
         path.write_text("bitcode\n", encoding="utf-8")
@@ -406,7 +406,7 @@ def test_explicit_svf_groups_still_enable_entry_clustering(
         def build(self, **kwargs):
             seen["groups"] = kwargs["groups"]
             seen["auto_entry_clusters"] = kwargs["auto_entry_clusters"]
-            seen["saber_full_group"] = kwargs["saber_full_group"]
+            seen["saber_groups"] = kwargs["saber_groups"]
             return dict(paths)
 
     class FakeSvfRunner:
@@ -437,7 +437,7 @@ def test_explicit_svf_groups_still_enable_entry_clustering(
     assert seen == {
         "groups": {"alpha": []},
         "auto_entry_clusters": True,
-        "saber_full_group": True,
+        "saber_groups": True,
     }
     db.close()
 
@@ -451,7 +451,7 @@ def test_wpa_group_timeout_does_not_block_successful_groups_or_full_saber(
     paths = {
         "entry_cluster_ok": tmp_path / "ok.bc",
         "entry_cluster_timeout": tmp_path / "timeout.bc",
-        "saber_full": tmp_path / "saber_full.bc",
+        "saber:default": tmp_path / "saber_default.bc",
     }
     for path in paths.values():
         path.write_text("bitcode\n", encoding="utf-8")
@@ -495,6 +495,75 @@ def test_wpa_group_timeout_does_not_block_successful_groups_or_full_saber(
         entry_functions=["api_a", "api_b"],
     ) is False
     assert calls["saber"] == 1
-    assert db.get_taint_bugs("Double Free")[0]["svf_group"] == "saber_full"
+    assert db.get_taint_bugs("Double Free")[0]["svf_group"] == "saber:default"
     assert db.get_svf_hash() == ""
+    db.close()
+
+
+def test_svf_resume_reruns_only_failed_groups(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root, compile_commands = _write_compile_commands(tmp_path)
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    paths = {
+        "entry_cluster_ok": tmp_path / "ok.bc",
+        "entry_cluster_retry": tmp_path / "retry.bc",
+        "saber:default": tmp_path / "saber_default.bc",
+    }
+    for path in paths.values():
+        path.write_text(f"bitcode {path.name}\n", encoding="utf-8")
+    calls = {"ander": [], "saber": []}
+    run_number = {"value": 0}
+
+    class FakeBitcodeBuilder:
+        def __init__(self, *args, **kwargs):
+            self.failed_tus = []
+            self.reused_linked_groups = set()
+
+        def build(self, **kwargs):
+            return dict(paths)
+
+    class FakeSvfRunner:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run_ander(self, bc_path, output_dir):
+            name = Path(bc_path).name
+            calls["ander"].append(name)
+            if name == "retry.bc" and run_number["value"] == 1:
+                return SvfResult(tool="wpa-ander", timed_out=True)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            dot = output_dir / "callgraph_final.dot"
+            dot.write_text("digraph { }\n", encoding="utf-8")
+            return SvfResult(tool="wpa-ander", success=True, output_file=dot)
+
+        def run_saber(self, bc_path, output_dir):
+            calls["saber"].append(Path(bc_path).name)
+            return SvfResult(tool="saber", success=True, bugs=[])
+
+    monkeypatch.setattr(svf_module, "BitcodeBuilder", FakeBitcodeBuilder)
+    monkeypatch.setattr(svf_module, "SvfRunner", FakeSvfRunner)
+
+    analyzer = SvfAnalyzer(db=db, timeout=42, parallel_workers=2)
+    run_number["value"] = 1
+    assert analyzer.run(
+        source_root,
+        tmp_path,
+        compile_commands,
+        entry_functions=["api_a", "api_b"],
+    ) is False
+
+    run_number["value"] = 2
+    assert analyzer.run(
+        source_root,
+        tmp_path,
+        compile_commands,
+        entry_functions=["api_a", "api_b"],
+    ) is True
+
+    assert calls["ander"].count("ok.bc") == 1
+    assert calls["ander"].count("retry.bc") == 2
+    assert calls["saber"] == ["saber_default.bc"]
+    assert db.get_svf_hash()
     db.close()

@@ -93,11 +93,6 @@ class ClangBackend(CodeBackend):
         try:
             # 收集所有 C/C++ 源文件
             file_list = self._collect_source_files()
-            if not file_list:
-                logger.warning("No source files found in %s", self._source_path)
-                self._status = "ready"
-                return True
-
             # 预扫描：检查有多少文件真正需要提取
             from .clang_extractor import ClangExtractor
             changed_count = 0
@@ -107,10 +102,48 @@ class ClangBackend(CodeBackend):
                 return False
 
             db = self._db
+            source_root = self._source_path
+
+            def normalize_db_path(path_value: str) -> str:
+                p = Path(str(path_value))
+                if not p.is_absolute() and source_root is not None:
+                    p = source_root / p
+                return str(p.resolve())
+
+            current_files: Dict[str, Path] = {
+                normalize_db_path(str(fp)): fp.resolve() for fp in file_list
+            }
+            deleted_tus = [
+                tu for tu in db.get_all_tus()
+                if normalize_db_path(str(tu.get("file_path") or "")) not in current_files
+            ]
+            force_refresh_paths: set[str] = set()
+            deleted_paths: List[Path] = []
+            for tu in deleted_tus:
+                tu_id = int(tu["id"])
+                impact = db.get_tu_delete_impact(tu_id)
+                db.delete_tu(tu_id)
+                raw_path = str(tu.get("file_path") or "")
+                if raw_path:
+                    deleted_paths.append(Path(normalize_db_path(raw_path)))
+                for related in impact.get("related_files", []):
+                    related_key = normalize_db_path(str(related))
+                    related_path = current_files.get(related_key)
+                    if related_path is not None and self._is_path_allowed(related_path):
+                        force_refresh_paths.add(related_key)
+
+            if not file_list:
+                logger.warning("No source files found in %s", self._source_path)
+                self._status = "ready"
+                return True
+
             for fp in file_list:
                 fp = fp.resolve()
                 file_hash = ClangExtractor._compute_file_hash(fp)
                 tu_id, changed = db.register_tu_hash(str(fp), file_hash)
+                if not changed and normalize_db_path(str(fp)) in force_refresh_paths:
+                    changed = True
+                    db.mark_tu_pending(tu_id)
                 prescanned_tus[str(fp)] = (tu_id, changed)
                 if changed:
                     changed_count += 1
@@ -136,6 +169,8 @@ class ClangBackend(CodeBackend):
             if extractor is None:
                 self._status = "error"
                 return False
+            if deleted_paths and hasattr(extractor, "notify_files_deleted"):
+                extractor.notify_files_deleted(deleted_paths)
 
             # 等待 clangd 后台索引稳定
             extractor.wait_for_indexing(timeout=120, idle_threshold=3.0)
