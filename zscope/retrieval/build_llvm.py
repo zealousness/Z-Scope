@@ -25,6 +25,7 @@ from .bitcode_scope import (
     BitcodeScopeConfig,
     BitcodeScopePlan,
     BitcodeSymbols,
+    EntryBitcodeCluster,
     EntryBitcodeSelector,
     ExclusivePoolClassifier,
     LlvmNmSymbolReader,
@@ -112,6 +113,7 @@ class BitcodeBuilder:
         knowledge_db: Optional[Any] = None,
         project_root: Optional[Path] = None,
         auto_entry_clusters: bool = False,
+        saber_groups: bool = False,
         saber_full_group: bool = False,
     ) -> Dict[str, Path]:
         """执行完整构建流程，返回各分组合并后的 .bc 路径字典。
@@ -125,6 +127,7 @@ class BitcodeBuilder:
         self._bc_compile_index.clear()
         self.reused_linked_groups.clear()
         self.failed_tus.clear()
+        build_saber_groups = saber_groups or saber_full_group
 
         commands = self._load_compile_commands()
         if not commands:
@@ -215,11 +218,14 @@ class BitcodeBuilder:
                     if group_name == "default"
                     else f"{group_name}__entry_cluster"
                 )
-                clusters = selector.cluster_entries(
+                clusters = self._load_or_build_entry_clusters(
+                    selector=selector,
+                    group_name=group_name,
                     group_prefix=cluster_prefix,
                     candidate_bcs=group_bcs,
                     bc_to_src=self._bc_to_src,
                     entries=entry_functions or [],
+                    scope_config=scope_config,
                 )
                 for cluster in clusters:
                     logger.info(
@@ -255,8 +261,17 @@ class BitcodeBuilder:
             else:
                 selected_items.append((group_name, group_bcs, None, previous_selected_bcs, False))
 
-            if saber_full_group and group_name == "default":
-                selected_items.append(("saber_full", candidate_group_bcs, None, None, True))
+            if build_saber_groups and selector:
+                self._build_saber_merge_groups(
+                    results=results,
+                    selector=selector,
+                    source_group_name=group_name,
+                    candidate_bcs=candidate_group_bcs,
+                    bc_to_src=self._bc_to_src,
+                    entries=entry_functions or [],
+                    pool_classifier=pool_classifier,
+                    symbol_reader=symbol_reader,
+                )
 
             for selected_group_name, selected_bcs, plan, reuse_bcs, direct_link in selected_items:
                 if not selected_bcs:
@@ -329,20 +344,276 @@ class BitcodeBuilder:
                 if plan:
                     self._write_scope_plan(plan)
 
-        if saber_full_group and "saber_full" not in results:
-            all_bcs = [
-                bc_path
-                for bc_path, _src_path in sorted(
-                    self._bc_to_src.items(),
-                    key=lambda item: self._bc_compile_index.get(item[0], len(commands)),
-                )
-            ]
-            merged = self._link_all(all_bcs, "saber_full")
-            if merged:
-                results["saber_full"] = merged
-
         self._save_manifest()
         return results
+
+    def _load_or_build_entry_clusters(
+        self,
+        *,
+        selector: EntryBitcodeSelector,
+        group_name: str,
+        group_prefix: str,
+        candidate_bcs: Sequence[Path],
+        bc_to_src: Dict[Path, Path],
+        entries: Sequence[Any],
+        scope_config: Optional[BitcodeScopeConfig],
+    ) -> List[EntryBitcodeCluster]:
+        fingerprint = self._entry_cluster_layout_fingerprint(
+            group_name=group_name,
+            candidate_bcs=candidate_bcs,
+            bc_to_src=bc_to_src,
+            entries=entries,
+            scope_config=scope_config,
+        )
+        layout_path = self.output_dir / f"entry_cluster_layout_{group_name}.json"
+        clusters = self._load_entry_cluster_layout(layout_path, fingerprint, entries)
+        if clusters is not None:
+            logger.info(
+                "Reusing unchanged SVF entry cluster layout for group '%s' (%d cluster(s))",
+                group_name,
+                len(clusters),
+            )
+            return clusters
+
+        clusters = selector.cluster_entries(
+            group_prefix=group_prefix,
+            candidate_bcs=candidate_bcs,
+            bc_to_src=bc_to_src,
+            entries=entries,
+        )
+        self._write_entry_cluster_layout(layout_path, fingerprint, clusters)
+        return clusters
+
+    def _entry_cluster_layout_fingerprint(
+        self,
+        *,
+        group_name: str,
+        candidate_bcs: Sequence[Path],
+        bc_to_src: Dict[Path, Path],
+        entries: Sequence[Any],
+        scope_config: Optional[BitcodeScopeConfig],
+    ) -> str:
+        config_payload = {
+            "group_name": group_name,
+            "compile_commands_hash": self._file_hash(self.compile_commands_path),
+            "source_aggregate_hash": self._source_aggregate_hash(candidate_bcs, bc_to_src),
+            "scope": getattr(scope_config, "mode", ""),
+            "entry_depth": getattr(scope_config, "entry_depth", 0),
+            "max_selected_tus": getattr(scope_config, "max_selected_tus", 0),
+            "fallback": getattr(scope_config, "fallback", ""),
+            "always_include": list(getattr(scope_config, "always_include", []) or []),
+            "symbol_closure": bool(getattr(scope_config, "symbol_closure", False)),
+            "exclusive_pools": list(getattr(scope_config, "exclusive_pools", []) or []),
+            "shared_pools": list(getattr(scope_config, "shared_pools", []) or []),
+            "entries": [
+                {
+                    "function_name": str(getattr(entry, "function_name", entry) or ""),
+                    "file_path": str(getattr(entry, "file_path", "") or ""),
+                }
+                for entry in entries
+            ],
+            "candidates": [
+                {
+                    "bc": str(Path(bc).resolve()),
+                    "src": str(Path(bc_to_src.get(Path(bc).resolve(), "")).resolve())
+                    if bc_to_src.get(Path(bc).resolve())
+                    else "",
+                    "hash": self._file_hash(Path(bc).resolve()),
+                }
+                for bc in candidate_bcs
+            ],
+        }
+        return hashlib.sha256(
+            json.dumps(config_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+    def _source_aggregate_hash(
+        self,
+        candidate_bcs: Sequence[Path],
+        bc_to_src: Dict[Path, Path],
+    ) -> str:
+        digest = hashlib.sha256()
+        source_paths = sorted(
+            {
+                Path(src).resolve()
+                for bc in candidate_bcs
+                for src in [bc_to_src.get(Path(bc).resolve())]
+                if src
+            },
+            key=lambda path: str(path),
+        )
+        for src_path in source_paths:
+            digest.update(str(src_path).encode("utf-8"))
+            digest.update(self._file_hash(src_path).encode("utf-8"))
+        return digest.hexdigest()
+
+    def _load_entry_cluster_layout(
+        self,
+        layout_path: Path,
+        fingerprint: str,
+        entries: Sequence[Any],
+    ) -> Optional[List[EntryBitcodeCluster]]:
+        if not layout_path.exists():
+            return None
+        try:
+            data = json.loads(layout_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, TypeError):
+            return None
+        if not isinstance(data, dict) or data.get("fingerprint") != fingerprint:
+            return None
+        raw_clusters = data.get("clusters")
+        if not isinstance(raw_clusters, list):
+            return None
+        entry_by_name = {
+            str(getattr(entry, "function_name", entry) or ""): entry
+            for entry in entries
+        }
+        clusters: List[EntryBitcodeCluster] = []
+        for raw in raw_clusters:
+            if not isinstance(raw, dict):
+                return None
+            group_name = str(raw.get("group_name") or "")
+            raw_bcs = raw.get("selected_bcs")
+            raw_plan = raw.get("plan")
+            if not group_name or not isinstance(raw_bcs, list) or not isinstance(raw_plan, dict):
+                return None
+            selected_bcs = [Path(str(path)).resolve() for path in raw_bcs]
+            plan = BitcodeScopePlan(
+                group_name=group_name,
+                mode=str(raw_plan.get("mode") or ""),
+                entries=[str(value) for value in raw_plan.get("entries") or []],
+                selected_sources=[str(value) for value in raw_plan.get("selected_sources") or []],
+                selected_bcs=[str(value) for value in raw_plan.get("selected_bcs") or []],
+                reachable_functions=[str(value) for value in raw_plan.get("reachable_functions") or []],
+                unresolved_entries=[str(value) for value in raw_plan.get("unresolved_entries") or []],
+                symbol_closure_added=[str(value) for value in raw_plan.get("symbol_closure_added") or []],
+                fallback_reason=str(raw_plan.get("fallback_reason") or ""),
+                exclusive_pool=str(raw_plan.get("exclusive_pool") or ""),
+                duplicate_symbols=list(raw_plan.get("duplicate_symbols") or []),
+                link_variants=list(raw_plan.get("link_variants") or []),
+                skipped_variants=list(raw_plan.get("skipped_variants") or []),
+            )
+            clusters.append(
+                EntryBitcodeCluster(
+                    group_name=group_name,
+                    entries=[entry_by_name.get(name, name) for name in plan.entries],
+                    selected_bcs=selected_bcs,
+                    plan=plan,
+                )
+            )
+        return clusters
+
+    def _write_entry_cluster_layout(
+        self,
+        layout_path: Path,
+        fingerprint: str,
+        clusters: Sequence[EntryBitcodeCluster],
+    ) -> None:
+        payload = {
+            "fingerprint": fingerprint,
+            "clusters": [
+                {
+                    "group_name": cluster.group_name,
+                    "entries": [
+                        str(getattr(entry, "function_name", entry) or "")
+                        for entry in cluster.entries
+                    ],
+                    "selected_bcs": [str(Path(path).resolve()) for path in cluster.selected_bcs],
+                    "plan": cluster.plan.to_dict(),
+                }
+                for cluster in clusters
+            ],
+        }
+        try:
+            layout_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            logger.debug("Failed to write SVF entry cluster layout %s: %s", layout_path, exc)
+
+    def _build_saber_merge_groups(
+        self,
+        *,
+        results: Dict[str, Path],
+        selector: EntryBitcodeSelector,
+        source_group_name: str,
+        candidate_bcs: Sequence[Path],
+        bc_to_src: Dict[Path, Path],
+        entries: Sequence[Any],
+        pool_classifier: ExclusivePoolClassifier,
+        symbol_reader: Any,
+    ) -> None:
+        selected_bcs, plan = selector.select(
+            group_name=source_group_name,
+            candidate_bcs=candidate_bcs,
+            bc_to_src=bc_to_src,
+            entries=entries,
+        )
+        logger.info(
+            "SVF Saber scope for group '%s': %d/%d .bc selected%s",
+            source_group_name,
+            len(selected_bcs),
+            len(candidate_bcs),
+            f" (fallback={plan.fallback_reason})" if plan.fallback_reason else "",
+        )
+        if not selected_bcs:
+            logger.warning("No .bc files selected for Saber group '%s'", source_group_name)
+            return
+        link_variants, duplicate_symbols = self._exclusive_pool_link_variants(
+            group_name=source_group_name,
+            bc_files=selected_bcs,
+            all_bcs=candidate_bcs,
+            bc_to_src=bc_to_src,
+            pool_classifier=pool_classifier,
+            symbol_reader=symbol_reader,
+        )
+        plan.duplicate_symbols = duplicate_symbols
+        for variant in link_variants:
+            variant_name = str(variant["group_name"])
+            variant_bcs = list(variant["bc_files"])
+            plan.link_variants.append(
+                {
+                    "group_name": variant_name,
+                    "exclusive_pool": variant.get("exclusive_pool", ""),
+                    "shared_pools": list(variant.get("shared_pools") or []),
+                    "selected_bcs": self._format_paths(variant_bcs),
+                    "excluded_pools": list(variant.get("excluded_pools") or []),
+                    "dependency_closure_added": list(variant.get("dependency_closure_added") or []),
+                    "excluded_conflicting_bcs": list(variant.get("excluded_conflicting_bcs") or []),
+                }
+            )
+            merged = self._link_all(variant_bcs, variant_name)
+            if merged:
+                results[f"saber:{variant_name}"] = merged
+                continue
+            plan.skipped_variants.append(
+                {
+                    "group_name": variant_name,
+                    "exclusive_pool": variant.get("exclusive_pool", ""),
+                    "reason": "llvm-link_failed",
+                    "duplicate_symbols": self._duplicate_external_symbols(
+                        variant_bcs,
+                        symbol_reader,
+                    ),
+                }
+            )
+        saber_plan = BitcodeScopePlan(
+            group_name=f"saber_{source_group_name}",
+            mode=plan.mode,
+            entries=plan.entries,
+            selected_sources=plan.selected_sources,
+            selected_bcs=plan.selected_bcs,
+            reachable_functions=plan.reachable_functions,
+            unresolved_entries=plan.unresolved_entries,
+            symbol_closure_added=plan.symbol_closure_added,
+            fallback_reason=plan.fallback_reason,
+            exclusive_pool=plan.exclusive_pool,
+            duplicate_symbols=plan.duplicate_symbols,
+            link_variants=plan.link_variants,
+            skipped_variants=plan.skipped_variants,
+        )
+        self._write_scope_plan(saber_plan)
 
     def _write_scope_plan(self, plan: BitcodeScopePlan) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)

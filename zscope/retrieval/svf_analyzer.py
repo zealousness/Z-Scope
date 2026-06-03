@@ -6,6 +6,7 @@ import hashlib
 import inspect
 import json
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -236,7 +237,7 @@ class SvfAnalyzer:
                 self._scope_config.mode != "full"
                 and bool(scope_entries)
             ),
-            saber_full_group=True,
+            saber_groups=True,
         )
 
     def _run_legacy_svf(
@@ -247,7 +248,7 @@ class SvfAnalyzer:
     ) -> bool:
         had_timeout = False
         for group_name, bc_path in bc_paths.items():
-            if group_name == "saber_full":
+            if self._is_saber_group(group_name):
                 continue
             logger.info("Running SVF analysis for group '%s' using %s", group_name, bc_path)
             group_suffix = f"_{group_name}" if group_name != "default" else ""
@@ -273,20 +274,18 @@ class SvfAnalyzer:
         bc_paths: Dict[str, Path],
         project_root: Path,
     ) -> bool:
-        wpa_paths = {name: path for name, path in bc_paths.items() if name != "saber_full"}
-        saber_bc = bc_paths.get("saber_full")
+        wpa_paths = {
+            name: path for name, path in bc_paths.items() if not self._is_saber_group(name)
+        }
+        saber_paths = {
+            name: path for name, path in bc_paths.items() if self._is_saber_group(name)
+        }
         if hasattr(self._db, "purge_svf_data_except"):
-            self._db.purge_svf_data_except(set(wpa_paths) | {"saber_full"})
+            self._db.purge_svf_data_except(set(wpa_paths) | set(saber_paths))
 
         had_timeout = self._run_wpa_groups(runner, wpa_paths, project_root)
-        if saber_bc:
-            result = runner.run_saber(saber_bc, project_root / ".zscope_svf_saber_full")
-            if result.timed_out:
-                had_timeout = True
-            self._db.purge_svf_data(group="saber_full")
-            mapper = SvfOutputMapper(self._db, svf_group="saber_full")
-            if result.bugs:
-                mapper.import_saber_bugs(result.bugs)
+        if self._run_saber_groups(runner, saber_paths, project_root):
+            had_timeout = True
         return had_timeout
 
     def _run_wpa_groups(
@@ -300,29 +299,223 @@ class SvfAnalyzer:
         max_workers = max(1, min(self._parallel_workers, len(wpa_paths)))
         logger.info("Running %d WPA group(s) with %d worker(s)", len(wpa_paths), max_workers)
         had_timeout = False
+        pending_paths: Dict[str, Path] = {}
+        for group_name, bc_path in wpa_paths.items():
+            fingerprint = self._tool_artifact_fingerprint("ander", group_name, bc_path)
+            if self._tool_status_success("ander", group_name, fingerprint):
+                logger.info(
+                    "SVF resume: skipping successful ander group '%s' (artifact unchanged)",
+                    group_name,
+                )
+                continue
+            pending_paths[group_name] = bc_path
+        if not pending_paths:
+            return False
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="zscope-wpa") as executor:
             futures = {
                 executor.submit(self._run_one_wpa_group, runner, group_name, bc_path, project_root): (
                     group_name,
                     bc_path,
                 )
-                for group_name, bc_path in wpa_paths.items()
+                for group_name, bc_path in pending_paths.items()
             }
             for future in as_completed(futures):
                 group_name, _bc_path = futures[future]
+                fingerprint = self._tool_artifact_fingerprint("ander", group_name, _bc_path)
                 try:
                     result = future.result()
                 except Exception as exc:
                     logger.warning("WPA group '%s' failed: %s", group_name, exc)
+                    self._write_tool_status(
+                        "ander",
+                        group_name,
+                        fingerprint,
+                        status="failed",
+                        timed_out=False,
+                    )
+                    had_timeout = True
                     continue
                 if result.timed_out:
+                    self._write_tool_status(
+                        "ander",
+                        group_name,
+                        fingerprint,
+                        status="timed_out",
+                        timed_out=True,
+                        result=result,
+                    )
+                    had_timeout = True
+                    continue
+                if not result.success and not result.output_file:
+                    self._write_tool_status(
+                        "ander",
+                        group_name,
+                        fingerprint,
+                        status="failed",
+                        timed_out=False,
+                        result=result,
+                    )
                     had_timeout = True
                     continue
                 self._db.purge_svf_data(group=group_name)
                 mapper = SvfOutputMapper(self._db, svf_group=group_name)
                 if result.output_file:
                     mapper.import_callgraph(result.output_file)
+                self._write_tool_status(
+                    "ander",
+                    group_name,
+                    fingerprint,
+                    status="success",
+                    timed_out=False,
+                    result=result,
+                )
         return had_timeout
+
+    def _run_saber_groups(
+        self,
+        runner: Any,
+        saber_paths: Dict[str, Path],
+        project_root: Path,
+    ) -> bool:
+        had_failure = False
+        for group_name, bc_path in sorted(saber_paths.items()):
+            fingerprint = self._tool_artifact_fingerprint("saber", group_name, bc_path)
+            if self._tool_status_success("saber", group_name, fingerprint):
+                logger.info(
+                    "SVF resume: skipping successful saber group '%s' (artifact unchanged)",
+                    group_name,
+                )
+                continue
+            output_dir = project_root / f".zscope_svf_{self._safe_output_suffix(group_name)}"
+            logger.info("Running Saber analysis for group '%s' using %s", group_name, bc_path)
+            try:
+                result = runner.run_saber(bc_path, output_dir)
+            except Exception as exc:
+                logger.warning("Saber group '%s' failed: %s", group_name, exc)
+                self._write_tool_status(
+                    "saber",
+                    group_name,
+                    fingerprint,
+                    status="failed",
+                    timed_out=False,
+                )
+                had_failure = True
+                continue
+            if result.timed_out:
+                self._write_tool_status(
+                    "saber",
+                    group_name,
+                    fingerprint,
+                    status="timed_out",
+                    timed_out=True,
+                    result=result,
+                )
+                had_failure = True
+                continue
+            if not result.success:
+                self._write_tool_status(
+                    "saber",
+                    group_name,
+                    fingerprint,
+                    status="failed",
+                    timed_out=False,
+                    result=result,
+                )
+                had_failure = True
+                continue
+            self._db.purge_svf_data(group=group_name)
+            mapper = SvfOutputMapper(self._db, svf_group=group_name)
+            if result.bugs:
+                mapper.import_saber_bugs(result.bugs)
+            self._write_tool_status(
+                "saber",
+                group_name,
+                fingerprint,
+                status="success",
+                timed_out=False,
+                result=result,
+            )
+        return had_failure
+
+    @staticmethod
+    def _is_saber_group(group_name: str) -> bool:
+        return str(group_name).startswith("saber:")
+
+    @staticmethod
+    def _safe_output_suffix(group_name: str) -> str:
+        return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(group_name))
+
+    @staticmethod
+    def _tool_status_key(tool: str, group_name: str) -> str:
+        return f"svf_tool_status:{tool}:{group_name}"
+
+    def _tool_status_success(self, tool: str, group_name: str, artifact_fingerprint: str) -> bool:
+        raw = self._db.get_metadata(self._tool_status_key(tool, group_name))
+        if not raw:
+            return False
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return False
+        return (
+            data.get("status") == "success"
+            and data.get("artifact_fingerprint") == artifact_fingerprint
+        )
+
+    def _write_tool_status(
+        self,
+        tool: str,
+        group_name: str,
+        artifact_fingerprint: str,
+        *,
+        status: str,
+        timed_out: bool,
+        result: Optional[SvfResult] = None,
+    ) -> None:
+        output_hash = ""
+        output_file = getattr(result, "output_file", None) if result else None
+        if output_file:
+            output_hash = self._file_hash(Path(output_file))
+        elif result and result.bugs:
+            output_hash = hashlib.sha256(
+                json.dumps(result.bugs, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+        payload = {
+            "artifact_fingerprint": artifact_fingerprint,
+            "status": status,
+            "timed_out": timed_out,
+            "updated_at": time.time(),
+            "output_hash": output_hash,
+        }
+        self._db.set_metadata(
+            self._tool_status_key(tool, group_name),
+            json.dumps(payload, sort_keys=True),
+        )
+
+    def _tool_artifact_fingerprint(self, tool: str, group_name: str, bc_path: Path) -> str:
+        payload = {
+            "tool": tool,
+            "group": group_name,
+            "bc_path": str(Path(bc_path).resolve()),
+            "bc_hash": self._file_hash(Path(bc_path)),
+            "timeout": self._timeout,
+            "heap_limit_mb": self._heap_limit,
+            "svf_bin_dir": str(self._svf_bin_dir or ""),
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
+    def _file_hash(path: Path) -> str:
+        digest = hashlib.sha256()
+        try:
+            with open(path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except OSError:
+            digest.update(b"__missing__")
+        return digest.hexdigest()
 
     def _run_one_wpa_group(
         self,
@@ -359,7 +552,7 @@ class SvfAnalyzer:
 
     def _cache_config(self) -> Dict[str, Any]:
         return {
-            "cache_schema_version": 2,
+            "cache_schema_version": 3,
             "svf_bin_dir": str(self._svf_bin_dir or ""),
             "gclang_path": str(self._gclang),
             "get_bc_path": str(self._get_bc),
@@ -374,7 +567,7 @@ class SvfAnalyzer:
             "symbol_closure": self._scope_config.symbol_closure,
             "exclusive_pools": self._scope_config.exclusive_pools,
             "shared_pools": self._scope_config.shared_pools,
-            "execution_lanes": "parallel_wpa_full_saber",
+            "execution_lanes": "parallel_wpa_resumable_saber_groups",
             "parallel_workers": self._parallel_workers,
         }
 
