@@ -364,7 +364,76 @@ class KnowledgeDB:
             ).fetchone()
             return (row["id"], True)
 
-    def purge_tu_data(self, tu_id: int):
+    def get_tu_delete_impact(self, tu_id: int) -> Dict[str, Any]:
+        """Return files and symbols affected by deleting one translation unit."""
+        row = self._conn.execute(
+            "SELECT file_path FROM translation_units WHERE id = ?", (tu_id,),
+        ).fetchone()
+        if not row:
+            return {"deleted_paths": [], "deleted_symbols": [], "related_files": []}
+
+        fp = str(row["file_path"] or "")
+        path_variants = self._path_variants(fp)
+        placeholders = ",".join("?" for _ in path_variants)
+        symbols = {
+            str(r["name"])
+            for r in self._conn.execute(
+                "SELECT DISTINCT name FROM functions WHERE tu_id = ?",
+                (tu_id,),
+            ).fetchall()
+            if str(r["name"] or "")
+        }
+
+        related: set[str] = set()
+        if path_variants:
+            incoming = self._conn.execute(
+                f"SELECT DISTINCT caller_file FROM call_edges "
+                f"WHERE callee_file IN ({placeholders})",
+                path_variants,
+            ).fetchall()
+            related.update(str(r["caller_file"] or "") for r in incoming)
+
+        if symbols:
+            symbol_placeholders = ",".join("?" for _ in symbols)
+            incoming_by_name = self._conn.execute(
+                f"SELECT DISTINCT caller_file FROM call_edges "
+                f"WHERE callee_name IN ({symbol_placeholders})",
+                tuple(sorted(symbols)),
+            ).fetchall()
+            related.update(str(r["caller_file"] or "") for r in incoming_by_name)
+
+        include_hints = set(path_variants)
+        deleted_name = Path(fp).name
+        if deleted_name:
+            include_hints.add(deleted_name)
+        include_rows = self._conn.execute(
+            "SELECT DISTINCT source_file, included_file FROM include_edges"
+        ).fetchall()
+        for include_row in include_rows:
+            included = str(include_row["included_file"] or "")
+            if included in include_hints or any(
+                self._paths_match_hint(variant, included)
+                or self._paths_match_hint(included, variant)
+                for variant in path_variants
+            ):
+                related.add(str(include_row["source_file"] or ""))
+
+        related = {item for item in related if item and item not in path_variants}
+        return {
+            "deleted_paths": list(path_variants),
+            "deleted_symbols": sorted(symbols),
+            "related_files": sorted(related),
+        }
+
+    def delete_tu(self, tu_id: int) -> Dict[str, Any]:
+        """Delete a translation unit and all file-owned facts from the database."""
+        impact = self.get_tu_delete_impact(tu_id)
+        self.purge_tu_data(tu_id, purge_incoming_refs=True)
+        self._conn.execute("DELETE FROM translation_units WHERE id = ?", (tu_id,))
+        self._conn.commit()
+        return impact
+
+    def purge_tu_data(self, tu_id: int, purge_incoming_refs: bool = False):
         """清除某 TU 关联的所有提取数据。"""
         self._conn.execute("DELETE FROM functions WHERE tu_id = ?", (tu_id,))
         # call_edges 没有 tu_id，通过 caller_file 联动清除
@@ -375,10 +444,23 @@ class KnowledgeDB:
             fp = row["file_path"]
             path_variants = self._path_variants(fp)
             placeholders = ",".join("?" for _ in path_variants)
+            stmt_rows = self._conn.execute(
+                f"SELECT id, function FROM ir_statements WHERE file_path IN ({placeholders})",
+                path_variants,
+            ).fetchall()
+            stmt_ids = [int(r["id"]) for r in stmt_rows]
+            stmt_functions = sorted(
+                {str(r["function"] or "") for r in stmt_rows if str(r["function"] or "")}
+            )
             self._conn.execute(
                 f"DELETE FROM call_edges WHERE caller_file IN ({placeholders})",
                 path_variants,
             )
+            if purge_incoming_refs:
+                self._conn.execute(
+                    f"DELETE FROM call_edges WHERE callee_file IN ({placeholders})",
+                    path_variants,
+                )
             self._conn.execute(
                 f"DELETE FROM include_edges WHERE source_file IN ({placeholders})",
                 path_variants,
@@ -391,6 +473,41 @@ class KnowledgeDB:
                 f"DELETE FROM macro_definitions WHERE file_path IN ({placeholders})",
                 path_variants,
             )
+            self._conn.execute(
+                f"DELETE FROM indirect_calls WHERE call_file IN ({placeholders})",
+                path_variants,
+            )
+            self._conn.execute(
+                f"DELETE FROM taint_signatures WHERE file_path IN ({placeholders})",
+                path_variants,
+            )
+            if stmt_ids:
+                stmt_placeholders = ",".join("?" for _ in stmt_ids)
+                self._conn.execute(
+                    f"DELETE FROM ir_cfg_edges WHERE from_stmt IN ({stmt_placeholders}) "
+                    f"OR to_stmt IN ({stmt_placeholders})",
+                    stmt_ids + stmt_ids,
+                )
+                self._conn.execute(
+                    f"DELETE FROM ir_def_use_edges WHERE def_stmt IN ({stmt_placeholders}) "
+                    f"OR use_stmt IN ({stmt_placeholders})",
+                    stmt_ids + stmt_ids,
+                )
+                self._conn.execute(
+                    f"DELETE FROM ir_path_slices WHERE source_stmt IN ({stmt_placeholders}) "
+                    f"OR sink_stmt IN ({stmt_placeholders})",
+                    stmt_ids + stmt_ids,
+                )
+            if stmt_functions:
+                function_placeholders = ",".join("?" for _ in stmt_functions)
+                self._conn.execute(
+                    f"DELETE FROM ir_cfg_edges WHERE function IN ({function_placeholders})",
+                    stmt_functions,
+                )
+                self._conn.execute(
+                    f"DELETE FROM ir_path_slices WHERE function IN ({function_placeholders})",
+                    stmt_functions,
+                )
             for table in (
                 "ir_statements",
                 "ir_resource_events",
@@ -428,6 +545,13 @@ class KnowledgeDB:
     def mark_tu_indexed(self, tu_id: int):
         self._conn.execute(
             "UPDATE translation_units SET status = 'indexed', index_time = ? WHERE id = ?",
+            (time.time(), tu_id),
+        )
+        self._conn.commit()
+
+    def mark_tu_pending(self, tu_id: int):
+        self._conn.execute(
+            "UPDATE translation_units SET status = 'pending', last_modified = ? WHERE id = ?",
             (time.time(), tu_id),
         )
         self._conn.commit()

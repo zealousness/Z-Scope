@@ -281,7 +281,7 @@ def test_bitcode_build_compiles_multiple_tus_before_single_link(tmp_path: Path, 
     assert BitcodeBuilder._build_worker_count(100) <= 8
 
 
-def test_saber_full_group_bypasses_exclusive_pool_variants(
+def test_saber_group_uses_old_style_entry_scope_variants(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -289,6 +289,41 @@ def test_saber_full_group_bypasses_exclusive_pool_variants(
     output_dir = tmp_path / ".zscope_bc"
     calls: list[str] = []
     _fake_bitcode_tools(monkeypatch, calls)
+
+    class FakeSelector:
+        def __init__(self, *args, **kwargs):
+            self.symbol_reader = self
+
+        def read_symbols(self, _bc_path):
+            return BitcodeSymbols()
+
+        def cluster_entries(self, *, group_prefix, candidate_bcs, entries, **kwargs):
+            plan = BitcodeScopePlan(
+                group_name=f"{group_prefix}_1",
+                mode="auto",
+                entries=[str(entry) for entry in entries],
+                selected_sources=[],
+                selected_bcs=[str(candidate_bcs[0])],
+            )
+            return [
+                EntryBitcodeCluster(
+                    group_name=f"{group_prefix}_1",
+                    entries=list(entries),
+                    selected_bcs=[candidate_bcs[0]],
+                    plan=plan,
+                )
+            ]
+
+        def select(self, *, group_name, candidate_bcs, entries, **kwargs):
+            return list(candidate_bcs), BitcodeScopePlan(
+                group_name=group_name,
+                mode="auto",
+                entries=[str(entry) for entry in entries],
+                selected_sources=[],
+                selected_bcs=[str(path) for path in candidate_bcs],
+            )
+
+    monkeypatch.setattr("zscope.retrieval.build_llvm.EntryBitcodeSelector", FakeSelector)
 
     builder = BitcodeBuilder(
         source_root=source_root,
@@ -307,12 +342,19 @@ def test_saber_full_group_bypasses_exclusive_pool_variants(
 
     monkeypatch.setattr(builder, "_exclusive_pool_link_variants", record_variant_group)
 
-    result = builder.build(saber_full_group=True)
+    result = builder.build(
+        scope_config=BitcodeScopeConfig(mode="auto"),
+        entry_functions=["api"],
+        knowledge_db=object(),
+        project_root=source_root,
+        auto_entry_clusters=True,
+        saber_groups=True,
+    )
 
-    assert sorted(result) == ["default", "saber_full"]
+    assert sorted(result) == ["entry_cluster_1", "saber:default"]
     assert variant_groups == ["default"]
     assert Counter(calls)["llvm-link"] == 2
-    assert (output_dir / "merged_saber_full.bc").exists()
+    assert (output_dir / "merged_default.bc").exists()
 
 
 def test_explicit_svf_group_can_be_entry_clustered(
@@ -439,6 +481,78 @@ def test_entry_cluster_links_directly_without_exclusive_pool_variants(
 
     assert sorted(result) == ["entry_cluster_1"]
     assert (output_dir / "merged_entry_cluster_1.bc").exists()
+
+
+def test_entry_cluster_layout_reused_when_fingerprint_unchanged(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root, compile_commands = _write_multi_compile_commands(tmp_path, 2)
+    output_dir = tmp_path / ".zscope_bc"
+    calls: list[str] = []
+    cluster_calls = {"count": 0}
+    _fake_bitcode_tools(monkeypatch, calls)
+
+    class FakeSelector:
+        def __init__(self, *args, **kwargs):
+            self.symbol_reader = self
+
+        def read_symbols(self, _bc_path):
+            return BitcodeSymbols()
+
+        def cluster_entries(self, *, group_prefix, candidate_bcs, entries, **kwargs):
+            cluster_calls["count"] += 1
+            if cluster_calls["count"] > 1:
+                raise AssertionError("cluster layout should have been reused")
+            plan = BitcodeScopePlan(
+                group_name=f"{group_prefix}_1",
+                mode="auto",
+                entries=[str(entry) for entry in entries],
+                selected_sources=[],
+                selected_bcs=[str(candidate_bcs[0])],
+            )
+            return [
+                EntryBitcodeCluster(
+                    group_name=f"{group_prefix}_1",
+                    entries=list(entries),
+                    selected_bcs=[candidate_bcs[0]],
+                    plan=plan,
+                )
+            ]
+
+        def select(self, *, group_name, candidate_bcs, entries, **kwargs):
+            return list(candidate_bcs), BitcodeScopePlan(
+                group_name=group_name,
+                mode="auto",
+                entries=[str(entry) for entry in entries],
+                selected_sources=[],
+                selected_bcs=[str(path) for path in candidate_bcs],
+            )
+
+    monkeypatch.setattr("zscope.retrieval.build_llvm.EntryBitcodeSelector", FakeSelector)
+
+    builder = BitcodeBuilder(
+        source_root=source_root,
+        compile_commands_path=compile_commands,
+        output_dir=output_dir,
+        gclang_path="gclang",
+        get_bc_path="get-bc",
+        llvm_link_path="llvm-link",
+    )
+    kwargs = dict(
+        scope_config=BitcodeScopeConfig(mode="auto"),
+        entry_functions=["api"],
+        knowledge_db=object(),
+        project_root=source_root,
+        auto_entry_clusters=True,
+    )
+
+    first = builder.build(**kwargs)
+    second = builder.build(**kwargs)
+
+    assert sorted(first) == ["entry_cluster_1"]
+    assert second == first
+    assert cluster_calls["count"] == 1
 
 
 def test_exclusive_pool_duplicate_symbols_split_link_variants(

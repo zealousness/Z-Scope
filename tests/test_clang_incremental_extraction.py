@@ -9,6 +9,7 @@ class _FakeDB:
         self.register_calls = 0
         self.purged = []
         self.commits = 0
+        self.pending = []
 
     def register_tu_hash(self, file_path: str, file_hash: str):
         self.register_calls += 1
@@ -19,6 +20,12 @@ class _FakeDB:
 
     def commit(self):
         self.commits += 1
+
+    def get_all_tus(self):
+        return []
+
+    def mark_tu_pending(self, tu_id: int):
+        self.pending.append(tu_id)
 
 
 class _SymbolDB:
@@ -178,4 +185,120 @@ def test_clang_backend_passes_prescanned_tus_to_batch_extraction(
     assert backend._run_full_extraction() is True
 
     assert backend._extractor.received_prescanned_tus == {str(source.resolve()): (31, True)}
+    assert backend._status == "ready"
+
+
+def test_clang_backend_deletes_missing_tu_without_starting_clangd(
+    tmp_path, monkeypatch
+) -> None:
+    deleted = tmp_path / "deleted.c"
+
+    class DeleteOnlyDB(_FakeDB):
+        def __init__(self):
+            super().__init__()
+            self.deleted = []
+
+        def get_all_tus(self):
+            return [{"id": 41, "file_path": str(deleted)}]
+
+        def get_tu_delete_impact(self, tu_id: int):
+            assert tu_id == 41
+            return {
+                "deleted_paths": [str(deleted)],
+                "deleted_symbols": ["deleted"],
+                "related_files": [],
+            }
+
+        def delete_tu(self, tu_id: int):
+            self.deleted.append(tu_id)
+            return self.get_tu_delete_impact(tu_id)
+
+    backend = ClangBackend()
+    backend._source_path = tmp_path
+    backend._db = DeleteOnlyDB()
+    monkeypatch.setattr(backend, "_collect_source_files", lambda: [])
+
+    def fail_start():
+        raise AssertionError("clangd should not start when only stale TUs are removed")
+
+    monkeypatch.setattr(backend, "_ensure_extractor", fail_start)
+
+    assert backend._run_full_extraction() is True
+    assert backend._db.deleted == [41]
+    assert backend._status == "ready"
+
+
+def test_clang_backend_force_refreshes_callers_of_deleted_tu(
+    tmp_path, monkeypatch
+) -> None:
+    caller = tmp_path / "caller.c"
+    deleted = tmp_path / "deleted.c"
+    caller.write_text("int caller(void) { return deleted(); }\n", encoding="utf-8")
+
+    class ImpactDB(_FakeDB):
+        def __init__(self):
+            super().__init__()
+            self.deleted = []
+
+        def get_all_tus(self):
+            return [
+                {"id": 51, "file_path": str(caller.resolve())},
+                {"id": 52, "file_path": str(deleted.resolve())},
+            ]
+
+        def get_tu_delete_impact(self, tu_id: int):
+            assert tu_id == 52
+            return {
+                "deleted_paths": [str(deleted.resolve())],
+                "deleted_symbols": ["deleted"],
+                "related_files": [str(caller.resolve())],
+            }
+
+        def delete_tu(self, tu_id: int):
+            self.deleted.append(tu_id)
+            return self.get_tu_delete_impact(tu_id)
+
+        def register_tu_hash(self, file_path: str, file_hash: str):
+            self.register_calls += 1
+            assert file_path == str(caller.resolve())
+            assert file_hash == "hash"
+            return (51, False)
+
+    class FakeExtractor:
+        def __init__(self):
+            self.deleted_notifications = []
+            self.received_prescanned_tus = None
+
+        def notify_files_deleted(self, file_paths):
+            self.deleted_notifications.extend(Path(p).resolve() for p in file_paths)
+
+        def wait_for_indexing(self, timeout: int, idle_threshold: float) -> bool:
+            return True
+
+        def run_batch_extraction(
+            self,
+            file_list,
+            db,
+            batch_size=50,
+            progress_cb=None,
+            prescanned_tus=None,
+        ):
+            self.received_prescanned_tus = prescanned_tus
+            return {"total": len(file_list), "success": 1, "failed": 0, "skipped": 0}
+
+    backend = ClangBackend(batch_size=3)
+    backend._source_path = tmp_path
+    backend._db = ImpactDB()
+    backend._extractor = FakeExtractor()
+
+    monkeypatch.setattr(backend, "_collect_source_files", lambda: [caller])
+    monkeypatch.setattr(backend, "_ensure_extractor", lambda: True)
+    monkeypatch.setattr(ClangExtractor, "_compute_file_hash", staticmethod(lambda _path: "hash"))
+
+    assert backend._run_full_extraction() is True
+
+    assert backend._db.deleted == [52]
+    assert backend._db.pending == [51]
+    assert backend._extractor.received_prescanned_tus == {str(caller.resolve()): (51, True)}
+    assert backend._extractor.deleted_notifications == [deleted.resolve()]
     assert backend._status == "ready"
