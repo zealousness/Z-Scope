@@ -92,3 +92,59 @@ def test_validator_agent_run_does_not_retry_for_recoverable_wrapper() -> None:
     assert response.success is True
     assert response.data["verdict"] == "verified"
     assert llm.calls == 1
+
+
+def test_validator_agent_run_accepts_high_confidence_fast_path() -> None:
+    class FakeLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.max_iterations = []
+
+        def run_conversation_with_tools(self, **kwargs):
+            self.calls += 1
+            self.max_iterations.append(kwargs.get("max_iterations"))
+            return {
+                "content": """
+```json
+{
+  "type": "validation_result",
+  "issue_id": "ISSUE_6",
+  "verdict": "verified",
+  "confidence_score": 0.91,
+  "reasoning": "证据包已经证明 source 到 sink",
+  "positive_evidence": ["source reaches sink"],
+  "negative_evidence": [],
+  "missing_context": [],
+  "source": "caller argument",
+  "sink": "memcpy length",
+  "control_of_source": "caller controls it",
+  "guard_analysis": "missing bound"
+}
+```
+""",
+                "conversation": [],
+                "context_tokens": 10,
+                "cumulative_prompt_tokens": 20,
+                "cumulative_completion_tokens": 5,
+                "cumulative_total_tokens": 25,
+                "iterations": 1,
+                "tool_call_count": 0,
+            }
+
+    llm = FakeLLM()
+    agent = ValidatorAgent(llm, [])
+
+    response = agent.run(
+        {
+            "finding": {"id": "ISSUE_6"},
+            "context_code": "",
+            "evidence_pack": {"positive_evidence": ["source reaches sink"]},
+        },
+        max_retries=2,
+    )
+
+    assert response.success is True
+    assert response.data["validator_fast_path"] is True
+    assert llm.calls == 1
+    assert llm.max_iterations == [1]
+    assert response.metadata["validator_fast_path_accepted"] == 1

@@ -604,59 +604,6 @@ class DiffImpactPlanner:
         """Compatibility wrapper for tests and callers that only need entries."""
         return self._build_semantic_selection(changed_functions)["entries"]
 
-    def _build_legacy_entries(self, changed_functions: Sequence[ChangedFunction]) -> List[FunctionEntry]:
-        entries_by_key: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
-        for changed in changed_functions:
-            external_paths = self._find_external_entry_paths(changed)
-            needs_synthetic = not external_paths
-            for candidate, path, path_refs in external_paths:
-                self._merge_entry(
-                    entries_by_key,
-                    candidate,
-                    changed,
-                    path,
-                    path_refs=path_refs,
-                    fallback_reason="",
-                )
-                if len(path) - 1 > self.synthetic_depth_threshold:
-                    needs_synthetic = True
-            if needs_synthetic:
-                synthetic = self._synthetic_candidate(changed)
-                reason = "no_external_entry_found" if not external_paths else "deep_path_exceeds_model_depth"
-                self._merge_entry(
-                    entries_by_key,
-                    synthetic,
-                    changed,
-                    [changed.function_name],
-                    path_refs=[self._changed_ref(changed).to_dict()],
-                    fallback_reason=reason,
-                )
-
-        entries: List[FunctionEntry] = []
-        for item in sorted(entries_by_key.values(), key=lambda value: value["sort_key"]):
-            focus = item["focus"]
-            focus["changed_functions"] = sorted(
-                focus["changed_functions"],
-                key=lambda value: (value.get("file_path", ""), value.get("function_name", "")),
-            )
-            focus["affected_paths"] = sorted(
-                focus["affected_paths"],
-                key=lambda value: (
-                    value.get("changed_function", ""),
-                    len(value.get("path") or []),
-                    "/".join(value.get("path") or []),
-                ),
-            )
-            entries.append(
-                FunctionEntry(
-                    function_name=item["function_name"],
-                    file_path=item["file_path"],
-                    custom_prompt=self._custom_prompt(item["base_prompt"], focus),
-                    diff_focus=focus,
-                )
-            )
-        return entries
-
     def _classify_change_intent(self, changed: ChangedFunction) -> str:
         if changed.change_kind == "header_declaration":
             declaration = self._first_header_declaration(changed.function_name)

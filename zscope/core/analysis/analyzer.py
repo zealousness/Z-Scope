@@ -998,6 +998,12 @@ class Analyzer:
             graph_candidates = candidate_batch.graph_candidates
             backend_candidates = candidate_batch.backend_candidates
             candidate_signals = candidate_batch.merged_candidates
+            candidate_signal_summary = candidate_batch.summary_increment()
+            agent_context["candidate_signal_summary"] = candidate_signal_summary
+            agent_context["candidate_signal_candidates"] = self._compact_candidate_signal_items(
+                candidate_signals,
+                limit=80,
+            )
             response = analyzer_agent.run(
                 agent_context,
                 max_iterations=self.config.analysis.max_tool_iterations,
@@ -1005,7 +1011,13 @@ class Analyzer:
 
             if response.success:
                 raw_new_issues = response.data.get("issues", [])
+                coverage = self._normalize_candidate_coverage(
+                    response.data.get("candidate_coverage")
+                )
+                if coverage:
+                    state["va_candidate_coverage_summary"] = self._candidate_coverage_summary(coverage)
                 if candidate_signals:
+                    self._mark_va_unreviewed_candidates(candidate_signals, coverage)
                     raw_new_issues = list(raw_new_issues) + candidate_signals
                     state["notes"].append(candidate_batch.note())
                 va_ctx_tokens = response.metadata.get("context_tokens", 0) if response.metadata else 0
@@ -3091,6 +3103,17 @@ class Analyzer:
             "subagent_reports": self._compact_subagent_reports(state.get("subagent_reports", [])),
             "candidate_ledger_summary": dict(state.get("candidate_ledger_summary", {})),
             "candidate_signal_summary": dict(state.get("candidate_signal_summary", {})),
+            "va_candidate_coverage_summary": dict(state.get("va_candidate_coverage_summary", {})),
+            "validation_performance": {
+                "iterations": int(state.get("validation_iterations", 0) or 0),
+                "tool_call_count": int(state.get("validation_tool_call_count", 0) or 0),
+                "validator_fast_path_attempted": int(state.get("validator_fast_path_attempted", 0) or 0),
+                "validator_fast_path_accepted": int(state.get("validator_fast_path_accepted", 0) or 0),
+                "prevalidation_decision_count": int(state.get("prevalidation_decision_count", 0) or 0),
+                "clang_prevalidation_decision_count": int(state.get("clang_prevalidation_decision_count", 0) or 0),
+                "static_audit_observation_count": int(state.get("static_audit_observation_count", 0) or 0),
+                "static_suppressed_count": int(state.get("static_suppressed_count", 0) or 0),
+            },
             "semantic_dedup_summary": dict(state.get("semantic_dedup_summary", {})),
             "budget_stage": state.get("budget_stage", ""),
             "budget_hard_caps": dict(state.get("budget_hard_caps", {})),
@@ -3252,6 +3275,79 @@ class Analyzer:
     @classmethod
     def _compact_subagent_items(cls, items: Any, *, limit: int = 50) -> List[Dict[str, Any]]:
         return compact_subagent_items(items, limit=limit)
+
+    @staticmethod
+    def _compact_candidate_signal_items(items: Any, *, limit: int = 80) -> List[Dict[str, Any]]:
+        compact: List[Dict[str, Any]] = []
+        if not isinstance(items, list):
+            return compact
+        for item in items[:limit]:
+            if not isinstance(item, dict):
+                continue
+            evidence_pack = item.get("evidence_pack") if isinstance(item.get("evidence_pack"), dict) else {}
+            compact.append(
+                {
+                    "candidate_id": item.get("candidate_id") or item.get("id") or evidence_pack.get("candidate_id"),
+                    "function": item.get("function"),
+                    "location": item.get("location"),
+                    "defect_class": item.get("defect_class") or item.get("subcategory") or item.get("category"),
+                    "rule": item.get("rule") or evidence_pack.get("rule"),
+                    "candidate_source": item.get("candidate_source") or evidence_pack.get("candidate_source"),
+                    "confidence": item.get("confidence") or item.get("rule_confidence"),
+                    "source": item.get("source") or evidence_pack.get("source"),
+                    "sink": item.get("sink") or evidence_pack.get("sink"),
+                    "validation_required": item.get("validation_required", evidence_pack.get("validation_required", True)),
+                    "positive_evidence": (item.get("positive_evidence") or evidence_pack.get("positive_evidence") or [])[:4],
+                    "negative_evidence": (item.get("negative_evidence") or evidence_pack.get("negative_evidence") or [])[:4],
+                }
+            )
+        if len(items) > limit:
+            compact.append({"truncated": True, "omitted_count": len(items) - limit})
+        return compact
+
+    @staticmethod
+    def _normalize_candidate_coverage(raw: Any) -> Dict[str, Dict[str, Any]]:
+        if not isinstance(raw, list):
+            return {}
+        coverage: Dict[str, Dict[str, Any]] = {}
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            candidate_id = str(item.get("candidate_id") or item.get("id") or "").strip()
+            if not candidate_id:
+                continue
+            coverage[candidate_id] = {
+                "status": str(item.get("status") or "").strip(),
+                "reason": item.get("reason"),
+                "issue_id": item.get("issue_id"),
+            }
+        return coverage
+
+    @staticmethod
+    def _candidate_coverage_summary(coverage: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
+        summary: Dict[str, int] = {"total": len(coverage)}
+        for item in coverage.values():
+            status = str(item.get("status") or "unknown")
+            summary[status] = summary.get(status, 0) + 1
+        return summary
+
+    @staticmethod
+    def _mark_va_unreviewed_candidates(
+        candidates: List[Dict[str, Any]],
+        coverage: Dict[str, Dict[str, Any]],
+    ) -> None:
+        covered_ok = {"reported", "rejected_by_evidence"}
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            evidence_pack = candidate.get("evidence_pack") if isinstance(candidate.get("evidence_pack"), dict) else {}
+            candidate_id = str(candidate.get("candidate_id") or candidate.get("id") or evidence_pack.get("candidate_id") or "")
+            status = str((coverage.get(candidate_id) or {}).get("status") or "")
+            if status not in covered_ok:
+                candidate["va_unreviewed"] = True
+                evidence_pack["va_unreviewed"] = True
+                if evidence_pack:
+                    candidate["evidence_pack"] = evidence_pack
 
     @staticmethod
     def _compact_subagent_item(item: Any) -> Dict[str, Any]:

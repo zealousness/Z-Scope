@@ -116,12 +116,12 @@ def test_svf_legacy_hash_does_not_skip_configured_run(tmp_path: Path, monkeypatc
         def __init__(self, *args, timeout=1800, **kwargs):
             self.timeout = timeout
 
-        def run_all(self, bc_path, output_dir):
+        def run_ander(self, bc_path, output_dir):
             calls.append(self.timeout)
-            return {
-                "ander": SvfResult(tool="wpa-ander", success=True),
-                "saber": SvfResult(tool="saber", success=True),
-            }
+            return SvfResult(tool="wpa-ander", success=True)
+
+        def run_saber(self, bc_path, output_dir):
+            return SvfResult(tool="saber", success=True)
 
     monkeypatch.setattr(svf_module, "BitcodeBuilder", FakeBitcodeBuilder)
     monkeypatch.setattr(svf_module, "SvfRunner", FakeSvfRunner)
@@ -161,12 +161,12 @@ def test_svf_artifact_hash_skips_runner_when_source_hash_misses(
         def __init__(self, *args, **kwargs):
             pass
 
-        def run_all(self, bc_path, output_dir):
+        def run_ander(self, bc_path, output_dir):
             calls.append("runner")
-            return {
-                "ander": SvfResult(tool="wpa-ander", success=True),
-                "saber": SvfResult(tool="saber", success=True),
-            }
+            return SvfResult(tool="wpa-ander", success=True)
+
+        def run_saber(self, bc_path, output_dir):
+            return SvfResult(tool="saber", success=True)
 
     monkeypatch.setattr(svf_module, "BitcodeBuilder", FakeBitcodeBuilder)
     monkeypatch.setattr(svf_module, "SvfRunner", FakeSvfRunner)
@@ -215,9 +215,12 @@ def test_svf_skips_runner_when_builder_reuses_all_merged_groups(
         def __init__(self, *args, **kwargs):
             pass
 
-        def run_all(self, bc_path, output_dir):
+        def run_ander(self, bc_path, output_dir):
             calls.append("runner")
-            return {}
+            return SvfResult(tool="wpa-ander", success=True)
+
+        def run_saber(self, bc_path, output_dir):
+            return SvfResult(tool="saber", success=True)
 
     monkeypatch.setattr(svf_module, "BitcodeBuilder", FakeBitcodeBuilder)
     monkeypatch.setattr(svf_module, "SvfRunner", FakeSvfRunner)
@@ -254,12 +257,12 @@ def test_partial_bitcode_build_retries_failed_tus_next_run(
         def __init__(self, *args, **kwargs):
             pass
 
-        def run_all(self, bc_path, output_dir):
+        def run_ander(self, bc_path, output_dir):
             calls.append("runner")
-            return {
-                "ander": SvfResult(tool="wpa-ander", success=True),
-                "saber": SvfResult(tool="saber", success=True),
-            }
+            return SvfResult(tool="wpa-ander", success=True)
+
+        def run_saber(self, bc_path, output_dir):
+            return SvfResult(tool="saber", success=True)
 
     monkeypatch.setattr(svf_module, "BitcodeBuilder", FakeBitcodeBuilder)
     monkeypatch.setattr(svf_module, "SvfRunner", FakeSvfRunner)
@@ -292,12 +295,12 @@ def test_svf_timeout_result_is_not_cached(tmp_path: Path, monkeypatch) -> None:
         def __init__(self, *args, timeout=1800, **kwargs):
             self.timeout = timeout
 
-        def run_all(self, bc_path, output_dir):
+        def run_ander(self, bc_path, output_dir):
             calls.append(self.timeout)
-            return {
-                "ander": SvfResult(tool="wpa-ander", timed_out=True),
-                "saber": SvfResult(tool="saber", success=True),
-            }
+            return SvfResult(tool="wpa-ander", timed_out=True)
+
+        def run_saber(self, bc_path, output_dir):
+            return SvfResult(tool="saber", success=True)
 
     monkeypatch.setattr(svf_module, "BitcodeBuilder", FakeBitcodeBuilder)
     monkeypatch.setattr(svf_module, "SvfRunner", FakeSvfRunner)
