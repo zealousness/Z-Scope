@@ -68,6 +68,7 @@ class ParallelAnalysisResult:
     cumulative_completion_tokens: int = 0
     cumulative_total_tokens: int = 0
     diff_focus: Optional[Dict[str, Any]] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 class ParallelAnalyzer:
@@ -378,6 +379,7 @@ class ParallelAnalyzer:
                 entry_key,
             )
             report_dict = analyzer.run()
+            report_metadata = report_dict.get("metadata", {}) if isinstance(report_dict.get("metadata"), dict) else {}
             logger.info(
                 "[entry-worker] run-end entry=%s key=%s duration=%.2fs",
                 entry.function_name,
@@ -399,13 +401,14 @@ class ParallelAnalyzer:
                 function_name=entry.function_name,
                 verdict=report_dict.get("overall_verdict", "unknown"),
                 issues=report_dict.get("issues", []),
-                audit_observations=report_dict.get("metadata", {}).get("audit_observations", []),
+                audit_observations=report_metadata.get("audit_observations", []),
                 duration_seconds=duration,
-                context_tokens=report_dict.get("metadata", {}).get("context_tokens", 0),
-                cumulative_prompt_tokens=report_dict.get("metadata", {}).get("cumulative_prompt_tokens", 0),
-                cumulative_completion_tokens=report_dict.get("metadata", {}).get("cumulative_completion_tokens", 0),
-                cumulative_total_tokens=report_dict.get("metadata", {}).get("cumulative_total_tokens", 0),
+                context_tokens=report_metadata.get("context_tokens", 0),
+                cumulative_prompt_tokens=report_metadata.get("cumulative_prompt_tokens", 0),
+                cumulative_completion_tokens=report_metadata.get("cumulative_completion_tokens", 0),
+                cumulative_total_tokens=report_metadata.get("cumulative_total_tokens", 0),
                 diff_focus=entry.diff_focus,
+                metadata=report_metadata,
             )
             
         except Exception as e:
@@ -488,6 +491,11 @@ class ParallelAnalyzer:
         
         for entry_key, result in results.items():
             total_duration += result.duration_seconds
+            validation_performance = (
+                result.metadata.get("validation_performance", {})
+                if isinstance(result.metadata, dict)
+                else {}
+            )
             
             function_summaries.append({
                 "function": result.function_name,
@@ -500,6 +508,7 @@ class ParallelAnalyzer:
                 "cumulative_prompt_tokens": result.cumulative_prompt_tokens,
                 "cumulative_completion_tokens": result.cumulative_completion_tokens,
                 "cumulative_total_tokens": result.cumulative_total_tokens,
+                "validation_performance": validation_performance,
                 "error": result.error
             })
             
@@ -535,6 +544,8 @@ class ParallelAnalyzer:
             if batch_wall_seconds > 0
             else 0.0
         )
+        validation_performance_summary = self._validation_performance_summary(results)
+        va_candidate_coverage_summary = self._va_candidate_coverage_summary(results)
 
         combined_report = {
             "type": "parallel_analysis_report",
@@ -559,6 +570,8 @@ class ParallelAnalyzer:
                 "parallel_worker_utilization": round(worker_utilization, 4),
                 "diff_relevance": diff_relevance_summary["issues"],
                 "diff_coverage": diff_coverage.get("coverage_summary", {}),
+                "validation_performance": validation_performance_summary,
+                "va_candidate_coverage": va_candidate_coverage_summary,
             },
             "function_results": function_summaries,
             "issues": unique_issues,
@@ -576,6 +589,8 @@ class ParallelAnalyzer:
                 "cumulative_prompt_tokens": sum(r.cumulative_prompt_tokens for r in results.values()),
                 "cumulative_completion_tokens": sum(r.cumulative_completion_tokens for r in results.values()),
                 "cumulative_total_tokens": sum(r.cumulative_total_tokens for r in results.values()),
+                "validation_performance": validation_performance_summary,
+                "va_candidate_coverage_summary": va_candidate_coverage_summary,
             },
         }
         
@@ -585,6 +600,48 @@ class ParallelAnalyzer:
             logger.info(f"Combined report saved to: {output_path}")
         
         return combined_report
+
+    @staticmethod
+    def _validation_performance_summary(
+        results: Dict[str, ParallelAnalysisResult],
+    ) -> Dict[str, int]:
+        keys = (
+            "iterations",
+            "tool_call_count",
+            "validator_fast_path_attempted",
+            "validator_fast_path_accepted",
+            "prevalidation_decision_count",
+            "clang_prevalidation_decision_count",
+            "static_audit_observation_count",
+            "static_suppressed_count",
+        )
+        summary = {key: 0 for key in keys}
+        for result in results.values():
+            metadata = result.metadata if isinstance(result.metadata, dict) else {}
+            perf = metadata.get("validation_performance") if isinstance(metadata.get("validation_performance"), dict) else {}
+            for key in keys:
+                try:
+                    summary[key] += int(perf.get(key, 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+        return summary
+
+    @staticmethod
+    def _va_candidate_coverage_summary(
+        results: Dict[str, ParallelAnalysisResult],
+    ) -> Dict[str, int]:
+        summary: Dict[str, int] = {}
+        for result in results.values():
+            metadata = result.metadata if isinstance(result.metadata, dict) else {}
+            coverage = metadata.get("va_candidate_coverage_summary")
+            if not isinstance(coverage, dict):
+                continue
+            for key, value in coverage.items():
+                try:
+                    summary[key] = summary.get(key, 0) + int(value or 0)
+                except (TypeError, ValueError):
+                    continue
+        return summary
 
     @classmethod
     def _annotate_diff_relevance(

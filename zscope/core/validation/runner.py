@@ -177,13 +177,6 @@ class ValidationRunner:
             if outcome.report_bucket:
                 state[outcome.report_bucket].append(raw_issue)
 
-    def _validate_one_issue(self, state: Dict[str, Any], raw_issue: Dict[str, Any], validator_agent: Any) -> None:
-        prepared = self._prepare_issue_for_validation(state, raw_issue, 0)
-        if prepared is None:
-            return
-        result = self._validate_prepared_issue(prepared, validator_agent=validator_agent)
-        self._apply_validation_worker_result(state, result)
-
     def _prepare_issue_for_validation(
         self,
         state: Dict[str, Any],
@@ -195,7 +188,13 @@ class ValidationRunner:
 
         decision = self.validation_pipeline.apply_pre_validation_feedback(raw_issue, issue_func)
         if decision:
-            logger.info("Issue %s suppressed by %s.", raw_issue.get("id"), decision.rejection_source)
+            logger.info(
+                "Issue %s handled before Validator by %s (%s).",
+                raw_issue.get("id"),
+                decision.rejection_source,
+                decision.action,
+            )
+            self._record_prevalidation_decision(state, raw_issue, decision)
             if decision.report_bucket:
                 state[decision.report_bucket].append(raw_issue)
             return None
@@ -357,54 +356,13 @@ class ValidationRunner:
         target["cumulative_total_tokens"] = int(
             target.get("cumulative_total_tokens", 0) or 0
         ) + token_value("cumulative_total_tokens", "context_tokens")
-
-    def _normalize_successful_response(
-        self,
-        raw_issue: Dict[str, Any],
-        issue_code: str,
-        evidence_pack: Dict[str, Any],
-        validator_agent: Any,
-        val_data: Dict[str, Any],
-        state: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        if is_entry_root_dead_code_rejection(val_data, evidence_pack):
-            val_data = self._retry_entry_root_rejection(raw_issue, issue_code, evidence_pack, validator_agent, val_data, state)
-        return val_data
-
-    def _retry_entry_root_rejection(
-        self,
-        raw_issue: Dict[str, Any],
-        issue_code: str,
-        evidence_pack: Dict[str, Any],
-        validator_agent: Any,
-        val_data: Dict[str, Any],
-        state: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        logger.info(
-            "Retrying validation for issue %s because rejection conflicts with entry-root evidence.",
-            raw_issue.get("id"),
-        )
-        retry_pack = dict(evidence_pack)
-        retry_pack["mode"] = "tri_state_exploitability_validation_entry_root_retry"
-        retry_pack["prior_validator_result"] = val_data
-        retry_requirements = list(retry_pack.get("validation_requirements") or [])
-        retry_requirements.insert(
-            0,
-            "Retry directive: the previous rejection used absence of callers/main/worker above the scan root as dead-code evidence. Re-evaluate only the concrete entry-to-sink path; do not require callers above current_analysis_entry.",
-        )
-        retry_pack["validation_requirements"] = retry_requirements
-        retry_resp = validator_agent.run(self._validator_input(raw_issue, issue_code, retry_pack))
-        self._accumulate_token_metadata(state, getattr(retry_resp, "metadata", {}) or {})
-        if not retry_resp.success:
-            logger.warning(
-                "Entry-root validation retry failed for issue %s: %s",
-                raw_issue.get("id"),
-                retry_resp.error,
-            )
-            return val_data
-
-        retry_data = retry_resp.data
-        return retry_data
+        for key in (
+            "iterations",
+            "tool_call_count",
+            "validator_fast_path_attempted",
+            "validator_fast_path_accepted",
+        ):
+            target[key] = int(target.get(key, 0) or 0) + token_value(key)
 
     @staticmethod
     def _accumulate_token_metadata(state: Dict[str, Any], metadata: Dict[str, Any]) -> None:
@@ -434,6 +392,34 @@ class ValidationRunner:
         state["total_cumulative_total_tokens"] = (
             int(state.get("total_cumulative_total_tokens", 0) or 0) + cumulative_total
         )
+        for source_key, state_key in (
+            ("iterations", "validation_iterations"),
+            ("tool_call_count", "validation_tool_call_count"),
+            ("validator_fast_path_attempted", "validator_fast_path_attempted"),
+            ("validator_fast_path_accepted", "validator_fast_path_accepted"),
+        ):
+            try:
+                value = int(metadata.get(source_key, 0) or 0)
+            except (TypeError, ValueError):
+                value = 0
+            if value:
+                state[state_key] = int(state.get(state_key, 0) or 0) + value
+
+    @staticmethod
+    def _record_prevalidation_decision(
+        state: Dict[str, Any],
+        raw_issue: Dict[str, Any],
+        decision: Any,
+    ) -> None:
+        state["prevalidation_decision_count"] = int(state.get("prevalidation_decision_count", 0) or 0) + 1
+        if decision.action == "audit_observation":
+            state["static_audit_observation_count"] = int(state.get("static_audit_observation_count", 0) or 0) + 1
+        if decision.action == "suppress":
+            state["static_suppressed_count"] = int(state.get("static_suppressed_count", 0) or 0) + 1
+        if raw_issue.get("candidate_source") == "clang_ast_cfg":
+            state["clang_prevalidation_decision_count"] = int(
+                state.get("clang_prevalidation_decision_count", 0) or 0
+            ) + 1
 
     def _handle_validation_failure(
         self,

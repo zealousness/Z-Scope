@@ -17,7 +17,9 @@ def deduplicate_issues(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     records: Dict[str, Dict[str, Any]] = {}
     for issue in issues:
         normalize_issue_fields(issue)
-        key = canonical_issue_key(issue)
+        source_sink_key = source_sink_location_issue_key(issue)
+        key = source_sink_key or canonical_issue_key(issue)
+        decision_method = "source_sink_location" if source_sink_key else "canonical_issue_key"
         existing = records.get(key)
         if existing is None:
             issue["dedup_key"] = key
@@ -34,7 +36,7 @@ def deduplicate_issues(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 issue,
                 existing,
                 dedup_key=key,
-                decision={"method": "canonical_issue_key", "root_cause_key": key},
+                decision={"method": decision_method, "root_cause_key": key},
             )
             issue["dedup_key"] = key
             records[key] = issue
@@ -44,7 +46,7 @@ def deduplicate_issues(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             existing,
             issue,
             dedup_key=key,
-            decision={"method": "canonical_issue_key", "root_cause_key": key},
+            decision={"method": decision_method, "root_cause_key": key},
         )
     return list(records.values())
 
@@ -337,6 +339,167 @@ def canonical_issue_key(issue: Dict[str, Any]) -> str:
         normalize_issue_key_part(part)
         for part in (category, scope, str(line or ""), sink or function)
     )
+
+
+def source_sink_location_issue_key(issue: Dict[str, Any]) -> str:
+    """Return an exact source/sink coordinate key when both endpoints are known."""
+    text = flatten_issue_text(issue)
+    category = normalize_issue_key_part(canonical_category(issue, text))
+    source_location = _issue_endpoint_location(issue, "source")
+    sink_location = _issue_endpoint_location(issue, "sink")
+    if not (category and source_location and sink_location):
+        return ""
+    source_file, source_line = source_location
+    sink_file, sink_line = sink_location
+    if not (source_file and source_line and sink_file and sink_line):
+        return ""
+    return "|".join(
+        (
+            "source-sink-v1",
+            category,
+            f"{source_file}:{source_line}",
+            f"{sink_file}:{sink_line}",
+        )
+    )
+
+
+def _issue_endpoint_location(issue: Dict[str, Any], endpoint: str) -> Optional[Tuple[str, int]]:
+    fallback_file = issue_file_identity(issue)
+    candidates: List[Any] = [
+        issue.get(f"{endpoint}_loc"),
+        issue.get(f"{endpoint}_location"),
+    ]
+    pack = issue.get("evidence_pack")
+    if isinstance(pack, dict):
+        candidates.extend(
+            [
+                pack.get(f"{endpoint}_loc"),
+                pack.get(f"{endpoint}_location"),
+                pack.get(endpoint),
+            ]
+        )
+        candidate_evidence = pack.get("candidate_evidence")
+        if isinstance(candidate_evidence, dict):
+            candidates.extend(
+                [
+                    candidate_evidence.get(f"{endpoint}_loc"),
+                    candidate_evidence.get(f"{endpoint}_location"),
+                    candidate_evidence.get(endpoint),
+                ]
+            )
+    candidates.append(issue.get(endpoint))
+
+    for candidate in candidates:
+        location = _coerce_endpoint_location(candidate, fallback_file, endpoint)
+        if location:
+            return location
+    return None
+
+
+def _coerce_endpoint_location(
+    value: Any,
+    fallback_file: str,
+    endpoint: str,
+) -> Optional[Tuple[str, int]]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, dict):
+        return _endpoint_location_from_mapping(value, fallback_file, endpoint)
+    if isinstance(value, (list, tuple)):
+        for item in value[:16]:
+            location = _coerce_endpoint_location(item, fallback_file, endpoint)
+            if location:
+                return location
+        return None
+    line = _positive_line(value)
+    if line is not None and fallback_file:
+        return fallback_file, line
+    return _endpoint_location_from_text(str(value), fallback_file)
+
+
+def _endpoint_location_from_mapping(
+    value: Dict[str, Any],
+    fallback_file: str,
+    endpoint: str,
+) -> Optional[Tuple[str, int]]:
+    for key in (
+        f"{endpoint}_loc",
+        f"{endpoint}_location",
+        "location",
+        "loc",
+        "reported_location",
+    ):
+        if key in value:
+            location = _coerce_endpoint_location(value.get(key), fallback_file, endpoint)
+            if location:
+                return location
+
+    file_path = ""
+    line: Optional[int] = None
+    for key in ("file", "file_path", "filename", "module_path"):
+        item = value.get(key)
+        location = _endpoint_location_from_text(str(item or ""), "")
+        if location:
+            return location
+        file_path = file_path or _endpoint_file_from_text(str(item or ""))
+
+    for key in (
+        "line",
+        "line_number",
+        "lineNumber",
+        "start_line",
+        "startLine",
+        f"{endpoint}_line",
+    ):
+        line = _positive_line(value.get(key))
+        if line is not None:
+            break
+
+    file_path = file_path or fallback_file
+    if file_path and line is not None:
+        return file_path, line
+    return None
+
+
+def _endpoint_location_from_text(value: str, fallback_file: str) -> Optional[Tuple[str, int]]:
+    text = str(value or "").replace("\\", "/").strip()
+    if not text:
+        return None
+    file_path, parsed_line = parse_issue_location(text)
+    if parsed_line is not None:
+        endpoint_file = normalize_issue_key_part(file_path) if file_path else fallback_file
+        if endpoint_file:
+            return endpoint_file, parsed_line
+    line_match = re.search(r"\bline\s*[:#]?\s*(\d+)\b", text, flags=re.IGNORECASE)
+    if not line_match:
+        line_match = re.search(r"第\s*(\d+)\s*行", text)
+    if line_match and fallback_file:
+        line = _positive_line(line_match.group(1))
+        if line is not None:
+            return fallback_file, line
+    return None
+
+
+def _endpoint_file_from_text(value: str) -> str:
+    text = str(value or "").replace("\\", "/").strip()
+    if not text:
+        return ""
+    file_path, _line = parse_issue_location(text)
+    if file_path:
+        return normalize_issue_key_part(file_path)
+    if re.search(r"\.[chp]+$", text, flags=re.IGNORECASE):
+        return normalize_issue_key_part(text)
+    return ""
+
+
+def _positive_line(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    try:
+        line = int(value)
+    except (TypeError, ValueError):
+        return None
+    return line if line > 0 else None
 
 
 def report_cluster_category(category: str, root: str) -> str:

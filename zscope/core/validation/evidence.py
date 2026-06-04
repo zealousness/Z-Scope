@@ -70,139 +70,6 @@ def is_entry_root_dead_code_rejection(
     return any(term in text for term in dead_code_terms)
 
 
-def is_entry_root_contract_scope_rejection(
-    val_data: Dict[str, Any],
-    evidence_pack: Dict[str, Any],
-) -> bool:
-    """Legacy no-op: validator rejections are not rewritten as observations."""
-    return False
-
-    if validation_verdict(val_data) != "rejected":
-        return False
-    if not _entry_root_reachable(evidence_pack):
-        return False
-    category = str(
-        evidence_pack.get("defect_class")
-        or (evidence_pack.get("finding_summary") or {}).get("category")
-        or ""
-    ).replace("-", "_").lower()
-    if category not in {
-        "alignment",
-        "held_lock_callback",
-        "log_amplification",
-        "version_filtering",
-        "fd_encoding_mismatch",
-        "size_limit_mismatch",
-        "busy_loop",
-        "dynamic_array_race",
-        "memory_leak",
-        "premature_destroy",
-        "fd_type_mismatch",
-        "semantic_mismatch",
-        "byte_order_logic",
-        "key_generation_race",
-        "signal_race",
-        "infinite_loop",
-    }:
-        return False
-    if not _has_strong_structured_evidence(evidence_pack):
-        return False
-    text = flatten_issue_text(
-        [
-            val_data.get("reasoning"),
-            val_data.get("negative_evidence"),
-            val_data.get("guard_analysis"),
-            val_data.get("missing_context"),
-        ]
-    ).lower()
-    if not text:
-        return False
-    scope_terms = (
-        "current callback",
-        "current caller",
-        "current direct caller",
-        "current branch",
-        "current path",
-        "currently registered",
-        "当前",
-        "目前",
-        "hardcoded",
-        "hard-coded",
-        "硬编码",
-        "no-op",
-        "empty callback",
-        "空回调",
-        "not controllable",
-        "not caller controllable",
-        "not externally controllable",
-        "not controlled by caller",
-        "caller cannot control",
-        "不可控",
-        "无法控制",
-        "fails closed",
-        "one local branch",
-        "only local",
-        "design semantics",
-        "designed semantics",
-        "by design",
-        "intended design",
-        "current design",
-        "本地分支",
-        "dead code",
-        "unreachable",
-        "死代码",
-        "不可达",
-    )
-    return any(term in text for term in scope_terms)
-
-
-def _has_strong_structured_evidence(evidence_pack: Dict[str, Any]) -> bool:
-    """Return whether a reachable candidate has concrete non-free-form evidence."""
-    candidate_evidence = (
-        evidence_pack.get("candidate_evidence")
-        if isinstance(evidence_pack.get("candidate_evidence"), dict)
-        else {}
-    )
-    source = str(
-        evidence_pack.get("evidence_checker")
-        or candidate_evidence.get("checker")
-        or candidate_evidence.get("candidate_source")
-        or ""
-    ).lower()
-    backend_profile = str(
-        evidence_pack.get("backend_profile")
-        or candidate_evidence.get("backend_profile")
-        or ""
-    ).lower()
-    structured_sources = (
-        "clang",
-        "ast",
-        "cfg",
-        "graph",
-        "svf",
-        "knowledge",
-        "backend",
-        "rule",
-    )
-    if any(token in source or token in backend_profile for token in structured_sources):
-        return True
-
-    refs = evidence_pack.get("evidence_refs") or candidate_evidence.get("evidence_refs") or []
-    if refs:
-        return True
-
-    path = candidate_evidence.get("path") if isinstance(candidate_evidence.get("path"), dict) else {}
-    positive = evidence_pack.get("positive_evidence") or candidate_evidence.get("positive_evidence") or []
-    entry_context = evidence_pack.get("entry_context")
-    if positive and (
-        path.get("complete") is True
-        or path.get("complete_to_entry") is True
-        or (isinstance(entry_context, dict) and bool(entry_context.get("call_path")))
-    ):
-        return True
-    return False
-
-
 def build_validation_evidence_pack(
     issue: Dict[str, Any],
     state: Dict[str, Any],
@@ -261,7 +128,11 @@ def build_validation_evidence_pack(
         "candidate_id": issue.get("candidate_id") or issue.get("id"),
         "candidate_role": issue.get("candidate_role") or "evidence_only",
         "candidate_is_conclusion": False,
-        "validation_required": True,
+        "validation_required": issue.get("validation_required", candidate_evidence.get("validation_required", True)),
+        "proofs": issue.get("proofs") or candidate_evidence.get("proofs") or {},
+        "audit_observation_reason": issue.get("audit_observation_reason")
+        or candidate_evidence.get("audit_observation_reason"),
+        "va_unreviewed": bool(issue.get("va_unreviewed") or candidate_evidence.get("va_unreviewed")),
         "backend_profile": issue.get("backend_profile") or candidate_evidence.get("backend_profile"),
         "evidence_checker": issue.get("evidence_checker") or candidate_evidence.get("checker"),
         "evidence_engines": issue.get("evidence_engines") or candidate_evidence.get("evidence_engines") or [],
@@ -576,6 +447,10 @@ FINDING_CORE_FIELDS = (
     "evidence_checker",
     "evidence_engines",
     "score_components",
+    "validation_required",
+    "audit_observation_reason",
+    "proofs",
+    "va_unreviewed",
 )
 
 RAW_PAYLOAD_KEYS = {
@@ -675,6 +550,10 @@ def _compact_candidate_evidence(value: Dict[str, Any]) -> Dict[str, Any]:
             "semantic_overlay_evidence",
             "path_constraints",
             "score_components",
+            "validation_required",
+            "audit_observation_reason",
+            "proofs",
+            "va_unreviewed",
         }:
             kept[key] = _compact_validation_value(item)
 

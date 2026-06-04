@@ -89,6 +89,10 @@ class ValidationPipeline:
         issue_func: str,
     ) -> Optional[PreValidationDecision]:
         """Mutate and return a decision when user feedback suppresses an issue."""
+        static_decision = self._apply_static_validation_gate(issue)
+        if static_decision:
+            return static_decision
+
         category = self.suppression_category(issue)
         if self.review_memory.is_false_positive(
             str(issue_func),
@@ -119,6 +123,46 @@ class ValidationPipeline:
                 baseline=baseline,
             )
         return None
+
+    @staticmethod
+    def _apply_static_validation_gate(issue: Dict[str, Any]) -> Optional[PreValidationDecision]:
+        """Honor proof-carrying candidates that do not need an LLM validator pass."""
+        evidence_pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+        validation_required = issue.get("validation_required")
+        if validation_required is None:
+            validation_required = evidence_pack.get("validation_required")
+        if validation_required is not False:
+            return None
+
+        reason = str(
+            issue.get("audit_observation_reason")
+            or evidence_pack.get("audit_observation_reason")
+            or "static validation gate"
+        )
+        finding_kind = str(issue.get("finding_kind") or "").strip().lower()
+        if finding_kind == "audit_observation" or reason:
+            preserve_issue_location(issue)
+            issue["validation_status"] = str(issue.get("validation_status") or "uncertain")
+            issue["finding_kind"] = "audit_observation"
+            issue["validation_reasoning"] = reason
+            issue["rejection_source"] = "static_analysis"
+            return PreValidationDecision(
+                action="audit_observation",
+                finding_kind="audit_observation",
+                rejection_source="static_analysis",
+                report_bucket="observations",
+            )
+
+        issue["validation_status"] = "rejected"
+        issue["finding_kind"] = "static_suppressed_false_positive"
+        issue["rejection_source"] = "static_analysis"
+        issue["validation_reasoning"] = reason
+        return PreValidationDecision(
+            action="suppress",
+            finding_kind="static_suppressed_false_positive",
+            rejection_source="static_analysis",
+            report_bucket=None,
+        )
 
     def find_baseline(self, issue: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         dedup_key = str(issue.get("dedup_key") or self.issue_key_fn(issue))

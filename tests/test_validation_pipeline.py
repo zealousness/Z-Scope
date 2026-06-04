@@ -203,6 +203,26 @@ def test_validation_pipeline_marks_unvalidated_issue_for_report() -> None:
     assert issue["final_score"] == 0.45
 
 
+def test_validation_pipeline_static_audit_gate_skips_validator() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "CLANG_CFG_SIZE_LIMIT_MISMATCH_1",
+        "validation_required": False,
+        "finding_kind": "audit_observation",
+        "audit_observation_reason": "design mismatch without a visible unsafe sink",
+        "location": "src/demo.c:12",
+    }
+
+    decision = pipeline.apply_pre_validation_feedback(issue, "demo")
+
+    assert decision is not None
+    assert decision.action == "audit_observation"
+    assert decision.report_bucket == "observations"
+    assert issue["validation_status"] == "uncertain"
+    assert issue["finding_kind"] == "audit_observation"
+    assert issue["validation_reasoning"] == "design mismatch without a visible unsafe sink"
+
+
 def test_validation_pipeline_score_components_use_evidence_and_history() -> None:
     user_config = FakeUserConfig()
     user_config.baseline = {"status": "verified"}
