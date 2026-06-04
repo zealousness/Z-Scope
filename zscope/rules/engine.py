@@ -201,9 +201,6 @@ class RuleEngine:
             )
         return matches
 
-    def _check_semantic_sink_call(self, sink: Dict[str, str]) -> List[RuleMatch]:
-        return self._check_semantic_sink_calls([sink])
-
     def _check_semantic_sink_calls(self, sinks: List[Dict[str, Any]]) -> List[RuleMatch]:
         sinks = [sink for sink in sinks if str(sink.get("name") or "").strip()]
         if not sinks:
@@ -361,9 +358,6 @@ class RuleEngine:
         except Exception as exc:
             logger.debug("Joern query failed: %s", exc)
             return None
-
-    def _strict_control_evidence_by_call(self, sink_name: str) -> Dict[tuple[str, int, str], Dict[str, Any]]:
-        return self._strict_control_evidence_by_call_regex(self._cpg_regex(sink_name))
 
     def _strict_control_evidence_by_call_regex(self, sink_regex: str) -> Dict[tuple[str, int, str], Dict[str, Any]]:
         query = (

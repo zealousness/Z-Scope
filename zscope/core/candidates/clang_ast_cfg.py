@@ -1347,6 +1347,7 @@ class ClangAstCfgCandidateGenerator:
             return
         if re.search(r"ENCODE|CHECK_VALUE|encode_fd", raw_line.text, re.I):
             return
+        audit_only = self._encoded_fd_validation_result_is_not_security_sink(lines, line)
         self._emit(
             issues,
             func_name,
@@ -1367,7 +1368,14 @@ class ClangAstCfgCandidateGenerator:
                 f"line {raw_line.number}: raw fd value is derived without encoding bits",
                 f"line {line.number}: `{validate.group('api')}` validates `{arg}` as an encoded fd",
             ],
-            negative=[],
+            negative=(
+                [
+                    "The encoded-fd validation result is not visibly consumed by a security-sensitive sink in this local body.",
+                    "Keep as an audit observation unless a caller uses the return value to authorize a dangerous operation.",
+                ]
+                if audit_only
+                else []
+            ),
             ast_cfg=self._ast_cfg_pack(
                 lines,
                 [
@@ -1375,6 +1383,13 @@ class ClangAstCfgCandidateGenerator:
                     self._event("encoded_fd_validate", line, arg, validate.group("api"), line.text),
                 ],
                 [raw_line.number, line.number],
+            ),
+            validation_required=not audit_only,
+            finding_kind="audit_observation" if audit_only else "clang_ast_cfg_candidate",
+            audit_observation_reason=(
+                "raw fd/encoded fd semantic mismatch has no visible security sink in the local CFG"
+                if audit_only
+                else ""
             ),
         )
 
@@ -1567,6 +1582,8 @@ class ClangAstCfgCandidateGenerator:
         )
         if explicit_bound or validator_guard:
             return
+        if self._has_dynamic_array_capacity_guard(lines, line, array_name, idx_name):
+            return
         self._emit(
             issues,
             func_name,
@@ -1682,6 +1699,7 @@ class ClangAstCfgCandidateGenerator:
             return
         if limit_match.group("limit") == spec_match.group("spec"):
             return
+        audit_only = not self._limit_mismatch_reaches_unsafe_sink(lines, line, length_var)
         self._emit(
             issues,
             func_name,
@@ -1706,11 +1724,25 @@ class ClangAstCfgCandidateGenerator:
                 f"later guard uses fixed byte limit `{limit_match.group('limit')}`",
                 f"later return/contract uses separate spec `{spec_match.group('spec')}`",
             ],
-            negative=[],
+            negative=(
+                [
+                    "The local CFG does not show the mismatched byte limit reaching an unsafe copy, index, or allocation sink.",
+                    "Treat as a design/contract observation unless a downstream sink consumes the mismatched length.",
+                ]
+                if audit_only
+                else []
+            ),
             ast_cfg=self._ast_cfg_pack(
                 lines,
                 [self._event("spec_byte_limit_mismatch", line, length_var, count_var, line.text)],
                 [line.number],
+            ),
+            validation_required=not audit_only,
+            finding_kind="audit_observation" if audit_only else "clang_ast_cfg_candidate",
+            audit_observation_reason=(
+                "size/spec limit mismatch has no visible unsafe sink in the local CFG"
+                if audit_only
+                else ""
             ),
         )
 
@@ -2206,6 +2238,8 @@ class ClangAstCfgCandidateGenerator:
             guard_window = "\n".join(item.text for item in lines[max(0, line.index - 8) : line.index])
             if self._has_overflow_guard(guard_window, expr):
                 continue
+            if self._has_small_count_bound_proof(lines, line, expr):
+                continue
             self._emit(
                 issues,
                 func_name,
@@ -2549,6 +2583,8 @@ class ClangAstCfgCandidateGenerator:
             return
         if not re.search(r"(?<!-)\+|\s-\s|-\s*\d|&\s*[A-Za-z_]|\[[^\]]+\]", cleaned):
             return
+        if self._is_owned_pointer_array_element_release(lines, line, cleaned):
+            return
         self._emit(
             issues,
             func_name,
@@ -2867,6 +2903,16 @@ class ClangAstCfgCandidateGenerator:
             obj = publish.group("obj")
             later = lines[idx + 1 : idx + 9]
             if any(re.search(rf"\b{re.escape(obj)}->[A-Za-z_]\w*\s*=", item.text) for item in later):
+                last_init = max(
+                    (
+                        item.index
+                        for item in later
+                        if re.search(rf"\b{re.escape(obj)}->[A-Za-z_]\w*\s*=", item.text)
+                    ),
+                    default=line.index,
+                )
+                if self._same_lock_region_without_escape(lines, idx, last_init):
+                    return
                 self._emit(
                     issues,
                     func_name,
@@ -3093,6 +3139,8 @@ class ClangAstCfgCandidateGenerator:
         fd = match.group("fd")
         if not fd.startswith("g_") and self._release_followed_by_failure_return(lines, line):
             return
+        if not fd.startswith("g_") and not self._fd_has_shared_owner_or_later_use(lines, line, fd):
+            return
         later = "\n".join(item.text for item in lines[line.index + 1 : line.index + 8])
         if re.search(r"(?:g_[A-Za-z_]\w*fd|fd)\s*=\s*-1", later):
             return
@@ -3253,6 +3301,191 @@ class ClangAstCfgCandidateGenerator:
             ),
         )
 
+    def _encoded_fd_validation_result_is_not_security_sink(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+    ) -> bool:
+        validate = re.search(
+            r"\b(?P<api>[A-Za-z_]\w*validate_encoded_fd)\s*\(\s*(?P<arg>[A-Za-z_]\w*)\s*\)",
+            line.text,
+        )
+        if not validate:
+            return False
+        arg = validate.group("arg")
+        window = "\n".join(item.text for item in lines[line.index : line.index + 10])
+        dangerous_use = re.search(
+            rf"\b(?:read|recv|write|send|close|dup|fcntl|ioctl|mmap|munmap|_net_[A-Za-z_0-9]+)\s*"
+            rf"\([^;]*\b{re.escape(arg)}\b",
+            window,
+        )
+        if dangerous_use:
+            return False
+        return True
+
+    def _has_dynamic_array_capacity_guard(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        array_name: str,
+        idx_name: str,
+    ) -> bool:
+        cap_candidates = {
+            f"{array_name}_cap",
+            f"{array_name}_capacity",
+            re.sub(r"(?:_array|s|_list)$", "", array_name) + "_cap",
+            re.sub(r"(?:_array|s|_list)$", "", array_name) + "_capacity",
+        }
+        window = lines[max(0, line.index - 28) : line.index + 1]
+        for cap in cap_candidates:
+            guard_line = self._last_line_matching(
+                window,
+                re.compile(
+                    rf"\bif\s*\(\s*{re.escape(idx_name)}\s*>=\s*{re.escape(cap)}\s*\)"
+                ),
+            )
+            if not guard_line:
+                continue
+            guarded_text = "\n".join(item.text for item in lines[guard_line.index : line.index + 1])
+            if not re.search(rf"\b{re.escape(cap)}\s*=", guarded_text):
+                continue
+            if not re.search(rf"\b{re.escape(array_name)}\s*=", guarded_text):
+                continue
+            if not re.search(r"\b(?:calloc|malloc|realloc|_safe_calloc|_safe_malloc|_safe_realloc)\s*\(", guarded_text):
+                continue
+            if re.search(rf"\bnew_[A-Za-z_0-9]*(?:cap|capacity)\b\s*=.*\b{re.escape(idx_name)}\b", guarded_text):
+                return True
+            if re.search(rf"\b{re.escape(idx_name)}\s*/\s*\d+u?\s*\)\s*\+\s*1u?\s*\)\s*\*", guarded_text):
+                return True
+        return False
+
+    def _has_small_count_bound_proof(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        expr: Any,
+    ) -> bool:
+        text = str(expr or "")
+        vars_in_expr = {
+            name
+            for name in re.findall(r"\b[A-Za-z_]\w*\b", text)
+            if name not in {"sizeof", "size_t", "uint32_t", "uint64_t", "int"}
+        }
+        if not vars_in_expr:
+            return False
+        window = "\n".join(item.text for item in lines[max(0, line.index - 14) : line.index])
+        for var in vars_in_expr:
+            parser_bound = re.search(
+                rf"\b{re.escape(var)}\s*=\s*[A-Za-z_]\w*(?:parse|split|count)[A-Za-z_0-9]*\s*"
+                r"\([^;]*,\s*(?P<limit>\d+)u?\s*\)",
+                window,
+                re.IGNORECASE,
+            )
+            if parser_bound and int(parser_bound.group("limit")) < 1000000:
+                return True
+            explicit_bound = re.search(
+                rf"\b{re.escape(var)}\s*(?:<=|<)\s*(?P<limit>\d+)u?\b",
+                window,
+            )
+            if explicit_bound and int(explicit_bound.group("limit")) < 1000000:
+                return True
+        return False
+
+    def _is_owned_pointer_array_element_release(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        expr: str,
+    ) -> bool:
+        match = re.match(r"(?P<base>.+?)\s*\[[^\]]+\]\s*$", expr.strip())
+        if not match:
+            return False
+        base = re.sub(r"\s+", "", match.group("base"))
+        previous = "\n".join(item.text for item in lines[max(0, line.index - 80) : line.index])
+        later = "\n".join(item.text for item in lines[line.index + 1 : line.index + 20])
+        base_re = re.escape(base)
+        element_allocated = re.search(
+            rf"{base_re}\s*\[[^\]]+\]\s*=\s*(?:\([^)]*\)\s*)?"
+            r"[A-Za-z_]\w*(?:alloc|calloc|malloc|dup|new)[A-Za-z_0-9]*\s*\(",
+            previous,
+            re.IGNORECASE,
+        )
+        base_released = re.search(
+            rf"\b(?:free|SAFE_FREE)\s*\(\s*{base_re}\s*\)",
+            later,
+        )
+        conventional_pointer_array = re.search(r"(?:args|argv|items|children|entries|array|list)$", base)
+        return bool(element_allocated or (base_released and conventional_pointer_array))
+
+    def _same_lock_region_without_escape(
+        self,
+        lines: Sequence[ClangCfgLine],
+        start_idx: int,
+        end_idx: int,
+    ) -> bool:
+        lock_idx = None
+        for item in reversed(lines[max(0, start_idx - 12) : start_idx + 1]):
+            if self._match_unlock(item.text):
+                break
+            if self._match_lock(item.text):
+                lock_idx = item.index
+                break
+        if lock_idx is None:
+            return False
+        region = lines[lock_idx : end_idx + 1]
+        if any(self._match_unlock(item.text) for item in region[:-1]):
+            return False
+        between = "\n".join(item.text for item in lines[start_idx : end_idx + 1])
+        if re.search(r"\b(?:pthread_create|thrd_create|VOS_TaskCreate|CreateThread|_beginthreadex)\s*\(", between):
+            return False
+        if re.search(r"\b[A-Za-z_]\w*(?:callback|cb|handler)\s*\(", between, re.IGNORECASE):
+            return False
+        return True
+
+    def _fd_has_shared_owner_or_later_use(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        fd: str,
+    ) -> bool:
+        before = "\n".join(item.text for item in lines[max(0, line.index - 16) : line.index])
+        if re.search(
+            rf"(?:\bg_[A-Za-z_0-9]*fd\b|->[A-Za-z_0-9]*fd\b|\.[A-Za-z_0-9]*fd\b)\s*=\s*{re.escape(fd)}\b",
+            before,
+        ):
+            return True
+        if re.search(rf"\b(?:watch|register|cache|store)[A-Za-z_0-9]*\s*\([^;]*\b{re.escape(fd)}\b", before, re.I):
+            return True
+        later_lines = []
+        for item in lines[line.index + 1 : line.index + 10]:
+            if self._is_return(item.text):
+                break
+            later_lines.append(item.text)
+        later = "\n".join(later_lines)
+        return bool(
+            re.search(
+                rf"\b(?:read|recv|write|send|close|dup|fcntl|ioctl|mmap|munmap|_net_[A-Za-z_0-9]+)\s*"
+                rf"\([^;]*\b{re.escape(fd)}\b",
+                later,
+            )
+            or re.search(rf"\bg_[A-Za-z_0-9]*fd\b", later)
+        )
+
+    def _limit_mismatch_reaches_unsafe_sink(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        length_var: str,
+    ) -> bool:
+        later = "\n".join(item.text for item in lines[line.index + 1 : line.index + 16])
+        return bool(
+            re.search(
+                rf"\b(?:memcpy|memmove|strncpy|read|recv|fread|malloc|calloc|_safe_malloc|_safe_calloc)\s*"
+                rf"\([^;]*\b{re.escape(length_var)}\b",
+                later,
+            )
+        )
+
     def _emit(
         self,
         issues: List[Dict[str, Any]],
@@ -3274,6 +3507,10 @@ class ClangAstCfgCandidateGenerator:
         negative: List[str],
         ast_cfg: Dict[str, Any],
         impact_level: str = "medium",
+        validation_required: bool = True,
+        finding_kind: str = "clang_ast_cfg_candidate",
+        audit_observation_reason: str = "",
+        proofs: Optional[Dict[str, Any]] = None,
     ) -> None:
         skill = self._SKILL_BY_CLASS.get(defect_class, "resource_lifecycle")
         if allowed_skills is not None and skill not in allowed_skills:
@@ -3319,7 +3556,11 @@ class ClangAstCfgCandidateGenerator:
             "positive_evidence": list(positive),
             "negative_evidence": list(negative),
             "evidence_refs": [],
+            "validation_required": bool(validation_required),
+            "proofs": dict(proofs or {}),
         }
+        if audit_observation_reason:
+            evidence_pack["audit_observation_reason"] = audit_observation_reason
         reasoning = self._readable_reasoning(
             defect_class,
             rule,
@@ -3341,7 +3582,7 @@ class ClangAstCfgCandidateGenerator:
                 "category": defect_class,
                 "subcategory": defect_class,
                 "defect_class": defect_class,
-                "finding_kind": "clang_ast_cfg_candidate",
+                "finding_kind": finding_kind,
                 "candidate_source": "clang_ast_cfg",
                 "evidence_checker": "clang_ast_cfg_checker",
                 "rule": rule,
@@ -3361,8 +3602,12 @@ class ClangAstCfgCandidateGenerator:
                 "negative_evidence": list(negative),
                 "evidence_pack": evidence_pack,
                 "evidence_refs": [],
+                "validation_required": bool(validation_required),
+                "proofs": dict(proofs or {}),
             }
         )
+        if audit_observation_reason:
+            issues[-1]["audit_observation_reason"] = audit_observation_reason
 
     def _parse_lines(self, code: str) -> List[ClangCfgLine]:
         result: List[ClangCfgLine] = []

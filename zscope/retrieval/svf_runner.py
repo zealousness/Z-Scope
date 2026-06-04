@@ -167,13 +167,6 @@ class SvfRunner:
 
         return result
 
-    def run_all(self, bc_path: Path, output_dir: Path) -> Dict[str, SvfResult]:
-        """依次运行 ander + saber，返回结果字典。"""
-        return {
-            "ander": self.run_ander(bc_path, output_dir),
-            "saber": self.run_saber(bc_path, output_dir),
-        }
-
     @staticmethod
     def _parse_saber_output(text: str) -> List[Dict[str, Any]]:
         """从 saber 输出中提取 bug 报告。

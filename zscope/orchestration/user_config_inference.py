@@ -1279,24 +1279,6 @@ def _looks_like_table_dispatch(code: str) -> bool:
     return bool(re.search(r"\b(?:handler|dispatch|proc|ops)\w*(?:table|api|map|list|array)\b", code, re.I))
 
 
-def _find_row(rows: Sequence[Dict[str, Any]], key: str, value: str) -> Optional[Dict[str, Any]]:
-    return next((row for row in rows if row.get(key) == value), None)
-
-
-def _merge_sentence(existing: Any, incoming: Any) -> str:
-    left = str(existing or "").strip()
-    right = str(incoming or "").strip()
-    if not left:
-        return right
-    if not right or right in left:
-        return left
-    return f"{left} {right}"
-
-
-def _merge_source(existing: Any, incoming: str) -> str:
-    return _merge_csv(existing, incoming)
-
-
 def _first_match(pattern: re.Pattern[str], text: str) -> str:
     match = pattern.search(text)
     return match.group(1) if match else ""
@@ -1575,10 +1557,6 @@ def _body_role_can_refine(existing: str, body_kind: str) -> bool:
 
 def _should_inspect_body(name: str) -> bool:
     return bool(WRAPPER_NAME_HINT_RE.search(name))
-
-
-def _has_any(text: str, *needles: str) -> bool:
-    return any(item in text for item in needles)
 
 
 def _paired_lifecycle_name(lower: str, *, acquire: bool) -> bool:

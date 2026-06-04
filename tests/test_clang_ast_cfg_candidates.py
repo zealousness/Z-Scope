@@ -173,16 +173,26 @@ def test_clang_ast_cfg_tracks_common_wrapper_and_ownership_shapes() -> None:
 74 |     return 0;
 75 | }
 """
+    shared_fd_close = """
+80 | static int g_watched_fd;
+81 | int close_shared_connection(int fd) {
+82 |     g_watched_fd = fd;
+83 |     close(fd);
+84 |     return 0;
+85 | }
+"""
 
     issues = _rules(code)
     local_fd_rules = {issue["rule"] for issue in _rules(local_fd_cleanup)}
     lifecycle_rules = {issue["rule"] for issue in _rules(lifecycle_close)}
+    shared_fd_rules = {issue["rule"] for issue in _rules(shared_fd_close)}
     rules = {issue["rule"] for issue in issues}
 
     assert "clang_cfg_use_after_release" not in rules
     assert "clang_cfg_unbounded_vla_or_stack_array" not in rules
     assert "clang_cfg_fd_closed_without_owner_invalidation" not in local_fd_rules
-    assert "clang_cfg_fd_closed_without_owner_invalidation" in lifecycle_rules
+    assert "clang_cfg_fd_closed_without_owner_invalidation" not in lifecycle_rules
+    assert "clang_cfg_fd_closed_without_owner_invalidation" in shared_fd_rules
     assert not any(
         issue["rule"] == "clang_cfg_acquire_without_release_on_exit"
         and "binary_data" in "\n".join(issue.get("positive_evidence", []))
@@ -408,9 +418,26 @@ def test_clang_ast_cfg_detects_concurrency_and_low_level_c_patterns() -> None:
     issues = _rules(code)
     rules = {issue["rule"] for issue in issues}
 
-    assert "clang_cfg_object_published_before_initialization" in rules
+    assert "clang_cfg_object_published_before_initialization" not in rules
     assert "clang_cfg_cond_wait_guarded_by_if" in rules
     assert "clang_cfg_unaligned_integer_pointer_cast" in rules
+
+
+def test_clang_ast_cfg_keeps_object_publication_when_not_same_lock_region() -> None:
+    code = """
+120 | int demo(void) {
+121 |     LifecycleEntry *entry = _safe_calloc(1, sizeof(LifecycleEntry));
+122 |     LOCK(&g_lifecycle.lock);
+123 |     g_lifecycle.entries = entry;
+124 |     UNLOCK(&g_lifecycle.lock);
+125 |     entry->value = _str_dup("value");
+126 |     return 0;
+127 | }
+"""
+
+    rules = {issue["rule"] for issue in _rules(code)}
+
+    assert "clang_cfg_object_published_before_initialization" in rules
 
 
 def test_clang_ast_cfg_detects_lifecycle_gap_patterns() -> None:

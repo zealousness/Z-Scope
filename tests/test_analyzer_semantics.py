@@ -835,31 +835,6 @@ def test_entry_root_dead_code_rejection_is_detected() -> None:
 
 def test_entry_root_contract_scope_rejection_is_not_rewritten() -> None:
     assert not hasattr(Analyzer, "_is_entry_root_contract_scope_rejection")
-    return
-
-    evidence_pack = {
-        "defect_class": "held_lock_callback",
-        "evidence_checker": "clang_ast_cfg",
-        "entry_context": {
-            "current_analysis_entry": "td_process_control_message",
-            "entry_exposure": "api",
-            "entry_is_external_root": True,
-            "reachable_from_entry": True,
-            "call_path": ["td_process_control_message", "_lifecycle_fire_callback_under_lock"],
-        },
-        "evidence_refs": ["src/lifecycle.c:247: callback invoked while lock is held"],
-    }
-    rejected = {
-        "verdict": "rejected",
-        "reasoning": "当前路径中回调函数是硬编码的空回调，调用者无法控制。",
-    }
-    guard_rejected = {
-        "verdict": "rejected",
-        "reasoning": "代码证据显示调用前已经释放锁，不存在持锁回调。",
-    }
-
-    assert rejected["verdict"] == "rejected"
-    assert guard_rejected["verdict"] == "rejected"
 
 
 def test_validation_pack_marks_current_entry_as_reachable() -> None:

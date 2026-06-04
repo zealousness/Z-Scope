@@ -9,6 +9,180 @@ from zscope.common.issue_identity import (
 from zscope.core.analysis.analyzer import Analyzer
 
 
+def _precise_endpoint_issue(
+    issue_id: str,
+    *,
+    category: str = "bounds",
+    source_file: str = "src/demo.c",
+    source_line: int = 10,
+    sink_file: str = "src/demo.c",
+    sink_line: int = 20,
+    function: str = "entry",
+    location_line: int = 100,
+):
+    return {
+        "id": issue_id,
+        "function": function,
+        "location": f"src/demo.c:{location_line}",
+        "category": category,
+        "description": f"{issue_id} reports a source to sink issue.",
+        "source_loc": f"{source_file}:{source_line}",
+        "sink_loc": f"{sink_file}:{sink_line}",
+        "source": f"source value at line {source_line}",
+        "sink": f"sink operation at line {sink_line}",
+    }
+
+
+def test_dedup_merges_same_source_sink_locations_and_normalized_type() -> None:
+    direct = _precise_endpoint_issue(
+        "DIRECT",
+        function="entry_a",
+        location_line=100,
+        category="bounds",
+    )
+    packed = {
+        "id": "PACKED",
+        "function": "entry_b",
+        "location": "src/demo.c:220",
+        "category": "bounds",
+        "description": "Second detector found the same flow with a different report shape.",
+        "dedup_key": "legacy-detector-specific-key",
+        "evidence_pack": {
+            "candidate_evidence": {
+                "source": {"file": "src/demo.c", "line": 10},
+                "sink": {"file": "src/demo.c", "line": 20},
+            }
+        },
+    }
+
+    deduped = deduplicate_issues([direct, packed])
+
+    assert len(deduped) == 1
+    assert deduped[0]["dedup_key"] == "source-sink-v1|bounds|src/demo.c:10|src/demo.c:20"
+    assert deduped[0]["duplicate_count"] == 1
+    assert deduped[0]["dedup_decisions"] == [
+        {
+            "method": "source_sink_location",
+            "root_cause_key": "source-sink-v1|bounds|src/demo.c:10|src/demo.c:20",
+        }
+    ]
+
+
+def test_source_sink_location_dedup_uses_normalized_category() -> None:
+    signed = _precise_endpoint_issue(
+        "SIGNED",
+        category="signed_unsigned",
+        function="signed_path",
+        location_line=301,
+    )
+    truncation = _precise_endpoint_issue(
+        "TRUNC",
+        category="integer_truncation",
+        function="truncation_path",
+        location_line=302,
+    )
+
+    deduped = deduplicate_issues([signed, truncation])
+
+    assert len(deduped) == 1
+    assert deduped[0]["dedup_key"] == (
+        "source-sink-v1|signed_unsigned|src/demo.c:10|src/demo.c:20"
+    )
+
+
+def test_source_sink_location_dedup_uses_issue_file_for_line_only_endpoints() -> None:
+    first = {
+        "id": "A",
+        "function": "line_only_a",
+        "location": "src/demo.c:801",
+        "category": "bounds",
+        "description": "Detector A reports the same source and sink lines.",
+        "source": "request length at line 12",
+        "sink": "buffer copy at line 30",
+    }
+    second = {
+        "id": "B",
+        "function": "line_only_b",
+        "location": "src/demo.c:802",
+        "category": "bounds",
+        "description": "Detector B reaches the same source and sink lines.",
+        "source": "tainted length at line 12",
+        "sink": "write into buffer at line 30",
+    }
+
+    deduped = deduplicate_issues([first, second])
+
+    assert len(deduped) == 1
+    assert deduped[0]["dedup_key"] == "source-sink-v1|bounds|src/demo.c:12|src/demo.c:30"
+
+
+def test_source_sink_location_dedup_requires_same_source_line() -> None:
+    first = _precise_endpoint_issue("A", source_line=10, function="source_a", location_line=401)
+    second = _precise_endpoint_issue("B", source_line=11, function="source_b", location_line=402)
+
+    assert len(deduplicate_issues([first, second])) == 2
+
+
+def test_source_sink_location_dedup_requires_same_sink_line() -> None:
+    first = _precise_endpoint_issue("A", sink_line=20, function="sink_a", location_line=501)
+    second = _precise_endpoint_issue("B", sink_line=21, function="sink_b", location_line=502)
+
+    assert len(deduplicate_issues([first, second])) == 2
+
+
+def test_source_sink_location_dedup_requires_same_endpoint_files() -> None:
+    same_file = _precise_endpoint_issue("A", function="file_a", location_line=601)
+    different_source_file = _precise_endpoint_issue(
+        "B",
+        source_file="src/other.c",
+        function="file_b",
+        location_line=602,
+    )
+    different_sink_file = _precise_endpoint_issue(
+        "C",
+        sink_file="src/other.c",
+        function="file_c",
+        location_line=603,
+    )
+
+    assert len(deduplicate_issues([same_file, different_source_file])) == 2
+    assert len(deduplicate_issues([same_file, different_sink_file])) == 2
+
+
+def test_source_sink_location_dedup_requires_same_type() -> None:
+    bounds = _precise_endpoint_issue("BOUNDS", category="bounds", function="bounds_path", location_line=701)
+    command = _precise_endpoint_issue(
+        "COMMAND",
+        category="command_injection",
+        function="command_path",
+        location_line=702,
+    )
+
+    assert len(deduplicate_issues([bounds, command])) == 2
+
+
+def test_missing_source_sink_locations_fall_back_to_canonical_dedup() -> None:
+    first = {
+        "id": "A",
+        "function": "copy_entry",
+        "location": "src/demo.c:80",
+        "category": "bounds",
+        "description": "memcpy can write beyond the destination buffer.",
+    }
+    second = {
+        "id": "B",
+        "function": "copy_entry",
+        "location": "src/demo.c:80",
+        "category": "bounds",
+        "description": "The same memcpy reaches an out of bounds write.",
+    }
+
+    deduped = deduplicate_issues([first, second])
+
+    assert len(deduped) == 1
+    assert deduped[0]["dedup_key"] == "bounds|src/demo.c|80|memcpy"
+
+
 def test_dedup_merges_chinese_needs_review_with_rule_finding() -> None:
     issues = [
         {

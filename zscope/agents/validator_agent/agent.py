@@ -51,10 +51,20 @@ class ValidatorAgent(ToolCallingAgent):
             "cumulative_total_tokens": 0,
             "iterations": 0,
             "tool_call_count": 0,
+            "validator_fast_path_attempted": 0,
+            "validator_fast_path_accepted": 0,
         }
 
         for attempt in range(1, max_retries + 1):
             messages = self._messages(input_data, prompt)
+            if attempt == 1 and evidence_pack:
+                fast_data = self._run_fast_path(messages, finding, token_metadata)
+                if fast_data:
+                    return AgentResponse(
+                        success=True,
+                        data=fast_data,
+                        metadata=dict(token_metadata),
+                    )
             if attempt > 1:
                 messages.append(
                     {
@@ -123,6 +133,86 @@ class ValidatorAgent(ToolCallingAgent):
             data={},
             error=f"Failed after {max_retries} validation attempt(s): {last_error}",
         )
+
+    def _run_fast_path(
+        self,
+        messages: List[Dict[str, Any]],
+        finding: Any,
+        token_metadata: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Try one no-tool validation pass from the compact evidence pack."""
+        fast_messages = list(messages)
+        fast_messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Fast-path validation: use only the suspected finding and Compact Evidence Pack. "
+                    "Do not ask for tools. Return exactly one validation_result JSON block. "
+                    "Use `uncertain` if a decisive fact requires code not present in the pack."
+                ),
+            }
+        )
+        token_metadata["validator_fast_path_attempted"] = int(
+            token_metadata.get("validator_fast_path_attempted", 0) or 0
+        ) + 1
+        try:
+            result = self._run_tool_conversation(
+                fast_messages,
+                max_iterations=1,
+                trace_label=f"fast_path; finding={str(finding)[:120]}",
+            )
+        except Exception as exc:
+            logger.debug("Validator fast path failed before fallback: %s", exc)
+            return None
+
+        self._merge_result_metadata(token_metadata, result)
+        parsed = self._extract_validation_payload(
+            str(result.get("content") or ""),
+            result,
+            result.get("conversation", []),
+        )
+        if not parsed or not self._accept_fast_path_result(parsed):
+            return None
+        token_metadata["validator_fast_path_accepted"] = int(
+            token_metadata.get("validator_fast_path_accepted", 0) or 0
+        ) + 1
+        parsed["validator_fast_path"] = True
+        return parsed
+
+    @classmethod
+    def _accept_fast_path_result(cls, data: Dict[str, Any]) -> bool:
+        verdict = cls._normalize_verdict_value(data.get("verdict"), data.get("is_valid"))
+        if verdict not in {"verified", "rejected"}:
+            return False
+        try:
+            confidence = float(data.get("confidence_score", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if confidence < 0.85:
+            return False
+        missing = data.get("missing_context") or []
+        if isinstance(missing, str):
+            missing = [missing] if missing.strip() else []
+        if missing:
+            return False
+        if verdict == "verified":
+            return bool(data.get("source")) and bool(data.get("sink")) and bool(data.get("positive_evidence"))
+        return bool(data.get("negative_evidence") or data.get("guard_analysis") or data.get("reasoning"))
+
+    @staticmethod
+    def _merge_result_metadata(target: Dict[str, Any], result: Dict[str, Any]) -> None:
+        for key in (
+            "context_tokens",
+            "cumulative_prompt_tokens",
+            "cumulative_completion_tokens",
+            "cumulative_total_tokens",
+            "iterations",
+            "tool_call_count",
+        ):
+            try:
+                target[key] = int(target.get(key, 0) or 0) + int(result.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                continue
 
     @staticmethod
     def _is_validation_result(data: Any) -> bool:

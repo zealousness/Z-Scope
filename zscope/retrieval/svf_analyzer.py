@@ -60,7 +60,6 @@ class SvfAnalyzer:
             exclusive_pools=list(exclusive_pools or []),
             shared_pools=list(shared_pools or []),
         )
-        self._results: Dict[str, SvfResult] = {}
         self._parallel_workers = max(1, int(parallel_workers or 1))
 
     def run(
@@ -184,10 +183,7 @@ class SvfAnalyzer:
                 timeout=self._timeout,
             )
 
-            if not hasattr(runner, "run_ander") or not hasattr(runner, "run_saber"):
-                had_timeout = self._run_legacy_svf(runner, bc_paths, project_root)
-            else:
-                had_timeout = self._run_split_svf(runner, bc_paths, project_root)
+            had_timeout = self._run_split_svf(runner, bc_paths, project_root)
 
             if had_timeout:
                 logger.warning("SVF analysis timed out; cache fingerprint will not be updated")
@@ -239,34 +235,6 @@ class SvfAnalyzer:
             ),
             saber_groups=True,
         )
-
-    def _run_legacy_svf(
-        self,
-        runner: Any,
-        bc_paths: Dict[str, Path],
-        project_root: Path,
-    ) -> bool:
-        had_timeout = False
-        for group_name, bc_path in bc_paths.items():
-            if self._is_saber_group(group_name):
-                continue
-            logger.info("Running SVF analysis for group '%s' using %s", group_name, bc_path)
-            group_suffix = f"_{group_name}" if group_name != "default" else ""
-            output_dir = project_root / f".zscope_svf{group_suffix}"
-
-            self._results = runner.run_all(bc_path, output_dir)
-            if any(result.timed_out for result in self._results.values()):
-                had_timeout = True
-
-            self._db.purge_svf_data(group=group_name)
-            mapper = SvfOutputMapper(self._db, svf_group=group_name)
-            ander = self._results.get("ander")
-            if ander and ander.output_file:
-                mapper.import_callgraph(ander.output_file)
-            saber = self._results.get("saber")
-            if saber and saber.bugs:
-                mapper.import_saber_bugs(saber.bugs)
-        return had_timeout
 
     def _run_split_svf(
         self,

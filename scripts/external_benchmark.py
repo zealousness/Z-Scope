@@ -48,7 +48,6 @@ from zscope.benchmarking.protocol import (
     build_trial_summary,
     collect_environment_metadata,
     copy_conversation_trajectory,
-    issue_matches as benchmark_issue_matches,
     json_dump as benchmark_json_dump,
     load_summaries,
     score_report,
@@ -61,8 +60,6 @@ FUNC_DEF_RE = re.compile(
 )
 MAIN_DEF_RE = re.compile(r"(?m)^(\s*(?:int|void)\s+)main\s*\(")
 CALL_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
-LINE_RE = re.compile(r"^\s*(\d+)\s*\|\s?(.*)$")
-
 DEFAULT_MEMORY_CWES = [
     "CWE121",
     "CWE122",
@@ -233,14 +230,6 @@ def _flatten(value: Any) -> str:
     if value is None:
         return ""
     return str(value)
-
-
-def _strip_numbered_code(code: str) -> str:
-    lines = []
-    for line in code.splitlines():
-        match = LINE_RE.match(line)
-        lines.append(match.group(2) if match else line)
-    return "\n".join(lines)
 
 
 def _find_matching_brace(text: str, open_idx: int) -> int:
@@ -1290,10 +1279,6 @@ def _text_has_category(text: str, truth: dict[str, Any]) -> bool:
     if cwe and cwe in lowered:
         return True
     return any(alias and alias in lowered for alias in aliases)
-
-
-def _issue_matches(issue: dict[str, Any], truth: dict[str, Any], line_tolerance: int) -> bool:
-    return benchmark_issue_matches(issue, truth, line_tolerance)
 
 
 def evaluate(args: argparse.Namespace) -> dict[str, Any]:
