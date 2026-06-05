@@ -340,6 +340,65 @@ def test_entry_seed_dependency_cache_reuses_bc_dependency_result(tmp_path: Path)
     db.close()
 
 
+def test_entry_clustering_precomputes_pool_maps_once_per_candidate(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source_root = project
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    entries = []
+    candidate_bcs = []
+    bc_to_src = {}
+
+    for idx in range(12):
+        name = f"entry_{idx}"
+        rel_path = f"src/pool/normal/{name}.c"
+        db.insert_function(name, rel_path, 1, 5)
+        bc = _touch(tmp_path / "bc" / f"{name}.bc")
+        candidate_bcs.append(bc)
+        bc_to_src[bc] = source_root / rel_path
+        entries.append(name)
+
+    for idx in range(20):
+        pool = "compat" if idx % 2 else "normal"
+        bc = _touch(tmp_path / "bc" / f"decoy_{idx}.bc")
+        candidate_bcs.append(bc)
+        bc_to_src[bc] = source_root / "src" / "pool" / pool / f"decoy_{idx}.c"
+
+    selector = EntryBitcodeSelector(
+        db=db,
+        source_root=source_root,
+        project_root=project,
+        config=BitcodeScopeConfig(mode="entry", entry_depth=0, symbol_closure=False),
+    )
+    counts = {"pool": 0, "conflicts": 0}
+
+    class CountingClassifier:
+        def pool_for_source(self, source_path):
+            counts["pool"] += 1
+            text = source_path.as_posix() if source_path else ""
+            if "/normal/" in text:
+                return "normal"
+            if "/compat/" in text:
+                return "compat"
+            return ""
+
+        def shared_conflicts_for_source(self, source_path):
+            counts["conflicts"] += 1
+            return set()
+
+    selector.pool_classifier = CountingClassifier()
+
+    clusters = selector.cluster_entries(
+        group_prefix="entry_cluster",
+        candidate_bcs=candidate_bcs,
+        bc_to_src=bc_to_src,
+        entries=entries,
+    )
+
+    assert len(clusters) == len(entries)
+    assert counts == {"pool": len(candidate_bcs), "conflicts": len(candidate_bcs)}
+    db.close()
+
+
 def test_entry_seed_dependency_respects_exclusive_pool(tmp_path: Path) -> None:
     project = tmp_path / "project"
     source_root = project
@@ -384,6 +443,59 @@ def test_entry_seed_dependency_respects_exclusive_pool(tmp_path: Path) -> None:
     assert len(clusters) == 1
     assert {path.name for path in clusters[0].selected_bcs} == {"entry.bc", "normal_helper.bc"}
     assert clusters[0].plan.exclusive_pool == "normal"
+    db.close()
+
+
+def test_entry_seed_dependency_respects_shared_pool_conflicts(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source_root = project
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    db.insert_function("entry", "src/pool/normal/entry.c", 1, 5)
+    db.insert_function("normal_helper", "src/pool/normal/helper.c", 1, 5)
+    db.insert_function("shared_helper", "src/shared/helper.c", 1, 5)
+    db.insert_call_edge("entry", "src/pool/normal/entry.c", "normal_helper", "src/pool/normal/helper.c", 3)
+    db.insert_call_edge("entry", "src/pool/normal/entry.c", "shared_helper", "src/shared/helper.c", 4)
+
+    entry_bc = _touch(tmp_path / "bc" / "entry.bc")
+    normal_bc = _touch(tmp_path / "bc" / "normal_helper.bc")
+    shared_bc = _touch(tmp_path / "bc" / "shared_helper.bc")
+    bc_to_src = {
+        entry_bc: source_root / "src" / "pool" / "normal" / "entry.c",
+        normal_bc: source_root / "src" / "pool" / "normal" / "helper.c",
+        shared_bc: source_root / "src" / "shared" / "helper.c",
+    }
+
+    selector = EntryBitcodeSelector(
+        db=db,
+        source_root=source_root,
+        project_root=project,
+        config=BitcodeScopeConfig(
+            mode="entry",
+            entry_depth=1,
+            symbol_closure=False,
+            exclusive_pools=[
+                {"name": "normal", "paths": ["src/pool/normal/**"]},
+            ],
+            shared_pools=[
+                {
+                    "name": "shared_runtime",
+                    "paths": ["src/shared/**"],
+                    "conflicts_with": ["normal"],
+                },
+            ],
+        ),
+    )
+
+    clusters = selector.cluster_entries(
+        group_prefix="entry_cluster",
+        candidate_bcs=[entry_bc, normal_bc, shared_bc],
+        bc_to_src=bc_to_src,
+        entries=["entry"],
+    )
+
+    assert len(clusters) == 1
+    assert {path.name for path in clusters[0].selected_bcs} == {"entry.bc", "normal_helper.bc"}
+    assert all("shared_helper" not in path for path in clusters[0].plan.selected_bcs)
     db.close()
 
 
