@@ -58,6 +58,8 @@ class CodeIndex:
         self._function_index: Dict[str, Dict[str, Any]] = {}
         self._function_alias_index: Dict[str, str] = {}
         self._ambiguous_function_aliases: set[str] = set()
+        self._function_file_index: Dict[str, set[str]] = {}
+        self._function_file_resolution_cache: Dict[Tuple[str, str], str] = {}
         self._declaration_comment_index: Optional[Dict[str, List[Dict[str, Any]]]] = None
         self._backend: Optional[CodeBackend] = backend
         self._svf_entry_functions = list(svf_entry_functions or [])
@@ -220,6 +222,8 @@ class CodeIndex:
             self._function_index.clear()
             self._function_alias_index.clear()
             self._ambiguous_function_aliases.clear()
+            self._function_file_index.clear()
+            self._function_file_resolution_cache.clear()
 
         if self._backend:
             backend_index = self._backend.build_function_index()
@@ -262,6 +266,8 @@ class CodeIndex:
             index_key = self._unique_function_index_key(canonical_name, record)
             record["index_name"] = index_key
             self._function_index[index_key] = record
+            self._register_function_file_index(index_key, record)
+            self._function_file_resolution_cache.clear()
 
             alias_candidates: set[str] = {raw_name, canonical_name, index_key}
             alias_candidates.update(str(alias or "") for alias in (aliases or []))
@@ -356,9 +362,27 @@ class CodeIndex:
         query_variants = set(self._function_query_variants(func_name))
         if not query_variants:
             return ""
+        cache_key = self._function_file_resolution_cache_key(func_name, file_path)
         with self._cache_lock:
-            records = [(key, dict(info)) for key, info in self._function_index.items()]
+            if cache_key in self._function_file_resolution_cache:
+                return self._function_file_resolution_cache[cache_key]
 
+        records = self._function_records_for_file_hint(file_path)
+        if not records:
+            with self._cache_lock:
+                records = [(key, dict(info)) for key, info in self._function_index.items()]
+
+        result = self._resolve_function_match_from_records(query_variants, file_path, records)
+        with self._cache_lock:
+            self._function_file_resolution_cache[cache_key] = result
+        return result
+
+    def _resolve_function_match_from_records(
+        self,
+        query_variants: set[str],
+        file_path: str,
+        records: Sequence[Tuple[str, Dict[str, Any]]],
+    ) -> str:
         matches: List[Tuple[str, Dict[str, Any]]] = []
         for key, info in records:
             if not self._record_matches_file_hint(info, file_path):
@@ -377,6 +401,44 @@ class CodeIndex:
             )
         )
         return matches[0][0]
+
+    def _register_function_file_index(self, index_key: str, record: Dict[str, Any]) -> None:
+        file_path = str(record.get("file") or record.get("filename") or "")
+        for key in self._function_file_index_keys(file_path):
+            self._function_file_index.setdefault(key, set()).add(index_key)
+
+    def _function_records_for_file_hint(self, file_path: str) -> List[Tuple[str, Dict[str, Any]]]:
+        candidate_keys: set[str] = set()
+        with self._cache_lock:
+            for key in self._function_file_index_keys(file_path):
+                candidate_keys.update(self._function_file_index.get(key, set()))
+            return [
+                (key, dict(self._function_index[key]))
+                for key in sorted(candidate_keys)
+                if key in self._function_index
+            ]
+
+    def _function_file_resolution_cache_key(self, func_name: str, file_path: str) -> Tuple[str, str]:
+        return (
+            self._normalize_function_query(func_name),
+            self._normalize_path_hint(file_path),
+        )
+
+    def _function_file_index_keys(self, file_path: str) -> List[str]:
+        normalized = self._normalize_path_hint(file_path)
+        if not normalized:
+            return []
+        keys = [f"path:{normalized}"]
+        basename = normalized.rsplit("/", 1)[-1]
+        if basename:
+            keys.append(f"basename:{basename}")
+        return keys
+
+    @staticmethod
+    def _normalize_path_hint(file_path: str) -> str:
+        normalized = str(file_path or "").replace("\\", "/").strip().lstrip("./")
+        normalized = re.sub(r"/+", "/", normalized)
+        return normalized.lower() if os.name == "nt" else normalized
 
     def _function_record_query_variants(self, index_key: str, info: Dict[str, Any]) -> set[str]:
         values = {
@@ -837,6 +899,7 @@ class CodeIndex:
     def _clear_function_impl_cache(self) -> None:
         with self._cache_lock:
             self._function_impl_cache.clear()
+            self._function_file_resolution_cache.clear()
 
     def _find_leading_c_comment_block(
         self,
@@ -1406,6 +1469,7 @@ class CodeIndex:
         with self._cache_lock:
             self._file_lines_cache.clear()
             self._function_impl_cache.clear()
+            self._function_file_resolution_cache.clear()
             self._declaration_comment_index = None
             self._function_alias_index.clear()
             self._ambiguous_function_aliases.clear()
