@@ -7,9 +7,11 @@ import logging
 import os
 import re
 import subprocess
+import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ..common.utils import matches_configured_path, normalize_path
 from ..config.function_entry import FunctionEntry
@@ -248,6 +250,7 @@ class DiffImpactPlanner:
         self.max_call_depth = max_call_depth
         self.caller_limit = caller_limit
         self.synthetic_depth_threshold = synthetic_depth_threshold
+        self._caller_cache: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
         self._entry_discovery = EntryDiscovery(
             code_index,
             header_files=self.header_files or None,
@@ -517,7 +520,17 @@ class DiffImpactPlanner:
 
         for changed in changed_functions:
             intent = self._classify_change_intent(changed)
+            started_at = time.monotonic()
             selection = self._select_semantic_root(changed, intent)
+            logger.debug(
+                "Diff impact selected root for %s (%s): root=%s status=%s stop=%s elapsed=%.3fs",
+                changed.function_name,
+                intent,
+                selection.get("root_function", ""),
+                selection.get("coverage_status", "unresolved"),
+                selection.get("stop_reason", ""),
+                time.monotonic() - started_at,
+            )
             obligation_id = f"DIFF_OBLIGATION_{len(obligations) + 1}"
             obligation = {
                 "id": obligation_id,
@@ -753,12 +766,15 @@ class DiffImpactPlanner:
     def _find_best_upstream_root(self, changed: ChangedFunction, intent: str) -> Optional[Dict[str, Any]]:
         max_depth = self._max_depth_for_intent(intent)
         changed_ref = self._changed_ref(changed)
-        queue: List[Tuple[FunctionRef, List[FunctionRef], int]] = [(changed_ref, [changed_ref], 0)]
+        queue: Deque[Tuple[FunctionRef, List[FunctionRef], int]] = deque(
+            [(changed_ref, [changed_ref], 0)]
+        )
         visited = {changed_ref.key}
         candidates: List[Dict[str, Any]] = []
+        started_at = time.monotonic()
 
         while queue:
-            current, changed_to_current_path, depth = queue.pop(0)
+            current, changed_to_current_path, depth = queue.popleft()
             root_score = self._semantic_root_score(
                 current.function_name,
                 intent,
@@ -794,6 +810,14 @@ class DiffImpactPlanner:
                 visited.add(caller_ref.key)
                 queue.append((caller_ref, changed_to_current_path + [caller_ref], depth + 1))
 
+        logger.debug(
+            "Diff impact upstream root search for %s (%s): visited=%d candidates=%d elapsed=%.3fs",
+            changed.function_name,
+            intent,
+            len(visited),
+            len(candidates),
+            time.monotonic() - started_at,
+        )
         if not candidates:
             return None
         candidates.sort(key=lambda item: (-int(item["score"]), int(item["depth"]), item["candidate"]["function_name"]))
@@ -993,10 +1017,12 @@ class DiffImpactPlanner:
                 idx = path.index(root_name)
                 return list(path[idx:]), list(path_refs[idx:])
 
-        queue: List[Tuple[FunctionRef, List[FunctionRef], int]] = [(changed_ref, [changed_ref], 0)]
+        queue: Deque[Tuple[FunctionRef, List[FunctionRef], int]] = deque(
+            [(changed_ref, [changed_ref], 0)]
+        )
         visited = {changed_ref.key}
         while queue:
-            current, changed_to_current_path, depth = queue.pop(0)
+            current, changed_to_current_path, depth = queue.popleft()
             if depth >= self.max_call_depth:
                 continue
             for caller in self._get_callers(current.function_name, current.file_path):
@@ -1425,10 +1451,13 @@ class DiffImpactPlanner:
     ) -> List[ExternalPath]:
         results: List[ExternalPath] = []
         changed_ref = self._changed_ref(changed)
-        queue: List[Tuple[FunctionRef, List[FunctionRef], int]] = [(changed_ref, [changed_ref], 0)]
+        queue: Deque[Tuple[FunctionRef, List[FunctionRef], int]] = deque(
+            [(changed_ref, [changed_ref], 0)]
+        )
         visited = {changed_ref.key}
+        started_at = time.monotonic()
         while queue:
-            current, changed_to_current_path, depth = queue.pop(0)
+            current, changed_to_current_path, depth = queue.popleft()
             candidate = self._classify_external_entry(current.function_name, current.file_path)
             if candidate:
                 path_refs = list(reversed(changed_to_current_path))
@@ -1457,6 +1486,13 @@ class DiffImpactPlanner:
                     )
                 visited.add(caller_ref.key)
                 queue.append((caller_ref, changed_to_current_path + [caller_ref], depth + 1))
+        logger.debug(
+            "Diff impact external entry search for %s: visited=%d external_paths=%d elapsed=%.3fs",
+            changed.function_name,
+            len(visited),
+            len(results),
+            time.monotonic() - started_at,
+        )
         return results
 
     def _thread_entry_candidate(
@@ -1752,6 +1788,9 @@ class DiffImpactPlanner:
                 return self.code_index.get_function_impl(func_name)
 
     def _get_callers(self, func_name: str, file_path: str = "") -> List[Dict[str, Any]]:
+        cache_key = (str(func_name or ""), str(file_path or ""))
+        if cache_key in self._caller_cache:
+            return [dict(caller) for caller in self._caller_cache[cache_key]]
         try:
             callers = self.code_index.get_callers(
                 func_name,
@@ -1767,7 +1806,9 @@ class DiffImpactPlanner:
         except Exception as exc:
             logger.debug("Failed to get callers for %s: %s", func_name, exc)
             callers = []
-        return [caller for caller in callers if isinstance(caller, dict)]
+        result = [dict(caller) for caller in callers if isinstance(caller, dict)]
+        self._caller_cache[cache_key] = [dict(caller) for caller in result]
+        return result
 
     def _changed_ref(self, changed: ChangedFunction) -> FunctionRef:
         return self._function_ref(

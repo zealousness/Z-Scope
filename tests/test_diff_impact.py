@@ -28,6 +28,7 @@ class FakeCodeIndex:
             }
             self.functions[key] = data
         self.callers = callers or {}
+        self.caller_call_count = {}
         self.headers = headers or []
 
     def ensure_index_ready(self):
@@ -62,6 +63,7 @@ class FakeCodeIndex:
 
     def get_callers(self, name, limit=20, callee_file=""):
         key = (name, callee_file)
+        self.caller_call_count[key] = self.caller_call_count.get(key, 0) + 1
         values = self.callers.get(key)
         if values is None:
             values = self.callers.get(name, [])
@@ -635,6 +637,41 @@ def test_duplicate_function_names_do_not_mix_reverse_call_paths(tmp_path: Path):
     assert [ref["file_path"] for ref in refs] == ["src/api.c", "src/real_b.c", "src/c.c"]
     assert all(item["function_name"] != "A" for item in focus["context_callers"])
     assert plan.function_coverage[0]["path_refs"][0][1]["file_path"] == "src/real_b.c"
+
+
+def test_diff_planner_caches_callers_by_function_and_file(tmp_path: Path):
+    _write_numbered_file(tmp_path, "api.c")
+    functions = {
+        "Caller": {
+            "file": "api.c",
+            "start_line": 1,
+            "end_line": 3,
+            "code": "int Caller(void) { return Changed(); }",
+        },
+        "Changed": {
+            "file": "api.c",
+            "start_line": 5,
+            "end_line": 7,
+            "code": "int Changed(void) { return 1; }",
+        },
+    }
+    code_index = FakeCodeIndex(
+        tmp_path,
+        functions,
+        callers={("Changed", "api.c"): ["Caller"]},
+    )
+    planner = StaticDiffPlanner(
+        code_index,
+        repo_root=tmp_path,
+        base_ref="base",
+        changed_ranges=[ChangedLineRange("api.c", 6, 6)],
+    )
+
+    first = planner._get_callers("Changed", "api.c")
+    second = planner._get_callers("Changed", "api.c")
+
+    assert first == second
+    assert code_index.caller_call_count[("Changed", "api.c")] == 1
 
 
 def test_empty_changed_function_mapping_emits_path_diagnostics(tmp_path: Path):
