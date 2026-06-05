@@ -6,7 +6,8 @@ import json
 import logging
 import shutil
 import subprocess
-from collections import deque
+import time
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set
@@ -412,12 +413,8 @@ class EntryBitcodeSelector:
         """
         entry_records = self._entry_records(entries)
         all_bcs = [Path(p).resolve() for p in candidate_bcs]
-        bc_to_src_norm = {
-            Path(bc).resolve(): self._resolve_source_path(str(src))
-            for bc, src in bc_to_src.items()
-        }
-        bc_to_src_norm = {bc: src for bc, src in bc_to_src_norm.items() if src}
-        source_to_bcs = self._source_to_bcs(all_bcs, bc_to_src)
+        bc_to_src_norm = self._normalize_bc_to_src(bc_to_src)
+        source_to_bcs = self._source_to_bcs(all_bcs, bc_to_src, normalized_bc_to_src=bc_to_src_norm)
         if not entry_records:
             selected, plan = self.select(
                 group_name=group_prefix,
@@ -507,6 +504,26 @@ class EntryBitcodeSelector:
             group_prefix,
             len(seeds_by_bc),
         )
+        pool_started_at = time.monotonic()
+        pool_by_bc = self._pool_by_bc(
+            all_bcs,
+            bc_to_src,
+            normalized_bc_to_src=bc_to_src_norm,
+        )
+        shared_conflicts_by_bc = self._shared_conflicts_by_bc(
+            all_bcs,
+            bc_to_src,
+            normalized_bc_to_src=bc_to_src_norm,
+        )
+        pool_distribution = Counter(pool or "<none>" for pool in pool_by_bc.values())
+        logger.info(
+            "SVF entry clustering '%s': precomputed pool maps for %d .bc in %.3fs (pools=%s)",
+            group_prefix,
+            len(all_bcs),
+            time.monotonic() - pool_started_at,
+            ", ".join(f"{pool}:{count}" for pool, count in sorted(pool_distribution.items())),
+        )
+        allowed_scope_cache: Dict[tuple[str, ...], tuple[Set[Path], Set[Path]]] = {}
         for idx, seed in enumerate(seeds_by_bc.values(), start=1):
             logger.info(
                 "SVF entry clustering '%s': expanding seed %d/%d (%d entr%s, %d initial .bc)",
@@ -521,8 +538,11 @@ class EntryBitcodeSelector:
                 initial_bcs=seed["initial_bcs"],
                 entry_records=seed["entry_records"],
                 all_bcs=all_bcs,
-                bc_to_src=bc_to_src,
+                normalized_bc_to_src=bc_to_src_norm,
                 source_to_bcs=source_to_bcs,
+                pool_by_bc=pool_by_bc,
+                shared_conflicts_by_bc=shared_conflicts_by_bc,
+                allowed_scope_cache=allowed_scope_cache,
             )
             seed.update(expanded)
             seed["unresolved"].update(unresolved_entries)
@@ -680,8 +700,11 @@ class EntryBitcodeSelector:
         initial_bcs: Set[Path],
         entry_records: Sequence[Mapping[str, str]],
         all_bcs: Sequence[Path],
-        bc_to_src: Mapping[Path, Path],
+        normalized_bc_to_src: Mapping[Path, Path],
         source_to_bcs: Mapping[Path, List[Path]],
+        pool_by_bc: Mapping[Path, str],
+        shared_conflicts_by_bc: Mapping[Path, Set[str]],
+        allowed_scope_cache: Dict[tuple[str, ...], tuple[Set[Path], Set[Path]]],
     ) -> Dict[str, Any]:
         entry_names = self._entry_names_from_records(entry_records)
         logger.info(
@@ -690,8 +713,6 @@ class EntryBitcodeSelector:
             len(initial_bcs),
             len(all_bcs),
         )
-        pool_by_bc = self._pool_by_bc(all_bcs, bc_to_src)
-        shared_conflicts_by_bc = self._shared_conflicts_by_bc(all_bcs, bc_to_src)
         seed_pools = {
             pool_by_bc.get(Path(bc).resolve(), "")
             for bc in initial_bcs
@@ -701,16 +722,38 @@ class EntryBitcodeSelector:
             "SVF seed dependency: seed pools=%s",
             ",".join(sorted(seed_pools)) if seed_pools else "<none>",
         )
-        allowed_bcs = {
-            Path(bc).resolve()
-            for bc in all_bcs
-            if self._bc_compatible_with_seed_pools(
-                Path(bc).resolve(),
-                seed_pools,
-                pool_by_bc,
-                shared_conflicts_by_bc,
+        allowed_cache_key = tuple(sorted(seed_pools))
+        if allowed_cache_key in allowed_scope_cache:
+            cached_allowed_bcs, cached_allowed_sources = allowed_scope_cache[allowed_cache_key]
+            allowed_bcs = set(cached_allowed_bcs)
+            allowed_sources = set(cached_allowed_sources)
+            logger.info(
+                "SVF seed dependency: allowed scope cache hit for pools=%s",
+                ",".join(allowed_cache_key) if allowed_cache_key else "<none>",
             )
-        }
+        else:
+            allowed_started_at = time.monotonic()
+            allowed_bcs = {
+                Path(bc).resolve()
+                for bc in all_bcs
+                if self._bc_compatible_with_seed_pools(
+                    Path(bc).resolve(),
+                    seed_pools,
+                    pool_by_bc,
+                    shared_conflicts_by_bc,
+                )
+            }
+            allowed_sources = {
+                normalized_bc_to_src.get(Path(bc).resolve())
+                for bc in allowed_bcs
+            }
+            allowed_sources = {src for src in allowed_sources if src}
+            allowed_scope_cache[allowed_cache_key] = (set(allowed_bcs), set(allowed_sources))
+            logger.info(
+                "SVF seed dependency: allowed scope cache miss for pools=%s; computed in %.3fs",
+                ",".join(allowed_cache_key) if allowed_cache_key else "<none>",
+                time.monotonic() - allowed_started_at,
+            )
         cache_key = (
             tuple(sorted(Path(bc).resolve().as_posix() for bc in initial_bcs)),
             tuple(sorted(seed_pools)),
@@ -732,19 +775,19 @@ class EntryBitcodeSelector:
                 "seed_pools": set(cached["seed_pools"]),
             }
 
-        allowed_sources = {
-            self._resolve_source_path(str(bc_to_src.get(Path(bc).resolve(), "")))
-            for bc in allowed_bcs
-        }
-        allowed_sources = {src for src in allowed_sources if src}
         logger.info(
             "SVF seed dependency: allowed candidates=%d .bc / %d source file(s)",
             len(allowed_bcs),
             len(allowed_sources),
         )
+        reachable_started_at = time.monotonic()
         reachable, selected_sources, unresolved = self._reachable_sources(
             entry_records,
             allowed_sources=allowed_sources,
+        )
+        logger.info(
+            "SVF seed dependency: reachable source expansion completed in %.3fs",
+            time.monotonic() - reachable_started_at,
         )
         selected_sources.update(
             src for src in self._always_include_sources(allowed_sources) if src in allowed_sources
@@ -851,9 +894,18 @@ class EntryBitcodeSelector:
         self,
         all_bcs: Sequence[Path],
         bc_to_src: Mapping[Path, Path],
+        *,
+        normalized_bc_to_src: Optional[Mapping[Path, Path]] = None,
     ) -> Dict[Path, str]:
+        normalized_map = (
+            normalized_bc_to_src
+            if normalized_bc_to_src is not None
+            else self._normalize_bc_to_src(bc_to_src)
+        )
         return {
-            Path(bc).resolve(): self.pool_classifier.pool_for_bc(Path(bc).resolve(), bc_to_src)
+            Path(bc).resolve(): self.pool_classifier.pool_for_source(
+                normalized_map.get(Path(bc).resolve())
+            )
             for bc in all_bcs
         }
 
@@ -861,11 +913,17 @@ class EntryBitcodeSelector:
         self,
         all_bcs: Sequence[Path],
         bc_to_src: Mapping[Path, Path],
+        *,
+        normalized_bc_to_src: Optional[Mapping[Path, Path]] = None,
     ) -> Dict[Path, Set[str]]:
+        normalized_map = (
+            normalized_bc_to_src
+            if normalized_bc_to_src is not None
+            else self._normalize_bc_to_src(bc_to_src)
+        )
         return {
-            Path(bc).resolve(): self.pool_classifier.shared_conflicts_for_bc(
-                Path(bc).resolve(),
-                bc_to_src,
+            Path(bc).resolve(): self.pool_classifier.shared_conflicts_for_source(
+                normalized_map.get(Path(bc).resolve())
             )
             for bc in all_bcs
         }
@@ -1055,10 +1113,7 @@ class EntryBitcodeSelector:
             len(selected_bcs),
             len(all_bcs),
         )
-        pool_by_bc = {
-            Path(bc).resolve(): self.pool_classifier.pool_for_bc(Path(bc).resolve(), bc_to_src)
-            for bc in all_bcs
-        }
+        pool_by_bc = self._pool_by_bc(all_bcs, bc_to_src)
         for idx, bc in enumerate(all_bcs, start=1):
             if idx == 1 or idx % 100 == 0 or idx == len(all_bcs):
                 logger.info(
@@ -1199,14 +1254,28 @@ class EntryBitcodeSelector:
         self,
         all_bcs: Sequence[Path],
         bc_to_src: Mapping[Path, Path],
+        *,
+        normalized_bc_to_src: Optional[Mapping[Path, Path]] = None,
     ) -> Dict[Path, List[Path]]:
-        normalized_map = {Path(bc).resolve(): src for bc, src in bc_to_src.items()}
+        normalized_map = (
+            normalized_bc_to_src
+            if normalized_bc_to_src is not None
+            else self._normalize_bc_to_src(bc_to_src)
+        )
         result: Dict[Path, List[Path]] = {}
         for bc in all_bcs:
-            src = self._resolve_source_path(str(normalized_map.get(Path(bc).resolve(), "")))
+            src = normalized_map.get(Path(bc).resolve())
             if src:
                 result.setdefault(src, []).append(Path(bc).resolve())
         return result
+
+    def _normalize_bc_to_src(self, bc_to_src: Mapping[Path, Path]) -> Dict[Path, Path]:
+        normalized: Dict[Path, Path] = {}
+        for bc, src in bc_to_src.items():
+            source = self._resolve_source_path(str(src))
+            if source:
+                normalized[Path(bc).resolve()] = source
+        return normalized
 
     def _resolve_source_path(self, file_path: str) -> Optional[Path]:
         if not file_path:
