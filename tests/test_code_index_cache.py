@@ -32,6 +32,23 @@ class FakeBackend:
         self.closed = True
 
 
+class MultiFunctionBackend:
+    def __init__(self, function_index):
+        self.function_index = function_index
+
+    def build_function_index(self):
+        return self.function_index
+
+    def get_method(self, name: str):
+        return None
+
+    def get_method_callees(self, name: str, limit: int = 30):
+        return []
+
+    def close(self) -> None:
+        pass
+
+
 def _write_source(tmp_path: Path) -> Path:
     source_path = tmp_path / "demo.c"
     source_path.write_text(
@@ -121,3 +138,131 @@ def test_function_impl_without_context_skips_comment_scan_and_callee_query(
     assert result is not None
     assert result["callees"] == []
     assert result["comment_blocks"] == []
+
+
+def test_file_scoped_function_lookup_avoids_full_path_scan(tmp_path, monkeypatch) -> None:
+    target_path = tmp_path / "src" / "target.c"
+    target_path.parent.mkdir(parents=True)
+    target_path.write_text("int Target(void) { return 7; }\n", encoding="utf-8")
+    function_index = {
+        f"Unrelated{idx}": {
+            "name": f"Unrelated{idx}",
+            "file": f"other/file_{idx}.c",
+            "start_line": 1,
+            "end_line": 1,
+            "signature": f"int Unrelated{idx}(void)",
+        }
+        for idx in range(3000)
+    }
+    function_index["Target"] = {
+        "name": "Target",
+        "file": "src/target.c",
+        "start_line": 1,
+        "end_line": 1,
+        "signature": "int Target(void)",
+    }
+    index = CodeIndex(tmp_path, source_root=tmp_path, backend=MultiFunctionBackend(function_index))
+    real_match = index._paths_match_hint
+    calls = {"count": 0}
+
+    def counting_match(stored_path, hint_path):
+        calls["count"] += 1
+        return real_match(stored_path, hint_path)
+
+    monkeypatch.setattr(index, "_paths_match_hint", counting_match)
+
+    result = index.get_function_impl(
+        "Target",
+        file_path="src/target.c",
+        include_context=False,
+    )
+
+    assert result is not None
+    assert result["file"].replace("\\", "/") == "src/target.c"
+    assert calls["count"] < 20
+
+
+def test_file_scoped_lookup_keeps_same_basename_paths_distinct(tmp_path) -> None:
+    left_path = tmp_path / "src" / "a" / "shared.c"
+    right_path = tmp_path / "src" / "b" / "shared.c"
+    left_path.parent.mkdir(parents=True)
+    right_path.parent.mkdir(parents=True)
+    left_path.write_text("int Target(void) { return 1; }\n", encoding="utf-8")
+    right_path.write_text("int Target(void) { return 2; }\n", encoding="utf-8")
+    backend = MultiFunctionBackend(
+        {
+            "TargetLeft": {
+                "name": "Target",
+                "file": "src/a/shared.c",
+                "start_line": 1,
+                "end_line": 1,
+                "signature": "int Target(void)",
+            },
+            "TargetRight": {
+                "name": "Target",
+                "file": "src/b/shared.c",
+                "start_line": 1,
+                "end_line": 1,
+                "signature": "int Target(void)",
+            },
+        }
+    )
+    index = CodeIndex(tmp_path, source_root=tmp_path, backend=backend)
+
+    result = index.get_function_impl(
+        "Target",
+        file_path="src/b/shared.c",
+        include_context=False,
+    )
+
+    assert result is not None
+    assert result["file"].replace("\\", "/") == "src/b/shared.c"
+    assert "return 2" in result["code"]
+
+
+def test_file_resolution_cache_clears_on_index_rebuild(tmp_path) -> None:
+    first_path = tmp_path / "src" / "first.c"
+    second_path = tmp_path / "src" / "second.c"
+    first_path.parent.mkdir(parents=True)
+    first_path.write_text("int Target(void) { return 1; }\n", encoding="utf-8")
+    second_path.write_text("int Target(void) { return 2; }\n", encoding="utf-8")
+    backend = MultiFunctionBackend(
+        {
+            "Target": {
+                "name": "Target",
+                "file": "src/first.c",
+                "start_line": 1,
+                "end_line": 1,
+                "signature": "int Target(void)",
+            },
+        }
+    )
+    index = CodeIndex(tmp_path, source_root=tmp_path, backend=backend)
+
+    first = index.get_function_impl(
+        "Target",
+        file_path="src/first.c",
+        include_context=False,
+    )
+    assert first is not None
+    assert index._function_file_resolution_cache
+
+    backend.function_index = {
+        "Target": {
+            "name": "Target",
+            "file": "src/second.c",
+            "start_line": 1,
+            "end_line": 1,
+            "signature": "int Target(void)",
+        },
+    }
+    index._build_index()
+
+    assert index._function_file_resolution_cache == {}
+    second = index.get_function_impl(
+        "Target",
+        file_path="src/second.c",
+        include_context=False,
+    )
+    assert second is not None
+    assert second["file"].replace("\\", "/") == "src/second.c"
