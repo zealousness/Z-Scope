@@ -352,7 +352,28 @@ def main(
                 llm_client=llm_client,
                 user_config=ucs,
             )
-            verification_results = verifier.verify_alerts(alerts)
+            configured_alert_workers = getattr(
+                zscope_config.analysis,
+                "validation_parallel_workers",
+                0,
+            )
+            try:
+                alert_workers = int(configured_alert_workers or 0)
+            except (TypeError, ValueError):
+                alert_workers = 0
+            if alert_workers <= 0:
+                try:
+                    alert_workers = int(
+                        getattr(zscope_config.analysis, "parallel_workers", 1) or 1
+                    )
+                except (TypeError, ValueError):
+                    alert_workers = 1
+            alert_workers = max(1, min(len(alerts), alert_workers))
+            click.echo(f"Verifying alerts with {alert_workers} worker(s)")
+            verification_results = verifier.verify_alerts(
+                alerts,
+                max_workers=alert_workers,
+            )
 
             # 输出报告
             import json

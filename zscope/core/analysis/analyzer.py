@@ -673,13 +673,13 @@ class Analyzer:
                 agent_context["location"],
             )
             logger.info(
-                "Successfully modeled function: %s (ctx 閳?%s tokens)",
+                "Successfully modeled function: %s (ctx ≈%s tokens)",
                 state["entry_func"],
                 f"{sm_tokens:,}",
             )
             state["notes"].append(f"Successfully modeled function: {state['entry_func']}")
         else:
-            logger.warning("Semantic modeling failed: %s (ctx 閳?%s tokens)", response.error, f"{sm_tokens:,}")
+            logger.warning("Semantic modeling failed: %s (ctx ≈%s tokens)", response.error, f"{sm_tokens:,}")
             state["notes"].append(f"Semantic modeling failed: {response.error}")
 
     def _step_focused_subagent_planning(self, state: Dict[str, Any]) -> None:
@@ -1024,7 +1024,7 @@ class Analyzer:
                 state["total_context_tokens"] += va_ctx_tokens
                 self._accumulate_cumulative_token_metadata(state, response.metadata if response.metadata else {})
                 logger.info(
-                    "Vulnerability Analyzer found %d issue(s) for task: %s (ctx 閳?%s tokens)",
+                    "Vulnerability Analyzer found %d issue(s) for task: %s (ctx ≈%s tokens)",
                     len(raw_new_issues),
                     agent_cfg.task,
                     f"{va_ctx_tokens:,}",
@@ -1866,13 +1866,19 @@ class Analyzer:
         db = self._get_knowledge_db()
         entry_func = str(state.get("entry_func") or "")
         if db is not None:
+            reachable_funcs = self._reachable_function_names_from_entry(entry_func)
             try:
+                bugs = db.get_enriched_taint_bugs(
+                    func_names=sorted(reachable_funcs),
+                    limit=50,
+                )
+            except TypeError:
                 bugs = db.get_enriched_taint_bugs(func_name=entry_func, limit=50)
             except Exception as exc:
                 logger.debug("Unable to read backend taint bugs: %s", exc)
                 bugs = []
 
-            candidates.extend(
+            svf_candidates = (
                 SvfValueFlowCandidateGenerator(
                     source_path_resolver=self._reconstruct_svf_source_path,
                 ).generate_issues(
@@ -1880,6 +1886,15 @@ class Analyzer:
                     entry_func=entry_func,
                 )
             )
+            if bugs or svf_candidates:
+                logger.info(
+                    "Backend Saber signal candidates for entry '%s': reachable=%d, bugs=%d, candidates=%d",
+                    entry_func,
+                    len(reachable_funcs),
+                    len(bugs),
+                    len(svf_candidates),
+                )
+            candidates.extend(svf_candidates)
         candidates.extend(self._detect_clang_knowledgedb_candidates(state, db))
         candidates.extend(self._detect_joern_cpg_candidates(state))
         candidates = dedupe_rule_candidates(candidates)
@@ -2080,6 +2095,40 @@ class Analyzer:
                 seen.add(name)
                 queue.append((name, depth + 1, next_path))
         return []
+
+    def _reachable_function_names_from_entry(
+        self,
+        entry_func: str,
+        *,
+        max_depth: int = 5,
+        max_nodes: int = 300,
+    ) -> Set[str]:
+        if not entry_func:
+            return set()
+        reachable: Set[str] = {entry_func}
+        get_callees = getattr(self.code_index, "get_callees", None)
+        if not callable(get_callees):
+            return reachable
+        queue: List[tuple[str, int]] = [(entry_func, 0)]
+        while queue and len(reachable) < max_nodes:
+            current, depth = queue.pop(0)
+            if depth >= max_depth:
+                continue
+            try:
+                callees = get_callees(current, limit=100)
+            except Exception:
+                continue
+            for item in callees or []:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or item.get("callee_name") or "").strip()
+                if not name or name in reachable:
+                    continue
+                reachable.add(name)
+                queue.append((name, depth + 1))
+                if len(reachable) >= max_nodes:
+                    break
+        return reachable
 
     def _reconstruct_svf_source_path(self, bug: Dict[str, Any], entry_func: str) -> Dict[str, Any]:
         target_func = str(bug.get("func_name") or bug.get("source_func") or entry_func or "")
@@ -3863,7 +3912,7 @@ class Analyzer:
                 self.snapshot_store.lock_manager.release(func, success=False)
                 logger.error(f"[premodel] Error modeling '{func}': {e}")
 
-        logger.info(f"[premodel] Done: {modeled} modeled, {skipped} reused from cache (ctx 閳?{total_tokens:,} tokens)")
+        logger.info(f"[premodel] Done: {modeled} modeled, {skipped} reused from cache (ctx ≈{total_tokens:,} tokens)")
         return modeled, skipped, total_tokens
 
     @staticmethod

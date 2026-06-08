@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import heapq
 import logging
 import shutil
 import subprocess
@@ -16,6 +17,8 @@ from ..common.utils import matches_configured_path, normalize_path
 from .knowledge_db import KnowledgeDB
 
 logger = logging.getLogger(__name__)
+
+ENTRY_CLUSTER_STRATEGY_VERSION = "cost_agglomerative_v1"
 
 
 @dataclass
@@ -556,47 +559,12 @@ class EntryBitcodeSelector:
                 len(seed["reachable"]),
             )
 
-        clusters: List[Dict[str, Any]] = []
-        max_tus = self.config.max_selected_tus
-        for seed in seeds:
-            best_idx = -1
-            best_overlap = 0.0
-            for idx, cluster in enumerate(clusters):
-                if not self._seed_pools_compatible(cluster["seed_pools"], seed["seed_pools"]):
-                    continue
-                union = set(cluster["selected"]) | set(seed["selected"])
-                if max_tus > 0 and len(union) > max_tus:
-                    continue
-                overlap = self._jaccard(cluster["selected"], seed["selected"])
-                if overlap >= min_overlap and overlap > best_overlap:
-                    best_idx = idx
-                    best_overlap = overlap
-            if best_idx >= 0:
-                clusters[best_idx]["entries"].extend(seed["entries"])
-                clusters[best_idx]["entry_records"].extend(seed["entry_records"])
-                clusters[best_idx]["initial_bcs"].update(seed["initial_bcs"])
-                clusters[best_idx]["entry_sources"].update(seed["entry_sources"])
-                clusters[best_idx]["selected"].update(seed["selected"])
-                clusters[best_idx]["selected_sources"].update(seed["selected_sources"])
-                clusters[best_idx]["reachable"].update(seed["reachable"])
-                clusters[best_idx]["unresolved"].update(seed["unresolved"])
-                clusters[best_idx]["allowed_bcs"].update(seed["allowed_bcs"])
-                clusters[best_idx]["seed_pools"].update(seed["seed_pools"])
-            else:
-                clusters.append(
-                    {
-                        "entries": list(seed["entries"]),
-                        "entry_records": list(seed["entry_records"]),
-                        "initial_bcs": set(seed["initial_bcs"]),
-                        "entry_sources": set(seed["entry_sources"]),
-                        "selected": set(seed["selected"]),
-                        "selected_sources": set(seed["selected_sources"]),
-                        "reachable": set(seed["reachable"]),
-                        "unresolved": set(seed["unresolved"]),
-                        "allowed_bcs": set(seed["allowed_bcs"]),
-                        "seed_pools": set(seed["seed_pools"]),
-                    }
-                )
+        clusters = self._merge_seed_clusters_by_cost(
+            seeds,
+            group_prefix=group_prefix,
+            all_bcs=all_bcs,
+            min_overlap=min_overlap,
+        )
 
         logger.info(
             "SVF entry clustering '%s': formed %d cluster(s) from %d seed(s)",
@@ -818,6 +786,306 @@ class EntryBitcodeSelector:
             "y" if len(unresolved) == 1 else "ies",
         )
         return data
+
+    def _merge_seed_clusters_by_cost(
+        self,
+        seeds: Sequence[Mapping[str, Any]],
+        *,
+        group_prefix: str,
+        all_bcs: Sequence[Path],
+        min_overlap: float,
+    ) -> List[Dict[str, Any]]:
+        if not seeds:
+            return []
+
+        bc_to_bit = {Path(bc).resolve(): idx for idx, bc in enumerate(all_bcs)}
+        clusters: Dict[int, Dict[str, Any]] = {}
+        bit_to_clusters: Dict[int, List[int]] = {}
+        selected_sizes: List[int] = []
+
+        for cluster_id, seed in enumerate(seeds):
+            selected_bits = self._paths_to_bitset(seed.get("selected", set()), bc_to_bit)
+            allowed_bits = self._paths_to_bitset(seed.get("allowed_bcs", set()), bc_to_bit)
+            cluster = self._seed_to_merge_cluster(
+                seed,
+                cluster_id=cluster_id,
+                order=cluster_id,
+                selected_bits=selected_bits,
+                allowed_bits=allowed_bits,
+            )
+            clusters[cluster_id] = cluster
+            selected_sizes.append(cluster["selected_size"])
+            for bit in self._iter_bit_indices(selected_bits):
+                bit_to_clusters.setdefault(bit, []).append(cluster_id)
+
+        cost_bias = self._entry_cluster_cost_bias(selected_sizes)
+        initial_cost = self._entry_cluster_total_cost(clusters.values(), cost_bias)
+        heap: List[tuple[float, int, int, int, int, int, int]] = []
+        reject_stats: Counter[str] = Counter()
+        scored_pairs = 0
+
+        def push_candidate(left_id: int, right_id: int) -> None:
+            nonlocal scored_pairs
+            if left_id == right_id:
+                return
+            if left_id > right_id:
+                left_id, right_id = right_id, left_id
+            left = clusters.get(left_id)
+            right = clusters.get(right_id)
+            if not left or not right or not left["active"] or not right["active"]:
+                return
+            scored_pairs += 1
+            score, reject_reason = self._score_seed_cluster_merge(
+                left,
+                right,
+                cost_bias=cost_bias,
+                min_overlap=min_overlap,
+            )
+            if score is None:
+                reject_stats[reject_reason] += 1
+                return
+            gain, union_size = score
+            heapq.heappush(
+                heap,
+                (
+                    -gain,
+                    union_size,
+                    min(left["order"], right["order"]),
+                    left_id,
+                    right_id,
+                    left["version"],
+                    right["version"],
+                ),
+            )
+
+        initial_pairs: Set[tuple[int, int]] = set()
+        for cluster_ids in bit_to_clusters.values():
+            unique_ids = sorted(set(cluster_ids))
+            for left_idx, left_id in enumerate(unique_ids[:-1]):
+                for right_id in unique_ids[left_idx + 1:]:
+                    initial_pairs.add((left_id, right_id))
+
+        for left_id, right_id in sorted(initial_pairs):
+            push_candidate(left_id, right_id)
+
+        logger.info(
+            "SVF entry clustering '%s': cost merge start seeds=%d candidate_pairs=%d "
+            "scored_pairs=%d initial_cost=%.1f cost_bias=%.1f sizes=(%s)",
+            group_prefix,
+            len(seeds),
+            len(initial_pairs),
+            scored_pairs,
+            initial_cost,
+            cost_bias,
+            self._entry_cluster_size_summary(selected_sizes),
+        )
+
+        active_ids = set(clusters)
+        next_cluster_id = len(clusters)
+        merge_count = 0
+        stale_count = 0
+
+        while heap:
+            (
+                negative_gain,
+                _union_size,
+                _order,
+                left_id,
+                right_id,
+                left_version,
+                right_version,
+            ) = heapq.heappop(heap)
+            left = clusters.get(left_id)
+            right = clusters.get(right_id)
+            if (
+                not left
+                or not right
+                or not left["active"]
+                or not right["active"]
+                or left["version"] != left_version
+                or right["version"] != right_version
+            ):
+                stale_count += 1
+                continue
+
+            merged = self._merge_seed_cluster_records(
+                left,
+                right,
+                cluster_id=next_cluster_id,
+            )
+            neighbor_ids: Set[int] = set()
+            for bit in self._iter_bit_indices(merged["selected_bits"]):
+                for cluster_id in bit_to_clusters.get(bit, []):
+                    if cluster_id in active_ids and cluster_id not in {left_id, right_id}:
+                        neighbor_ids.add(cluster_id)
+
+            left["active"] = False
+            right["active"] = False
+            left["version"] += 1
+            right["version"] += 1
+            active_ids.discard(left_id)
+            active_ids.discard(right_id)
+            clusters[next_cluster_id] = merged
+            active_ids.add(next_cluster_id)
+            for bit in self._iter_bit_indices(merged["selected_bits"]):
+                bit_to_clusters.setdefault(bit, []).append(next_cluster_id)
+            for neighbor_id in sorted(neighbor_ids):
+                push_candidate(next_cluster_id, neighbor_id)
+
+            merge_count += 1
+            logger.debug(
+                "SVF entry clustering '%s': merged cluster %d + %d -> %d "
+                "(gain=%.1f, selected=%d)",
+                group_prefix,
+                left_id,
+                right_id,
+                next_cluster_id,
+                -negative_gain,
+                merged["selected_size"],
+            )
+            next_cluster_id += 1
+
+        active_clusters = [
+            clusters[cluster_id]
+            for cluster_id in sorted(active_ids, key=lambda item: (clusters[item]["order"], item))
+        ]
+        final_sizes = [cluster["selected_size"] for cluster in active_clusters]
+        final_cost = self._entry_cluster_total_cost(active_clusters, cost_bias)
+        reject_text = (
+            ", ".join(f"{reason}:{count}" for reason, count in sorted(reject_stats.items()))
+            or "<none>"
+        )
+        logger.info(
+            "SVF entry clustering '%s': cost merge completed %d -> %d cluster(s), "
+            "merges=%d, scored_pairs=%d, stale_pairs=%d, estimated_cost %.1f -> %.1f",
+            group_prefix,
+            len(seeds),
+            len(active_clusters),
+            merge_count,
+            scored_pairs,
+            stale_count,
+            initial_cost,
+            final_cost,
+        )
+        logger.info(
+            "SVF entry clustering '%s': final cluster selected .bc sizes=(%s), rejected=(%s)",
+            group_prefix,
+            self._entry_cluster_size_summary(final_sizes),
+            reject_text,
+        )
+        return active_clusters
+
+    def _seed_to_merge_cluster(
+        self,
+        seed: Mapping[str, Any],
+        *,
+        cluster_id: int,
+        order: int,
+        selected_bits: int,
+        allowed_bits: int,
+    ) -> Dict[str, Any]:
+        entries = list(seed.get("entries", []))
+        entry_records = list(seed.get("entry_records", []))
+        entry_items = []
+        for idx, entry in enumerate(entries):
+            if idx < len(entry_records):
+                record = entry_records[idx]
+            else:
+                record = {
+                    "name": str(getattr(entry, "function_name", entry) or ""),
+                    "file_path": str(getattr(entry, "file_path", "") or ""),
+                }
+            entry_items.append((order, idx, entry, record))
+        return {
+            "id": cluster_id,
+            "version": 0,
+            "active": True,
+            "order": order,
+            "entry_items": entry_items,
+            "entries": entries,
+            "entry_records": entry_records,
+            "initial_bcs": set(seed.get("initial_bcs", set())),
+            "entry_sources": set(seed.get("entry_sources", set())),
+            "selected": set(seed.get("selected", set())),
+            "selected_sources": set(seed.get("selected_sources", set())),
+            "reachable": set(seed.get("reachable", set())),
+            "unresolved": set(seed.get("unresolved", set())),
+            "allowed_bcs": set(seed.get("allowed_bcs", set())),
+            "seed_pools": set(seed.get("seed_pools", set())),
+            "selected_bits": selected_bits,
+            "allowed_bits": allowed_bits,
+            "selected_size": selected_bits.bit_count(),
+        }
+
+    def _merge_seed_cluster_records(
+        self,
+        left: Mapping[str, Any],
+        right: Mapping[str, Any],
+        *,
+        cluster_id: int,
+    ) -> Dict[str, Any]:
+        entry_items = sorted(
+            list(left["entry_items"]) + list(right["entry_items"]),
+            key=lambda item: (item[0], item[1]),
+        )
+        selected_bits = int(left["selected_bits"]) | int(right["selected_bits"])
+        allowed_bits = int(left["allowed_bits"]) | int(right["allowed_bits"])
+        return {
+            "id": cluster_id,
+            "version": 0,
+            "active": True,
+            "order": min(left["order"], right["order"]),
+            "entry_items": entry_items,
+            "entries": [item[2] for item in entry_items],
+            "entry_records": [item[3] for item in entry_items],
+            "initial_bcs": set(left["initial_bcs"]) | set(right["initial_bcs"]),
+            "entry_sources": set(left["entry_sources"]) | set(right["entry_sources"]),
+            "selected": set(left["selected"]) | set(right["selected"]),
+            "selected_sources": set(left["selected_sources"]) | set(right["selected_sources"]),
+            "reachable": set(left["reachable"]) | set(right["reachable"]),
+            "unresolved": set(left["unresolved"]) | set(right["unresolved"]),
+            "allowed_bcs": set(left["allowed_bcs"]) | set(right["allowed_bcs"]),
+            "seed_pools": set(left["seed_pools"]) | set(right["seed_pools"]),
+            "selected_bits": selected_bits,
+            "allowed_bits": allowed_bits,
+            "selected_size": selected_bits.bit_count(),
+        }
+
+    def _score_seed_cluster_merge(
+        self,
+        left: Mapping[str, Any],
+        right: Mapping[str, Any],
+        *,
+        cost_bias: float,
+        min_overlap: float,
+    ) -> tuple[Optional[tuple[float, int]], str]:
+        if not self._seed_pools_compatible(set(left["seed_pools"]), set(right["seed_pools"])):
+            return None, "pool"
+        left_bits = int(left["selected_bits"])
+        right_bits = int(right["selected_bits"])
+        intersection_size = (left_bits & right_bits).bit_count()
+        if intersection_size <= 0:
+            return None, "no_shared_bc"
+        left_size = int(left["selected_size"])
+        right_size = int(right["selected_size"])
+        if left_size <= 0 or right_size <= 0:
+            return None, "empty"
+        union_size = (left_bits | right_bits).bit_count()
+        max_tus = self.config.max_selected_tus
+        if max_tus > 0 and union_size > max_tus:
+            return None, "max_tus"
+        jaccard = intersection_size / union_size if union_size else 0.0
+        containment = intersection_size / min(left_size, right_size)
+        if jaccard < min_overlap and containment < 0.95:
+            return None, "overlap"
+        gain = (
+            self._entry_cluster_cost(left_size, cost_bias)
+            + self._entry_cluster_cost(right_size, cost_bias)
+            - self._entry_cluster_cost(union_size, cost_bias)
+        )
+        if gain <= 0:
+            return None, "gain"
+        return (gain, union_size), ""
 
     def _finalize_entry_cluster(
         self,
@@ -1315,6 +1583,58 @@ class EntryBitcodeSelector:
     def _ordered_subset(all_bcs: Sequence[Path], selected_bcs: Set[Path]) -> List[Path]:
         selected = {Path(p).resolve() for p in selected_bcs}
         return [Path(bc).resolve() for bc in all_bcs if Path(bc).resolve() in selected]
+
+    @staticmethod
+    def _paths_to_bitset(paths: Iterable[Path], path_to_bit: Mapping[Path, int]) -> int:
+        bits = 0
+        for path in paths:
+            bit = path_to_bit.get(Path(path).resolve())
+            if bit is not None:
+                bits |= 1 << bit
+        return bits
+
+    @staticmethod
+    def _iter_bit_indices(bits: int) -> Iterable[int]:
+        while bits:
+            low_bit = bits & -bits
+            yield low_bit.bit_length() - 1
+            bits ^= low_bit
+
+    @staticmethod
+    def _entry_cluster_cost_bias(sizes: Sequence[int]) -> float:
+        if not sizes:
+            return 1.0
+        ordered = sorted(size for size in sizes if size >= 0)
+        if not ordered:
+            return 1.0
+        mid = len(ordered) // 2
+        if len(ordered) % 2:
+            return float(max(1, ordered[mid]))
+        return float(max(1.0, (ordered[mid - 1] + ordered[mid]) / 2))
+
+    @staticmethod
+    def _entry_cluster_cost(size: int, cost_bias: float) -> float:
+        return cost_bias + (size * size)
+
+    @classmethod
+    def _entry_cluster_total_cost(
+        cls,
+        clusters: Iterable[Mapping[str, Any]],
+        cost_bias: float,
+    ) -> float:
+        return sum(cls._entry_cluster_cost(int(cluster["selected_size"]), cost_bias) for cluster in clusters)
+
+    @staticmethod
+    def _entry_cluster_size_summary(sizes: Sequence[int]) -> str:
+        if not sizes:
+            return "min=0,p50=0,p95=0,max=0"
+        ordered = sorted(sizes)
+        p50 = ordered[len(ordered) // 2]
+        p95_idx = min(len(ordered) - 1, max(0, ((95 * len(ordered)) - 1) // 100))
+        return (
+            f"min={ordered[0]},p50={p50},"
+            f"p95={ordered[p95_idx]},max={ordered[-1]}"
+        )
 
     @staticmethod
     def _jaccard(left: Set[Path], right: Set[Path]) -> float:
