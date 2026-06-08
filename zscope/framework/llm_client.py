@@ -820,6 +820,7 @@ class LLMClient:
         conversation = messages.copy()
         iterations = 0
         tool_call_history: Dict[str, List[Dict[str, Any]]] = {}
+        loop_guard_recovery: Optional[Dict[str, Any]] = None
         cumulative_prompt_tokens = 0
         cumulative_completion_tokens = 0
         warned_low_iterations = False
@@ -834,8 +835,10 @@ class LLMClient:
         while iterations < max_iterations:
             iterations += 1
             remaining_after_this = max_iterations - iterations
-            final_iteration = iterations >= max_iterations
-            if final_iteration:
+            max_iteration_final = iterations >= max_iterations
+            force_no_tool_final = loop_guard_recovery is not None
+            final_iteration = max_iteration_final or force_no_tool_final
+            if max_iteration_final:
                 conversation.append(
                     {
                         "role": "user",
@@ -847,6 +850,8 @@ class LLMClient:
                         ),
                     }
                 )
+            elif force_no_tool_final:
+                pass
             elif (
                 not warned_low_iterations
                 and remaining_after_this <= low_iteration_threshold
@@ -915,7 +920,7 @@ class LLMClient:
                 logger.info(f"Conversation complete: {iterations} iterations, final context ≈ {final_tokens:,} tokens")
                 if recorder and trace_session:
                     recorder.record_session_end(trace_session, iterations, final_tokens)
-                return {
+                result_payload = {
                     "content": content,
                     "conversation": conversation,
                     "iterations": iterations,
@@ -925,6 +930,15 @@ class LLMClient:
                     "cumulative_total_tokens": cumulative_prompt_tokens + cumulative_completion_tokens,
                     "tool_call_count": self._count_tool_result_messages(conversation),
                 }
+                if loop_guard_recovery:
+                    result_payload.update(
+                        {
+                            "loop_guard_triggered": True,
+                            "loop_guard_recovered": True,
+                            "repeated_tool_call": loop_guard_recovery,
+                        }
+                    )
+                return result_payload
                 
             if finish_reason == "length":
                 logger.warning(f"Model {self.models[0] if self.models else 'unknown'} output truncated! Prompting to continue...")
@@ -933,6 +947,13 @@ class LLMClient:
 
             # Handle tool calls
             tool_calls = message.get("tool_calls", [])
+            if final_iteration and tool_calls:
+                logger.warning(
+                    "Ignoring %d tool calls returned after tool use was disabled.",
+                    len(tool_calls),
+                )
+                message["tool_calls"] = []
+                tool_calls = []
             
             # --- XML Fallback (For GLM/Minimax models that emit raw text invoke tags) ---
             content = message.get("content", "")
@@ -972,7 +993,7 @@ class LLMClient:
                 logger.info(f"Conversation complete (no more tool calls): {iterations} iterations, final context ≈ {final_tokens:,} tokens")
                 if recorder and trace_session:
                     recorder.record_session_end(trace_session, iterations, final_tokens)
-                return {
+                result_payload = {
                     "content": content,
                     "conversation": conversation,
                     "iterations": iterations,
@@ -982,8 +1003,18 @@ class LLMClient:
                     "cumulative_total_tokens": cumulative_prompt_tokens + cumulative_completion_tokens,
                     "tool_call_count": self._count_tool_result_messages(conversation),
                 }
+                if loop_guard_recovery:
+                    result_payload.update(
+                        {
+                            "loop_guard_triggered": True,
+                            "loop_guard_recovered": True,
+                            "repeated_tool_call": loop_guard_recovery,
+                        }
+                    )
+                return result_payload
 
             # Execute each tool call
+            force_final_after_loop_guard = False
             for tool_call in tool_calls:
                 tool_id = tool_call.get("id")
                 function = tool_call.get("function", {})
@@ -1001,6 +1032,16 @@ class LLMClient:
 
                     signature = self._tool_call_signature(func_name, func_args)
                     previous_calls = tool_call_history.get(signature, [])
+                    covered_snippet_call = None
+                    if not (
+                        max_identical_tool_calls > 0
+                        and len(previous_calls) >= max_identical_tool_calls
+                    ):
+                        covered_snippet_call = self._find_covering_file_snippet_call(
+                            tool_call_history,
+                            signature,
+                            func_args,
+                        )
                     cached_replayed = any(call.get("cached_replay") for call in previous_calls)
                     cached_previous_result = self._last_replayable_tool_result(previous_calls)
                     repeat_notice = self._build_repeat_tool_notice(
@@ -1009,7 +1050,24 @@ class LLMClient:
                         tool_id,
                         previous_calls,
                     )
-                    if (
+                    if covered_snippet_call is not None:
+                        repeated_call_count = 0
+                        covering_result = covered_snippet_call.get("result")
+                        result = dict(covering_result) if isinstance(covering_result, dict) else {}
+                        result["cached_tool_result"] = True
+                        result["covered_file_snippet_replay"] = True
+                        result["repeat_call_warning"] = self._build_covered_file_snippet_notice(
+                            func_args,
+                            tool_id,
+                            covered_snippet_call,
+                        )
+                        logger.warning(
+                            "Replayed cached result for covered get_file_snippet range: "
+                            "%s (covered by %s)",
+                            func_args,
+                            covered_snippet_call.get("arguments"),
+                        )
+                    elif (
                         max_identical_tool_calls > 0
                         and len(previous_calls) >= max_identical_tool_calls
                     ):
@@ -1049,6 +1107,19 @@ class LLMClient:
                                 func_args,
                                 repeated_call_count,
                             )
+                            if cached_previous_result is not None:
+                                result = dict(cached_previous_result)
+                                result["cached_tool_result"] = True
+                                result["repeat_call_guard"] = True
+                                result["repeat_call_warning"] = {
+                                    **repeat_notice,
+                                    "instruction": (
+                                        "This repeated tool call is blocked by the loop guard. "
+                                        "The latest tool message replays the previous successful "
+                                        "result. Use this content now and produce the final answer; "
+                                        "tool use will be disabled for the next response."
+                                    ),
+                                }
                     else:
                         repeated_call_count = 0
                         result = tool_executor(func_name, func_args)
@@ -1065,6 +1136,7 @@ class LLMClient:
                     tool_call_history.setdefault(signature, []).append(
                         {
                             "iteration": iterations,
+                            "tool": func_name,
                             "tool_call_id": tool_id,
                             "assistant_message_index": assistant_message_index,
                             "tool_result_message_index": tool_result_message_index,
@@ -1090,58 +1162,34 @@ class LLMClient:
                         )
 
                     if isinstance(result, dict) and result.get("repeat_call_guard"):
-                        final_tokens = self.estimate_tokens(
-                            self._prepare_messages_for_model(conversation)
-                        )
+                        loop_guard_recovery = {
+                            "tool": func_name,
+                            "arguments": func_args,
+                            "repeat_count": repeated_call_count,
+                        }
                         logger.error(
-                            "Conversation stopped early after repeated identical tool call: "
+                            "Conversation hit repeated identical tool call; forcing final "
+                            "no-tool response: "
                             "%s %s (repeat #%d)",
                             func_name,
                             func_args,
                             repeated_call_count,
                         )
-                        if recorder and trace_session:
-                            recorder.record_session_end(
-                                trace_session,
-                                iterations,
-                                final_tokens,
-                                truncated=True,
-                            )
-                        error_content = json.dumps(
+                        conversation.append(
                             {
-                                "success": False,
-                                "error": (
-                                    "Conversation stopped because the model repeatedly "
-                                    "requested the same tool call."
+                                "role": "user",
+                                "content": (
+                                    "The loop guard blocked a repeated identical tool call. "
+                                    "The latest tool message contains the cached result or the "
+                                    "available evidence for that request. Tool use is now disabled. "
+                                    "Produce the required final answer from the evidence already in "
+                                    "this conversation. If the expected output is JSON, output one "
+                                    "valid JSON block now."
                                 ),
-                                "loop_guard_triggered": True,
-                                "repeated_tool_call": {
-                                    "tool": func_name,
-                                    "arguments": func_args,
-                                    "repeat_count": repeated_call_count,
-                                },
-                            },
-                            ensure_ascii=False,
+                            }
                         )
-                        return {
-                            "content": error_content,
-                            "conversation": conversation,
-                            "iterations": iterations,
-                            "truncated": True,
-                            "loop_guard_triggered": True,
-                            "repeated_tool_call": {
-                                "tool": func_name,
-                                "arguments": func_args,
-                                "repeat_count": repeated_call_count,
-                            },
-                            "context_tokens": final_tokens,
-                            "cumulative_prompt_tokens": cumulative_prompt_tokens,
-                            "cumulative_completion_tokens": cumulative_completion_tokens,
-                            "cumulative_total_tokens": (
-                                cumulative_prompt_tokens + cumulative_completion_tokens
-                            ),
-                            "tool_call_count": self._count_tool_result_messages(conversation),
-                        }
+                        force_final_after_loop_guard = True
+                        break
 
                 except Exception as e:
                     logger.error(f"Tool execution failed: {e}")
@@ -1159,6 +1207,8 @@ class LLMClient:
                             {},
                             error=str(e),
                         )
+            if force_final_after_loop_guard:
+                continue
 
         if iterations >= max_iterations:
             logger.warning(f"Conversation reached max iterations ({max_iterations}). Possible loop.")
@@ -1185,7 +1235,7 @@ class LLMClient:
                 final_tokens,
                 truncated=iterations >= max_iterations,
             )
-        return {
+        result_payload = {
             "content": conversation[-1].get("content", "") if not message.get("tool_calls") else "",
             "conversation": conversation,
             "iterations": iterations,
@@ -1196,6 +1246,15 @@ class LLMClient:
             "cumulative_total_tokens": cumulative_prompt_tokens + cumulative_completion_tokens,
             "tool_call_count": self._count_tool_result_messages(conversation),
         }
+        if loop_guard_recovery:
+            result_payload.update(
+                {
+                    "loop_guard_triggered": True,
+                    "loop_guard_recovered": not result_payload.get("truncated"),
+                    "repeated_tool_call": loop_guard_recovery,
+                }
+            )
+        return result_payload
 
     @staticmethod
     def _count_tool_result_messages(conversation: List[Dict[str, Any]]) -> int:
@@ -1286,6 +1345,103 @@ class LLMClient:
                 "tool_result_message_index": latest.get("tool_result_message_index"),
             }
         return notice
+
+    @classmethod
+    def _find_covering_file_snippet_call(
+        cls,
+        tool_call_history: Dict[str, List[Dict[str, Any]]],
+        current_signature: str,
+        arguments: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Return a previous get_file_snippet call whose result covers this range."""
+        requested_file = cls._normalize_file_path_for_compare(arguments.get("file_path"))
+        requested_start = cls._line_number(arguments.get("start_line"))
+        requested_end = cls._line_number(arguments.get("end_line"))
+        if not requested_file or requested_start is None or requested_end is None:
+            return None
+        if requested_end < requested_start:
+            return None
+
+        for signature, calls in tool_call_history.items():
+            if signature == current_signature:
+                continue
+            for call in reversed(calls):
+                if call.get("tool") != "get_file_snippet":
+                    continue
+                if call.get("blocked") or call.get("cached_replay"):
+                    continue
+                result = call.get("result")
+                if not isinstance(result, dict) or result.get("success") is False:
+                    continue
+                data = result.get("data")
+                if not isinstance(data, dict):
+                    continue
+
+                previous_file = cls._normalize_file_path_for_compare(
+                    data.get("file") or (call.get("arguments") or {}).get("file_path")
+                )
+                previous_start = cls._line_number(
+                    data.get("start_line") or (call.get("arguments") or {}).get("start_line")
+                )
+                previous_end = cls._line_number(
+                    data.get("end_line") or (call.get("arguments") or {}).get("end_line")
+                )
+                if (
+                    previous_file == requested_file
+                    and previous_start is not None
+                    and previous_end is not None
+                    and previous_start <= requested_start
+                    and previous_end >= requested_end
+                ):
+                    return call
+        return None
+
+    @classmethod
+    def _build_covered_file_snippet_notice(
+        cls,
+        arguments: Dict[str, Any],
+        current_tool_call_id: Any,
+        covering_call: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        covering_args = covering_call.get("arguments") or {}
+        result = covering_call.get("result") if isinstance(covering_call.get("result"), dict) else {}
+        data = result.get("data") if isinstance(result, dict) else {}
+        if not isinstance(data, dict):
+            data = {}
+        return {
+            "tool": "get_file_snippet",
+            "arguments": arguments,
+            "current_tool_call_id": current_tool_call_id,
+            "covered_by_previous_snippet": {
+                "iteration": covering_call.get("iteration"),
+                "assistant_tool_call_id": covering_call.get("tool_call_id"),
+                "assistant_message_index": covering_call.get("assistant_message_index"),
+                "tool_result_message_index": covering_call.get("tool_result_message_index"),
+                "file_path": data.get("file") or covering_args.get("file_path"),
+                "start_line": data.get("start_line") or covering_args.get("start_line"),
+                "end_line": data.get("end_line") or covering_args.get("end_line"),
+            },
+            "instruction": (
+                "The requested file line range is already contained in a previous "
+                "get_file_snippet result. This tool message replays that cached "
+                "snippet. Use it directly and do not request overlapping snippets "
+                "unless the new range includes additional lines that are not present."
+            ),
+        }
+
+    @staticmethod
+    def _normalize_file_path_for_compare(value: Any) -> str:
+        text = str(value or "").strip().replace("\\", "/")
+        while text.startswith("./"):
+            text = text[2:]
+        return text
+
+    @staticmethod
+    def _line_number(value: Any) -> Optional[int]:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _last_replayable_tool_result(previous_calls: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

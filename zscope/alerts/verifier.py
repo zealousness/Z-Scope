@@ -7,6 +7,7 @@ then uses the Validator Agent to confirm or reject each alert.
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -65,21 +66,39 @@ class AlertVerifier:
         max_workers: int = 1,
     ) -> List[Dict[str, Any]]:
         """验证一批外部告警，返回验证结果列表。"""
-        results = []
         total = len(alerts)
         logger.info("Starting verification of %d alerts", total)
 
-        for idx, alert in enumerate(alerts, 1):
+        worker_count = self._worker_count(total, max_workers)
+        if worker_count <= 1:
+            results = [
+                self._verify_alert_safely(alert, idx, total)
+                for idx, alert in enumerate(alerts, 1)
+            ]
+        else:
             logger.info(
-                "[%d/%d] Verifying %s:%d (%s)",
-                idx, total, alert.file_path, alert.line, alert.rule_id,
+                "Verifying %d alert(s) with %d worker(s).",
+                total,
+                worker_count,
             )
-            try:
-                result = self._verify_single(alert, idx)
-                results.append(result)
-            except Exception as e:
-                logger.error("Failed to verify alert %d: %s", idx, e)
-                results.append(self._make_error_result(alert, idx, str(e)))
+            results_by_index: Dict[int, Dict[str, Any]] = {}
+            with ThreadPoolExecutor(
+                max_workers=worker_count,
+                thread_name_prefix="zscope-alert-verifier",
+            ) as executor:
+                future_to_index = {
+                    executor.submit(self._verify_alert_safely, alert, idx, total): idx
+                    for idx, alert in enumerate(alerts, 1)
+                }
+                for future in as_completed(future_to_index):
+                    idx = future_to_index[future]
+                    try:
+                        results_by_index[idx] = future.result()
+                    except Exception as e:
+                        alert = alerts[idx - 1]
+                        logger.exception("Alert verification worker crashed for alert %d.", idx)
+                        results_by_index[idx] = self._make_error_result(alert, idx, str(e))
+            results = [results_by_index[idx] for idx in range(1, total + 1)]
 
         confirmed = sum(1 for r in results if r.get("verdict") == "confirmed")
         rejected = sum(1 for r in results if r.get("verdict") == "rejected")
@@ -89,6 +108,35 @@ class AlertVerifier:
             confirmed, rejected, uncertain,
         )
         return results
+
+    def _worker_count(self, alert_count: int, max_workers: int) -> int:
+        if alert_count <= 1:
+            return 1
+        try:
+            requested = int(max_workers or 1)
+        except (TypeError, ValueError):
+            requested = 1
+        return max(1, min(alert_count, requested))
+
+    def _verify_alert_safely(
+        self,
+        alert: ExternalAlert,
+        idx: int,
+        total: int,
+    ) -> Dict[str, Any]:
+        logger.info(
+            "[%d/%d] Verifying %s:%d (%s)",
+            idx,
+            total,
+            alert.file_path,
+            alert.line,
+            alert.rule_id,
+        )
+        try:
+            return self._verify_single(alert, idx)
+        except Exception as e:
+            logger.error("Failed to verify alert %d: %s", idx, e)
+            return self._make_error_result(alert, idx, str(e))
 
     def _verify_single(self, alert: ExternalAlert, idx: int) -> Dict[str, Any]:
         """验证单个告警。"""

@@ -250,6 +250,122 @@ def test_entry_clustering_merges_overlapping_entry_scopes(tmp_path: Path) -> Non
     db.close()
 
 
+def test_entry_clustering_cost_merge_revisits_ordered_singletons(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source_root = project
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    db.insert_function("api_a", "src/a.c", 1, 10)
+    db.insert_function("api_b", "src/b.c", 1, 10)
+    db.insert_function("api_c", "src/common.c", 1, 10)
+    db.insert_function("common_func", "src/common.c", 20, 30)
+    db.insert_call_edge("api_a", "src/a.c", "common_func", "src/common.c", 3)
+    db.insert_call_edge("api_b", "src/b.c", "common_func", "src/common.c", 3)
+    db.insert_call_edge("api_c", "src/common.c", "api_a", "src/a.c", 3)
+    db.insert_call_edge("api_c", "src/common.c", "api_b", "src/b.c", 4)
+
+    a_bc = _touch(tmp_path / "bc" / "a.bc")
+    b_bc = _touch(tmp_path / "bc" / "b.bc")
+    common_bc = _touch(tmp_path / "bc" / "common.bc")
+    bc_to_src = {
+        a_bc: source_root / "src" / "a.c",
+        b_bc: source_root / "src" / "b.c",
+        common_bc: source_root / "src" / "common.c",
+    }
+
+    selector = EntryBitcodeSelector(
+        db=db,
+        source_root=source_root,
+        project_root=project,
+        config=BitcodeScopeConfig(mode="entry", entry_depth=1, symbol_closure=False),
+    )
+
+    clusters = selector.cluster_entries(
+        group_prefix="entry_cluster",
+        candidate_bcs=[a_bc, b_bc, common_bc],
+        bc_to_src=bc_to_src,
+        entries=["api_a", "api_b", "api_c"],
+    )
+
+    legacy_scopes = [
+        {"a.bc", "common.bc"},
+        {"b.bc", "common.bc"},
+        {"a.bc", "b.bc", "common.bc"},
+    ]
+    legacy_clusters = []
+    for scope in legacy_scopes:
+        best_idx = -1
+        best_overlap = 0.0
+        for idx, cluster in enumerate(legacy_clusters):
+            overlap = len(cluster & scope) / len(cluster | scope)
+            if overlap >= 0.6 and overlap > best_overlap:
+                best_idx = idx
+                best_overlap = overlap
+        if best_idx >= 0:
+            legacy_clusters[best_idx].update(scope)
+        else:
+            legacy_clusters.append(set(scope))
+
+    assert len(legacy_clusters) == 2
+    assert len(clusters) == 1
+    assert clusters[0].plan.entries == ["api_a", "api_b", "api_c"]
+    assert {path.name for path in clusters[0].selected_bcs} == {"a.bc", "b.bc", "common.bc"}
+    assert set(clusters[0].plan.reachable_functions) >= {"api_a", "api_b", "api_c"}
+    assert clusters[0].plan.unresolved_entries == []
+    cost_bias = 2
+    legacy_cost = sum(cost_bias + len(cluster) ** 2 for cluster in legacy_clusters)
+    new_cost = cost_bias + len(clusters[0].selected_bcs) ** 2
+    assert new_cost < legacy_cost
+    db.close()
+
+
+def test_entry_clustering_merges_contained_scope_below_jaccard_threshold(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source_root = project
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    db.insert_function("small_entry", "src/common.c", 1, 10)
+    db.insert_function("large_entry", "src/large.c", 1, 10)
+    db.insert_call_edge("large_entry", "src/large.c", "small_entry", "src/common.c", 3)
+    for idx in range(8):
+        name = f"helper_{idx}"
+        db.insert_function(name, f"src/helper_{idx}.c", 1, 10)
+        db.insert_call_edge("large_entry", "src/large.c", name, f"src/helper_{idx}.c", idx + 4)
+
+    candidate_bcs = []
+    bc_to_src = {}
+    common_bc = _touch(tmp_path / "bc" / "common.bc")
+    large_bc = _touch(tmp_path / "bc" / "large.bc")
+    candidate_bcs.extend([common_bc, large_bc])
+    bc_to_src[common_bc] = source_root / "src" / "common.c"
+    bc_to_src[large_bc] = source_root / "src" / "large.c"
+    for idx in range(8):
+        bc = _touch(tmp_path / "bc" / f"helper_{idx}.bc")
+        candidate_bcs.append(bc)
+        bc_to_src[bc] = source_root / "src" / f"helper_{idx}.c"
+
+    selector = EntryBitcodeSelector(
+        db=db,
+        source_root=source_root,
+        project_root=project,
+        config=BitcodeScopeConfig(mode="entry", entry_depth=1, symbol_closure=False),
+    )
+
+    clusters = selector.cluster_entries(
+        group_prefix="entry_cluster",
+        candidate_bcs=candidate_bcs,
+        bc_to_src=bc_to_src,
+        entries=["small_entry", "large_entry"],
+    )
+
+    assert len(clusters) == 1
+    assert clusters[0].plan.entries == ["small_entry", "large_entry"]
+    assert {path.name for path in clusters[0].selected_bcs} == {
+        "common.bc",
+        "large.bc",
+        *(f"helper_{idx}.bc" for idx in range(8)),
+    }
+    db.close()
+
+
 def test_entry_clustering_seed_selection_skips_symbol_closure(tmp_path: Path) -> None:
     project = tmp_path / "project"
     source_root = project
@@ -396,6 +512,101 @@ def test_entry_clustering_precomputes_pool_maps_once_per_candidate(tmp_path: Pat
 
     assert len(clusters) == len(entries)
     assert counts == {"pool": len(candidate_bcs), "conflicts": len(candidate_bcs)}
+    db.close()
+
+
+def test_entry_clustering_cost_merge_respects_exclusive_pool_boundaries(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source_root = project
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    db.insert_function("normal_entry", "src/pool/normal/entry.c", 1, 5)
+    db.insert_function("compat_entry", "src/pool/compat/entry.c", 1, 5)
+    db.insert_function("common_helper", "src/common/helper.c", 1, 5)
+    db.insert_call_edge("normal_entry", "src/pool/normal/entry.c", "common_helper", "src/common/helper.c", 3)
+    db.insert_call_edge("compat_entry", "src/pool/compat/entry.c", "common_helper", "src/common/helper.c", 3)
+
+    normal_bc = _touch(tmp_path / "bc" / "normal.bc")
+    compat_bc = _touch(tmp_path / "bc" / "compat.bc")
+    common_bc = _touch(tmp_path / "bc" / "common.bc")
+    bc_to_src = {
+        normal_bc: source_root / "src" / "pool" / "normal" / "entry.c",
+        compat_bc: source_root / "src" / "pool" / "compat" / "entry.c",
+        common_bc: source_root / "src" / "common" / "helper.c",
+    }
+
+    selector = EntryBitcodeSelector(
+        db=db,
+        source_root=source_root,
+        project_root=project,
+        config=BitcodeScopeConfig(
+            mode="entry",
+            entry_depth=1,
+            symbol_closure=False,
+            exclusive_pools=[
+                {"name": "normal", "paths": ["src/pool/normal/**"]},
+                {"name": "compat", "paths": ["src/pool/compat/**"]},
+            ],
+        ),
+    )
+
+    clusters = selector.cluster_entries(
+        group_prefix="entry_cluster",
+        candidate_bcs=[normal_bc, compat_bc, common_bc],
+        bc_to_src=bc_to_src,
+        entries=["normal_entry", "compat_entry"],
+    )
+
+    assert len(clusters) == 2
+    assert sorted(cluster.plan.exclusive_pool for cluster in clusters) == ["compat", "normal"]
+    assert all("common.bc" in {path.name for path in cluster.selected_bcs} for cluster in clusters)
+    db.close()
+
+
+def test_entry_clustering_cost_merge_respects_max_selected_tus(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source_root = project
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    db.insert_function("api_a", "src/a.c", 1, 5)
+    db.insert_function("api_b", "src/b.c", 1, 5)
+    for name in ("shared_1", "shared_2"):
+        db.insert_function(name, f"src/{name}.c", 1, 5)
+        db.insert_call_edge("api_a", "src/a.c", name, f"src/{name}.c", 3)
+        db.insert_call_edge("api_b", "src/b.c", name, f"src/{name}.c", 3)
+
+    a_bc = _touch(tmp_path / "bc" / "a.bc")
+    b_bc = _touch(tmp_path / "bc" / "b.bc")
+    shared_1_bc = _touch(tmp_path / "bc" / "shared_1.bc")
+    shared_2_bc = _touch(tmp_path / "bc" / "shared_2.bc")
+    bc_to_src = {
+        a_bc: source_root / "src" / "a.c",
+        b_bc: source_root / "src" / "b.c",
+        shared_1_bc: source_root / "src" / "shared_1.c",
+        shared_2_bc: source_root / "src" / "shared_2.c",
+    }
+
+    selector = EntryBitcodeSelector(
+        db=db,
+        source_root=source_root,
+        project_root=project,
+        config=BitcodeScopeConfig(
+            mode="entry",
+            entry_depth=1,
+            max_selected_tus=3,
+            symbol_closure=False,
+        ),
+    )
+
+    clusters = selector.cluster_entries(
+        group_prefix="entry_cluster",
+        candidate_bcs=[a_bc, b_bc, shared_1_bc, shared_2_bc],
+        bc_to_src=bc_to_src,
+        entries=["api_a", "api_b"],
+        min_overlap=0.5,
+    )
+
+    assert len(clusters) == 2
+    assert sorted(len(cluster.selected_bcs) for cluster in clusters) == [3, 3]
+    assert all(len(cluster.selected_bcs) <= 3 for cluster in clusters)
     db.close()
 
 

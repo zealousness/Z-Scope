@@ -295,6 +295,47 @@ def test_svf_queries_dedupe_across_groups_with_provenance(tmp_path: Path) -> Non
         db.close()
 
 
+def test_enriched_taint_bugs_can_filter_by_reachable_function_names(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_function("entry", "src/entry.c", 1, 20)
+        db.insert_function("callee", "src/callee.c", 10, 30)
+        db.insert_function("unreachable", "src/unreachable.c", 10, 30)
+        db.insert_taint_signature(
+            "",
+            "",
+            "Double Free",
+            file_path="src/callee.c",
+            line=12,
+            tool="saber",
+            svf_group="saber:default",
+        )
+        db.insert_taint_signature(
+            "",
+            "",
+            "Memory Leak",
+            file_path="src/unreachable.c",
+            line=14,
+            tool="saber",
+            svf_group="saber:default",
+        )
+        db.commit()
+
+        assert db.get_enriched_taint_bugs(func_name="entry", limit=10) == []
+
+        bugs = db.get_enriched_taint_bugs(
+            func_names=["entry", "callee"],
+            limit=10,
+        )
+
+        assert len(bugs) == 1
+        assert bugs[0]["bug_type"] == "Double Free"
+        assert bugs[0]["func_name"] == "callee"
+        assert bugs[0]["svf_groups"] == ["saber:default"]
+    finally:
+        db.close()
+
+
 def test_user_config_suppression_and_baseline(tmp_path: Path) -> None:
     store = UserConfigStore(tmp_path)
     store.add_false_positive_suppression(

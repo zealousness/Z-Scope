@@ -1083,7 +1083,8 @@ class KnowledgeDB:
         return dict(row) if row else None
 
     def get_enriched_taint_bugs(self, bug_type: str = "", func_name: str = "",
-                                limit: int = 50) -> List[Dict[str, Any]]:
+                                limit: int = 50,
+                                func_names: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """污点缺陷 JOIN 函数表，返回带 AST 上下文的富结果。"""
         where = ["1=1"]
         params: list = []
@@ -1093,6 +1094,19 @@ class KnowledgeDB:
         if func_name:
             where.append("(t.source_func = ? OR f.name = ?)")
             params.extend([func_name, func_name])
+        normalized_func_names = sorted(
+            {str(name).strip() for name in (func_names or []) if str(name).strip()}
+        )
+        if normalized_func_names:
+            placeholders = ",".join("?" for _ in normalized_func_names)
+            where.append(
+                f"(t.source_func IN ({placeholders}) "
+                f"OR t.sink_func IN ({placeholders}) "
+                f"OR f.name IN ({placeholders}))"
+            )
+            params.extend(normalized_func_names)
+            params.extend(normalized_func_names)
+            params.extend(normalized_func_names)
         params.append(limit)
         rows = self._conn.execute(
             f"SELECT t.*, f.name AS func_name, f.signature, "

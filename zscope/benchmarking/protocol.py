@@ -13,7 +13,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set
 
 from zscope._version import __version__
 from zscope.common.issue_identity import issues_may_share_root_cause, stable_issue_fingerprint
@@ -39,6 +39,8 @@ BENCHMARK_CONDITIONS = (
 )
 
 RUN_KINDS = ("smoke", "sample", "formal")
+
+FalsePositiveClassifier = Callable[[Dict[str, Any]], Dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -92,88 +94,25 @@ def issue_identity_record(issue: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def classify_false_positive_record(record: Dict[str, Any]) -> Dict[str, Any]:
-    """Classify an FP record for audit before deciding whether to suppress it."""
-
-    identity = str(record.get("identity") or "").lower().replace("\\", "/")
-    dedup_key = str(record.get("dedup_key") or "").lower().replace("\\", "/")
-    candidate_source = str(record.get("candidate_source") or "").lower()
-    text = f"{identity} {dedup_key}"
-
-    classification = FP_AUDIT_NEEDS_REVIEW_ONLY
-    reason = "unmatched finding should remain review-only until a human audit classifies it"
-
-    suppress_patterns = (
-        ("td_query_status", "api_contract_violation", "status query stub is not a concrete security defect"),
-        ("_safe_realloc", "memory_leak", "helper returning NULL does not lose the caller-owned original pointer by itself"),
-        ("_lock_read_wrapper", "api_contract_violation", "thin lock wrapper logs failures but has no standalone vulnerability path"),
-        ("_td_runtime_worker", ("file_descriptor_leak", "fd_leak"), "worker receives an externally-owned descriptor and does not establish close ownership"),
-        (
-            "_runtime_activate_service_path",
-            "container_unlink_free_after_unlock",
-            "unlink-after-unlock race lacks a concrete retained-reader path and overlaps cleanup modeling noise",
-        ),
-    )
-    for function_token, category_token, why in suppress_patterns:
-        category_tokens = category_token if isinstance(category_token, tuple) else (category_token,)
-        if function_token in text and any(token in text for token in category_tokens):
-            classification = FP_AUDIT_FALSE_POSITIVE_SUPPRESS
-            reason = why
-            break
-
-    if classification == FP_AUDIT_NEEDS_REVIEW_ONLY and (
-        (
-            ("_validate_task" in text or "_executor_validate_command" in text)
-            and ("system(" in text or "system(full_command)" in text)
-        )
-        or ("_peer_publish_shared_session" in text and ("use_after_free" in text or "missing_refcount" in text))
-        or ("td_process_control_message" in text and "g_callback_entry" in text)
-    ):
-        classification = FP_AUDIT_DUPLICATE_OF_GT
-        reason = "unmatched finding is another manifestation of an already matched root cause"
-
-    if classification == FP_AUDIT_NEEDS_REVIEW_ONLY and (
-        (
-            "_net_send_data" in text
-            and any(
-                token in text
-                for token in (
-                    "sigpipe",
-                    "busy_wait",
-                    "busy_loop",
-                    "integer_truncation",
-                    "signed_unsigned",
-                    "net_send_data_return_truncation",
-                    "resource_lifecycle",
-                    "resource_management",
-                )
-            )
-        )
-        or ("_lifecycle_send_status" in text and "data_race" in text)
-        or ("_executor_process_file" in text and "path_traversal" in text)
-        or ("_runtime_read_service_flag" in text and "memory_leak" in text)
-        or (
-            "_net_recv_data" in text
-            and any(token in text for token in ("integer_truncation", "signed_unsigned", "net_recv_data_return_truncation"))
-        )
-    ):
-        classification = FP_AUDIT_TRUE_EXTRA_ADD_GT
-        reason = "finding has process-impact evidence and should be reviewed as a possible GT addition, not suppressed"
-
-    if candidate_source in {"needs_review", "audit_observation"} and classification == FP_AUDIT_TRUE_EXTRA_ADD_GT:
-        reason += "; currently kept out of default until GT review completes"
+    """Classify an unmatched finding when no suite-specific audit rules are provided."""
 
     audited = dict(record)
-    audited["fp_audit_classification"] = classification
-    audited["fp_audit_reason"] = reason
+    audited["fp_audit_classification"] = FP_AUDIT_NEEDS_REVIEW_ONLY
+    audited["fp_audit_reason"] = (
+        "unmatched finding should remain review-only until a benchmark-specific "
+        "audit classifies it"
+    )
     return audited
 
 
 def false_positive_audit_summary(
     effective_records: Sequence[Dict[str, Any]],
     duplicate_records: Sequence[Dict[str, Any]],
+    fp_audit_classifier: Optional[FalsePositiveClassifier] = None,
 ) -> Dict[str, Any]:
     """Return an auditable split between duplicates, true extras, review-only, and suppressions."""
 
+    classifier = fp_audit_classifier or classify_false_positive_record
     audited_duplicates = [
         {
             **dict(record),
@@ -182,7 +121,7 @@ def false_positive_audit_summary(
         }
         for record in duplicate_records
     ]
-    audited_effective = [classify_false_positive_record(record) for record in effective_records]
+    audited_effective = [classifier(record) for record in effective_records]
     all_records = audited_duplicates + audited_effective
     counts: Dict[str, int] = {}
     for record in all_records:
@@ -220,6 +159,7 @@ def score_report(
     view: str = "default",
     line_tolerance: int = 8,
     count_duplicate_of_matched_as_fp: bool = False,
+    fp_audit_classifier: Optional[FalsePositiveClassifier] = None,
 ) -> Dict[str, Any]:
     issues = report_issues(report, view)
     vulns = [item for item in truth.get("vulnerabilities", []) if isinstance(item, dict)]
@@ -320,7 +260,11 @@ def score_report(
         }
         for index in sorted(duplicate_of_matched_indices)
     ]
-    fp_audit = false_positive_audit_summary(fp_issue_records, duplicate_records)
+    fp_audit = false_positive_audit_summary(
+        fp_issue_records,
+        duplicate_records,
+        fp_audit_classifier=fp_audit_classifier,
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "benchmark": truth.get("benchmark", "unknown"),
@@ -413,6 +357,7 @@ def score_report_views(
     *,
     line_tolerance: int = 8,
     count_duplicate_of_matched_as_fp: bool = False,
+    fp_audit_classifier: Optional[FalsePositiveClassifier] = None,
 ) -> Dict[str, Dict[str, Any]]:
     return {
         "default": score_report(
@@ -421,6 +366,7 @@ def score_report_views(
             view="default",
             line_tolerance=line_tolerance,
             count_duplicate_of_matched_as_fp=count_duplicate_of_matched_as_fp,
+            fp_audit_classifier=fp_audit_classifier,
         ),
         "with_needs_review": score_report(
             report,
@@ -428,6 +374,7 @@ def score_report_views(
             view="with_needs_review",
             line_tolerance=line_tolerance,
             count_duplicate_of_matched_as_fp=count_duplicate_of_matched_as_fp,
+            fp_audit_classifier=fp_audit_classifier,
         ),
     }
 
@@ -661,8 +608,14 @@ def build_trial_summary(
     environment: Dict[str, Any],
     line_tolerance: int = 8,
     conversation_files: Optional[List[str]] = None,
+    fp_audit_classifier: Optional[FalsePositiveClassifier] = None,
 ) -> Dict[str, Any]:
-    evaluation_views = score_report_views(report, truth, line_tolerance=line_tolerance)
+    evaluation_views = score_report_views(
+        report,
+        truth,
+        line_tolerance=line_tolerance,
+        fp_audit_classifier=fp_audit_classifier,
+    )
     default_eval = evaluation_views["default"]
     cost = build_cost_metrics(
         report,

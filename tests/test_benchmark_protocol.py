@@ -1,4 +1,5 @@
 import argparse
+import importlib.util
 import json
 import time
 from pathlib import Path
@@ -8,6 +9,7 @@ from zscope.benchmarking.protocol import (
     CONDITION_CANDIDATES,
     FP_AUDIT_DUPLICATE_OF_GT,
     FP_AUDIT_FALSE_POSITIVE_SUPPRESS,
+    FP_AUDIT_NEEDS_REVIEW_ONLY,
     FP_AUDIT_TRUE_EXTRA_ADD_GT,
     SCHEMA_VERSION,
     aggregate_trial_summaries,
@@ -21,6 +23,22 @@ from zscope.benchmarking.protocol import (
     score_report_views,
 )
 from zscope.reporting.report import Issue
+
+
+def _range_fp_audit_classifier():
+    module_path = (
+        Path(__file__).resolve().parents[1] / "test" / "range" / "benchmark" / "fp_audit_rules.py"
+    )
+    spec = importlib.util.spec_from_file_location("zscope_range_fp_audit_rules", module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    classifier = getattr(module, "classify_range_false_positive_record")
+    assert callable(classifier)
+    return classifier
+
+
+classify_range_false_positive_record = _range_fp_audit_classifier()
 
 
 def _truth():
@@ -225,20 +243,31 @@ def test_score_report_classifies_duplicate_of_matched_separately() -> None:
     assert scored["false_positive_audit"]["counts"][FP_AUDIT_DUPLICATE_OF_GT] == 1
 
 
-def test_false_positive_audit_classifies_suppress_duplicate_and_true_extra() -> None:
-    suppress = classify_false_positive_record(
+def test_default_false_positive_audit_keeps_unmatched_findings_for_review() -> None:
+    audited = classify_false_positive_record(
         {
             "identity": "v1|api_contract_violation|src/main.c|td_query_status|audit_observation",
             "dedup_key": "api_contract_violation|src/main.c|613|return status",
         }
     )
-    duplicate = classify_false_positive_record(
+
+    assert audited["fp_audit_classification"] == FP_AUDIT_NEEDS_REVIEW_ONLY
+
+
+def test_range_false_positive_audit_classifies_suppress_duplicate_and_true_extra() -> None:
+    suppress = classify_range_false_positive_record(
+        {
+            "identity": "v1|api_contract_violation|src/main.c|td_query_status|audit_observation",
+            "dedup_key": "api_contract_violation|src/main.c|613|return status",
+        }
+    )
+    duplicate = classify_range_false_positive_record(
         {
             "identity": "v1|insufficient_validation|src/executor.c|_executor_validate_command|verified_vulnerability|task command",
             "dedup_key": "insufficient_validation|src/executor.c|207|system(full_command)",
         }
     )
-    true_extra = classify_false_positive_record(
+    true_extra = classify_range_false_positive_record(
         {
             "identity": "v1|busy_wait_loop|src/network.c|_net_send_data|needs_review|send returns EAGAIN forever",
             "dedup_key": "busy_wait_loop|src/network.c|104|send loop",
@@ -249,6 +278,31 @@ def test_false_positive_audit_classifies_suppress_duplicate_and_true_extra() -> 
     assert suppress["fp_audit_classification"] == FP_AUDIT_FALSE_POSITIVE_SUPPRESS
     assert duplicate["fp_audit_classification"] == FP_AUDIT_DUPLICATE_OF_GT
     assert true_extra["fp_audit_classification"] == FP_AUDIT_TRUE_EXTRA_ADD_GT
+
+
+def test_score_report_accepts_suite_specific_fp_audit_classifier() -> None:
+    report = {
+        "issues": [
+            {
+                "category": "api_contract_violation",
+                "function": "td_query_status",
+                "location": "src/main.c:613",
+                "description": "return status",
+            }
+        ]
+    }
+
+    scored = score_report(
+        report,
+        _truth(),
+        line_tolerance=2,
+        fp_audit_classifier=classify_range_false_positive_record,
+    )
+
+    assert (
+        scored["false_positive_audit"]["counts"][FP_AUDIT_FALSE_POSITIVE_SUPPRESS]
+        == 1
+    )
 
 
 def test_issue_matches_additional_function_and_location_anchor() -> None:
