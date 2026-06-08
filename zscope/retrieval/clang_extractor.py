@@ -20,6 +20,7 @@ from .knowledge_db import KnowledgeDB
 logger = logging.getLogger(__name__)
 
 ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+HEADER_LIKE_SUFFIXES = {".h", ".hh", ".hpp", ".hxx", ".ph", ".inc", ".inl"}
 
 
 class ClangExtractor:
@@ -457,11 +458,13 @@ class ClangExtractor:
             signature = f"{detail} {name}" if detail else f"{name}(...)"
             is_static = "static" in detail if detail else False
             is_inline = "inline" in detail if detail else False
-            is_decl = (
-                file_path.suffix in (".h", ".hpp", ".ph", ".inc")
-                and end_line - start_line <= 1
-                and not is_static
-                and not is_inline
+            is_decl = self._is_function_declaration_symbol(
+                file_path,
+                start_line,
+                end_line,
+                detail,
+                is_static=is_static,
+                is_inline=is_inline,
             )
             func_rows.append(
                 (
@@ -477,9 +480,10 @@ class ClangExtractor:
                 )
             )
             # 通过 hover 提取调用边
-            self._extract_call_edges(
-                file_path, stored_name, rel_path, start_line, end_line, call_rows, sym
-            )
+            if not is_decl:
+                self._extract_call_edges(
+                    file_path, stored_name, rel_path, start_line, end_line, call_rows, sym
+                )
 
         elif kind in (self.SK_STRUCT, self.SK_CLASS, self.SK_ENUM):
             kind_str = {self.SK_STRUCT: "struct", self.SK_CLASS: "class", self.SK_ENUM: "enum"}.get(
@@ -750,6 +754,60 @@ class ClangExtractor:
             return resolved.relative_to(self.project_root).as_posix()
         except ValueError:
             return resolved.as_posix()
+
+    def _is_function_declaration_symbol(
+        self,
+        file_path: Path,
+        start_line: int,
+        end_line: int,
+        detail: str,
+        *,
+        is_static: bool,
+        is_inline: bool,
+    ) -> bool:
+        has_body = self._symbol_range_has_function_body(file_path, start_line, end_line)
+        if has_body is not None:
+            return not has_body
+
+        if "extern" in str(detail or ""):
+            return True
+        suffix = file_path.suffix.lower()
+        return (
+            suffix in HEADER_LIKE_SUFFIXES
+            and end_line - start_line <= 1
+            and not is_static
+            and not is_inline
+        )
+
+    def _symbol_range_has_function_body(
+        self,
+        file_path: Path,
+        start_line: int,
+        end_line: int,
+    ) -> Optional[bool]:
+        try:
+            lines = file_path.read_text(encoding="utf-8", errors="ignore").splitlines(True)
+        except OSError:
+            return None
+
+        if not lines:
+            return None
+        start_idx = max(0, int(start_line or 1) - 1)
+        end_idx = min(len(lines), max(start_idx + 1, int(end_line or start_line or 1)))
+        text = "".join(lines[start_idx:end_idx])
+        if not text.strip():
+            return None
+
+        masked = self._mask_c_comments_and_literals(text)
+        for match in re.finditer(r"\{", masked):
+            brace_pos = match.start()
+            paren_pos = masked.rfind(")", 0, brace_pos)
+            if paren_pos == -1:
+                continue
+            if ";" in masked[paren_pos + 1 : brace_pos]:
+                continue
+            return True
+        return False
 
     def _mask_c_comments_and_literals(self, text: str) -> str:
         chars = list(text)

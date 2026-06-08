@@ -848,6 +848,79 @@ class CodeIndex:
         """Format source lines with the line-number prefix used by tool outputs."""
         return "".join(f"{start_idx + i + 1} | {line}" for i, line in enumerate(lines))
 
+    @classmethod
+    def _code_range_has_function_body(cls, code_lines: Sequence[str]) -> bool:
+        masked = cls._mask_c_comments_and_literals("".join(code_lines))
+        for match in re.finditer(r"\{", masked):
+            brace_pos = match.start()
+            paren_pos = masked.rfind(")", 0, brace_pos)
+            if paren_pos == -1:
+                continue
+            if ";" in masked[paren_pos + 1 : brace_pos]:
+                continue
+            return True
+        return False
+
+    @staticmethod
+    def _mask_c_comments_and_literals(text: str) -> str:
+        chars = list(text)
+        i = 0
+        state = "code"
+        while i < len(chars):
+            ch = chars[i]
+            nxt = chars[i + 1] if i + 1 < len(chars) else ""
+
+            if state == "code":
+                if ch == "/" and nxt == "/":
+                    chars[i] = chars[i + 1] = " "
+                    i += 2
+                    state = "line_comment"
+                    continue
+                if ch == "/" and nxt == "*":
+                    chars[i] = chars[i + 1] = " "
+                    i += 2
+                    state = "block_comment"
+                    continue
+                if ch == '"':
+                    chars[i] = " "
+                    i += 1
+                    state = "string"
+                    continue
+                if ch == "'":
+                    chars[i] = " "
+                    i += 1
+                    state = "char"
+                    continue
+            elif state == "line_comment":
+                if ch == "\n":
+                    state = "code"
+                else:
+                    chars[i] = " "
+            elif state == "block_comment":
+                if ch == "*" and nxt == "/":
+                    chars[i] = chars[i + 1] = " "
+                    i += 2
+                    state = "code"
+                    continue
+                if ch != "\n":
+                    chars[i] = " "
+            elif state in ("string", "char"):
+                quote = '"' if state == "string" else "'"
+                if ch == "\\":
+                    chars[i] = " "
+                    if i + 1 < len(chars) and chars[i + 1] != "\n":
+                        chars[i + 1] = " "
+                        i += 2
+                        continue
+                if ch == quote:
+                    chars[i] = " "
+                    state = "code"
+                elif ch != "\n":
+                    chars[i] = " "
+
+            i += 1
+        return "".join(chars)
+
     def _file_cache_key(self, file_path: Union[str, Path]) -> str:
         """Return a stable per-run key for cached source file contents."""
         path = Path(file_path)
@@ -1083,6 +1156,14 @@ class CodeIndex:
             if end - start > max_lines:
                 end = start + max_lines
             code_lines = lines[start:end]
+            if not self._code_range_has_function_body(code_lines):
+                if warn_missing:
+                    logger.warning(
+                        "Function '%s' matched a declaration without a body at %s",
+                        func_name,
+                        func_info["file"],
+                    )
+                return None
             comment_blocks: List[Dict[str, Any]] = []
             if include_context:
                 comment_blocks = self._find_function_declaration_comments(
