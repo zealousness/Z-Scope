@@ -179,7 +179,7 @@ def test_run_conversation_with_tools_compacts_old_tool_results(monkeypatch) -> N
     assert huge_two in full_transcript
 
 
-def test_run_conversation_stops_on_repeated_identical_tool_call(monkeypatch) -> None:
+def test_run_conversation_forces_final_answer_after_repeated_identical_tool_call(monkeypatch) -> None:
     client = LLMClient(
         api_key="test",
         base_url="http://example.invalid",
@@ -190,6 +190,18 @@ def test_run_conversation_stops_on_repeated_identical_tool_call(monkeypatch) -> 
 
     def fake_chat_completion(messages, **kwargs):
         chat_calls.append(list(messages))
+        if len(chat_calls) == 4:
+            assert kwargs.get("tools") is None
+            assert "Tool use is now disabled" in messages[-1]["content"]
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "done"},
+                    }
+                ],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 4},
+            }
         return {
             "choices": [
                 {
@@ -234,10 +246,12 @@ def test_run_conversation_stops_on_repeated_identical_tool_call(monkeypatch) -> 
     )
 
     assert result["loop_guard_triggered"] is True
-    assert result["truncated"] is True
-    assert result["iterations"] == 3
-    assert len(chat_calls) == 3
+    assert result["loop_guard_recovered"] is True
+    assert "truncated" not in result
+    assert result["iterations"] == 4
+    assert len(chat_calls) == 4
     assert len(tool_calls) == 1
+    assert result["content"].endswith("done")
     assert result["repeated_tool_call"]["tool"] == "get_file_snippet"
     assert result["repeated_tool_call"]["repeat_count"] == 3
     cached_tool_messages = [
@@ -247,3 +261,92 @@ def test_run_conversation_stops_on_repeated_identical_tool_call(monkeypatch) -> 
         and "cached_tool_result" in str(msg.get("content", ""))
     ]
     assert cached_tool_messages
+
+
+def test_get_file_snippet_covered_range_reuses_cached_result(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+    )
+    chat_calls = []
+    tool_calls = []
+
+    def snippet_call(call_id: str, start: int, end: int):
+        return {
+            "id": call_id,
+            "type": "function",
+            "function": {
+                "name": "get_file_snippet",
+                "arguments": json.dumps(
+                    {
+                        "file_path": "src/demo.c",
+                        "start_line": start,
+                        "end_line": end,
+                    }
+                ),
+            },
+        }
+
+    def fake_chat_completion(messages, **kwargs):
+        chat_calls.append(list(messages))
+        if len(chat_calls) == 1:
+            tool_call = snippet_call("call_wide", 1, 20)
+        elif len(chat_calls) == 2:
+            tool_call = snippet_call("call_covered", 5, 10)
+        else:
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "done"},
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+            }
+        return {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [tool_call],
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+        }
+
+    def fake_tool_executor(name, args):
+        tool_calls.append((name, args))
+        return {
+            "success": True,
+            "data": {
+                "file": args["file_path"],
+                "start_line": args["start_line"],
+                "end_line": args["end_line"],
+                "code": "1 | int demo(void) { return 0; }\n",
+            },
+        }
+
+    monkeypatch.setattr(client, "chat_completion", fake_chat_completion)
+
+    result = client.run_conversation_with_tools(
+        messages=[{"role": "user", "content": "start"}],
+        tools_schema=[],
+        tool_executor=fake_tool_executor,
+        max_iterations=5,
+    )
+
+    assert result["iterations"] == 3
+    assert result["tool_call_count"] == 2
+    assert len(tool_calls) == 1
+    covered_tool_messages = [
+        msg
+        for msg in result["conversation"]
+        if msg.get("role") == "tool"
+        and "covered_file_snippet_replay" in str(msg.get("content", ""))
+    ]
+    assert covered_tool_messages
+    assert "cached_tool_result" in covered_tool_messages[0]["content"]

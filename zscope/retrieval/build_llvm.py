@@ -25,6 +25,7 @@ from .bitcode_scope import (
     BitcodeScopeConfig,
     BitcodeScopePlan,
     BitcodeSymbols,
+    ENTRY_CLUSTER_STRATEGY_VERSION,
     EntryBitcodeCluster,
     EntryBitcodeSelector,
     ExclusivePoolClassifier,
@@ -395,6 +396,7 @@ class BitcodeBuilder:
     ) -> str:
         config_payload = {
             "group_name": group_name,
+            "entry_cluster_strategy": ENTRY_CLUSTER_STRATEGY_VERSION,
             "compile_commands_hash": self._file_hash(self.compile_commands_path),
             "source_aggregate_hash": self._source_aggregate_hash(candidate_bcs, bc_to_src),
             "scope": getattr(scope_config, "mode", ""),

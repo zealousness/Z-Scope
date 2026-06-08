@@ -44,7 +44,14 @@ class GetFileSnippetTool(BaseTool):
     def __init__(self, code_index: "CodeIndex"):
         super().__init__(
             name="get_file_snippet",
-            description="Retrieve a specific line range from a source file.",
+            description=(
+                "Read an inclusive 1-based line range from a source file for exact "
+                "evidence. Use this only when the existing entry code, function "
+                "snapshot, or an earlier snippet does not already contain the needed "
+                "lines. Do not repeat the same or covered line range; use the prior "
+                "tool result directly. If more context is needed, request one wider "
+                "range instead of several overlapping ranges."
+            ),
         )
         self.code_index = code_index
 
@@ -66,9 +73,21 @@ class GetFileSnippetTool(BaseTool):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "file_path": {"type": "string"},
-                        "start_line": {"type": "integer"},
-                        "end_line": {"type": "integer"},
+                        "file_path": {
+                            "type": "string",
+                            "description": "Project-relative source path, for example src/main.c.",
+                        },
+                        "start_line": {
+                            "type": "integer",
+                            "description": "Inclusive 1-based first line to read.",
+                        },
+                        "end_line": {
+                            "type": "integer",
+                            "description": (
+                                "Inclusive 1-based last line to read. If omitted or "
+                                "before start_line, the tool returns up to 200 lines."
+                            ),
+                        },
                     },
                     "required": [],
                 },

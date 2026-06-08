@@ -17,6 +17,7 @@ signal before a full LLM-backed Z-SCOPE scan.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import json
 import re
@@ -26,7 +27,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -103,6 +104,9 @@ CWE_CATEGORY = {
     "CWE-762": "invalid_free",
     "CWE-789": "stack_overflow",
 }
+
+FalsePositiveClassifier = Callable[[dict[str, Any]], dict[str, Any]]
+RANGE_BENCHMARK_NAMES = {"zscope-range-service-runtime"}
 
 CATEGORY_ALIASES = {
     "memory_safety": [
@@ -1271,6 +1275,36 @@ def _issue_function(issue: dict[str, Any]) -> str:
     return str(issue.get("function") or issue.get("func_name") or "").lower()
 
 
+def _load_range_fp_audit_classifier() -> Optional[FalsePositiveClassifier]:
+    module_path = REPO_ROOT / "test" / "range" / "benchmark" / "fp_audit_rules.py"
+    if not module_path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location("zscope_range_fp_audit_rules", module_path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    classifier = getattr(module, "classify_range_false_positive_record", None)
+    return classifier if callable(classifier) else None
+
+
+def _fp_audit_classifier_for_truth(
+    truth: dict[str, Any],
+    *,
+    truth_path: Optional[Path] = None,
+    suite_root: Optional[Path] = None,
+) -> Optional[FalsePositiveClassifier]:
+    benchmark = str(truth.get("benchmark") or "")
+    truth_path_text = truth_path.as_posix().lower() if truth_path else ""
+    suite_root_text = suite_root.as_posix().lower() if suite_root else ""
+    is_range = (
+        benchmark in RANGE_BENCHMARK_NAMES
+        or "test/range/benchmark/ground_truth.json" in truth_path_text
+        or suite_root_text.endswith("test/range")
+    )
+    return _load_range_fp_audit_classifier() if is_range else None
+
+
 def _text_has_category(text: str, truth: dict[str, Any]) -> bool:
     lowered = text.replace("_", " ").replace("-", " ").lower()
     category = str(truth.get("category") or "").lower()
@@ -1283,17 +1317,21 @@ def _text_has_category(text: str, truth: dict[str, Any]) -> bool:
 
 def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     report = json.loads(Path(args.report).read_text(encoding="utf-8"))
-    truth = json.loads(Path(args.truth).read_text(encoding="utf-8"))
+    truth_path = Path(args.truth)
+    truth = json.loads(truth_path.read_text(encoding="utf-8"))
+    fp_audit_classifier = _fp_audit_classifier_for_truth(truth, truth_path=truth_path)
     result = score_report(
         report,
         truth,
         view=args.view,
         line_tolerance=args.line_tolerance,
+        fp_audit_classifier=fp_audit_classifier,
     )
     result["evaluation_views"] = score_report_views(
         report,
         truth,
         line_tolerance=args.line_tolerance,
+        fp_audit_classifier=fp_audit_classifier,
     )
     if args.output:
         _json_dump(Path(args.output), result)
@@ -1388,6 +1426,7 @@ def run_prepared(args: argparse.Namespace) -> dict[str, Any]:
     )
     report_payload = _load_report(Path(report))
     truth = _load_truth(suite_root)
+    fp_audit_classifier = _fp_audit_classifier_for_truth(truth, suite_root=suite_root)
     summary = build_trial_summary(
         suite_root=suite_root,
         run_dir=run_dir,
@@ -1399,6 +1438,7 @@ def run_prepared(args: argparse.Namespace) -> dict[str, Any]:
         environment=env_metadata,
         line_tolerance=args.line_tolerance,
         conversation_files=conversation_files,
+        fp_audit_classifier=fp_audit_classifier,
     )
     summary["mode"] = _mode_from_condition(condition)
     summary["run"] = run_result

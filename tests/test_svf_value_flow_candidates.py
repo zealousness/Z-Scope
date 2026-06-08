@@ -84,8 +84,9 @@ def test_analyzer_uses_svf_value_flow_candidates_for_unified_backend() -> None:
         pass
 
     class FakeDb:
-        def get_enriched_taint_bugs(self, func_name: str = "", limit: int = 50):
-            assert func_name == "entry"
+        def get_enriched_taint_bugs(self, func_name: str = "", limit: int = 50, func_names=None):
+            assert func_name == ""
+            assert set(func_names or []) == {"entry", "cleanup"}
             return [
                 {
                     "source_func": "alloc_obj",
@@ -160,6 +161,141 @@ def test_analyzer_uses_svf_value_flow_candidates_for_unified_backend() -> None:
     assert "Source-level flow events" in "\n".join(svf["positive_evidence"])
     assert "Source-level expression edges" in "\n".join(svf["positive_evidence"])
     assert svf["must_validate"] is True
+
+
+def test_analyzer_uses_reachable_saber_bugs_for_backend_signal_candidates() -> None:
+    class UnifiedBackend:
+        pass
+
+    class FakeDb:
+        def get_enriched_taint_bugs(self, func_name: str = "", limit: int = 50, func_names=None):
+            assert func_name == ""
+            reachable = set(func_names or [])
+            rows = [
+                {
+                    "source_func": "",
+                    "sink_func": "",
+                    "bug_type": "DoubleFree",
+                    "file_path": "src/callee.c",
+                    "line": 12,
+                    "tool": "saber",
+                    "func_name": "callee",
+                },
+                {
+                    "source_func": "",
+                    "sink_func": "",
+                    "bug_type": "NeverFree",
+                    "file_path": "src/unreachable.c",
+                    "line": 5,
+                    "tool": "saber",
+                    "func_name": "unreachable",
+                },
+            ]
+            return [row for row in rows if row["func_name"] in reachable]
+
+    class FakeIndex:
+        backend_name = "unified"
+        backend = UnifiedBackend()
+
+        def get_callees(self, name: str, limit: int = 80):
+            return {"entry": [{"name": "callee"}]}.get(name, [])
+
+        def get_file_snippet(self, file_path: str, start_line: int, end_line: int):
+            return {"file": file_path, "start_line": start_line, "end_line": end_line, "code": "12 | free(obj);\n"}
+
+        def get_function_impl(self, name: str, max_lines: int = 40, warn_missing: bool = False):
+            return {
+                "func_name": name,
+                "file": "src/callee.c",
+                "start_line": 1,
+                "end_line": 20,
+                "signature": f"void {name}(void)",
+                "code": f"1 | void {name}(void) {{ free(obj); }}\n",
+            }
+
+    analyzer = object.__new__(Analyzer)
+    analyzer.code_index = FakeIndex()
+    analyzer.user_config = object()
+    analyzer._local_pattern_semantics = LocalPatternSemantics()
+    analyzer._semantic_overlay = {
+        "resource_models": [],
+        "lock_models": [],
+        "macro_models": [],
+        "dispatcher_models": [],
+        "lifecycle_models": [],
+        "pointer_target_models": [],
+        "function_intent_models": [],
+    }
+    analyzer._get_knowledge_db = lambda: FakeDb()
+
+    issues = analyzer._detect_backend_signal_candidates({"entry_func": "entry"})
+
+    svf_issues = [issue for issue in issues if issue["candidate_source"] == "svf_value_flow"]
+    assert len(svf_issues) == 1
+    assert svf_issues[0]["function"] == "callee"
+    assert svf_issues[0]["must_validate"] is True
+    assert svf_issues[0]["evidence_pack"]["source_path"]["call_path"] == ["entry", "callee"]
+
+
+def test_analyzer_still_uses_entry_local_saber_bug_for_backend_signal_candidates() -> None:
+    class UnifiedBackend:
+        pass
+
+    class FakeDb:
+        def get_enriched_taint_bugs(self, func_name: str = "", limit: int = 50, func_names=None):
+            assert "entry" in set(func_names or [])
+            return [
+                {
+                    "source_func": "",
+                    "sink_func": "",
+                    "bug_type": "NeverFree",
+                    "file_path": "src/entry.c",
+                    "line": 9,
+                    "tool": "saber",
+                    "func_name": "entry",
+                }
+            ]
+
+    class FakeIndex:
+        backend_name = "unified"
+        backend = UnifiedBackend()
+
+        def get_callees(self, name: str, limit: int = 80):
+            return []
+
+        def get_file_snippet(self, file_path: str, start_line: int, end_line: int):
+            return {"file": file_path, "start_line": start_line, "end_line": end_line, "code": "9 | return -1;\n"}
+
+        def get_function_impl(self, name: str, max_lines: int = 40, warn_missing: bool = False):
+            return {
+                "func_name": name,
+                "file": "src/entry.c",
+                "start_line": 1,
+                "end_line": 20,
+                "signature": f"void {name}(void)",
+                "code": "1 | void entry(void) { return; }\n",
+            }
+
+    analyzer = object.__new__(Analyzer)
+    analyzer.code_index = FakeIndex()
+    analyzer.user_config = object()
+    analyzer._local_pattern_semantics = LocalPatternSemantics()
+    analyzer._semantic_overlay = {
+        "resource_models": [],
+        "lock_models": [],
+        "macro_models": [],
+        "dispatcher_models": [],
+        "lifecycle_models": [],
+        "pointer_target_models": [],
+        "function_intent_models": [],
+    }
+    analyzer._get_knowledge_db = lambda: FakeDb()
+
+    issues = analyzer._detect_backend_signal_candidates({"entry_func": "entry"})
+
+    svf = next(issue for issue in issues if issue["candidate_source"] == "svf_value_flow")
+    assert svf["function"] == "entry"
+    assert svf["evidence_pack"]["source_path"]["call_path"] == ["entry"]
 
 
 def test_unified_candidate_merge_combines_clang_and_svf_evidence_only() -> None:

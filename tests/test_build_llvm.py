@@ -12,6 +12,7 @@ from zscope.retrieval.bitcode_scope import (
     EntryBitcodeCluster,
     ExclusivePoolClassifier,
 )
+import zscope.retrieval.build_llvm as build_llvm_module
 from zscope.retrieval.build_llvm import BitcodeBuilder
 
 
@@ -553,6 +554,71 @@ def test_entry_cluster_layout_reused_when_fingerprint_unchanged(
     assert sorted(first) == ["entry_cluster_1"]
     assert second == first
     assert cluster_calls["count"] == 1
+
+
+def test_entry_cluster_layout_fingerprint_includes_strategy_version(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root, compile_commands = _write_multi_compile_commands(tmp_path, 1)
+    output_dir = tmp_path / ".zscope_bc"
+    output_dir.mkdir()
+    bc = output_dir / "file_0.bc"
+    bc.write_text("bitcode", encoding="utf-8")
+    bc_to_src = {bc.resolve(): source_root / "file_0.c"}
+    builder = BitcodeBuilder(
+        source_root=source_root,
+        compile_commands_path=compile_commands,
+        output_dir=output_dir,
+        gclang_path="gclang",
+        get_bc_path="get-bc",
+        llvm_link_path="llvm-link",
+    )
+
+    current_fingerprint = builder._entry_cluster_layout_fingerprint(
+        group_name="default",
+        candidate_bcs=[bc],
+        bc_to_src=bc_to_src,
+        entries=["api"],
+        scope_config=BitcodeScopeConfig(mode="auto"),
+    )
+    monkeypatch.setattr(
+        build_llvm_module,
+        "ENTRY_CLUSTER_STRATEGY_VERSION",
+        "legacy_ordered_greedy_v0",
+    )
+    legacy_fingerprint = builder._entry_cluster_layout_fingerprint(
+        group_name="default",
+        candidate_bcs=[bc],
+        bc_to_src=bc_to_src,
+        entries=["api"],
+        scope_config=BitcodeScopeConfig(mode="auto"),
+    )
+
+    assert legacy_fingerprint != current_fingerprint
+
+    layout_path = output_dir / "entry_cluster_layout_default.json"
+    plan = BitcodeScopePlan(
+        group_name="entry_cluster_1",
+        mode="auto",
+        entries=["api"],
+        selected_sources=[],
+        selected_bcs=[str(bc.resolve())],
+    )
+    builder._write_entry_cluster_layout(
+        layout_path,
+        legacy_fingerprint,
+        [
+            EntryBitcodeCluster(
+                group_name="entry_cluster_1",
+                entries=["api"],
+                selected_bcs=[bc.resolve()],
+                plan=plan,
+            )
+        ],
+    )
+
+    assert builder._load_entry_cluster_layout(layout_path, current_fingerprint, ["api"]) is None
 
 
 def test_exclusive_pool_duplicate_symbols_split_link_variants(
