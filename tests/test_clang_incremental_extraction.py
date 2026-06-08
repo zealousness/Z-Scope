@@ -80,6 +80,71 @@ def test_clang_extractor_qualifies_class_scoped_cpp_symbols(tmp_path, monkeypatc
     ]
 
 
+def test_clang_extractor_marks_ph_prototype_as_declaration(tmp_path, monkeypatch) -> None:
+    header = tmp_path / "plugin.ph"
+    header.write_text(
+        "extern int _plugin_register(\n"
+        "    PluginRegistry* registry,\n"
+        "    const char* name\n"
+        ");\n",
+        encoding="utf-8",
+    )
+    extractor = ClangExtractor(project_root=tmp_path)
+    monkeypatch.setattr(extractor, "_extract_call_edges", lambda *args, **kwargs: None)
+    func_rows = []
+
+    extractor._process_symbol(
+        {
+            "kind": extractor.SK_FUNCTION,
+            "name": "_plugin_register",
+            "detail": "extern int",
+            "range": {"start": {"line": 0}, "end": {"line": 3}},
+        },
+        header,
+        "plugin.ph",
+        1,
+        _SymbolDB(),
+        func_rows,
+        [],
+    )
+
+    assert func_rows[0][0] == "_plugin_register"
+    assert func_rows[0][7] == 1
+
+
+def test_clang_extractor_keeps_header_inline_body_as_implementation(
+    tmp_path, monkeypatch
+) -> None:
+    header = tmp_path / "helpers.h"
+    header.write_text(
+        "static inline int helper(void) {\n"
+        "    return 1;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    extractor = ClangExtractor(project_root=tmp_path)
+    monkeypatch.setattr(extractor, "_extract_call_edges", lambda *args, **kwargs: None)
+    func_rows = []
+
+    extractor._process_symbol(
+        {
+            "kind": extractor.SK_FUNCTION,
+            "name": "helper",
+            "detail": "static inline int",
+            "range": {"start": {"line": 0}, "end": {"line": 2}},
+        },
+        header,
+        "helpers.h",
+        1,
+        _SymbolDB(),
+        func_rows,
+        [],
+    )
+
+    assert func_rows[0][0] == "helper"
+    assert func_rows[0][7] == 0
+
+
 def test_run_batch_extraction_uses_prescanned_tus_without_rehashing(
     tmp_path, monkeypatch
 ) -> None:

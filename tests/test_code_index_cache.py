@@ -140,6 +140,32 @@ def test_function_impl_without_context_skips_comment_scan_and_callee_query(
     assert result["comment_blocks"] == []
 
 
+def test_function_impl_rejects_backend_header_prototype_without_body(tmp_path) -> None:
+    header = tmp_path / "internal" / "plugin.ph"
+    header.parent.mkdir(parents=True)
+    header.write_text(
+        "extern int _plugin_register(\n"
+        "    PluginRegistry* registry,\n"
+        "    const char* name\n"
+        ");\n",
+        encoding="utf-8",
+    )
+    backend = MultiFunctionBackend(
+        {
+            "_plugin_register": {
+                "name": "_plugin_register",
+                "file": "internal/plugin.ph",
+                "start_line": 1,
+                "end_line": 4,
+                "signature": "extern int _plugin_register(...)",
+            }
+        }
+    )
+    index = CodeIndex(tmp_path, source_root=tmp_path, backend=backend)
+
+    assert index.get_function_impl("_plugin_register", warn_missing=False) is None
+
+
 def test_file_scoped_function_lookup_avoids_full_path_scan(tmp_path, monkeypatch) -> None:
     target_path = tmp_path / "src" / "target.c"
     target_path.parent.mkdir(parents=True)

@@ -8,13 +8,15 @@ import sqlite3
 import threading
 import copy
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple, cast
+from typing import Optional, Dict, Any, Tuple, Iterable, List, cast
 
 from ..common.utils import compute_code_hash, compute_semantic_fingerprint
 
 logger = logging.getLogger(__name__)
 
 _SQLITE_PRAGMA_LOCK = threading.Lock()
+_SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx"}
+_HEADER_SUFFIXES = {".h", ".hh", ".hpp", ".hxx", ".ph", ".inc", ".inl"}
 
 
 class SnapshotLockManager:
@@ -116,6 +118,30 @@ class SnapshotStore:
                         self._snapshot_cache.pop(key, None)
             else:
                 self._snapshot_cache.pop((func_name, file_path), None)
+
+    @classmethod
+    def _preferred_rows_by_file_path(
+        cls,
+        rows: Iterable[Tuple[Any, ...]],
+        *,
+        file_path_index: int,
+    ) -> List[Tuple[Any, ...]]:
+        return sorted(
+            list(rows),
+            key=lambda row: cls._file_path_preference(str(row[file_path_index] or "")),
+        )
+
+    @staticmethod
+    def _file_path_preference(file_path: str) -> Tuple[int, str]:
+        suffix = Path(file_path).suffix.lower()
+        if suffix in _SOURCE_SUFFIXES:
+            category = 0
+        elif suffix in _HEADER_SUFFIXES:
+            category = 2
+        else:
+            category = 1
+        normalized = file_path.replace("\\", "/").lstrip("./").lower()
+        return category, normalized
 
     def _connect(self) -> sqlite3.Connection:
         """Create a configured SQLite connection."""
@@ -304,7 +330,7 @@ class SnapshotStore:
         Args:
             func_name: Function name
             file_path: Optional file path for disambiguation. If None and multiple
-                      snapshots exist, returns the first one with a warning.
+                      snapshots exist, prefers source files over headers.
 
         Returns:
             Snapshot data or None if not found
@@ -315,49 +341,52 @@ class SnapshotStore:
 
         conn = self._connect()
         try:
-            selected_file_path = file_path
-            ambiguous = False
             if file_path:
                 # Exact match query
                 cursor = conn.execute(
-                    "SELECT snapshot_file FROM snapshots WHERE func_name = ? AND file_path = ?",
+                    "SELECT snapshot_file, file_path FROM snapshots WHERE func_name = ? AND file_path = ?",
                     (func_name, file_path)
                 )
+                rows = cursor.fetchall()
             else:
                 # Query all matches for this function name
                 cursor = conn.execute(
                     "SELECT snapshot_file, file_path FROM snapshots WHERE func_name = ?",
                     (func_name,)
                 )
+                rows = self._preferred_rows_by_file_path(
+                    cursor.fetchall(),
+                    file_path_index=1,
+                )
                 
-            row = cursor.fetchone()
-            if not row:
+            if not rows:
                 return None
             
             # If no file_path specified, check if there are multiple matches
             if not file_path:
-                all_rows = [row] + cursor.fetchall()
-                if len(all_rows) > 1:
-                    ambiguous = True
-                    paths = [r[1] for r in all_rows]
+                if len(rows) > 1:
+                    paths = [r[1] for r in rows]
                     logger.warning(
                         f"Multiple snapshots found for '{func_name}' in {paths}. "
-                        f"Using first match. Specify file_path for exact match."
+                        f"Using preferred match '{rows[0][1]}'. "
+                        f"Specify file_path for exact match."
                     )
+            for row in rows:
                 selected_file_path = row[1]
+                snapshot_path = self.snapshot_dir / row[0]
+                if not snapshot_path.exists():
+                    logger.warning(f"Snapshot file missing for '{func_name}' at '{selected_file_path}'")
+                    if file_path:
+                        return None
+                    continue
 
-            snapshot_path = self.snapshot_dir / row[0]
-            if not snapshot_path.exists():
-                logger.warning(f"Snapshot file missing for '{func_name}'")
-                return None
-
-            with open(snapshot_path, "r", encoding="utf-8") as f:
-                snapshot = cast(Dict[str, Any], json.load(f))
-            if selected_file_path:
+                with open(snapshot_path, "r", encoding="utf-8") as f:
+                    snapshot = cast(Dict[str, Any], json.load(f))
                 self._cache_snapshot(func_name, selected_file_path, snapshot)
-            if not file_path and not ambiguous:
-                self._cache_snapshot(func_name, None, snapshot)
-            return cast(Dict[str, Any], copy.deepcopy(snapshot))
+                if not file_path:
+                    self._cache_snapshot(func_name, None, snapshot)
+                return cast(Dict[str, Any], copy.deepcopy(snapshot))
+            return None
         finally:
             conn.close()
 
@@ -369,35 +398,44 @@ class SnapshotStore:
         try:
             if file_path:
                 cursor = conn.execute(
-                    "SELECT final_report_file FROM snapshots WHERE func_name = ? AND file_path = ?",
+                    "SELECT final_report_file, file_path FROM snapshots WHERE func_name = ? AND file_path = ?",
                     (func_name, file_path)
                 )
+                rows = cursor.fetchall()
             else:
                 cursor = conn.execute(
                     "SELECT final_report_file, file_path FROM snapshots WHERE func_name = ?",
                     (func_name,)
                 )
+                rows = self._preferred_rows_by_file_path(
+                    cursor.fetchall(),
+                    file_path_index=1,
+                )
                 
-            row = cursor.fetchone()
-            if not row or not row[0]:
+            rows = [row for row in rows if row[0]]
+            if not rows:
                 return None
             
             if not file_path:
-                all_rows = [row] + cursor.fetchall()
-                if len(all_rows) > 1:
-                    paths = [r[1] for r in all_rows]
+                if len(rows) > 1:
+                    paths = [r[1] for r in rows]
                     logger.warning(
                         f"Multiple final reports found for '{func_name}' in {paths}. "
-                        f"Using first match. Specify file_path for exact match."
+                        f"Using preferred match '{rows[0][1]}'. "
+                        f"Specify file_path for exact match."
                     )
-                    
-            final_path = self.snapshot_dir / row[0]
-            if not final_path.exists():
-                logger.warning(f"Final report file missing for '{func_name}'")
-                return None
 
-            with open(final_path, "r", encoding="utf-8") as f:
-                return cast(Dict[str, Any], json.load(f))
+            for row in rows:
+                final_path = self.snapshot_dir / row[0]
+                if not final_path.exists():
+                    logger.warning(f"Final report file missing for '{func_name}' at '{row[1]}'")
+                    if file_path:
+                        return None
+                    continue
+
+                with open(final_path, "r", encoding="utf-8") as f:
+                    return cast(Dict[str, Any], json.load(f))
+            return None
         finally:
             conn.close()
 
@@ -419,12 +457,17 @@ class SnapshotStore:
                     "SELECT code_hash, semantic_hash FROM snapshots WHERE func_name = ? AND file_path = ?",
                     (func_name, file_path),
                 )
+                row = cursor.fetchone()
             else:
                 cursor = conn.execute(
-                    "SELECT code_hash, semantic_hash FROM snapshots WHERE func_name = ?",
+                    "SELECT code_hash, semantic_hash, file_path FROM snapshots WHERE func_name = ?",
                     (func_name,),
                 )
-            row = cursor.fetchone()
+                rows = self._preferred_rows_by_file_path(
+                    cursor.fetchall(),
+                    file_path_index=2,
+                )
+                row = rows[0] if rows else None
             if not row:
                 return None
             return {"code_hash": row[0], "semantic_hash": row[1]}
