@@ -1,5 +1,16 @@
+from click.testing import CliRunner
+
+from zscope._version import __version__
+from zscope.cli.cli import main
 from zscope.cli.cli import _batch_interruption_lines
 from zscope.orchestration.scan_session import ScanSessionResult
+
+
+def test_cli_version_reports_package_version() -> None:
+    result = CliRunner().invoke(main, ["--version"])
+
+    assert result.exit_code == 0
+    assert result.output == f"Z-SCOPE, version {__version__}\n"
 
 
 def test_batch_interruption_lines_report_no_interrupted_entries() -> None:
