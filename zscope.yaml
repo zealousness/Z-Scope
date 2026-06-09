@@ -1,10 +1,10 @@
-# Z-SCOPE v1.1 配置文件
+# Z-SCOPE v1.2 配置文件
 #
 # 说明：
 # - 本文件字段来自 zscope/config/config.py 的 ConfigLoader.load()。
 # - 字符串支持环境变量展开，例如 ${Z_SCOPE_API_KEY}。
 # - analysis.workflow_name 是运行时内部字段，请不要写入 zscope.yaml；需要切换工作流时使用 CLI 的 --resume / --maintain。
-# - v1.1 新增 diff impact 扫描、报告语义去重、Deep Worker 工单控制和工具审计配置；diff 扫描通过 CLI 参数启用，语义收敛策略可在 project.diff_impact 配置。
+# - v1.2 在 v1.1 基础上增强 diff impact 语义收敛、SVF 入口聚类、LLM endpoint 容量控制和并行验证；diff 扫描通过 CLI 参数启用，语义收敛策略可在 project.diff_impact 配置。
 
 # llm:                                      # 兼容旧版单模型配置；推荐使用下面的 llms 多模型配置
 #   provider: openai                        # LLM 服务类型预留字段，当前按 OpenAI 兼容接口调用
