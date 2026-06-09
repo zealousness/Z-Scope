@@ -145,6 +145,44 @@ def test_clang_extractor_keeps_header_inline_body_as_implementation(
     assert func_rows[0][7] == 0
 
 
+def test_clang_extractor_writes_macro_definitions_for_tu(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "macros.h"
+    source.write_text(
+        "#define ZIP_ALLOC(sz) alloc(sz)\n"
+        "#define ZIP_LIMIT 64\n"
+        "#define ZIP_WRAP(x) \\\n"
+        "    helper(x)\n",
+        encoding="utf-8",
+    )
+
+    class MacroDB:
+        def __init__(self):
+            self.macro_rows = []
+            self.indexed = []
+
+        def insert_macro_definitions_batch(self, rows):
+            self.macro_rows.extend(rows)
+
+        def mark_tu_indexed(self, tu_id: int):
+            self.indexed.append(tu_id)
+
+    extractor = ClangExtractor(project_root=tmp_path)
+    monkeypatch.setattr(extractor, "open_document", lambda _path: True)
+    monkeypatch.setattr(extractor, "close_document", lambda _path: None)
+    monkeypatch.setattr(extractor, "get_document_symbols", lambda _path: [])
+
+    db = MacroDB()
+
+    assert extractor.extract_tu(source, db, 7) is True
+
+    assert db.indexed == [7]
+    assert db.macro_rows == [
+        ("ZIP_ALLOC", "macros.h", 1, "#define ZIP_ALLOC(sz) alloc(sz)\n", 1),
+        ("ZIP_LIMIT", "macros.h", 2, "#define ZIP_LIMIT 64\n", 0),
+        ("ZIP_WRAP", "macros.h", 3, "#define ZIP_WRAP(x) \\\n    helper(x)\n", 1),
+    ]
+
+
 def test_run_batch_extraction_uses_prescanned_tus_without_rehashing(
     tmp_path, monkeypatch
 ) -> None:
@@ -250,6 +288,69 @@ def test_clang_backend_passes_prescanned_tus_to_batch_extraction(
     assert backend._run_full_extraction() is True
 
     assert backend._extractor.received_prescanned_tus == {str(source.resolve()): (31, True)}
+    assert backend._status == "ready"
+
+
+def test_clang_backend_refreshes_unchanged_files_when_macro_metadata_missing(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "macros.h"
+    source.write_text("#define ZIP_ALLOC(sz) alloc(sz)\n", encoding="utf-8")
+
+    class LegacyMacroDB(_FakeDB):
+        def __init__(self):
+            super().__init__()
+            self.cleared_macros = 0
+            self.metadata = {}
+
+        def register_tu_hash(self, file_path: str, file_hash: str):
+            self.register_calls += 1
+            assert file_path == str(source.resolve())
+            assert file_hash == "hash"
+            return (61, False)
+
+        def get_metadata(self, key: str) -> str:
+            return self.metadata.get(key, "")
+
+        def set_metadata(self, key: str, value: str):
+            self.metadata[key] = value
+
+        def clear_macro_definitions(self):
+            self.cleared_macros += 1
+
+    class FakeExtractor:
+        def __init__(self):
+            self.received_prescanned_tus = None
+
+        def wait_for_indexing(self, timeout: int, idle_threshold: float) -> bool:
+            return True
+
+        def run_batch_extraction(
+            self,
+            file_list,
+            db,
+            batch_size=50,
+            progress_cb=None,
+            prescanned_tus=None,
+        ):
+            self.received_prescanned_tus = prescanned_tus
+            return {"total": len(file_list), "success": 1, "failed": 0, "skipped": 0}
+
+    backend = ClangBackend(batch_size=5)
+    backend._source_path = tmp_path
+    backend._db = LegacyMacroDB()
+    backend._extractor = FakeExtractor()
+
+    monkeypatch.setattr(backend, "_collect_source_files", lambda: [source])
+    monkeypatch.setattr(backend, "_ensure_extractor", lambda: True)
+    monkeypatch.setattr(ClangExtractor, "_compute_file_hash", staticmethod(lambda _path: "hash"))
+
+    assert backend._run_full_extraction() is True
+
+    assert backend._db.cleared_macros == 1
+    assert backend._db.pending == [61]
+    assert backend._extractor.received_prescanned_tus == {str(source.resolve()): (61, True)}
+    assert backend._db.metadata["macro_extractor_version"] == "1"
     assert backend._status == "ready"
 
 

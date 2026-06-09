@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 HEADER_LIKE_SUFFIXES = {".h", ".hh", ".hpp", ".hxx", ".ph", ".inc", ".inl"}
+MACRO_DEFINE_RE = re.compile(
+    r"^\s*#\s*define\s+(?P<name>[A-Za-z_]\w*)(?P<tail>.*)$"
+)
 
 
 class ClangExtractor:
@@ -412,6 +415,7 @@ class ClangExtractor:
         rel_path = self._project_relative_path(file_path)
         func_rows: List[Tuple[Any, ...]] = []
         call_rows: List[Tuple[Any, ...]] = []
+        macro_rows = self._extract_macros(file_path, rel_path)
 
         for sym in symbols:
             self._process_symbol(sym, file_path, rel_path, tu_id, db, func_rows, call_rows)
@@ -421,6 +425,9 @@ class ClangExtractor:
             db.insert_functions_batch(func_rows)
         if call_rows:
             db.insert_call_edges_batch(call_rows)
+        insert_macros = getattr(db, "insert_macro_definitions_batch", None)
+        if macro_rows and callable(insert_macros):
+            insert_macros(macro_rows)
 
         # 提取 #include 边
         self._extract_includes(file_path, rel_path, db)
@@ -543,6 +550,41 @@ class ClangExtractor:
                         )
         except Exception:
             pass
+
+    def _extract_macros(self, file_path: Path, rel_path: str) -> List[Tuple[Any, ...]]:
+        rows: List[Tuple[Any, ...]] = []
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+        except OSError:
+            return rows
+
+        idx = 0
+        while idx < len(lines):
+            line = lines[idx]
+            match = MACRO_DEFINE_RE.match(line)
+            if not match:
+                idx += 1
+                continue
+
+            start_idx = idx
+            body_lines = [line]
+            while body_lines[-1].rstrip().endswith("\\") and idx + 1 < len(lines):
+                idx += 1
+                body_lines.append(lines[idx])
+
+            rows.append(
+                (
+                    match.group("name"),
+                    rel_path,
+                    start_idx + 1,
+                    "".join(body_lines),
+                    int(str(match.group("tail") or "").startswith("(")),
+                )
+            )
+            idx += 1
+
+        return rows
 
     def run_batch_extraction(
         self,

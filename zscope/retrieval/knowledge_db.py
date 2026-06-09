@@ -784,6 +784,32 @@ class KnowledgeDB:
             }
         return index
 
+    # -- Macro definitions --
+
+    def insert_macro_definitions_batch(self, rows: List[tuple]):
+        self._conn.executemany(
+            "INSERT OR REPLACE INTO macro_definitions "
+            "(name, file_path, line, definition, is_function_like) "
+            "VALUES (?, ?, ?, ?, ?)",
+            rows,
+        )
+
+    def get_macro_definitions(self, name: str, limit: int = 20) -> List[Dict[str, Any]]:
+        clean_name = str(name or "").strip()
+        if not clean_name:
+            return []
+        rows = self._conn.execute(
+            "SELECT name, file_path, line, definition, is_function_like "
+            "FROM macro_definitions WHERE name = ? "
+            "ORDER BY is_function_like DESC, file_path ASC, line ASC LIMIT ?",
+            (clean_name, int(limit or 20)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def clear_macro_definitions(self) -> None:
+        self._conn.execute("DELETE FROM macro_definitions")
+        self._conn.commit()
+
     @staticmethod
     def _function_signature_key(name: str, signature: str) -> str:
         if "(" not in signature or ")" not in signature:
