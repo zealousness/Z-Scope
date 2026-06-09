@@ -8,6 +8,7 @@ import sys
 import os
 from pathlib import Path # Keep this import as it's used for 'config: Path'
 from typing import Optional
+from .._version import __version__
 from ..retrieval.code_index import CodeIndex
 from ..common.utils import setup_logging
 from ..config.config import ConfigLoader
@@ -15,6 +16,7 @@ from ..framework.conversation_recorder import enable_conversation_recording
 from ..orchestration.scan_session import ScanSessionResult, ScanSessionRunner
 
 @click.command()
+@click.version_option(version=__version__, prog_name="Z-SCOPE")
 @click.option(
     "--config",
     "-c",

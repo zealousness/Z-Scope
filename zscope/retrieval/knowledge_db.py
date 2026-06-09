@@ -8,7 +8,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 logger = logging.getLogger(__name__)
 
@@ -17,15 +17,60 @@ class KnowledgeDB:
     """SQLite-backed code knowledge store."""
 
     SCHEMA_VERSION = "7"
+    CALLGRAPH_READ_CONCURRENCY = 8
 
     def __init__(self, db_path: str):
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._connections_lock = threading.RLock()
+        self._query_cache_lock = threading.RLock()
+        self._callgraph_read_semaphore = threading.BoundedSemaphore(self.CALLGRAPH_READ_CONCURRENCY)
         self._thread_local = threading.local()
         self._connections: List[sqlite3.Connection] = []
+        self._callee_cache: Dict[Tuple[str, int, str], List[Dict[str, Any]]] = {}
+        self._indirect_callee_cache: Dict[Tuple[str, int], List[Dict[str, Any]]] = {}
+        self._callgraph_cache_version = 0
+        self._callee_cache_hits = 0
+        self._callee_cache_misses = 0
+        self._indirect_callee_cache_hits = 0
+        self._indirect_callee_cache_misses = 0
         self._closed = False
         self._create_tables()
+
+    @classmethod
+    def _clone_query_rows(cls, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [
+            {str(key): cls._clone_query_value(value) for key, value in row.items()}
+            for row in rows
+        ]
+
+    @classmethod
+    def _clone_query_value(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: cls._clone_query_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [cls._clone_query_value(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(cls._clone_query_value(item) for item in value)
+        return value
+
+    def _invalidate_callgraph_query_cache(self) -> None:
+        with self._query_cache_lock:
+            self._callgraph_cache_version += 1
+            self._callee_cache.clear()
+            self._indirect_callee_cache.clear()
+
+    def callgraph_cache_stats(self) -> Dict[str, int]:
+        with self._query_cache_lock:
+            return {
+                "version": self._callgraph_cache_version,
+                "callee_hits": self._callee_cache_hits,
+                "callee_misses": self._callee_cache_misses,
+                "callee_size": len(self._callee_cache),
+                "indirect_callee_hits": self._indirect_callee_cache_hits,
+                "indirect_callee_misses": self._indirect_callee_cache_misses,
+                "indirect_callee_size": len(self._indirect_callee_cache),
+            }
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(
@@ -435,6 +480,7 @@ class KnowledgeDB:
 
     def purge_tu_data(self, tu_id: int, purge_incoming_refs: bool = False):
         """清除某 TU 关联的所有提取数据。"""
+        self._invalidate_callgraph_query_cache()
         self._conn.execute("DELETE FROM functions WHERE tu_id = ?", (tu_id,))
         # call_edges 没有 tu_id，通过 caller_file 联动清除
         row = self._conn.execute(
@@ -696,12 +742,14 @@ class KnowledgeDB:
 
     def purge_svf_data(self, group: str = "default"):
         """清除 SVF 产生的间接调用和污点数据（按分组）。"""
+        self._invalidate_callgraph_query_cache()
         self._conn.execute("DELETE FROM indirect_calls WHERE svf_group = ?", (group,))
         self._conn.execute("DELETE FROM taint_signatures WHERE svf_group = ?", (group,))
         self._conn.commit()
 
     def purge_svf_data_except(self, groups: set[str]):
         """Remove stale SVF rows whose group is not part of the current refresh."""
+        self._invalidate_callgraph_query_cache()
         clean_groups = sorted(str(group) for group in groups if str(group))
         if not clean_groups:
             self._conn.execute("DELETE FROM indirect_calls")
@@ -862,6 +910,7 @@ class KnowledgeDB:
     def insert_call_edge(self, caller_name: str, caller_file: str,
                          callee_name: str, callee_file: str = "", call_line: int = 0,
                          call_type: str = "direct"):
+        self._invalidate_callgraph_query_cache()
         self._conn.execute(
             "INSERT OR IGNORE INTO call_edges "
             "(caller_name, caller_file, callee_name, callee_file, call_line, call_type) "
@@ -870,6 +919,7 @@ class KnowledgeDB:
         )
 
     def insert_call_edges_batch(self, rows: List[tuple]):
+        self._invalidate_callgraph_query_cache()
         self._conn.executemany(
             "INSERT OR IGNORE INTO call_edges "
             "(caller_name, caller_file, callee_name, callee_file, call_line, call_type) "
@@ -910,24 +960,45 @@ class KnowledgeDB:
         limit: int = 30,
         caller_file: str = "",
     ) -> List[Dict[str, Any]]:
+        cache_key = (str(func_name), int(limit), str(caller_file or ""))
+        with self._query_cache_lock:
+            cached = self._callee_cache.get(cache_key)
+            if cached is not None:
+                self._callee_cache_hits += 1
+                return self._clone_query_rows(cached)
+            self._callee_cache_misses += 1
+            cache_version = self._callgraph_cache_version
+
         if caller_file:
-            all_rows = self._conn.execute(
-                "SELECT DISTINCT callee_name, callee_file, call_line, call_type, caller_file "
-                "FROM call_edges WHERE caller_name = ?",
-                (func_name,),
-            ).fetchall()
+            self._callgraph_read_semaphore.acquire()
+            try:
+                all_rows = self._conn.execute(
+                    "SELECT DISTINCT callee_name, callee_file, call_line, call_type, caller_file "
+                    "FROM call_edges WHERE caller_name = ?",
+                    (func_name,),
+                ).fetchall()
+            finally:
+                self._callgraph_read_semaphore.release()
             rows = [
                 row for row in all_rows
                 if self._paths_match_hint(str(row["caller_file"] or ""), caller_file)
             ][:limit]
         else:
-            rows = self._conn.execute(
-                "SELECT DISTINCT callee_name, callee_file, call_line, call_type FROM call_edges "
-                "WHERE caller_name = ? LIMIT ?",
-                (func_name, limit),
-            ).fetchall()
-        return [{"name": r["callee_name"], "filename": r["callee_file"],
-                 "lineNumber": r["call_line"], "call_type": r["call_type"]} for r in rows]
+            self._callgraph_read_semaphore.acquire()
+            try:
+                rows = self._conn.execute(
+                    "SELECT DISTINCT callee_name, callee_file, call_line, call_type FROM call_edges "
+                    "WHERE caller_name = ? LIMIT ?",
+                    (func_name, limit),
+                ).fetchall()
+            finally:
+                self._callgraph_read_semaphore.release()
+        result = [{"name": r["callee_name"], "filename": r["callee_file"],
+                   "lineNumber": r["call_line"], "call_type": r["call_type"]} for r in rows]
+        with self._query_cache_lock:
+            if cache_version == self._callgraph_cache_version:
+                self._callee_cache[cache_key] = self._clone_query_rows(result)
+        return result
 
     @staticmethod
     def _paths_match_hint(stored_path: str, hint_path: str) -> bool:
@@ -1032,6 +1103,7 @@ class KnowledgeDB:
                              source: str = "svf-ander", confidence: float = 1.0,
                              call_file: str = "", call_line: int = 0,
                              svf_group: str = "default"):
+        self._invalidate_callgraph_query_cache()
         self._conn.execute(
             "INSERT OR IGNORE INTO indirect_calls "
             "(caller_name, callee_name, call_file, call_line, source, confidence, svf_group) "
@@ -1040,15 +1112,28 @@ class KnowledgeDB:
         )
 
     def get_indirect_callees(self, func_name: str, limit: int = 30) -> List[Dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT callee_name, source, MAX(confidence) AS confidence, "
-            "GROUP_CONCAT(DISTINCT svf_group) AS svf_groups, "
-            "MAX(call_file) AS call_file, MAX(call_line) AS call_line "
-            "FROM indirect_calls WHERE caller_name = ? "
-            "GROUP BY caller_name, callee_name, source "
-            "ORDER BY confidence DESC LIMIT ?",
-            (func_name, limit),
-        ).fetchall()
+        cache_key = (str(func_name), int(limit))
+        with self._query_cache_lock:
+            cached = self._indirect_callee_cache.get(cache_key)
+            if cached is not None:
+                self._indirect_callee_cache_hits += 1
+                return self._clone_query_rows(cached)
+            self._indirect_callee_cache_misses += 1
+            cache_version = self._callgraph_cache_version
+
+        self._callgraph_read_semaphore.acquire()
+        try:
+            rows = self._conn.execute(
+                "SELECT callee_name, source, MAX(confidence) AS confidence, "
+                "GROUP_CONCAT(DISTINCT svf_group) AS svf_groups, "
+                "MAX(call_file) AS call_file, MAX(call_line) AS call_line "
+                "FROM indirect_calls WHERE caller_name = ? "
+                "GROUP BY caller_name, callee_name, source "
+                "ORDER BY confidence DESC LIMIT ?",
+                (func_name, limit),
+            ).fetchall()
+        finally:
+            self._callgraph_read_semaphore.release()
         result = []
         for r in rows:
             groups = self._split_svf_groups(r["svf_groups"])
@@ -1056,6 +1141,9 @@ class KnowledgeDB:
                            "confidence": r["confidence"], "svf_group": groups[0] if groups else "",
                            "svf_groups": groups,
                            "call_file": r["call_file"], "call_line": r["call_line"]})
+        with self._query_cache_lock:
+            if cache_version == self._callgraph_cache_version:
+                self._indirect_callee_cache[cache_key] = self._clone_query_rows(result)
         return result
 
     def get_indirect_callers(self, func_name: str, limit: int = 20) -> List[Dict[str, Any]]:

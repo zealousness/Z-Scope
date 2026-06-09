@@ -1059,6 +1059,129 @@ def test_joern_candidate_scope_uses_entry_reachability() -> None:
     assert not analyzer._match_reachable_from_entry("entry", "unrelated")
 
 
+def test_reachable_precompute_is_cached_per_entry_depth_and_limit() -> None:
+    class CountingIndex:
+        def __init__(self):
+            self.calls = []
+
+        def get_callees(self, name: str, limit: int = 80):
+            self.calls.append((name, limit))
+            graph = {
+                "entry": [{"name": "wrapper"}],
+                "wrapper": [{"name": "api_open"}, {"name": "entry"}],
+                "api_open": [{"name": "leaf"}],
+                "leaf": [],
+            }
+            return graph.get(name, [])
+
+    index = CountingIndex()
+    analyzer = object.__new__(Analyzer)
+    analyzer.code_index = index
+
+    assert analyzer._match_reachable_from_entry("entry", "api_open")
+    assert analyzer._match_reachable_from_entry("entry", "ns:api_open")
+    assert analyzer._match_reachable_from_entry("entry", "leaf")
+    assert not analyzer._match_reachable_from_entry("entry", "unrelated")
+    assert index.calls == [
+        ("entry", 80),
+        ("wrapper", 80),
+        ("api_open", 80),
+        ("leaf", 80),
+    ]
+
+    assert not analyzer._match_reachable_from_entry("entry", "leaf", max_depth=2)
+    assert index.calls[-2:] == [
+        ("entry", 80),
+        ("wrapper", 80),
+    ]
+
+    assert analyzer._match_reachable_from_entry("entry", "leaf", max_depth=3)
+    assert index.calls[-3:] == [
+        ("entry", 80),
+        ("wrapper", 80),
+        ("api_open", 80),
+    ]
+
+
+def test_reachable_precompute_respects_cycles_depth_and_node_limits() -> None:
+    class FakeIndex:
+        def get_callees(self, name: str, limit: int = 80):
+            graph = {
+                "entry": [{"name": "a"}, {"name": "b"}, {"name": "c"}],
+                "a": [{"name": "entry"}, {"name": "deep"}],
+                "b": [],
+                "c": [],
+                "deep": [{"name": "leaf"}],
+            }
+            return graph.get(name, [])
+
+    analyzer = object.__new__(Analyzer)
+    analyzer.code_index = FakeIndex()
+
+    assert analyzer._reachable_function_names_from_entry(
+        "entry",
+        max_depth=1,
+        max_nodes=10,
+        callee_limit=80,
+    ) == {"entry", "a", "b", "c"}
+    assert not analyzer._match_reachable_from_entry("entry", "leaf", max_depth=2)
+    assert analyzer._match_reachable_from_entry("entry", "leaf", max_depth=3)
+    assert len(
+        analyzer._reachable_function_names_from_entry(
+            "entry",
+            max_depth=5,
+            max_nodes=3,
+            callee_limit=80,
+        )
+    ) == 3
+
+
+def test_clang_knowledge_candidates_reuse_precomputed_reachable_set() -> None:
+    class CountingIndex:
+        def __init__(self):
+            self.calls = []
+
+        def get_callees(self, name: str, limit: int = 80):
+            self.calls.append((name, limit))
+            graph = {
+                "entry": [{"name": "api_open"}],
+                "api_open": [],
+            }
+            return graph.get(name, [])
+
+    class FakeDB:
+        def find_callers_without_callee(self, acquire: str, release: str, limit: int = 100):
+            return [
+                {"function": "api_open", "file_path": "src/api.c", "line": 7},
+                {"function": "unreachable", "file_path": "src/other.c", "line": 9},
+            ]
+
+    index = CountingIndex()
+    analyzer = object.__new__(Analyzer)
+    analyzer.code_index = index
+    analyzer._candidate_backend_profile = lambda: "clang"
+    analyzer._resource_release_pairs_from_overlay = lambda: [("open", "close", "test")]
+    analyzer._clang_pair_row_to_candidate = (
+        lambda row, **kwargs: {"function": row["function"], "entry": kwargs["entry_func"]}
+    )
+    reachable = analyzer._reachable_function_names_from_entry(
+        "entry",
+        max_depth=4,
+        max_nodes=200,
+        callee_limit=80,
+    )
+    calls_after_precompute = list(index.calls)
+
+    candidates = analyzer._detect_clang_knowledgedb_candidates(
+        {"entry_func": "entry"},
+        FakeDB(),
+        reachable_funcs=reachable,
+    )
+
+    assert candidates == [{"function": "api_open", "entry": "entry"}]
+    assert index.calls == calls_after_precompute
+
+
 def test_clang_pair_row_normalizes_to_candidate() -> None:
     analyzer = object.__new__(Analyzer)
     row = {

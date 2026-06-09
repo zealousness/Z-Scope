@@ -9,6 +9,7 @@ import logging
 import time
 import datetime
 import re
+import threading
 import uuid
 from collections import deque
 from copy import deepcopy
@@ -236,6 +237,8 @@ class Analyzer:
         )
         self._clang_tooling_provider: Optional[ClangToolingEvidenceProvider] = None
         self._clang_tooling_evidence_cache: Dict[tuple[str, str, int, int], Dict[str, Any]] = {}
+        self._reachable_function_cache: Dict[tuple[str, int, int, int], Set[str]] = {}
+        self._reachable_function_cache_lock = threading.RLock()
         self._semantic_dedup_llm_cache: Dict[str, Dict[str, Any]] = {}
         self.workflow_progress: List[Dict[str, Any]] = []
         self.current_workflow_step: Optional[str] = None
@@ -1862,11 +1865,28 @@ class Analyzer:
 
     def _detect_backend_signal_candidates(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Convert KnowledgeDB/SVF/Saber findings into normal candidates."""
+        scan_started = time.time()
         candidates: List[Dict[str, Any]] = []
         db = self._get_knowledge_db()
         entry_func = str(state.get("entry_func") or "")
+        profile = self._candidate_backend_profile()
+        db_cache_before = self._knowledge_db_callgraph_cache_stats(db)
+        reachable_started = time.time()
+        reachable_funcs: Set[str] = set()
         if db is not None:
             reachable_funcs = self._reachable_function_names_from_entry(entry_func)
+        reachable_duration = time.time() - reachable_started
+        scope_reachable_funcs = (
+            self._reachable_function_names_from_entry(
+                entry_func,
+                max_depth=4,
+                max_nodes=200,
+                callee_limit=80,
+            )
+            if profile == "joern" or (db is not None and profile in {"clang", "unified"})
+            else reachable_funcs
+        )
+        if db is not None:
             try:
                 bugs = db.get_enriched_taint_bugs(
                     func_names=sorted(reachable_funcs),
@@ -1895,14 +1915,46 @@ class Analyzer:
                     len(svf_candidates),
                 )
             candidates.extend(svf_candidates)
-        candidates.extend(self._detect_clang_knowledgedb_candidates(state, db))
-        candidates.extend(self._detect_joern_cpg_candidates(state))
+        candidates.extend(
+            self._detect_clang_knowledgedb_candidates(
+                state,
+                db,
+                reachable_funcs=scope_reachable_funcs,
+            )
+        )
+        candidates.extend(
+            self._detect_joern_cpg_candidates(
+                state,
+                reachable_funcs=scope_reachable_funcs,
+            )
+        )
         candidates = dedupe_rule_candidates(candidates)
-        return self._annotate_candidate_issues(
+        annotation_started = time.time()
+        annotated = self._annotate_candidate_issues(
             candidates,
             checker=self._backend_signal_checker(),
             path_kind="backend_signal",
         )
+        annotation_duration = time.time() - annotation_started
+        db_cache_delta = self._callgraph_cache_stat_delta(
+            db_cache_before,
+            self._knowledge_db_callgraph_cache_stats(db),
+        )
+        logger.info(
+            "Backend signal scan end entry='%s' profile=%s reachable=%d scope_reachable=%d "
+            "candidates=%d duration=%.2fs reachable_duration=%.2fs evidence_annotation_duration=%.2fs "
+            "db_cache_delta=%s",
+            entry_func,
+            profile,
+            len(reachable_funcs),
+            len(scope_reachable_funcs),
+            len(annotated),
+            time.time() - scan_started,
+            reachable_duration,
+            annotation_duration,
+            db_cache_delta,
+        )
+        return annotated
 
     def _merge_unified_evidence_candidates(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return merge_unified_evidence_candidates(
@@ -1950,6 +2002,8 @@ class Analyzer:
         self,
         state: Dict[str, Any],
         db: Optional[Any],
+        *,
+        reachable_funcs: Optional[Set[str]] = None,
     ) -> List[Dict[str, Any]]:
         if db is None or self._candidate_backend_profile() not in {"clang", "unified"}:
             return []
@@ -1958,16 +2012,26 @@ class Analyzer:
             return []
         entry_func = str(state.get("entry_func") or "")
         pairs = self._resource_release_pairs_from_overlay()
+        scan_started = time.time()
+        if reachable_funcs is None:
+            reachable_funcs = self._reachable_function_names_from_entry(
+                entry_func,
+                max_depth=4,
+                max_nodes=200,
+                callee_limit=80,
+            )
         candidates: List[Dict[str, Any]] = []
+        rows_seen = 0
         for acquire, release, pair_source in pairs:
             try:
                 rows = find_missing(acquire, release, limit=100)
             except Exception as exc:
                 logger.debug("Unable to query KnowledgeDB pair %s/%s: %s", acquire, release, exc)
                 continue
+            rows_seen += len(rows)
             for row in rows:
                 func = str(row.get("function") or "")
-                if not self._match_reachable_from_entry(entry_func, func):
+                if not self._target_in_reachable_functions(func, reachable_funcs):
                     continue
                 candidates.append(
                     self._clang_pair_row_to_candidate(
@@ -1976,6 +2040,16 @@ class Analyzer:
                         pair_source=pair_source,
                     )
                 )
+        logger.info(
+            "Backend Clang KnowledgeDB signal scan entry='%s': pairs=%d rows=%d reachable=%d "
+            "candidates=%d duration=%.2fs",
+            entry_func,
+            len(pairs),
+            rows_seen,
+            len(reachable_funcs),
+            len(candidates),
+            time.time() - scan_started,
+        )
         return candidates
 
     def _resource_release_pairs_from_overlay(self) -> List[tuple[str, str, str]]:
@@ -1994,7 +2068,12 @@ class Analyzer:
             pair_source=pair_source,
         )
 
-    def _detect_joern_cpg_candidates(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _detect_joern_cpg_candidates(
+        self,
+        state: Dict[str, Any],
+        *,
+        reachable_funcs: Optional[Set[str]] = None,
+    ) -> List[Dict[str, Any]]:
         if self._candidate_backend_profile() != "joern":
             return []
         backend_attr = getattr(self.code_index, "backend", None)
@@ -2014,10 +2093,17 @@ class Analyzer:
             logger.debug("Unable to run Joern CPG candidate checks: %s", exc)
             return []
         entry_func = str(state.get("entry_func") or "")
+        if reachable_funcs is None:
+            reachable_funcs = self._reachable_function_names_from_entry(
+                entry_func,
+                max_depth=4,
+                max_nodes=200,
+                callee_limit=80,
+            )
         scoped = [
             match
             for match in matches
-            if self._match_reachable_from_entry(entry_func, str(getattr(match, "func_name", "")))
+            if self._target_in_reachable_functions(str(getattr(match, "func_name", "")), reachable_funcs)
         ]
         return [self._joern_rule_match_to_candidate(match, entry_func) for match in scoped]
 
@@ -2033,30 +2119,32 @@ class Analyzer:
             return False
         if self._function_names_may_match(entry_func, target_func):
             return True
-        get_callees = getattr(self.code_index, "get_callees", None)
-        if not callable(get_callees):
+        reachable_funcs = self._reachable_function_names_from_entry(
+            entry_func,
+            max_depth=max_depth,
+            max_nodes=max_nodes,
+            callee_limit=80,
+        )
+        return self._target_in_reachable_functions(target_func, reachable_funcs)
+
+    def _reachable_cache_state(self) -> tuple[Dict[tuple[str, int, int, int], Set[str]], threading.RLock]:
+        cache = getattr(self, "_reachable_function_cache", None)
+        lock = getattr(self, "_reachable_function_cache_lock", None)
+        if cache is None:
+            cache = {}
+            self._reachable_function_cache = cache
+        if lock is None:
+            lock = threading.RLock()
+            self._reachable_function_cache_lock = lock
+        return cache, lock
+
+    def _target_in_reachable_functions(self, target_func: str, reachable_funcs: Set[str]) -> bool:
+        if not target_func:
             return False
-        seen = {entry_func}
-        queue: List[tuple[str, int]] = [(entry_func, 0)]
-        while queue and len(seen) < max_nodes:
-            current, depth = queue.pop(0)
-            if depth >= max_depth:
-                continue
-            try:
-                callees = get_callees(current, limit=80)
-            except Exception:
-                continue
-            for item in callees or []:
-                if not isinstance(item, dict):
-                    continue
-                name = str(item.get("name") or item.get("callee_name") or "").strip()
-                if not name or name in seen:
-                    continue
-                if self._function_names_may_match(name, target_func):
-                    return True
-                seen.add(name)
-                queue.append((name, depth + 1))
-        return False
+        return any(
+            self._function_names_may_match(name, target_func)
+            for name in reachable_funcs
+        )
 
     def _find_call_path_from_entry(
         self,
@@ -2102,20 +2190,29 @@ class Analyzer:
         *,
         max_depth: int = 5,
         max_nodes: int = 300,
+        callee_limit: int = 100,
     ) -> Set[str]:
         if not entry_func:
             return set()
+        cache_key = (entry_func, int(max_depth), int(max_nodes), int(callee_limit))
+        cache, lock = self._reachable_cache_state()
+        with lock:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return set(cached)
         reachable: Set[str] = {entry_func}
         get_callees = getattr(self.code_index, "get_callees", None)
         if not callable(get_callees):
+            with lock:
+                cache[cache_key] = set(reachable)
             return reachable
-        queue: List[tuple[str, int]] = [(entry_func, 0)]
+        queue: deque[tuple[str, int]] = deque([(entry_func, 0)])
         while queue and len(reachable) < max_nodes:
-            current, depth = queue.pop(0)
+            current, depth = queue.popleft()
             if depth >= max_depth:
                 continue
             try:
-                callees = get_callees(current, limit=100)
+                callees = get_callees(current, limit=callee_limit)
             except Exception:
                 continue
             for item in callees or []:
@@ -2128,6 +2225,8 @@ class Analyzer:
                 queue.append((name, depth + 1))
                 if len(reachable) >= max_nodes:
                     break
+        with lock:
+            cache[cache_key] = set(reachable)
         return reachable
 
     def _reconstruct_svf_source_path(self, bug: Dict[str, Any], entry_func: str) -> Dict[str, Any]:
@@ -2534,6 +2633,30 @@ class Analyzer:
         if db is not None:
             return db
         return getattr(backend, "_db", None)
+
+    @staticmethod
+    def _knowledge_db_callgraph_cache_stats(db: Optional[Any]) -> Dict[str, int]:
+        if db is None:
+            return {}
+        stats = getattr(db, "callgraph_cache_stats", None)
+        if not callable(stats):
+            return {}
+        try:
+            raw = stats()
+        except Exception:
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        return {str(key): int(value) for key, value in raw.items() if isinstance(value, int)}
+
+    @staticmethod
+    def _callgraph_cache_stat_delta(before: Dict[str, int], after: Dict[str, int]) -> Dict[str, int]:
+        keys = set(before) | set(after)
+        return {
+            key: int(after.get(key, 0)) - int(before.get(key, 0))
+            for key in sorted(keys)
+            if int(after.get(key, 0)) != int(before.get(key, 0))
+        }
 
     def _persist_candidate_ir_records(self, issues: List[Dict[str, Any]]) -> None:
         """Persist compact candidate evidence into KnowledgeDB inspection IR tables."""

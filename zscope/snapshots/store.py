@@ -6,7 +6,6 @@ import json
 import logging
 import sqlite3
 import threading
-import copy
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, Iterable, List, cast
 
@@ -17,6 +16,20 @@ logger = logging.getLogger(__name__)
 _SQLITE_PRAGMA_LOCK = threading.Lock()
 _SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx"}
 _HEADER_SUFFIXES = {".h", ".hh", ".hpp", ".hxx", ".ph", ".inc", ".inl"}
+
+
+def _clone_json_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _clone_json_value(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_clone_json_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_clone_json_value(item) for item in value)
+    return value
+
+
+def _clone_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    return {str(key): _clone_json_value(value) for key, value in snapshot.items()}
 
 
 class SnapshotLockManager:
@@ -103,11 +116,11 @@ class SnapshotStore:
             snapshot = self._snapshot_cache.get((func_name, file_path))
             if snapshot is None:
                 return None
-            return cast(Dict[str, Any], copy.deepcopy(snapshot))
+            return _clone_snapshot(snapshot)
 
     def _cache_snapshot(self, func_name: str, file_path: Optional[str], snapshot: Dict[str, Any]) -> None:
         with self._snapshot_cache_lock:
-            self._snapshot_cache[(func_name, file_path)] = cast(Dict[str, Any], copy.deepcopy(snapshot))
+            self._snapshot_cache[(func_name, file_path)] = _clone_snapshot(snapshot)
 
     def _invalidate_snapshot_cache(self, func_name: str, file_path: Optional[str] = None) -> None:
         with self._snapshot_cache_lock:
@@ -385,7 +398,7 @@ class SnapshotStore:
                 self._cache_snapshot(func_name, selected_file_path, snapshot)
                 if not file_path:
                     self._cache_snapshot(func_name, None, snapshot)
-                return cast(Dict[str, Any], copy.deepcopy(snapshot))
+                return _clone_snapshot(snapshot)
             return None
         finally:
             conn.close()

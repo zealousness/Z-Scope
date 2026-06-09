@@ -4,13 +4,15 @@ Supports concurrent analysis of multiple functions using thread pool.
 """
 
 import concurrent.futures
+import hashlib
 import json
 import logging
 import re
 import threading
 import time
+from copy import copy
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 from dataclasses import dataclass, field
 
 from ..config.config import ZScopeConfig
@@ -29,10 +31,18 @@ from ..common.issue_identity import (
     deduplicate_semantic_issues_programmatic,
     deduplicate_issues,
     flatten_issue_text,
+    issue_call_path_signature,
+    issue_resource_signature,
     issue_rank,
+    issue_sink_signature,
+    issues_may_share_root_cause,
+    merge_duplicate_issue,
     normalize_issue_category,
     normalize_issue_key_part,
     parse_issue_location,
+    semantic_category_family,
+    semantic_related_cluster_keys,
+    semantic_root_cause_key,
 )
 from ..reporting.views import build_report_views, report_view_summary
 
@@ -109,6 +119,7 @@ class ParallelAnalyzer:
         self._shared_semantic_overlay: Optional[Dict[str, Any]] = None
         self._shared_semantics_lock = threading.Lock()
         self._last_batch_wall_seconds = 0.0
+        self._semantic_dedup_llm_cache: Dict[str, Dict[str, Any]] = {}
 
     @staticmethod
     def _normalize_md_text(value: Any) -> str:
@@ -453,19 +464,27 @@ class ParallelAnalyzer:
 
     def _create_config_for_entry(self, entry: FunctionEntry) -> ZScopeConfig:
         """Create a ZScopeConfig copy with the specified entry and custom prompt."""
-        from copy import deepcopy
-        config = deepcopy(self.base_config)
-        config.project.entry_function = entry.function_name
-        config.project.entry_file_path = entry.file_path
-        config.project.entry_diff_focus = entry.diff_focus
-        
+
+        agents = []
+        for agent_cfg in self.base_config.project.agents:
+            agent_copy = copy(agent_cfg)
+            entry_custom_prompt = agent_cfg.entry_custom_prompt
+            if entry.custom_prompt and agent_cfg.name == "vulnerability_analyzer":
+                entry_custom_prompt = entry.custom_prompt
+            agent_copy.entry_custom_prompt = entry_custom_prompt
+            agents.append(agent_copy)
+
+        project = copy(self.base_config.project)
+        project.entry_function = entry.function_name
+        project.entry_file_path = entry.file_path
+        project.entry_diff_focus = entry.diff_focus
+        project.agents = agents
+
+        config = copy(self.base_config)
+        config.project = project
+
         # Keep entry-specific focus separate from the configured task so skill
         # routing remains driven by the global vulnerability scope.
-        if entry.custom_prompt:
-            for agent_cfg in config.project.agents:
-                if agent_cfg.name == "vulnerability_analyzer":
-                    agent_cfg.entry_custom_prompt = entry.custom_prompt
-        
         return config
     
 
@@ -528,8 +547,10 @@ class ParallelAnalyzer:
                 self._annotate_diff_relevance(observation_copy, result.diff_focus)
                 all_observations.append(observation_copy)
         
-        # Deduplicate issues by location
-        unique_issues = self._deduplicate_issues(all_issues)
+        # Deduplicate confirmed issues with the same final-report semantics used
+        # by single-entry reports. Observations stay programmatic to avoid an
+        # extra batch LLM pass over needs_review-only material.
+        unique_issues, semantic_dedup_summary = self._deduplicate_report_issues(all_issues)
         unique_observations = self._deduplicate_issues(all_observations)
         report_views = build_report_views(unique_issues, unique_observations)
         view_summary = report_view_summary({"report_views": report_views})
@@ -572,6 +593,7 @@ class ParallelAnalyzer:
                 "diff_coverage": diff_coverage.get("coverage_summary", {}),
                 "validation_performance": validation_performance_summary,
                 "va_candidate_coverage": va_candidate_coverage_summary,
+                "semantic_dedup": semantic_dedup_summary,
             },
             "function_results": function_summaries,
             "issues": unique_issues,
@@ -591,6 +613,7 @@ class ParallelAnalyzer:
                 "cumulative_total_tokens": sum(r.cumulative_total_tokens for r in results.values()),
                 "validation_performance": validation_performance_summary,
                 "va_candidate_coverage_summary": va_candidate_coverage_summary,
+                "semantic_dedup_summary": semantic_dedup_summary,
             },
         }
         
@@ -1033,6 +1056,313 @@ class ParallelAnalyzer:
             deduped, _summary = deduplicate_semantic_issues_programmatic(issues)
             return deduped
         return deduplicate_issues(issues)
+
+    def _deduplicate_report_issues(self, issues: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """Apply batch final-report semantic dedup, including LLM dedup when enabled."""
+        semantic_cfg = getattr(getattr(getattr(self, "base_config", None), "reporting", None), "semantic_dedup", None)
+        if semantic_cfg is None or not getattr(semantic_cfg, "enabled", True):
+            deduped = deduplicate_issues(issues)
+            return deduped, {
+                "enabled": False,
+                "input_issue_count": len(issues),
+                "output_issue_count": len(deduped),
+            }
+
+        deduped, summary = deduplicate_semantic_issues_programmatic(issues)
+        summary.update(
+            {
+                "enabled": True,
+                "llm_enabled": bool(getattr(semantic_cfg, "llm_enabled", False)),
+                "input_issue_count": len(issues),
+                "after_programmatic_issue_count": len(deduped),
+            }
+        )
+        if getattr(semantic_cfg, "llm_enabled", False):
+            deduped, llm_summary = self._deduplicate_report_clusters_with_llm(
+                deduped,
+                semantic_cfg=semantic_cfg,
+            )
+            summary.update(llm_summary)
+        summary["output_issue_count"] = len(deduped)
+        return deduped, summary
+
+    def _deduplicate_report_clusters_with_llm(
+        self,
+        issues: List[Dict[str, Any]],
+        *,
+        semantic_cfg: Any,
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        max_cluster_size = max(2, int(getattr(semantic_cfg, "max_cluster_size", 8) or 8))
+        threshold = float(getattr(semantic_cfg, "llm_confidence_threshold", 0.85) or 0.85)
+        clusters: Dict[str, List[Dict[str, Any]]] = {}
+        for issue in issues:
+            for key in semantic_related_cluster_keys(issue):
+                clusters.setdefault(key, []).append(issue)
+
+        candidate_clusters: List[List[Dict[str, Any]]] = []
+        seen_cluster_sets: Set[tuple[int, ...]] = set()
+        for group in clusters.values():
+            for candidate_group in self._split_semantic_dedup_cluster(group, max_cluster_size):
+                if len(candidate_group) < 2:
+                    continue
+                cluster_ids = tuple(sorted(id(issue) for issue in candidate_group))
+                if cluster_ids in seen_cluster_sets:
+                    continue
+                seen_cluster_sets.add(cluster_ids)
+                candidate_clusters.append(candidate_group)
+
+        summary: Dict[str, Any] = {
+            "llm_candidate_cluster_count": len(candidate_clusters),
+            "llm_clusters_called": 0,
+            "llm_cache_hits": 0,
+            "llm_merge_count": 0,
+            "llm_rejected_merge_count": 0,
+            "llm_failed_cluster_count": 0,
+        }
+        if not candidate_clusters:
+            return issues, summary
+
+        recon_agent = self._make_issue_reconciler_agent()
+        if recon_agent is None:
+            summary["llm_disabled_reason"] = "no_issue_reconciler_llm_client"
+            return issues, summary
+
+        by_issue_id: Dict[str, Dict[str, Any]] = {}
+        issue_order: List[str] = []
+        issue_indices = {id(issue): index for index, issue in enumerate(issues)}
+        for index, issue in enumerate(issues):
+            issue_id = self._semantic_dedup_issue_id(issue, index)
+            by_issue_id[issue_id] = issue
+            issue_order.append(issue_id)
+
+        cache = getattr(self, "_semantic_dedup_llm_cache", None)
+        if cache is None:
+            cache = {}
+            self._semantic_dedup_llm_cache = cache
+
+        removed: Set[str] = set()
+        for cluster in candidate_clusters:
+            active_cluster = [
+                issue
+                for issue in cluster
+                if self._semantic_dedup_issue_id(issue, issue_indices.get(id(issue), 0)) not in removed
+            ]
+            if len(active_cluster) < 2:
+                continue
+            cluster_payload = self._semantic_dedup_cluster_payload(active_cluster, issue_indices)
+            cluster_fingerprint = self._semantic_dedup_cluster_fingerprint(cluster_payload)
+            decision = cache.get(cluster_fingerprint)
+            if decision is not None:
+                summary["llm_cache_hits"] += 1
+            else:
+                response = recon_agent.run(cluster_payload)
+                summary["llm_clusters_called"] += 1
+                if not response.success or not isinstance(response.data, dict):
+                    summary["llm_failed_cluster_count"] += 1
+                    continue
+                decision = response.data
+                cache[cluster_fingerprint] = decision
+
+            applied, rejected = self._apply_llm_dedup_decision(
+                decision,
+                by_issue_id,
+                removed,
+                threshold=threshold,
+            )
+            summary["llm_merge_count"] += applied
+            summary["llm_rejected_merge_count"] += rejected
+
+        return [issue for issue_id, issue in zip(issue_order, issues) if issue_id not in removed], summary
+
+    @staticmethod
+    def _split_semantic_dedup_cluster(
+        group: List[Dict[str, Any]],
+        max_cluster_size: int,
+    ) -> List[List[Dict[str, Any]]]:
+        if len(group) <= max_cluster_size:
+            return [group]
+
+        buckets: Dict[str, List[Dict[str, Any]]] = {}
+        for issue in group:
+            bucket_key = (
+                issue_resource_signature(issue)
+                or issue_sink_signature(issue)
+                or semantic_root_cause_key(issue)
+                or str(issue.get("function") or issue.get("func_name") or "")
+                or "fallback"
+            )
+            buckets.setdefault(bucket_key, []).append(issue)
+
+        split: List[List[Dict[str, Any]]] = []
+        for bucket in buckets.values():
+            for start in range(0, len(bucket), max_cluster_size):
+                chunk = bucket[start : start + max_cluster_size]
+                if len(chunk) > 1:
+                    split.append(chunk)
+        return split
+
+    def _make_issue_reconciler_agent(self) -> Any:
+        config = getattr(self, "base_config", None)
+        agents = getattr(getattr(config, "project", None), "agents", []) if config is not None else []
+        recon_agent_cfg = next(
+            (agent for agent in agents if getattr(agent, "name", "") == "issue_reconciler_agent"),
+            None,
+        )
+        recon_llm_ref = getattr(recon_agent_cfg, "llm_ref", "") if recon_agent_cfg else ""
+        recon_llm_ref = recon_llm_ref or "default"
+        clients = getattr(self, "_shared_llm_clients", {}) or {}
+        recon_client = clients.get(recon_llm_ref) or clients.get("default")
+        if recon_client is None:
+            logger.warning("Batch semantic LLM dedup requested but no issue_reconciler_agent LLM client is configured.")
+            return None
+
+        from ..agents.issue_reconciler.agent import IssueReconcilerAgent
+
+        return IssueReconcilerAgent(recon_client)
+
+    @staticmethod
+    def _semantic_dedup_issue_id(issue: Dict[str, Any], index: int) -> str:
+        return str(
+            issue.get("id")
+            or issue.get("candidate_id")
+            or issue.get("dedup_key")
+            or f"semantic_issue_{index}"
+        )
+
+    def _semantic_dedup_cluster_payload(
+        self,
+        cluster: List[Dict[str, Any]],
+        issue_indices: Dict[int, int],
+    ) -> Dict[str, Any]:
+        compact_issues = []
+        files = set()
+        functions = set()
+        resources = set()
+        families = set()
+        for issue in cluster:
+            issue_id = self._semantic_dedup_issue_id(issue, issue_indices.get(id(issue), 0))
+            compact = self._compact_issue_for_semantic_dedup(issue, issue_id)
+            compact_issues.append(compact)
+            if compact.get("file"):
+                files.add(compact["file"])
+            if compact.get("function"):
+                functions.add(compact["function"])
+            if compact.get("resource_signature"):
+                resources.add(compact["resource_signature"])
+            if compact.get("category_family"):
+                families.add(compact["category_family"])
+        cluster_id = self._semantic_dedup_cluster_fingerprint(
+            {"issues": compact_issues, "mode": "deduplicate_cluster"}
+        )
+        return {
+            "mode": "deduplicate_cluster",
+            "cluster_id": cluster_id,
+            "issues": compact_issues,
+            "deterministic_hints": {
+                "category_families": sorted(families),
+                "same_file": len(files) <= 1,
+                "same_function": len(functions) <= 1,
+                "resource_signatures": sorted(resources),
+            },
+        }
+
+    @staticmethod
+    def _compact_issue_for_semantic_dedup(issue: Dict[str, Any], issue_id: str) -> Dict[str, Any]:
+        location = str(issue.get("location") or issue.get("file") or "")
+        file_path, _line = parse_issue_location(location)
+        category = str(issue.get("category") or issue.get("subcategory") or "")
+        return {
+            "id": issue_id,
+            "category": category,
+            "category_family": semantic_category_family(category),
+            "function": issue.get("function") or issue.get("func_name"),
+            "file": file_path,
+            "location": location,
+            "root_cause": issue.get("root_cause"),
+            "description": issue.get("description"),
+            "positive_evidence": issue.get("positive_evidence"),
+            "candidate_source": issue.get("candidate_source") or issue.get("finding_kind"),
+            "resource_signature": issue_resource_signature(issue),
+            "root_cause_key": semantic_root_cause_key(issue),
+            "source": issue.get("source"),
+            "sink": issue.get("sink") or issue.get("sink_function"),
+            "call_path": issue.get("call_path"),
+            "call_path_signature": issue_call_path_signature(issue),
+            "sink_signature": issue_sink_signature(issue),
+        }
+
+    @staticmethod
+    def _semantic_dedup_cluster_fingerprint(payload: Dict[str, Any]) -> str:
+        stable = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(stable.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _apply_llm_dedup_decision(
+        decision: Dict[str, Any],
+        by_issue_id: Dict[str, Dict[str, Any]],
+        removed: Set[str],
+        *,
+        threshold: float,
+    ) -> tuple[int, int]:
+        applied = 0
+        rejected = 0
+        keep_distinct = {
+            str(issue_id)
+            for issue_id in decision.get("must_keep_distinct_issue_ids", [])
+            if issue_id
+        }
+        groups = decision.get("duplicate_groups")
+        if not isinstance(groups, list):
+            return 0, 0
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            primary_id = str(group.get("primary_issue_id") or "")
+            primary = by_issue_id.get(primary_id)
+            if primary is None or primary_id in removed:
+                rejected += 1
+                continue
+            try:
+                confidence = float(group.get("confidence", 0) or 0)
+            except (TypeError, ValueError):
+                confidence = 0.0
+            for duplicate_id in group.get("duplicate_issue_ids", []) or []:
+                duplicate_id = str(duplicate_id or "")
+                duplicate = by_issue_id.get(duplicate_id)
+                if (
+                    not duplicate_id
+                    or duplicate is None
+                    or duplicate_id == primary_id
+                    or duplicate_id in removed
+                    or duplicate_id in keep_distinct
+                    or primary_id in keep_distinct
+                ):
+                    rejected += 1
+                    continue
+                if not issues_may_share_root_cause(
+                    primary,
+                    duplicate,
+                    confidence=confidence,
+                    threshold=threshold,
+                    allow_cross_function_root=True,
+                ):
+                    rejected += 1
+                    continue
+                root_key = str(group.get("root_cause_key") or "") or semantic_root_cause_key(primary)
+                merge_duplicate_issue(
+                    primary,
+                    duplicate,
+                    dedup_key=root_key,
+                    decision={
+                        "method": "issue_reconciler_agent",
+                        "root_cause_key": root_key,
+                        "confidence": confidence,
+                        "reasoning": group.get("reasoning"),
+                    },
+                )
+                removed.add(duplicate_id)
+                applied += 1
+        return applied, rejected
 
     @staticmethod
     def _issue_rank(issue: Dict[str, Any]) -> tuple[int, float, int]:

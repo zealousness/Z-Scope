@@ -1,6 +1,8 @@
 from zscope.core.analysis.analyzer import Analyzer
 from zscope.core.candidates.evidence import (
     SemanticOverlayCompiler,
+    _compiled_identifier_token_pattern,
+    _contains_token,
     annotate_candidate_evidence,
     backend_profile_for_code_index,
     evidence_engines_for_profile,
@@ -133,6 +135,18 @@ def test_candidate_annotation_includes_relevant_overlay_rows_only() -> None:
     assert evidence["resource_models"][0]["name"] == "VOS_MemAlloc"
     assert evidence["macro_models"][0]["name"] == "VOS_MemAlloc"
     assert evidence["pointer_target_models"][0]["pointer_location"] == "ops->create"
+
+
+def test_contains_token_preserves_matching_semantics_with_cached_identifier_regex() -> None:
+    _compiled_identifier_token_pattern.cache_clear()
+
+    assert _contains_token("call VOS_MemAlloc(size)", "VOS_MemAlloc")
+    assert _contains_token("call VOS_MemAlloc(size)", "VOS_MemAlloc")
+    assert not _contains_token("call VOS_MemAllocator(size)", "VOS_MemAlloc")
+    assert _contains_token("handler is called through ops->create", "ops->create")
+    assert not _contains_token("handler is called through ops create", "ops->create")
+
+    assert _compiled_identifier_token_pattern.cache_info().hits >= 1
 
 
 def test_analyzer_annotation_uses_active_backend_profile() -> None:

@@ -102,6 +102,65 @@ def test_knowledge_db_uses_thread_local_connections_for_parallel_access(tmp_path
         db.close()
 
 
+def test_knowledge_db_caches_direct_callee_queries_and_invalidates_on_write(tmp_path: Path) -> None:
+    db_path = tmp_path / "knowledge.db"
+    db = KnowledgeDB(str(db_path))
+    try:
+        db.insert_call_edge("entry", "src/demo.c", "helper", "src/helper.c", 5)
+        db.commit()
+
+        first = db.get_callees("entry", limit=30)
+        second = db.get_callees("entry", limit=30)
+        second[0]["name"] = "mutated"
+
+        stats = db.callgraph_cache_stats()
+        assert stats["callee_misses"] == 1
+        assert stats["callee_hits"] == 1
+        assert db.get_callees("entry", limit=30)[0]["name"] == "helper"
+
+        db.get_callees("entry", limit=1)
+        assert db.callgraph_cache_stats()["callee_misses"] == 2
+
+        db.insert_call_edge("entry", "src/demo.c", "later", "src/later.c", 6)
+        db.commit()
+
+        assert {row["name"] for row in db.get_callees("entry", limit=30)} == {"helper", "later"}
+    finally:
+        db.close()
+
+    db2 = KnowledgeDB(str(db_path))
+    try:
+        assert db2.callgraph_cache_stats()["callee_hits"] == 0
+        assert {row["name"] for row in db2.get_callees("entry", limit=30)} == {"helper", "later"}
+    finally:
+        db2.close()
+
+
+def test_knowledge_db_caches_indirect_callee_queries_and_invalidates_on_write(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_indirect_call("caller", "target", confidence=0.8, svf_group="entry_cluster_1")
+        db.commit()
+
+        first = db.get_indirect_callees("caller", limit=30)
+        second = db.get_indirect_callees("caller", limit=30)
+        first[0]["name"] = "mutated"
+
+        stats = db.callgraph_cache_stats()
+        assert stats["indirect_callee_misses"] == 1
+        assert stats["indirect_callee_hits"] == 1
+        assert second[0]["name"] == "target"
+        assert db.get_indirect_callees("caller", limit=1)[0]["name"] == "target"
+        assert db.callgraph_cache_stats()["indirect_callee_misses"] == 2
+
+        db.insert_indirect_call("caller", "later", confidence=0.7, svf_group="entry_cluster_2")
+        db.commit()
+
+        assert {row["name"] for row in db.get_indirect_callees("caller", limit=30)} == {"target", "later"}
+    finally:
+        db.close()
+
+
 def test_get_callers_filters_duplicate_callee_names_by_file(tmp_path: Path) -> None:
     db = KnowledgeDB(str(tmp_path / "knowledge.db"))
     try:

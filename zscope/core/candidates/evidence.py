@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
 
 from ...semantics.defaults import default_overlay_models
@@ -30,6 +31,12 @@ _RESOURCE_KINDS = {
     "resource_release",
 }
 _LOCK_KINDS = {"lock", "unlock"}
+_IDENTIFIER_TOKEN_RE = re.compile(r"[A-Za-z_]\w*")
+
+
+@lru_cache(maxsize=4096)
+def _compiled_identifier_token_pattern(needle: str) -> re.Pattern[str]:
+    return re.compile(rf"\b{re.escape(needle)}\b")
 
 
 def backend_profile_for_code_index(code_index: Any) -> str:
@@ -391,9 +398,9 @@ def _target_values(value: Any) -> List[str]:
 def _contains_token(haystack: str, needle: str) -> bool:
     if not needle:
         return False
-    if not re.fullmatch(r"[A-Za-z_]\w*", needle):
+    if not _IDENTIFIER_TOKEN_RE.fullmatch(needle):
         return needle in haystack
-    return bool(re.search(rf"\b{re.escape(needle)}\b", haystack))
+    return bool(_compiled_identifier_token_pattern(needle).search(haystack))
 
 
 def _jsonish(value: Any) -> Dict[str, Any]:
