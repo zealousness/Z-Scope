@@ -176,6 +176,9 @@ class UnifiedBackend(CodeBackend):
     def get_method(self, name: str) -> Optional[Dict[str, Any]]:
         return self._clang.get_method(name)
 
+    def get_macro_definitions(self, name: str, limit: int = 20) -> List[Dict[str, Any]]:
+        return self._clang.get_macro_definitions(name, limit=limit)
+
     def get_method_callees(self, name: str, limit: int = 30) -> List[Dict[str, Any]]:
         return self._clang.get_method_callees(name, limit)
 

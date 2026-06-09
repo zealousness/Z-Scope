@@ -20,6 +20,8 @@ class ClangBackend(CodeBackend):
     使用 ClangExtractor 批量提取代码结构，存入 KnowledgeDB 供查询。
     """
 
+    MACRO_EXTRACTOR_VERSION = "1"
+
     def __init__(
         self,
         clangd_path: str = "clangd",
@@ -103,6 +105,11 @@ class ClangBackend(CodeBackend):
 
             db = self._db
             source_root = self._source_path
+            force_macro_refresh = self._macro_index_needs_refresh(db)
+            if force_macro_refresh:
+                clear_macros = getattr(db, "clear_macro_definitions", None)
+                if callable(clear_macros):
+                    clear_macros()
 
             def normalize_db_path(path_value: str) -> str:
                 p = Path(str(path_value))
@@ -134,6 +141,7 @@ class ClangBackend(CodeBackend):
 
             if not file_list:
                 logger.warning("No source files found in %s", self._source_path)
+                self._mark_macro_index_current(db)
                 self._status = "ready"
                 return True
 
@@ -141,7 +149,9 @@ class ClangBackend(CodeBackend):
                 fp = fp.resolve()
                 file_hash = ClangExtractor._compute_file_hash(fp)
                 tu_id, changed = db.register_tu_hash(str(fp), file_hash)
-                if not changed and normalize_db_path(str(fp)) in force_refresh_paths:
+                if not changed and (
+                    normalize_db_path(str(fp)) in force_refresh_paths or force_macro_refresh
+                ):
                     changed = True
                     db.mark_tu_pending(tu_id)
                 prescanned_tus[str(fp)] = (tu_id, changed)
@@ -153,6 +163,7 @@ class ClangBackend(CodeBackend):
                     "Incremental: all %d files unchanged, reusing cached KnowledgeDB",
                     len(file_list),
                 )
+                self._mark_macro_index_current(db)
                 self._status = "ready"
                 return True
 
@@ -186,12 +197,27 @@ class ClangBackend(CodeBackend):
                 "Extraction complete: %d extracted, %d skipped, %d failed",
                 stats["success"], stats["skipped"], stats["failed"],
             )
+            self._mark_macro_index_current(db)
             self._status = "ready"
             return True
         except Exception as e:
             logger.error("Extraction failed: %s", e)
             self._status = "error"
             return False
+
+    def _macro_index_needs_refresh(self, db: Any) -> bool:
+        get_metadata = getattr(db, "get_metadata", None)
+        if not callable(get_metadata):
+            return False
+        try:
+            return str(get_metadata("macro_extractor_version") or "") != self.MACRO_EXTRACTOR_VERSION
+        except Exception:
+            return False
+
+    def _mark_macro_index_current(self, db: Any) -> None:
+        set_metadata = getattr(db, "set_metadata", None)
+        if callable(set_metadata):
+            set_metadata("macro_extractor_version", self.MACRO_EXTRACTOR_VERSION)
 
     def _is_path_allowed(self, p: Path) -> bool:
         """Check if a path passes include/exclude filters."""
@@ -284,6 +310,11 @@ class ClangBackend(CodeBackend):
             "lineNumberEnd": func["end_line"],
             "signature": func.get("signature", f"{name}(...)"),
         }
+
+    def get_macro_definitions(self, name: str, limit: int = 20) -> List[Dict[str, Any]]:
+        if not self._db:
+            return []
+        return self._db.get_macro_definitions(name, limit=limit)
 
     def get_method_callees(self, name: str, limit: int = 30) -> List[Dict[str, Any]]:
         if not self._db:

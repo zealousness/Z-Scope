@@ -119,6 +119,10 @@ class CodeBackend(ABC):
         """按名称精确查找单个函数节点。"""
         ...
 
+    def get_macro_definitions(self, name: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Return macro definitions by name when the backend has macro facts."""
+        return []
+
     @abstractmethod
     def get_method_callees(self, name: str, limit: int = 30) -> List[Dict[str, Any]]:
         """获取指定函数的被调用者列表（用于 get_function_impl 中提取 callees）。"""
