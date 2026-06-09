@@ -68,8 +68,11 @@ class CodeIndex:
         self._index_ready = False
         self._cache_lock = threading.RLock()
         self._declaration_comment_index_lock = threading.Lock()
+        self._macro_definition_index_lock = threading.Lock()
         self._file_lines_cache: Dict[str, Tuple[str, ...]] = {}
         self._function_impl_cache: Dict[Tuple[str, int, bool], Dict[str, Any]] = {}
+        self._macro_definition_index: Optional[Dict[str, List[Dict[str, Any]]]] = None
+        self._macro_definition_miss_cache: set[str] = set()
 
         # 向后兼容：如果传入了 joern_client，包装为 JoernBackend
         if self._backend is None and joern_client is not None:
@@ -973,6 +976,8 @@ class CodeIndex:
         with self._cache_lock:
             self._function_impl_cache.clear()
             self._function_file_resolution_cache.clear()
+            self._macro_definition_index = None
+            self._macro_definition_miss_cache.clear()
 
     def _find_leading_c_comment_block(
         self,
@@ -1141,7 +1146,9 @@ class CodeIndex:
 
         indexed_file = func_info.get("file", "")
         if not indexed_file or indexed_file.startswith("<"):
-            macro_result = self._find_macro_definition(func_name)
+            macro_result = self._find_backend_macro_definition(func_name, max_lines=max_lines)
+            if not macro_result:
+                macro_result = self._find_macro_definition(func_name, max_lines=max_lines)
             if macro_result:
                 return self._store_function_impl_cache(cache_key, macro_result)
             if warn_missing:
@@ -1431,60 +1438,161 @@ class CodeIndex:
         self, macro_name: str, max_lines: int = 500
     ) -> Optional[Dict[str, Any]]:
         """Find a macro definition using regex scanning."""
-        macro_pattern = re.compile(rf"^\s*#\s*define\s+{re.escape(macro_name)}\b")
-        signature_pattern = re.compile(
-            rf"^\s*#\s*define\s+{re.escape(macro_name)}(?P<params>\s*\([^)]*\))?"
+        clean_name = str(macro_name or "").strip()
+        if not clean_name:
+            return None
+        with self._cache_lock:
+            if clean_name in self._macro_definition_miss_cache:
+                return None
+
+        records = self._get_macro_definition_index().get(clean_name, [])
+        if not records:
+            with self._cache_lock:
+                self._macro_definition_miss_cache.add(clean_name)
+            return None
+        return self._macro_definition_payload(
+            clean_name,
+            records[0],
+            max_lines=max_lines,
+            macro_alternates_count=max(0, len(records) - 1),
         )
-        # 搜索 source_root 和 project_root（去重，覆盖 include 目录）
-        search_roots = [self.source_root]
-        if self.project_root.resolve() != self.source_root.resolve():
-            search_roots.append(self.project_root)
-        seen_files: set = set()
-        for ext in ["*.h", "*.hpp", "*.ph", "*.inc", "*.c", "*.cpp", "*.cc"]:
-            for root in search_roots:
-                file_paths = []
-                try:
-                    for p in root.rglob(ext):
-                        file_paths.append(p)
-                except OSError as e:
-                    logger.debug(f"Error traversing directory during macro lookup: {e}")
-                
-                for file_path in file_paths:
-                    real = file_path.resolve()
-                    if real in seen_files:
-                        continue
-                    seen_files.add(real)
-                    try:
-                        lines = self._read_file_lines(file_path)
-                    except Exception:
-                        continue
-                    for idx, line in enumerate(lines):
-                        if not macro_pattern.match(line):
-                            continue
-                        start_idx = idx
-                        end_idx = idx
-                        while lines[end_idx].rstrip().endswith("\\") and end_idx + 1 < len(lines):
-                            end_idx += 1
-                        code_lines = lines[start_idx : end_idx + 1]
-                        if len(code_lines) > max_lines:
-                            code_lines = code_lines[:max_lines]
-                            end_idx = start_idx + max_lines - 1
-                        signature_match = signature_pattern.match(lines[start_idx])
-                        params = signature_match.group("params") if signature_match else None
-                        code = "".join(f"{start_idx + i + 1} | {line}" for i, line in enumerate(code_lines))
-                        callees = list(set(extract_function_calls(code)))
-                        return {
-                            "func_name": macro_name,
-                            "file": normalize_path(file_path, self.project_root),
-                            "start_line": start_idx + 1,
-                            "end_line": end_idx + 1,
-                            "code": code,
-                            "callees": callees,
-                            "signature": f"#define {macro_name}{params or ''}",
-                            "truncated": len(lines[start_idx : end_idx + 1]) > max_lines,
-                            "is_macro": True,
-                        }
+
+    def _find_backend_macro_definition(
+        self, macro_name: str, max_lines: int = 500
+    ) -> Optional[Dict[str, Any]]:
+        if not self._backend:
+            return None
+        getter = getattr(self._backend, "get_macro_definitions", None)
+        if not callable(getter):
+            return None
+        for candidate in self._function_query_variants(macro_name):
+            try:
+                records = getter(candidate, limit=20)
+            except Exception as exc:
+                logger.debug("Backend macro lookup failed for %s: %s", candidate, exc)
+                return None
+            if not records:
+                continue
+            return self._macro_definition_payload(
+                candidate,
+                records[0],
+                max_lines=max_lines,
+                macro_alternates_count=max(0, len(records) - 1),
+            )
         return None
+
+    def _get_macro_definition_index(self) -> Dict[str, List[Dict[str, Any]]]:
+        with self._cache_lock:
+            if self._macro_definition_index is not None:
+                return self._macro_definition_index
+
+        with self._macro_definition_index_lock:
+            with self._cache_lock:
+                if self._macro_definition_index is not None:
+                    return self._macro_definition_index
+
+            index: Dict[str, List[Dict[str, Any]]] = {}
+            for file_name in sorted(self._find_all_files()):
+                file_path = self._resolve_file_path(file_name)
+                if not file_path.exists() or file_path.is_dir():
+                    continue
+                try:
+                    lines = self._read_file_lines(file_path)
+                except Exception:
+                    continue
+                idx = 0
+                while idx < len(lines):
+                    parsed = self._parse_macro_definition_line(lines[idx])
+                    if not parsed:
+                        idx += 1
+                        continue
+                    start_idx = idx
+                    definition_lines = [lines[idx]]
+                    while definition_lines[-1].rstrip().endswith("\\") and idx + 1 < len(lines):
+                        idx += 1
+                        definition_lines.append(lines[idx])
+                    index.setdefault(parsed["name"], []).append(
+                        {
+                            "name": parsed["name"],
+                            "file_path": normalize_path(file_path, self.project_root),
+                            "line": start_idx + 1,
+                            "definition": "".join(definition_lines),
+                            "is_function_like": int(parsed["is_function_like"]),
+                        }
+                    )
+                    idx += 1
+
+            for records in index.values():
+                records.sort(
+                    key=lambda row: (
+                        -int(row.get("is_function_like") or 0),
+                        str(row.get("file_path") or ""),
+                        int(row.get("line") or 0),
+                    )
+                )
+            with self._cache_lock:
+                self._macro_definition_index = index
+                return self._macro_definition_index
+
+    @staticmethod
+    def _parse_macro_definition_line(line: str) -> Optional[Dict[str, Any]]:
+        match = re.match(r"^\s*#\s*define\s+(?P<name>[A-Za-z_]\w*)(?P<tail>.*)$", line)
+        if not match:
+            return None
+        tail = str(match.group("tail") or "")
+        return {
+            "name": match.group("name"),
+            "is_function_like": tail.startswith("("),
+        }
+
+    def _macro_definition_payload(
+        self,
+        macro_name: str,
+        record: Dict[str, Any],
+        *,
+        max_lines: int = 500,
+        macro_alternates_count: int = 0,
+    ) -> Dict[str, Any]:
+        definition = str(record.get("definition") or "")
+        definition_lines = definition.splitlines(True)
+        if not definition_lines:
+            definition_lines = [definition]
+        start_line = int(record.get("line") or record.get("start_line") or 1)
+        full_line_count = max(1, len(definition_lines))
+        code_lines = definition_lines[: max(0, int(max_lines or 500))]
+        end_line = start_line + len(code_lines) - 1 if code_lines else start_line - 1
+        code = self._numbered_code(code_lines, start_line - 1)
+        file_value = str(record.get("file_path") or record.get("file") or "")
+        resolved_file = self._resolve_file_path(file_value) if file_value else self.project_root
+        result = {
+            "func_name": macro_name,
+            "file": normalize_path(resolved_file, self.project_root),
+            "start_line": start_line,
+            "end_line": end_line,
+            "code": code,
+            "callees": self._filter_callee_names(extract_function_calls(code)),
+            "signature": self._macro_signature(
+                macro_name,
+                definition_lines[0] if definition_lines else "",
+                bool(record.get("is_function_like")),
+            ),
+            "truncated": full_line_count > len(code_lines),
+            "is_macro": True,
+        }
+        if macro_alternates_count:
+            result["macro_alternates_count"] = macro_alternates_count
+        return result
+
+    @staticmethod
+    def _macro_signature(macro_name: str, first_line: str, is_function_like: bool) -> str:
+        if is_function_like:
+            match = re.match(
+                rf"^\s*#\s*define\s+{re.escape(macro_name)}(?P<params>\([^)]*\))?",
+                str(first_line or ""),
+            )
+            params = match.group("params") if match else None
+            return f"#define {macro_name}{params or ''}"
+        return f"#define {macro_name}"
 
     def _resolve_file_path(self, file_path: str) -> Path:
         """Resolve file path against source_root first, then project_root."""
@@ -1554,5 +1662,7 @@ class CodeIndex:
             self._declaration_comment_index = None
             self._function_alias_index.clear()
             self._ambiguous_function_aliases.clear()
+            self._macro_definition_index = None
+            self._macro_definition_miss_cache.clear()
         if self._backend:
             self._backend.close()

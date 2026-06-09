@@ -123,6 +123,32 @@ def test_get_callers_filters_duplicate_callee_names_by_file(tmp_path: Path) -> N
         db.close()
 
 
+def test_knowledge_db_macro_definitions_round_trip_and_clear(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_macro_definitions_batch(
+            [
+                ("Z_ALLOC", "include/z_b.h", 9, "#define Z_ALLOC 1\n", 0),
+                ("Z_ALLOC", "include/z_a.h", 3, "#define Z_ALLOC(sz) alloc(sz)\n", 1),
+                ("OTHER", "include/other.h", 1, "#define OTHER 0\n", 0),
+            ]
+        )
+        db.commit()
+
+        rows = db.get_macro_definitions("Z_ALLOC")
+
+        assert [row["file_path"] for row in rows] == ["include/z_a.h", "include/z_b.h"]
+        assert rows[0]["is_function_like"] == 1
+        assert rows[0]["definition"] == "#define Z_ALLOC(sz) alloc(sz)\n"
+
+        db.clear_macro_definitions()
+
+        assert db.get_macro_definitions("Z_ALLOC") == []
+        assert db.stats()["macro_definitions"] == 0
+    finally:
+        db.close()
+
+
 def test_delete_tu_removes_file_owned_facts_and_related_call_edges(tmp_path: Path) -> None:
     project = tmp_path / "project"
     deleted = project / "include" / "deleted.h"

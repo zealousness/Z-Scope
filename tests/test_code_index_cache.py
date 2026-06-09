@@ -1,6 +1,7 @@
 import builtins
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 from zscope.retrieval.code_index import CodeIndex
 
@@ -164,6 +165,118 @@ def test_function_impl_rejects_backend_header_prototype_without_body(tmp_path) -
     index = CodeIndex(tmp_path, source_root=tmp_path, backend=backend)
 
     assert index.get_function_impl("_plugin_register", warn_missing=False) is None
+
+
+def test_function_impl_prefers_backend_macro_definitions(tmp_path, monkeypatch) -> None:
+    header = tmp_path / "include" / "macros.h"
+    header.parent.mkdir(parents=True)
+    header.write_text("#define DB_ALLOC(sz) alloc(sz)\n", encoding="utf-8")
+
+    class MacroBackend(MultiFunctionBackend):
+        def __init__(self):
+            super().__init__({})
+            self.macro_calls = 0
+
+        def get_macro_definitions(self, name: str, limit: int = 20):
+            self.macro_calls += 1
+            if name != "DB_ALLOC":
+                return []
+            return [
+                {
+                    "name": "DB_ALLOC",
+                    "file_path": "include/macros.h",
+                    "line": 1,
+                    "definition": "#define DB_ALLOC(sz) alloc(sz)\n",
+                    "is_function_like": 1,
+                }
+            ]
+
+    backend = MacroBackend()
+    index = CodeIndex(tmp_path, source_root=tmp_path, backend=backend)
+
+    def fail_fallback(*args, **kwargs):
+        raise AssertionError("backend macro hit should not use regex fallback")
+
+    monkeypatch.setattr(index, "_find_macro_definition", fail_fallback)
+
+    result = index.get_function_impl("DB_ALLOC", warn_missing=False)
+
+    assert result is not None
+    assert result["is_macro"] is True
+    assert result["signature"] == "#define DB_ALLOC(sz)"
+    assert result["file"].replace("\\", "/") == "include/macros.h"
+    assert backend.macro_calls == 1
+
+
+def test_macro_fallback_negative_cache_avoids_repeated_index_lookup(
+    tmp_path, monkeypatch
+) -> None:
+    index = CodeIndex(
+        tmp_path,
+        source_root=tmp_path,
+        indexing_config=SimpleNamespace(backend="regex"),
+    )
+    calls = {"count": 0}
+    real_get_index = index._get_macro_definition_index
+
+    def counting_get_index():
+        calls["count"] += 1
+        return real_get_index()
+
+    monkeypatch.setattr(index, "_get_macro_definition_index", counting_get_index)
+
+    assert index.get_function_impl("MISSING_MACRO", warn_missing=False) is None
+    assert index.get_function_impl("MISSING_MACRO", warn_missing=False) is None
+    assert calls["count"] == 1
+
+
+def test_macro_fallback_respects_exclude_paths(tmp_path) -> None:
+    include_dir = tmp_path / "include"
+    excluded_dir = tmp_path / "excluded"
+    include_dir.mkdir()
+    excluded_dir.mkdir()
+    (include_dir / "allowed.h").write_text("#define ALLOWED_MACRO 1\n", encoding="utf-8")
+    (excluded_dir / "hidden.h").write_text("#define HIDDEN_MACRO 1\n", encoding="utf-8")
+
+    index = CodeIndex(
+        tmp_path,
+        source_root=tmp_path,
+        indexing_config=SimpleNamespace(backend="regex"),
+        include_paths=[include_dir, excluded_dir],
+        exclude_paths=[excluded_dir],
+    )
+
+    allowed = index.get_function_impl("ALLOWED_MACRO", warn_missing=False)
+
+    assert allowed is not None
+    assert allowed["is_macro"] is True
+    assert index.get_function_impl("HIDDEN_MACRO", warn_missing=False) is None
+
+
+def test_macro_fallback_returns_multiline_function_like_macro(tmp_path) -> None:
+    header = tmp_path / "include" / "macros.h"
+    header.parent.mkdir()
+    header.write_text(
+        "#define ALLOC_WRAP(sz) \\\n"
+        "    alloc(sz) \\\n"
+        "    + 1\n",
+        encoding="utf-8",
+    )
+    index = CodeIndex(
+        tmp_path,
+        source_root=tmp_path,
+        indexing_config=SimpleNamespace(backend="regex"),
+    )
+
+    result = index.get_function_impl("ALLOC_WRAP", warn_missing=False)
+
+    assert result is not None
+    assert result["is_macro"] is True
+    assert result["signature"] == "#define ALLOC_WRAP(sz)"
+    assert result["start_line"] == 1
+    assert result["end_line"] == 3
+    assert "1 | #define ALLOC_WRAP(sz)" in result["code"]
+    assert "3 |     + 1" in result["code"]
 
 
 def test_file_scoped_function_lookup_avoids_full_path_scan(tmp_path, monkeypatch) -> None:
