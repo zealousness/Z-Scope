@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from zscope.orchestration.parallel_analyzer import ParallelAnalysisResult, ParallelAnalyzer
 from zscope.reporting.views import build_report_views, findings_for_view
 
@@ -245,3 +247,90 @@ def test_parallel_combined_report_exposes_needs_review_view() -> None:
     assert report["metadata"]["audit_observation_count"] == 1
     assert len(findings_for_view(report, "default")) == 1
     assert len(findings_for_view(report, "with_needs_review")) == 2
+
+
+def test_parallel_combined_report_applies_llm_semantic_dedup(monkeypatch) -> None:
+    analyzer = object.__new__(ParallelAnalyzer)
+    analyzer.max_workers = 12
+    analyzer._semantic_dedup_llm_cache = {}
+    analyzer.base_config = SimpleNamespace(
+        reporting=SimpleNamespace(
+            semantic_dedup=SimpleNamespace(
+                enabled=True,
+                llm_enabled=True,
+                llm_confidence_threshold=0.85,
+                max_cluster_size=8,
+            )
+        )
+    )
+    calls = []
+
+    class FakeReconciler:
+        def run(self, payload):
+            calls.append(payload)
+            return SimpleNamespace(
+                success=True,
+                data={
+                    "duplicate_groups": [
+                        {
+                            "primary_issue_id": "ISSUE_A",
+                            "duplicate_issue_ids": ["ISSUE_B"],
+                            "root_cause_key": "same_bounds_guard",
+                            "confidence": 0.95,
+                            "reasoning": "Both findings describe the same missing bounds guard.",
+                        }
+                    ],
+                    "must_keep_distinct_issue_ids": [],
+                },
+            )
+
+    monkeypatch.setattr(
+        analyzer,
+        "_make_issue_reconciler_agent",
+        lambda: FakeReconciler(),
+    )
+
+    results = {
+        "entry_a": ParallelAnalysisResult(
+            function_name="entry_a",
+            verdict="issues_found",
+            issues=[
+                {
+                    "id": "ISSUE_A",
+                    "function": "parse_packet",
+                    "location": "src/demo.c:10",
+                    "category": "bounds",
+                    "description": "array access lacks a guard on the first branch.",
+                    "validation_status": "validated",
+                }
+            ],
+        ),
+        "entry_b": ParallelAnalysisResult(
+            function_name="entry_b",
+            verdict="issues_found",
+            issues=[
+                {
+                    "id": "ISSUE_B",
+                    "function": "parse_packet",
+                    "location": "src/demo.c:42",
+                    "category": "bounds",
+                    "description": "array access lacks a guard on the second branch.",
+                    "validation_status": "validated",
+                }
+            ],
+        ),
+    }
+
+    report = analyzer.generate_combined_report(results)
+
+    semantic_summary = report["summary"]["semantic_dedup"]
+    assert len(calls) == 1
+    assert report["summary"]["total_issues"] == 1
+    assert report["issues"][0]["id"] == "ISSUE_A"
+    assert report["issues"][0]["duplicate_count"] == 1
+    assert semantic_summary["llm_enabled"] is True
+    assert semantic_summary["after_programmatic_issue_count"] == 2
+    assert semantic_summary["llm_clusters_called"] == 1
+    assert semantic_summary["llm_merge_count"] == 1
+    assert semantic_summary["output_issue_count"] == 1
+    assert report["metadata"]["semantic_dedup_summary"] == semantic_summary

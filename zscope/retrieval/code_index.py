@@ -3,7 +3,6 @@ Code indexing and function locator for C projects.
 Supports pluggable backends (Joern / Clang-SQLite / regex fallback).
 """
 
-import copy
 import logging
 import os
 import re
@@ -951,7 +950,20 @@ class CodeIndex:
 
     def _clone_function_impl(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """Copy function implementation payloads before exposing cached data."""
-        return copy.deepcopy(result)
+        return {
+            str(key): self._clone_function_impl_value(value)
+            for key, value in result.items()
+        }
+
+    @classmethod
+    def _clone_function_impl_value(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: cls._clone_function_impl_value(val) for key, val in value.items()}
+        if isinstance(value, list):
+            return [cls._clone_function_impl_value(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(cls._clone_function_impl_value(item) for item in value)
+        return value
 
     def _get_cached_function_impl(
         self,
