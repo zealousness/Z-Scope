@@ -215,37 +215,51 @@ class ValidationRunner:
         *,
         validator_agent: Optional[Any] = None,
     ) -> _ValidationWorkerResult:
-        validator_agent = validator_agent or self._build_validator_agent()
-        token_metadata = self._empty_token_metadata()
-        val_resp = validator_agent.run(
-            self._validator_input(item.raw_issue, item.issue_code, item.evidence_pack)
-        )
-        self._merge_response_metadata(token_metadata, getattr(val_resp, "metadata", {}) or {})
+        try:
+            validator_agent = validator_agent or self._build_validator_agent()
+            token_metadata = self._empty_token_metadata()
+            val_resp = validator_agent.run(
+                self._validator_input(item.raw_issue, item.issue_code, item.evidence_pack)
+            )
+            self._merge_response_metadata(token_metadata, getattr(val_resp, "metadata", {}) or {})
 
-        if not val_resp.success:
+            if not val_resp.success:
+                return _ValidationWorkerResult(
+                    index=item.index,
+                    raw_issue=item.raw_issue,
+                    issue_func=item.issue_func,
+                    success=False,
+                    error=val_resp.error,
+                    metadata=token_metadata,
+                )
+
+            val_data = self._normalize_worker_response(
+                item,
+                validator_agent,
+                val_resp.data,
+                token_metadata,
+            )
             return _ValidationWorkerResult(
                 index=item.index,
                 raw_issue=item.raw_issue,
                 issue_func=item.issue_func,
-                success=False,
-                error=val_resp.error,
+                success=True,
+                val_data=val_data,
                 metadata=token_metadata,
             )
+        finally:
+            self._close_thread_llm_sessions()
 
-        val_data = self._normalize_worker_response(
-            item,
-            validator_agent,
-            val_resp.data,
-            token_metadata,
-        )
-        return _ValidationWorkerResult(
-            index=item.index,
-            raw_issue=item.raw_issue,
-            issue_func=item.issue_func,
-            success=True,
-            val_data=val_data,
-            metadata=token_metadata,
-        )
+    def _close_thread_llm_sessions(self) -> None:
+        seen: set[int] = set()
+        for client in self.llm_clients.values():
+            client_id = id(client)
+            if client_id in seen:
+                continue
+            seen.add(client_id)
+            close_thread_session = getattr(client, "close_thread_session", None)
+            if callable(close_thread_session):
+                close_thread_session()
 
     def _apply_validation_worker_result(
         self,
