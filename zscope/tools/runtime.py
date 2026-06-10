@@ -173,8 +173,9 @@ class ToolsRuntime:
             resolved = validate_existing_file(file_path)
             if not resolved:
                 return ensure_existing_file(file_path)
-            with open(resolved, "r", encoding="utf-8", errors="ignore") as handle:
-                total_lines = len(handle.readlines())
+            total_lines = self.code_index.get_file_line_count(resolved)
+            if total_lines is None:
+                return ensure_existing_file(file_path)
             if start_line < 1 or start_line > total_lines:
                 return {
                     "success": False,

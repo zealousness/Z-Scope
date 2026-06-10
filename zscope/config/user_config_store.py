@@ -7,6 +7,7 @@ function design intent, false positives, and config warnings.
 import json
 import logging
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -18,6 +19,7 @@ from ..common.issue_identity import (
 from .user_config_workbook import UserConfigWorkbook
 
 logger = logging.getLogger(__name__)
+_SQLITE_PRAGMA_LOCK = threading.Lock()
 
 
 class UserConfigStore:
@@ -43,8 +45,14 @@ class UserConfigStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path))
-        conn.execute("PRAGMA journal_mode=WAL")
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(self.db_path), timeout=30.0)
+        conn.execute("PRAGMA busy_timeout=30000")
+        try:
+            with _SQLITE_PRAGMA_LOCK:
+                conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError as exc:
+            logger.debug("Unable to enable WAL for user config state DB %s: %s", self.db_path, exc)
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.row_factory = sqlite3.Row
         return conn
@@ -88,6 +96,10 @@ class UserConfigStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_finding_baselines_stable_fingerprint "
                 "ON finding_baselines(stable_fingerprint)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_finding_baselines_stable_updated "
+                "ON finding_baselines(stable_fingerprint, updated_at DESC, id DESC)"
             )
             conn.commit()
         finally:
@@ -337,7 +349,9 @@ class UserConfigStore:
                     return result
 
             rows = conn.execute(
-                "SELECT * FROM finding_baselines ORDER BY updated_at DESC, id DESC"
+                """SELECT * FROM finding_baselines
+                   WHERE stable_fingerprint = ''
+                   ORDER BY updated_at DESC, id DESC"""
             ).fetchall()
             for old_row in rows:
                 old_issue = self._parse_json_value(old_row["issue_json"], {})

@@ -424,6 +424,59 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
   const defaultViewBtn = document.getElementById('defaultViewBtn');
   const needsReviewViewBtn = document.getElementById('needsReviewViewBtn');
   const detailCache = state.issueStore && typeof state.issueStore === 'object' ? state.issueStore : {};
+  let hasUnsavedValidationChanges = false;
+  let savedValidationSignature = '';
+
+  function collectValidationSignatureIssue(issue, fallback, bucket) {
+    if (!issue || typeof issue !== 'object') {
+      return;
+    }
+    const key = issue._offline_id || offlineIssueKey(issue, fallback);
+    bucket[key] = [
+      String(issue.validation_status ?? ''),
+      String(issue.validation_reasoning ?? ''),
+    ];
+  }
+
+  function validationSignature() {
+    const bucket = {};
+    Object.entries(state.issueStore || {}).forEach(([key, issue]) => {
+      collectValidationSignatureIssue(issue, key, bucket);
+    });
+    Object.entries(state.reportViews || {}).forEach(([viewName, view]) => {
+      if (!view || typeof view !== 'object' || !Array.isArray(view.issues)) {
+        return;
+      }
+      view.issues.forEach((issue, index) => {
+        collectValidationSignatureIssue(issue, `${viewName}:${index}`, bucket);
+      });
+    });
+    state.findings.forEach((issue, index) => {
+      collectValidationSignatureIssue(issue, `${state.reportView || 'current'}:${index}`, bucket);
+    });
+    Object.entries(state.issueSummaries || {}).forEach(([key, issue]) => {
+      collectValidationSignatureIssue(issue, key, bucket);
+    });
+    return JSON.stringify(Object.keys(bucket).sort().map(key => [key, ...bucket[key]]));
+  }
+
+  function markValidationStateSaved() {
+    savedValidationSignature = validationSignature();
+    hasUnsavedValidationChanges = false;
+  }
+
+  function refreshUnsavedValidationChanges() {
+    hasUnsavedValidationChanges = validationSignature() !== savedValidationSignature;
+  }
+
+  window.addEventListener('beforeunload', (event) => {
+    refreshUnsavedValidationChanges();
+    if (!hasUnsavedValidationChanges) {
+      return;
+    }
+    event.preventDefault();
+    event.returnValue = '';
+  });
 
   function updateIssueSummary(issue) {
     if (!issue || typeof issue !== 'object') {
@@ -729,6 +782,7 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
     if (currentIndex < 0) return;
     state.findings[currentIndex].validation_status = statusEl.value;
     updateIssueSummary(state.findings[currentIndex]);
+    refreshUnsavedValidationChanges();
     renderList();
   });
 
@@ -736,6 +790,7 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
     if (currentIndex < 0) return;
     state.findings[currentIndex].validation_reasoning = reasonEl.value;
     updateIssueSummary(state.findings[currentIndex]);
+    refreshUnsavedValidationChanges();
   });
 
   filterInputEl.addEventListener('input', () => {
@@ -766,6 +821,7 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
     a.download = 'zscope-offline-dashboard.html';
     a.click();
     URL.revokeObjectURL(a.href);
+    markValidationStateSaved();
   });
 
   if (defaultViewBtn) {
@@ -775,6 +831,7 @@ pre { margin: 0; padding: 16px; font-size: 13px; font-family: 'Fira Code', monos
     needsReviewViewBtn.addEventListener('click', () => activateReportView('with_needs_review'));
   }
 
+  markValidationStateSaved();
   updateViewButtons();
   renderList();
   if (state.findings.length > 0) {

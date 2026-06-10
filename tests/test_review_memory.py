@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from zscope.common.issue_identity import stable_issue_fingerprint
 from zscope.config.user_config_store import UserConfigStore
 from zscope.core.validation.pipeline import ValidationPipeline
 from zscope.memory import ReviewMemory
@@ -140,6 +141,49 @@ def test_review_memory_rejects_stable_baseline_when_source_context_conflicts(tmp
     baseline = memory.get_finding_baseline_for_issue(shifted_issue, shifted_issue["dedup_key"])
 
     assert baseline is None
+
+
+def test_review_memory_backfills_legacy_empty_stable_fingerprint(tmp_path: Path) -> None:
+    store = UserConfigStore(tmp_path)
+    memory = ReviewMemory(store)
+    original_issue = {
+        "category": "double_free",
+        "function": "entry",
+        "location": "src/demo.c:42",
+        "rule": "resource_automaton",
+        "sink": "free",
+        "resource": "ctx",
+        "dedup_key": "double_free|entry|src/demo.c:42",
+    }
+    shifted_issue = {
+        **original_issue,
+        "location": "src/demo.c:99",
+        "dedup_key": "double_free|entry|src/demo.c:99",
+    }
+
+    memory.upsert_finding_baseline(
+        original_issue["dedup_key"],
+        "false_positive",
+        original_issue,
+    )
+
+    conn = store._connect()
+    try:
+        conn.execute(
+            "UPDATE finding_baselines SET stable_fingerprint = '' WHERE dedup_key = ?",
+            (store._normalize_key(original_issue["dedup_key"]),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    baseline = memory.get_finding_baseline_for_issue(shifted_issue, shifted_issue["dedup_key"])
+
+    assert baseline is not None
+    assert baseline["match_strategy"] == "backfilled_stable_fingerprint"
+    reloaded = store.get_finding_baseline(original_issue["dedup_key"])
+    assert reloaded is not None
+    assert reloaded["stable_fingerprint"] == stable_issue_fingerprint(original_issue)
 
 
 def test_validation_pipeline_queries_baselines_through_review_memory() -> None:

@@ -612,17 +612,24 @@ class CodeIndex:
     def _find_all_files(self) -> List[str]:
         """Find all relevant source files using ripgrep or fallback to glob."""
         files = []
-        extensions = (".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".ph", ".inc", ".inl")
+        extensions = {".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".ph", ".inc", ".inl"}
+        seen = set()
 
         bases_to_search = self.include_paths if self.include_paths else [self.source_root]
 
         for base in bases_to_search:
-            for ext in extensions:
-                for file_path in base.rglob(f"*{ext}"):
-                    if self._is_path_allowed(file_path):
-                        files.append(str(file_path))
+            for file_path in base.rglob("*"):
+                if file_path.suffix.lower() not in extensions:
+                    continue
+                if not self._is_path_allowed(file_path):
+                    continue
+                cache_key = self._file_cache_key(file_path)
+                if cache_key in seen:
+                    continue
+                seen.add(cache_key)
+                files.append(str(file_path))
 
-        return list(set(files))
+        return sorted(files)
 
     def _build_index_regex(self) -> None:
         """Build index using regex pattern matching (fallback)."""
@@ -947,6 +954,17 @@ class CodeIndex:
     def _read_file_text(self, file_path: Union[str, Path]) -> str:
         """Read source file text through the per-run line cache."""
         return "".join(self._read_file_lines(file_path))
+
+    def get_file_line_count(self, file_path: Union[str, Path]) -> Optional[int]:
+        """Return source file line count through the per-run line cache."""
+        resolved = self._resolve_file_path(str(file_path))
+        if not resolved.exists() or resolved.is_dir():
+            return None
+        try:
+            return len(self._read_file_lines(resolved))
+        except Exception as e:
+            logger.debug("Failed to count lines in %s: %s", file_path, e)
+            return None
 
     def _clone_function_impl(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """Copy function implementation payloads before exposing cached data."""

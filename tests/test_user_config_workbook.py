@@ -8,10 +8,12 @@ import pytest
 from click.testing import CliRunner
 
 import zscope.cli.cli as cli_module
+import zscope.config.user_config_workbook as workbook_module
 import zscope.orchestration.user_config_inference as inference_module
 from zscope.cli.cli import _resolve_user_config_workbook_path
 from zscope.config.user_config_store import UserConfigStore
 from zscope.config.user_config_workbook import SHEET_HEADERS, UserConfigWorkbook
+from zscope.core.candidates.evidence import SemanticOverlayCompiler
 from zscope.core.analysis.analyzer import Analyzer
 from zscope.semantics.user_config_context import relevant_user_config_context
 from zscope.orchestration.user_config_inference import (
@@ -70,6 +72,167 @@ def test_store_uses_user_config_xlsx_inside_config_directory(tmp_path: Path) -> 
 
     store = UserConfigStore(tmp_path)
     assert store.get_external_function("ZIP_ALLOC")["kind"] == "allocator"
+
+
+def test_workbook_read_rows_uses_identity_cache_and_returns_copies(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    workbook_path = tmp_path / "user_config.xlsx"
+    writer = UserConfigWorkbook(workbook_path)
+    writer.write_rows(
+        {
+            "resource": [
+                {
+                    "symbol_name": "ZipAlloc",
+                    "kind": "allocator",
+                    "symbol_type": "function",
+                }
+            ]
+        }
+    )
+    workbook = UserConfigWorkbook(workbook_path)
+    read_count = 0
+    original_read_xlsx = workbook_module._read_xlsx
+
+    def counted_read_xlsx(path: Path):
+        nonlocal read_count
+        read_count += 1
+        return original_read_xlsx(path)
+
+    monkeypatch.setattr(workbook_module, "_read_xlsx", counted_read_xlsx)
+
+    first = workbook.read_rows()
+    first["resource"][0]["symbol_name"] = "Mutated"
+    second = workbook.read_rows()
+
+    assert read_count == 1
+    assert second["resource"][0]["symbol_name"] == "ZipAlloc"
+
+    workbook.write_rows(
+        {
+            "resource": [
+                {
+                    "symbol_name": "ZipFree",
+                    "kind": "deallocator",
+                    "symbol_type": "function",
+                }
+            ]
+        }
+    )
+
+    assert workbook.read_rows()["resource"][0]["symbol_name"] == "ZipFree"
+    assert read_count == 1
+
+
+def test_workbook_cache_reloads_after_external_edit(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    workbook_path = tmp_path / "user_config.xlsx"
+    workbook = UserConfigWorkbook(workbook_path)
+    workbook.write_rows({"resource": [{"symbol_name": "Before", "kind": "allocator"}]})
+    assert workbook.read_rows()["resource"][0]["symbol_name"] == "Before"
+
+    read_count = 0
+    original_read_xlsx = workbook_module._read_xlsx
+
+    def counted_read_xlsx(path: Path):
+        nonlocal read_count
+        read_count += 1
+        return original_read_xlsx(path)
+
+    monkeypatch.setattr(workbook_module, "_read_xlsx", counted_read_xlsx)
+
+    external = UserConfigWorkbook(workbook_path)
+    external.write_rows(
+        {
+            "resource": [
+                {"symbol_name": "After", "kind": "deallocator"},
+                {"symbol_name": "ExtraSymbol", "kind": "allocator"},
+            ]
+        }
+    )
+
+    rows = workbook.read_rows()
+
+    assert [row["symbol_name"] for row in rows["resource"]] == ["After", "ExtraSymbol"]
+    assert read_count == 1
+
+
+def test_user_config_scan_paths_share_one_workbook_read(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    workbook_path = tmp_path / "user_config.xlsx"
+    writer = UserConfigWorkbook(workbook_path)
+    writer.write_rows(
+        {
+            "resource": [
+                {
+                    "symbol_name": "ZipAlloc",
+                    "kind": "allocator",
+                    "symbol_type": "function",
+                    "pair": "ZipFree",
+                    "description": "allocator",
+                }
+            ],
+            "lock": [
+                {
+                    "symbol_name": "ZipLock",
+                    "kind": "lock",
+                    "symbol_type": "function",
+                    "pair": "ZipUnlock",
+                }
+            ],
+            "pointer_targets": [
+                {
+                    "pointer_location": "ops->alloc",
+                    "scope": "*",
+                    "target_functions": '["ZipAlloc"]',
+                }
+            ],
+            "dispatcher": [
+                {
+                    "dispatcher_name": "ZipDispatch",
+                    "file_path": "*",
+                    "message_type": "ZIP_MSG",
+                    "handler_name": "ZipHandler",
+                }
+            ],
+            "module_lifecycle": [{"symbol_name": "ZipInit", "file_path": "*", "kind": "init"}],
+            "function_intents": [
+                {
+                    "symbol_name": "entry",
+                    "file_path": "src/demo.c",
+                    "intents": "demo intent",
+                }
+            ],
+        }
+    )
+    read_count = 0
+    original_read_xlsx = workbook_module._read_xlsx
+
+    def counted_read_xlsx(path: Path):
+        nonlocal read_count
+        read_count += 1
+        return original_read_xlsx(path)
+
+    monkeypatch.setattr(workbook_module, "_read_xlsx", counted_read_xlsx)
+    store = UserConfigStore(workbook_path)
+
+    relevant_user_config_context(
+        store,
+        "entry",
+        "ZipAlloc ZipLock ops ZipDispatch ZipInit ZipHandler",
+        "src/demo.c",
+    )
+    SemanticOverlayCompiler(store).compile()
+    store.list_external_functions()
+    store.list_paired_functions()
+    store.get_pointer_targets()
+
+    assert read_count == 1
 
 
 def test_store_rejects_database_config_paths(tmp_path: Path) -> None:
