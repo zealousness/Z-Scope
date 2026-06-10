@@ -469,6 +469,20 @@ class SubAgentOrchestrator:
                 execution_policy=execution_policy,
                 worktree_isolation=isolation,
             )
+        finally:
+            self._close_thread_llm_sessions(llm_client, selected_llm_client)
+
+    @staticmethod
+    def _close_thread_llm_sessions(*clients: LLMClient) -> None:
+        seen: set[int] = set()
+        for client in clients:
+            client_id = id(client)
+            if client_id in seen:
+                continue
+            seen.add(client_id)
+            close_thread_session = getattr(client, "close_thread_session", None)
+            if callable(close_thread_session):
+                close_thread_session()
 
     @staticmethod
     def _exception_report(

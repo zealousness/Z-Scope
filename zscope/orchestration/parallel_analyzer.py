@@ -437,7 +437,20 @@ class ParallelAnalyzer:
                 duration_seconds=duration,
                 diff_focus=entry.diff_focus,
             )
+        finally:
+            self._close_thread_llm_sessions()
     
+    def _close_thread_llm_sessions(self) -> None:
+        seen: Set[int] = set()
+        for client in self._shared_llm_clients.values():
+            client_id = id(client)
+            if client_id in seen:
+                continue
+            seen.add(client_id)
+            close_thread_session = getattr(client, "close_thread_session", None)
+            if callable(close_thread_session):
+                close_thread_session()
+
     def _prepare_shared_semantics(self) -> None:
         """Warm shared project semantics before entry-level analyzers fan out."""
         self._get_shared_local_pattern_semantics()

@@ -12,7 +12,7 @@ import json
 import logging
 import threading
 import time
-from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Sequence, Union, cast
+from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Sequence, Set, Union, cast
 
 import requests
 
@@ -139,6 +139,8 @@ class LLMClient:
             "Content-Type": "application/json",
         }
         self._thread_local = threading.local()
+        self._sessions_lock = threading.Lock()
+        self._sessions: Set[requests.Session] = set()
         self.session = self._new_session()
         self._thread_local.session = self.session
 
@@ -162,6 +164,8 @@ class LLMClient:
     def _new_session(self) -> requests.Session:
         session = requests.Session()
         session.headers.update(self._session_headers)
+        with self._sessions_lock:
+            self._sessions.add(session)
         return session
 
     def _session_for_thread(self) -> requests.Session:
@@ -170,6 +174,36 @@ class LLMClient:
             session = self._new_session()
             self._thread_local.session = session
         return cast(requests.Session, session)
+
+    def close_thread_session(self) -> None:
+        """Close this client's HTTP session for the current thread."""
+        session = getattr(self._thread_local, "session", None)
+        if session is None:
+            return
+        try:
+            session.close()
+        finally:
+            with self._sessions_lock:
+                self._sessions.discard(session)
+            try:
+                delattr(self._thread_local, "session")
+            except AttributeError:
+                pass
+
+    def close(self) -> None:
+        """Close all HTTP sessions known to this client."""
+        with self._sessions_lock:
+            sessions = list(self._sessions)
+            self._sessions.clear()
+        for session in sessions:
+            try:
+                session.close()
+            except Exception:
+                logger.debug("Failed to close LLM HTTP session", exc_info=True)
+        try:
+            delattr(self._thread_local, "session")
+        except AttributeError:
+            pass
 
     @staticmethod
     def _normalize_base_urls(base_url: Union[str, Sequence[str]]) -> List[str]:
@@ -356,6 +390,7 @@ class LLMClient:
             for attempt in range(total_attempts):
                 endpoint = self._select_base_url()
                 post_attempt_delay = 0.0
+                response: Optional[requests.Response] = None
                 try:
                     url = self._chat_completion_url(endpoint.url)
                     
@@ -459,6 +494,10 @@ class LLMClient:
                     last_error = str(e)
                     continue
                 finally:
+                    if response is not None:
+                        close_response = getattr(response, "close", None)
+                        if callable(close_response):
+                            close_response()
                     self._release_base_url(endpoint)
                     if post_attempt_delay > 0:
                         time.sleep(post_attempt_delay)
