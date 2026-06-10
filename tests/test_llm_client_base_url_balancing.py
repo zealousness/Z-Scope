@@ -13,6 +13,7 @@ class _FakeResponse:
         self.status_code = status_code
         self.text = text
         self.headers = headers or {}
+        self.closed = False
 
     def iter_lines(self):
         yield (
@@ -20,6 +21,9 @@ class _FakeResponse:
             b'"finish_reason":"stop"}]}'
         )
         yield b"data: [DONE]"
+
+    def close(self):
+        self.closed = True
 
 
 def test_llm_client_balances_base_urls_by_recent_load(monkeypatch) -> None:
@@ -75,6 +79,74 @@ def test_llm_client_falls_back_to_another_base_url_after_rate_limit(monkeypatch)
         "http://limited.example/v1/chat/completions",
         "http://ready.example/v1/chat/completions",
     ]
+
+
+def test_llm_client_closes_streaming_response_on_success(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://one.example/v1",
+        models=["unit-model"],
+    )
+    responses = []
+
+    def fake_post(url, **kwargs):
+        response = _FakeResponse()
+        responses.append(response)
+        return response
+
+    monkeypatch.setattr(client.session, "post", fake_post)
+
+    result = client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert result["choices"][0]["message"]["content"] == "ok"
+    assert responses and responses[0].closed is True
+
+
+def test_llm_client_closes_error_response_before_retry(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url=["http://limited.example/v1", "http://ready.example/v1"],
+        models=["unit-model"],
+        max_retries=0,
+    )
+    responses = []
+
+    def fake_post(url, **kwargs):
+        response = (
+            _FakeResponse(status_code=429, text="rate limited", headers={"Retry-After": "0.01"})
+            if not responses
+            else _FakeResponse()
+        )
+        responses.append(response)
+        return response
+
+    monkeypatch.setattr(client.session, "post", fake_post)
+
+    result = client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert result["choices"][0]["message"]["content"] == "ok"
+    assert [response.closed for response in responses] == [True, True]
+
+
+def test_llm_client_closes_current_thread_session(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://one.example/v1",
+        models=["unit-model"],
+    )
+    initial_session = client._session_for_thread()
+    closed = []
+
+    def close_initial():
+        closed.append(initial_session)
+
+    monkeypatch.setattr(initial_session, "close", close_initial)
+
+    client.close_thread_session()
+    new_session = client._session_for_thread()
+
+    assert closed == [initial_session]
+    assert new_session is not initial_session
 
 
 def test_llm_client_limits_concurrent_requests_per_base_url(monkeypatch) -> None:
