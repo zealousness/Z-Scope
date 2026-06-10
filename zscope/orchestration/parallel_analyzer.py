@@ -195,9 +195,14 @@ class ParallelAnalyzer:
             
             except KeyboardInterrupt:
                 self._interrupted = True
-                logger.warning("\n[!] Scan interrupted by user (Ctrl+C). Instantly killing threads and gathering partial results...")
+                logger.warning(
+                    "\n[!] Scan interrupted by user (Ctrl+C). Cancelling queued work "
+                    "and returning completed results. Running Python worker threads "
+                    "cannot be force-killed safely."
+                )
                 
-                # Instantly destroy the thread pool without waiting for running threads to finish
+                # cancel_futures only affects queued work; already-running threads may
+                # continue until the CLI takes the interrupted fast-exit path.
                 executor.shutdown(wait=False, cancel_futures=True)
                 
                 logger.info(f"Returning {len(results)} completed results out of {total} total.")
@@ -563,7 +568,11 @@ class ParallelAnalyzer:
         # Deduplicate confirmed issues with the same final-report semantics used
         # by single-entry reports. Observations stay programmatic to avoid an
         # extra batch LLM pass over needs_review-only material.
-        unique_issues, semantic_dedup_summary = self._deduplicate_report_issues(all_issues)
+        interrupted = bool(getattr(self, "_interrupted", False))
+        unique_issues, semantic_dedup_summary = self._deduplicate_report_issues(
+            all_issues,
+            allow_llm=not interrupted,
+        )
         unique_observations = self._deduplicate_issues(all_observations)
         report_views = build_report_views(unique_issues, unique_observations)
         view_summary = report_view_summary({"report_views": report_views})
@@ -607,6 +616,7 @@ class ParallelAnalyzer:
                 "validation_performance": validation_performance_summary,
                 "va_candidate_coverage": va_candidate_coverage_summary,
                 "semantic_dedup": semantic_dedup_summary,
+                "interrupted": interrupted,
             },
             "function_results": function_summaries,
             "issues": unique_issues,
@@ -627,6 +637,7 @@ class ParallelAnalyzer:
                 "validation_performance": validation_performance_summary,
                 "va_candidate_coverage_summary": va_candidate_coverage_summary,
                 "semantic_dedup_summary": semantic_dedup_summary,
+                "interrupted": interrupted,
             },
         }
         
@@ -1070,7 +1081,12 @@ class ParallelAnalyzer:
             return deduped
         return deduplicate_issues(issues)
 
-    def _deduplicate_report_issues(self, issues: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    def _deduplicate_report_issues(
+        self,
+        issues: List[Dict[str, Any]],
+        *,
+        allow_llm: bool = True,
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """Apply batch final-report semantic dedup, including LLM dedup when enabled."""
         semantic_cfg = getattr(getattr(getattr(self, "base_config", None), "reporting", None), "semantic_dedup", None)
         if semantic_cfg is None or not getattr(semantic_cfg, "enabled", True):
@@ -1082,15 +1098,20 @@ class ParallelAnalyzer:
             }
 
         deduped, summary = deduplicate_semantic_issues_programmatic(issues)
+        llm_configured = bool(getattr(semantic_cfg, "llm_enabled", False))
+        llm_enabled = bool(llm_configured and allow_llm)
         summary.update(
             {
                 "enabled": True,
-                "llm_enabled": bool(getattr(semantic_cfg, "llm_enabled", False)),
+                "llm_enabled": llm_enabled,
+                "llm_configured": llm_configured,
                 "input_issue_count": len(issues),
                 "after_programmatic_issue_count": len(deduped),
             }
         )
-        if getattr(semantic_cfg, "llm_enabled", False):
+        if llm_configured and not allow_llm:
+            summary["llm_disabled_reason"] = "interrupted_fast_shutdown"
+        if llm_enabled:
             deduped, llm_summary = self._deduplicate_report_clusters_with_llm(
                 deduped,
                 semantic_cfg=semantic_cfg,

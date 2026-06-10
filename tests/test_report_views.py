@@ -334,3 +334,74 @@ def test_parallel_combined_report_applies_llm_semantic_dedup(monkeypatch) -> Non
     assert semantic_summary["llm_merge_count"] == 1
     assert semantic_summary["output_issue_count"] == 1
     assert report["metadata"]["semantic_dedup_summary"] == semantic_summary
+
+
+def test_parallel_combined_report_skips_llm_semantic_dedup_when_interrupted(monkeypatch) -> None:
+    analyzer = object.__new__(ParallelAnalyzer)
+    analyzer.max_workers = 12
+    analyzer._interrupted = True
+    analyzer._semantic_dedup_llm_cache = {}
+    analyzer.base_config = SimpleNamespace(
+        reporting=SimpleNamespace(
+            semantic_dedup=SimpleNamespace(
+                enabled=True,
+                llm_enabled=True,
+                llm_confidence_threshold=0.85,
+                max_cluster_size=8,
+            )
+        )
+    )
+    calls = []
+
+    class FakeReconciler:
+        def run(self, payload):
+            calls.append(payload)
+            return SimpleNamespace(success=True, data={})
+
+    monkeypatch.setattr(
+        analyzer,
+        "_make_issue_reconciler_agent",
+        lambda: FakeReconciler(),
+    )
+
+    results = {
+        "entry_a": ParallelAnalysisResult(
+            function_name="entry_a",
+            verdict="issues_found",
+            issues=[
+                {
+                    "id": "ISSUE_A",
+                    "function": "parse_packet",
+                    "location": "src/demo.c:10",
+                    "category": "bounds",
+                    "description": "array access lacks a guard on the first branch.",
+                    "validation_status": "validated",
+                }
+            ],
+        ),
+        "entry_b": ParallelAnalysisResult(
+            function_name="entry_b",
+            verdict="issues_found",
+            issues=[
+                {
+                    "id": "ISSUE_B",
+                    "function": "parse_packet",
+                    "location": "src/demo.c:42",
+                    "category": "bounds",
+                    "description": "array access lacks a guard on the second branch.",
+                    "validation_status": "validated",
+                }
+            ],
+        ),
+    }
+
+    report = analyzer.generate_combined_report(results)
+
+    semantic_summary = report["summary"]["semantic_dedup"]
+    assert calls == []
+    assert report["summary"]["interrupted"] is True
+    assert report["summary"]["total_issues"] == 2
+    assert semantic_summary["llm_configured"] is True
+    assert semantic_summary["llm_enabled"] is False
+    assert semantic_summary["llm_disabled_reason"] == "interrupted_fast_shutdown"
+    assert semantic_summary["output_issue_count"] == 2
