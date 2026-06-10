@@ -253,6 +253,52 @@ def test_macro_fallback_respects_exclude_paths(tmp_path) -> None:
     assert index.get_function_impl("HIDDEN_MACRO", warn_missing=False) is None
 
 
+def test_find_all_files_scans_each_root_once_and_keeps_filtering(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    src_dir = tmp_path / "src"
+    nested_dir = src_dir / "nested"
+    excluded_dir = src_dir / "excluded"
+    nested_dir.mkdir(parents=True)
+    excluded_dir.mkdir()
+    allowed_source = src_dir / "allowed.c"
+    allowed_header = nested_dir / "allowed.hpp"
+    allowed_inc = nested_dir / "allowed.inc"
+    ignored_text = nested_dir / "ignored.txt"
+    hidden_source = excluded_dir / "hidden.c"
+    for path in [allowed_source, allowed_header, allowed_inc, ignored_text, hidden_source]:
+        path.write_text("int x;\n", encoding="utf-8")
+
+    index = CodeIndex(
+        tmp_path,
+        source_root=tmp_path,
+        indexing_config=SimpleNamespace(backend="regex"),
+        include_paths=[src_dir, tmp_path],
+        exclude_paths=[excluded_dir],
+        wait_for_cpg=False,
+    )
+
+    path_type = type(tmp_path)
+    original_rglob = path_type.rglob
+    calls = []
+
+    def counting_rglob(self, pattern):
+        calls.append((Path(self).resolve(), pattern))
+        yield from original_rglob(self, pattern)
+
+    monkeypatch.setattr(path_type, "rglob", counting_rglob)
+
+    files = {Path(path).resolve() for path in index._find_all_files()}
+
+    assert files == {
+        allowed_source.resolve(),
+        allowed_header.resolve(),
+        allowed_inc.resolve(),
+    }
+    assert [pattern for _, pattern in calls] == ["*", "*"]
+
+
 def test_macro_fallback_returns_multiline_function_like_macro(tmp_path) -> None:
     header = tmp_path / "include" / "macros.h"
     header.parent.mkdir()

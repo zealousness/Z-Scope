@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import zipfile
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from xml.etree import ElementTree as ET
@@ -82,14 +84,29 @@ class UserConfigWorkbook:
 
     def __init__(self, path: Path):
         self.path = Path(path)
+        self._cache_lock = threading.RLock()
+        self._rows_cache_key: Tuple[int, int] = (-2, -2)
+        self._rows_cache: Optional[Dict[str, List[Dict[str, str]]]] = None
 
     def exists(self) -> bool:
         return self.path.exists()
 
     def read_rows(self) -> Dict[str, List[Dict[str, str]]]:
-        if not self.path.exists():
-            return {name: [] for name in SHEET_HEADERS}
-        return _read_xlsx(self.path)
+        cache_key = self._cache_key()
+        with self._cache_lock:
+            if self._rows_cache is not None and self._rows_cache_key == cache_key:
+                return self._clone_rows(self._rows_cache)
+
+        rows = {name: [] for name in SHEET_HEADERS}
+        if self.path.exists():
+            rows = _read_xlsx(self.path)
+
+        after_key = self._cache_key()
+        with self._cache_lock:
+            if after_key == cache_key:
+                self._rows_cache_key = after_key
+                self._rows_cache = self._clone_rows(rows)
+        return self._clone_rows(rows)
 
     def write_rows(self, rows_by_sheet: Dict[str, List[Dict[str, Any]]]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,6 +116,7 @@ class UserConfigWorkbook:
             rows = source_rows.get(sheet, [])
             normalized[sheet] = [_normalize_row(row, headers) for row in rows]
         _write_xlsx(self.path, normalized)
+        self._refresh_cache(normalized)
 
     def merge_generated(self, generated: Dict[str, List[Dict[str, Any]]]) -> Dict[str, int]:
         existing = self.read_rows()
@@ -145,8 +163,9 @@ class UserConfigWorkbook:
 
     def list_external_functions(self) -> List[Dict[str, Any]]:
         items = []
+        rows_by_sheet = self.read_rows()
         for sheet in SYMBOL_SHEETS:
-            for row in self.read_rows().get(sheet, []):
+            for row in rows_by_sheet.get(sheet, []):
                 if _is_active(row) and row.get("symbol_name"):
                     items.append(_workbook_symbol_to_db(row, sheet))
         return sorted(items, key=lambda item: item.get("func_name", ""))
@@ -188,10 +207,11 @@ class UserConfigWorkbook:
     def list_paired_functions(self, category: Optional[str] = None) -> List[Dict[str, Any]]:
         result: List[Dict[str, Any]] = []
         next_id = 1
+        rows_by_sheet = self.read_rows()
         for sheet in SYMBOL_SHEETS:
             if category and category != sheet and not (category == "memory" and sheet == "resource"):
                 continue
-            for row in self.read_rows().get(sheet, []):
+            for row in rows_by_sheet.get(sheet, []):
                 if not _is_active(row):
                     continue
                 acquire = row.get("symbol_name", "")
@@ -392,6 +412,22 @@ class UserConfigWorkbook:
             if not (row.get("symbol_name") == func_name and row.get("file_path", "") == file_path)
         ]
         self.write_rows(rows)
+
+    def _cache_key(self) -> Tuple[int, int]:
+        try:
+            stat = self.path.stat()
+        except OSError:
+            return (-1, -1)
+        return (int(stat.st_mtime_ns), int(stat.st_size))
+
+    def _refresh_cache(self, rows: Dict[str, List[Dict[str, str]]]) -> None:
+        with self._cache_lock:
+            self._rows_cache_key = self._cache_key()
+            self._rows_cache = self._clone_rows(rows)
+
+    @staticmethod
+    def _clone_rows(rows: Dict[str, List[Dict[str, str]]]) -> Dict[str, List[Dict[str, str]]]:
+        return deepcopy(rows)
 
 
 def _normalize_workbook_shape(rows_by_sheet: Dict[str, List[Dict[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:

@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from zscope.tools.policy import ToolPolicy, deny_sensitive_paths_hook
 from zscope.tools.runtime import ToolsRuntime
@@ -75,6 +76,46 @@ def test_sensitive_path_pre_hook_blocks_secret_file_before_validation() -> None:
     assert result["success"] is False
     assert result["policy_decision"] == "deny"
     assert "sensitive path" in result["error"]
+
+
+def test_get_file_snippet_validation_uses_code_index_line_cache(tmp_path) -> None:
+    source = tmp_path / "demo.c"
+    source.write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+    class SnippetCodeIndex(FakeCodeIndex):
+        def __init__(self):
+            self.line_count_calls = 0
+            self.snippet_calls = 0
+
+        def resolve_existing_file(self, file_path):
+            assert file_path == "demo.c"
+            return source
+
+        def get_file_line_count(self, file_path):
+            assert Path(file_path) == source
+            self.line_count_calls += 1
+            return 3
+
+        def get_file_snippet(self, file_path, start_line, end_line):
+            self.snippet_calls += 1
+            return {
+                "file": file_path,
+                "start_line": start_line,
+                "end_line": end_line,
+                "code": "1 | one\n2 | two\n",
+            }
+
+    code_index = SnippetCodeIndex()
+    runtime = ToolsRuntime(code_index, FakeSnapshotStore(), tool_policy=ToolPolicy.allow_all())
+
+    result = runtime.execute_tool(
+        "get_file_snippet",
+        {"file_path": "demo.c", "start_line": 1, "end_line": 2},
+    )
+
+    assert result["success"] is True
+    assert code_index.line_count_calls == 1
+    assert code_index.snippet_calls == 1
 
 
 def test_tool_policy_redacts_sensitive_audit_arguments() -> None:
