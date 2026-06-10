@@ -262,15 +262,16 @@ class ClangBackend(CodeBackend):
         files = []
         if self._source_path is None:
             return []
-        extensions = ("*.c", "*.cpp", "*.cc", "*.cxx", "*.h", "*.hpp", "*.ph", "*.inc", "*.inl")
+        extensions = {".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".ph", ".inc", ".inl"}
         
         bases_to_search = self._include_paths if self._include_paths else [self._source_path]
         
         for base in bases_to_search:
-            for ext in extensions:
-                for file_path in base.rglob(ext):
-                    if self._is_path_allowed(file_path):
-                        files.append(file_path.resolve())
+            for file_path in base.rglob("*"):
+                if file_path.suffix.lower() not in extensions:
+                    continue
+                if self._is_path_allowed(file_path):
+                    files.append(file_path.resolve())
                         
         # Remove duplicates
         return sorted(list(set(files)))

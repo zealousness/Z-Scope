@@ -109,6 +109,8 @@ class SnapshotStore:
         self.lock_manager = SnapshotLockManager()
         self._snapshot_cache: Dict[Tuple[str, Optional[str]], Dict[str, Any]] = {}
         self._snapshot_cache_lock = threading.Lock()
+        self._final_report_cache: Dict[Tuple[str, Optional[str]], Dict[str, Any]] = {}
+        self._final_report_cache_lock = threading.Lock()
         self._init_db()
 
     def _cached_snapshot(self, func_name: str, file_path: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -131,6 +133,27 @@ class SnapshotStore:
                         self._snapshot_cache.pop(key, None)
             else:
                 self._snapshot_cache.pop((func_name, file_path), None)
+
+    def _cached_final_report(self, func_name: str, file_path: Optional[str]) -> Optional[Dict[str, Any]]:
+        with self._final_report_cache_lock:
+            report = self._final_report_cache.get((func_name, file_path))
+            if report is None:
+                return None
+            return _clone_snapshot(report)
+
+    def _cache_final_report(self, func_name: str, file_path: Optional[str], report: Dict[str, Any]) -> None:
+        with self._final_report_cache_lock:
+            self._final_report_cache[(func_name, file_path)] = _clone_snapshot(report)
+
+    def _invalidate_final_report_cache(self, func_name: str, file_path: Optional[str] = None) -> None:
+        with self._final_report_cache_lock:
+            self._final_report_cache.pop((func_name, None), None)
+            if file_path is None:
+                for key in list(self._final_report_cache):
+                    if key[0] == func_name:
+                        self._final_report_cache.pop(key, None)
+            else:
+                self._final_report_cache.pop((func_name, file_path), None)
 
     @classmethod
     def _preferred_rows_by_file_path(
@@ -301,6 +324,7 @@ class SnapshotStore:
             )
             conn.commit()
             self._invalidate_snapshot_cache(func_name, file_path)
+            self._invalidate_final_report_cache(func_name, file_path)
             self._cache_snapshot(func_name, file_path, snapshot)
             logger.info(f"Saved snapshot for function '{func_name}' at '{file_path}'")
         finally:
@@ -323,7 +347,7 @@ class SnapshotStore:
 
         conn = self._connect()
         try:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 UPDATE snapshots 
                 SET final_report_file = ?
@@ -332,6 +356,9 @@ class SnapshotStore:
                 (final_file, func_name, file_path),
             )
             conn.commit()
+            self._invalidate_final_report_cache(func_name, file_path)
+            if cursor.rowcount > 0:
+                self._cache_final_report(func_name, file_path, final_report)
             logger.info(f"Saved final report for function '{func_name}' at '{file_path}'")
         finally:
             conn.close()
@@ -407,6 +434,10 @@ class SnapshotStore:
         """
         Load a final vulnerability report if it exists.
         """
+        cached = self._cached_final_report(func_name, file_path)
+        if cached is not None:
+            return cached
+
         conn = self._connect()
         try:
             if file_path:
@@ -439,15 +470,20 @@ class SnapshotStore:
                     )
 
             for row in rows:
+                selected_file_path = row[1]
                 final_path = self.snapshot_dir / row[0]
                 if not final_path.exists():
-                    logger.warning(f"Final report file missing for '{func_name}' at '{row[1]}'")
+                    logger.warning(f"Final report file missing for '{func_name}' at '{selected_file_path}'")
                     if file_path:
                         return None
                     continue
 
                 with open(final_path, "r", encoding="utf-8") as f:
-                    return cast(Dict[str, Any], json.load(f))
+                    report = cast(Dict[str, Any], json.load(f))
+                self._cache_final_report(func_name, selected_file_path, report)
+                if not file_path:
+                    self._cache_final_report(func_name, None, report)
+                return _clone_snapshot(report)
             return None
         finally:
             conn.close()
@@ -549,9 +585,10 @@ class SnapshotStore:
                 conn.execute(
                         "DELETE FROM snapshots WHERE func_name = ? AND file_path = ?",
                         (func_name, file_path)
-                    )
+                )
                 conn.commit()
                 self._invalidate_snapshot_cache(func_name, file_path)
+                self._invalidate_final_report_cache(func_name, file_path)
                 logger.info(f"Deleted snapshot for '{func_name}' at '{file_path}'")
             else:
                 # Delete all snapshots
@@ -568,6 +605,7 @@ class SnapshotStore:
                 conn.execute("DELETE FROM snapshots WHERE func_name = ?", (func_name,))
                 conn.commit()
                 self._invalidate_snapshot_cache(func_name)
+                self._invalidate_final_report_cache(func_name)
                 logger.info(f"Deleted all snapshots for '{func_name}'")
         finally:
             conn.close()

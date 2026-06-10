@@ -11,6 +11,7 @@ import threading
 import time
 import re
 import hashlib
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
@@ -56,6 +57,9 @@ class ClangExtractor:
         self._call_hierarchy_supported = False
         self._last_progress_time = time.time()
         self._opened_documents: Dict[str, int] = {}
+        self._source_text_cache: OrderedDict[Tuple[str, int, int], str] = OrderedDict()
+        self._source_text_cache_lock = threading.RLock()
+        self._source_text_cache_limit = 32
 
     # ── 生命周期 ──
 
@@ -273,10 +277,8 @@ class ClangExtractor:
         uri = file_path.as_uri()
         if uri in self._opened_documents:
             return True
-        try:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                text = f.read()
-        except Exception:
+        text = self._read_source_text(file_path)
+        if text is None:
             return False
         lang = "c" if file_path.suffix in (".c", ".h") else "cpp"
         self.send_notification(
@@ -536,27 +538,27 @@ class ClangExtractor:
 
     def _extract_includes(self, file_path: Path, rel_path: str, db: KnowledgeDB):
         """提取 #include 边。"""
+        lines = self._read_source_lines(file_path)
+        if lines is None:
+            return
         try:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                for line_no, line in enumerate(f, 1):
-                    m = re.match(r'\s*#\s*include\s+([<"])([^>"]+)[>"]', line)
-                    if m:
-                        is_system = 1 if m.group(1) == "<" else 0
-                        included = m.group(2)
-                        db._conn.execute(
-                            "INSERT OR IGNORE INTO include_edges "
-                            "(source_file, included_file, line, is_system) VALUES (?, ?, ?, ?)",
-                            (rel_path, included, line_no, is_system),
-                        )
+            for line_no, line in enumerate(lines, 1):
+                m = re.match(r'\s*#\s*include\s+([<"])([^>"]+)[>"]', line)
+                if m:
+                    is_system = 1 if m.group(1) == "<" else 0
+                    included = m.group(2)
+                    db._conn.execute(
+                        "INSERT OR IGNORE INTO include_edges "
+                        "(source_file, included_file, line, is_system) VALUES (?, ?, ?, ?)",
+                        (rel_path, included, line_no, is_system),
+                    )
         except Exception:
             pass
 
     def _extract_macros(self, file_path: Path, rel_path: str) -> List[Tuple[Any, ...]]:
         rows: List[Tuple[Any, ...]] = []
-        try:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                lines = f.readlines()
-        except OSError:
+        lines = self._read_source_lines(file_path)
+        if lines is None:
             return rows
 
         idx = 0
@@ -720,8 +722,9 @@ class ClangExtractor:
     ):
         """Fallback call extraction for clangd versions without call hierarchy."""
         try:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                lines = f.readlines()
+            lines = self._read_source_lines(file_path)
+            if lines is None:
+                return
             body = "".join(lines[start_line - 1 : end_line])
             masked_body = self._mask_c_comments_and_literals(body)
 
@@ -827,9 +830,8 @@ class ClangExtractor:
         start_line: int,
         end_line: int,
     ) -> Optional[bool]:
-        try:
-            lines = file_path.read_text(encoding="utf-8", errors="ignore").splitlines(True)
-        except OSError:
+        lines = self._read_source_lines(file_path)
+        if lines is None:
             return None
 
         if not lines:
@@ -850,6 +852,46 @@ class ClangExtractor:
                 continue
             return True
         return False
+
+    def _source_cache_key(self, file_path: Path) -> Optional[Tuple[str, int, int]]:
+        try:
+            resolved = Path(file_path).resolve()
+            stat = resolved.stat()
+        except OSError:
+            return None
+        return (str(resolved), int(stat.st_mtime_ns), int(stat.st_size))
+
+    def _read_source_text(self, file_path: Path) -> Optional[str]:
+        cache_key = self._source_cache_key(file_path)
+        if cache_key is None:
+            return None
+
+        with self._source_text_cache_lock:
+            cached = self._source_text_cache.get(cache_key)
+            if cached is not None:
+                self._source_text_cache.move_to_end(cache_key)
+                return cached
+
+        try:
+            text = Path(file_path).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return None
+
+        if self._source_cache_key(file_path) != cache_key:
+            return text
+
+        with self._source_text_cache_lock:
+            self._source_text_cache[cache_key] = text
+            self._source_text_cache.move_to_end(cache_key)
+            while len(self._source_text_cache) > self._source_text_cache_limit:
+                self._source_text_cache.popitem(last=False)
+        return text
+
+    def _read_source_lines(self, file_path: Path) -> Optional[List[str]]:
+        text = self._read_source_text(file_path)
+        if text is None:
+            return None
+        return text.splitlines(True)
 
     def _mask_c_comments_and_literals(self, text: str) -> str:
         chars = list(text)

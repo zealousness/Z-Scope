@@ -8,6 +8,8 @@ out of the LLM context until an agent actually needs them.
 
 from __future__ import annotations
 
+import threading
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -19,6 +21,11 @@ except ImportError:  # pragma: no cover - ConfigLoader already depends on yaml.
     _yaml = None
 
 yaml: Any = _yaml
+_SPEC_REGISTRY_CACHE_LOCK = threading.RLock()
+_SPEC_REGISTRY_CACHE: Dict[
+    Tuple[str, str],
+    Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]],
+] = {}
 
 
 def _as_list(value: Any) -> List[str]:
@@ -243,14 +250,37 @@ class SpecRegistry:
         self.agents: Dict[str, AgentSpec] = {}
         self.skills: Dict[str, SkillSpec] = {}
         self.workflows: Dict[str, WorkflowSpec] = {}
-        self.reload()
+        self._load_from_cache_or_disk()
 
     def reload(self) -> None:
+        with _SPEC_REGISTRY_CACHE_LOCK:
+            self._reload_unlocked()
+            _SPEC_REGISTRY_CACHE[self._cache_key()] = self._snapshot_specs()
+
+    def _load_from_cache_or_disk(self) -> None:
+        with _SPEC_REGISTRY_CACHE_LOCK:
+            cached = _SPEC_REGISTRY_CACHE.get(self._cache_key())
+            if cached is not None:
+                self.agents, self.skills, self.workflows = deepcopy(cached)
+                return
+            self._reload_unlocked()
+            _SPEC_REGISTRY_CACHE[self._cache_key()] = self._snapshot_specs()
+
+    def _reload_unlocked(self) -> None:
         self.agents.clear()
         self.skills.clear()
         self.workflows.clear()
         self._load_package_specs()
         self._load_project_overrides()
+
+    def _cache_key(self) -> Tuple[str, str]:
+        project_root = str(self.project_root) if self.project_root else ""
+        return str(self.package_root.resolve()), project_root
+
+    def _snapshot_specs(
+        self,
+    ) -> Tuple[Dict[str, AgentSpec], Dict[str, SkillSpec], Dict[str, WorkflowSpec]]:
+        return deepcopy((self.agents, self.skills, self.workflows))
 
     def _load_package_specs(self) -> None:
         self._load_agents(self.package_root / "agents")

@@ -1,3 +1,5 @@
+import json
+
 from zscope.snapshots.store import SnapshotStore
 from zscope.common.utils import compute_code_hash, compute_semantic_fingerprint
 
@@ -97,4 +99,65 @@ def test_final_report_load_prefers_source_file_over_header_snapshot(tmp_path) ->
 
     assert store.load_final_report("handle_request") == {
         "issues": [{"source": "source"}]
+    }
+
+
+def test_final_report_cache_returns_independent_copies_and_refreshes_on_save(tmp_path) -> None:
+    snapshot_dir = tmp_path / "snapshots"
+    store = SnapshotStore(snapshot_dir)
+    store.save_snapshot(
+        "handle_request",
+        {"summary": "snapshot"},
+        "int handle_request(void) { return 0; }\n",
+        "src/server.c:10",
+    )
+    store.save_final_report(
+        "handle_request",
+        {"issues": [{"id": "first"}]},
+        "src/server.c:10",
+    )
+
+    reloaded_store = SnapshotStore(snapshot_dir)
+    first = reloaded_store.load_final_report("handle_request", file_path="src/server.c")
+    assert first is not None
+    first["issues"][0]["id"] = "mutated"
+
+    second = reloaded_store.load_final_report("handle_request", file_path="src/server.c")
+    assert second == {"issues": [{"id": "first"}]}
+
+    reloaded_store.save_final_report(
+        "handle_request",
+        {"issues": [{"id": "second"}]},
+        "src/server.c:10",
+    )
+
+    assert reloaded_store.load_final_report("handle_request", file_path="src/server.c") == {
+        "issues": [{"id": "second"}]
+    }
+
+
+def test_final_report_missing_file_is_not_cached_as_permanent_miss(tmp_path) -> None:
+    snapshot_dir = tmp_path / "snapshots"
+    store = SnapshotStore(snapshot_dir)
+    store.save_snapshot(
+        "handle_request",
+        {"summary": "snapshot"},
+        "int handle_request(void) { return 0; }\n",
+        "src/server.c:10",
+    )
+    store.save_final_report(
+        "handle_request",
+        {"issues": [{"id": "first"}]},
+        "src/server.c:10",
+    )
+    final_path = next(snapshot_dir.glob("*_final.json"))
+    final_path.unlink()
+
+    reloaded_store = SnapshotStore(snapshot_dir)
+    assert reloaded_store.load_final_report("handle_request", file_path="src/server.c") is None
+
+    final_path.write_text(json.dumps({"issues": [{"id": "restored"}]}), encoding="utf-8")
+
+    assert reloaded_store.load_final_report("handle_request", file_path="src/server.c") == {
+        "issues": [{"id": "restored"}]
     }

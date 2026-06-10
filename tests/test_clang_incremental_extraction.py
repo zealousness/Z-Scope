@@ -183,6 +183,59 @@ def test_clang_extractor_writes_macro_definitions_for_tu(tmp_path, monkeypatch) 
     ]
 
 
+def test_clang_extractor_reuses_source_text_cache_across_helpers(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "demo.c"
+    source.write_text(
+        "#define ZIP_WRAP(x) helper(x)\n"
+        "int helper(void) { return 1; }\n"
+        "int entry(void) {\n"
+        "    return helper();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    extractor = ClangExtractor(project_root=tmp_path)
+    monkeypatch.setattr(extractor, "get_definition", lambda *args, **kwargs: [])
+
+    original_read_text = Path.read_text
+    read_count = 0
+    source_resolved = source.resolve()
+
+    def counted_read_text(self, *args, **kwargs):
+        nonlocal read_count
+        if Path(self).resolve() == source_resolved:
+            read_count += 1
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counted_read_text)
+
+    assert extractor._read_source_text(source) is not None
+    assert extractor._extract_macros(source, "demo.c") == [
+        ("ZIP_WRAP", "demo.c", 1, "#define ZIP_WRAP(x) helper(x)\n", 1)
+    ]
+    assert extractor._symbol_range_has_function_body(source, 3, 5) is True
+    call_rows = []
+    extractor._extract_call_edges_by_regex(source, "entry", "demo.c", 3, 5, call_rows)
+
+    assert read_count == 1
+    assert any(row[2] == "helper" for row in call_rows)
+
+    source.write_text(
+        "#define ZIP_WRAP(x) helper(x)\n"
+        "int helper(void) { return 1; }\n"
+        "int entry(void) {\n"
+        "    return helper();\n"
+        "}\n"
+        "int after(void) { return entry(); }\n",
+        encoding="utf-8",
+    )
+
+    assert "after" in (extractor._read_source_text(source) or "")
+    assert read_count == 2
+
+
 def test_run_batch_extraction_uses_prescanned_tus_without_rehashing(
     tmp_path, monkeypatch
 ) -> None:
@@ -289,6 +342,48 @@ def test_clang_backend_passes_prescanned_tus_to_batch_extraction(
 
     assert backend._extractor.received_prescanned_tus == {str(source.resolve()): (31, True)}
     assert backend._status == "ready"
+
+
+def test_clang_backend_collect_source_files_scans_each_root_once_and_filters(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    src_dir = tmp_path / "src"
+    nested_dir = src_dir / "nested"
+    excluded_dir = src_dir / "excluded"
+    nested_dir.mkdir(parents=True)
+    excluded_dir.mkdir()
+    allowed_source = src_dir / "allowed.c"
+    allowed_header = nested_dir / "allowed.hpp"
+    allowed_inline = nested_dir / "allowed.inl"
+    ignored_text = nested_dir / "ignored.txt"
+    hidden_source = excluded_dir / "hidden.c"
+    for path in [allowed_source, allowed_header, allowed_inline, ignored_text, hidden_source]:
+        path.write_text("int x;\n", encoding="utf-8")
+
+    backend = ClangBackend()
+    backend._source_path = tmp_path
+    backend._include_paths = [src_dir.absolute(), tmp_path.absolute()]
+    backend._exclude_paths = [excluded_dir.absolute()]
+
+    path_type = type(tmp_path)
+    original_rglob = path_type.rglob
+    calls = []
+
+    def counting_rglob(self, pattern):
+        calls.append((Path(self).resolve(), pattern))
+        yield from original_rglob(self, pattern)
+
+    monkeypatch.setattr(path_type, "rglob", counting_rglob)
+
+    files = {path.resolve() for path in backend._collect_source_files()}
+
+    assert files == {
+        allowed_source.resolve(),
+        allowed_header.resolve(),
+        allowed_inline.resolve(),
+    }
+    assert [pattern for _, pattern in calls] == ["*", "*"]
 
 
 def test_clang_backend_refreshes_unchanged_files_when_macro_metadata_missing(
