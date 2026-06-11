@@ -4,6 +4,8 @@ Snapshot storage and cache management for function semantic snapshots.
 
 import json
 import logging
+import os
+import re
 import sqlite3
 import threading
 from pathlib import Path
@@ -179,6 +181,64 @@ class SnapshotStore:
         normalized = file_path.replace("\\", "/").lstrip("./").lower()
         return category, normalized
 
+    @staticmethod
+    def _normalize_path_hint(file_path: str) -> str:
+        normalized = str(file_path or "").replace("\\", "/").strip().lstrip("./")
+        while "//" in normalized:
+            normalized = normalized.replace("//", "/")
+        return normalized.lower() if os.name == "nt" else normalized
+
+    @classmethod
+    def _paths_match_hint(cls, stored_path: str, hint_path: str) -> bool:
+        stored = cls._normalize_path_hint(stored_path)
+        hint = cls._normalize_path_hint(hint_path)
+        if not stored or not hint:
+            return False
+        return (
+            stored == hint
+            or stored.endswith(f"/{hint}")
+            or hint.endswith(f"/{stored}")
+        )
+
+    @classmethod
+    def _rows_matching_file_path(
+        cls,
+        rows: Iterable[Tuple[Any, ...]],
+        *,
+        file_path: str,
+        file_path_index: int,
+    ) -> List[Tuple[Any, ...]]:
+        row_list = list(rows)
+        normalized_hint = cls._normalize_path_hint(file_path)
+        exact_rows = [
+            row
+            for row in row_list
+            if cls._normalize_path_hint(str(row[file_path_index] or "")) == normalized_hint
+        ]
+        if exact_rows:
+            return cls._preferred_rows_by_file_path(
+                exact_rows,
+                file_path_index=file_path_index,
+            )
+        return cls._preferred_rows_by_file_path(
+            [
+                row
+                for row in row_list
+                if cls._paths_match_hint(str(row[file_path_index] or ""), file_path)
+            ],
+            file_path_index=file_path_index,
+        )
+
+    @staticmethod
+    def _file_path_from_location(location: str) -> str:
+        text = str(location or "").strip()
+        if not text:
+            return "unknown"
+        line_suffix = re.match(r"^(.*):\d+(?:-\d+)?$", text)
+        if line_suffix:
+            return line_suffix.group(1) or "unknown"
+        return text
+
     def _connect(self) -> sqlite3.Connection:
         """Create a configured SQLite connection."""
         conn = sqlite3.connect(str(self.db_path), timeout=30.0)
@@ -269,7 +329,7 @@ class SnapshotStore:
         # Migrate data
         for func_name, code_hash, semantic_hash, location, snapshot_file in old_data:
             # Extract file_path from location (format: "path/to/file.c:start-end")
-            file_path = location.split(':')[0] if ':' in location else 'unknown'
+            file_path = self._file_path_from_location(location)
             
             conn.execute(
                 """
@@ -300,7 +360,7 @@ class SnapshotStore:
         semantic_hash = compute_semantic_fingerprint(code)
         
         # Extract file_path from location
-        file_path = location.split(':')[0] if ':' in location else 'unknown'
+        file_path = self._file_path_from_location(location)
         
         # Create unique snapshot filename with sanitized path
         safe_path = file_path.replace('/', '_').replace('\\', '_').replace(':', '')
@@ -336,30 +396,58 @@ class SnapshotStore:
         """
         Save the final vulnerability report to disk and update metadata in DB.
         """
-        file_path = location.split(':')[0] if ':' in location else 'unknown'
-        
-        safe_path = file_path.replace('/', '_').replace('\\', '_').replace(':', '')
-        final_file = f"{func_name}_{safe_path}_final.json"
-        final_path = self.snapshot_dir / final_file
-
-        with open(final_path, "w", encoding="utf-8") as f:
-            json.dump(final_report, f, indent=2, ensure_ascii=False)
+        file_path = self._file_path_from_location(location)
 
         conn = self._connect()
         try:
+            target_file_path = file_path
+            cursor = conn.execute(
+                "SELECT file_path FROM snapshots WHERE func_name = ?",
+                (func_name,),
+            )
+            rows = self._rows_matching_file_path(
+                cursor.fetchall(),
+                file_path=file_path,
+                file_path_index=0,
+            )
+            if len(rows) > 1:
+                paths = [r[0] for r in rows]
+                logger.warning(
+                    "Not attaching final report for function '%s' with ambiguous path hint '%s'; matched %s.",
+                    func_name,
+                    file_path,
+                    paths,
+                )
+                rows = []
+            if rows:
+                target_file_path = str(rows[0][0] or file_path)
+
+            safe_path = target_file_path.replace('/', '_').replace('\\', '_').replace(':', '')
+            final_file = f"{func_name}_{safe_path}_final.json"
+            final_path = self.snapshot_dir / final_file
+
+            with open(final_path, "w", encoding="utf-8") as f:
+                json.dump(final_report, f, indent=2, ensure_ascii=False)
+
             cursor = conn.execute(
                 """
                 UPDATE snapshots 
                 SET final_report_file = ?
                 WHERE func_name = ? AND file_path = ?
                 """,
-                (final_file, func_name, file_path),
+                (final_file, func_name, target_file_path),
             )
             conn.commit()
-            self._invalidate_final_report_cache(func_name, file_path)
+            self._invalidate_final_report_cache(func_name, target_file_path)
             if cursor.rowcount > 0:
-                self._cache_final_report(func_name, file_path, final_report)
-            logger.info(f"Saved final report for function '{func_name}' at '{file_path}'")
+                self._cache_final_report(func_name, target_file_path, final_report)
+            else:
+                logger.warning(
+                    "Saved final report file for function '%s' at '%s', but no matching snapshot row was found.",
+                    func_name,
+                    file_path,
+                )
+            logger.info(f"Saved final report for function '{func_name}' at '{target_file_path}'")
         finally:
             conn.close()
 
@@ -382,12 +470,15 @@ class SnapshotStore:
         conn = self._connect()
         try:
             if file_path:
-                # Exact match query
                 cursor = conn.execute(
-                    "SELECT snapshot_file, file_path FROM snapshots WHERE func_name = ? AND file_path = ?",
-                    (func_name, file_path)
+                    "SELECT snapshot_file, file_path FROM snapshots WHERE func_name = ?",
+                    (func_name,)
                 )
-                rows = cursor.fetchall()
+                rows = self._rows_matching_file_path(
+                    cursor.fetchall(),
+                    file_path=file_path,
+                    file_path_index=1,
+                )
             else:
                 # Query all matches for this function name
                 cursor = conn.execute(
@@ -411,6 +502,13 @@ class SnapshotStore:
                         f"Using preferred match '{rows[0][1]}'. "
                         f"Specify file_path for exact match."
                     )
+            elif len(rows) > 1:
+                paths = [r[1] for r in rows]
+                logger.warning(
+                    f"Multiple snapshots matched '{func_name}' with path hint '{file_path}' in {paths}. "
+                    "Skipping ambiguous match."
+                )
+                return None
             for row in rows:
                 selected_file_path = row[1]
                 snapshot_path = self.snapshot_dir / row[0]
@@ -442,10 +540,14 @@ class SnapshotStore:
         try:
             if file_path:
                 cursor = conn.execute(
-                    "SELECT final_report_file, file_path FROM snapshots WHERE func_name = ? AND file_path = ?",
-                    (func_name, file_path)
+                    "SELECT final_report_file, file_path FROM snapshots WHERE func_name = ?",
+                    (func_name,)
                 )
-                rows = cursor.fetchall()
+                rows = self._rows_matching_file_path(
+                    cursor.fetchall(),
+                    file_path=file_path,
+                    file_path_index=1,
+                )
             else:
                 cursor = conn.execute(
                     "SELECT final_report_file, file_path FROM snapshots WHERE func_name = ?",
@@ -468,6 +570,13 @@ class SnapshotStore:
                         f"Using preferred match '{rows[0][1]}'. "
                         f"Specify file_path for exact match."
                     )
+            elif len(rows) > 1:
+                paths = [r[1] for r in rows]
+                logger.warning(
+                    f"Multiple final reports matched '{func_name}' with path hint '{file_path}' in {paths}. "
+                    "Skipping ambiguous match."
+                )
+                return None
 
             for row in rows:
                 selected_file_path = row[1]
@@ -503,10 +612,24 @@ class SnapshotStore:
         try:
             if file_path:
                 cursor = conn.execute(
-                    "SELECT code_hash, semantic_hash FROM snapshots WHERE func_name = ? AND file_path = ?",
-                    (func_name, file_path),
+                    "SELECT code_hash, semantic_hash, file_path FROM snapshots WHERE func_name = ?",
+                    (func_name,),
                 )
-                row = cursor.fetchone()
+                rows = self._rows_matching_file_path(
+                    cursor.fetchall(),
+                    file_path=file_path,
+                    file_path_index=2,
+                )
+                if len(rows) > 1:
+                    paths = [r[2] for r in rows]
+                    logger.warning(
+                        "Multiple fingerprints matched '%s' with path hint '%s' in %s. Skipping ambiguous match.",
+                        func_name,
+                        file_path,
+                        paths,
+                    )
+                    return None
+                row = rows[0] if rows else None
             else:
                 cursor = conn.execute(
                     "SELECT code_hash, semantic_hash, file_path FROM snapshots WHERE func_name = ?",

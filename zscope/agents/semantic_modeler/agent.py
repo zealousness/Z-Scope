@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional
 import json
 import logging
 
-from ..base import JsonToolAgent
+from ..base import JsonOutputSpec, JsonToolAgent
 from ...tools.policy import ToolPolicy
 from ...common.utils import is_valid_snapshot
 from ...framework.base import AgentResponse
@@ -70,5 +70,14 @@ class SemanticModeler(JsonToolAgent):
             retry_prompt=(
                 "The previous response did not contain a valid function_snapshot JSON. "
                 "Re-output only one complete ```json ... ``` block that follows the schema."
+            ),
+            json_output_spec=JsonOutputSpec(
+                type_name="function_snapshot",
+                schema=DEFAULT_FUNCTION_SNAPSHOT_SCHEMA,
+                final_tool_name="emit_function_snapshot",
+                final_tool_description="Emit the final semantic function_snapshot object.",
+                validator=is_valid_snapshot,
+                nested_keys=("function_snapshot",),
+                metadata_prefix="snapshot",
             ),
         )

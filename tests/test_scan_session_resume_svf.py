@@ -11,7 +11,9 @@ from zscope.config.config import (
 )
 from zscope.config.function_entry import FunctionEntry
 from zscope.orchestration import scan_session as scan_session_module
+from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
 from zscope.orchestration.scan_session import ScanSessionRunner
+from zscope.snapshots.store import SnapshotStore
 
 
 def _config(tmp_path: Path) -> ZScopeConfig:
@@ -194,6 +196,81 @@ def test_interrupted_entry_names_are_missing_result_entries(tmp_path: Path) -> N
     missing = runner._interrupted_entry_names(entries, {"api_a": object()})
 
     assert missing == ["api_b", "api_c"]
+
+
+def test_resume_does_not_skip_entry_when_only_other_path_has_final_report(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    store = SnapshotStore(Path(cfg.analysis.snapshot_dir))
+    store.save_snapshot(
+        "handle_request",
+        {"summary": "a"},
+        "int handle_request(void) { return 1; }\n",
+        "src/a.c:10",
+    )
+    store.save_snapshot(
+        "handle_request",
+        {"summary": "b"},
+        "int handle_request(void) { return 2; }\n",
+        "src/b.c:20",
+    )
+    store.save_final_report(
+        "handle_request",
+        {"overall_verdict": "no_issue_found", "issues": []},
+        "src/a.c:10",
+    )
+
+    runner = ScanSessionRunner(cfg, resume=True)
+    entry = FunctionEntry("handle_request", file_path="src/b.c")
+    state = {
+        "entries_loaded": True,
+        "batch_mode": True,
+        "entries": [entry],
+    }
+
+    runner._handle_plan_resume_entries(state, None)  # type: ignore[arg-type]
+
+    assert state["entries"] == [entry]
+    assert state["skipped_entries"] == []
+
+
+def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    store = SnapshotStore(Path(cfg.analysis.snapshot_dir))
+    reports = {
+        "src/a.c": {"overall_verdict": "issues_found", "issues": [{"source": "a"}]},
+        "src/b.c": {"overall_verdict": "no_issue_found", "issues": [{"source": "b"}]},
+    }
+    for file_path, report in reports.items():
+        store.save_snapshot(
+            "handle_request",
+            {"summary": file_path},
+            "int handle_request(void) { return 0; }\n",
+            f"{file_path}:10",
+        )
+        store.save_final_report("handle_request", report, f"{file_path}:10")
+
+    entries = [
+        FunctionEntry("handle_request", file_path="src/a.c"),
+        FunctionEntry("handle_request", file_path="src/b.c"),
+    ]
+    runner = ScanSessionRunner(cfg, resume=True)
+    state = {
+        "entries_loaded": True,
+        "batch_mode": True,
+        "entries": list(entries),
+    }
+
+    runner._handle_plan_resume_entries(state, None)  # type: ignore[arg-type]
+    state["results"] = {}
+    runner._handle_merge_skipped_reports(state, None)  # type: ignore[arg-type]
+
+    expected_keys = {ParallelAnalyzer._entry_result_key(entry) for entry in entries}
+    assert state["entries"] == []
+    assert set(state["results"]) == expected_keys
+    assert state["results"]["default:handle_request@src/a.c"].issues == [{"source": "a"}]
+    assert state["results"]["default:handle_request@src/b.c"].issues == [{"source": "b"}]
 
 
 def test_resume_with_no_remaining_entries_defers_svf_initialization(

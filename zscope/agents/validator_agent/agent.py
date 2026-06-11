@@ -2,7 +2,7 @@ import json
 import logging
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from ..base import ToolCallingAgent
+from ..base import JsonOutputSpec, JsonToolAgent
 from ...tools.policy import ToolPolicy
 from ...framework.base import AgentResponse
 from ...framework.llm_client import LLMClient
@@ -11,7 +11,7 @@ from ...common.utils import extract_json_blocks
 logger = logging.getLogger(__name__)
 
 
-class ValidatorAgent(ToolCallingAgent):
+class ValidatorAgent(JsonToolAgent):
     """Agent for verifying and triaging findings."""
 
     def __init__(
@@ -206,194 +206,54 @@ class ValidatorAgent(ToolCallingAgent):
         token_metadata: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
         """Run one final no-retrieval pass whose only job is validator JSON."""
-        chat_completion = getattr(self.llm_client, "chat_completion", None)
-        if not callable(chat_completion):
-            return None
-
-        token_metadata["validator_repair_attempted"] = int(
-            token_metadata.get("validator_repair_attempted", 0) or 0
-        ) + 1
-        repair_messages = list(messages)
-        repair_messages.append(
-            {
-                "role": "user",
-                "content": self._repair_prompt(
-                    error_type,
-                    result=result,
-                    content=str(result.get("content") or ""),
-                ),
-            }
+        repair_seed = dict(result)
+        for key in (
+            "context_tokens",
+            "cumulative_prompt_tokens",
+            "cumulative_completion_tokens",
+            "cumulative_total_tokens",
+            "iterations",
+            "tool_call_count",
+            "final_tool_call_count",
+        ):
+            repair_seed[key] = 0
+        response = self._run_json_final_repair(
+            messages,
+            repair_seed,
+            json_output_spec=self._validation_json_output_spec(),
+            extractor=lambda content, repair_result, conversation: self._extract_validation_payload(
+                content,
+                repair_result,
+                conversation,
+            ),
+            trace_label=f"attempt={attempt}; finding={str(finding)[:120]}",
+            parse_label="validation_result JSON",
+            error_type=error_type,
+            max_json_retries=1,
+            post_process=lambda data: self._coerce_validation_result(data) or data,
         )
-        response_format = (
-            self._validation_response_format()
-            if bool(getattr(self.llm_client, "supports_structured_output", False))
-            else None
-        )
-        final_tool_schema = self._validation_result_tool_schema()
-        tools = None if response_format else [final_tool_schema]
-        prompt_messages = list(repair_messages)
-        try:
-            response = chat_completion(
-                prompt_messages,
-                tools=tools,
-                tool_choice="auto" if tools else None,
-                response_format=response_format,
-                trace_agent=self.name,
-                trace_label=f"attempt={attempt}; repair={error_type}; finding={str(finding)[:120]}",
-                trace_iteration=attempt,
-            )
-        except TypeError:
-            response = chat_completion(
-                prompt_messages,
-                tools=[final_tool_schema],
-                trace_agent=self.name,
-                trace_label=f"attempt={attempt}; repair={error_type}; finding={str(finding)[:120]}",
-                trace_iteration=attempt,
-            )
-        except Exception as exc:
-            if response_format:
-                try:
-                    response = chat_completion(
-                        prompt_messages,
-                        tools=[final_tool_schema],
-                        tool_choice="auto",
-                        trace_agent=self.name,
-                        trace_label=(
-                            f"attempt={attempt}; repair={error_type}; "
-                            f"structured_fallback=tool; finding={str(finding)[:120]}"
-                        ),
-                        trace_iteration=attempt,
-                    )
-                except TypeError:
-                    response = chat_completion(
-                        prompt_messages,
-                        tools=[final_tool_schema],
-                        trace_agent=self.name,
-                        trace_label=(
-                            f"attempt={attempt}; repair={error_type}; "
-                            f"structured_fallback=tool; finding={str(finding)[:120]}"
-                        ),
-                        trace_iteration=attempt,
-                    )
-                except Exception as fallback_exc:
-                    logger.warning(
-                        "Validator repair exception: issue_id=%s phase=repair "
-                        "error_type=%s error=%s fallback_error=%s",
-                        self._issue_id_from_finding(finding),
-                        error_type,
-                        exc,
-                        fallback_exc,
-                    )
-                    return None
-            else:
-                logger.warning(
-                    "Validator repair exception: issue_id=%s phase=repair error_type=%s error=%s",
-                    self._issue_id_from_finding(finding),
-                    error_type,
-                    exc,
-                )
-                return None
-
-        if response is None:
-            logger.warning(
-                "Validator repair exception: issue_id=%s phase=repair error_type=%s error=%s",
-                self._issue_id_from_finding(finding),
-                error_type,
-                "empty_response",
-            )
-            return None
-
-        choice = response.get("choices", [{}])[0]
-        message = choice.get("message", {})
-        self._merge_chat_response_metadata(token_metadata, response, prompt_messages, message)
-        repair_messages.append(message)
-        tool_calls = message.get("tool_calls") or []
-        if tool_calls:
-            token_metadata["validator_final_tool_call_count"] = int(
-                token_metadata.get("validator_final_tool_call_count", 0) or 0
-            ) + len(tool_calls)
-
-        repair_result = {
-            "content": str(message.get("content") or ""),
-            "conversation": repair_messages,
-            "reasoning_content": message.get("reasoning_content"),
-            "finish_reason": choice.get("finish_reason"),
-            "provider_model": response.get("model") or (getattr(self.llm_client, "models", []) or [""])[0],
-            "tool_call_count": 0,
-            "final_tool_call_count": len(tool_calls),
-            "last_assistant_preview": self._message_preview(message),
-        }
-        parsed = self._extract_validation_payload(
-            str(repair_result.get("content") or ""),
-            repair_result,
-            repair_messages,
-        )
-        if parsed:
-            token_metadata["validator_repair_accepted"] = int(
-                token_metadata.get("validator_repair_accepted", 0) or 0
-            ) + 1
-            parsed["validator_json_repaired"] = True
-            parsed["validator_repair_error_type"] = error_type
-            return parsed
-
-        repair_error, json_blocks_found = self._classify_invalid_result(
-            str(repair_result.get("content") or ""),
-            repair_result,
-            repair_messages,
-        )
-        self._log_invalid_result(
-            attempt,
-            1,
-            repair_error,
-            phase="repair",
-            finding=finding,
-            result=repair_result,
-            content=str(repair_result.get("content") or ""),
-            json_blocks_found=json_blocks_found,
+        self._merge_result_metadata(token_metadata, response.metadata or {})
+        if response.success:
+            return response.data
+        logger.warning(
+            "Validator repair failed: issue_id=%s phase=repair error_type=%s error=%s",
+            self._issue_id_from_finding(finding),
+            error_type,
+            response.error,
         )
         return None
 
-    @staticmethod
-    def _repair_prompt(error_type: str, *, result: Dict[str, Any], content: str) -> str:
-        diagnostics = {
-            "error_type": error_type,
-            "finish_reason": result.get("finish_reason"),
-            "truncated": bool(result.get("truncated")),
-            "final_tool_call_without_json": bool(result.get("final_tool_call_without_json")),
-            "last_assistant_preview": result.get("last_assistant_preview") or content[:500],
-        }
-        return (
-            "Final validation repair. The prior validator answer did not produce a usable "
-            "validation_result. Do not ask for retrieval tools or more context. Use the "
-            "finding, code context, compact evidence pack, and diagnostics below to produce "
-            "one final validation_result. If evidence is insufficient, set verdict to "
-            "`uncertain` and explain missing_context.\n\n"
-            f"Diagnostics:\n{json.dumps(diagnostics, ensure_ascii=False, indent=2)}\n\n"
-            "Return by calling emit_validation_result, or return exactly one JSON object "
-            "with type=validation_result."
+    @classmethod
+    def _validation_json_output_spec(cls) -> JsonOutputSpec:
+        return JsonOutputSpec(
+            type_name="validation_result",
+            schema=cls._validation_result_schema(),
+            final_tool_name="emit_validation_result",
+            final_tool_description="Emit the final Z-Scope validation_result object.",
+            validator=lambda data: cls._coerce_validation_result(data) is not None,
+            nested_keys=tuple(cls._WRAPPER_KEYS),
+            metadata_prefix="validator",
         )
-
-    @classmethod
-    def _validation_result_tool_schema(cls) -> Dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": "emit_validation_result",
-                "description": "Emit the final Z-Scope validation_result object.",
-                "parameters": cls._validation_result_schema(),
-            },
-        }
-
-    @classmethod
-    def _validation_response_format(cls) -> Dict[str, Any]:
-        return {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "validation_result",
-                "strict": False,
-                "schema": cls._validation_result_schema(),
-            },
-        }
 
     @staticmethod
     def _validation_result_schema() -> Dict[str, Any]:

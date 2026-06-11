@@ -1,9 +1,13 @@
 from zscope.common.issue_identity import (
+    canonical_category,
     canonical_issue_key,
     deduplicate_semantic_issues_programmatic,
     deduplicate_issues,
+    flatten_issue_text,
+    issue_resource_signature,
     normalize_issue_category,
     normalize_issue_fields,
+    root_cause_token,
     semantic_related_cluster_keys,
 )
 from zscope.core.analysis.analyzer import Analyzer
@@ -708,6 +712,76 @@ def test_td_init_distinct_memory_leaks_remain_separate() -> None:
         "memory_leak|src/main.c|thread_ids",
         "memory_leak|src/main.c|td_init|g_dispatcher.queue.tasks",
     }
+
+
+def test_memory_leak_resource_signature_extracts_allocation_owner() -> None:
+    pid_list = {
+        "function": "_runtime_query_peak_stats",
+        "location": "src/lifecycle.c:1422-1430",
+        "category": "memory_leak",
+        "description": "pid_list通过_safe_calloc分配后从未释放，函数返回时内存丢失",
+    }
+    child_member = {
+        "function": "_runtime_unload_patch_member",
+        "location": "src/lifecycle.c:1346-1350",
+        "category": "memory_leak",
+        "resource": "root->children分配的ServiceChild结构体及其name字段从未释放",
+    }
+
+    assert issue_resource_signature(pid_list) == "pid_list"
+    assert issue_resource_signature(child_member) == "root->children"
+
+
+def test_generic_memory_leak_text_does_not_become_root_token() -> None:
+    issue = {
+        "function": "generic_cleanup",
+        "location": "src/demo.c:10",
+        "category": "memory_leak",
+        "description": "memory_leak memory leak resource leak",
+    }
+    text = flatten_issue_text(issue)
+    category = canonical_category(issue, text)
+
+    assert root_cause_token(issue, category, text) == ""
+    assert canonical_issue_key(issue) == "memory_leak|src/demo.c|10|generic_cleanup"
+
+
+def test_real018_style_memory_leak_stays_independent_from_patch_member_leak() -> None:
+    patch_member = {
+        "id": "ISSUE_4",
+        "function": "_runtime_unload_patch_member",
+        "location": "src/lifecycle.c:1346-1350",
+        "category": "memory_leak",
+        "validation_status": "validated",
+        "confidence": 0.95,
+        "description": "root->children分配的ServiceChild结构体及其name字段从未释放",
+        "root_cause": "释放父节点时未递归释放子节点资源",
+        "reasoning": "root->children及其内部name字段未被释放",
+    }
+    peak_stats = {
+        "id": "ISSUE_2",
+        "function": "_runtime_query_peak_stats",
+        "location": "src/lifecycle.c:1422-1430",
+        "category": "memory_leak",
+        "validation_status": "validated",
+        "confidence": 0.95,
+        "description": "pid_list通过_safe_calloc分配后从未释放，函数返回时内存丢失",
+        "root_cause": "函数获取所有权后既未释放也未转移所有权，违反所有权契约",
+        "reasoning": "第1422行分配pid_list；第1430行返回时指针丢失",
+    }
+
+    deduped = deduplicate_issues([patch_member.copy(), peak_stats.copy()])
+    semantic_deduped, summary = deduplicate_semantic_issues_programmatic(
+        [patch_member.copy(), peak_stats.copy()]
+    )
+
+    assert len(deduped) == 2
+    assert len(semantic_deduped) == 2
+    assert summary["programmatic_merge_count"] == 0
+    assert {
+        issue_resource_signature(issue)
+        for issue in semantic_deduped
+    } == {"root->children", "pid_list"}
 
 
 def test_semantic_dedup_merges_loop_aliases_by_concrete_root() -> None:

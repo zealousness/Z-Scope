@@ -86,14 +86,15 @@ ignored copy such as `test/range/zscope.local.yaml`.
 - `benchmark/ground_truth.json`: hidden scoring truth for evaluator use only.
 - `benchmark/PATTERN_COVERAGE.md`: maintenance matrix for the C
   memory/concurrency pattern catalog.
-- `benchmark/evaluate_zscope_report.py`: scorer for Z-SCOPE JSON reports.
-  It reports both aggregate metrics and per-tier recall; `real_project_issue40`,
-  `real_project_issue41`, and `real_project_issue42` are intentionally
-  separated from the legacy range tier.
+- `scripts/external_benchmark.py evaluate`: canonical scorer for Z-SCOPE JSON
+  reports. It reports both aggregate metrics and a false-positive split where
+  duplicate hits on already matched ground-truth items are listed separately
+  from effective false positives.
 - `entry_functions_list.json`: latest generated automatic entry-discovery list.
 - `zscope_batch_report.json` and `zscope_batch_report.md`: latest generated
   batch report preserved locally for comparison.
-- `current_eval.json`: current scorer output for the preserved batch report.
+- `current_eval.json`: current `external_benchmark.py evaluate` output for the
+  preserved batch report.
 
 Do not include `GROUND_TRUTH.md` or `benchmark/ground_truth.json` in the
 analysis prompt/context given to Z-SCOPE. They are answer keys, not
@@ -107,10 +108,14 @@ The latest preserved batch report is from 2026-06-09:
 - Report files: `zscope_batch_report.json` and `zscope_batch_report.md`.
 - Generated entry list: `entry_functions_list.json`.
 - Current scorer output: `current_eval.json`.
-- Default view: TP 84, FP 60, FN 37, precision 0.5833, recall 0.6942,
-  F1 0.6340, weighted recall 0.6616.
-- With `needs_review`: TP 105, FP 115, FN 16, precision 0.4773,
-  recall 0.8678, F1 0.6158, weighted recall 0.8251.
+- Default view: TP 92, raw FP 52, duplicate-of-matched 44, effective FP 8,
+  FN 29, precision 0.9200, recall 0.7603, F1 0.8326.
+- With `needs_review`: TP 113, raw FP 107, duplicate-of-matched 92,
+  effective FP 15, FN 8, precision 0.8828, recall 0.9339, F1 0.9076.
+
+For reporting comparisons, use effective FP and `false_positive_rate`. Keep raw
+FP and duplicate-of-matched counts visible so repeated reports against the same
+ground-truth issue are auditable instead of silently hidden.
 
 ## Baseline Commands
 
@@ -134,9 +139,10 @@ python test/range/benchmark/check_entry_coverage.py \
   --truth test/range/benchmark/ground_truth.json
 python -m zscope.cli.cli -c test/range/zscope.benchmark.yaml --build-cpg
 python -m zscope.cli.cli -c test/range/zscope.benchmark.yaml --verbose
-python test/range/benchmark/evaluate_zscope_report.py \
+python scripts/external_benchmark.py evaluate \
   --report test/range/zscope_batch_report.json \
-  --truth test/range/benchmark/ground_truth.json
+  --truth test/range/benchmark/ground_truth.json \
+  --output test/range/current_eval.json
 ```
 
 `--build-cpg` is the cheap preflight. It should index functions without calling
@@ -163,9 +169,13 @@ Primary metrics:
 
 - True positives: ground-truth defects matched by at least one reported issue.
 - False negatives: ground-truth defects not matched.
-- False positives: reported issues that match no ground-truth item.
+- Raw false positives: reported issues that match no ground-truth item.
+- Duplicate-of-matched: raw false positives that duplicate an already matched
+  ground-truth issue or share the same root cause with that matched issue.
+- Effective false positives: raw false positives minus duplicate-of-matched
+  issues. This is the FP count used for precision and false-positive rate.
 - Recall: TP / total ground truth.
-- Precision: TP / reported issues considered.
+- Precision: TP / (TP + effective FP).
 - F1: harmonic mean of precision and recall.
 
 The evaluation output includes `matched_pairs`; inspect it before classifying a

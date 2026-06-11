@@ -81,10 +81,15 @@ if [[ -f test/range/zscope_batch_report.md ]]; then
 fi
 
 if [[ -f "${run_dir}/zscope_batch_report.json" ]]; then
-  python3 test/range/benchmark/evaluate_zscope_report.py \
+  python3 scripts/external_benchmark.py evaluate \
     --report "${run_dir}/zscope_batch_report.json" \
     --truth test/range/benchmark/ground_truth.json \
-    > "${run_dir}/evaluation.json"
+    --output "${run_dir}/evaluation.json"
+  python3 scripts/external_benchmark.py evaluate \
+    --report "${run_dir}/zscope_batch_report.json" \
+    --truth test/range/benchmark/ground_truth.json \
+    --output "${run_dir}/evaluation.with_needs_review.json" \
+    --view with_needs_review
 fi
 
 python3 - "${run_dir}" "${scan_rc}" "${wall_seconds}" <<'PY'
@@ -108,12 +113,15 @@ metrics = {
 eval_path = run_dir / "evaluation.json"
 if eval_path.exists():
     metrics["evaluation"] = json.loads(eval_path.read_text(encoding="utf-8"))
-    views = metrics["evaluation"].get("report_views", {})
+    views = metrics["evaluation"].get("evaluation_views", {})
     if views:
         metrics["benchmark_views"] = {
             name: {
                 "issues": view.get("report_issue_count"),
                 "true_positives": view.get("true_positives"),
+                "false_positives_raw": view.get("false_positives_raw"),
+                "duplicate_of_matched": view.get("duplicate_of_matched_count"),
+                "false_positives_effective": view.get("false_positives_effective"),
                 "false_positives": view.get("false_positives"),
                 "false_negatives": view.get("false_negatives"),
                 "detection_rate": view.get("recall"),

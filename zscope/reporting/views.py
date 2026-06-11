@@ -85,11 +85,23 @@ def _same_root_cause(default_issue: Dict[str, Any], review_issue: Dict[str, Any]
 
     default_file, default_func, default_root = _issue_root_signature(default_issue)
     review_file, review_func, review_root = _issue_root_signature(review_issue)
+    default_line = _issue_location_parts(default_issue)[1]
+    review_line = _issue_location_parts(review_issue)[1]
+    if (
+        default_file
+        and review_file
+        and default_file == review_file
+        and default_func
+        and review_func
+        and default_func == review_func
+        and default_line is not None
+        and review_line is not None
+        and abs(default_line - review_line) <= 8
+    ):
+        return True
     if default_root and default_root == review_root and (default_file or default_func):
         if default_func and review_func:
             return default_func == review_func
-        default_line = _issue_location_parts(default_issue)[1]
-        review_line = _issue_location_parts(review_issue)[1]
         if (
             default_file
             and review_file

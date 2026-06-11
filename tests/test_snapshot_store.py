@@ -102,6 +102,85 @@ def test_final_report_load_prefers_source_file_over_header_snapshot(tmp_path) ->
     }
 
 
+def test_final_report_load_matches_normalized_path_hint(tmp_path) -> None:
+    store = SnapshotStore(tmp_path / "snapshots")
+    store.save_snapshot(
+        "handle_request",
+        {"summary": "source implementation"},
+        "int handle_request(void) { return 1; }\n",
+        "src/server.c:10",
+    )
+    store.save_final_report(
+        "handle_request",
+        {"issues": [{"source": "source"}]},
+        "src/server.c:10",
+    )
+
+    assert store.load_final_report("handle_request", file_path=".\\src\\server.c") == {
+        "issues": [{"source": "source"}]
+    }
+
+
+def test_save_final_report_updates_snapshot_row_for_normalized_path_hint(tmp_path) -> None:
+    store = SnapshotStore(tmp_path / "snapshots")
+    store.save_snapshot(
+        "handle_request",
+        {"summary": "source implementation"},
+        "int handle_request(void) { return 1; }\n",
+        ".\\src\\server.c:10",
+    )
+    store.save_final_report(
+        "handle_request",
+        {"issues": [{"source": "source"}]},
+        "src/server.c:10",
+    )
+
+    assert store.load_final_report("handle_request", file_path="src/server.c") == {
+        "issues": [{"source": "source"}]
+    }
+
+
+def test_location_parser_preserves_windows_drive_colon(tmp_path) -> None:
+    store = SnapshotStore(tmp_path / "snapshots")
+    store.save_snapshot(
+        "handle_request",
+        {"summary": "windows path"},
+        "int handle_request(void) { return 1; }\n",
+        "C:\\repo\\src\\server.c:10",
+    )
+    store.save_final_report(
+        "handle_request",
+        {"issues": [{"source": "source"}]},
+        "C:\\repo\\src\\server.c:10",
+    )
+
+    assert store.load_final_report(
+        "handle_request",
+        file_path="C:\\repo\\src\\server.c",
+    ) == {"issues": [{"source": "source"}]}
+
+
+def test_final_report_path_hint_does_not_guess_ambiguous_suffix(tmp_path) -> None:
+    store = SnapshotStore(tmp_path / "snapshots")
+    for file_path, source in (
+        ("src/a/server.c", "a"),
+        ("src/b/server.c", "b"),
+    ):
+        store.save_snapshot(
+            "handle_request",
+            {"summary": source},
+            "int handle_request(void) { return 1; }\n",
+            f"{file_path}:10",
+        )
+        store.save_final_report(
+            "handle_request",
+            {"issues": [{"source": source}]},
+            f"{file_path}:10",
+        )
+
+    assert store.load_final_report("handle_request", file_path="server.c") is None
+
+
 def test_final_report_cache_returns_independent_copies_and_refreshes_on_save(tmp_path) -> None:
     snapshot_dir = tmp_path / "snapshots"
     store = SnapshotStore(snapshot_dir)
