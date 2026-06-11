@@ -230,12 +230,15 @@ def main(
                     llm_cfg, "base_url_max_concurrent_requests", 0
                 ),
             )
-            generated, llm_stats = filter_user_config_rows_with_llm(
-                generated,
-                code_index,
-                llm_client,
-                max_workers=llm_workers,
-            )
+            try:
+                generated, llm_stats = filter_user_config_rows_with_llm(
+                    generated,
+                    code_index,
+                    llm_client,
+                    max_workers=llm_workers,
+                )
+            finally:
+                llm_client.close()
             stats = UserConfigWorkbook(workbook_path).merge_generated(generated)
             total_symbols = sum(len(items) for items in generated.values())
             click.echo(f"User config workbook: {workbook_path}")
@@ -285,7 +288,10 @@ def main(
                 svf_parallel_workers=zscope_config.analysis.parallel_workers,
             )
             rda = RuleDrivenAnalyzer(zscope_config, code_index=code_index)
-            result = rda.run()
+            try:
+                result = rda.run()
+            finally:
+                rda.close()
             issues_count = len(result.get("issues", []))
             click.echo(f"\nRule-driven analysis complete. Issues: {issues_count}")
             sys.exit(1 if issues_count > 0 else 0)
@@ -372,10 +378,13 @@ def main(
                     alert_workers = 1
             alert_workers = max(1, min(len(alerts), alert_workers))
             click.echo(f"Verifying alerts with {alert_workers} worker(s)")
-            verification_results = verifier.verify_alerts(
-                alerts,
-                max_workers=alert_workers,
-            )
+            try:
+                verification_results = verifier.verify_alerts(
+                    alerts,
+                    max_workers=alert_workers,
+                )
+            finally:
+                verifier.close()
 
             # 输出报告
             import json

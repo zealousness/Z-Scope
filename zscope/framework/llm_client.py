@@ -6,6 +6,7 @@ import ast
 from collections import deque
 from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
+import errno
 import random
 import re
 import json
@@ -52,6 +53,8 @@ class LLMClient:
     MODEL_CONTEXT_SUMMARY_HEAVY_STRING_CHARS = 900
     MODEL_CONTEXT_SUMMARY_MAX_ITEMS = 8
     MODEL_CONTEXT_SUMMARY_MAX_KEYS = 18
+    LOCAL_FD_EXHAUSTION_COOLDOWN_SECONDS = 2.0
+    SESSION_POOL_MAXSIZE = 1
     _SUMMARY_PRIORITY_KEYS = (
         "success",
         "error",
@@ -123,6 +126,8 @@ class LLMClient:
         self.max_tokens = max_tokens
         self.base_url_rate_limit_per_minute = max(0, int(base_url_rate_limit_per_minute or 0))
         self.base_url_max_concurrent_requests = max(0, int(base_url_max_concurrent_requests or 0))
+        self._session_pool_connections = max(1, len(self.base_urls))
+        self._session_pool_maxsize = self.SESSION_POOL_MAXSIZE
         self._base_url_states = [_BaseUrlState(url=url) for url in self.base_urls]
         self._endpoint_capacity_states = {
             url: self._shared_endpoint_capacity_state(
@@ -164,6 +169,13 @@ class LLMClient:
     def _new_session(self) -> requests.Session:
         session = requests.Session()
         session.headers.update(self._session_headers)
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=self._session_pool_connections,
+            pool_maxsize=self._session_pool_maxsize,
+            max_retries=0,
+        )
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
         with self._sessions_lock:
             self._sessions.add(session)
         return session
@@ -284,6 +296,15 @@ class LLMClient:
             state.cooldown_until = max(state.cooldown_until, until)
             self._base_url_condition.notify_all()
 
+    def _mark_all_base_urls_cooldown(self, seconds: float) -> None:
+        if seconds <= 0:
+            return
+        until = time.monotonic() + seconds
+        with self._base_url_condition:
+            for state in self._base_url_states:
+                state.cooldown_until = max(state.cooldown_until, until)
+            self._base_url_condition.notify_all()
+
     def _log_base_url_wait(
         self,
         blocked_by_concurrency_only: bool,
@@ -347,6 +368,45 @@ class LLMClient:
             return max(0.0, retry_at.timestamp() - time.time())
         except (TypeError, ValueError, OverflowError):
             return None
+
+    @classmethod
+    def _is_too_many_open_files(cls, error: BaseException) -> bool:
+        pending: List[Any] = [error]
+        seen: set[int] = set()
+        while pending:
+            current = pending.pop()
+            if current is None:
+                continue
+            current_id = id(current)
+            if current_id in seen:
+                continue
+            seen.add(current_id)
+            if isinstance(current, OSError) and current.errno == errno.EMFILE:
+                return True
+            if getattr(current, "errno", None) == errno.EMFILE:
+                return True
+            text = str(current)
+            if "[Errno 24]" in text or "Too many open files" in text:
+                return True
+            if isinstance(current, BaseException):
+                pending.append(current.__cause__)
+                pending.append(current.__context__)
+                pending.extend(arg for arg in current.args if isinstance(arg, BaseException))
+        return False
+
+    def _recover_from_local_fd_exhaustion(
+        self,
+        error: BaseException,
+        cooldown_seconds: float,
+    ) -> None:
+        logger.warning(
+            "Local file descriptor exhaustion while calling LLM; closing current "
+            "thread HTTP session and cooling all base_urls for %.1fs: %s",
+            cooldown_seconds,
+            error,
+        )
+        self.close_thread_session()
+        self._mark_all_base_urls_cooldown(cooldown_seconds)
 
     def chat_completion(
         self,
@@ -468,7 +528,11 @@ class LLMClient:
                         break # Try next model
                         
                 except Exception as e:
+                    local_fd_exhausted = self._is_too_many_open_files(e)
                     wait_time = min(2**attempt, 10) + random.uniform(0, 3)
+                    if local_fd_exhausted:
+                        wait_time = max(wait_time, self.LOCAL_FD_EXHAUSTION_COOLDOWN_SECONDS)
+                        self._recover_from_local_fd_exhaustion(e, wait_time)
                     is_last = attempt >= total_attempts - 1
                     post_attempt_delay = 0.0 if is_last else wait_time
                     if is_last:
