@@ -1,5 +1,6 @@
-from typing import Any, Dict, Iterable, List, Optional
+import json
 import logging
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from ..base import ToolCallingAgent
 from ...tools.policy import ToolPolicy
@@ -33,7 +34,6 @@ class ValidatorAgent(ToolCallingAgent):
         evidence_pack = input_data.get("evidence_pack")
         evidence_text = ""
         if evidence_pack:
-            import json
             evidence_text = (
                 "\n\nCompact Evidence Pack:\n"
                 + json.dumps(evidence_pack, ensure_ascii=False, indent=2)
@@ -53,6 +53,9 @@ class ValidatorAgent(ToolCallingAgent):
             "tool_call_count": 0,
             "validator_fast_path_attempted": 0,
             "validator_fast_path_accepted": 0,
+            "validator_repair_attempted": 0,
+            "validator_repair_accepted": 0,
+            "validator_final_tool_call_count": 0,
         }
 
         for attempt in range(1, max_retries + 1):
@@ -89,8 +92,7 @@ class ValidatorAgent(ToolCallingAgent):
                     messages,
                     trace_label=f"attempt={attempt}; finding={str(finding)[:120]}",
                 )
-                for key in token_metadata:
-                    token_metadata[key] += int(result.get(key, 0) or 0)
+                self._merge_result_metadata(token_metadata, result)
                 parsed = self._extract_validation_payload(
                     str(result.get("content") or ""),
                     result,
@@ -103,22 +105,35 @@ class ValidatorAgent(ToolCallingAgent):
                         metadata=dict(token_metadata),
                     )
 
-                candidates = self._extract_first_json(
+                last_error, json_blocks_found = self._classify_invalid_result(
                     str(result.get("content") or ""),
                     result,
                     result.get("conversation", []),
                 )
-                last_error = (
-                    "JSON parsed but no validation_result found"
-                    if candidates
-                    else "No JSON block found"
-                )
-                logger.warning(
-                    "Validator attempt %d/%d failed: %s",
+                self._log_invalid_result(
                     attempt,
                     max_retries,
                     last_error,
+                    phase="evidence_gathering",
+                    finding=finding,
+                    result=result,
+                    content=str(result.get("content") or ""),
+                    json_blocks_found=json_blocks_found,
                 )
+                repaired = self._run_json_repair(
+                    messages,
+                    result,
+                    error_type=last_error,
+                    attempt=attempt,
+                    finding=finding,
+                    token_metadata=token_metadata,
+                )
+                if repaired:
+                    return AgentResponse(
+                        success=True,
+                        data=repaired,
+                        metadata=dict(token_metadata),
+                    )
             except Exception as exc:
                 last_error = str(exc)
                 logger.warning(
@@ -132,6 +147,7 @@ class ValidatorAgent(ToolCallingAgent):
             success=False,
             data={},
             error=f"Failed after {max_retries} validation attempt(s): {last_error}",
+            metadata=dict(token_metadata, validator_last_error_type=last_error),
         )
 
     def _run_fast_path(
@@ -179,6 +195,231 @@ class ValidatorAgent(ToolCallingAgent):
         parsed["validator_fast_path"] = True
         return parsed
 
+    def _run_json_repair(
+        self,
+        messages: List[Dict[str, Any]],
+        result: Dict[str, Any],
+        *,
+        error_type: str,
+        attempt: int,
+        finding: Any,
+        token_metadata: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Run one final no-retrieval pass whose only job is validator JSON."""
+        chat_completion = getattr(self.llm_client, "chat_completion", None)
+        if not callable(chat_completion):
+            return None
+
+        token_metadata["validator_repair_attempted"] = int(
+            token_metadata.get("validator_repair_attempted", 0) or 0
+        ) + 1
+        repair_messages = list(messages)
+        repair_messages.append(
+            {
+                "role": "user",
+                "content": self._repair_prompt(
+                    error_type,
+                    result=result,
+                    content=str(result.get("content") or ""),
+                ),
+            }
+        )
+        response_format = (
+            self._validation_response_format()
+            if bool(getattr(self.llm_client, "supports_structured_output", False))
+            else None
+        )
+        final_tool_schema = self._validation_result_tool_schema()
+        tools = None if response_format else [final_tool_schema]
+        prompt_messages = list(repair_messages)
+        try:
+            response = chat_completion(
+                prompt_messages,
+                tools=tools,
+                tool_choice="auto" if tools else None,
+                response_format=response_format,
+                trace_agent=self.name,
+                trace_label=f"attempt={attempt}; repair={error_type}; finding={str(finding)[:120]}",
+                trace_iteration=attempt,
+            )
+        except TypeError:
+            response = chat_completion(
+                prompt_messages,
+                tools=[final_tool_schema],
+                trace_agent=self.name,
+                trace_label=f"attempt={attempt}; repair={error_type}; finding={str(finding)[:120]}",
+                trace_iteration=attempt,
+            )
+        except Exception as exc:
+            if response_format:
+                try:
+                    response = chat_completion(
+                        prompt_messages,
+                        tools=[final_tool_schema],
+                        tool_choice="auto",
+                        trace_agent=self.name,
+                        trace_label=(
+                            f"attempt={attempt}; repair={error_type}; "
+                            f"structured_fallback=tool; finding={str(finding)[:120]}"
+                        ),
+                        trace_iteration=attempt,
+                    )
+                except TypeError:
+                    response = chat_completion(
+                        prompt_messages,
+                        tools=[final_tool_schema],
+                        trace_agent=self.name,
+                        trace_label=(
+                            f"attempt={attempt}; repair={error_type}; "
+                            f"structured_fallback=tool; finding={str(finding)[:120]}"
+                        ),
+                        trace_iteration=attempt,
+                    )
+                except Exception as fallback_exc:
+                    logger.warning(
+                        "Validator repair exception: issue_id=%s phase=repair "
+                        "error_type=%s error=%s fallback_error=%s",
+                        self._issue_id_from_finding(finding),
+                        error_type,
+                        exc,
+                        fallback_exc,
+                    )
+                    return None
+            else:
+                logger.warning(
+                    "Validator repair exception: issue_id=%s phase=repair error_type=%s error=%s",
+                    self._issue_id_from_finding(finding),
+                    error_type,
+                    exc,
+                )
+                return None
+
+        if response is None:
+            logger.warning(
+                "Validator repair exception: issue_id=%s phase=repair error_type=%s error=%s",
+                self._issue_id_from_finding(finding),
+                error_type,
+                "empty_response",
+            )
+            return None
+
+        choice = response.get("choices", [{}])[0]
+        message = choice.get("message", {})
+        self._merge_chat_response_metadata(token_metadata, response, prompt_messages, message)
+        repair_messages.append(message)
+        tool_calls = message.get("tool_calls") or []
+        if tool_calls:
+            token_metadata["validator_final_tool_call_count"] = int(
+                token_metadata.get("validator_final_tool_call_count", 0) or 0
+            ) + len(tool_calls)
+
+        repair_result = {
+            "content": str(message.get("content") or ""),
+            "conversation": repair_messages,
+            "reasoning_content": message.get("reasoning_content"),
+            "finish_reason": choice.get("finish_reason"),
+            "provider_model": response.get("model") or (getattr(self.llm_client, "models", []) or [""])[0],
+            "tool_call_count": 0,
+            "final_tool_call_count": len(tool_calls),
+            "last_assistant_preview": self._message_preview(message),
+        }
+        parsed = self._extract_validation_payload(
+            str(repair_result.get("content") or ""),
+            repair_result,
+            repair_messages,
+        )
+        if parsed:
+            token_metadata["validator_repair_accepted"] = int(
+                token_metadata.get("validator_repair_accepted", 0) or 0
+            ) + 1
+            parsed["validator_json_repaired"] = True
+            parsed["validator_repair_error_type"] = error_type
+            return parsed
+
+        repair_error, json_blocks_found = self._classify_invalid_result(
+            str(repair_result.get("content") or ""),
+            repair_result,
+            repair_messages,
+        )
+        self._log_invalid_result(
+            attempt,
+            1,
+            repair_error,
+            phase="repair",
+            finding=finding,
+            result=repair_result,
+            content=str(repair_result.get("content") or ""),
+            json_blocks_found=json_blocks_found,
+        )
+        return None
+
+    @staticmethod
+    def _repair_prompt(error_type: str, *, result: Dict[str, Any], content: str) -> str:
+        diagnostics = {
+            "error_type": error_type,
+            "finish_reason": result.get("finish_reason"),
+            "truncated": bool(result.get("truncated")),
+            "final_tool_call_without_json": bool(result.get("final_tool_call_without_json")),
+            "last_assistant_preview": result.get("last_assistant_preview") or content[:500],
+        }
+        return (
+            "Final validation repair. The prior validator answer did not produce a usable "
+            "validation_result. Do not ask for retrieval tools or more context. Use the "
+            "finding, code context, compact evidence pack, and diagnostics below to produce "
+            "one final validation_result. If evidence is insufficient, set verdict to "
+            "`uncertain` and explain missing_context.\n\n"
+            f"Diagnostics:\n{json.dumps(diagnostics, ensure_ascii=False, indent=2)}\n\n"
+            "Return by calling emit_validation_result, or return exactly one JSON object "
+            "with type=validation_result."
+        )
+
+    @classmethod
+    def _validation_result_tool_schema(cls) -> Dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": "emit_validation_result",
+                "description": "Emit the final Z-Scope validation_result object.",
+                "parameters": cls._validation_result_schema(),
+            },
+        }
+
+    @classmethod
+    def _validation_response_format(cls) -> Dict[str, Any]:
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "validation_result",
+                "strict": False,
+                "schema": cls._validation_result_schema(),
+            },
+        }
+
+    @staticmethod
+    def _validation_result_schema() -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "type": {"type": "string", "enum": ["validation_result"]},
+                "issue_id": {"type": "string"},
+                "verdict": {"type": "string", "enum": ["verified", "rejected", "uncertain"]},
+                "finding_kind": {"type": "string"},
+                "is_valid": {"type": "boolean"},
+                "confidence_score": {"type": "number", "minimum": 0, "maximum": 1},
+                "reasoning": {"type": "string"},
+                "positive_evidence": {"type": "array", "items": {"type": "string"}},
+                "negative_evidence": {"type": "array", "items": {"type": "string"}},
+                "missing_context": {"type": "array", "items": {"type": "string"}},
+                "exploit_scenario": {"type": "string"},
+                "source": {"type": "string"},
+                "sink": {"type": "string"},
+                "control_of_source": {"type": "string"},
+                "guard_analysis": {"type": "string"},
+            },
+            "required": ["type", "verdict", "reasoning"],
+            "additionalProperties": True,
+        }
+
     @classmethod
     def _accept_fast_path_result(cls, data: Dict[str, Any]) -> bool:
         verdict = cls._normalize_verdict_value(data.get("verdict"), data.get("is_valid"))
@@ -208,11 +449,121 @@ class ValidatorAgent(ToolCallingAgent):
             "cumulative_total_tokens",
             "iterations",
             "tool_call_count",
+            "validator_repair_attempted",
+            "validator_repair_accepted",
+            "validator_final_tool_call_count",
         ):
             try:
                 target[key] = int(target.get(key, 0) or 0) + int(result.get(key, 0) or 0)
             except (TypeError, ValueError):
                 continue
+        try:
+            target["validator_final_tool_call_count"] = int(
+                target.get("validator_final_tool_call_count", 0) or 0
+            ) + int(result.get("final_tool_call_count", 0) or 0)
+        except (TypeError, ValueError):
+            pass
+
+    @staticmethod
+    def _merge_chat_response_metadata(
+        target: Dict[str, Any],
+        response: Dict[str, Any],
+        messages: List[Dict[str, Any]],
+        assistant_message: Dict[str, Any],
+    ) -> None:
+        prompt_tokens, completion_tokens = LLMClient._response_token_usage(
+            response,
+            messages,
+            assistant_message,
+        )
+        target["context_tokens"] = int(target.get("context_tokens", 0) or 0) + LLMClient.estimate_tokens(messages)
+        target["cumulative_prompt_tokens"] = int(
+            target.get("cumulative_prompt_tokens", 0) or 0
+        ) + prompt_tokens
+        target["cumulative_completion_tokens"] = int(
+            target.get("cumulative_completion_tokens", 0) or 0
+        ) + completion_tokens
+        target["cumulative_total_tokens"] = int(
+            target.get("cumulative_prompt_tokens", 0) or 0
+        ) + int(target.get("cumulative_completion_tokens", 0) or 0)
+        target["iterations"] = int(target.get("iterations", 0) or 0) + 1
+
+    def _classify_invalid_result(
+        self,
+        content: str,
+        result: Dict[str, Any],
+        conversation: Iterable[Dict[str, Any]],
+    ) -> Tuple[str, int]:
+        json_blocks_found = self._json_candidate_count(content, result, conversation)
+        if json_blocks_found:
+            return "schema_mismatch", json_blocks_found
+        if result.get("final_tool_call_without_json"):
+            return "final_tool_call_without_json", json_blocks_found
+
+        text = "\n".join(self._text_sources(content, result, conversation)).strip()
+        if result.get("truncated") or result.get("finish_reason") == "length":
+            if "{" in text or "```json" in text.lower():
+                return "truncated_json", json_blocks_found
+            if not text:
+                return "empty_final_content", json_blocks_found
+        if not text:
+            return "empty_final_content", json_blocks_found
+        return "prose_without_json", json_blocks_found
+
+    def _log_invalid_result(
+        self,
+        attempt: int,
+        max_retries: int,
+        error_type: str,
+        *,
+        phase: str,
+        finding: Any,
+        result: Dict[str, Any],
+        content: str,
+        json_blocks_found: int,
+    ) -> None:
+        logger.warning(
+            "Validator attempt %d/%d failed: issue_id=%s phase=%s error_type=%s "
+            "finish_reason=%s truncated=%s content_len=%d tool_call_count=%s "
+            "json_blocks_found=%d provider_model=%s",
+            attempt,
+            max_retries,
+            self._issue_id_from_finding(finding),
+            phase,
+            error_type,
+            result.get("finish_reason"),
+            bool(result.get("truncated")),
+            len(content or ""),
+            result.get("tool_call_count", 0),
+            json_blocks_found,
+            result.get("provider_model") or (getattr(self.llm_client, "models", []) or ["unknown"])[0],
+        )
+
+    @staticmethod
+    def _issue_id_from_finding(finding: Any) -> str:
+        if isinstance(finding, dict):
+            return str(finding.get("id") or finding.get("issue_id") or "unknown")
+        if isinstance(finding, str):
+            try:
+                data = json.loads(finding)
+                if isinstance(data, dict):
+                    return str(data.get("id") or data.get("issue_id") or "unknown")
+            except Exception:
+                return "unknown"
+        return "unknown"
+
+    @staticmethod
+    def _message_preview(message: Dict[str, Any], limit: int = 500) -> str:
+        content = str(message.get("content") or "")
+        if not content and message.get("reasoning_content"):
+            content = str(message.get("reasoning_content") or "")
+        if not content and message.get("tool_calls"):
+            names = [
+                str((tool_call.get("function") or {}).get("name") or "unknown")
+                for tool_call in message.get("tool_calls") or []
+            ]
+            content = "tool_calls=" + ",".join(names)
+        return content[:limit]
 
     @staticmethod
     def _is_validation_result(data: Any) -> bool:
@@ -234,12 +585,73 @@ class ValidatorAgent(ToolCallingAgent):
         conversation: Iterable[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
         """Extract and normalize validator JSON, including common wrapper shapes."""
+        for data in self._validation_result_tool_payloads(result, conversation):
+            parsed = self._coerce_validation_result(data)
+            if parsed:
+                return parsed
         for text in self._text_sources(content, result, conversation):
             for data in extract_json_blocks(text):
                 parsed = self._coerce_validation_result(data)
                 if parsed:
                     return parsed
         return None
+
+    def _extract_first_json(
+        self,
+        content: str,
+        result: Dict[str, Any],
+        conversation: Iterable[Dict[str, Any]],
+    ) -> Any:
+        for data in self._validation_result_tool_payloads(result, conversation):
+            return data
+        return super()._extract_first_json(content, result, conversation)
+
+    def _json_candidate_count(
+        self,
+        content: str,
+        result: Dict[str, Any],
+        conversation: Iterable[Dict[str, Any]],
+    ) -> int:
+        count = len(list(self._validation_result_tool_payloads(result, conversation)))
+        for text in self._text_sources(content, result, conversation):
+            count += len(extract_json_blocks(text))
+        return count
+
+    @classmethod
+    def _validation_result_tool_payloads(
+        cls,
+        result: Dict[str, Any],
+        conversation: Iterable[Dict[str, Any]],
+    ) -> Iterable[Dict[str, Any]]:
+        messages = []
+        if isinstance(result.get("message"), dict):
+            messages.append(result["message"])
+        messages.extend(list(conversation))
+        for message in reversed(messages):
+            tool_calls = message.get("tool_calls") if isinstance(message, dict) else None
+            if not isinstance(tool_calls, list):
+                continue
+            for tool_call in tool_calls:
+                function = tool_call.get("function") if isinstance(tool_call, dict) else None
+                if not isinstance(function, dict):
+                    continue
+                if function.get("name") != "emit_validation_result":
+                    continue
+                payload = cls._coerce_tool_arguments(function.get("arguments"))
+                if payload is not None:
+                    yield payload
+
+    @staticmethod
+    def _coerce_tool_arguments(arguments: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(arguments, dict):
+            return arguments
+        if not isinstance(arguments, str):
+            return None
+        try:
+            data = json.loads(arguments)
+        except Exception:
+            return None
+        return data if isinstance(data, dict) else None
 
     @classmethod
     def _coerce_validation_result(cls, data: Any) -> Optional[Dict[str, Any]]:

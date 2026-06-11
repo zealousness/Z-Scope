@@ -1,3 +1,5 @@
+import json
+
 from zscope.agents.validator_agent.agent import ValidatorAgent
 
 
@@ -148,3 +150,144 @@ def test_validator_agent_run_accepts_high_confidence_fast_path() -> None:
     assert llm.calls == 1
     assert llm.max_iterations == [1]
     assert response.metadata["validator_fast_path_accepted"] == 1
+
+
+def test_validator_agent_repairs_prose_without_json() -> None:
+    class FakeLLM:
+        models = ["repair-model"]
+        supports_structured_output = False
+
+        def __init__(self) -> None:
+            self.repair_kwargs = {}
+
+        def run_conversation_with_tools(self, **kwargs):
+            return {
+                "content": "Based on the evidence, I can now provide the validation result.",
+                "conversation": [
+                    {
+                        "role": "assistant",
+                        "content": "Based on the evidence, I can now provide the validation result.",
+                    }
+                ],
+                "finish_reason": "stop",
+                "provider_model": "repair-model",
+                "context_tokens": 10,
+                "cumulative_prompt_tokens": 20,
+                "cumulative_completion_tokens": 5,
+                "cumulative_total_tokens": 25,
+                "iterations": 1,
+                "tool_call_count": 0,
+            }
+
+        def chat_completion(self, messages, **kwargs):
+            self.repair_kwargs = kwargs
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(
+                                {
+                                    "type": "validation_result",
+                                    "issue_id": "ISSUE_7",
+                                    "verdict": "uncertain",
+                                    "reasoning": "Evidence is incomplete.",
+                                    "missing_context": ["callee lifetime contract"],
+                                }
+                            ),
+                        },
+                    }
+                ],
+                "model": "repair-model",
+                "usage": {"prompt_tokens": 30, "completion_tokens": 10},
+            }
+
+    llm = FakeLLM()
+    agent = ValidatorAgent(llm, [])
+
+    response = agent.run({"finding": {"id": "ISSUE_7"}, "context_code": ""}, max_retries=1)
+
+    assert response.success is True
+    assert response.data["verdict"] == "uncertain"
+    assert response.data["validator_json_repaired"] is True
+    assert response.data["validator_repair_error_type"] == "prose_without_json"
+    assert response.metadata["validator_repair_attempted"] == 1
+    assert response.metadata["validator_repair_accepted"] == 1
+    assert llm.repair_kwargs["tools"][0]["function"]["name"] == "emit_validation_result"
+
+
+def test_validator_agent_repairs_with_final_emit_tool_call() -> None:
+    class FakeLLM:
+        models = ["repair-model"]
+        supports_structured_output = False
+
+        def run_conversation_with_tools(self, **kwargs):
+            return {
+                "content": "",
+                "conversation": [
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_lookup",
+                                "type": "function",
+                                "function": {
+                                    "name": "get_file_snippet",
+                                    "arguments": json.dumps({"file_path": "src/demo.c"}),
+                                },
+                            }
+                        ],
+                    }
+                ],
+                "finish_reason": "tool_calls",
+                "provider_model": "repair-model",
+                "final_tool_call_without_json": True,
+                "final_tool_call_count": 1,
+                "iterations": 1,
+                "tool_call_count": 0,
+            }
+
+        def chat_completion(self, messages, **kwargs):
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_emit",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "emit_validation_result",
+                                        "arguments": json.dumps(
+                                            {
+                                                "type": "validation_result",
+                                                "issue_id": "ISSUE_8",
+                                                "verdict": "rejected",
+                                                "reasoning": "Guard rejects the path.",
+                                                "negative_evidence": ["len is checked"],
+                                            }
+                                        ),
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "model": "repair-model",
+                "usage": {"prompt_tokens": 30, "completion_tokens": 10},
+            }
+
+    agent = ValidatorAgent(FakeLLM(), [])
+
+    response = agent.run({"finding": {"id": "ISSUE_8"}, "context_code": ""}, max_retries=1)
+
+    assert response.success is True
+    assert response.data["issue_id"] == "ISSUE_8"
+    assert response.data["verdict"] == "rejected"
+    assert response.data["validator_repair_error_type"] == "final_tool_call_without_json"
+    assert response.metadata["validator_final_tool_call_count"] >= 1

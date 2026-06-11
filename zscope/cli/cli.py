@@ -229,6 +229,9 @@ def main(
                 base_url_max_concurrent_requests=getattr(
                     llm_cfg, "base_url_max_concurrent_requests", 0
                 ),
+                supports_structured_output=getattr(
+                    llm_cfg, "supports_structured_output", False
+                ),
             )
             try:
                 generated, llm_stats = filter_user_config_rows_with_llm(
@@ -345,6 +348,9 @@ def main(
                 ),
                 base_url_max_concurrent_requests=getattr(
                     llm_cfg, "base_url_max_concurrent_requests", 0
+                ),
+                supports_structured_output=getattr(
+                    llm_cfg, "supports_structured_output", False
                 ),
             )
             db_dir = (
