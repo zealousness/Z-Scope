@@ -109,6 +109,17 @@ class RuleDrivenAnalyzer:
 
         return self._build_report(validated_issues, notes)
 
+    def close(self) -> None:
+        seen: set[int] = set()
+        for client in getattr(self, "llm_clients", {}).values():
+            client_id = id(client)
+            if client_id in seen:
+                continue
+            seen.add(client_id)
+            close_client = getattr(client, "close", None)
+            if callable(close_client):
+                close_client()
+
     def _validate_matches(
         self, func_name: str, issues: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:

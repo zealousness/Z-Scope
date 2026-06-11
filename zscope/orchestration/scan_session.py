@@ -438,39 +438,45 @@ class ScanSessionRunner:
             maintain_mode=self.maintain,
         )
         state["parallel_analyzer"] = parallel_analyzer
-        state["results"] = parallel_analyzer.analyze_function_entries(entries)
-        self.batch_executor.execute(state, steps)
+        try:
+            state["results"] = parallel_analyzer.analyze_function_entries(entries)
+            self.batch_executor.execute(state, steps)
 
-        json_report_path = self.config.project.project_root / "zscope_batch_report.json"
-        md_report_path = self.config.project.project_root / "zscope_batch_report.md"
-        self._backup_existing_batch_report(json_report_path)
+            json_report_path = self.config.project.project_root / "zscope_batch_report.json"
+            md_report_path = self.config.project.project_root / "zscope_batch_report.md"
+            self._backup_existing_batch_report(json_report_path)
 
-        combined_report = parallel_analyzer.generate_combined_report(
-            state["results"],
-            json_report_path,
-        )
-        parallel_analyzer.generate_combined_markdown_report(
-            state["results"],
-            md_report_path,
-        )
+            combined_report = parallel_analyzer.generate_combined_report(
+                state["results"],
+                json_report_path,
+            )
+            parallel_analyzer.generate_combined_markdown_report(
+                state["results"],
+                md_report_path,
+            )
 
-        total_issues = combined_report["summary"]["total_issues"]
-        functions_analyzed = combined_report["summary"]["functions_analyzed"]
-        interrupted_entries = self._interrupted_entry_names(entries, state["results"])
-        interrupted = bool(getattr(parallel_analyzer, "_interrupted", False)) or bool(
-            interrupted_entries
-        )
-        return ScanSessionResult(
-            is_batch=True,
-            exit_code=1 if total_issues > 0 else 0,
-            reports=[json_report_path, md_report_path],
-            issues_count=total_issues,
-            needs_review_count=self._needs_review_count_from_report(combined_report),
-            functions_analyzed=functions_analyzed,
-            interrupted=interrupted,
-            interrupted_entries=interrupted_entries,
-            project_root=self.config.project.project_root,
-        )
+            total_issues = combined_report["summary"]["total_issues"]
+            functions_analyzed = combined_report["summary"]["functions_analyzed"]
+            interrupted_entries = self._interrupted_entry_names(entries, state["results"])
+            interrupted = bool(getattr(parallel_analyzer, "_interrupted", False)) or bool(
+                interrupted_entries
+            )
+            return ScanSessionResult(
+                is_batch=True,
+                exit_code=1 if total_issues > 0 else 0,
+                reports=[json_report_path, md_report_path],
+                issues_count=total_issues,
+                needs_review_count=self._needs_review_count_from_report(combined_report),
+                functions_analyzed=functions_analyzed,
+                interrupted=interrupted,
+                interrupted_entries=interrupted_entries,
+                project_root=self.config.project.project_root,
+            )
+        finally:
+            if not getattr(parallel_analyzer, "_interrupted", False):
+                close_parallel_analyzer = getattr(parallel_analyzer, "close", None)
+                if callable(close_parallel_analyzer):
+                    close_parallel_analyzer()
 
     def _run_single(self, state: Dict[str, Any]) -> ScanSessionResult:
         entry_function = self.config.project.entry_function
@@ -485,7 +491,12 @@ class ScanSessionRunner:
             force_ignore_history=not (self.resume or self.maintain),
             maintain_mode=self.maintain,
         )
-        result = analyzer.run()
+        try:
+            result = analyzer.run()
+        finally:
+            close_analyzer = getattr(analyzer, "close", None)
+            if callable(close_analyzer):
+                close_analyzer()
         verdict = result.get("overall_verdict", "unknown")
         issues_count = len(result.get("issues", []))
         return ScanSessionResult(

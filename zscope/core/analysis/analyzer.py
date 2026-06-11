@@ -182,6 +182,7 @@ class Analyzer:
             budget_refresher=self._refresh_effective_budget,
             candidate_persister=self._persist_candidate_ir_records,
         )
+        self._owns_llm_clients = llm_clients is None
         if llm_clients is not None:
             self.llm_clients = llm_clients
         else:
@@ -269,6 +270,19 @@ class Analyzer:
     def run(self) -> Dict[str, Any]:
         """Run the selected workflow as executable orchestration steps."""
         return self.workflow_runner.run()
+
+    def close(self) -> None:
+        if not getattr(self, "_owns_llm_clients", False):
+            return
+        seen: Set[int] = set()
+        for client in getattr(self, "llm_clients", {}).values():
+            client_id = id(client)
+            if client_id in seen:
+                continue
+            seen.add(client_id)
+            close_client = getattr(client, "close", None)
+            if callable(close_client):
+                close_client()
 
     def _set_current_workflow_step(self, step_id: Optional[str]) -> None:
         self.current_workflow_step = step_id
