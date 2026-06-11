@@ -316,7 +316,7 @@ def canonical_issue_key(issue: Dict[str, Any]) -> str:
         file_path = match.group(1).lower() if match else ""
     function = str(issue.get("function") or issue.get("func_name") or "")
     category = canonical_category(issue, text)
-    root = root_cause_token(issue, category, text)
+    root = _concrete_root_token(root_cause_token(issue, category, text))
     category = report_cluster_category(category, root)
     scope = file_path or function
     if root:
@@ -568,7 +568,12 @@ def issue_resource_signature(issue: Dict[str, Any]) -> str:
         return ""
     explicit = first_issue_value(issue, *_RESOURCE_IDENTITY_KEYS)
     if explicit:
-        return normalize_issue_key_part(explicit)
+        explicit_signature = _resource_signature_from_text(explicit)
+        if explicit_signature:
+            return explicit_signature
+        explicit_token = _concrete_resource_token(explicit)
+        if explicit_token:
+            return explicit_token
 
     pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
     clang_fact = pack.get("clang_matcher_fact") if isinstance(pack.get("clang_matcher_fact"), dict) else {}
@@ -580,34 +585,102 @@ def issue_resource_signature(issue: Dict[str, Any]) -> str:
         "source_symbol",
         "sink_symbol",
     ):
-        if clang_fact.get(key):
-            return normalize_issue_key_part(clang_fact.get(key))
+        token = _concrete_resource_token(clang_fact.get(key))
+        if token:
+            return token
 
     text = flatten_issue_text(issue)
-    raw_lower = text.lower()
-    for member_match in re.finditer(r"\b([a-z_]\w*(?:->|\.)[a-z_]\w*)\b", raw_lower):
-        token = member_match.group(1)
-        if re.search(r"\.(?:c|h|cc|cpp|hpp)$", token):
-            continue
-        return normalize_issue_key_part(token)
-    global_match = re.search(r"\b(g_[a-z0-9_]{3,})\b", raw_lower)
-    if global_match:
-        return normalize_issue_key_part(global_match.group(1))
-    backtick_match = re.search(r"`([^`]{2,80})`", text)
-    if backtick_match:
-        token = backtick_match.group(1).strip()
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*(?:(?:->|\.)[A-Za-z_][A-Za-z0-9_]*)?$", token):
-            return normalize_issue_key_part(token)
+    text_signature = _resource_signature_from_text(text)
+    if text_signature:
+        return text_signature
     category = canonical_category(issue, text)
-    root = root_cause_token(issue, category, text)
+    root = _concrete_root_token(root_cause_token(issue, category, text))
     if root and (
         root in _GLOBAL_OBJECT_ROOTS
         or "->" in root
         or root.startswith("g_")
         or root in {"thread_ids", "g_dispatcher.queue.tasks"}
     ):
-        return normalize_issue_key_part(root)
+        return root
     return ""
+
+
+def _resource_signature_from_text(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    raw_lower = text.lower()
+    identifier = r"[A-Za-z_][A-Za-z0-9_]*"
+    member_identifier = r"[a-z_][a-z0-9_]*"
+    allocator = r"(?:_safe_calloc|safe_calloc|calloc|malloc|realloc|strdup|xmalloc)"
+
+    assignment = re.search(
+        rf"(?<![A-Za-z0-9_])({identifier})\s*=\s*(?:\([^)]*\)\s*)?{allocator}\s*\(",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if assignment:
+        token = _concrete_resource_token(assignment.group(1))
+        if token:
+            return token
+
+    allocator_ref = re.search(allocator, text, flags=re.IGNORECASE)
+    if allocator_ref:
+        prefix = text[max(0, allocator_ref.start() - 96) : allocator_ref.start()]
+        identifiers = re.findall(rf"(?<![A-Za-z0-9_])({identifier})(?![A-Za-z0-9_])", prefix)
+        for name in reversed(identifiers):
+            token = _concrete_resource_token(name)
+            if token:
+                return token
+
+    for member_match in re.finditer(
+        rf"(?<![a-z0-9_])({member_identifier}(?:->|\.){member_identifier})(?![a-z0-9_])",
+        raw_lower,
+    ):
+        token = member_match.group(1)
+        if re.search(r"\.(?:c|h|cc|cpp|hpp)$", token):
+            continue
+        concrete = _concrete_resource_token(token)
+        if concrete:
+            return concrete
+    global_match = re.search(r"\b(g_[a-z0-9_]{3,})\b", raw_lower)
+    if global_match:
+        token = _concrete_resource_token(global_match.group(1))
+        if token:
+            return token
+    backtick_match = re.search(r"`([^`]{2,80})`", text)
+    if backtick_match:
+        token = _concrete_resource_token(backtick_match.group(1).strip())
+        if token:
+            return token
+    return ""
+
+
+def _concrete_resource_token(value: Any) -> str:
+    normalized = normalize_issue_key_part(value)
+    if not normalized or _is_generic_identity_token(normalized):
+        return ""
+    if re.search(r"\s", normalized):
+        return ""
+    if len(normalized) > 96:
+        return ""
+    if re.match(r"^[a-z_][a-z0-9_]*(?:(?:->|\.)[a-z_][a-z0-9_]*)*$", normalized):
+        return normalized
+    if re.match(r"^g_[a-z0-9_.]+$", normalized):
+        return normalized
+    return ""
+
+
+def _concrete_root_token(value: Any) -> str:
+    normalized = normalize_issue_key_part(value)
+    if not normalized or _is_generic_identity_token(normalized):
+        return ""
+    return normalized
+
+
+def _is_generic_identity_token(value: Any) -> bool:
+    normalized = normalize_issue_key_part(value).strip("_")
+    return not normalized or normalized in _GENERIC_IDENTITY_TOKENS
 
 
 def semantic_root_cause_key(issue: Dict[str, Any]) -> str:
@@ -615,10 +688,10 @@ def semantic_root_cause_key(issue: Dict[str, Any]) -> str:
     normalize_issue_fields(issue)
     text = flatten_issue_text(issue)
     category = canonical_category(issue, text)
-    family = semantic_category_family(report_cluster_category(category, root_cause_token(issue, category, text)))
+    root = _concrete_root_token(root_cause_token(issue, category, text))
+    family = semantic_category_family(report_cluster_category(category, root))
     file_path = issue_file_identity(issue, text)
     function = issue_function_identity(issue)
-    root = root_cause_token(issue, category, text)
     resource = issue_resource_signature(issue)
     parts = ["semantic-v1", family, file_path, function, root or resource]
     normalized = [normalize_issue_key_part(part) for part in parts if normalize_issue_key_part(part)]
@@ -662,7 +735,7 @@ def semantic_related_cluster_keys(issue: Dict[str, Any]) -> List[str]:
     category = canonical_category(issue, text)
     family = semantic_related_family(category)
     file_path = issue_file_identity(issue, text)
-    root = root_cause_token(issue, category, text)
+    root = _concrete_root_token(root_cause_token(issue, category, text))
     resource = issue_resource_signature(issue)
     if not (family and file_path and (root or resource)):
         root_related_key = ""
@@ -746,8 +819,8 @@ def issues_share_file_root_or_resource(left: Dict[str, Any], right: Dict[str, An
 
     left_category = canonical_category(left, left_text)
     right_category = canonical_category(right, right_text)
-    left_root = root_cause_token(left, left_category, left_text)
-    right_root = root_cause_token(right, right_category, right_text)
+    left_root = _concrete_root_token(root_cause_token(left, left_category, left_text))
+    right_root = _concrete_root_token(root_cause_token(right, right_category, right_text))
     if left_root and right_root and left_root == right_root:
         return True
 
@@ -791,8 +864,8 @@ def issues_share_cross_file_root(left: Dict[str, Any], right: Dict[str, Any]) ->
     right_category = canonical_category(right, right_text)
     if not category_families_compatible(left_category, right_category):
         return False
-    left_root = root_cause_token(left, left_category, left_text)
-    right_root = root_cause_token(right, right_category, right_text)
+    left_root = _concrete_root_token(root_cause_token(left, left_category, left_text))
+    right_root = _concrete_root_token(root_cause_token(right, right_category, right_text))
     if not left_root or left_root != right_root or left_root not in _CROSS_FILE_ROOT_DEDUP_ROOTS:
         return False
     left_sink = issue_sink_signature(left)
@@ -835,8 +908,8 @@ def issues_may_share_root_cause(
     right_text = flatten_issue_text(right)
     left_category = canonical_category(left, left_text)
     right_category = canonical_category(right, right_text)
-    left_root = root_cause_token(left, left_category, left_text)
-    right_root = root_cause_token(right, right_category, right_text)
+    left_root = _concrete_root_token(root_cause_token(left, left_category, left_text))
+    right_root = _concrete_root_token(root_cause_token(right, right_category, right_text))
     left_resource = issue_resource_signature(left)
     right_resource = issue_resource_signature(right)
 
@@ -1584,9 +1657,9 @@ def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
     if category == "format_string" and ("printf" in lower or "格式化字符串" in text):
         return "printf_format_string"
     if category == "memory_leak" and function:
-        object_match = re.search(r"\b([A-Za-z_]\w*)\s*(?:allocated|分配|未释放|leak)", text)
-        if object_match:
-            return object_match.group(1).lower()
+        resource = _resource_signature_from_text(text)
+        if resource:
+            return resource
     return ""
 
 
@@ -1970,6 +2043,26 @@ _CROSS_CONTEXT_RESIDUAL_DEDUP_CATEGORIES = {
 
 _CROSS_FILE_ROOT_DEDUP_ROOTS = {
     "task_command_execution",
+}
+
+
+_GENERIC_IDENTITY_TOKENS = {
+    "allocation",
+    "alloc",
+    "calloc",
+    "free",
+    "leak",
+    "malloc",
+    "memory",
+    "memory_",
+    "memory_leak",
+    "resource",
+    "resource_leak",
+    "resources",
+    "safe_calloc",
+    "safe_free",
+    "strdup",
+    "xmalloc",
 }
 
 

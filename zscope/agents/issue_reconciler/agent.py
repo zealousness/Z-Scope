@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional
 import json
 import logging
 
-from ..base import ToolCallingAgent
+from ..base import JsonOutputSpec, JsonToolAgent
 from ...tools.policy import ToolPolicy
 from ...framework.base import AgentResponse
 from ...framework.llm_client import LLMClient
@@ -114,7 +114,40 @@ If there are no duplicates, output:
 """
 
 
-class IssueReconcilerAgent(ToolCallingAgent):
+DEDUPLICATE_DECISION_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "is_duplicate": {"type": "boolean"},
+        "matched_historical_id": {"type": ["string", "null"]},
+        "reasoning": {"type": "string"},
+    },
+    "required": ["is_duplicate", "reasoning"],
+    "additionalProperties": True,
+}
+
+VERIFY_FIX_DECISION_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "still_exists": {"type": "boolean"},
+        "new_location": {"type": ["string", "null"]},
+        "reasoning": {"type": "string"},
+    },
+    "required": ["still_exists", "reasoning"],
+    "additionalProperties": True,
+}
+
+DEDUPLICATE_CLUSTER_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "duplicate_groups": {"type": "array", "items": {"type": "object"}},
+        "must_keep_distinct_issue_ids": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["duplicate_groups", "must_keep_distinct_issue_ids"],
+    "additionalProperties": True,
+}
+
+
+class IssueReconcilerAgent(JsonToolAgent):
     """Agent for reconciling historical issues with new code or new findings."""
 
     def __init__(self, llm_client: LLMClient, tool_policy: Optional[ToolPolicy] = None):
@@ -204,25 +237,80 @@ class IssueReconcilerAgent(ToolCallingAgent):
 
     def _call_llm(self, user_prompt: str) -> AgentResponse:
         try:
-            result = self._run_tool_conversation(
+            spec = self._json_output_spec_for_prompt(user_prompt)
+            response = self._run_json_conversation(
                 self._messages({}, user_prompt),
-                max_iterations=1,
+                extractor=lambda content, result, conversation: self._extract_structured_json_payload(
+                    content,
+                    result,
+                    conversation,
+                    spec,
+                ),
                 trace_label=self._trace_label(user_prompt),
+                parse_label=f"{spec.type_name} JSON",
+                retry_prompt=(
+                    f"The previous response did not contain a valid {spec.type_name} JSON. "
+                    "Re-output exactly one JSON object."
+                ),
+                max_iterations=1,
+                max_json_retries=1,
+                json_output_spec=spec,
             )
-            decision = self._extract_first_json(
-                str(result.get("content") or ""),
-                result,
-                result.get("conversation", []),
-            )
-            if not isinstance(decision, dict):
-                logger.error("Failed to parse JSON from IssueReconciler: %s", result.get("content", ""))
-                return AgentResponse(success=False, data={}, error="No JSON block found")
+            if not response.success:
+                logger.error("Failed to parse JSON from IssueReconciler: %s", response.error)
+                return response
 
-            logger.debug("IssueReconciler decision: %s", decision)
-            return AgentResponse(success=True, data=decision)
+            logger.debug("IssueReconciler decision: %s", response.data)
+            return response
         except Exception as exc:
             logger.exception("IssueReconciler agent failed")
             return AgentResponse(success=False, data={}, error=str(exc))
+
+    @classmethod
+    def _json_output_spec_for_prompt(cls, user_prompt: str) -> JsonOutputSpec:
+        first_line = next((line.strip() for line in user_prompt.splitlines() if line.strip()), "")
+        if "Deduplicate Cluster" in first_line:
+            return JsonOutputSpec(
+                type_name="deduplicate_cluster_decision",
+                schema=DEDUPLICATE_CLUSTER_SCHEMA,
+                final_tool_name="emit_deduplicate_cluster_decision",
+                final_tool_description="Emit the final deduplicate cluster decision.",
+                validator=cls._is_cluster_decision_payload,
+                metadata_prefix="issue_reconciler",
+            )
+        if "Verify Fix" in first_line:
+            return JsonOutputSpec(
+                type_name="verify_fix_decision",
+                schema=VERIFY_FIX_DECISION_SCHEMA,
+                final_tool_name="emit_verify_fix_decision",
+                final_tool_description="Emit the final historical fix verification decision.",
+                validator=cls._is_verify_fix_payload,
+                metadata_prefix="issue_reconciler",
+            )
+        return JsonOutputSpec(
+            type_name="deduplicate_decision",
+            schema=DEDUPLICATE_DECISION_SCHEMA,
+            final_tool_name="emit_deduplicate_decision",
+            final_tool_description="Emit the final historical issue deduplication decision.",
+            validator=cls._is_deduplicate_payload,
+            metadata_prefix="issue_reconciler",
+        )
+
+    @staticmethod
+    def _is_deduplicate_payload(data: Any) -> bool:
+        return isinstance(data, dict) and isinstance(data.get("is_duplicate"), bool)
+
+    @staticmethod
+    def _is_verify_fix_payload(data: Any) -> bool:
+        return isinstance(data, dict) and isinstance(data.get("still_exists"), bool)
+
+    @staticmethod
+    def _is_cluster_decision_payload(data: Any) -> bool:
+        return (
+            isinstance(data, dict)
+            and isinstance(data.get("duplicate_groups"), list)
+            and isinstance(data.get("must_keep_distinct_issue_ids"), list)
+        )
 
     @staticmethod
     def _compact_cluster_issue(issue: Dict[str, Any]) -> Dict[str, Any]:

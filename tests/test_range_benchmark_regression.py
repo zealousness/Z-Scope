@@ -1,17 +1,16 @@
 from pathlib import Path
 import json
-import importlib.util
 
 import pytest
 
 from scripts.evaluate_range_regression import evaluate_range_regression
+from zscope.benchmarking.protocol import score_report
 
 
 def test_range_regex_candidate_coverage_when_available() -> None:
     project_root = Path(__file__).resolve().parents[1] / "test" / "range"
     benchmark_dir = project_root / "benchmark"
     required = [
-        benchmark_dir / "evaluate_zscope_report.py",
         benchmark_dir / "ground_truth.json",
         benchmark_dir / "entries.json",
     ]
@@ -34,6 +33,7 @@ def test_range_regex_candidate_coverage_when_available() -> None:
     assert result["precision"] >= 0.50
     assert result["f1"] >= 0.65
     assert "false_positive_rate" in result
+    assert "duplicate_of_matched_count" in result
     assert "with_needs_review" in result["report_views"]
     assert result["graph_issue_count"] > 0
 
@@ -42,7 +42,6 @@ def test_range_unified_candidate_recall_gate_when_available() -> None:
     project_root = Path(__file__).resolve().parents[1] / "test" / "range"
     benchmark_dir = project_root / "benchmark"
     required = [
-        benchmark_dir / "evaluate_zscope_report.py",
         benchmark_dir / "ground_truth.json",
         benchmark_dir / "entries.json",
     ]
@@ -58,6 +57,8 @@ def test_range_unified_candidate_recall_gate_when_available() -> None:
     assert result["threshold_status"] == "passed"
     assert result["candidate_backend"] == "unified"
     assert result["recall"] >= 0.66
+    assert result["false_positives_raw"] >= result["false_positives_effective"]
+    assert result["duplicate_of_matched_count"] >= 0
     assert result["issue_sources"]["clang_ast_cfg"] > 0
     assert "miss_analysis" in result
     assert all("reason" in row for row in result["miss_analysis"])
@@ -65,16 +66,6 @@ def test_range_unified_candidate_recall_gate_when_available() -> None:
 
 
 def test_range_scorer_counts_discoverable_same_location_even_with_category_drift() -> None:
-    project_root = Path(__file__).resolve().parents[1] / "test" / "range"
-    scorer_path = project_root / "benchmark" / "evaluate_zscope_report.py"
-    if not scorer_path.exists():
-        pytest.skip("test/range scorer is not available in this checkout")
-
-    spec = importlib.util.spec_from_file_location("range_scorer_for_test", scorer_path)
-    assert spec and spec.loader
-    scorer = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(scorer)
-
     truth = {
         "benchmark": "unit",
         "vulnerabilities": [
@@ -102,7 +93,7 @@ def test_range_scorer_counts_discoverable_same_location_even_with_category_drift
         ]
     }
 
-    result = scorer.score(report, truth, tolerance=5)
+    result = score_report(report, truth, line_tolerance=5)
 
     assert result["true_positives"] == 1
     assert result["false_negatives"] == 0

@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Optional
 import logging
 import json
 
-from ..base import ToolCallingAgent
+from ..base import JsonOutputSpec, JsonToolAgent
 from ...tools.policy import ToolPolicy
 from ...framework.base import AgentResponse
 from ...framework.llm_client import LLMClient
@@ -10,7 +10,22 @@ from ...framework.llm_client import LLMClient
 logger = logging.getLogger(__name__)
 
 
-class DeepWorkerAgent(ToolCallingAgent):
+WORKER_REPORT_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "type": {"type": "string", "enum": ["worker_report"]},
+        "ticket_id": {"type": "string"},
+        "issues_found": {"type": "array", "items": {"type": "object"}},
+        "conclusion": {"type": "string"},
+        "needs_human_review": {"type": "boolean"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    },
+    "required": ["type", "ticket_id", "issues_found", "conclusion"],
+    "additionalProperties": True,
+}
+
+
+class DeepWorkerAgent(JsonToolAgent):
     """
     Worker Agent that receives a narrow, isolated ticket (e.g. a DFG slice and hypothesis)
     from the Manager Agent to perform deep structural vulnerability traversal.
@@ -59,63 +74,69 @@ class DeepWorkerAgent(ToolCallingAgent):
 
         logger.info("DeepWorkerAgent dispatching ticket %s", ticket_id)
         try:
-            result = self._run_tool_conversation(
-                self._messages(input_data, prompt),
-                max_iterations=max_iterations,
+            messages = self._messages(input_data, prompt)
+            response = self._run_json_conversation(
+                messages,
+                extractor=lambda content, result, conversation: self._extract_valid_payload(
+                    content,
+                    result,
+                    conversation,
+                    validator=self._is_worker_report,
+                ),
                 trace_label=f"ticket={ticket_id}; skill={ticket.get('skill')}",
+                parse_label="worker_report JSON",
+                retry_prompt=(
+                    "The previous response did not contain a valid worker_report JSON. "
+                    "Re-output only one complete JSON object with type=worker_report."
+                ),
+                max_iterations=max_iterations,
+                json_output_spec=JsonOutputSpec(
+                    type_name="worker_report",
+                    schema=WORKER_REPORT_SCHEMA,
+                    final_tool_name="emit_worker_report",
+                    final_tool_description="Emit the final focused worker_report object.",
+                    validator=self._is_worker_report,
+                    metadata_prefix="worker_report",
+                ),
             )
-            content = str(result.get("content") or "")
-            conversation = result.get("conversation", [])
-            parsed = self._extract_valid_payload(
-                content,
-                result,
-                conversation,
-                validator=self._is_worker_report,
-            )
-            if parsed:
+            if response.success:
+                parsed = response.data
+                metadata = dict(response.metadata or {})
+                metadata.update(
+                    {
+                        "truncated": bool(metadata.get("truncated", False)),
+                        "max_iterations": max_iterations,
+                        "needs_human_review": bool(parsed.get("needs_human_review")),
+                    }
+                )
                 return AgentResponse(
                     success=True,
                     data=parsed,
-                    metadata={
-                        "context_tokens": result.get("context_tokens", 0),
-                        "cumulative_prompt_tokens": result.get("cumulative_prompt_tokens", 0),
-                        "cumulative_completion_tokens": result.get("cumulative_completion_tokens", 0),
-                        "cumulative_total_tokens": result.get("cumulative_total_tokens", 0),
-                        "iterations": result.get("iterations", 0),
-                        "tool_call_count": result.get(
-                            "tool_call_count",
-                            self._count_tool_result_messages(conversation),
-                        ),
-                        "truncated": bool(result.get("truncated", False)),
-                        "max_iterations": max_iterations,
-                        "needs_human_review": bool(parsed.get("needs_human_review")),
-                    },
+                    metadata=metadata,
                 )
 
-            partial_result = self._extract_last_text(content, conversation)
-            failure_kind = "partial" if result.get("truncated") and partial_result else "invalid_report"
-            return AgentResponse(
-                success=False,
-                data={
-                    "raw_output": content,
-                    "partial_result": partial_result,
-                },
-                error=f"Deep worker {ticket_id} did not return a worker_report JSON.",
-                metadata={
-                    "context_tokens": result.get("context_tokens", 0),
-                    "cumulative_prompt_tokens": result.get("cumulative_prompt_tokens", 0),
-                    "cumulative_completion_tokens": result.get("cumulative_completion_tokens", 0),
-                    "cumulative_total_tokens": result.get("cumulative_total_tokens", 0),
-                    "iterations": result.get("iterations", 0),
-                    "tool_call_count": result.get(
-                        "tool_call_count",
-                        self._count_tool_result_messages(conversation),
-                    ),
-                    "truncated": bool(result.get("truncated", False)),
+            partial_result = self._extract_last_text_from_response(response)
+            failure_kind = (
+                "partial"
+                if response.metadata.get("truncated") and partial_result
+                else "invalid_report"
+            )
+            metadata = dict(response.metadata or {})
+            metadata.update(
+                {
                     "max_iterations": max_iterations,
                     "failure_kind": failure_kind,
                     "needs_human_review": True,
+                }
+            )
+            return AgentResponse(
+                success=False,
+                data={
+                    "raw_output": str(response.data.get("raw_output") or ""),
+                    "partial_result": partial_result,
                 },
+                error=f"Deep worker {ticket_id} did not return a worker_report JSON.",
+                metadata=metadata,
             )
         except KeyboardInterrupt:
             return AgentResponse(
@@ -146,5 +167,7 @@ class DeepWorkerAgent(ToolCallingAgent):
         return ""
 
     @staticmethod
-    def _count_tool_result_messages(conversation: List[Dict[str, Any]]) -> int:
-        return sum(1 for msg in conversation if msg.get("role") == "tool")
+    def _extract_last_text_from_response(response: AgentResponse) -> str:
+        raw_output = response.data.get("raw_output") if isinstance(response.data, dict) else ""
+        partial_result = response.data.get("partial_result") if isinstance(response.data, dict) else ""
+        return str(partial_result or raw_output or "")
