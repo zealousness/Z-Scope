@@ -164,8 +164,12 @@ metric_keys = [
     "ground_truth_count",
     "true_positives",
     "false_positives",
+    "false_positives_raw",
+    "false_positives_effective",
+    "duplicate_of_matched_count",
     "false_negatives",
     "precision",
+    "false_positive_rate",
     "recall",
     "f1",
 ]

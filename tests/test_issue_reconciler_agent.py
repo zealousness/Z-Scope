@@ -1,3 +1,5 @@
+import json
+
 from zscope.agents.issue_reconciler.agent import IssueReconcilerAgent
 from zscope.framework.base import AgentResponse
 
@@ -73,3 +75,66 @@ def test_issue_reconciler_deduplicate_cluster_rejects_invalid_schema(monkeypatch
 
     assert response.success is False
     assert "Invalid deduplicate_cluster" in str(response.error)
+
+
+def test_issue_reconciler_repairs_non_json_deduplicate_response(monkeypatch) -> None:
+    class FakeLLM:
+        models = ["unit-model"]
+        supports_structured_output = False
+
+        def chat_completion(self, messages, **kwargs):
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_emit",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "emit_deduplicate_decision",
+                                        "arguments": json.dumps(
+                                            {
+                                                "is_duplicate": False,
+                                                "matched_historical_id": None,
+                                                "reasoning": "Distinct root cause.",
+                                            }
+                                        ),
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "model": "unit-model",
+                "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+            }
+
+    agent = IssueReconcilerAgent(FakeLLM())  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        agent,
+        "_run_tool_conversation",
+        lambda *args, **kwargs: {
+            "content": "They look different.",
+            "conversation": [{"role": "assistant", "content": "They look different."}],
+            "finish_reason": "stop",
+            "iterations": 1,
+        },
+    )
+
+    response = agent.run(
+        {
+            "mode": "deduplicate",
+            "historical_issues": [{"id": "ISSUE_A", "description": "old"}],
+            "new_issue": {"id": "ISSUE_B", "description": "new"},
+        }
+    )
+
+    assert response.success is True
+    assert response.data["is_duplicate"] is False
+    assert response.metadata["issue_reconciler_repair_attempted"] == 1
+    assert response.metadata["issue_reconciler_repair_accepted"] == 1

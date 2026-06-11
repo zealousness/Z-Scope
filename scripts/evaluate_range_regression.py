@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from zscope.config.config import AnalysisConfig, IndexingConfig
+from zscope.benchmarking.protocol import (
+    issue_match_detail,
+    report_issues as benchmark_report_issues,
+    score_report,
+    score_report_views,
+)
 from zscope.common.issue_identity import deduplicate_issues
 from zscope.core.analysis.analyzer import Analyzer
 from zscope.core.candidates.graph import GraphCandidateGenerator
@@ -40,16 +45,6 @@ class _EmptyUserConfig:
 
 def _load_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _load_scorer(benchmark_dir: Path):
-    scorer_path = benchmark_dir / "evaluate_zscope_report.py"
-    spec = importlib.util.spec_from_file_location("range_scorer", scorer_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load benchmark scorer: {scorer_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _empty_semantic_overlay() -> Dict[str, Any]:
@@ -173,15 +168,13 @@ def _legacy_regex_candidate_report(project_root: Path, entries_path: Path) -> Di
 def _candidate_miss_analysis(
     report: Dict[str, Any],
     truth: Dict[str, Any],
-    scorer: Any,
     *,
     tolerance: int,
-    source_index: Optional[Dict[str, Any]],
     missed_ids: List[str],
 ) -> List[Dict[str, Any]]:
     if not missed_ids:
         return []
-    issues = scorer.report_issues(report) if hasattr(scorer, "report_issues") else report.get("issues", [])
+    issues = benchmark_report_issues(report)
     issues = [issue for issue in issues if isinstance(issue, dict)]
     vulns = {
         str(vuln.get("id") or ""): vuln
@@ -195,18 +188,18 @@ def _candidate_miss_analysis(
             continue
         probes = []
         for issue in issues:
-            issue_file, issue_line = scorer.issue_file_and_line(issue)
-            same_file = scorer.file_matches(issue_file, vuln)
-            same_function = scorer.function_matches(issue, vuln)
-            near_line = scorer.line_near(issue_line, vuln, tolerance)
-            category = scorer.category_matches(issue, vuln)
-            text = scorer.text_matches(issue, vuln)
-            reachable = (
-                bool(source_index)
-                and hasattr(scorer, "call_reachable_function_matches")
-                and scorer.call_reachable_function_matches(issue, vuln, source_index)
+            detail = issue_match_detail(issue, vuln, tolerance)
+            text = json.dumps(issue, ensure_ascii=False).lower().replace("_", " ").replace("-", " ")
+            truth_function = str(vuln.get("function") or "").lower()
+            secondary_function = str(vuln.get("secondary_function") or "").lower()
+            category = str(vuln.get("category") or "").lower().replace("_", " ").replace("-", " ")
+            keywords = [str(k or "").lower().replace("_", " ").replace("-", " ") for k in vuln.get("keywords", [])]
+            same_function = bool(truth_function and truth_function in text) or bool(
+                secondary_function and secondary_function in text
             )
-            if not (same_file or same_function or category or reachable):
+            category_match = bool(category and category in text)
+            keyword_hits = sum(1 for keyword in keywords if keyword and keyword in text)
+            if detail is None and not (same_function or category_match or keyword_hits):
                 continue
             probes.append(
                 {
@@ -215,30 +208,25 @@ def _candidate_miss_analysis(
                     "function": issue.get("function"),
                     "location": issue.get("location"),
                     "defect_class": issue.get("defect_class") or issue.get("category"),
-                    "same_file": same_file,
                     "same_function": same_function,
-                    "near_line": near_line,
-                    "category_match": category,
-                    "text_match": text,
-                    "call_reachable": reachable,
+                    "category_match": category_match,
+                    "keyword_hits": keyword_hits,
+                    "protocol_match": detail,
                 }
             )
         same_function_count = sum(1 for item in probes if item["same_function"])
-        near_count = sum(1 for item in probes if item["same_file"] and item["near_line"])
-        text_count = sum(1 for item in probes if item["text_match"])
         category_count = sum(1 for item in probes if item["category_match"])
+        keyword_count = sum(1 for item in probes if item["keyword_hits"])
         if not probes:
             reason = "no_related_candidate"
         elif same_function_count == 0:
             reason = "no_candidate_in_truth_function"
-        elif near_count == 0:
-            reason = "candidate_in_function_but_not_near_truth_line"
-        elif text_count == 0:
-            reason = "near_candidate_missing_truth_keywords"
         elif category_count == 0:
-            reason = "near_candidate_category_drift"
+            reason = "candidate_category_drift"
+        elif keyword_count == 0:
+            reason = "candidate_missing_truth_keywords"
         else:
-            reason = "candidate_related_but_scorer_did_not_match"
+            reason = "candidate_related_but_protocol_did_not_match"
         source_counts: Dict[str, int] = {}
         for item in probes:
             source = str(item.get("candidate_source") or "unknown")
@@ -254,9 +242,8 @@ def _candidate_miss_analysis(
                 "reason": reason,
                 "related_candidate_count": len(probes),
                 "same_function_candidate_count": same_function_count,
-                "near_line_candidate_count": near_count,
-                "text_match_candidate_count": text_count,
                 "category_match_candidate_count": category_count,
+                "keyword_match_candidate_count": keyword_count,
                 "candidate_sources": source_counts,
                 "top_candidates": probes[:5],
             }
@@ -281,7 +268,6 @@ def evaluate_range_regression(
     benchmark_dir = benchmark_dir or project_root / "benchmark"
     truth_path = truth_path or benchmark_dir / "ground_truth.json"
     entries_path = entries_path or benchmark_dir / "entries.json"
-    scorer = _load_scorer(benchmark_dir)
 
     if regex_candidates:
         report = _legacy_regex_candidate_report(project_root, entries_path)
@@ -294,25 +280,8 @@ def evaluate_range_regression(
         raise ValueError("Pass report_path, regex_candidates=True, or candidate_backend")
 
     truth = _load_json(truth_path)
-    source_index = None
-    if hasattr(scorer, "build_source_index"):
-        source_index = scorer.build_source_index(project_root)
-    if source_index and hasattr(scorer, "enrich_truth_locations"):
-        scorer.enrich_truth_locations(truth, source_index)
-    try:
-        result = scorer.score(report, truth, line_tolerance, source_index)
-    except TypeError:
-        result = scorer.score(report, truth, line_tolerance)
-    if hasattr(scorer, "score_report_views"):
-        try:
-            result["report_views"] = scorer.score_report_views(
-                report,
-                truth,
-                line_tolerance,
-                source_index,
-            )
-        except TypeError:
-            result["report_views"] = scorer.score_report_views(report, truth, line_tolerance)
+    result = score_report(report, truth, line_tolerance=line_tolerance)
+    result["report_views"] = score_report_views(report, truth, line_tolerance=line_tolerance)
     if candidate_backend:
         result["candidate_coverage_mode"] = True
         result["candidate_backend"] = candidate_backend
@@ -324,9 +293,7 @@ def evaluate_range_regression(
         result["miss_analysis"] = _candidate_miss_analysis(
             report,
             truth,
-            scorer,
             tolerance=line_tolerance,
-            source_index=source_index,
             missed_ids=[str(item) for item in result.get("missed", [])],
         )
         miss_reason_summary: Dict[str, int] = {}

@@ -257,7 +257,10 @@ class ScanSessionRunner:
         skipped: List[FunctionEntry] = []
 
         for entry in state["entries"]:
-            saved_report = snapshot_store.load_final_report(entry.function_name)
+            saved_report = snapshot_store.load_final_report(
+                entry.function_name,
+                file_path=self._entry_report_file_path(entry),
+            )
             if saved_report and saved_report.get("overall_verdict") != "error":
                 issues = saved_report.get("issues", [])
                 has_pending = any(issue.get("validation_status") == "pending" for issue in issues)
@@ -283,6 +286,12 @@ class ScanSessionRunner:
         )
         return False
 
+    @staticmethod
+    def _entry_report_file_path(entry: FunctionEntry) -> Optional[str]:
+        focus = entry.diff_focus if isinstance(entry.diff_focus, dict) else {}
+        file_path = str(entry.file_path or focus.get("entry_file_path") or "").strip()
+        return file_path or None
+
     def _handle_merge_skipped_reports(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
         skipped_entries: List[FunctionEntry] = state.get("skipped_entries", [])
         if not skipped_entries:
@@ -293,20 +302,26 @@ class ScanSessionRunner:
         merged_count = 0
         for entry in skipped_entries:
             fname = entry.function_name
-            if fname in results:
+            entry_key = ParallelAnalyzer._entry_result_key(entry)
+            if entry_key in results:
                 continue
 
-            saved_report = snapshot_store.load_final_report(fname)
+            saved_report = snapshot_store.load_final_report(
+                fname,
+                file_path=self._entry_report_file_path(entry),
+            )
             if saved_report:
-                results[fname] = ParallelAnalysisResult(
+                metadata = saved_report.get("metadata", {})
+                results[entry_key] = ParallelAnalysisResult(
                     function_name=fname,
                     verdict=saved_report.get("overall_verdict", "unknown"),
                     issues=saved_report.get("issues", []),
-                    audit_observations=saved_report.get("metadata", {}).get(
-                        "audit_observations",
-                        [],
-                    ),
+                    audit_observations=metadata.get("audit_observations", [])
+                    if isinstance(metadata, dict)
+                    else [],
                     duration_seconds=0.0,
+                    diff_focus=entry.diff_focus,
+                    metadata=metadata if isinstance(metadata, dict) else {},
                 )
                 merged_count += 1
             else:

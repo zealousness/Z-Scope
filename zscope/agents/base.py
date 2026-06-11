@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, cast
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, cast
 
 from ..common.utils import extract_json_blocks
 from ..framework.base import AgentResponse, BaseAgent
@@ -17,6 +18,20 @@ logger = logging.getLogger(__name__)
 JsonValidator = Callable[[Any], bool]
 JsonExtractor = Callable[[str, Dict[str, Any], List[Dict[str, Any]]], Any]
 PostProcessor = Callable[[Any], Any]
+
+
+@dataclass(frozen=True)
+class JsonOutputSpec:
+    """Runtime contract for agents that must emit one structured JSON payload."""
+
+    type_name: str
+    schema: Dict[str, Any]
+    final_tool_name: str
+    final_tool_description: str
+    validator: JsonValidator
+    nested_keys: Sequence[str] = ()
+    fallback_empty_payload: Optional[Dict[str, Any]] = None
+    metadata_prefix: str = "json"
 
 
 class ToolCallingAgent(BaseAgent):
@@ -188,6 +203,7 @@ class JsonToolAgent(ToolCallingAgent):
         fail_on_truncated: bool = False,
         truncated_error: str = "Max iterations reached without finding a JSON result in history",
         post_process: Optional[PostProcessor] = None,
+        json_output_spec: Optional[JsonOutputSpec] = None,
     ) -> AgentResponse:
         try:
             result = self._run_tool_conversation(
@@ -199,11 +215,17 @@ class JsonToolAgent(ToolCallingAgent):
             conversation = result.get("conversation", [])
             ctx_tokens = int(result.get("context_tokens", 0) or 0)
 
-            parsed = extractor(content, result, conversation)
+            parsed = self._extract_json_output(
+                content,
+                result,
+                conversation,
+                extractor=extractor,
+                json_output_spec=json_output_spec,
+            )
             if parsed:
                 if post_process:
                     parsed = post_process(parsed)
-                metadata = self._conversation_token_metadata(result)
+                metadata = self._json_result_metadata(result, json_output_spec)
                 return AgentResponse(
                     success=True,
                     data=parsed,
@@ -222,6 +244,54 @@ class JsonToolAgent(ToolCallingAgent):
                     error="Stopped after repeated identical tool calls.",
                     metadata=metadata,
                 )
+
+            if json_output_spec:
+                error_type, json_blocks_found = self._classify_json_result_failure(
+                    content,
+                    result,
+                    conversation,
+                    json_output_spec=json_output_spec,
+                )
+                self._log_json_result_failure(
+                    attempt=1,
+                    max_retries=max_json_retries,
+                    error_type=error_type,
+                    phase="finalize",
+                    parse_label=parse_label,
+                    result=result,
+                    content=content,
+                    json_blocks_found=json_blocks_found,
+                )
+                repair_response = self._run_json_final_repair(
+                    messages,
+                    result,
+                    json_output_spec=json_output_spec,
+                    extractor=extractor,
+                    trace_label=trace_label,
+                    parse_label=parse_label,
+                    error_type=error_type,
+                    max_json_retries=max_json_retries,
+                    post_process=post_process,
+                )
+                if repair_response.success:
+                    return repair_response
+                if fail_on_truncated and result.get("truncated"):
+                    metadata = repair_response.metadata or self._json_result_metadata(
+                        result,
+                        json_output_spec,
+                    )
+                    return AgentResponse(
+                        success=False,
+                        data={},
+                        error=truncated_error,
+                        metadata=metadata,
+                    )
+                if not repair_response.data:
+                    repair_response.data = {
+                        "raw_output": content,
+                        "partial_result": self._extract_last_assistant_text(content, conversation),
+                    }
+                return repair_response
 
             if fail_on_truncated and result.get("truncated"):
                 return AgentResponse(success=False, data={}, error=truncated_error)
@@ -298,6 +368,487 @@ class JsonToolAgent(ToolCallingAgent):
             )
         except Exception as exc:
             return AgentResponse(success=False, data={}, error=str(exc))
+
+    def _extract_json_output(
+        self,
+        content: str,
+        result: Dict[str, Any],
+        conversation: Iterable[Dict[str, Any]],
+        *,
+        extractor: JsonExtractor,
+        json_output_spec: Optional[JsonOutputSpec],
+    ) -> Any:
+        if json_output_spec:
+            parsed = self._extract_structured_json_payload(
+                content,
+                result,
+                conversation,
+                json_output_spec,
+            )
+            if parsed is not None:
+                return parsed
+        return extractor(content, result, list(conversation))
+
+    def _extract_structured_json_payload(
+        self,
+        content: str,
+        result: Dict[str, Any],
+        conversation: Iterable[Dict[str, Any]],
+        json_output_spec: JsonOutputSpec,
+    ) -> Any:
+        for data in self._final_tool_payloads(result, conversation, json_output_spec):
+            parsed = self._coerce_payload_for_spec(data, json_output_spec)
+            if parsed is not None:
+                return parsed
+        for text in self._text_sources(content, result, conversation):
+            for data in extract_json_blocks(text):
+                parsed = self._coerce_payload_for_spec(data, json_output_spec)
+                if parsed is not None:
+                    return parsed
+        return None
+
+    @staticmethod
+    def _coerce_payload_for_spec(data: Any, json_output_spec: JsonOutputSpec) -> Any:
+        if json_output_spec.validator(data):
+            return data
+        if isinstance(data, dict):
+            for key in json_output_spec.nested_keys:
+                nested = data.get(key)
+                if json_output_spec.validator(nested):
+                    return nested
+        return None
+
+    @classmethod
+    def _final_tool_payloads(
+        cls,
+        result: Dict[str, Any],
+        conversation: Iterable[Dict[str, Any]],
+        json_output_spec: JsonOutputSpec,
+    ) -> Iterable[Dict[str, Any]]:
+        messages = []
+        if isinstance(result.get("message"), dict):
+            messages.append(result["message"])
+        messages.extend(list(conversation))
+        for message in reversed(messages):
+            tool_calls = message.get("tool_calls") if isinstance(message, dict) else None
+            if not isinstance(tool_calls, list):
+                continue
+            for tool_call in tool_calls:
+                function = tool_call.get("function") if isinstance(tool_call, dict) else None
+                if not isinstance(function, dict):
+                    continue
+                if function.get("name") != json_output_spec.final_tool_name:
+                    continue
+                payload = cls._coerce_tool_arguments(function.get("arguments"))
+                if payload is not None:
+                    yield payload
+
+    @staticmethod
+    def _coerce_tool_arguments(arguments: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(arguments, dict):
+            return arguments
+        if not isinstance(arguments, str):
+            return None
+        try:
+            data = json.loads(arguments)
+        except Exception:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _run_json_final_repair(
+        self,
+        messages: List[Dict[str, Any]],
+        result: Dict[str, Any],
+        *,
+        json_output_spec: JsonOutputSpec,
+        extractor: JsonExtractor,
+        trace_label: str,
+        parse_label: str,
+        error_type: str,
+        max_json_retries: int = 1,
+        post_process: Optional[PostProcessor] = None,
+    ) -> AgentResponse:
+        chat_completion = getattr(self.llm_client, "chat_completion", None)
+        metadata = self._json_result_metadata(result, json_output_spec)
+        if not callable(chat_completion):
+            return AgentResponse(
+                success=False,
+                data={},
+                error=f"Failed to parse {parse_label}: {error_type}",
+                metadata=metadata,
+            )
+
+        final_tool_schema = self._final_json_tool_schema(json_output_spec)
+        last_error = error_type
+        for retry in range(1, max(1, max_json_retries) + 1):
+            self._increment_metadata_counter(metadata, json_output_spec, "repair_attempted")
+            repair_messages = list(messages)
+            repair_messages.append(
+                {
+                    "role": "user",
+                    "content": self._json_repair_prompt(
+                        parse_label,
+                        error_type=last_error,
+                        result=result,
+                        json_output_spec=json_output_spec,
+                    ),
+                }
+            )
+            prompt_messages = list(repair_messages)
+            response = self._call_json_repair_completion(
+                chat_completion,
+                prompt_messages,
+                final_tool_schema=final_tool_schema,
+                json_output_spec=json_output_spec,
+                trace_label=f"{trace_label}; json_repair={retry}; error={last_error}",
+                trace_iteration=retry,
+            )
+            if response is None:
+                last_error = "repair_call_failed"
+                continue
+
+            choice = response.get("choices", [{}])[0]
+            message = choice.get("message", {})
+            self._merge_chat_metadata(metadata, response, prompt_messages, message, json_output_spec)
+            repair_messages.append(message)
+            tool_calls = message.get("tool_calls") or []
+            if tool_calls:
+                self._increment_metadata_counter(
+                    metadata,
+                    json_output_spec,
+                    "final_tool_call_count",
+                    len(tool_calls),
+                )
+
+            repair_result = {
+                "content": str(message.get("content") or ""),
+                "conversation": repair_messages,
+                "message": message,
+                "reasoning_content": message.get("reasoning_content"),
+                "finish_reason": choice.get("finish_reason"),
+                "provider_model": response.get("model")
+                or (getattr(self.llm_client, "models", []) or [""])[0],
+                "tool_call_count": 0,
+                "final_tool_call_count": len(tool_calls),
+                "last_assistant_preview": self._message_preview(message),
+            }
+            parsed = self._extract_json_output(
+                str(repair_result.get("content") or ""),
+                repair_result,
+                repair_messages,
+                extractor=extractor,
+                json_output_spec=json_output_spec,
+            )
+            if parsed is not None:
+                if post_process:
+                    parsed = post_process(parsed)
+                self._increment_metadata_counter(metadata, json_output_spec, "repair_accepted")
+                if isinstance(parsed, dict):
+                    parsed.setdefault(f"{json_output_spec.metadata_prefix}_json_repaired", True)
+                    parsed.setdefault(f"{json_output_spec.metadata_prefix}_repair_error_type", error_type)
+                return AgentResponse(success=True, data=parsed, metadata=metadata)
+
+            last_error, json_blocks_found = self._classify_json_result_failure(
+                str(repair_result.get("content") or ""),
+                repair_result,
+                repair_messages,
+                json_output_spec=json_output_spec,
+            )
+            self._log_json_result_failure(
+                attempt=retry,
+                max_retries=max_json_retries,
+                error_type=last_error,
+                phase="repair",
+                parse_label=parse_label,
+                result=repair_result,
+                content=str(repair_result.get("content") or ""),
+                json_blocks_found=json_blocks_found,
+            )
+
+        if json_output_spec.fallback_empty_payload is not None:
+            fallback = dict(json_output_spec.fallback_empty_payload)
+            self._increment_metadata_counter(metadata, json_output_spec, "repair_fallback_used")
+            fallback.setdefault(f"{json_output_spec.metadata_prefix}_repair_error_type", last_error)
+            return AgentResponse(success=True, data=fallback, metadata=metadata)
+
+        metadata[f"{json_output_spec.metadata_prefix}_last_error_type"] = last_error
+        return AgentResponse(
+            success=False,
+            data={},
+            error=f"Failed to parse {parse_label}: {last_error}",
+            metadata=metadata,
+        )
+
+    def _call_json_repair_completion(
+        self,
+        chat_completion: Callable[..., Dict[str, Any]],
+        prompt_messages: List[Dict[str, Any]],
+        *,
+        final_tool_schema: Dict[str, Any],
+        json_output_spec: JsonOutputSpec,
+        trace_label: str,
+        trace_iteration: int,
+    ) -> Optional[Dict[str, Any]]:
+        response_format = (
+            self._json_response_format(json_output_spec)
+            if bool(getattr(self.llm_client, "supports_structured_output", False))
+            else None
+        )
+        tools = None if response_format else [final_tool_schema]
+        try:
+            return chat_completion(
+                prompt_messages,
+                tools=tools,
+                tool_choice="auto" if tools else None,
+                response_format=response_format,
+                trace_agent=self.name,
+                trace_label=trace_label,
+                trace_iteration=trace_iteration,
+            )
+        except TypeError:
+            return chat_completion(
+                prompt_messages,
+                tools=[final_tool_schema],
+                trace_agent=self.name,
+                trace_label=trace_label,
+                trace_iteration=trace_iteration,
+            )
+        except Exception as exc:
+            if not response_format:
+                logger.warning(
+                    "JSON repair call failed for %s: %s",
+                    json_output_spec.type_name,
+                    exc,
+                )
+                return None
+            try:
+                return chat_completion(
+                    prompt_messages,
+                    tools=[final_tool_schema],
+                    tool_choice="auto",
+                    trace_agent=self.name,
+                    trace_label=f"{trace_label}; structured_fallback=tool",
+                    trace_iteration=trace_iteration,
+                )
+            except TypeError:
+                return chat_completion(
+                    prompt_messages,
+                    tools=[final_tool_schema],
+                    trace_agent=self.name,
+                    trace_label=f"{trace_label}; structured_fallback=tool",
+                    trace_iteration=trace_iteration,
+                )
+            except Exception as fallback_exc:
+                logger.warning(
+                    "JSON repair call failed for %s after structured fallback: %s; fallback_error=%s",
+                    json_output_spec.type_name,
+                    exc,
+                    fallback_exc,
+                )
+                return None
+
+    @staticmethod
+    def _json_repair_prompt(
+        parse_label: str,
+        *,
+        error_type: str,
+        result: Dict[str, Any],
+        json_output_spec: JsonOutputSpec,
+    ) -> str:
+        diagnostics = {
+            "error_type": error_type,
+            "finish_reason": result.get("finish_reason"),
+            "truncated": bool(result.get("truncated")),
+            "final_tool_call_without_json": bool(result.get("final_tool_call_without_json")),
+            "last_assistant_preview": result.get("last_assistant_preview")
+            or str(result.get("content") or "")[:500],
+        }
+        return (
+            f"Final JSON repair for {parse_label}. The prior answer did not produce "
+            f"a usable {json_output_spec.type_name} payload. Do not ask for tools or "
+            "more context. Use the already provided task context and diagnostics below "
+            "to produce exactly one final payload.\n\n"
+            f"Diagnostics:\n{json.dumps(diagnostics, ensure_ascii=False, indent=2)}\n\n"
+            f"Return by calling {json_output_spec.final_tool_name}, or return exactly "
+            f"one JSON object with type={json_output_spec.type_name}."
+        )
+
+    @staticmethod
+    def _final_json_tool_schema(json_output_spec: JsonOutputSpec) -> Dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": json_output_spec.final_tool_name,
+                "description": json_output_spec.final_tool_description,
+                "parameters": json_output_spec.schema,
+            },
+        }
+
+    @staticmethod
+    def _json_response_format(json_output_spec: JsonOutputSpec) -> Dict[str, Any]:
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": json_output_spec.type_name,
+                "strict": False,
+                "schema": json_output_spec.schema,
+            },
+        }
+
+    def _classify_json_result_failure(
+        self,
+        content: str,
+        result: Dict[str, Any],
+        conversation: Iterable[Dict[str, Any]],
+        *,
+        json_output_spec: JsonOutputSpec,
+    ) -> Tuple[str, int]:
+        json_blocks_found = self._json_candidate_count(
+            content,
+            result,
+            conversation,
+            json_output_spec=json_output_spec,
+        )
+        if json_blocks_found:
+            return "schema_mismatch", json_blocks_found
+        if result.get("final_tool_call_without_json"):
+            return "final_tool_call_without_json", json_blocks_found
+
+        text = "\n".join(self._text_sources(content, result, conversation)).strip()
+        if result.get("truncated") or result.get("finish_reason") == "length":
+            if "{" in text or "```json" in text.lower():
+                return "truncated_json", json_blocks_found
+            if not text:
+                return "empty_final_content", json_blocks_found
+        if not text:
+            return "empty_final_content", json_blocks_found
+        return "prose_without_json", json_blocks_found
+
+    def _json_candidate_count(
+        self,
+        content: str,
+        result: Dict[str, Any],
+        conversation: Iterable[Dict[str, Any]],
+        *,
+        json_output_spec: JsonOutputSpec,
+    ) -> int:
+        count = len(list(self._final_tool_payloads(result, conversation, json_output_spec)))
+        for text in self._text_sources(content, result, conversation):
+            count += len(extract_json_blocks(text))
+        return count
+
+    def _log_json_result_failure(
+        self,
+        *,
+        attempt: int,
+        max_retries: int,
+        error_type: str,
+        phase: str,
+        parse_label: str,
+        result: Dict[str, Any],
+        content: str,
+        json_blocks_found: int,
+    ) -> None:
+        logger.warning(
+            "%s JSON attempt %d/%d failed for %s: phase=%s error_type=%s "
+            "finish_reason=%s truncated=%s content_len=%d tool_call_count=%s "
+            "json_blocks_found=%d provider_model=%s",
+            self.name,
+            attempt,
+            max_retries,
+            parse_label,
+            phase,
+            error_type,
+            result.get("finish_reason"),
+            bool(result.get("truncated")),
+            len(content or ""),
+            result.get("tool_call_count", 0),
+            json_blocks_found,
+            result.get("provider_model") or (getattr(self.llm_client, "models", []) or ["unknown"])[0],
+        )
+
+    @staticmethod
+    def _message_preview(message: Dict[str, Any], limit: int = 500) -> str:
+        content = str(message.get("content") or "")
+        if not content and message.get("reasoning_content"):
+            content = str(message.get("reasoning_content") or "")
+        if not content and message.get("tool_calls"):
+            names = [
+                str((tool_call.get("function") or {}).get("name") or "unknown")
+                for tool_call in message.get("tool_calls") or []
+            ]
+            content = "tool_calls=" + ",".join(names)
+        return content[:limit]
+
+    @staticmethod
+    def _increment_metadata_counter(
+        metadata: Dict[str, Any],
+        json_output_spec: JsonOutputSpec,
+        name: str,
+        amount: int = 1,
+    ) -> None:
+        key = f"{json_output_spec.metadata_prefix}_{name}"
+        metadata[key] = int(metadata.get(key, 0) or 0) + amount
+
+    @staticmethod
+    def _merge_chat_metadata(
+        metadata: Dict[str, Any],
+        response: Dict[str, Any],
+        messages: List[Dict[str, Any]],
+        assistant_message: Dict[str, Any],
+        json_output_spec: JsonOutputSpec,
+    ) -> None:
+        prompt_tokens, completion_tokens = LLMClient._response_token_usage(
+            response,
+            messages,
+            assistant_message,
+        )
+        metadata["context_tokens"] = int(metadata.get("context_tokens", 0) or 0) + LLMClient.estimate_tokens(messages)
+        metadata["cumulative_prompt_tokens"] = int(
+            metadata.get("cumulative_prompt_tokens", 0) or 0
+        ) + prompt_tokens
+        metadata["cumulative_completion_tokens"] = int(
+            metadata.get("cumulative_completion_tokens", 0) or 0
+        ) + completion_tokens
+        metadata["cumulative_total_tokens"] = int(
+            metadata.get("cumulative_prompt_tokens", 0) or 0
+        ) + int(metadata.get("cumulative_completion_tokens", 0) or 0)
+        metadata["iterations"] = int(metadata.get("iterations", 0) or 0) + 1
+
+    @staticmethod
+    def _json_result_metadata(
+        result: Dict[str, Any],
+        json_output_spec: Optional[JsonOutputSpec] = None,
+    ) -> Dict[str, Any]:
+        metadata = JsonToolAgent._conversation_token_metadata(result)
+        for key in ("iterations", "tool_call_count"):
+            try:
+                metadata[key] = int(result.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                metadata[key] = 0
+        if json_output_spec:
+            final_tool_count = int(result.get("final_tool_call_count", 0) or 0)
+            if final_tool_count:
+                JsonToolAgent._increment_metadata_counter(
+                    metadata,
+                    json_output_spec,
+                    "final_tool_call_count",
+                    final_tool_count,
+                )
+        metadata["truncated"] = bool(result.get("truncated", False))
+        return metadata
+
+    @staticmethod
+    def _extract_last_assistant_text(
+        content: str,
+        conversation: Iterable[Dict[str, Any]],
+    ) -> str:
+        if content:
+            return content
+        for message in reversed(list(conversation)):
+            if message.get("role") == "assistant" and message.get("content"):
+                return str(message.get("content"))
+        return ""
 
     @staticmethod
     def _conversation_token_metadata(result: Dict[str, Any]) -> Dict[str, Any]:
