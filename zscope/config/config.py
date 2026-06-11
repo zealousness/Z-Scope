@@ -47,6 +47,19 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _safe_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
 @dataclass
 class LLMConfig:
     """Configuration for LLM client."""
@@ -62,6 +75,7 @@ class LLMConfig:
     max_tokens: int = 4096
     timeout: int = 120
     max_retries: int = 2
+    supports_structured_output: bool = False
 
     def __post_init__(self) -> None:
         self.base_urls = _normalize_llm_base_urls(self.base_urls or self.base_url)
@@ -450,6 +464,9 @@ class ConfigLoader:
                         max_tokens=llm_data.get("max_tokens", 4096),
                         timeout=llm_data.get("timeout", 120),
                         max_retries=llm_data.get("max_retries", 2),
+                        supports_structured_output=_safe_bool(
+                            llm_data.get("supports_structured_output", False)
+                        ),
                     )
                     parsed_llms["default"] = default_llm_config
 
@@ -495,6 +512,9 @@ class ConfigLoader:
                     max_tokens=data.get("max_tokens", 4096),
                     timeout=data.get("timeout", 120),
                     max_retries=data.get("max_retries", 2),
+                    supports_structured_output=_safe_bool(
+                        data.get("supports_structured_output", False)
+                    ),
                 )
                 parsed_llms[name] = cfg
                 if default_llm_config is None and name == "default":

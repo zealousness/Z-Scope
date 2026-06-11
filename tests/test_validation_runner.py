@@ -57,6 +57,7 @@ def _runner(
     enabled=True,
     memory=None,
     analysis=None,
+    code_index=None,
     validator_agent_factory=None,
 ):
     memory = memory if memory is not None else []
@@ -70,7 +71,7 @@ def _runner(
         config=config,
         llm_clients={"default": object()},
         validation_pipeline=ValidationPipeline(FakeUserConfig()),
-        code_index=FakeCodeIndex(),
+        code_index=code_index or FakeCodeIndex(),
         snapshot_store=FakeSnapshotStore(),
         get_tools=lambda agent_name: [],
         tool_policy_for_agent=lambda agent_name: None,
@@ -377,3 +378,41 @@ def test_validation_runner_parallel_workers_preserve_order_and_token_totals() ->
     assert state["total_cumulative_completion_tokens"] == 15
     assert state["total_cumulative_total_tokens"] == 75
     assert all(thread_name.startswith("zscope-validator") for thread_name, _issue_id in calls)
+
+
+def test_validation_runner_normalizes_external_api_function_to_entry_function() -> None:
+    class MissingExternalApiCodeIndex(FakeCodeIndex):
+        def get_function_impl(self, func_name, *args, **kwargs):
+            if func_name == "pthread_create":
+                return None
+            if func_name == "api_entry":
+                return {"code": "void api_entry(void) { pthread_create(0, 0, worker, 0); }"}
+            return super().get_function_impl(func_name)
+
+    agent = FakeValidatorAgent(
+        [
+            AgentResponse(
+                success=True,
+                data={
+                    "verdict": "uncertain",
+                    "reasoning": "Need worker lifetime details.",
+                    "missing_context": ["worker ownership contract"],
+                },
+            )
+        ]
+    )
+    issue = _issue(
+        id="ISSUE_PTHREAD",
+        function="pthread_create",
+        entry_function="api_entry",
+        sink="pthread_create",
+    )
+    state = _state(issue)
+
+    _runner(agent, code_index=MissingExternalApiCodeIndex()).run(state)
+
+    compact_finding = json.loads(agent.inputs[0]["finding"])
+    assert compact_finding["function"] == "api_entry"
+    assert compact_finding["sink_function"] == "pthread_create"
+    assert issue["validation_function_normalized_from"] == "pthread_create"
+    assert issue["validation_function_normalization_reason"] == "external_api_function_without_indexed_body"

@@ -47,6 +47,28 @@ class _ValidationWorkerResult:
 class ValidationRunner:
     """Owns validation-stage orchestration around ``ValidationPipeline``."""
 
+    _EXTERNAL_API_NAMES = {
+        "calloc",
+        "close",
+        "free",
+        "malloc",
+        "memcpy",
+        "memmove",
+        "memset",
+        "open",
+        "pthread_create",
+        "read",
+        "realloc",
+        "recv",
+        "send",
+        "snprintf",
+        "sprintf",
+        "strcpy",
+        "strncpy",
+        "thrd_create",
+        "write",
+    }
+
     def __init__(
         self,
         *,
@@ -160,7 +182,7 @@ class ValidationRunner:
             entry_workers = int(getattr(analysis_cfg, "parallel_workers", 1) or 1)
         except (TypeError, ValueError):
             entry_workers = 1
-        auto_cap = 2 if entry_workers > 1 else 4
+        auto_cap = 2 if entry_workers > 1 else 1
         return max(1, min(issue_count, auto_cap))
 
     def _mark_unvalidated(self, state: Dict[str, Any], new_issues: List[Dict[str, Any]]) -> None:
@@ -375,6 +397,9 @@ class ValidationRunner:
             "tool_call_count",
             "validator_fast_path_attempted",
             "validator_fast_path_accepted",
+            "validator_repair_attempted",
+            "validator_repair_accepted",
+            "validator_final_tool_call_count",
         ):
             target[key] = int(target.get(key, 0) or 0) + token_value(key)
 
@@ -411,6 +436,9 @@ class ValidationRunner:
             ("tool_call_count", "validation_tool_call_count"),
             ("validator_fast_path_attempted", "validator_fast_path_attempted"),
             ("validator_fast_path_accepted", "validator_fast_path_accepted"),
+            ("validator_repair_attempted", "validator_repair_attempted"),
+            ("validator_repair_accepted", "validator_repair_accepted"),
+            ("validator_final_tool_call_count", "validator_final_tool_call_count"),
         ):
             try:
                 value = int(metadata.get(source_key, 0) or 0)
@@ -466,15 +494,75 @@ class ValidationRunner:
         return any(a.name == "validator_agent" and a.enabled for a in self.config.project.agents)
 
     def _issue_function(self, raw_issue: Dict[str, Any], state: Dict[str, Any]) -> str:
-        return str(raw_issue.get("function", state["agent_context"]["func_name"]))
+        agent_context = state.get("agent_context") if isinstance(state.get("agent_context"), dict) else {}
+        default_func = str(agent_context.get("func_name") or state.get("entry_func") or "").strip()
+        issue_func = str(raw_issue.get("function") or default_func).strip() or default_func
+        if not issue_func or issue_func == default_func:
+            return issue_func
+        if self._get_function_impl(issue_func):
+            return issue_func
+        if not self._looks_like_external_api(issue_func):
+            return issue_func
+
+        for candidate in (
+            raw_issue.get("entry_function"),
+            raw_issue.get("analyzed_from"),
+            state.get("entry_func"),
+            default_func,
+        ):
+            fallback = str(candidate or "").strip()
+            if not fallback or fallback == issue_func:
+                continue
+            if fallback == default_func or self._get_function_impl(fallback):
+                self._record_issue_function_normalization(raw_issue, issue_func, fallback)
+                return fallback
+        return issue_func
 
     def _issue_code(self, issue_func: str, state: Dict[str, Any]) -> str:
         issue_code = state["agent_context"]["code"]
         if issue_func != state["agent_context"]["func_name"]:
-            impl = self.code_index.get_function_impl(issue_func)
+            impl = self._get_function_impl(issue_func)
             if impl:
                 issue_code = impl["code"]
         return issue_code
+
+    def _get_function_impl(self, func_name: str) -> Optional[Dict[str, Any]]:
+        getter = getattr(self.code_index, "get_function_impl", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter(func_name, warn_missing=False)
+        except TypeError:
+            return getter(func_name)
+        except Exception:
+            return None
+
+    @classmethod
+    def _looks_like_external_api(cls, func_name: str) -> bool:
+        cleaned = str(func_name or "").strip()
+        if cleaned in cls._EXTERNAL_API_NAMES:
+            return True
+        return cleaned.startswith(("VOS_", "vos_", "osal_", "OSAL_")) and any(
+            token in cleaned.lower()
+            for token in ("alloc", "free", "mem", "taskcreate", "thread", "lock", "unlock")
+        )
+
+    @staticmethod
+    def _record_issue_function_normalization(
+        raw_issue: Dict[str, Any],
+        original_func: str,
+        normalized_func: str,
+    ) -> None:
+        raw_issue.setdefault("sink_function", original_func)
+        raw_issue["validation_function_normalized_from"] = original_func
+        raw_issue["validation_function_normalization_reason"] = "external_api_function_without_indexed_body"
+        raw_issue["function"] = normalized_func
+        logger.info(
+            "Normalized validation function for issue %s from external API %s to %s.",
+            raw_issue.get("id"),
+            original_func,
+            normalized_func,
+        )
 
     def _build_evidence_pack(
         self,

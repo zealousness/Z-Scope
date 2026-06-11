@@ -52,6 +52,9 @@ class RuleDrivenAnalyzer:
                 base_url_max_concurrent_requests=getattr(
                     llm_cfg, "base_url_max_concurrent_requests", 0
                 ),
+                supports_structured_output=getattr(
+                    llm_cfg, "supports_structured_output", False
+                ),
             )
         self.report_generator = ReportGenerator(config.project.project_root)
 
