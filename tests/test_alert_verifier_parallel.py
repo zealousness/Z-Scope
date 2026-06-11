@@ -57,3 +57,31 @@ def test_alert_verifier_worker_error_becomes_uncertain_result() -> None:
     assert [result["alert_id"] for result in results] == ["ALERT_1", "ALERT_2", "ALERT_3"]
     assert results[1]["verdict"] == "uncertain"
     assert "validator failed" in results[1]["reasoning"]
+
+
+def test_alert_verifier_closes_worker_thread_llm_sessions() -> None:
+    class CloseTrackingClient:
+        def __init__(self) -> None:
+            self.closed_threads: list[str] = []
+            self.lock = threading.Lock()
+
+        def close_thread_session(self) -> None:
+            with self.lock:
+                self.closed_threads.append(threading.current_thread().name)
+
+    class ClosingVerifier(AlertVerifier):
+        def __init__(self) -> None:
+            self.llm_client = CloseTrackingClient()
+
+        def _verify_single(self, alert: ExternalAlert, idx: int) -> dict:
+            if idx == 2:
+                raise RuntimeError("validator failed")
+            return {"alert_id": f"ALERT_{idx}", "idx": idx, "verdict": "confirmed"}
+
+    verifier = ClosingVerifier()
+
+    results = verifier.verify_alerts([_alert(1), _alert(2), _alert(3)], max_workers=3)
+
+    assert [result["alert_id"] for result in results] == ["ALERT_1", "ALERT_2", "ALERT_3"]
+    assert len(verifier.llm_client.closed_threads) == 3
+    assert all(name.startswith("zscope-alert-verifier") for name in verifier.llm_client.closed_threads)

@@ -284,7 +284,7 @@ def filter_user_config_rows_with_llm(
     if worker_count == 1:
         for batch in batches:
             try:
-                batch_decisions = _request_llm_user_config_decisions(llm_client, batch)
+                batch_decisions = _request_llm_user_config_decisions_for_thread(llm_client, batch)
             except Exception:
                 stats["errors"] += 1
                 continue
@@ -293,7 +293,11 @@ def filter_user_config_rows_with_llm(
     else:
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             future_to_batch = {
-                executor.submit(_request_llm_user_config_decisions, llm_client, batch): batch
+                executor.submit(
+                    _request_llm_user_config_decisions_for_thread,
+                    llm_client,
+                    batch,
+                ): batch
                 for batch in batches
             }
             for future in as_completed(future_to_batch):
@@ -429,6 +433,22 @@ def _request_llm_user_config_decisions(
         if decisions:
             break
     return decisions
+
+
+def _request_llm_user_config_decisions_for_thread(
+    llm_client: Any,
+    candidates: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    try:
+        return _request_llm_user_config_decisions(llm_client, candidates)
+    finally:
+        _close_llm_thread_session(llm_client)
+
+
+def _close_llm_thread_session(llm_client: Any) -> None:
+    close_thread_session = getattr(llm_client, "close_thread_session", None)
+    if callable(close_thread_session):
+        close_thread_session()
 
 
 def _llm_user_config_system_prompt() -> str:

@@ -137,6 +137,20 @@ class AlertVerifier:
         except Exception as e:
             logger.error("Failed to verify alert %d: %s", idx, e)
             return self._make_error_result(alert, idx, str(e))
+        finally:
+            self._close_thread_llm_session()
+
+    def _close_thread_llm_session(self) -> None:
+        llm_client = getattr(self, "llm_client", None)
+        close_thread_session = getattr(llm_client, "close_thread_session", None)
+        if callable(close_thread_session):
+            close_thread_session()
+
+    def close(self) -> None:
+        llm_client = getattr(self, "llm_client", None)
+        close_client = getattr(llm_client, "close", None)
+        if callable(close_client):
+            close_client()
 
     def _verify_single(self, alert: ExternalAlert, idx: int) -> Dict[str, Any]:
         """验证单个告警。"""

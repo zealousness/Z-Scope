@@ -1,8 +1,11 @@
 import json
+import errno
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+
+import requests
 
 from zscope.config.config import ConfigLoader
 from zscope.framework.llm_client import LLMClient
@@ -147,6 +150,50 @@ def test_llm_client_closes_current_thread_session(monkeypatch) -> None:
 
     assert closed == [initial_session]
     assert new_session is not initial_session
+
+
+def test_llm_client_recovers_from_too_many_open_files(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://one.example/v1",
+        models=["unit-model"],
+        max_retries=1,
+    )
+    client.close()
+    client.LOCAL_FD_EXHAUSTION_COOLDOWN_SECONDS = 0.0
+    monkeypatch.setattr("zscope.framework.llm_client.random.uniform", lambda _a, _b: -1.0)
+    sessions = []
+
+    class FakeSession:
+        def __init__(self, index):
+            self.index = index
+            self.closed = False
+
+        def post(self, url, **kwargs):
+            if self.index == 0:
+                raise requests.exceptions.ConnectionError(
+                    OSError(errno.EMFILE, "Too many open files")
+                )
+            return _FakeResponse()
+
+        def close(self):
+            self.closed = True
+
+    def fake_new_session():
+        session = FakeSession(len(sessions))
+        sessions.append(session)
+        with client._sessions_lock:
+            client._sessions.add(session)
+        return session
+
+    monkeypatch.setattr(client, "_new_session", fake_new_session)
+
+    result = client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert result["choices"][0]["message"]["content"] == "ok"
+    assert len(sessions) == 2
+    assert sessions[0].closed is True
+    assert sessions[1].closed is False
 
 
 def test_llm_client_limits_concurrent_requests_per_base_url(monkeypatch) -> None:

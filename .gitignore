@@ -93,6 +93,8 @@ Thumbs.db
 # Test outputs
 scan_output.log
 test/range/build/
+test/range/codeql_runs/
+test/range/.zscope*
 test/range/.zscope_knowledge/
 test/range/.zscope_snapshots*/
 test/range/.zscope_svf/

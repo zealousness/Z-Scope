@@ -599,6 +599,7 @@ def test_llm_filter_uses_parallel_workers_for_batches(tmp_path: Path) -> None:
         def __init__(self):
             self.active = 0
             self.max_active = 0
+            self.closed_sessions = 0
             self.lock = threading.Lock()
 
         def chat_completion(self, messages, **kwargs):
@@ -627,6 +628,10 @@ def test_llm_filter_uses_parallel_workers_for_batches(tmp_path: Path) -> None:
                 with self.lock:
                     self.active -= 1
 
+        def close_thread_session(self):
+            with self.lock:
+                self.closed_sessions += 1
+
     llm = ParallelFakeLLM()
     filtered, stats = filter_user_config_rows_with_llm(
         rows,
@@ -639,6 +644,7 @@ def test_llm_filter_uses_parallel_workers_for_batches(tmp_path: Path) -> None:
     assert len(filtered["resource"]) == 4
     assert stats["kept"] == 4
     assert llm.max_active > 1
+    assert llm.closed_sessions == 4
 
 
 def test_llm_keep_decision_cannot_change_kind(tmp_path: Path) -> None:
@@ -657,6 +663,9 @@ def test_llm_keep_decision_cannot_change_kind(tmp_path: Path) -> None:
     ]
 
     class FakeLLM:
+        def __init__(self):
+            self.closed_sessions = 0
+
         def chat_completion(self, messages, **kwargs):
             return {
                 "choices": [
@@ -673,10 +682,14 @@ def test_llm_keep_decision_cannot_change_kind(tmp_path: Path) -> None:
                 ]
             }
 
+        def close_thread_session(self):
+            self.closed_sessions += 1
+
+    llm = FakeLLM()
     filtered, stats = filter_user_config_rows_with_llm(
         rows,
         FakeCodeIndex(tmp_path),
-        FakeLLM(),
+        llm,
         batch_size=1,
         max_workers=1,
     )
@@ -684,6 +697,7 @@ def test_llm_keep_decision_cannot_change_kind(tmp_path: Path) -> None:
     assert filtered["resource"][0]["kind"] == "reallocator"
     assert "old_resource=arg1" in filtered["resource"][0]["description"]
     assert stats["kept"] == 1
+    assert llm.closed_sessions == 1
 
 
 def test_inference_moves_dispatcher_and_handler_context_into_user_config(tmp_path: Path) -> None:

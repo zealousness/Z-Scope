@@ -1121,50 +1121,53 @@ def run_pure_llm(args: argparse.Namespace, *, repo_context: bool) -> dict[str, A
     issues: list[dict[str, Any]] = []
     total_context_tokens = 0
     started = time.time()
-    with transcript_path.open("w", encoding="utf-8") as transcript:
-        for entry in entries:
-            name = str(entry.get("function_name") or "")
-            entry_file = str(entry.get("file_path") or "")
-            direct = extract_function_code(project / entry_file, name) if entry_file else None
-            if not direct:
-                continue
-            code, info = direct
-            context = _repo_context_for_entry(project, entry, code) if repo_context else ""
-            prompt = (
-                "Analyze this C/C++ benchmark entry for memory, bounds/integer, null/failure, "
-                "resource lifecycle, and concurrency defects. Return only JSON with key 'issues'. "
-                "Each issue must include category, function, file, line, description, and evidence. "
-                "Do not use any answer-key or ground-truth files.\n\n"
-                f"Function: {name}\nFile: {info.file}\n\n{context}\n\n```c\n{code}\n```"
-            )
-            messages = [
-                {
-                    "role": "system",
-                    "content": "You are a C/C++ security evaluator. Return strict JSON only.",
-                },
-                {"role": "user", "content": prompt},
-            ]
-            response = client.chat_completion(messages, tools=None, temperature=0.0)
-            message = (response.get("choices") or [{}])[0].get("message") or {}
-            content = str(message.get("content") or "")
-            entry_issues = _extract_llm_issues(content)
-            for issue in entry_issues:
-                issue.setdefault("function", name)
-                issue.setdefault("file", info.file)
-                issues.append(issue)
-            total_context_tokens += LLMClient.estimate_tokens(messages + [message])
-            transcript.write(
-                json.dumps(
-                    {
-                        "entry": entry,
-                        "request_messages": messages,
-                        "response_message": message,
-                        "issues": entry_issues,
-                    },
-                    ensure_ascii=False,
+    try:
+        with transcript_path.open("w", encoding="utf-8") as transcript:
+            for entry in entries:
+                name = str(entry.get("function_name") or "")
+                entry_file = str(entry.get("file_path") or "")
+                direct = extract_function_code(project / entry_file, name) if entry_file else None
+                if not direct:
+                    continue
+                code, info = direct
+                context = _repo_context_for_entry(project, entry, code) if repo_context else ""
+                prompt = (
+                    "Analyze this C/C++ benchmark entry for memory, bounds/integer, null/failure, "
+                    "resource lifecycle, and concurrency defects. Return only JSON with key 'issues'. "
+                    "Each issue must include category, function, file, line, description, and evidence. "
+                    "Do not use any answer-key or ground-truth files.\n\n"
+                    f"Function: {name}\nFile: {info.file}\n\n{context}\n\n```c\n{code}\n```"
                 )
-                + "\n"
-            )
+                messages = [
+                    {
+                        "role": "system",
+                        "content": "You are a C/C++ security evaluator. Return strict JSON only.",
+                    },
+                    {"role": "user", "content": prompt},
+                ]
+                response = client.chat_completion(messages, tools=None, temperature=0.0)
+                message = (response.get("choices") or [{}])[0].get("message") or {}
+                content = str(message.get("content") or "")
+                entry_issues = _extract_llm_issues(content)
+                for issue in entry_issues:
+                    issue.setdefault("function", name)
+                    issue.setdefault("file", info.file)
+                    issues.append(issue)
+                total_context_tokens += LLMClient.estimate_tokens(messages + [message])
+                transcript.write(
+                    json.dumps(
+                        {
+                            "entry": entry,
+                            "request_messages": messages,
+                            "response_message": message,
+                            "issues": entry_issues,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+    finally:
+        client.close()
 
     report = {
         "entry_function": "external_benchmark_pure_llm",
