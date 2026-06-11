@@ -350,3 +350,58 @@ def test_get_file_snippet_covered_range_reuses_cached_result(monkeypatch) -> Non
     ]
     assert covered_tool_messages
     assert "cached_tool_result" in covered_tool_messages[0]["content"]
+
+
+def test_run_conversation_reports_final_tool_call_after_tools_disabled(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+    )
+
+    def fake_chat_completion(messages, **kwargs):
+        assert kwargs.get("tools") is None
+        return {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "lookup",
+                                    "arguments": json.dumps({"name": "demo"}),
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "model": "unit-model",
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+        }
+
+    def fail_tool_executor(name, args):
+        raise AssertionError("final disabled tool calls must not be executed")
+
+    monkeypatch.setattr(client, "chat_completion", fake_chat_completion)
+
+    result = client.run_conversation_with_tools(
+        messages=[{"role": "user", "content": "start"}],
+        tools_schema=[],
+        tool_executor=fail_tool_executor,
+        max_iterations=1,
+    )
+
+    assert result["final_tool_call_without_json"] is True
+    assert result["final_tool_call_after_tools_disabled"] is True
+    assert result["final_tool_call_count"] == 1
+    assert result["finish_reason"] == "tool_calls"
+    assert result["provider_model"] == "unit-model"
+    assert result["truncated"] is True
+    assert result["tool_call_count"] == 0
+    assert "lookup" in result["last_assistant_preview"]

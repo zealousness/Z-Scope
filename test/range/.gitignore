@@ -1,4 +1,6 @@
 build/
+benchmark_runs/
+codeql_runs/
 *.o
 *.a
 *.so
@@ -12,9 +14,13 @@ compile_commands.json
 .idea/
 *.log
 zscope.local.yaml
+zscope.local.env
+report.json
+report.md
 zscope_batch_report.json
 zscope_batch_report.md
 zscope_alert_verify_report.json
+.zscope*/
 .zscope_knowledge/
 .zscope_snapshots/
 .zscope_conversations/

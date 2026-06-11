@@ -106,6 +106,7 @@ class LLMClient:
         max_tokens: int = 4096,
         base_url_rate_limit_per_minute: int = 0,
         base_url_max_concurrent_requests: int = 0,
+        supports_structured_output: bool = False,
     ):
         """
         Initialize LLM client.
@@ -124,6 +125,7 @@ class LLMClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self.max_tokens = max_tokens
+        self.supports_structured_output = bool(supports_structured_output)
         self.base_url_rate_limit_per_minute = max(0, int(base_url_rate_limit_per_minute or 0))
         self.base_url_max_concurrent_requests = max(0, int(base_url_max_concurrent_requests or 0))
         self._session_pool_connections = max(1, len(self.base_urls))
@@ -412,6 +414,8 @@ class LLMClient:
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
+        response_format: Optional[Dict[str, Any]] = None,
         temperature: float = 0.1,
         max_tokens: Optional[int] = None,
         trace_agent: Optional[str] = None,
@@ -441,7 +445,9 @@ class LLMClient:
 
             if tools:
                 payload["tools"] = tools
-                payload["tool_choice"] = "auto"
+                payload["tool_choice"] = tool_choice if tool_choice is not None else "auto"
+            if response_format:
+                payload["response_format"] = response_format
             
             # Force streaming to bypass middle-proxy timeouts (e.g. 504 on 120s limit)
             payload["stream"] = True
@@ -494,6 +500,7 @@ class LLMClient:
                                 "message": assembled_message,
                                 "finish_reason": finish_reason
                             }],
+                            "model": model,
                             "usage": {
                                 "prompt_tokens": prompt_tokens,
                                 "completion_tokens": completion_tokens,
@@ -928,6 +935,9 @@ class LLMClient:
         cumulative_completion_tokens = 0
         warned_low_iterations = False
         low_iteration_threshold = max(3, min(10, max_iterations // 10 or 1))
+        last_finish_reason: Optional[str] = None
+        last_provider_model: Optional[str] = None
+        last_message: Dict[str, Any] = {}
         recorder = get_conversation_recorder()
         trace_session = (
             recorder.begin_session(trace_agent or "unknown_agent", trace_label)
@@ -997,6 +1007,10 @@ class LLMClient:
             choice = response.get("choices", [{}])[0]
             message = choice.get("message", {})
             finish_reason = choice.get("finish_reason")
+            provider_model = response.get("model") or (self.models[0] if self.models else None)
+            last_finish_reason = finish_reason
+            last_provider_model = provider_model
+            last_message = message
             prompt_tokens, completion_tokens = self._response_token_usage(
                 response,
                 model_conversation,
@@ -1032,6 +1046,9 @@ class LLMClient:
                     "cumulative_completion_tokens": cumulative_completion_tokens,
                     "cumulative_total_tokens": cumulative_prompt_tokens + cumulative_completion_tokens,
                     "tool_call_count": self._count_tool_result_messages(conversation),
+                    "finish_reason": finish_reason,
+                    "provider_model": provider_model,
+                    "last_assistant_preview": self._assistant_preview(message),
                 }
                 if loop_guard_recovery:
                     result_payload.update(
@@ -1052,11 +1069,45 @@ class LLMClient:
             tool_calls = message.get("tool_calls", [])
             if final_iteration and tool_calls:
                 logger.warning(
-                    "Ignoring %d tool calls returned after tool use was disabled.",
+                    "Model returned %d tool calls after tool use was disabled.",
                     len(tool_calls),
                 )
-                message["tool_calls"] = []
-                tool_calls = []
+                final_tokens = self.estimate_tokens(
+                    self._prepare_messages_for_model(conversation)
+                )
+                if recorder and trace_session:
+                    recorder.record_session_end(
+                        trace_session,
+                        iterations,
+                        final_tokens,
+                        truncated=max_iteration_final,
+                    )
+                result_payload = {
+                    "content": self._get_combined_content(conversation),
+                    "conversation": conversation,
+                    "iterations": iterations,
+                    "truncated": max_iteration_final,
+                    "context_tokens": final_tokens,
+                    "cumulative_prompt_tokens": cumulative_prompt_tokens,
+                    "cumulative_completion_tokens": cumulative_completion_tokens,
+                    "cumulative_total_tokens": cumulative_prompt_tokens + cumulative_completion_tokens,
+                    "tool_call_count": self._count_tool_result_messages(conversation),
+                    "finish_reason": finish_reason,
+                    "provider_model": provider_model,
+                    "final_tool_call_after_tools_disabled": True,
+                    "final_tool_call_without_json": True,
+                    "final_tool_call_count": len(tool_calls),
+                    "last_assistant_preview": self._assistant_preview(message),
+                }
+                if loop_guard_recovery:
+                    result_payload.update(
+                        {
+                            "loop_guard_triggered": True,
+                            "loop_guard_recovered": False,
+                            "repeated_tool_call": loop_guard_recovery,
+                        }
+                    )
+                return result_payload
             
             # --- XML Fallback (For GLM/Minimax models that emit raw text invoke tags) ---
             content = message.get("content", "")
@@ -1105,6 +1156,9 @@ class LLMClient:
                     "cumulative_completion_tokens": cumulative_completion_tokens,
                     "cumulative_total_tokens": cumulative_prompt_tokens + cumulative_completion_tokens,
                     "tool_call_count": self._count_tool_result_messages(conversation),
+                    "finish_reason": finish_reason,
+                    "provider_model": provider_model,
+                    "last_assistant_preview": self._assistant_preview(message),
                 }
                 if loop_guard_recovery:
                     result_payload.update(
@@ -1348,6 +1402,10 @@ class LLMClient:
             "cumulative_completion_tokens": cumulative_completion_tokens,
             "cumulative_total_tokens": cumulative_prompt_tokens + cumulative_completion_tokens,
             "tool_call_count": self._count_tool_result_messages(conversation),
+            "finish_reason": last_finish_reason,
+            "provider_model": last_provider_model,
+            "final_tool_call_count": len(last_message.get("tool_calls") or []),
+            "last_assistant_preview": self._assistant_preview(last_message),
         }
         if loop_guard_recovery:
             result_payload.update(
@@ -1362,6 +1420,19 @@ class LLMClient:
     @staticmethod
     def _count_tool_result_messages(conversation: List[Dict[str, Any]]) -> int:
         return sum(1 for message in conversation if message.get("role") == "tool")
+
+    @staticmethod
+    def _assistant_preview(message: Dict[str, Any], limit: int = 240) -> str:
+        content = str(message.get("content") or "")
+        if not content and message.get("reasoning_content"):
+            content = str(message.get("reasoning_content") or "")
+        if not content and message.get("tool_calls"):
+            names = [
+                str((tool_call.get("function") or {}).get("name") or "unknown")
+                for tool_call in message.get("tool_calls") or []
+            ]
+            content = "tool_calls=" + ",".join(names)
+        return LLMClient._truncate_text(content, limit)
 
     @classmethod
     def _response_token_usage(

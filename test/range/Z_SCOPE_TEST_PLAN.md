@@ -14,9 +14,7 @@ Current scorer truth is benchmark v13 with 121 scored vulnerabilities. The
 project models, `ISSUE41-*` is a separate high-priority tier derived from
 GitHub issue #41 distributed C/S messaging and task-creation models, and
 `ISSUE42-*` covers the shared-memory/runtime callback models from GitHub issue
-#42. These tiers are weighted above the original `RANGE-*` findings. Older
-observed-run notes below refer to previous 12-item, 14-item, 33-item, and
-87-item truths and are retained as historical context only.
+#42. These tiers are weighted above the original `RANGE-*` findings.
 
 Protocol-oriented `REAL-*` findings should be exercised through the realistic
 message path `td_handle_protocol_message` ->
@@ -89,15 +87,30 @@ ignored copy such as `test/range/zscope.local.yaml`.
 - `benchmark/PATTERN_COVERAGE.md`: maintenance matrix for the C
   memory/concurrency pattern catalog.
 - `benchmark/evaluate_zscope_report.py`: scorer for Z-SCOPE JSON reports.
-  It reports both aggregate metrics and per-tier recall; `real_project_issue40`
-  and `real_project_issue41` are intentionally separated from the legacy range
-  tier.
+  It reports both aggregate metrics and per-tier recall; `real_project_issue40`,
+  `real_project_issue41`, and `real_project_issue42` are intentionally
+  separated from the legacy range tier.
+- `entry_functions_list.json`: latest generated automatic entry-discovery list.
+- `zscope_batch_report.json` and `zscope_batch_report.md`: latest generated
+  batch report preserved locally for comparison.
+- `current_eval.json`: current scorer output for the preserved batch report.
 
-Do not include `GROUND_TRUTH.md`, `DELIVERY.md`, or
-`benchmark/ground_truth.json` in the analysis prompt/context given to Z-SCOPE.
-They are answer keys, not target-project documentation. The intended public
-project context is source code, headers, `README.md`, build files, and
-`benchmark/entries.json`.
+Do not include `GROUND_TRUTH.md` or `benchmark/ground_truth.json` in the
+analysis prompt/context given to Z-SCOPE. They are answer keys, not
+target-project documentation. The intended public project context is source
+code, headers, `README.md`, build files, and `benchmark/entries.json`.
+
+## Latest Preserved Result
+
+The latest preserved batch report is from 2026-06-09:
+
+- Report files: `zscope_batch_report.json` and `zscope_batch_report.md`.
+- Generated entry list: `entry_functions_list.json`.
+- Current scorer output: `current_eval.json`.
+- Default view: TP 84, FP 60, FN 37, precision 0.5833, recall 0.6942,
+  F1 0.6340, weighted recall 0.6616.
+- With `needs_review`: TP 105, FP 115, FN 16, precision 0.4773,
+  recall 0.8678, F1 0.6158, weighted recall 0.8251.
 
 ## Baseline Commands
 
@@ -158,34 +171,6 @@ Primary metrics:
 The evaluation output includes `matched_pairs`; inspect it before classifying a
 miss as a real Z-SCOPE false negative.
 
-## Observed Run: 2026-05-19
-
-Run id: `auto_unified_wsl_20260519_155123`.
-
-Execution:
-
-- WSL-only automatic entry discovery.
-- Unified backend with clangd plus SVF/Saber evidence.
-- 40/40 final reports were produced; one entry had a provider/modeling error
-  but still emitted run artifacts.
-
-Original strict v2 scorer:
-
-- default: TP 20, FP 35, FN 67, precision 0.3636, recall 0.2299, F1 0.2817
-- with_needs_review: TP 26, FP 55, FN 61, precision 0.3210, recall 0.2989,
-  F1 0.3095
-
-After the v3 scorer contract fix, without rerunning Z-SCOPE:
-
-- default: TP 34, FP 21, FN 53, precision 0.6182, recall 0.3908, F1 0.4789
-- with_needs_review: TP 46, FP 35, FN 41, precision 0.5679, recall 0.5287,
-  F1 0.5476
-
-The delta confirms that a large share of prior "misses" were scorer-contract
-misses: secondary sink anchors, placeholder lines, and custom category aliases.
-Remaining misses are concentrated in REAL/ISSUE41 protocol, state-machine, and
-resource-lifecycle patterns.
-
 ## Known Pitfalls
 
 - The repository README and some project Markdown contain mojibake. Prefer source
@@ -201,53 +186,6 @@ resource-lifecycle patterns.
   when launching from the repository root; otherwise Z-SCOPE stores scan
   snapshots in the repository-level `.zscope_snapshots/` directory and can
   accidentally reuse state from unrelated runs.
-
-## Observed Run: 2026-05-13
-
-Environment:
-
-- WSL Ubuntu
-- `clangd` installed from apt (`Ubuntu clangd version 18.1.3`)
-- Z-SCOPE config: `test/range/zscope.benchmark.yaml`
-- Model: DashScope OpenAI-compatible `glm-5`
-- SVF/gllvm unavailable, so SVF-enhanced pointer/lifetime analysis was disabled.
-
-Result:
-
-```text
-Functions analyzed: 12
-Total issues found: 35
-Total duration seconds: 5173.37
-Total context tokens: 855654
-```
-
-Benchmark scorer:
-
-```json
-{
-  "true_positives": 30,
-  "false_positives": 5,
-  "false_negatives": 3,
-  "precision": 0.8571,
-  "recall": 0.1429,
-  "f1": 0.8824,
-  "missed": ["RANGE-005","RANGE-013","RANGE-014"]
-}
-```
-
-Operational notes:
-
-- Full run wall-clock was long: started at `2026-05-12 22:17:51`, completed at
-  `2026-05-13 00:30:49`.
-- The first two entries were slow because Z-SCOPE built reusable snapshots for
-  common macros/helpers. Progress became faster after cache warm-up.
-- DashScope `glm-5` had intermittent `InvalidChunkLength`, SSL EOF, and bad MAC
-  errors; Z-SCOPE retry logic recovered and the run completed.
-- The result has high recall but low precision. The evaluator counted 47 report
-  issues against the previous 12-item ground truth. Benchmark v2 later retired
-  the disputed `_allocate_buffer` overflow item and added clearer memory and
-  concurrency findings; benchmark v3 later expanded lifecycle/cache/callback,
-  event, reload, and mmap patterns.
 - `GROUND_TRUTH.md` line numbers can drift from current source. The canonical
   line ranges for scoring are in `benchmark/ground_truth.json`.
 - Running from `/mnt/c/...` may be slower than a native WSL filesystem. If a tool
