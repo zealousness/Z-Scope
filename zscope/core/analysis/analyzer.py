@@ -93,7 +93,6 @@ from ...snapshots.policy import (
 )
 from ...framework.llm_client import LLMClient
 from ...agents.semantic_modeler.agent import SemanticModeler
-from ...agents.semantic_modeler.schema import DEFAULT_FUNCTION_SNAPSHOT_SCHEMA
 from ...agents.vulnerability_analyzer.agent import VulnerabilityAnalyzer
 from ...reporting.report import FinalReport, Issue, ReportGenerator
 from ...common.issue_identity import (
@@ -3375,14 +3374,38 @@ class Analyzer:
         agent_name: str,
         extra_skills: Optional[List[str]] = None,
         active_skill_names: Optional[List[str]] = None,
+        visible_tool_names: Optional[Sequence[str]] = None,
     ) -> None:
+        if visible_tool_names is None:
+            visible_tool_names = self._visible_prompt_tool_names(
+                agent_name,
+                active_skill_names=active_skill_names,
+            )
         attach_agent_contract(
             context,
             agent_name,
             self.spec_registry,
             extra_skills=extra_skills,
             active_skill_names=active_skill_names,
+            visible_tool_names=visible_tool_names,
         )
+
+    def _visible_prompt_tool_names(
+        self,
+        agent_name: str,
+        *,
+        active_skill_names: Optional[List[str]] = None,
+    ) -> Optional[List[str]]:
+        try:
+            return [
+                str(tool.name)
+                for tool in self._get_tools(
+                    agent_name,
+                    active_skill_names=active_skill_names,
+                )
+            ]
+        except Exception:
+            return None
 
     def _agent_system_prompt(
         self,
@@ -3390,12 +3413,14 @@ class Analyzer:
         *,
         active_skill_names: Optional[List[str]] = None,
         substitutions: Optional[Dict[str, Any]] = None,
+        visible_tool_names: Optional[Sequence[str]] = None,
     ) -> str:
         return agent_system_prompt(
             agent_name,
             self.spec_registry,
             active_skill_names=active_skill_names,
             substitutions=substitutions,
+            visible_tool_names=visible_tool_names,
         )
 
     def _select_vulnerability_skills_for_config(
@@ -4148,32 +4173,22 @@ class Analyzer:
 
     def _ask_refresh_decision(self, func_name: str, old_snapshot: Dict[str, Any], new_code: str) -> Dict[str, Any]:
         """Ask LLM if snapshot needs refresh."""
-        prompt = f"""
-Function '{func_name}' has changed.
-Old Snapshot Summary: {old_snapshot.get('summary')}
-Old Fingerprint: {old_snapshot.get('semantic_fingerprint')}
-
-New Code:
-```c
-{new_code}
-```
-
-        Determine if the semantic contract/behavior relevant to defect attributes (resources, errors, concurrency) has changed.
-Output a JSON of type 'snapshot_refresh_decision'.
-"""
+        prompt = (
+            f"Function '{func_name}' has changed.\n"
+            f"Old Snapshot Summary: {old_snapshot.get('summary')}\n"
+            f"Old Fingerprint: {old_snapshot.get('semantic_fingerprint')}\n\n"
+            "New Code:\n"
+            "```c\n"
+            f"{new_code}\n"
+            "```\n\n"
+            "Determine if the semantic contract/behavior relevant to defect attributes "
+            "(resources, errors, concurrency) has changed. Output only JSON of type "
+            "'snapshot_refresh_decision'."
+        )
         messages = [
             {
                 "role": "system",
-                "content": self._agent_system_prompt(
-                    "semantic_modeler",
-                    substitutions={
-                        "schema": json.dumps(
-                            DEFAULT_FUNCTION_SNAPSHOT_SCHEMA,
-                            indent=2,
-                            ensure_ascii=False,
-                        )
-                    },
-                ),
+                "content": self._snapshot_refresh_decision_system_prompt(),
             },
             {"role": "user", "content": prompt}
         ]
@@ -4193,6 +4208,29 @@ Output a JSON of type 'snapshot_refresh_decision'.
         except Exception as e:
             logger.error(f"Failed to get refresh decision: {e}")
             return {"refresh_needed": True, "reason": "Error calling LLM"}
+
+    def _snapshot_refresh_decision_system_prompt(self) -> str:
+        skill = self.spec_registry.get_skill("snapshot_refresh_decision")
+        skill_contract = (
+            skill.to_prompt_block(
+                allowed_tools=[],
+                allowed_mcp_tools=[],
+                allowed_mcp_resources=[],
+            )
+            if skill
+            else (
+                "## Skill: snapshot_refresh_decision\n"
+                "Determine whether an existing function snapshot must be refreshed after code changes.\n"
+                "Return exactly one JSON object with type=snapshot_refresh_decision."
+            )
+        )
+        return (
+            "You are the Z-SCOPE snapshot refresh decision reviewer. Decide whether "
+            "the old semantic snapshot still captures defect-relevant behavior in the "
+            "new implementation. No tools or MCP resources are available in this call.\n\n"
+            "[Loaded Skill Contract]\n"
+            f"{skill_contract}"
+        )
 
     def _extract_final_report(self, text: str) -> Optional[FinalReport]:
         """Parse final report from text."""

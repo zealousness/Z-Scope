@@ -1,4 +1,5 @@
 from zscope.core.analysis.analyzer import Analyzer
+from zscope.orchestration.agent_policy import attach_agent_contract
 from zscope.orchestration.specs import SpecRegistry
 
 
@@ -31,3 +32,18 @@ def test_active_skill_policy_intersects_agent_and_skill_tools() -> None:
     blocked = policy.enforce_tool("get_data_flow", {}, actor="test")
     assert blocked is not None
     assert blocked["policy_decision"] == "deny"
+
+
+def test_prompt_contract_lists_only_visible_tools() -> None:
+    context = {}
+    attach_agent_contract(
+        context,
+        "vulnerability_analyzer",
+        SpecRegistry(),
+        active_skill_names=["stack_escape"],
+        visible_tool_names=["get_file_snippet", "get_call_graph"],
+    )
+
+    assert "Allowed tools: get_file_snippet, get_call_graph" in context["agent_contract"]
+    assert "Allowed tools: get_file_snippet, get_call_graph" in context["skill_contracts"]
+    assert "get_function_impl" not in context["skill_contracts"]

@@ -151,3 +151,44 @@ def test_function_list_loader_preserves_entry_discovery_metadata(tmp_path) -> No
 
     assert entries[0].exposure == "other_user_input"
     assert entries[0].reasons == ["input:argv"]
+
+
+def test_function_list_loader_restores_diff_focus_from_file_metadata(tmp_path) -> None:
+    path = tmp_path / "entry_functions_diff.json"
+    path.write_text(
+        """
+        {
+          "mode": "diff_impact",
+          "diff_impact": {
+            "mode": "diff_impact",
+            "component": "repo_a",
+            "base_ref": "base",
+            "head_ref": "head",
+            "changed_functions": [
+              {
+                "function_name": "Changed",
+                "file_path": "src/changed.c",
+                "changed_lines": [12]
+              }
+            ]
+          },
+          "functions": [
+            {
+              "function_name": "Api",
+              "file_path": "src/api.c"
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    entries = FunctionListLoader.load(path)
+    focus = entries[0].diff_focus
+
+    assert focus["mode"] == "diff_impact"
+    assert focus["component"] == "repo_a"
+    assert focus["base_ref"] == "base"
+    assert focus["entry_function"] == "Api"
+    assert focus["entry_file_path"] == "src/api.c"
+    assert focus["changed_functions"][0]["function_name"] == "Changed"
