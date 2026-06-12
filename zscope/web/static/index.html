@@ -41,6 +41,7 @@
         .finding-queue-pane,
         .finding-detail-pane,
         .context-rail {
+            min-width: 0;
             min-height: 0;
             height: 100%;
             overflow: hidden;
@@ -91,13 +92,16 @@
             overflow: hidden;
         }
         .finding-workspace {
+            min-width: 0;
             height: 100%;
             min-height: 0;
             display: grid;
+            grid-template-columns: minmax(0, 1fr);
             grid-template-rows: auto minmax(290px, 0.95fr) minmax(220px, 0.85fr) auto;
             overflow: auto;
         }
         .finding-summary-bar {
+            min-width: 0;
             padding: 1rem;
             border-bottom: 1px solid #e5e7eb;
             background: #ffffff;
@@ -106,20 +110,25 @@
             z-index: 8;
         }
         .code-evidence-panel {
+            min-width: 0;
             min-height: 0;
             display: grid;
+            grid-template-columns: minmax(0, 1fr);
             grid-template-rows: auto minmax(0, 1fr);
             overflow: hidden;
             border-bottom: 1px solid #e5e7eb;
             background: #ffffff;
         }
         .code-and-evidence {
+            min-width: 0;
             min-height: 0;
+            height: 100%;
             display: grid;
-            grid-template-columns: minmax(0, 1fr) 248px;
+            grid-template-columns: minmax(240px, calc(66% - 5px)) 10px minmax(180px, calc(34% - 5px));
             overflow: hidden;
         }
         .code-evidence-body {
+            min-width: 0;
             min-height: 0;
             overflow: auto;
         }
@@ -152,12 +161,49 @@
             color: #f8fafc;
         }
         .evidence-panel {
+            min-width: 0;
             min-height: 0;
-            border-left: 1px solid #e5e7eb;
             background: #f8fafc;
             display: grid;
             grid-template-rows: auto minmax(0, 1fr);
             overflow: hidden;
+        }
+        .evidence-splitter {
+            min-width: 10px;
+            min-height: 0;
+            border-left: 1px solid #e5e7eb;
+            border-right: 1px solid #e5e7eb;
+            background: #f1f5f9;
+            cursor: col-resize;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            touch-action: none;
+            outline: none;
+        }
+        .evidence-splitter::before {
+            content: "";
+            width: 3px;
+            height: 46px;
+            border-radius: 999px;
+            background: #cbd5e1;
+        }
+        .evidence-splitter:hover,
+        .evidence-splitter:focus-visible {
+            background: #e0f2fe;
+        }
+        .evidence-splitter:hover::before,
+        .evidence-splitter:focus-visible::before {
+            background: #2563eb;
+        }
+        body.evidence-split-resizing {
+            user-select: none;
+        }
+        body.evidence-split-horizontal {
+            cursor: col-resize;
+        }
+        body.evidence-split-vertical {
+            cursor: row-resize;
         }
         .evidence-panel-head {
             padding: 0.75rem 0.875rem;
@@ -367,8 +413,10 @@
             padding: 0.875rem;
         }
         .audit-review-dock {
+            min-width: 0;
             min-height: 0;
             display: grid;
+            grid-template-columns: minmax(0, 1fr);
             grid-template-rows: auto minmax(0, 1fr);
             overflow: hidden;
             background: #fbfdff;
@@ -440,6 +488,7 @@
             word-break: break-word;
         }
         .audit-decision-panel {
+            min-width: 0;
             min-height: 184px;
             padding: 0.875rem;
             display: grid;
@@ -529,8 +578,6 @@
             .context-rail { display: none; }
             .context-tab-only { display: inline-flex; }
             .finding-workspace { grid-template-rows: auto minmax(280px, 0.95fr) minmax(220px, 0.85fr) auto; }
-            .code-and-evidence { grid-template-columns: 1fr; }
-            .evidence-panel { border-left: 0; border-top: 1px solid #e5e7eb; max-height: 220px; }
             .audit-claim-row { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
             .audit-claim-track { grid-template-columns: repeat(2, minmax(170px, 1fr)); }
             .status-dashboard-grid { grid-template-columns: 1fr; }
@@ -557,8 +604,26 @@
             }
             .mobile-hidden { display: none !important; }
             .finding-workspace {
-                grid-template-rows: auto minmax(250px, 0.85fr) minmax(220px, 0.85fr) auto;
+                grid-template-rows: auto minmax(320px, 1fr) minmax(220px, 0.85fr) auto;
             }
+            .code-and-evidence {
+                grid-template-columns: 1fr;
+                grid-template-rows: minmax(100px, calc(58% - 5px)) 10px minmax(92px, calc(42% - 5px));
+            }
+            .evidence-splitter {
+                min-width: 0;
+                min-height: 10px;
+                border-left: 0;
+                border-right: 0;
+                border-top: 1px solid #e5e7eb;
+                border-bottom: 1px solid #e5e7eb;
+                cursor: row-resize;
+            }
+            .evidence-splitter::before {
+                width: 46px;
+                height: 3px;
+            }
+            .evidence-panel { border-left: 0; border-top: 0; max-height: none; }
             .audit-decision-panel { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr) auto; }
             .audit-decision-controls { grid-column: 1; grid-row: 3; grid-template-rows: auto auto; }
             .audit-status-stack { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -793,7 +858,7 @@
                             <h3 class="text-sm font-semibold text-slate-950">代码证据</h3>
                             <span class="text-xs subtle-text code-font truncate" x-text="activeCodeLabel(selectedFinding)"></span>
                         </div>
-                        <div class="code-and-evidence">
+                        <div class="code-and-evidence" :style="codeEvidenceSplitStyle()">
                             <div class="code-evidence-body code-panel">
                                 <table class="code-table">
                                     <tbody>
@@ -805,6 +870,19 @@
                                         </template>
                                     </tbody>
                                 </table>
+                            </div>
+                            <div
+                                class="evidence-splitter"
+                                role="separator"
+                                tabindex="0"
+                                aria-label="调整代码证据和 Evidence Timeline 的占用比例"
+                                :aria-orientation="evidenceSplitOrientation()"
+                                :aria-valuenow="Math.round(activeEvidenceSplitPercent())"
+                                aria-valuemin="20"
+                                aria-valuemax="65"
+                                @pointerdown="startEvidenceSplitResize($event)"
+                                @keydown="handleEvidenceSplitKeydown($event)"
+                                title="拖动调整代码证据和 Evidence Timeline 的占用比例">
                             </div>
                             <aside class="evidence-panel">
                                 <div class="evidence-panel-head">
@@ -908,7 +986,7 @@
                                     <span x-text="findingEvidenceRefs(selectedFinding).slice(0, 5).join(', ') || '暂无 evidence refs'"></span>
                                 </div>
                                 <p class="text-[11px] leading-snug" x-show="saveFeedbackStatus" :class="saveFeedbackType === 'success' ? 'text-emerald-700' : (saveFeedbackType === 'warning' ? 'text-amber-700' : 'text-error')" x-text="saveFeedbackStatus"></p>
-                                <button type="button" class="btn btn-outline btn-xs" @click="saveFindings()" :disabled="savingFindings" x-text="savingFindings ? '保存中...' : '保存验证结果'">保存验证结果</button>
+                                <button type="button" class="btn btn-outline btn-xs" @click="saveSelectedFinding()" :disabled="savingFindings" x-text="savingFindings ? '保存中...' : '保存当前条'">保存当前条</button>
                             </div>
                         </div>
                     </section>
@@ -1370,6 +1448,9 @@
                 activeCodeSnippet: null,
                 auditClaimHeight: 220,
                 auditDecisionHeight: 250,
+                evidenceTimelineWidthPercent: 34,
+                evidenceTimelineHeightPercent: 42,
+                viewportWidth: window.innerWidth || 1280,
                 reportSummary: null,
                 reportViews: {},
                 reportView: 'default',
@@ -1462,6 +1543,9 @@
                 intentForm: { func_name:'', file_path:'', concurrency_group:'', concurrent_str:'', caller_constraints:'', notes:'' },
 
                 init() {
+                    window.addEventListener('resize', () => {
+                        this.viewportWidth = window.innerWidth || this.viewportWidth;
+                    });
                     this.loadVersion();
                     this.refreshData();
                     this.loadStructuredConfig();
@@ -2375,13 +2459,22 @@
                         });
                 },
 
+                saveSelectedFinding() {
+                    if (!this.selectedFinding) {
+                        this.showToast('请先选择一条 finding', 'warning');
+                        return;
+                    }
+                    this.saveFindings([this.selectedFinding]);
+                },
+
                 saveFindings(issuesOverride = null) {
                     if (this.savingFindings) {
                         return;
                     }
+                    const isSingleFindingSave = Array.isArray(issuesOverride) && issuesOverride.length === 1;
                     const issuesToSave = Array.isArray(issuesOverride) ? issuesOverride : this.findings;
                     this.savingFindings = true;
-                    this.saveFeedbackStatus = '正在保存验证结果...';
+                    this.saveFeedbackStatus = isSingleFindingSave ? '正在保存当前验证结果...' : '正在保存验证结果...';
                     this.saveFeedbackType = 'info';
                     fetch('/api/save_findings', {
                         method: 'POST',
@@ -2813,6 +2906,105 @@
 
                 selectNextFinding() {
                     this.selectFindingByOffset(1);
+                },
+
+                evidenceSplitOrientation() {
+                    return this.viewportWidth < 900 ? 'vertical' : 'horizontal';
+                },
+
+                activeEvidenceSplitPercent() {
+                    return this.evidenceSplitOrientation() === 'vertical'
+                        ? this.evidenceTimelineHeightPercent
+                        : this.evidenceTimelineWidthPercent;
+                },
+
+                evidenceSplitBounds(orientation = this.evidenceSplitOrientation()) {
+                    return orientation === 'vertical'
+                        ? { min: 28, max: 65 }
+                        : { min: 24, max: 56 };
+                },
+
+                setEvidenceSplitPercent(value, orientation = this.evidenceSplitOrientation()) {
+                    const bounds = this.evidenceSplitBounds(orientation);
+                    const next = Math.max(bounds.min, Math.min(bounds.max, Math.round(value)));
+                    if (orientation === 'vertical') {
+                        this.evidenceTimelineHeightPercent = next;
+                    } else {
+                        this.evidenceTimelineWidthPercent = next;
+                    }
+                },
+
+                codeEvidenceSplitStyle() {
+                    const orientation = this.evidenceSplitOrientation();
+                    const evidencePercent = orientation === 'vertical'
+                        ? this.evidenceTimelineHeightPercent
+                        : this.evidenceTimelineWidthPercent;
+                    const codePercent = 100 - evidencePercent;
+                    if (orientation === 'vertical') {
+                        return `grid-template-columns: 1fr; grid-template-rows: minmax(100px, calc(${codePercent}% - 5px)) 10px minmax(92px, calc(${evidencePercent}% - 5px));`;
+                    }
+                    return `grid-template-columns: minmax(240px, calc(${codePercent}% - 5px)) 10px minmax(180px, calc(${evidencePercent}% - 5px));`;
+                },
+
+                handleEvidenceSplitKeydown(event) {
+                    const orientation = this.evidenceSplitOrientation();
+                    const current = this.activeEvidenceSplitPercent();
+                    let next = null;
+                    if (orientation === 'vertical') {
+                        if (event.key === 'ArrowUp') next = current + 4;
+                        if (event.key === 'ArrowDown') next = current - 4;
+                    } else {
+                        if (event.key === 'ArrowLeft') next = current + 4;
+                        if (event.key === 'ArrowRight') next = current - 4;
+                    }
+                    if (event.key === 'Home') next = this.evidenceSplitBounds(orientation).max;
+                    if (event.key === 'End') next = this.evidenceSplitBounds(orientation).min;
+                    if (next === null) {
+                        return;
+                    }
+                    event.preventDefault();
+                    this.setEvidenceSplitPercent(next, orientation);
+                },
+
+                startEvidenceSplitResize(event) {
+                    const container = event.currentTarget?.closest('.code-and-evidence');
+                    const handle = event.currentTarget;
+                    if (!container || !handle) return;
+                    const orientation = this.evidenceSplitOrientation();
+                    let active = true;
+                    const applyResize = (clientX, clientY) => {
+                        const rect = container.getBoundingClientRect();
+                        const size = orientation === 'vertical' ? rect.height : rect.width;
+                        if (!size) return;
+                        const distanceFromEnd = orientation === 'vertical'
+                            ? rect.bottom - clientY
+                            : rect.right - clientX;
+                        this.setEvidenceSplitPercent((distanceFromEnd / size) * 100, orientation);
+                    };
+                    const resize = (moveEvent) => {
+                        if (!active) return;
+                        moveEvent.preventDefault?.();
+                        applyResize(moveEvent.clientX, moveEvent.clientY);
+                    };
+                    const stop = () => {
+                        active = false;
+                        document.removeEventListener('pointermove', resize);
+                        document.removeEventListener('pointerup', stop);
+                        document.removeEventListener('pointercancel', stop);
+                        try {
+                            handle.releasePointerCapture?.(event.pointerId);
+                        } catch (_err) {
+                            // Pointer capture can already be released by the browser.
+                        }
+                        document.body.classList.remove('evidence-split-resizing', 'evidence-split-horizontal', 'evidence-split-vertical');
+                    };
+                    event.preventDefault?.();
+                    handle.setPointerCapture?.(event.pointerId);
+                    applyResize(event.clientX, event.clientY);
+                    document.body.classList.add('evidence-split-resizing', `evidence-split-${orientation}`);
+                    document.addEventListener('pointermove', resize);
+                    document.addEventListener('pointerup', stop);
+                    document.addEventListener('pointercancel', stop);
                 },
 
                 startAuditResize(event, section) {
