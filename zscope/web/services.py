@@ -13,8 +13,8 @@ from ..config.user_config_workbook import SHEET_HEADERS
 from ..reporting.views import (
     DEFAULT_REPORT_VIEW,
     WITH_NEEDS_REVIEW_REPORT_VIEW,
-    build_report_views,
     findings_for_view,
+    group_by_severity,
     report_view_summary,
 )
 
@@ -775,19 +775,24 @@ class ReportFeedbackService:
                 if isinstance(view, dict):
                     for issue in view.get("issues", []):
                         update_issue(issue)
+                    for issues in view.get("issues_by_severity", {}).values():
+                        for issue in issues:
+                            update_issue(issue)
+                    view_issues = [
+                        issue for issue in view.get("issues", []) if isinstance(issue, dict)
+                    ]
+                    view["issue_count"] = len(view_issues)
+                    view["issues_by_severity"] = group_by_severity(view_issues)
 
-            metadata = report.get("metadata") if isinstance(report.get("metadata"), dict) else {}
-            rebuilt_views = build_report_views(
-                report.get("issues", []),
-                metadata.get("audit_observations", []),
-            )
-            report["report_views"] = rebuilt_views
-            with_review = rebuilt_views.get(WITH_NEEDS_REVIEW_REPORT_VIEW, {})
-            report["issues_with_needs_review"] = with_review.get("issues", [])
-            report["issues_by_severity_with_needs_review"] = with_review.get(
-                "issues_by_severity",
-                {},
-            )
+            with_review = report_views.get(WITH_NEEDS_REVIEW_REPORT_VIEW)
+            if isinstance(with_review, dict):
+                with_review_issues = [
+                    issue for issue in with_review.get("issues", []) if isinstance(issue, dict)
+                ]
+                report["issues_with_needs_review"] = with_review_issues
+                report["issues_by_severity_with_needs_review"] = group_by_severity(
+                    with_review_issues
+                )
             report.setdefault("metadata", {})["report_view_summary"] = report_view_summary(report)
 
     def apply_validation_to_snapshots(self, updates: list[Any]) -> Dict[str, Any]:
