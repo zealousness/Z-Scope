@@ -6,7 +6,12 @@ import pytest
 from zscope.config.config import ConfigLoader
 from zscope.config.function_entry import FunctionEntry
 from zscope.core.analysis.analyzer import Analyzer
-from zscope.orchestration.diff_impact import ChangedLineRange, DiffImpactPlanner
+from zscope.orchestration.diff_impact import (
+    ChangedFunction,
+    ChangedLineRange,
+    DiffImpactPlan,
+    DiffImpactPlanner,
+)
 from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
 
 
@@ -118,6 +123,42 @@ class StaticDiffPlanner(DiffImpactPlanner):
 
     def _collect_changed_line_ranges(self):
         return list(self.changed_ranges)
+
+
+def test_diff_entry_payload_declares_diff_mode(tmp_path: Path):
+    plan = DiffImpactPlan(
+        component="repo_a",
+        repo_root=str(tmp_path),
+        git_root=str(tmp_path),
+        source_root=str(tmp_path),
+        project_root=str(tmp_path),
+        requested_repo_root=str(tmp_path),
+        base_ref="base",
+        head_ref="head",
+        entries=[
+            FunctionEntry(
+                "Api",
+                file_path="src/api.c",
+                diff_focus={"mode": "diff_impact", "component": "repo_a"},
+            )
+        ],
+        changed_functions=[
+            ChangedFunction(
+                "Changed",
+                "src/changed.c",
+                10,
+                20,
+                changed_lines=[12],
+            )
+        ],
+        changed_files=["src/changed.c"],
+        changed_headers=[],
+    )
+
+    payload = plan.to_entry_functions_payload()
+
+    assert payload["mode"] == "diff_impact"
+    assert payload["diff_impact"]["mode"] == "diff_impact"
 
 
 def _write_numbered_file(root: Path, rel_path: str, line_count: int = 30) -> None:

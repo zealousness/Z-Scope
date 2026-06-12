@@ -268,10 +268,10 @@ def is_valid_snapshot(d: dict) -> bool:
 
 def is_valid_report(d: dict) -> bool:
     """Check if dictionary looks like a final report."""
-    return isinstance(d, dict) and (
-        d.get("type") == "final_report" or 
-        "issues" in d or 
-        "overall_verdict" in d
+    return (
+        isinstance(d, dict)
+        and d.get("type") == "final_report"
+        and isinstance(d.get("issues"), list)
     )
 
 

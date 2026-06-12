@@ -11,8 +11,12 @@ import random
 import re
 import json
 import logging
+import os
 import threading
 import time
+import shutil
+import subprocess
+import tempfile
 from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Sequence, Set, Union, cast
 
 import requests
@@ -145,6 +149,8 @@ class LLMClient:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
+        self._transport = os.environ.get("Z_SCOPE_LLM_TRANSPORT", "requests").strip().lower()
+        self._curl_bin = os.environ.get("Z_SCOPE_CURL_BIN", "").strip()
         self._thread_local = threading.local()
         self._sessions_lock = threading.Lock()
         self._sessions: Set[requests.Session] = set()
@@ -459,7 +465,55 @@ class LLMClient:
                 response: Optional[requests.Response] = None
                 try:
                     url = self._chat_completion_url(endpoint.url)
-                    
+
+                    if self._transport == "curl":
+                        assembled_message, finish_reason, provider_usage = self._curl_chat_completion(
+                            url,
+                            payload,
+                        )
+                        prompt_tokens = LLMClient.estimate_tokens(messages)
+                        completion_tokens = LLMClient.estimate_tokens([assembled_message])
+                        logger.info(
+                            f"[LLM API Trace] Model: {model} | "
+                            f"Prompt ~{prompt_tokens:,} tk | "
+                            f"Completion ~{completion_tokens:,} tk | "
+                            f"Total ~{prompt_tokens + completion_tokens:,} tk"
+                        )
+                        if recorder and trace_session:
+                            recorder.record_exchange(
+                                trace_session,
+                                trace_iteration,
+                                messages,
+                                assembled_message,
+                                finish_reason,
+                                model,
+                                prompt_tokens,
+                                completion_tokens,
+                            )
+                            if created_trace_session:
+                                recorder.record_session_end(
+                                    trace_session,
+                                    trace_iteration or 1,
+                                    prompt_tokens + completion_tokens,
+                                )
+                        usage = {
+                            "prompt_tokens": prompt_tokens,
+                            "completion_tokens": completion_tokens,
+                            "total_tokens": prompt_tokens + completion_tokens,
+                            "estimated": True,
+                        }
+                        if provider_usage:
+                            usage.update(provider_usage)
+                            usage["estimated"] = False
+                        return {
+                            "choices": [{
+                                "message": assembled_message,
+                                "finish_reason": finish_reason,
+                            }],
+                            "model": model,
+                            "usage": usage,
+                        }
+
                     response = self._session_for_thread().post(
                         url, json=payload, timeout=self.timeout, stream=True
                     )
@@ -576,6 +630,139 @@ class LLMClient:
             logger.info(f"Falling back from model {model}...")
             
         raise Exception(f"All models failed. Last error: {last_error}")
+
+    def _curl_chat_completion(
+        self,
+        url: str,
+        payload: Dict[str, Any],
+    ) -> tuple[Dict[str, Any], str, Dict[str, Any]]:
+        """Send a chat completion request through curl.
+
+        This is intentionally opt-in via ``Z_SCOPE_LLM_TRANSPORT=curl``. It is
+        useful on Windows/WSL setups where Python's OpenSSL stack cannot reach a
+        provider but the system curl/SChannel path can.
+        """
+
+        curl_bin = self._curl_executable()
+        curl_payload = dict(payload)
+        curl_payload["stream"] = False
+        request_bytes = json.dumps(curl_payload, ensure_ascii=False).encode("utf-8")
+        status_marker = "\n__Z_SCOPE_HTTP_STATUS__:"
+        timeout_seconds = max(float(self.timeout) * 3.0, 60.0)
+        config_path = self._write_curl_config(
+            url=url,
+            timeout_seconds=timeout_seconds,
+            status_marker=status_marker,
+        )
+        command_config_path = self._curl_command_path(config_path, curl_bin)
+        command = [curl_bin, "--config", command_config_path]
+        try:
+            proc = subprocess.run(
+                command,
+                input=request_bytes,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        finally:
+            try:
+                os.unlink(config_path)
+            except OSError:
+                logger.debug("Failed to remove temporary curl config", exc_info=True)
+        stdout = proc.stdout.decode("utf-8", errors="replace")
+        stderr = proc.stderr.decode("utf-8", errors="replace").strip()
+        if status_marker not in stdout:
+            detail = stderr or stdout[-500:] or f"curl exited with {proc.returncode}"
+            raise RuntimeError(f"curl transport did not return an HTTP status: {detail}")
+        body, raw_status = stdout.rsplit(status_marker, 1)
+        try:
+            status = int(raw_status.strip()[-3:])
+        except ValueError as exc:
+            raise RuntimeError(f"curl transport returned invalid HTTP status: {raw_status!r}") from exc
+        if proc.returncode != 0:
+            detail = stderr or body[-500:] or f"curl exited with {proc.returncode}"
+            raise RuntimeError(f"curl transport failed: {detail}")
+        if status != 200:
+            raise RuntimeError(f"HTTP {status}: {body[:2000]}")
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"curl transport returned non-JSON response: {body[:1000]}") from exc
+        choices = data.get("choices") or []
+        if not choices:
+            raise RuntimeError(f"curl transport response missing choices: {body[:1000]}")
+        choice = choices[0] if isinstance(choices[0], dict) else {}
+        message = choice.get("message") or {}
+        if not isinstance(message, dict):
+            message = {"role": "assistant", "content": str(message)}
+        message.setdefault("role", "assistant")
+        message.setdefault("content", "")
+        finish_reason = str(choice.get("finish_reason") or "stop")
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        return message, finish_reason, dict(usage)
+
+    def _write_curl_config(
+        self,
+        *,
+        url: str,
+        timeout_seconds: float,
+        status_marker: str,
+    ) -> str:
+        fd, path = tempfile.mkstemp(prefix="zscope-curl-", suffix=".cfg")
+        auth_header = f"Authorization: {self._session_headers['Authorization']}"
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("silent\n")
+            handle.write("show-error\n")
+            handle.write("http1.1\n")
+            handle.write('request = "POST"\n')
+            handle.write(f"url = {self._curl_config_quote(url)}\n")
+            handle.write(f"header = {self._curl_config_quote(auth_header)}\n")
+            handle.write('header = "Content-Type: application/json"\n')
+            handle.write('data-binary = "@-"\n')
+            handle.write(f'max-time = "{int(timeout_seconds)}"\n')
+            handle.write(f"write-out = {self._curl_config_quote(status_marker + '%{http_code}')}\n")
+        return path
+
+    @staticmethod
+    def _curl_config_quote(value: str) -> str:
+        escaped = (
+            value.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\r", "\\r")
+            .replace("\n", "\\n")
+            .replace("\t", "\\t")
+        )
+        return f'"{escaped}"'
+
+    @staticmethod
+    def _curl_command_path(path: str, curl_bin: str) -> str:
+        if os.name != "posix" or not curl_bin.lower().endswith(".exe"):
+            return path
+        try:
+            converted = subprocess.run(
+                ["wslpath", "-w", path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        except OSError:
+            return path
+        if converted.returncode != 0:
+            return path
+        windows_path = converted.stdout.decode("utf-8", errors="replace").strip()
+        return windows_path or path
+
+    def _curl_executable(self) -> str:
+        if self._curl_bin:
+            return self._curl_bin
+        for candidate in ("curl.exe", "curl"):
+            resolved = shutil.which(candidate)
+            if resolved:
+                return resolved
+        raise RuntimeError(
+            "Z_SCOPE_LLM_TRANSPORT=curl was requested, but no curl executable was found. "
+            "Set Z_SCOPE_CURL_BIN to an explicit curl path."
+        )
 
     def _assemble_chat_response(self, response: requests.Response) -> tuple[Dict[str, Any], str]:
         """Assemble either SSE chunks or a plain JSON chat completion response."""

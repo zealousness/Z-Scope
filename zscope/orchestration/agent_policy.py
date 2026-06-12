@@ -31,11 +31,20 @@ def attach_agent_contract(
     *,
     extra_skills: Optional[List[str]] = None,
     active_skill_names: Optional[List[str]] = None,
+    visible_tool_names: Optional[Sequence[str]] = None,
+    visible_mcp_tool_names: Optional[Sequence[str]] = None,
+    visible_mcp_resource_names: Optional[Sequence[str]] = None,
 ) -> None:
     """Attach agent/skill contracts to a single agent invocation."""
+    if visible_tool_names is not None:
+        visible_mcp_tool_names = visible_mcp_tool_names or []
+        visible_mcp_resource_names = visible_mcp_resource_names or []
     agent_spec = spec_registry.get_agent(agent_name)
     if agent_spec:
-        context["agent_contract"] = agent_spec.to_prompt_block(active_skills=active_skill_names)
+        context["agent_contract"] = agent_spec.to_prompt_block(
+            active_skills=active_skill_names,
+            allowed_tools=visible_tool_names,
+        )
     else:
         context.pop("agent_contract", None)
 
@@ -45,7 +54,14 @@ def attach_agent_contract(
         only=active_skill_names,
     )
     if skills:
-        context["skill_contracts"] = "\n\n".join(skill.to_prompt_block() for skill in skills)
+        context["skill_contracts"] = "\n\n".join(
+            skill.to_prompt_block(
+                allowed_tools=visible_tool_names,
+                allowed_mcp_tools=visible_mcp_tool_names,
+                allowed_mcp_resources=visible_mcp_resource_names,
+            )
+            for skill in skills
+        )
     else:
         context.pop("skill_contracts", None)
 
@@ -56,10 +72,19 @@ def agent_system_prompt(
     *,
     active_skill_names: Optional[List[str]] = None,
     substitutions: Optional[Dict[str, Any]] = None,
+    visible_tool_names: Optional[Sequence[str]] = None,
+    visible_mcp_tool_names: Optional[Sequence[str]] = None,
+    visible_mcp_resource_names: Optional[Sequence[str]] = None,
 ) -> str:
+    if visible_tool_names is not None:
+        visible_mcp_tool_names = visible_mcp_tool_names or []
+        visible_mcp_resource_names = visible_mcp_resource_names or []
     agent_spec = spec_registry.get_agent(agent_name)
     prompt = (
-        agent_spec.to_prompt_block(active_skills=active_skill_names)
+        agent_spec.to_prompt_block(
+            active_skills=active_skill_names,
+            allowed_tools=visible_tool_names,
+        )
         if agent_spec
         else agent_name
     )

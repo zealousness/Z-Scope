@@ -3,6 +3,8 @@ import json
 from zscope.agents.deep_worker.agent import DeepWorkerAgent
 from zscope.agents.semantic_modeler.agent import SemanticModeler
 from zscope.agents.vulnerability_analyzer.agent import VulnerabilityAnalyzer
+from zscope.common.utils import is_valid_report
+from zscope.orchestration.entry_discovery import COMM_PROMPT
 
 
 class RepairLLM:
@@ -37,6 +39,20 @@ class RepairLLM:
             ],
             "model": "unit-model",
             "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+        }
+
+
+class GetCallersTool:
+    name = "get_callers"
+
+    def get_schema(self):
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": "Get callers.",
+                "parameters": {"type": "object", "properties": {}},
+            },
         }
 
 
@@ -91,6 +107,31 @@ def test_vulnerability_analyzer_repairs_final_report(monkeypatch) -> None:
     assert response.data["type"] == "final_report"
     assert response.data["issues"] == []
     assert response.metadata["report_repair_attempted"] == 1
+
+
+def test_entry_focus_rewrites_hidden_get_callers_requirement() -> None:
+    agent = VulnerabilityAnalyzer(RepairLLM("emit_final_report", {"type": "final_report", "issues": []}), [])
+
+    focus = agent._entry_focus_for_available_tools(COMM_PROMPT)
+
+    assert "get_callers" not in focus
+    assert "caller-side parsing and validation" in focus
+    assert "candidate evidence" in focus
+
+
+def test_entry_focus_keeps_get_callers_when_tool_is_visible() -> None:
+    agent = VulnerabilityAnalyzer(
+        RepairLLM("emit_final_report", {"type": "final_report", "issues": []}),
+        [GetCallersTool()],
+    )
+
+    assert "get_callers" in agent._entry_focus_for_available_tools(COMM_PROMPT)
+
+
+def test_final_report_validator_requires_type_and_issues() -> None:
+    assert is_valid_report({"type": "final_report", "issues": []}) is True
+    assert is_valid_report({"overall_verdict": "clean"}) is False
+    assert is_valid_report({"type": "final_report"}) is False
 
 
 def test_deep_worker_preserves_partial_failure_metadata(monkeypatch) -> None:
