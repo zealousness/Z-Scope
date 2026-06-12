@@ -240,6 +240,86 @@ def test_report_feedback_service_accepts_structured_issue_key_fields(tmp_path: P
     assert saved["issues"][0]["validation_reasoning"] == "manual confirmation"
 
 
+def test_report_feedback_service_preserves_existing_report_view_membership_on_save(
+    tmp_path: Path,
+) -> None:
+    report_path = tmp_path / "report.json"
+    default_issue = {
+        "id": "ISSUE_1",
+        "function": "entry",
+        "location": "src/demo.c:42",
+        "subcategory": "bounds",
+        "impact_level": "high",
+        "validation_status": "validated",
+        "validation_reasoning": "auto validation",
+    }
+    review_only_issue = {
+        "id": "OBS_1",
+        "function": "entry",
+        "location": "src/demo.c:48",
+        "subcategory": "bounds",
+        "impact_level": "medium",
+        "validation_status": "needs_review",
+        "validation_reasoning": "needs manual review",
+    }
+    report_path.write_text(
+        json.dumps(
+            {
+                "issues": [dict(default_issue)],
+                "issues_with_needs_review": [dict(default_issue), dict(review_only_issue)],
+                "report_views": {
+                    "default": {
+                        "label": "Default",
+                        "issue_count": 1,
+                        "issues": [dict(default_issue)],
+                    },
+                    "with_needs_review": {
+                        "label": "With needs_review",
+                        "issue_count": 2,
+                        "included_needs_review_count": 1,
+                        "independent_needs_review_count": 1,
+                        "attached_needs_review_count": 0,
+                        "issues": [dict(default_issue), dict(review_only_issue)],
+                    },
+                },
+                "metadata": {
+                    "audit_observations": [],
+                    "report_view_summary": {
+                        "default": {"issue_count": 1},
+                        "with_needs_review": {"issue_count": 2},
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = ReportFeedbackService(report_filename=str(report_path))
+
+    payload = service.save_validation_feedback(
+        [
+            {
+                "id": "ISSUE_1",
+                "function": "entry",
+                "location": "src/demo.c:42",
+                "subcategory": "bounds",
+                "validation_status": "needs_review",
+                "validation_reasoning": "manual confirmation",
+            }
+        ]
+    )
+    saved = service.load_report()
+
+    assert payload["success"] is True
+    with_review = saved["report_views"]["with_needs_review"]
+    assert len(with_review["issues"]) == 2
+    assert {issue["id"] for issue in with_review["issues"]} == {"ISSUE_1", "OBS_1"}
+    assert with_review["issue_count"] == 2
+    assert len(saved["issues_with_needs_review"]) == 2
+    assert saved["metadata"]["report_view_summary"]["with_needs_review"]["issue_count"] == 2
+    assert saved["report_views"]["default"]["issues"][0]["validation_status"] == "needs_review"
+    assert with_review["issues"][0]["validation_reasoning"] == "manual confirmation"
+
+
 def test_report_feedback_service_findings_payload_is_lightweight(tmp_path: Path) -> None:
     report_path = tmp_path / "report.json"
     heavy_issue = {
