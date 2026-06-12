@@ -414,11 +414,20 @@ class SubAgentOrchestrator:
         worker = DeepWorkerAgent(selected_llm_client, self.tools, tool_policy=tool_policy)
         skill = self.spec_registry.get_skill(ticket.skill)
         agent = self.spec_registry.get_agent(agent_type)
+        visible_tool_names = [
+            str(tool.name)
+            for tool in self.tools
+            if tool_policy is None or tool_policy.is_tool_visible(str(tool.name))
+        ]
         input_data = {
             "ticket": ticket.to_dict(),
             "context_slice": ticket.context_slice,
-            "agent_contract": agent.to_prompt_block() if agent else "",
-            "skill_contract": skill.to_prompt_block() if skill else "",
+            "agent_contract": agent.to_prompt_block(allowed_tools=visible_tool_names) if agent else "",
+            "skill_contract": skill.to_prompt_block(
+                allowed_tools=visible_tool_names,
+                allowed_mcp_tools=[],
+                allowed_mcp_resources=[],
+            ) if skill else "",
             "max_iterations": max_iterations,
             "agent_type": agent_type,
             "nested_spawn_allowed": nested_spawn_allowed,

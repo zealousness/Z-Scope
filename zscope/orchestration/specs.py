@@ -12,7 +12,7 @@ import threading
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 _yaml: Any
 try:
@@ -97,17 +97,40 @@ class SkillSpec:
             body=body.strip(),
         )
 
-    def to_prompt_block(self, max_chars: int = 6000) -> str:
+    def to_prompt_block(
+        self,
+        max_chars: int = 6000,
+        allowed_tools: Optional[Sequence[str]] = None,
+        allowed_mcp_tools: Optional[Sequence[str]] = None,
+        allowed_mcp_resources: Optional[Sequence[str]] = None,
+    ) -> str:
         body = self.body[:max_chars]
         if len(self.body) > max_chars:
             body += "\n\n[truncated]"
+        if allowed_tools is None:
+            tool_names = self.allowed_tools
+        else:
+            visible = set(allowed_tools)
+            tool_names = [name for name in self.allowed_tools if name in visible]
+        if allowed_mcp_tools is None:
+            mcp_tool_names = self.allowed_mcp_tools
+        else:
+            visible_mcp_tools = set(allowed_mcp_tools)
+            mcp_tool_names = [name for name in self.allowed_mcp_tools if name in visible_mcp_tools]
+        if allowed_mcp_resources is None:
+            mcp_resource_names = self.allowed_mcp_resources
+        else:
+            visible_mcp_resources = set(allowed_mcp_resources)
+            mcp_resource_names = [
+                name for name in self.allowed_mcp_resources if name in visible_mcp_resources
+            ]
         return (
             f"## Skill: {self.name}\n"
             f"Description: {self.description}\n"
             f"Category: {self.category}\n"
-            f"Allowed tools: {', '.join(self.allowed_tools) or 'none'}\n"
-            f"Allowed MCP tools: {', '.join(self.allowed_mcp_tools) or 'none'}\n"
-            f"Allowed MCP resources: {', '.join(self.allowed_mcp_resources) or 'none'}\n"
+            f"Allowed tools: {', '.join(tool_names) or 'none'}\n"
+            f"Allowed MCP tools: {', '.join(mcp_tool_names) or 'none'}\n"
+            f"Allowed MCP resources: {', '.join(mcp_resource_names) or 'none'}\n"
             f"References: {', '.join(self.references) or 'none'}\n\n"
             f"{body}"
         )
@@ -150,16 +173,21 @@ class AgentSpec:
         self,
         max_chars: int = 5000,
         active_skills: Optional[List[str]] = None,
+        allowed_tools: Optional[Sequence[str]] = None,
     ) -> str:
         body = self.body[:max_chars]
         if len(self.body) > max_chars:
             body += "\n\n[truncated]"
         skill_names = self.skills if active_skills is None else active_skills
+        if allowed_tools is None:
+            tool_text = ", ".join(self.tools) or "runtime default"
+        else:
+            tool_text = ", ".join(allowed_tools) or "none"
         return (
             f"## Agent: {self.name}\n"
             f"Role: {self.role or self.description}\n"
             f"Skills: {', '.join(skill_names) or 'none'}\n"
-            f"Allowed tools: {', '.join(self.tools) or 'runtime default'}\n"
+            f"Allowed tools: {tool_text}\n"
             f"Context policy: {self.context_policy or 'runtime default'}\n"
             f"Can spawn subagents: {self.can_spawn_subagents}\n\n"
             f"{body}"
