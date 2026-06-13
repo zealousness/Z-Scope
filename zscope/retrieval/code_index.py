@@ -15,6 +15,7 @@ from ..common.utils import (
     is_likely_function_call_identifier,
     normalize_path,
 )
+from ..common.runtime_limits import ensure_linux_nofile_limit
 from .backend_base import CodeBackend
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ class CodeIndex:
         defer_svf: bool = False,
         svf_parallel_workers: int = 1,
     ):
+        ensure_linux_nofile_limit()
         self.project_root = Path(project_root).absolute()
         self.source_root = Path(source_root).absolute() if source_root else self.project_root
         self.compile_commands_path = compile_commands_path

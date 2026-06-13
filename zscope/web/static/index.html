@@ -668,7 +668,7 @@
             <button @click="refreshData()" class="btn btn-outline btn-sm">刷新</button>
             <button @click="exportOfflinePage()" class="btn btn-ghost btn-sm">离线导出</button>
             <button @click="triggerOfflineImport()" class="btn btn-ghost btn-sm">导入</button>
-            <button @click="saveFindings()" class="btn btn-primary btn-sm" :disabled="savingFindings" x-text="savingFindings ? '保存中...' : '回写验证结果'">回写验证结果</button>
+            <button @click="saveFindings()" class="btn btn-primary btn-sm" :disabled="savingFindings || savingSingleFinding" x-text="savingFindings ? '保存中...' : '回写验证结果'">回写验证结果</button>
             <input type="file" x-ref="offlineImportInput" @change="importOfflinePage($event)" class="hidden" accept=".html,text/html">
         </div>
     </nav>
@@ -986,7 +986,7 @@
                                     <span x-text="findingEvidenceRefs(selectedFinding).slice(0, 5).join(', ') || '暂无 evidence refs'"></span>
                                 </div>
                                 <p class="text-[11px] leading-snug" x-show="saveFeedbackStatus" :class="saveFeedbackType === 'success' ? 'text-emerald-700' : (saveFeedbackType === 'warning' ? 'text-amber-700' : 'text-error')" x-text="saveFeedbackStatus"></p>
-                                <button type="button" class="btn btn-outline btn-xs" @click="saveSelectedFinding()" :disabled="savingFindings" x-text="savingFindings ? '保存中...' : '保存当前条'">保存当前条</button>
+                                <button type="button" class="btn btn-outline btn-xs" @click="saveSelectedFinding()" :disabled="savingFindings || savingSingleFinding" x-text="savingSingleFinding ? '保存中...' : '保存当前条'">保存当前条</button>
                             </div>
                         </div>
                     </section>
@@ -1535,6 +1535,7 @@
                 workbookStatus: '',
                 workbookDirty: false,
                 savingFindings: false,
+                savingSingleFinding: false,
                 saveFeedbackStatus: '',
                 saveFeedbackType: 'info',
                 extForm: { func_name:'', library:'', description:'', return_semantics:'', memory_behavior:'', concurrency_behavior:'' },
@@ -2464,29 +2465,52 @@
                         this.showToast('请先选择一条 finding', 'warning');
                         return;
                     }
-                    this.saveFindings([this.selectedFinding]);
+                    this.saveFindings([this.selectedFinding], {
+                        persistSnapshots: false,
+                        saveScope: 'single',
+                    });
                 },
 
-                saveFindings(issuesOverride = null) {
-                    if (this.savingFindings) {
+                saveFindings(issuesOverride = null, options = {}) {
+                    if (this.savingFindings || this.savingSingleFinding) {
                         return;
                     }
-                    const isSingleFindingSave = Array.isArray(issuesOverride) && issuesOverride.length === 1;
+                    const isSingleFindingSave = options.saveScope === 'single';
                     const issuesToSave = Array.isArray(issuesOverride) ? issuesOverride : this.findings;
-                    this.savingFindings = true;
+                    if (isSingleFindingSave) {
+                        this.savingSingleFinding = true;
+                    } else {
+                        this.savingFindings = true;
+                    }
                     this.saveFeedbackStatus = isSingleFindingSave ? '正在保存当前验证结果...' : '正在保存验证结果...';
                     this.saveFeedbackType = 'info';
+                    const requestBody = {
+                        issues: issuesToSave.map(issue => this.stripOfflineRuntimeFields(issue)),
+                    };
+                    if (options.persistSnapshots === false) {
+                        requestBody.persist_snapshots = false;
+                    }
+                    if (options.saveScope) {
+                        requestBody.save_scope = options.saveScope;
+                    }
                     fetch('/api/save_findings', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ issues: issuesToSave.map(issue => this.stripOfflineRuntimeFields(issue)) })
+                        body: JSON.stringify(requestBody)
                     })
                         .then(res => res.json())
                         .then(data => {
                             if (data.success) {
                                 const persistence = data.feedback_persistence || {};
                                 const snapshotPersistence = data.snapshot_persistence || {};
-                                if (data.db_persisted) {
+                                if (isSingleFindingSave && snapshotPersistence.skipped) {
+                                    const count = persistence.baseline_upserts ?? 0;
+                                    const suppressions = persistence.suppression_upserts ?? 0;
+                                    const dbPath = persistence.db_path ? `（DB: ${persistence.db_path}）` : '';
+                                    this.saveFeedbackStatus = `当前条已保存到报告和状态数据库（baseline ${count} 条，suppression ${suppressions} 条）${dbPath}；snapshot 将在全量回写时同步`;
+                                    this.saveFeedbackType = data.db_persisted ? 'success' : 'warning';
+                                    this.showToast('当前条已保存，snapshot 将在全量回写时同步', this.saveFeedbackType);
+                                } else if (data.db_persisted) {
                                     const count = persistence.baseline_upserts ?? 0;
                                     const suppressions = persistence.suppression_upserts ?? 0;
                                     const finalReports = snapshotPersistence.final_reports_updated ?? 0;
@@ -2512,7 +2536,11 @@
                             this.showToast('回写失败', 'error');
                         })
                         .finally(() => {
-                            this.savingFindings = false;
+                            if (isSingleFindingSave) {
+                                this.savingSingleFinding = false;
+                            } else {
+                                this.savingFindings = false;
+                            }
                         });
                 },
 

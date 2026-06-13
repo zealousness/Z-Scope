@@ -882,14 +882,32 @@ class ReportFeedbackService:
             result["issues_updated"] += changed_count
         return result
 
-    def save_validation_feedback(self, updates: list[Any]) -> Dict[str, Any]:
+    def save_validation_feedback(
+        self,
+        updates: list[Any],
+        *,
+        persist_snapshots: bool = True,
+        save_scope: str = "full",
+    ) -> Dict[str, Any]:
         report = self.load_report()
         self.apply_validation_updates(report, updates)
-        snapshot_result = self.apply_validation_to_snapshots(updates)
+        if persist_snapshots:
+            snapshot_result = self.apply_validation_to_snapshots(updates)
+        else:
+            snapshot_result = {
+                "snapshot_available": bool(self.snapshot_store),
+                "snapshot_dir": str(getattr(self.snapshot_store, "snapshot_dir", "")),
+                "final_reports_scanned": 0,
+                "final_reports_updated": 0,
+                "issues_updated": 0,
+                "skipped": True,
+                "skip_reason": "persist_snapshots=false",
+            }
         feedback_result = self.persist_validation_feedback(updates)
         self.save_report(report)
         return {
             "success": True,
+            "save_scope": save_scope,
             "saved_to_report": True,
             "db_persisted": bool(feedback_result.get("db_available")),
             "state_db_persisted": bool(feedback_result.get("db_available")),
