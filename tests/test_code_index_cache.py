@@ -113,6 +113,24 @@ def test_function_impl_cache_reuses_file_content_and_returns_isolated_results(
     assert index._declaration_comment_index is None
 
 
+def test_code_index_ensures_linux_nofile_limit(tmp_path, monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        "zscope.retrieval.code_index.ensure_linux_nofile_limit",
+        lambda: calls.append("called"),
+    )
+
+    index = CodeIndex(
+        tmp_path,
+        source_root=tmp_path,
+        backend=MultiFunctionBackend({}),
+        wait_for_cpg=False,
+    )
+
+    assert calls == ["called"]
+    index.close()
+
+
 def test_function_impl_without_context_skips_comment_scan_and_callee_query(
     tmp_path,
     monkeypatch,

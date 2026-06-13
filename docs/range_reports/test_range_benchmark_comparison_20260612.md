@@ -1,10 +1,11 @@
 # test/range C 语言内存/并发 Benchmark 扫描对比报告
 
 生成时间：2026-06-12 10:23:45 +08:00
+更新时间：2026-06-13 +08:00（补入 `auto_unified_wsl_perfopt_netfixed_20260612_2130`）
 
 ## 结论摘要
 
-在当前 `test/range` benchmark 上，Z-Scope full pipeline 仍是召回率和误报率综合表现最好的方案：default view 召回率 `0.7603`、误报率 `0.0800`；补充 `with_needs_review` 视图后召回率升至 `0.9339`，误报率为 `0.1172`。CodeQL 官方 selected 内存/并发规则非常快，但召回率只有 `0.0661`；官方高召回组合把 TP 从 8 提到 11，同时误报率升到 `0.8333`。把同一批 CodeQL 高召回 SARIF 交给 Z-Scope 验证后，confirmed-only 视图 TP 为 14，误报率降到 `0.4815`，说明验证模式主要价值是过滤噪声和改善最终报告视图，而不是扩展 CodeQL 原始候选覆盖。
+在当前 `test/range` benchmark 上，Z-Scope full pipeline 仍是召回率和误报率综合表现最好的方案：最新 WSL/unified/auto-discovery run 的 default view 召回率 `0.7025`、误报率 `0.0556`；补充 `with_needs_review` 视图后召回率为 `0.9174`，误报率为 `0.0826`。CodeQL 官方 selected 内存/并发规则非常快，但召回率只有 `0.0661`；官方高召回组合把 TP 从 8 提到 11，同时误报率升到 `0.8333`。把同一批 CodeQL 高召回 SARIF 交给 Z-Scope 验证后，confirmed-only 视图 TP 为 14，误报率降到 `0.4815`，说明验证模式主要价值是过滤噪声和改善最终报告视图，而不是扩展 CodeQL 原始候选覆盖。
 
 opencode 纯 LLM 扫描使用 GLM-5，输出较少，precision 达到 `0.7059`，但召回率只有 `0.0992`。它更像高置信人工审计辅助，不适合作为这个 benchmark 的唯一高召回扫描器。
 
@@ -28,8 +29,8 @@ opencode 纯 LLM 扫描使用 GLM-5，输出较少，precision 达到 `0.7059`�
 | opencode 纯 LLM，GLM-5 | 17 | 12 | 5 | 5 | 0 | 109 | 0.0992 | 0.2941 | 0.7059 | 0.1739 | 258s |
 | CodeQL 官方高召回组合 | 69 | 11 | 55 | 58 | 3 | 110 | 0.0909 | 0.8333 | 0.1667 | 0.1176 | 98s |
 | CodeQL 官方高召回组合 + Z-Scope 验证模式 | 34 | 14 | 13 | 20 | 7 | 107 | 0.1157 | 0.4815 | 0.5185 | 0.1892 | 2286s |
-| Z-Scope full pipeline，default view | 144 | 92 | 8 | 52 | 44 | 29 | 0.7603 | 0.0800 | 0.9200 | 0.8326 | 10201s |
-| Z-Scope full pipeline，with_needs_review 补充视图 | 220 | 113 | 15 | 107 | 92 | 8 | 0.9339 | 0.1172 | 0.8828 | 0.9076 | 10201s |
+| Z-Scope full pipeline，default view | 132 | 85 | 5 | 47 | 42 | 36 | 0.7025 | 0.0556 | 0.9444 | 0.8057 | 9842s |
+| Z-Scope full pipeline，with_needs_review 补充视图 | 198 | 111 | 10 | 87 | 77 | 10 | 0.9174 | 0.0826 | 0.9174 | 0.9174 | 9842s |
 
 ## 方案分析
 
@@ -61,9 +62,11 @@ TP 从 11 变成 14，并不表示 Z-Scope 让 CodeQL 新发现了 3 个原始 a
 
 ### Z-Scope full pipeline
 
-Z-Scope full pipeline 是当前整体效果最强的方案。default view 报告 144 条，命中 92 个 TP，effective FP 只有 8，召回率 `0.7603`，误报率 `0.0800`。with_needs_review 补充视图报告 220 条，命中 113 个 TP，召回率 `0.9339`，误报率 `0.1172`。这个视图的用途是给评测和人工复核提供更激进的候选集合，default view 则更接近直接交付的高置信报告。
+最新 full pipeline 结果来自 `auto_unified_wsl_perfopt_netfixed_20260612_2130`。该 run 在 Windows 环境中通过 WSL ext4 副本执行，使用 unified 后端、自动入口发现、`header_files: ["*.h"]`、默认 LLM 语义去重；未使用 curl transport，也未调整 `parallel_workers` 或 LLM endpoint 限流，配置仍为 `parallel_workers: 12`。
 
-完整扫描耗时较长：latest completed full scan run 的 batch wall seconds 为 10201.08 秒，约 2.83 小时；日志中的 scan elapsed 为 2:51:25。该成本来自 82 个入口的并行分析、LLM 漏洞挖掘和验证循环，验证迭代 3574 次，工具调用 4802 次。需要注意：这里引用的是当前文件中最新完成的 full pipeline 评测产物；它早于 REAL-018 去重边界修复，因此若要把修复后的 REAL-018 default-view 行为写进最终论文/正式报告，还需要重新跑一次 full pipeline 或至少跑覆盖 `src/lifecycle.c` 的增量评测。
+本轮自动发现并完成 82 个入口，entry error 为 0。default view 报告 132 条，命中 85 个 TP，effective FP 为 5，召回率 `0.7025`，误报率 `0.0556`，precision `0.9444`。with_needs_review 补充视图报告 198 条，命中 111 个 TP，effective FP 为 10，召回率 `0.9174`，误报率 `0.0826`，precision `0.9174`。与上一版记录相比，default view 更保守，FP 明显下降，但 TP 和召回率也下降；with_needs_review 仍保持接近完整覆盖，且误报率低于上一版记录。
+
+本轮 scan wall-clock 为 9842 秒，约 2:44:02；该时间是 Z-Scope `--discover-entries` 扫描、报告生成和去重阶段的 wall time，不包含前置 CMake/CPG 构建。报告摘要中的 batch wall seconds 为 9154.07 秒，观测并行加速为 `11.05x observed (using 12 workers)`，worker utilization 为 `0.9205`。语义去重默认开启：input issue 190，程序化去重后 133，LLM candidate cluster 30，LLM failed cluster 为 0，最终 default report issue 132。运行期间仍有少量可恢复网络抖动（SSLEOFError=13、ProxyError=8、Read timeout=1、All models failed=5），但未造成入口失败。
 
 ## 社区 CodeQL 规则补充
 
@@ -77,7 +80,7 @@ CodeQL 的最佳使用方式不是直接作为最终报告，而是作为低成�
 
 纯 LLM 的 GLM-5 扫描 precision 尚可，但缺少稳定覆盖能力。它可以补充 CodeQL 无法表达的语义判断，却不能替代 Z-Scope 的工具化上下文、跨函数检索和验证循环。
 
-Z-Scope full pipeline 在这个 C 内存/并发 benchmark 上优势最大，尤其是 with_needs_review 视图接近完整覆盖。但它的时间成本是小时级，适合深度审计和 benchmark 主结果；CodeQL + Z-Scope 验证则是更轻量的折中方案，适合先用静态规则铺候选，再用 LLM/工具验证降 FP。
+Z-Scope full pipeline 在这个 C 内存/并发 benchmark 上优势最大。最新 default view 更保守、误报率最低；with_needs_review 召回率 `0.9174`，适合评测和人工复核。但它的时间成本仍是小时级，最新 WSL/unified run 为 `9842s`；CodeQL + Z-Scope 验证则是更轻量的折中方案，适合先用静态规则铺候选，再用 LLM/工具验证降 FP。
 
 ## 数据来源
 
@@ -88,7 +91,8 @@ Z-Scope full pipeline 在这个 C 内存/并发 benchmark 上优势最大，尤�
 - CodeQL official high recall timing：`test/range/codeql_runs/codeql_high_recall_20260611_170306/codeql_run_summary.json`
 - Z-Scope alert verify run summary：`test/range/benchmark_runs/alert_verify_codeql_high_recall_glm5_curl_full_cfg_20260611_2052/run_summary.json`
 - Z-Scope verified confirmed-only evaluation：`test/range/benchmark_runs/alert_verify_codeql_high_recall_glm5_curl_full_cfg_20260611_2052/zscope_verified_confirmed_only_evaluation.json`
-- Z-Scope full pipeline evaluation：`test/range/benchmark_runs/perf_toolfunc_20260609_105807/evaluation.json`
-- Z-Scope with_needs_review evaluation：`test/range/benchmark_runs/perf_toolfunc_20260609_105807/evaluation.with_needs_review.json`
-- Z-Scope performance summary：`test/range/benchmark_runs/perf_toolfunc_20260609_105807/perf_summary.json`
+- Z-Scope full pipeline evaluation：`test/range/benchmark_runs/auto_unified_wsl_perfopt_netfixed_20260612_2130/evaluation.json`
+- Z-Scope with_needs_review evaluation：`test/range/benchmark_runs/auto_unified_wsl_perfopt_netfixed_20260612_2130/evaluation.with_needs_review.json`
+- Z-Scope full pipeline run summary：`test/range/benchmark_runs/auto_unified_wsl_perfopt_netfixed_20260612_2130/run_summary.json`
+- Z-Scope full pipeline log：`test/range/benchmark_runs/auto_unified_wsl_perfopt_netfixed_20260612_2130/zscope_run.log`
 - Trail of Bits community rule evaluation：`test/range/codeql_runs/trailofbits_queries_20260611_2040/codeql_high_recall_plus_trailofbits_evaluation.json`
