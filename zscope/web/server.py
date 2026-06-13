@@ -110,7 +110,11 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
                 if not isinstance(updates, list):
                     self._send_json({"success": False, "error": "Issues must be a list"}, status=400)
                     return
-                response_payload = _report_feedback_service.save_validation_feedback(updates)
+                response_payload = _report_feedback_service.save_validation_feedback(
+                    updates,
+                    persist_snapshots=payload.get("persist_snapshots", True) is not False,
+                    save_scope=str(payload.get("save_scope") or "full"),
+                )
             except Exception as exc:
                 self._send_json({"success": False, "error": str(exc)}, status=500)
                 return

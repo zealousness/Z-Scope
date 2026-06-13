@@ -884,7 +884,7 @@
       "confidence": 0.7
     },
     {
-      "function_name": "_runtime_map_linked_segment(const char*,const char*,size_t)",
+      "function_name": "_runtime_map_linked_segment",
       "file_path": "src/lifecycle.c",
       "custom_prompt": "User-controlled input entry. Treat file, environment, CLI, device, and stdin data as untrusted. Audit parsing, size conversion, range checks, termination, and resource cleanup before the data feeds copies, indexing, allocation sizes, dispatch, paths, or commands. If the input buffer, string, parsed value, or derived length is returned, written through an out-parameter, stored globally, or consumed by callers, use get_callers to inspect caller-side validation and sinks.",
       "exposure": "other_user_input",

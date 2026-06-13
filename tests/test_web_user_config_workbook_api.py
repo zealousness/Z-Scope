@@ -200,6 +200,96 @@ def test_report_feedback_service_saves_validation_feedback(tmp_path: Path) -> No
     assert store.get_finding_baseline("double_free|entry|src/demo.c:42")["status"] == "false_positive"
 
 
+def test_report_feedback_service_can_skip_snapshot_persistence_for_single_save(
+    tmp_path: Path,
+) -> None:
+    report_path = tmp_path / "report.json"
+    issue = {
+        "id": "ISSUE_1",
+        "function": "entry",
+        "location": "src/demo.c:42",
+        "defect_class": "double_free",
+        "validation_status": "pending",
+        "dedup_key": "double_free|entry|src/demo.c:42",
+    }
+    report_path.write_text(json.dumps({"issues": [dict(issue)]}), encoding="utf-8")
+    snapshot_dir = tmp_path / "snapshots"
+    snapshot_dir.mkdir()
+    snapshot_report = snapshot_dir / "entry_final.json"
+    snapshot_report.write_text(json.dumps({"issues": [dict(issue)]}), encoding="utf-8")
+    snapshot_store = type("FakeSnapshotStore", (), {"snapshot_dir": snapshot_dir})()
+
+    store = UserConfigStore(tmp_path / "user_config.xlsx")
+    service = ReportFeedbackService(
+        store,
+        snapshot_store,
+        report_filename=str(report_path),
+    )
+
+    payload = service.save_validation_feedback(
+        [
+            {
+                **issue,
+                "validation_status": "validated",
+                "validation_reasoning": "manual confirmation",
+            }
+        ],
+        persist_snapshots=False,
+        save_scope="single",
+    )
+
+    saved = service.load_report()
+    snapshot_saved = json.loads(snapshot_report.read_text(encoding="utf-8"))
+
+    assert payload["success"] is True
+    assert payload["save_scope"] == "single"
+    assert payload["snapshot_persistence"]["skipped"] is True
+    assert payload["snapshot_persistence"]["final_reports_scanned"] == 0
+    assert saved["issues"][0]["validation_status"] == "validated"
+    assert store.get_finding_baseline("double_free|entry|src/demo.c:42")["status"] == "true_positive"
+    assert snapshot_saved["issues"][0]["validation_status"] == "pending"
+
+
+def test_report_feedback_service_updates_snapshots_by_default(tmp_path: Path) -> None:
+    report_path = tmp_path / "report.json"
+    issue = {
+        "id": "ISSUE_1",
+        "function": "entry",
+        "location": "src/demo.c:42",
+        "defect_class": "double_free",
+        "validation_status": "pending",
+        "dedup_key": "double_free|entry|src/demo.c:42",
+    }
+    report_path.write_text(json.dumps({"issues": [dict(issue)]}), encoding="utf-8")
+    snapshot_dir = tmp_path / "snapshots"
+    snapshot_dir.mkdir()
+    snapshot_report = snapshot_dir / "entry_final.json"
+    snapshot_report.write_text(json.dumps({"issues": [dict(issue)]}), encoding="utf-8")
+    snapshot_store = type("FakeSnapshotStore", (), {"snapshot_dir": snapshot_dir})()
+
+    service = ReportFeedbackService(
+        snapshot_store=snapshot_store,
+        report_filename=str(report_path),
+    )
+
+    payload = service.save_validation_feedback(
+        [
+            {
+                **issue,
+                "validation_status": "needs_review",
+                "validation_reasoning": "manual review",
+            }
+        ]
+    )
+    snapshot_saved = json.loads(snapshot_report.read_text(encoding="utf-8"))
+
+    assert payload["snapshot_persistence"]["final_reports_scanned"] == 1
+    assert payload["snapshot_persistence"]["final_reports_updated"] == 1
+    assert payload["snapshot_persistence"]["issues_updated"] == 1
+    assert snapshot_saved["issues"][0]["validation_status"] == "needs_review"
+    assert snapshot_saved["issues"][0]["validation_reasoning"] == "manual review"
+
+
 def test_report_feedback_service_accepts_structured_issue_key_fields(tmp_path: Path) -> None:
     report_path = tmp_path / "report.json"
     location = {"file": "src/demo.c", "line": 42}
