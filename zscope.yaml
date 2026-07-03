@@ -8,7 +8,7 @@
 
 # llm:                                      # 兼容旧版单模型配置；推荐使用下面的 llms 多模型配置
 #   provider: openai                        # LLM 服务类型预留字段，当前按 OpenAI 兼容接口调用
-#   base_url: https://api.openai.com/v1      # OpenAI 兼容 API 地址
+#   base_url: https://dashscope.aliyuncs.com/apps/anthropic     # OpenAI 兼容 API 地址
 #   model: gpt-4.1-mini                     # 兼容旧字段：单模型名称；未配置 models 时生效
 #   models: []                              # 模型回退列表；优先使用此字段
 #   api_key: ${OPENAI_API_KEY}              # API Key，可使用环境变量
@@ -20,11 +20,11 @@
 llms:                                      # 多模型配置；Agent 通过 llm_ref 引用其中一个 profile
   default:                                 # 默认 LLM profile；未指定 llm_ref 时使用
     provider: openai                       # LLM 服务类型预留字段，当前按 OpenAI 兼容接口调用
-    base_url: http://127.0.0.1:11434/v1    # OpenAI 兼容 API 地址，例如 Ollama、本地网关或云服务
+    base_url: https://dashscope.aliyuncs.com/apps/anthropic   # OpenAI 兼容 API 地址，例如 Ollama、本地网关或云服务
     # model: qwen3:latest                  # 兼容旧字段：单模型名称；未配置 models 时生效
     models:                                # 模型回退列表，按顺序尝试
       - qwen3:latest                       # 当前 profile 的首选模型
-    api_key: ollama                        # API Key；本地 Ollama 可使用占位值
+    api_key: ${Z_SCOPE_API_KEY}                            # API Key；本地 Ollama 可使用占位值
     temperature: 0.1                       # 采样温度，越低越稳定
     max_tokens: 4096                       # 单次模型响应最大 token 数
     timeout: 180                           # 单次 LLM 请求超时时间，单位秒
@@ -32,7 +32,7 @@ llms:                                      # 多模型配置；Agent 通过 llm_
 
   smart_model:                             # 更强模型 profile；供复杂 Agent 或验证阶段引用
     provider: openai                       # LLM 服务类型预留字段，当前按 OpenAI 兼容接口调用
-    base_url: https://api.siliconflow.cn/v1 # OpenAI 兼容 API 地址
+    base_url: https://dashscope.aliyuncs.com/apps/anthropic   # OpenAI 兼容 API 地址
     # model: Qwen/Qwen3-Coder-30B-Instruct # 兼容旧字段：单模型名称；未配置 models 时生效
     models:                                # 模型回退列表，按顺序尝试
       - Qwen/Qwen3-Coder-30B-Instruct      # 当前 profile 的首选模型
@@ -175,8 +175,8 @@ analysis:                                  # 分析流程和缓存行为配置
   enable_snapshot_cache: true              # 是否启用函数实现和语义快照缓存
   user_config_db: ""                       # 用户配置 workbook 或目录；为空时使用 {snapshot_dir}/user_config.xlsx
   parallel_workers: 5                      # 批量入口扫描时的并发 worker 数
-  max_premodel_depth: 3                    # 语义预建模时向下展开 callee 的最大深度
-  max_premodel_callees: 20                 # 语义预建模每层最多展开的 callee 数量
+  max_premodel_depth: 3                    # 语义预建模时向下展开 callee 的最大深度，0表示禁用，-1表示无限制
+  max_premodel_callees: 20                 # 语义预建模每层最多展开的 callee 数量，0表示禁用，-1表示无限制
   trivial_function_max_lines: 5            # 小于等于该有效行数的函数可视为 trivial，减少建模开销
   enable_subagent_workers: true            # 是否允许全局启用 Deep Worker 子 Agent
   max_subagent_tickets: 4                  # Deep Worker 执行预算；候选点仍会全量保留并传给主 Agent
