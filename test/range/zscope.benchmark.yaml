@@ -1,10 +1,12 @@
 # Z-SCOPE benchmark config for test/range.
 # Fill the LLM placeholders before running the full scan.
+# ${bailian_url}="https://dashscope.aliyuncs.com/compatible-mode/v1"
+# ${zhipu_url}="https://open.bigmodel.cn/api/paas/v4"
 
 llms:
   default:
     provider: openai
-    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    base_url: "https://open.bigmodel.cn/api/paas/v4"
     models:
       - "glm-5"
     api_key: ${Z_SCOPE_API_KEY}
@@ -15,7 +17,7 @@ llms:
 
   smart_model:
     provider: openai
-    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    base_url: "https://open.bigmodel.cn/api/paas/v4"
     models:
       - "glm-5"
     api_key: ${Z_SCOPE_API_KEY}
@@ -83,7 +85,7 @@ project:
 
 indexing:
   backend: unified
-  joern_path: /mnt/c/tmp/joern/joern-cli/joern
+  joern_path: joern
   joern_server_host: 127.0.0.1
   joern_server_port: 8080
   joern_heap_size: 4g
@@ -94,7 +96,7 @@ indexing:
   gclang_path: gclang
   get_bc_path: get-bc
   llvm_link_path: llvm-link
-  svf_bin_dir: /home/zeal/.local/svf/SVF-linux-x86_64/bin
+  svf_bin_dir: "/home/jager/.local/svf/SVF-SVF-3.2/build/bin"
   svf_heap_limit_mb: 8192
   svf_timeout: 600
 

@@ -3,11 +3,11 @@ set -euo pipefail
 
 if [[ ! -r /proc/version ]] || ! grep -qiE 'microsoft|wsl' /proc/version; then
   echo "[range] ERROR: range benchmark must run inside WSL/Linux for SVF/Saber." >&2
-  echo "[range]        Launch with: wsl bash -lc 'cd /mnt/c/Users/10273/home/work/Z-Scope && test/range/benchmark/run_zscope_scan.sh'" >&2
+  echo "[range]        Launch with: bash  'cd~/Z-Scope && test/range/benchmark/run_zscope_scan.sh'" >&2
   exit 2
 fi
 
-cd /mnt/c/Users/10273/home/work/Z-Scope
+cd ~/Z-Scope
 
 if [[ -f test/range/zscope.local.env ]]; then
   # Local secret-bearing config. This file is ignored by git.
@@ -21,8 +21,8 @@ if [[ -z "${Z_SCOPE_API_KEY:-}" ]]; then
   exit 2
 fi
 
-export PATH="$HOME/go/bin:/usr/lib/llvm-18/bin:$HOME/.local/svf/SVF-linux-x86_64/bin:$PATH"
-export LD_LIBRARY_PATH="$HOME/.local/svf/SVF-linux-x86_64/lib:$HOME/.local/svf/llvm-18.1.0.obj/lib:${LD_LIBRARY_PATH:-}"
+export PATH="$HOME/go/bin:/usr/lib/llvm-18/bin:$HOME/.local/svf/SVF-SVF-3.2/build/bin:$PATH"
+export LD_LIBRARY_PATH="$HOME/.local/svf/SVF-SVF-3.2/build/lib:$HOME/.local/svf/llvm-18.1.0.obj/lib:${LD_LIBRARY_PATH:-}"
 export LLVM_COMPILER=clang
 export LLVM_CC_NAME=clang-18
 
