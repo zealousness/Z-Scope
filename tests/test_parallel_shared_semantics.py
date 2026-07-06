@@ -130,3 +130,144 @@ def test_parallel_analyzer_builds_shared_semantics_once_per_batch(monkeypatch, t
     assert len(seen_overlays) == 3
     assert len({id(overlay) for overlay in seen_overlays}) == 3
     assert "mutated_entries" not in parallel._shared_semantic_overlay
+
+
+def test_parallel_analyzer_runs_global_model_before_entries(monkeypatch, tmp_path) -> None:
+    events = []
+
+    class CountingLocalPatternSemanticBuilder:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def build(self) -> LocalPatternSemantics:
+            return LocalPatternSemantics()
+
+    class CountingSemanticOverlayCompiler:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def compile(self):
+            return {}
+
+    class FakeStats:
+        reachable_functions = 1
+        modeled_functions = 1
+        cache_hit_functions = 0
+        deterministic_snapshot_count = 0
+        llm_snapshot_count = 1
+        failed_functions = 0
+
+        def to_dict(self):
+            return {"reachable_functions": 1, "modeled_functions": 1}
+
+    class FakeGlobalModeler:
+        def run(self, entries):
+            events.append(("global", [entry.function_name for entry in entries]))
+            return FakeStats()
+
+    def fake_from_helpers(*args, **kwargs):
+        return FakeGlobalModeler()
+
+    def fake_run(self):
+        events.append(("entry", self.config.project.entry_function))
+        return {
+            "overall_verdict": "clean",
+            "issues": [],
+            "metadata": {"audit_observations": [], "context_tokens": 1},
+        }
+
+    monkeypatch.setattr(
+        parallel_module,
+        "LocalPatternSemanticBuilder",
+        CountingLocalPatternSemanticBuilder,
+    )
+    monkeypatch.setattr(
+        analyzer_module,
+        "LocalPatternSemanticBuilder",
+        CountingLocalPatternSemanticBuilder,
+    )
+    monkeypatch.setattr(
+        parallel_module,
+        "SemanticOverlayCompiler",
+        CountingSemanticOverlayCompiler,
+    )
+    monkeypatch.setattr(
+        analyzer_module,
+        "SemanticOverlayCompiler",
+        CountingSemanticOverlayCompiler,
+    )
+    monkeypatch.setattr(parallel_module.GlobalModeler, "from_analyzer_helpers", fake_from_helpers)
+    monkeypatch.setattr(analyzer_module.Analyzer, "run", fake_run)
+
+    config = _config(tmp_path)
+    config.analysis.enable_global_model = True
+    parallel = ParallelAnalyzer(config, code_index=FakeCodeIndex())
+    results = parallel.analyze_function_entries([FunctionEntry("alpha")])
+
+    assert list(results) == ["alpha"]
+    assert events == [("global", ["alpha"]), ("entry", "alpha")]
+    assert parallel._last_global_model_stats == {
+        "reachable_functions": 1,
+        "modeled_functions": 1,
+    }
+
+
+def test_parallel_analyzer_falls_back_when_global_model_fails(monkeypatch, tmp_path) -> None:
+    observed_flags = []
+
+    class CountingLocalPatternSemanticBuilder:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def build(self) -> LocalPatternSemantics:
+            return LocalPatternSemantics()
+
+    class CountingSemanticOverlayCompiler:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def compile(self):
+            return {}
+
+    def fail_global_model(*args, **kwargs):
+        raise RuntimeError("global model unavailable")
+
+    def fake_run(self):
+        observed_flags.append(self.config.analysis.enable_global_model)
+        return {
+            "overall_verdict": "clean",
+            "issues": [],
+            "metadata": {"audit_observations": [], "context_tokens": 1},
+        }
+
+    monkeypatch.setattr(
+        parallel_module,
+        "LocalPatternSemanticBuilder",
+        CountingLocalPatternSemanticBuilder,
+    )
+    monkeypatch.setattr(
+        analyzer_module,
+        "LocalPatternSemanticBuilder",
+        CountingLocalPatternSemanticBuilder,
+    )
+    monkeypatch.setattr(
+        parallel_module,
+        "SemanticOverlayCompiler",
+        CountingSemanticOverlayCompiler,
+    )
+    monkeypatch.setattr(
+        analyzer_module,
+        "SemanticOverlayCompiler",
+        CountingSemanticOverlayCompiler,
+    )
+    monkeypatch.setattr(parallel_module.GlobalModeler, "from_analyzer_helpers", fail_global_model)
+    monkeypatch.setattr(analyzer_module.Analyzer, "run", fake_run)
+
+    config = _config(tmp_path)
+    config.analysis.enable_global_model = True
+    parallel = ParallelAnalyzer(config, code_index=FakeCodeIndex())
+    results = parallel.analyze_function_entries([FunctionEntry("alpha")])
+
+    assert list(results) == ["alpha"]
+    assert observed_flags == [False]
+    assert parallel._last_global_model_stats == {"error": "global model unavailable"}

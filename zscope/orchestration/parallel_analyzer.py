@@ -26,6 +26,7 @@ from ..semantics.models import LocalPatternSemantics
 from ..snapshots.store import SnapshotStore
 from ..retrieval.code_index import CodeIndex
 from ..orchestration.candidates import CandidateLedger
+from ..orchestration.global_modeler import GlobalModeler
 from ..common.issue_identity import (
     canonical_issue_key,
     deduplicate_semantic_issues_programmatic,
@@ -119,6 +120,8 @@ class ParallelAnalyzer:
         self._shared_semantic_overlay: Optional[Dict[str, Any]] = None
         self._shared_semantics_lock = threading.Lock()
         self._last_batch_wall_seconds = 0.0
+        self._last_global_model_stats: Optional[Dict[str, Any]] = None
+        self._global_modeling_succeeded = False
         self._semantic_dedup_llm_cache: Dict[str, Dict[str, Any]] = {}
 
     @staticmethod
@@ -158,6 +161,8 @@ class ParallelAnalyzer:
                 total,
                 time.time() - semantics_started,
             )
+            if self.base_config.analysis.enable_global_model:
+                self._global_modeling_succeeded = self._run_global_modeling(entries)
 
         scheduled_entries = self._prioritize_entries_for_execution(entries)
         
@@ -218,6 +223,55 @@ class ParallelAnalyzer:
                     pass
                     
         return results
+
+    def _run_global_modeling(self, entries: List[FunctionEntry]) -> bool:
+        started = time.time()
+        logger.info("[global-model] start entries=%d", len(entries))
+        try:
+            helper = Analyzer(
+                self.base_config,
+                code_index=self.code_index,
+                snapshot_store=self.snapshot_store,
+                user_config=self.user_config,
+                force_ignore_history=self.force_ignore_history,
+                maintain_mode=self.maintain_mode,
+                candidate_ledger=CandidateLedger(),
+                shared_local_pattern_semantics=self._get_shared_local_pattern_semantics(),
+                shared_semantic_overlay=self._get_shared_semantic_overlay(),
+                llm_clients=self._shared_llm_clients,
+                write_root_reports=False,
+            )
+            modeler = GlobalModeler.from_analyzer_helpers(
+                self.base_config,
+                self.code_index,
+                self.snapshot_store,
+                self.user_config,
+                llm_clients=self._shared_llm_clients,
+                tools_factory=helper._get_tools,
+                tool_policy_factory=helper._tool_policy_for_agent,
+                attach_contract=helper._attach_agent_contract,
+            )
+            stats = modeler.run(entries)
+            self._last_global_model_stats = stats.to_dict()
+            logger.info(
+                "[global-model] end entries=%d reachable=%d modeled=%d cache_hits=%d "
+                "deterministic=%d llm=%d failed=%d duration=%.2fs",
+                len(entries),
+                stats.reachable_functions,
+                stats.modeled_functions,
+                stats.cache_hit_functions,
+                stats.deterministic_snapshot_count,
+                stats.llm_snapshot_count,
+                stats.failed_functions,
+                time.time() - started,
+            )
+            return True
+        except Exception as exc:
+            self._last_global_model_stats = {"error": str(exc)}
+            logger.exception(
+                "[global-model] failed before entry fan-out; falling back to per-entry modeling."
+            )
+            return False
 
     @staticmethod
     def _build_shared_llm_clients(config: ZScopeConfig) -> Dict[str, LLMClient]:
@@ -514,6 +568,10 @@ class ParallelAnalyzer:
 
         config = copy(self.base_config)
         config.project = project
+        if config.analysis.enable_global_model and not self._global_modeling_succeeded:
+            analysis = copy(config.analysis)
+            analysis.enable_global_model = False
+            config.analysis = analysis
 
         # Keep entry-specific focus separate from the configured task so skill
         # routing remains driven by the global vulnerability scope.
