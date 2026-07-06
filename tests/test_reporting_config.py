@@ -45,3 +45,14 @@ def test_config_loader_allows_disabling_llm_semantic_dedup(tmp_path) -> None:
 
     assert cfg.reporting.semantic_dedup.enabled is True
     assert cfg.reporting.semantic_dedup.llm_enabled is False
+
+
+def test_config_loader_reads_global_model_flag(tmp_path) -> None:
+    data = _base_config(tmp_path)
+    data["analysis"] = {"enable_global_model": True}
+    path = tmp_path / "zscope.yaml"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    cfg = ConfigLoader.load(str(path))
+
+    assert cfg.analysis.enable_global_model is True

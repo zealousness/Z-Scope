@@ -634,6 +634,12 @@ class Analyzer:
         state["history_reconciled"] = True
 
     def _step_premodel_reachable_callees(self, state: Dict[str, Any]) -> None:
+        if self.config.analysis.enable_global_model:
+            state["notes"].append(
+                "Premodel reachable callees skipped because global modeling is enabled."
+            )
+            return
+
         sm_agent_cfg = next((a for a in self.config.project.agents if a.name == "semantic_modeler"), None)
         sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
         sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients["default"])
@@ -667,6 +673,41 @@ class Analyzer:
         )
 
     def _step_model_entry(self, state: Dict[str, Any]) -> None:
+        if self.config.analysis.enable_global_model:
+            impl_result = state.get("impl_result") if isinstance(state.get("impl_result"), dict) else {}
+            entry_func = str(state.get("entry_func") or "")
+            file_path = str(impl_result.get("file") or "")
+            snapshot = self.snapshot_store.load_snapshot(entry_func, file_path or None)
+            if snapshot:
+                try:
+                    needs_refresh, reason = self.snapshot_store.needs_refresh(
+                        entry_func,
+                        str(impl_result.get("code") or ""),
+                        file_path or None,
+                    )
+                except Exception:
+                    needs_refresh, reason = False, "snapshot_loaded"
+                if not needs_refresh:
+                    state["notes"].append(
+                        f"Reused globally modeled snapshot for {entry_func}."
+                    )
+                    logger.info(
+                        "[global-model] Reusing entry snapshot for '%s' (%s).",
+                        entry_func,
+                        reason or "current",
+                    )
+                    return
+                logger.info(
+                    "[global-model] Entry snapshot for '%s' needs refresh (%s); falling back to model_entry.",
+                    entry_func,
+                    reason or "unknown",
+                )
+            else:
+                logger.info(
+                    "[global-model] No entry snapshot for '%s'; falling back to model_entry.",
+                    entry_func,
+                )
+
         sm_agent_cfg = next((a for a in self.config.project.agents if a.name == "semantic_modeler"), None)
         sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
         sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients["default"])
@@ -3777,18 +3818,16 @@ class Analyzer:
         """Initialize and return the set of tools."""
         from ...tools.code_retrieval import GetFunctionImplTool
         from ...tools.snapshot_tool import GetFunctionSnapshotTool
-        from ...tools.utils import (
-            ListFunctionsTool,
-            GetFileSnippetTool,
-            GetCallersTool,
-            GetTypeInfoTool,
-            GetCallGraphTool,
-            GetDataFlowTool,
-            FindFunctionPointersTool,
-            QueryPointerAliasTool,
-            VerifyTaintReachabilityTool,
-            GetDeepCallContextTool,
-        )
+        from ...tools.call_graph import GetCallGraphTool
+        from ...tools.callers import GetCallersTool
+        from ...tools.data_flow import GetDataFlowTool
+        from ...tools.deep_call_context import GetDeepCallContextTool
+        from ...tools.file_snippet import GetFileSnippetTool
+        from ...tools.function_pointers import FindFunctionPointersTool
+        from ...tools.list_functions import ListFunctionsTool
+        from ...tools.pointer_alias import QueryPointerAliasTool
+        from ...tools.taint_reachability import VerifyTaintReachabilityTool
+        from ...tools.type_info import GetTypeInfoTool
 
         # Base tools universally supported by all backends (including regex/clangd)
         snapshot_resolver = (
@@ -3847,15 +3886,26 @@ class Analyzer:
         self, func_name: str, file_path: Optional[str] = None
     ) -> Dict[str, Any]:
         """Load a snapshot, or build and persist one under the snapshot lock."""
+        prelock_impl = None
+        lock_file_path = file_path
         existing = self.snapshot_store.load_snapshot(func_name, file_path=file_path)
         if existing is not None:
-            impl_for_refresh = self.code_index.get_function_impl(func_name, warn_missing=False)
+            try:
+                impl_for_refresh = self.code_index.get_function_impl(
+                    func_name,
+                    warn_missing=False,
+                    file_path=file_path or "",
+                )
+            except TypeError:
+                impl_for_refresh = self.code_index.get_function_impl(func_name, warn_missing=False)
             if not impl_for_refresh:
                 return {"success": True, "data": existing}
+            prelock_impl = impl_for_refresh
             impl_file_for_refresh = str(impl_for_refresh.get("file") or "unknown")
             if file_path and impl_file_for_refresh != file_path:
                 return {"success": True, "data": existing}
             refresh_file = file_path or impl_file_for_refresh
+            lock_file_path = refresh_file
             needs_refresh, reason = self.snapshot_store.needs_refresh(
                 func_name,
                 str(impl_for_refresh.get("code") or ""),
@@ -3871,25 +3921,46 @@ class Analyzer:
                         else "Snapshot is current."
                     ),
                 }
-            self.snapshot_store.lock_manager.invalidate(func_name)
+            self.snapshot_store.lock_manager.invalidate(func_name, file_path=lock_file_path)
+
+        if prelock_impl is None:
+            try:
+                prelock_impl = self.code_index.get_function_impl(
+                    func_name,
+                    warn_missing=False,
+                    file_path=file_path or "",
+                )
+            except TypeError:
+                prelock_impl = self.code_index.get_function_impl(func_name, warn_missing=False)
+            if prelock_impl is not None:
+                impl_file_for_lock = str(prelock_impl.get("file") or "unknown")
+                if not file_path or impl_file_for_lock == file_path:
+                    lock_file_path = file_path or impl_file_for_lock
 
         lock_started = time.monotonic()
         logger.info(
             "[snapshot-lock] waiting context=on_demand func=%s file=%s",
             func_name,
-            file_path or "",
+            lock_file_path or "",
         )
-        status = self.snapshot_store.lock_manager.acquire(func_name, timeout=120.0)
+        status = self.snapshot_store.lock_manager.acquire(
+            func_name,
+            timeout=120.0,
+            file_path=lock_file_path,
+        )
         lock_wait = time.monotonic() - lock_started
         logger.info(
             "[snapshot-lock] outcome context=on_demand func=%s file=%s status=%s waited=%.2fs",
             func_name,
-            file_path or "",
+            lock_file_path or "",
             status,
             lock_wait,
         )
         if status == "done":
-            snapshot = self.snapshot_store.load_snapshot(func_name, file_path=file_path)
+            snapshot = self.snapshot_store.load_snapshot(
+                func_name,
+                file_path=file_path or lock_file_path,
+            )
             return {
                 "success": True,
                 "data": snapshot,
@@ -3906,11 +3977,25 @@ class Analyzer:
             }
 
         try:
-            snapshot = self.snapshot_store.load_snapshot(func_name, file_path=file_path)
-            impl = self.code_index.get_function_impl(func_name, warn_missing=False)
+            snapshot = self.snapshot_store.load_snapshot(
+                func_name,
+                file_path=file_path or lock_file_path,
+            )
+            impl = prelock_impl
+            if impl is None:
+                try:
+                    impl = self.code_index.get_function_impl(
+                        func_name,
+                        warn_missing=False,
+                        file_path=file_path or "",
+                    )
+                except TypeError:
+                    impl = self.code_index.get_function_impl(func_name, warn_missing=False)
             if not impl:
                 self.snapshot_store.lock_manager.release(
-                    func_name, success=snapshot is not None
+                    func_name,
+                    success=snapshot is not None,
+                    file_path=lock_file_path,
                 )
                 if snapshot is not None:
                     return {"success": True, "data": snapshot}
@@ -3925,7 +4010,9 @@ class Analyzer:
             impl_file = str(impl.get("file") or "unknown")
             if file_path and impl_file != file_path:
                 self.snapshot_store.lock_manager.release(
-                    func_name, success=snapshot is not None
+                    func_name,
+                    success=snapshot is not None,
+                    file_path=lock_file_path,
                 )
                 if snapshot is not None:
                     return {"success": True, "data": snapshot}
@@ -3945,7 +4032,11 @@ class Analyzer:
                     file_path or impl_file,
                 )
                 if not needs_refresh:
-                    self.snapshot_store.lock_manager.release(func_name, success=True)
+                    self.snapshot_store.lock_manager.release(
+                        func_name,
+                        success=True,
+                        file_path=lock_file_path,
+                    )
                     return {
                         "success": True,
                         "data": snapshot,
@@ -3965,7 +4056,11 @@ class Analyzer:
                     str(impl.get("code") or ""),
                     location,
                 )
-                self.snapshot_store.lock_manager.release(func_name, success=True)
+                self.snapshot_store.lock_manager.release(
+                    func_name,
+                    success=True,
+                    file_path=lock_file_path,
+                )
                 return {
                     "success": True,
                     "data": snapshot,
@@ -3983,7 +4078,11 @@ class Analyzer:
                     str(impl.get("code") or ""),
                     location,
                 )
-                self.snapshot_store.lock_manager.release(func_name, success=True)
+                self.snapshot_store.lock_manager.release(
+                    func_name,
+                    success=True,
+                    file_path=lock_file_path,
+                )
                 return {
                     "success": True,
                     "data": snapshot,
@@ -3997,7 +4096,11 @@ class Analyzer:
             sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
             sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients.get("default"))
             if sm_client is None:
-                self.snapshot_store.lock_manager.release(func_name, success=False)
+                self.snapshot_store.lock_manager.release(
+                    func_name,
+                    success=False,
+                    file_path=lock_file_path,
+                )
                 return {"success": False, "error": "No LLM client configured for snapshot build"}
 
             semantic_agent = SemanticModeler(
@@ -4020,7 +4123,11 @@ class Analyzer:
                     impl["code"],
                     location,
                 )
-                self.snapshot_store.lock_manager.release(func_name, success=True)
+                self.snapshot_store.lock_manager.release(
+                    func_name,
+                    success=True,
+                    file_path=lock_file_path,
+                )
                 return {
                     "success": True,
                     "data": response.data,
@@ -4028,14 +4135,22 @@ class Analyzer:
                     "message": "Generated and saved semantic snapshot on demand.",
                 }
 
-            self.snapshot_store.lock_manager.release(func_name, success=False)
+            self.snapshot_store.lock_manager.release(
+                func_name,
+                success=False,
+                file_path=lock_file_path,
+            )
             return {
                 "success": False,
                 "error": f"On-demand snapshot build failed for '{func_name}': {response.error}",
                 "metadata": response.metadata,
             }
         except Exception as exc:
-            self.snapshot_store.lock_manager.release(func_name, success=False)
+            self.snapshot_store.lock_manager.release(
+                func_name,
+                success=False,
+                file_path=lock_file_path,
+            )
             logger.exception("On-demand snapshot build failed for '%s'", func_name)
             return {"success": False, "error": str(exc)}
 
@@ -4182,25 +4297,46 @@ class Analyzer:
         total_tokens = 0
 
         for func in order:
-            # 快速检查：已有快照则跳过
-            existing = self.snapshot_store.load_snapshot(func)
+            impl = impl_cache.get(func) or self.code_index.get_function_impl(
+                func,
+                warn_missing=False,
+                include_context=False,
+            )
+            if not impl:
+                continue
+            impl_file = str(impl.get("file") or "")
+
+            # 快速检查：已有当前实现文件对应的快照则跳过。
+            try:
+                existing = self.snapshot_store.load_snapshot(
+                    func,
+                    file_path=impl_file or None,
+                )
+            except TypeError:
+                existing = self.snapshot_store.load_snapshot(func)
             if existing is not None:
                 skipped += 1
                 continue
 
-            # 跨线程锁保护
+            # 跨线程锁保护。
             lock_started = time.monotonic()
             logger.info(
-                "[snapshot-lock] waiting context=premodel entry=%s func=%s",
+                "[snapshot-lock] waiting context=premodel entry=%s func=%s file=%s",
                 entry_func,
                 func,
+                impl_file,
             )
-            status = self.snapshot_store.lock_manager.acquire(func, timeout=120.0)
+            status = self.snapshot_store.lock_manager.acquire(
+                func,
+                timeout=120.0,
+                file_path=impl_file or None,
+            )
             lock_wait = time.monotonic() - lock_started
             logger.info(
-                "[snapshot-lock] outcome context=premodel entry=%s func=%s status=%s waited=%.2fs",
+                "[snapshot-lock] outcome context=premodel entry=%s func=%s file=%s status=%s waited=%.2fs",
                 entry_func,
                 func,
+                impl_file,
                 status,
                 lock_wait,
             )
@@ -4213,22 +4349,17 @@ class Analyzer:
 
             # status == "acquired"：由当前 Worker 建模
             try:
-                impl = impl_cache.get(func) or self.code_index.get_function_impl(
-                    func,
-                    warn_missing=False,
-                    include_context=False,
-                )
-                if not impl:
-                    self.snapshot_store.lock_manager.release(func, success=False)
-                    continue
-
                 location = f"{impl['file']}:{impl['start_line']}"
 
                 if self._is_lightweight_snapshot_candidate(func, impl):
                     logger.info(f"[premodel] Auto-summarizing lightweight helper '{func}'")
                     snapshot = self._build_lightweight_snapshot(func, impl, location)
                     self.snapshot_store.save_snapshot(func, snapshot, impl["code"], location)
-                    self.snapshot_store.lock_manager.release(func, success=True)
+                    self.snapshot_store.lock_manager.release(
+                        func,
+                        success=True,
+                        file_path=impl_file or None,
+                    )
                     modeled += 1
                     continue
 
@@ -4237,7 +4368,11 @@ class Analyzer:
                     logger.info(f"[premodel] Auto-summarizing trivial function '{func}'")
                     snapshot = self._build_trivial_snapshot(func, impl, location)
                     self.snapshot_store.save_snapshot(func, snapshot, impl["code"], location)
-                    self.snapshot_store.lock_manager.release(func, success=True)
+                    self.snapshot_store.lock_manager.release(
+                        func,
+                        success=True,
+                        file_path=impl_file or None,
+                    )
                     modeled += 1
                     continue
 
@@ -4264,13 +4399,25 @@ class Analyzer:
                     self.snapshot_store.save_snapshot(
                         func, resp.data, impl["code"], location
                     )
-                    self.snapshot_store.lock_manager.release(func, success=True)
+                    self.snapshot_store.lock_manager.release(
+                        func,
+                        success=True,
+                        file_path=impl_file or None,
+                    )
                     modeled += 1
                 else:
-                    self.snapshot_store.lock_manager.release(func, success=False)
+                    self.snapshot_store.lock_manager.release(
+                        func,
+                        success=False,
+                        file_path=impl_file or None,
+                    )
                     logger.warning(f"[premodel] Failed to model '{func}': {resp.error}")
             except Exception as e:
-                self.snapshot_store.lock_manager.release(func, success=False)
+                self.snapshot_store.lock_manager.release(
+                    func,
+                    success=False,
+                    file_path=impl_file or None,
+                )
                 logger.error(f"[premodel] Error modeling '{func}': {e}")
 
         logger.info(f"[premodel] Done: {modeled} modeled, {skipped} reused from cache (ctx ≈{total_tokens:,} tokens)")
@@ -4562,7 +4709,3 @@ class Analyzer:
             if end_line is not None:
                 if not issue.get("end_line"):
                     issue["end_line"] = end_line
-
-
-
-

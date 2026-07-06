@@ -1,7 +1,21 @@
 import json
 
-from zscope.snapshots.store import SnapshotStore
+from zscope.snapshots.store import SnapshotLockManager, SnapshotStore
 from zscope.common.utils import compute_code_hash, compute_semantic_fingerprint
+
+
+def test_snapshot_lock_distinguishes_same_function_in_different_files() -> None:
+    lock_manager = SnapshotLockManager()
+
+    assert lock_manager.acquire("handle_request", file_path="src/a/server.c") == "acquired"
+    assert lock_manager.acquire("handle_request", timeout=0.01, file_path="src/a/server.c") == "timeout"
+    assert lock_manager.acquire("handle_request", file_path="src/b/server.c") == "acquired"
+
+    lock_manager.release("handle_request", file_path="src/a/server.c")
+    lock_manager.release("handle_request", file_path="src/b/server.c")
+
+    assert lock_manager.acquire("handle_request", file_path="src/a/server.c") == "done"
+    assert lock_manager.acquire("handle_request", file_path="src/b/server.c") == "done"
 
 
 def test_snapshot_load_cache_returns_independent_copies(tmp_path) -> None:

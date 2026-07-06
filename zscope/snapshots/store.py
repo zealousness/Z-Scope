@@ -36,8 +36,8 @@ def _clone_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
 
 class SnapshotLockManager:
     """
-    管理函数级别的建模互斥锁。
-    确保并行扫描时，同一个函数同时只有一个 Worker 在建模。
+    管理函数实现级别的建模互斥锁。
+    确保并行扫描时，同一个函数实现同时只有一个 Worker 在建模。
     """
 
     def __init__(self):
@@ -45,25 +45,38 @@ class SnapshotLockManager:
         self._func_locks: Dict[str, threading.Lock] = {}
         self._modeling_status: Dict[str, str] = {}  # "idle" | "modeling" | "done" | "failed"
 
-    def acquire(self, func_name: str, timeout: float = 120.0) -> str:
+    @staticmethod
+    def _lock_key(func_name: str, file_path: Optional[str] = None) -> str:
+        normalized_path = SnapshotStore._normalize_path_hint(str(file_path or ""))
+        if not normalized_path:
+            return str(func_name)
+        return f"{func_name}@@{normalized_path}"
+
+    def acquire(
+        self,
+        func_name: str,
+        timeout: float = 120.0,
+        file_path: Optional[str] = None,
+    ) -> str:
         """
-        尝试获取某函数的建模权。
+        尝试获取某个函数实现的建模权。
 
         Returns:
             "acquired"  — 你拿到了锁，你负责建模
             "done"      — 其他 Worker 已经建模完毕，直接用快照
             "timeout"   — 等待超时，放弃
         """
+        lock_key = self._lock_key(func_name, file_path)
         with self._global_lock:
-            if func_name not in self._func_locks:
-                self._func_locks[func_name] = threading.Lock()
-                self._modeling_status[func_name] = "idle"
+            if lock_key not in self._func_locks:
+                self._func_locks[lock_key] = threading.Lock()
+                self._modeling_status[lock_key] = "idle"
 
             # Fast path: 已经建模完成
-            if self._modeling_status[func_name] == "done":
+            if self._modeling_status[lock_key] == "done":
                 return "done"
 
-        lock = self._func_locks[func_name]
+        lock = self._func_locks[lock_key]
         acquired = lock.acquire(timeout=timeout)
 
         if not acquired:
@@ -71,30 +84,37 @@ class SnapshotLockManager:
 
         # Double-check：拿到锁后再看一次状态
         with self._global_lock:
-            if self._modeling_status[func_name] == "done":
+            if self._modeling_status[lock_key] == "done":
                 lock.release()
                 return "done"
-            self._modeling_status[func_name] = "modeling"
+            self._modeling_status[lock_key] = "modeling"
 
         return "acquired"
 
-    def release(self, func_name: str, success: bool = True):
+    def release(
+        self,
+        func_name: str,
+        success: bool = True,
+        file_path: Optional[str] = None,
+    ):
         """释放建模权并标记状态。"""
+        lock_key = self._lock_key(func_name, file_path)
         with self._global_lock:
-            self._modeling_status[func_name] = "done" if success else "failed"
+            self._modeling_status[lock_key] = "done" if success else "failed"
 
-        lock = self._func_locks.get(func_name)
+        lock = self._func_locks.get(lock_key)
         if lock:
             try:
                 lock.release()
             except RuntimeError:
                 pass  # already released
 
-    def invalidate(self, func_name: str) -> None:
+    def invalidate(self, func_name: str, file_path: Optional[str] = None) -> None:
         """Allow a stale snapshot to be rebuilt in the current process."""
+        lock_key = self._lock_key(func_name, file_path)
         with self._global_lock:
-            if func_name in self._modeling_status:
-                self._modeling_status[func_name] = "failed"
+            if lock_key in self._modeling_status:
+                self._modeling_status[lock_key] = "failed"
 
 
 class SnapshotStore:
