@@ -3,10 +3,10 @@
   "discovery": {
     "exposure_kind": "mixed_api_and_communication",
     "summary": {
-      "api": 62,
-      "thread": 7,
+      "api": 64,
+      "thread": 8,
       "communication": 8,
-      "other_user_input": 5
+      "other_user_input": 8
     },
     "notes": []
   },
@@ -19,7 +19,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 148,
+      "line": 156,
       "confidence": 0.9
     },
     {
@@ -239,7 +239,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 187,
+      "line": 195,
       "confidence": 0.9
     },
     {
@@ -371,7 +371,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 169,
+      "line": 177,
       "confidence": 0.9
     },
     {
@@ -426,7 +426,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 158,
+      "line": 166,
       "confidence": 0.9
     },
     {
@@ -437,7 +437,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 154,
+      "line": 162,
       "confidence": 0.9
     },
     {
@@ -448,7 +448,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 160,
+      "line": 168,
       "confidence": 0.9
     },
     {
@@ -459,7 +459,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 150,
+      "line": 158,
       "confidence": 0.9
     },
     {
@@ -470,7 +470,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 152,
+      "line": 160,
       "confidence": 0.9
     },
     {
@@ -481,7 +481,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 151,
+      "line": 159,
       "confidence": 0.9
     },
     {
@@ -526,6 +526,28 @@
         "declared_in_header"
       ],
       "line": 140,
+      "confidence": 0.9
+    },
+    {
+      "function_name": "td_runtime_maintain_lock_cache",
+      "file_path": "include/task_dispatcher.h",
+      "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
+      "exposure": "api",
+      "reasons": [
+        "declared_in_header"
+      ],
+      "line": 147,
+      "confidence": 0.9
+    },
+    {
+      "function_name": "td_runtime_process_stream_batch",
+      "file_path": "include/task_dispatcher.h",
+      "custom_prompt": "Public API declared in a header file. Audit caller-controlled arguments and API contract misuse. This header API is an external scan root: zero repository callers, absence from main, or absence of a separate worker/start wrapper is expected and must not be treated as dead code by itself. Treat this as an externally reachable facade: follow its callees and callback/worker paths to the actual internal source/sink operations, and report the concrete vulnerable callee location rather than stopping at the wrapper call site.",
+      "exposure": "api",
+      "reasons": [
+        "declared_in_header"
+      ],
+      "line": 143,
       "confidence": 0.9
     },
     {
@@ -613,7 +635,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 159,
+      "line": 167,
       "confidence": 0.9
     },
     {
@@ -624,7 +646,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 156,
+      "line": 164,
       "confidence": 0.9
     },
     {
@@ -635,7 +657,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 161,
+      "line": 169,
       "confidence": 0.9
     },
     {
@@ -657,7 +679,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 177,
+      "line": 185,
       "confidence": 0.9
     },
     {
@@ -668,7 +690,7 @@
       "reasons": [
         "declared_in_header"
       ],
-      "line": 143,
+      "line": 151,
       "confidence": 0.9
     },
     {
@@ -716,6 +738,17 @@
       "confidence": 0.88
     },
     {
+      "function_name": "_runtime_stream_flush_worker",
+      "file_path": "src/lifecycle.c",
+      "custom_prompt": "Thread entry or thread creator. Audit stack lifetime, shared state, lock ordering, and handoff ownership.",
+      "exposure": "thread",
+      "reasons": [
+        "thread_entry:pthread_create"
+      ],
+      "line": 3245,
+      "confidence": 0.88
+    },
+    {
       "function_name": "_service_async_worker",
       "file_path": "src/lifecycle.c",
       "custom_prompt": "Thread entry or thread creator. Audit stack lifetime, shared state, lock ordering, and handoff ownership.",
@@ -756,7 +789,7 @@
       "reasons": [
         "thread_entry:VOS_TaskCreate"
       ],
-      "line": 780,
+      "line": 799,
       "confidence": 0.88
     },
     {
@@ -884,6 +917,17 @@
       "confidence": 0.7
     },
     {
+      "function_name": "_runtime_lock_cache_reset_client",
+      "file_path": "src/lifecycle.c",
+      "custom_prompt": "User-controlled input entry. Treat file, environment, CLI, device, and stdin data as untrusted. Audit parsing, size conversion, range checks, termination, and resource cleanup before the data feeds copies, indexing, allocation sizes, dispatch, paths, or commands. If the input buffer, string, parsed value, or derived length is returned, written through an out-parameter, stored globally, or consumed by callers, use get_callers to inspect caller-side validation and sinks.",
+      "exposure": "other_user_input",
+      "reasons": [
+        "input:open"
+      ],
+      "line": 3357,
+      "confidence": 0.7
+    },
+    {
       "function_name": "_runtime_map_linked_segment",
       "file_path": "src/lifecycle.c",
       "custom_prompt": "User-controlled input entry. Treat file, environment, CLI, device, and stdin data as untrusted. Audit parsing, size conversion, range checks, termination, and resource cleanup before the data feeds copies, indexing, allocation sizes, dispatch, paths, or commands. If the input buffer, string, parsed value, or derived length is returned, written through an out-parameter, stored globally, or consumed by callers, use get_callers to inspect caller-side validation and sinks.",
@@ -892,6 +936,28 @@
         "input:open"
       ],
       "line": 2654,
+      "confidence": 0.7
+    },
+    {
+      "function_name": "_runtime_stream_open_journal",
+      "file_path": "src/lifecycle.c",
+      "custom_prompt": "User-controlled input entry. Treat file, environment, CLI, device, and stdin data as untrusted. Audit parsing, size conversion, range checks, termination, and resource cleanup before the data feeds copies, indexing, allocation sizes, dispatch, paths, or commands. If the input buffer, string, parsed value, or derived length is returned, written through an out-parameter, stored globally, or consumed by callers, use get_callers to inspect caller-side validation and sinks.",
+      "exposure": "other_user_input",
+      "reasons": [
+        "input:open"
+      ],
+      "line": 3312,
+      "confidence": 0.7
+    },
+    {
+      "function_name": "_runtime_stream_open_segment_handles",
+      "file_path": "src/lifecycle.c",
+      "custom_prompt": "User-controlled input entry. Treat file, environment, CLI, device, and stdin data as untrusted. Audit parsing, size conversion, range checks, termination, and resource cleanup before the data feeds copies, indexing, allocation sizes, dispatch, paths, or commands. If the input buffer, string, parsed value, or derived length is returned, written through an out-parameter, stored globally, or consumed by callers, use get_callers to inspect caller-side validation and sinks.",
+      "exposure": "other_user_input",
+      "reasons": [
+        "input:open"
+      ],
+      "line": 3293,
       "confidence": 0.7
     },
     {

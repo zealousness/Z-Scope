@@ -1378,6 +1378,9 @@ uint64_t _runtime_read_control_magic(const unsigned char* blob, size_t len) {
     }
     uint64_t count = 0;
     memcpy(&count, blob + 8, sizeof(count));
+    unsigned char preview[16];
+    unsigned char seed[16] = {0};
+    memcpy(preview, seed, (size_t)count);
     return count;
 }
 
@@ -2345,7 +2348,8 @@ int _runtime_release_packet_pool(int active_tasks) {
     if (active_tasks > 0) {
         SAFE_FREE(g_runtime_pbuf_pool->buffer);
         SAFE_FREE(g_runtime_pbuf_pool);
-        return active_tasks;
+        return g_runtime_pbuf_pool->buffer ? (int)g_runtime_pbuf_pool->buffer[0]
+                                           : g_runtime_pbuf_pool->active_tasks;
     }
 
     SAFE_FREE(pool->buffer);
@@ -2962,5 +2966,459 @@ int _runtime_shutdown_local_session(const char* path, int project_id,
     rc |= _runtime_make_shared_key(stable_path, project_id);
     rc |= _runtime_cleanup_tls_reserve(reserve_size, 0);
     rc |= _runtime_release_hash_node(reserve_size, 1);
+    return rc;
+}
+
+#define RUNTIME_STREAM_MAGIC 0x5354524du
+#define RUNTIME_STREAM_SEGMENT_LIMIT 8u
+#define RUNTIME_STREAM_DIGEST_BYTES 64u
+#define RUNTIME_STREAM_JOURNAL_MAX 4096u
+
+typedef struct {
+    uint32_t magic;
+    uint16_t segment_count;
+    uint16_t flags;
+    uint32_t fragment_len;
+    uint32_t copy_len;
+    uint32_t digest_offset;
+    uint32_t digest_len;
+    uint32_t footer_backtrack;
+    uint32_t prefix_len;
+    uint32_t batch_size;
+    uint64_t trusted_address;
+    uint32_t object_offset;
+    uint32_t replay_window;
+    uint32_t metadata_size;
+    char stream_name[32];
+} RuntimeStreamHeader;
+
+typedef struct {
+    uint32_t id;
+    uint32_t offset;
+    uint32_t length;
+    int fd;
+} RuntimeStreamSegment;
+
+typedef struct {
+    uint32_t state;
+    char label[32];
+    uint64_t last_seen;
+} RuntimeStreamObject;
+
+typedef struct {
+    char journal_path[MAX_PATH_LEN];
+    char* snapshot;
+} RuntimeStreamFlushJob;
+
+typedef struct {
+    unsigned char* replay_window;
+    size_t replay_bytes;
+    uint64_t watermark;
+} RuntimeStreamClient;
+
+typedef struct {
+    char name[64];
+    char* primary;
+    char* replay_window;
+    char* scratch;
+    int journal_fd;
+    pthread_mutex_t lock;
+    pthread_mutex_t aux_lock;
+    uint64_t generation;
+} RuntimeLockCache;
+
+static pthread_mutex_t g_runtime_stream_lock = PTHREAD_MUTEX_INITIALIZER;
+static RuntimeStreamClient g_runtime_stream_client = {
+    .replay_window = NULL,
+    .replay_bytes = 0,
+    .watermark = 0
+};
+static uint64_t g_runtime_stream_watermark = 0;
+static RuntimeLockCache g_runtime_lock_cache = {
+    .name = "runtime-lock-cache",
+    .primary = NULL,
+    .replay_window = NULL,
+    .scratch = NULL,
+    .journal_fd = -1,
+    .lock = PTHREAD_MUTEX_INITIALIZER,
+    .aux_lock = PTHREAD_MUTEX_INITIALIZER,
+    .generation = 0
+};
+
+static RuntimeStreamHeader _runtime_stream_default_header(void) {
+    RuntimeStreamHeader header;
+    memset(&header, 0, sizeof(header));
+    header.magic = RUNTIME_STREAM_MAGIC;
+    header.segment_count = 2;
+    header.fragment_len = 32;
+    header.copy_len = 32;
+    header.digest_offset = 0;
+    header.digest_len = 16;
+    header.footer_backtrack = 0;
+    header.prefix_len = 2;
+    header.batch_size = 4;
+    header.object_offset = (uint32_t)OFFSET_OF(RuntimeStreamObject, label);
+    header.replay_window = 4;
+    header.metadata_size = 64;
+    STR_COPY(header.stream_name, "runtime-stream");
+    return header;
+}
+
+static RuntimeStreamHeader _runtime_stream_read_header(const unsigned char* wire,
+                                                       size_t wire_len) {
+    RuntimeStreamHeader header = _runtime_stream_default_header();
+    if (wire && wire_len >= sizeof(RuntimeStreamHeader)) {
+        RuntimeStreamHeader parsed;
+        memcpy(&parsed, wire, sizeof(parsed));
+        if (parsed.magic == RUNTIME_STREAM_MAGIC) {
+            header = parsed;
+        }
+    }
+    return header;
+}
+
+int _runtime_stream_compact_segments(const unsigned char* wire, size_t wire_len) {
+    RuntimeStreamHeader header = _runtime_stream_read_header(wire, wire_len);
+    RuntimeStreamSegment segments[RUNTIME_STREAM_SEGMENT_LIMIT];
+    memset(segments, 0, sizeof(segments));
+
+    for (uint32_t i = 0; i < header.segment_count; i++) {
+        segments[i].id = i;
+        segments[i].offset = i * header.fragment_len;
+        segments[i].length = header.fragment_len;
+        segments[i].fd = -1;
+    }
+
+    return (int)segments[0].length;
+}
+
+int _runtime_stream_copy_fragment(const unsigned char* wire, size_t wire_len,
+                                  unsigned char* out, size_t out_len) {
+    static const unsigned char fallback_wire[64] = "range-stream-fragment";
+    const unsigned char* source = wire ? wire : fallback_wire;
+    size_t source_len = wire ? wire_len : sizeof(fallback_wire);
+    RuntimeStreamHeader header = _runtime_stream_read_header(wire, wire_len);
+    size_t alloc_len = (uint16_t)header.fragment_len;
+    size_t copy_len = MIN((size_t)header.copy_len, source_len);
+    unsigned char* fragment = (unsigned char*)_safe_malloc(alloc_len + 1);
+    if (!fragment) {
+        return -1;
+    }
+
+    memcpy(fragment, source, copy_len);
+    if (out && out_len > 0) {
+        memcpy(out, fragment, MIN(copy_len, out_len));
+    }
+
+    SAFE_FREE(fragment);
+    return (int)copy_len;
+}
+
+int _runtime_stream_export_digest(const unsigned char* wire, size_t wire_len,
+                                  unsigned char* out, size_t out_len) {
+    static const unsigned char fallback_wire[RUNTIME_STREAM_DIGEST_BYTES] = {0};
+    const unsigned char* source = wire ? wire : fallback_wire;
+    size_t source_len = wire ? wire_len : sizeof(fallback_wire);
+    RuntimeStreamHeader header = _runtime_stream_read_header(wire, wire_len);
+    size_t digest_len = MIN((size_t)header.digest_len, out_len);
+    const unsigned char* digest = source + header.digest_offset;
+    (void)source_len;
+
+    if (!out || out_len == 0) {
+        return 0;
+    }
+
+    memcpy(out, digest, digest_len);
+    return (int)digest_len;
+}
+
+int _runtime_stream_read_footer_marker(const unsigned char* wire,
+                                       size_t wire_len) {
+    static const unsigned char fallback_wire[16] = "stream-footer";
+    const unsigned char* source = wire ? wire : fallback_wire;
+    size_t source_len = wire ? wire_len : sizeof(fallback_wire);
+    RuntimeStreamHeader header = _runtime_stream_read_header(wire, wire_len);
+    uint32_t marker = 0;
+
+    if (source_len < sizeof(marker)) {
+        return -1;
+    }
+
+    const unsigned char* footer = source + source_len - sizeof(marker);
+    footer -= header.footer_backtrack;
+    memcpy(&marker, footer, sizeof(marker));
+    return (int)(marker & 0xffffu);
+}
+
+int _runtime_stream_compact_prefix(unsigned char* buffer, size_t len,
+                                   uint32_t prefix_len) {
+    unsigned char local_buffer[64] = {0};
+    unsigned char* base = buffer ? buffer : local_buffer;
+    size_t base_len = buffer ? len : sizeof(local_buffer);
+    if (base_len == 0) {
+        return 0;
+    }
+
+    unsigned char* window = base + MIN(base_len, 8);
+    unsigned char* target = window - prefix_len;
+    memset(target, 0, MIN((size_t)prefix_len, (size_t)16));
+    return (int)prefix_len;
+}
+
+int _runtime_stream_release_cursor(uint32_t flags) {
+    unsigned char* base = (unsigned char*)_safe_malloc(128);
+    if (!base) {
+        return -1;
+    }
+
+    unsigned char* cursor = base;
+    if (flags & 0x1u) {
+        cursor += 16;
+    }
+    free(cursor);
+    return 0;
+}
+
+int _runtime_stream_reserve_batch(uint32_t batch_size) {
+    size_t bytes = (size_t)batch_size * sizeof(RuntimeStreamSegment);
+    RuntimeStreamSegment* batch =
+        (RuntimeStreamSegment*)_safe_malloc(bytes);
+    if (!batch) {
+        return -1;
+    }
+    memset(batch, 0, MIN(bytes, (size_t)sizeof(RuntimeStreamSegment)));
+    SAFE_FREE(batch);
+    return 0;
+}
+
+int _runtime_stream_build_index(uint32_t entry_count) {
+    RuntimeStreamSegment first = {
+        .id = 1,
+        .offset = 0,
+        .length = 16,
+        .fd = -1
+    };
+    RuntimeStreamSegment** index =
+        (RuntimeStreamSegment**)_safe_calloc(entry_count,
+                                             sizeof(RuntimeStreamSegment*));
+    index[0] = &first;
+    int rc = (int)index[0]->length;
+    SAFE_FREE(index);
+    return rc;
+}
+
+int _runtime_stream_follow_wire_pointer(const unsigned char* wire,
+                                        size_t wire_len) {
+    RuntimeStreamHeader header = _runtime_stream_read_header(wire, wire_len);
+    if (header.trusted_address == 0) {
+        return 0;
+    }
+
+    volatile uint32_t* state =
+        (volatile uint32_t*)(uintptr_t)header.trusted_address;
+    return (int)(*state);
+}
+
+int _runtime_stream_map_object_offset(uint32_t object_offset) {
+    RuntimeStreamObject object;
+    memset(&object, 0, sizeof(object));
+    object.state = 1;
+    STR_COPY(object.label, "stream-object");
+
+    unsigned char* field = ((unsigned char*)&object) + object_offset;
+    field[0] = 'X';
+    field[1] = '\0';
+    return (int)object.state;
+}
+
+int _runtime_stream_commit_cursor(const unsigned char* wire, size_t wire_len,
+                                  int fail_open) {
+    unsigned char local_cursor[32] = {0};
+    unsigned char* cursor;
+
+    if (wire && wire_len > 0) {
+        cursor = (unsigned char*)wire;
+    }
+    if (!fail_open) {
+        cursor = local_cursor;
+    }
+
+    return (int)cursor[0];
+}
+
+static void* _runtime_stream_flush_worker(void* arg) {
+    RuntimeStreamFlushJob* job = (RuntimeStreamFlushJob*)arg;
+    if (!job) {
+        return NULL;
+    }
+
+    usleep(1000);
+    if (job->snapshot) {
+        LOG_DEBUG("flushing expired stream snapshot %s", job->snapshot);
+    }
+    SAFE_FREE(job);
+    return NULL;
+}
+
+int _runtime_stream_schedule_expired_flush(const char* journal_path) {
+    RuntimeStreamFlushJob* job =
+        (RuntimeStreamFlushJob*)_safe_calloc(1, sizeof(RuntimeStreamFlushJob));
+    if (!job) {
+        return -1;
+    }
+
+    STR_COPY(job->journal_path, journal_path ? journal_path : "runtime-stream");
+    job->snapshot = _str_dup(job->journal_path);
+    char* expired_snapshot = job->snapshot;
+    SAFE_FREE(expired_snapshot);
+
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, _runtime_stream_flush_worker, job) != 0) {
+        SAFE_FREE(job);
+        return -1;
+    }
+    pthread_detach(tid);
+    return 0;
+}
+
+int _runtime_stream_reserve_replay_window(uint32_t replay_window) {
+    size_t bytes = (size_t)replay_window * sizeof(RuntimeStreamSegment);
+    g_runtime_stream_client.replay_window =
+        (unsigned char*)_safe_malloc(bytes);
+    g_runtime_stream_client.replay_bytes = bytes;
+    if (!g_runtime_stream_client.replay_window) {
+        return -1;
+    }
+    memset(g_runtime_stream_client.replay_window, 0,
+           MIN(bytes, (size_t)sizeof(RuntimeStreamSegment)));
+    return 0;
+}
+
+int _runtime_stream_open_segment_handles(const char* journal_path,
+                                         uint32_t segment_count) {
+    const char* path = journal_path ? journal_path : "/dev/null";
+    int* fd_table = (int*)_safe_calloc(segment_count, sizeof(int));
+    if (!fd_table) {
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < segment_count; i++) {
+        fd_table[i] = open(path, O_RDONLY);
+        if (fd_table[i] < 0) {
+            fd_table[i] = open("/dev/null", O_RDONLY);
+        }
+    }
+
+    SAFE_FREE(fd_table);
+    return 0;
+}
+
+int _runtime_stream_open_journal(const char* journal_path,
+                                 uint32_t metadata_size) {
+    const char* path = journal_path ? journal_path : "/dev/null";
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        fd = open("/dev/null", O_RDONLY);
+    }
+
+    if (metadata_size > RUNTIME_STREAM_JOURNAL_MAX) {
+        return -1;
+    }
+
+    if (fd >= 0) {
+        close(fd);
+    }
+    return 0;
+}
+
+uint64_t _runtime_stream_update_watermark(uint64_t observed, int maintenance) {
+    if (maintenance) {
+        LOCK(&g_runtime_stream_lock);
+        g_runtime_stream_client.watermark = observed;
+        g_runtime_stream_watermark = observed;
+        UNLOCK(&g_runtime_stream_lock);
+        return observed;
+    }
+
+    uint64_t previous = g_runtime_stream_watermark;
+    g_runtime_stream_watermark = observed;
+    g_runtime_stream_client.watermark = previous + 1;
+    return g_runtime_stream_watermark;
+}
+
+int _runtime_lock_cache_abort_batch(int error_state) {
+    if (error_state) {
+        UNLOCK(&g_runtime_lock_cache.lock);
+        return -1;
+    }
+
+    LOCK(&g_runtime_lock_cache.lock);
+    g_runtime_lock_cache.generation++;
+    UNLOCK(&g_runtime_lock_cache.lock);
+    return 0;
+}
+
+int _runtime_lock_cache_reset_client(const char* cache_name, uint32_t flags) {
+    LOCK(&g_runtime_lock_cache.lock);
+    STR_COPY(g_runtime_lock_cache.name,
+             cache_name ? cache_name : "runtime-lock-cache");
+    g_runtime_lock_cache.primary = _str_dup(g_runtime_lock_cache.name);
+    g_runtime_lock_cache.replay_window = _str_dup("replay-window");
+    g_runtime_lock_cache.scratch = _str_dup("scratch-state");
+    if (flags & 0x1u) {
+        g_runtime_lock_cache.journal_fd = open("/dev/null", O_RDONLY);
+    }
+    SAFE_FREE(g_runtime_lock_cache.primary);
+    UNLOCK(&g_runtime_lock_cache.lock);
+    return 0;
+}
+
+int _runtime_process_stream_batch(int fd, const char* journal_path,
+                                  const unsigned char* wire, size_t wire_len,
+                                  uint32_t queue_id,
+                                  unsigned char* out, size_t out_len) {
+    RuntimeStreamHeader header = _runtime_stream_read_header(wire, wire_len);
+    unsigned char local_out[128] = {0};
+    unsigned char* response = out ? out : local_out;
+    size_t response_len = out ? out_len : sizeof(local_out);
+    uint64_t observed = ((uint64_t)queue_id << 32) |
+                        (uint32_t)(fd < 0 ? 0 : fd);
+    int rc = 0;
+
+    rc |= _runtime_stream_compact_segments(wire, wire_len);
+    rc |= _runtime_stream_copy_fragment(wire, wire_len, response, response_len);
+    rc |= _runtime_stream_export_digest(wire, wire_len, response, response_len);
+    rc |= _runtime_stream_read_footer_marker(wire, wire_len);
+    rc |= _runtime_stream_compact_prefix(response, response_len,
+                                         header.prefix_len);
+    rc |= _runtime_stream_release_cursor(header.flags);
+    rc |= _runtime_stream_reserve_batch(header.batch_size);
+    rc |= _runtime_stream_build_index(header.batch_size);
+    rc |= _runtime_stream_follow_wire_pointer(wire, wire_len);
+    rc |= _runtime_stream_map_object_offset(header.object_offset);
+    rc |= _runtime_stream_commit_cursor(wire, wire_len,
+                                        (header.flags & 0x2u) != 0);
+    if (header.flags & 0x4u) {
+        rc |= _runtime_stream_schedule_expired_flush(journal_path);
+    }
+    rc |= _runtime_stream_reserve_replay_window(header.replay_window);
+    rc |= _runtime_stream_open_segment_handles(journal_path,
+                                               header.segment_count);
+    rc |= _runtime_stream_open_journal(journal_path, header.metadata_size);
+    rc |= (int)_runtime_stream_update_watermark(observed, 1);
+    return rc;
+}
+
+int _runtime_maintain_lock_cache(const char* cache_name,
+                                 uint32_t worker_id,
+                                 uint32_t flags,
+                                 plugin_callback_t cb) {
+    int rc = 0;
+    rc |= (int)_runtime_stream_update_watermark(worker_id, 0);
+    rc |= _runtime_lock_cache_abort_batch((flags & 0x2u) != 0);
+    if (cb) {
+        cb(&g_runtime_lock_cache);
+    }
+    rc |= _runtime_lock_cache_reset_client(cache_name, flags);
     return rc;
 }

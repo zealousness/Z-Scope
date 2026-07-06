@@ -57,10 +57,17 @@ class ClangAstCfgCandidateGenerator:
 
     _CWE_BY_CLASS = {
         "memory_leak": "CWE-401",
+        "heap_overflow": "CWE-122",
+        "buffer_overread": "CWE-126",
+        "buffer_underread": "CWE-127",
+        "buffer_underwrite": "CWE-124",
+        "buffer_underflow": "CWE-127",
         "double_free": "CWE-415",
         "use_after_free": "CWE-416",
         "missing_unlock": "CWE-667",
+        "lock_protocol_violation": "CWE-832",
         "null_pointer_dereference": "CWE-476",
+        "unchecked_allocation": "CWE-690",
         "realloc_misuse": "CWE-401",
         "bad_parameter_or_api_misuse": "CWE-252",
         "bounds": "CWE-125",
@@ -84,6 +91,12 @@ class ClangAstCfgCandidateGenerator:
         "stack_escape": "CWE-562",
         "uninitialized_read": "CWE-457",
         "invalid_free": "CWE-590",
+        "out_of_bounds_write": "CWE-787",
+        "untrusted_pointer": "CWE-822",
+        "out_of_range_pointer_offset": "CWE-823",
+        "uninitialized_pointer": "CWE-824",
+        "resource_allocation_without_limits": "CWE-770",
+        "fd_leak": "CWE-775",
         "stack_overflow": "CWE-121",
         "fd_encoding_mismatch": "CWE-587",
         "state_inconsistency": "CWE-672",
@@ -91,13 +104,26 @@ class ClangAstCfgCandidateGenerator:
         "size_limit_mismatch": "CWE-131",
         "busy_loop": "CWE-835",
         "dynamic_array_race": "CWE-362",
+        "file_type_validation": "CWE-20",
+        "premature_destroy": "CWE-416",
+        "unsynchronized_shared_state": "CWE-362",
+        "permission": "CWE-732",
+        "key_truncation": "CWE-187",
+        "key_generation_race": "CWE-362",
     }
     _SKILL_BY_CLASS = {
         "memory_leak": "resource_lifecycle",
+        "heap_overflow": "memory",
+        "buffer_overread": "memory",
+        "buffer_underread": "memory",
+        "buffer_underwrite": "memory",
+        "buffer_underflow": "memory",
         "double_free": "temporal_memory",
         "use_after_free": "temporal_memory",
         "missing_unlock": "concurrency_lock_order",
+        "lock_protocol_violation": "concurrency_lock_order",
         "null_pointer_dereference": "memory",
+        "unchecked_allocation": "null_and_failure",
         "realloc_misuse": "resource_lifecycle",
         "bad_parameter_or_api_misuse": "null_and_failure",
         "bounds": "memory",
@@ -121,6 +147,12 @@ class ClangAstCfgCandidateGenerator:
         "stack_escape": "temporal_memory",
         "uninitialized_read": "memory",
         "invalid_free": "temporal_memory",
+        "out_of_bounds_write": "memory",
+        "untrusted_pointer": "memory",
+        "out_of_range_pointer_offset": "memory",
+        "uninitialized_pointer": "memory",
+        "resource_allocation_without_limits": "resource_lifecycle",
+        "fd_leak": "resource_lifecycle",
         "stack_overflow": "memory",
         "fd_encoding_mismatch": "ownership_contract",
         "state_inconsistency": "resource_lifecycle",
@@ -128,13 +160,26 @@ class ClangAstCfgCandidateGenerator:
         "size_limit_mismatch": "bounds_and_integer",
         "busy_loop": "concurrency_lock_order",
         "dynamic_array_race": "shared_state_race",
+        "file_type_validation": "ownership_contract",
+        "premature_destroy": "temporal_memory",
+        "unsynchronized_shared_state": "shared_state_race",
+        "permission": "ownership_contract",
+        "key_truncation": "ownership_contract",
+        "key_generation_race": "shared_state_race",
     }
     _RESOURCE_BY_CLASS = {
         "memory_leak": "memory",
+        "heap_overflow": "memory",
+        "buffer_overread": "memory",
+        "buffer_underread": "memory",
+        "buffer_underwrite": "memory",
+        "buffer_underflow": "memory",
         "double_free": "memory",
         "use_after_free": "memory",
         "missing_unlock": "lock",
+        "lock_protocol_violation": "lock",
         "null_pointer_dereference": "memory",
+        "unchecked_allocation": "memory",
         "realloc_misuse": "memory",
         "bad_parameter_or_api_misuse": "resource",
         "bounds": "memory",
@@ -158,6 +203,12 @@ class ClangAstCfgCandidateGenerator:
         "stack_escape": "memory",
         "uninitialized_read": "memory",
         "invalid_free": "memory",
+        "out_of_bounds_write": "memory",
+        "untrusted_pointer": "memory",
+        "out_of_range_pointer_offset": "memory",
+        "uninitialized_pointer": "memory",
+        "resource_allocation_without_limits": "memory",
+        "fd_leak": "file_descriptor",
         "stack_overflow": "memory",
         "fd_encoding_mismatch": "file_descriptor",
         "state_inconsistency": "shared_state",
@@ -165,6 +216,33 @@ class ClangAstCfgCandidateGenerator:
         "size_limit_mismatch": "memory",
         "busy_loop": "cpu",
         "dynamic_array_race": "shared_state",
+        "unsynchronized_shared_state": "shared_state",
+        "permission": "file_permission",
+        "key_truncation": "key",
+        "key_generation_race": "shared_state",
+    }
+    _GENERIC_VALIDATION_BUDGET_CLASSES = {
+        "integer_overflow",
+        "protocol_validation",
+        "resource_allocation_without_limits",
+        "version_filtering",
+    }
+    _EXACT_SINK_CLASSES = {
+        "bounds",
+        "buffer_overflow",
+        "heap_overflow",
+        "buffer_overread",
+        "buffer_underread",
+        "buffer_underwrite",
+        "buffer_underflow",
+        "double_free",
+        "fd_leak",
+        "invalid_free",
+        "memory_leak",
+        "signed_unsigned",
+        "stack_overflow",
+        "use_after_free",
+        "key_truncation",
     }
 
     def __init__(
@@ -237,6 +315,7 @@ class ClangAstCfgCandidateGenerator:
             priority_reasons=[
                 "clang_ast_cfg_candidate",
                 defect_class,
+                f"priority_group={issue.get('candidate_priority_group', '')}",
                 f"rule_confidence={issue.get('rule_confidence', issue.get('confidence', 0.5))}",
             ],
             origin=str(issue.get("source") or issue.get("location") or ""),
@@ -315,12 +394,14 @@ class ClangAstCfgCandidateGenerator:
     ) -> None:
         live: Dict[str, ResourceState] = {}
         freed: Dict[str, Tuple[ClangCfgLine, str]] = {}
+        terminal_branch_freed: Dict[Tuple[int, str], Tuple[ClangCfgLine, str]] = {}
         emitted_null_deref: Set[str] = set()
         emitted_uaf: Set[str] = set()
         emitted_realloc: Set[Tuple[str, int]] = set()
         emitted_status_misuse: Set[str] = set()
 
         for line in lines:
+            terminal_branch_line = self._is_terminal_conditional_branch_line(lines, line)
             reset_var = self._match_null_reset(line.text)
             if reset_var:
                 freed.pop(reset_var, None)
@@ -466,47 +547,61 @@ class ClangAstCfgCandidateGenerator:
             if release:
                 api, arg = release
                 var = self._resource_expr(arg) or self._resource_var(arg)
-                if var and var in freed:
-                    previous_line, previous_api = freed[var]
-                    self._emit(
+                terminal_branch_release = bool(var and terminal_branch_line)
+                terminal_key = (line.block_id, var) if terminal_branch_release and var else None
+                if terminal_key and terminal_key in terminal_branch_freed:
+                    previous_line, previous_api = terminal_branch_freed[terminal_key]
+                    self._emit_double_free(
                         issues,
                         func_name,
                         file_path,
                         lines,
                         allowed_skills,
-                        defect_class="double_free",
-                        rule="clang_cfg_same_object_released_twice",
-                        line=line,
-                        description=f"`{var}` is released twice on the same local CFG path.",
-                        root_cause=(
-                            "The resource state reaches a second release without an "
-                            "intervening reallocation, ownership transfer, or null reset."
-                        ),
-                        suggested_fix=(
-                            "Release the resource once, clear the owner after release, or "
-                            "merge cleanup paths through a single exit block."
-                        ),
-                        source=f"{previous_api}({var}) at line {previous_line.number}",
-                        sink=f"{api}({arg})",
-                        confidence=0.88,
-                        impact_level="high",
-                        positive=[
-                            f"line {previous_line.number}: first release of `{var}` via `{previous_api}`",
-                            f"line {line.number}: second release of `{var}` via `{api}`",
-                        ],
-                        negative=[],
-                        ast_cfg=self._ast_cfg_pack(
-                            lines,
-                            [
-                                self._event("release", previous_line, var, previous_api, previous_line.text),
-                                self._event("release", line, var, api, line.text),
-                            ],
-                            [previous_line.number, line.number],
-                        ),
+                        var,
+                        previous_line,
+                        previous_api,
+                        line,
+                        api,
+                        arg,
+                    )
+                elif var and var in freed:
+                    previous_line, previous_api = freed[var]
+                    self._emit_double_free(
+                        issues,
+                        func_name,
+                        file_path,
+                        lines,
+                        allowed_skills,
+                        var,
+                        previous_line,
+                        previous_api,
+                        line,
+                        api,
+                        arg,
                     )
                 elif var:
-                    live.pop(var, None)
-                    if not self._release_followed_by_return(lines, line):
+                    if terminal_key:
+                        terminal_branch_freed[terminal_key] = (line, api)
+                    if not terminal_branch_release:
+                        live.pop(var, None)
+                    return_line = self._return_line_after_release(lines, line)
+                    if (
+                        return_line is not None
+                        and self._uses_freed_var(return_line.text, var, release_api_names=self._release_names)
+                    ):
+                        self._emit_use_after_release(
+                            issues,
+                            func_name,
+                            file_path,
+                            lines,
+                            allowed_skills,
+                            var,
+                            line,
+                            api,
+                            return_line,
+                        )
+                        emitted_uaf.add(var)
+                    if not terminal_branch_release and return_line is None:
                         freed[var] = (line, api)
 
             for var, (free_line, free_api) in list(freed.items()):
@@ -518,41 +613,16 @@ class ClangAstCfgCandidateGenerator:
                     freed.pop(var, None)
                     continue
                 if self._uses_freed_var(line.text, var, release_api_names=self._release_names):
-                    self._emit(
+                    self._emit_use_after_release(
                         issues,
                         func_name,
                         file_path,
                         lines,
                         allowed_skills,
-                        defect_class="use_after_free",
-                        rule="clang_cfg_use_after_release",
-                        line=line,
-                        description=f"`{var}` is used after it has been released.",
-                        root_cause=(
-                            "The local CFG state marks the resource as released and no "
-                            "reset, reallocation, or ownership reacquire appears before use."
-                        ),
-                        suggested_fix=(
-                            "Move the use before release, keep a valid owned reference, or "
-                            "clear and guard the pointer after release."
-                        ),
-                        source=f"{free_api}({var}) at line {free_line.number}",
-                        sink=line.text,
-                        confidence=0.86,
-                        impact_level="high",
-                        positive=[
-                            f"line {free_line.number}: `{var}` released via `{free_api}`",
-                            f"line {line.number}: `{var}` is dereferenced or passed after release",
-                        ],
-                        negative=[],
-                        ast_cfg=self._ast_cfg_pack(
-                            lines,
-                            [
-                                self._event("release", free_line, var, free_api, free_line.text),
-                                self._event("use", line, var, "", line.text),
-                            ],
-                            [free_line.number, line.number],
-                        ),
+                        var,
+                        free_line,
+                        free_api,
+                        line,
                     )
                     emitted_uaf.add(var)
 
@@ -619,9 +689,10 @@ class ClangAstCfgCandidateGenerator:
                         state.transferred
                         or self._return_excludes_resource(line.text, var)
                         or self._return_exits_null_failure_path(lines, line, var)
+                        or self._resource_released_in_terminal_branch_before_return(lines, line, var)
                     ):
                         continue
-                    if state.carrier == "output_argument" and self._is_status_failure_return(line.text, state.status_var):
+                    if state.carrier == "output_argument" and self._return_is_status_failure_exit(lines, line, state.status_var):
                         continue
                     self._emit_leak_on_exit(
                         issues,
@@ -633,7 +704,11 @@ class ClangAstCfgCandidateGenerator:
                         line,
                         is_return=True,
                     )
-                    live.pop(var, None)
+                    if not terminal_branch_line:
+                        live.pop(var, None)
+                if not terminal_branch_line:
+                    live.clear()
+                    freed.clear()
 
         if lines:
             exit_line = lines[-1]
@@ -651,6 +726,57 @@ class ClangAstCfgCandidateGenerator:
                     is_return=False,
                 )
 
+    def _emit_double_free(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        var: str,
+        previous_line: ClangCfgLine,
+        previous_api: str,
+        line: ClangCfgLine,
+        api: str,
+        arg: str,
+    ) -> None:
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="double_free",
+            rule="clang_cfg_same_object_released_twice",
+            line=line,
+            description=f"`{var}` is released twice on the same local CFG path.",
+            root_cause=(
+                "The resource state reaches a second release without an "
+                "intervening reallocation, ownership transfer, or null reset."
+            ),
+            suggested_fix=(
+                "Release the resource once, clear the owner after release, or "
+                "merge cleanup paths through a single exit block."
+            ),
+            source=f"{previous_api}({var}) at line {previous_line.number}",
+            sink=f"{api}({arg})",
+            confidence=0.88,
+            impact_level="high",
+            positive=[
+                f"line {previous_line.number}: first release of `{var}` via `{previous_api}`",
+                f"line {line.number}: second release of `{var}` via `{api}`",
+            ],
+            negative=[],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("release", previous_line, var, previous_api, previous_line.text),
+                    self._event("release", line, var, api, line.text),
+                ],
+                [previous_line.number, line.number],
+            ),
+        )
+
     def _run_lock_state_machine(
         self,
         issues: List[Dict[str, Any]],
@@ -666,7 +792,19 @@ class ClangAstCfgCandidateGenerator:
                 api, lock_id = lock
                 held.append(LockState(lock_id=lock_id, api=api, line=line))
             unlock = self._match_unlock(line.text)
-            if unlock and held:
+            if unlock and not held:
+                api, lock_id = unlock
+                self._emit_unlock_without_matching_lock(
+                    issues,
+                    func_name,
+                    file_path,
+                    lines,
+                    allowed_skills,
+                    line,
+                    api,
+                    lock_id,
+                )
+            elif unlock and held:
                 _, lock_id = unlock
                 match_idx = next(
                     (idx for idx in range(len(held) - 1, -1, -1) if held[idx].lock_id == lock_id),
@@ -714,6 +852,50 @@ class ClangAstCfgCandidateGenerator:
                 ),
             )
             held.clear()
+
+    def _emit_unlock_without_matching_lock(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+        api: str,
+        lock_id: str,
+    ) -> None:
+        recent = "\n".join(item.text for item in lines[max(0, line.index - 8) : line.index])
+        if re.search(r"\b(?:expects|requires|must_hold|held_by_caller)\b", recent, re.IGNORECASE):
+            return
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="lock_protocol_violation",
+            rule="clang_cfg_unlock_without_matching_lock",
+            line=line,
+            description=f"`{api}` releases `{lock_id}` without a visible matching acquire in the local function body.",
+            root_cause=(
+                "The local lock-state path reaches an unlock operation while no matching lock "
+                "acquire has been observed."
+            ),
+            suggested_fix=(
+                "Acquire the same lock before the unlock, remove the stray unlock, or document "
+                "and enforce a caller-held-lock contract."
+            ),
+            source="local lock-state machine",
+            sink=line.text,
+            confidence=0.72,
+            positive=[f"line {line.number}: `{api}` releases `{lock_id}` with no prior local acquire"],
+            negative=["Validator must confirm the function is not exclusively called with this lock already held."],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [self._event("unlock_without_local_lock", line, lock_id, api, line.text)],
+                [line.number],
+            ),
+        )
 
     def _run_common_sast_rules(
         self,
@@ -824,7 +1006,23 @@ class ClangAstCfgCandidateGenerator:
             )
             self._maybe_emit_off_by_one(issues, func_name, file_path, lines, allowed_skills, line)
             self._maybe_emit_stack_array_overflow(issues, func_name, file_path, lines, allowed_skills, line)
+            self._maybe_emit_heap_copy_length_mismatch(issues, func_name, file_path, lines, allowed_skills, line)
+            self._maybe_emit_offset_length_copy_overread(issues, func_name, file_path, lines, allowed_skills, line)
+            self._maybe_emit_pointer_backtrack_underflow(issues, func_name, file_path, lines, allowed_skills, line)
             self._maybe_emit_invalid_free(issues, func_name, file_path, lines, allowed_skills, line)
+            self._maybe_emit_interior_free_alias(issues, func_name, file_path, lines, allowed_skills, line)
+            self._maybe_emit_unchecked_allocation_result(issues, func_name, file_path, lines, allowed_skills, line)
+            self._maybe_emit_fixed_array_count_overflow(issues, func_name, file_path, lines, allowed_skills, line)
+            self._maybe_emit_key_truncation(issues, func_name, file_path, lines, allowed_skills, line)
+            self._maybe_emit_wire_integer_pointer_deref(issues, func_name, file_path, lines, allowed_skills, line)
+            self._maybe_emit_unchecked_object_offset_access(issues, func_name, file_path, lines, allowed_skills, line)
+            self._maybe_emit_uninitialized_pointer_use(issues, func_name, file_path, lines, allowed_skills, line)
+            self._maybe_emit_unbounded_heap_allocation(issues, func_name, file_path, lines, allowed_skills, line)
+            self._maybe_emit_slot_overwrite_leak(issues, func_name, file_path, lines, allowed_skills, line)
+            self._maybe_emit_key_generation_race(issues, func_name, file_path, lines, allowed_skills, line)
+            self._maybe_emit_file_type_validation_order(issues, func_name, file_path, lines, allowed_skills, line)
+            self._maybe_emit_active_owner_premature_destroy(issues, func_name, file_path, lines, allowed_skills, line)
+            self._maybe_emit_fd_leak_on_error_return(issues, func_name, file_path, lines, allowed_skills, line)
             self._maybe_emit_unchecked_strchr_result(issues, func_name, file_path, lines, allowed_skills, line)
             self._maybe_emit_thread_stack_escape(issues, func_name, file_path, lines, allowed_skills, line, local_aggregates)
             self._maybe_emit_partial_aggregate_send(
@@ -998,6 +1196,14 @@ class ClangAstCfgCandidateGenerator:
                 allowed_skills,
                 line,
             )
+            self._maybe_emit_owned_member_leak_on_parent_release(
+                issues,
+                func_name,
+                file_path,
+                lines,
+                allowed_skills,
+                line,
+            )
             self._maybe_emit_unchecked_insert_handoff(
                 issues,
                 func_name,
@@ -1007,6 +1213,14 @@ class ClangAstCfgCandidateGenerator:
                 line,
             )
             self._maybe_emit_protocol_length_copy_without_packet_bound(
+                issues,
+                func_name,
+                file_path,
+                lines,
+                allowed_skills,
+                line,
+            )
+            self._maybe_emit_header_length_copy_without_wire_bound(
                 issues,
                 func_name,
                 file_path,
@@ -1043,6 +1257,9 @@ class ClangAstCfgCandidateGenerator:
             heap_thread_released,
             heap_thread_sinks,
         )
+        self._emit_unlocked_global_state_write_candidates(issues, func_name, file_path, lines, allowed_skills)
+        self._emit_permission_mode_candidate(issues, func_name, file_path, lines, allowed_skills)
+        self._emit_timer_callback_lock_order_candidate(issues, func_name, file_path, lines, allowed_skills)
 
     def _track_heap_thread_argument_owner(
         self,
@@ -1317,6 +1534,499 @@ class ClangAstCfgCandidateGenerator:
                     self._event("post_unlock_release", line, released, "", line.text),
                 ],
                 [insert_line.number, unlink_line.number, unlock_line.number, line.number],
+            ),
+        )
+
+    def _maybe_emit_owned_member_leak_on_parent_release(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        release = self._match_release(line.text)
+        if not release:
+            return
+        _api, raw_parent = release
+        parent = self._resource_var(raw_parent)
+        if not parent or "->" in raw_parent or "." in raw_parent:
+            return
+
+        explicit = self._find_owned_member_assignment(lines, line, parent)
+        if explicit is not None:
+            member_line, member, rhs = explicit
+            if self._owned_member_has_cleanup(lines, member_line.index + 1, line.index, parent, member):
+                return
+            resource = f"{parent}->{member}"
+            description = f"Parent object `{parent}` is released while owned member `{resource}` remains live."
+            source = f"{resource} = {rhs} at line {member_line.number}"
+            positive = [
+                f"line {member_line.number}: `{resource}` receives an owned child/list resource",
+                f"line {line.number}: parent `{parent}` is released without releasing `{resource}`",
+            ]
+        else:
+            missing_common = self._find_missing_common_owned_member_cleanup(lines, line, parent)
+            if missing_common is not None:
+                member_line, member = missing_common
+                resource = f"{parent}->{member}"
+                description = f"Parent object `{parent}` is released while common owned member `{resource}` is not cleaned up."
+                source = member_line.text
+                positive = [
+                    f"line {member_line.number}: `{parent}` is created by an allocator/helper that initializes owned members",
+                    f"line {line.number}: parent `{parent}` is released without releasing `{resource}`",
+                ]
+            else:
+                if not self._looks_like_parent_delete_without_member_cleanup(func_name, lines, line, parent):
+                    return
+                resource = f"{parent}->child_list"
+                description = f"Parent object `{parent}` is released without visible cleanup of owned child/list members."
+                source = self._parent_declaration_text(lines, line, parent) or parent
+                positive = [
+                    f"line {line.number}: parent `{parent}` is released in a delete/remove/destroy-style function",
+                    "no visible walk or release of child/list members appears before the parent release",
+                ]
+
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="memory_leak",
+            rule="clang_cfg_parent_release_without_owned_member_cleanup",
+            line=line,
+            description=description,
+            root_cause="Freeing a container object does not release owned child/list members unless the cleanup walks and releases those members first.",
+            suggested_fix="Release or transfer every owned child/list member before freeing the parent object.",
+            source=source,
+            sink=line.text,
+            confidence=0.78,
+            impact_level="high",
+            positive=positive,
+            negative=["Validator must confirm the member is owned by the parent and no out-of-line destructor dominates this release."],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [self._event("owned_member_leak", line, resource, "", line.text)],
+                [line.number],
+            ),
+        )
+
+    def _emit_unlocked_global_state_write_candidates(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+    ) -> None:
+        writes: List[Tuple[ClangCfgLine, str, str, bool]] = []
+        held: List[str] = []
+        for line in lines:
+            lock = self._match_lock(line.text)
+            if lock:
+                held.append(lock[1])
+            lhs = self._global_write_lhs(line.text)
+            if lhs:
+                writes.append((line, lhs, self._global_state_family(lhs), bool(held)))
+            unlock = self._match_unlock(line.text)
+            if unlock and held:
+                held.pop()
+
+        families: Dict[str, List[Tuple[ClangCfgLine, str, bool]]] = {}
+        for line, lhs, family, locked in writes:
+            families.setdefault(family, []).append((line, lhs, locked))
+
+        emitted: Set[str] = set()
+        for family, family_writes in families.items():
+            locked_writes = [item for item in family_writes if item[2]]
+            unlocked_writes = [item for item in family_writes if not item[2]]
+            if locked_writes and unlocked_writes and family not in emitted:
+                locked_line, locked_lhs, _ = locked_writes[0]
+                unlocked_line, unlocked_lhs, _ = unlocked_writes[0]
+                self._emit_shared_state_candidate(
+                    issues,
+                    func_name,
+                    file_path,
+                    lines,
+                    allowed_skills,
+                    rule="clang_cfg_global_state_written_with_and_without_lock",
+                    line=unlocked_line,
+                    source=locked_line.text,
+                    sink=unlocked_line.text,
+                    resource=family,
+                    description=f"Global shared state `{family}` is written both with and without a lock.",
+                    positive=[
+                        f"line {locked_line.number}: `{locked_lhs}` is written while a lock appears held",
+                        f"line {unlocked_line.number}: `{unlocked_lhs}` is written without the same local lock evidence",
+                    ],
+                )
+                emitted.add(family)
+                continue
+
+            if self._is_global_pointer_length_publication(family_writes) and family not in emitted:
+                first_line, first_lhs, _ = family_writes[0]
+                last_line, last_lhs, _ = family_writes[-1]
+                self._emit_shared_state_candidate(
+                    issues,
+                    func_name,
+                    file_path,
+                    lines,
+                    allowed_skills,
+                    rule="clang_cfg_global_pointer_length_pair_published_without_lock",
+                    line=last_line,
+                    source=first_line.text,
+                    sink=last_line.text,
+                    resource=family,
+                    description=f"Global pointer/length state `{family}` is published without visible synchronization.",
+                    positive=[
+                        f"line {first_line.number}: `{first_lhs}` is written as part of a global state pair",
+                        f"line {last_line.number}: `{last_lhs}` is written without a common lock around the publication",
+                    ],
+                )
+                emitted.add(family)
+
+    def _emit_permission_mode_candidate(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+    ) -> None:
+        mode_assignment = None
+        request_check = None
+        special_name_branch = None
+        body = "\n".join(line.text for line in lines)
+        for line in lines:
+            if mode_assignment is None and re.search(
+                r"\b(?:g_[A-Za-z_0-9]+(?:\.|->))?(?:perm|mode|permission)\b\s*=\s*0[0-7]{2,4}u?\s*;",
+                line.text,
+                re.IGNORECASE,
+            ):
+                mode_assignment = line
+            if request_check is None and re.search(
+                r"\b(?:requested|request|desired|required)[A-Za-z_0-9]*(?:perm|permission|mode)\b[^;]*(?:&|==|!=)",
+                line.text,
+                re.IGNORECASE,
+            ):
+                request_check = line
+            if special_name_branch is None and re.search(r"\bstrcmp\s*\([^;]*(?:pipe|segment|shm|shared|product)", line.text, re.IGNORECASE):
+                special_name_branch = line
+
+        if mode_assignment is None or request_check is None:
+            return
+        if re.search(r"\b(?:chmod|fchmod|open|creat|shm_open|mmap)\s*\([^;]*(?:requested|request|desired|required)[A-Za-z_0-9]*(?:perm|permission|mode)\b", body, re.IGNORECASE):
+            return
+
+        positive = [
+            f"line {mode_assignment.number}: file/shared-memory permission or mode is hard-coded",
+            f"line {request_check.number}: requested permission is only compared locally",
+        ]
+        if special_name_branch is not None:
+            positive.append(f"line {special_name_branch.number}: special name/deployment branch does not update the mode policy")
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="permission",
+            rule="clang_cfg_requested_permission_not_applied_to_mode",
+            line=request_check,
+            description="Requested file/shared-memory permission is compared against a hard-coded mode but is not applied to the backing object.",
+            root_cause="The code treats permission as a local validation flag while the actual backing mode remains fixed.",
+            suggested_fix="Derive the open/chmod/mmap mode from the validated request or reject unsupported requests before publishing the resource.",
+            source=mode_assignment.text,
+            sink=request_check.text,
+            confidence=0.72,
+            positive=positive,
+            negative=["Validator must confirm no later platform-specific permission update applies the requested mode."],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("hardcoded_permission", mode_assignment, "permission", "", mode_assignment.text),
+                    self._event("requested_permission_check", request_check, "permission", "", request_check.text),
+                ],
+                [mode_assignment.number, request_check.number],
+            ),
+        )
+
+    def _emit_timer_callback_lock_order_candidate(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+    ) -> None:
+        effective_name = self._function_name_hint(func_name, lines)
+        if not re.search(r"(?:timer|tick|callback|cb)", effective_name, re.IGNORECASE):
+            return
+        global_walk = self._first_line_matching_in(
+            lines,
+            re.compile(r"\b[A-Za-z_]\w*\s*=\s*&?\s*g_[A-Za-z_0-9]+(?:\.|->)[A-Za-z_0-9]*(?:head|list|queue|scheduler)?", re.IGNORECASE),
+        )
+        object_lock = None
+        for line in lines:
+            lock = self._match_lock(line.text)
+            if lock and re.search(r"(?:->|\.)[A-Za-z_0-9]*(?:lock|mutex)", line.text, re.IGNORECASE):
+                object_lock = line
+                break
+        if global_walk is None or object_lock is None:
+            return
+        if any(self._match_lock(item.text) and "g_" in item.text for item in lines[: object_lock.index]):
+            return
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="deadlock",
+            rule="clang_cfg_timer_callback_object_lock_without_scheduler_lock",
+            line=object_lock,
+            description="Timer/callback path locks an object from a global scheduler/list without holding the scheduler lock.",
+            root_cause="A close/destroy path can hold the object lock while waiting for the scheduler/global lock, creating a lock-order cycle with the callback path.",
+            suggested_fix="Use one lock order for scheduler/list and per-object locks, or snapshot/refcount the object before dropping the scheduler lock.",
+            source=global_walk.text,
+            sink=object_lock.text,
+            confidence=0.74,
+            impact_level="high",
+            positive=[
+                f"line {global_walk.number}: callback path traverses a global scheduler/list",
+                f"line {object_lock.number}: callback path then acquires a per-object lock",
+            ],
+            negative=["Validator must confirm a reachable close/destroy path takes these locks in the opposite order."],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("global_scheduler_walk", global_walk, "scheduler", "", global_walk.text),
+                    self._event("object_lock_in_callback", object_lock, "object_lock", "", object_lock.text),
+                ],
+                [global_walk.number, object_lock.number],
+            ),
+        )
+
+    @staticmethod
+    def _function_name_hint(func_name: str, lines: Sequence[ClangCfgLine]) -> str:
+        signature = next((line.text for line in lines[:6] if "(" in line.text), "")
+        match = re.search(r"\b(?P<name>[A-Za-z_]\w*)\s*\([^;]*\)\s*\{?", signature)
+        parsed = match.group("name") if match else ""
+        if parsed and parsed not in {"if", "for", "while", "switch"}:
+            return parsed
+        return str(func_name or "")
+
+    def _find_owned_member_assignment(
+        self,
+        lines: Sequence[ClangCfgLine],
+        release_line: ClangCfgLine,
+        parent: str,
+    ) -> Optional[Tuple[ClangCfgLine, str, str]]:
+        for item in reversed(lines[max(0, release_line.index - 80) : release_line.index]):
+            match = re.search(
+                rf"\b{re.escape(parent)}\s*->\s*(?P<member>[A-Za-z_]\w*)\s*=\s*(?P<rhs>[^;]+);",
+                item.text,
+            )
+            if not match:
+                continue
+            member = match.group("member")
+            rhs = match.group("rhs").strip()
+            if not (self._is_owned_member_name(member) or self._looks_like_owned_member_rhs(rhs)):
+                continue
+            if re.fullmatch(r"(?:NULL|nullptr|0)", rhs):
+                continue
+            return item, member, rhs
+        return None
+
+    @staticmethod
+    def _is_owned_member_name(member: str) -> bool:
+        return bool(
+            re.search(
+                r"(?:child|children|proc_head|head$|_head$|list$|_list$|items$|_items$|entries$|_entries$)",
+                str(member or ""),
+                re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
+    def _looks_like_owned_member_rhs(rhs: str) -> bool:
+        return bool(
+            re.search(
+                r"\b[A-Za-z_]\w*(?:alloc|calloc|malloc|dup|new|create|clone|open)[A-Za-z_0-9]*\s*\(",
+                str(rhs or ""),
+                re.IGNORECASE,
+            )
+        )
+
+    def _owned_member_has_cleanup(
+        self,
+        lines: Sequence[ClangCfgLine],
+        start_index: int,
+        end_index: int,
+        parent: str,
+        member: str,
+    ) -> bool:
+        region = lines[start_index:end_index]
+        member_expr = rf"{re.escape(parent)}\s*->\s*{re.escape(member)}"
+        for item in region:
+            release = self._match_release(item.text)
+            if release and re.search(member_expr, release[1]):
+                return True
+            if re.search(member_expr, item.text) and re.search(r"\b(?:while|for)\b", item.text):
+                return True
+            if re.search(rf"\b(?:free|SAFE_FREE|safe_free|_safe_free)\s*\([^;]*{member_expr}", item.text):
+                return True
+        return False
+
+    def _find_missing_common_owned_member_cleanup(
+        self,
+        lines: Sequence[ClangCfgLine],
+        release_line: ClangCfgLine,
+        parent: str,
+    ) -> Optional[Tuple[ClangCfgLine, str]]:
+        create_line = next(
+            (
+                item
+                for item in reversed(lines[max(0, release_line.index - 40) : release_line.index])
+                if re.search(
+                    rf"\b{re.escape(parent)}\s*=\s*(?:\([^)]*\)\s*)?"
+                    r"[A-Za-z_]\w*(?:alloc|calloc|malloc|new|create)[A-Za-z_0-9]*\s*\(",
+                    item.text,
+                    re.IGNORECASE,
+                )
+            ),
+            None,
+        )
+        if create_line is None:
+            return None
+        region = "\n".join(item.text for item in lines[create_line.index + 1 : release_line.index])
+        common_members = ("payload", "context", "ctx", "tag", "buffer", "data", "value")
+        for member in common_members:
+            member_expr = rf"{re.escape(parent)}\s*->\s*{member}"
+            if re.search(member_expr, region) and not re.search(
+                rf"\b(?:free|SAFE_FREE|safe_free|_safe_free|destroy|release)[A-Za-z_0-9]*\s*\([^;]*{member_expr}",
+                region,
+                re.IGNORECASE,
+            ):
+                return create_line, member
+        if re.search(r"_alloc_node|create_node|new_node", create_line.text, re.IGNORECASE):
+            for member in ("payload", "tag", "value"):
+                if not re.search(
+                    rf"\b(?:free|SAFE_FREE|safe_free|_safe_free|destroy|release)[A-Za-z_0-9]*\s*\([^;]*{re.escape(parent)}\s*->\s*{member}",
+                    region,
+                    re.IGNORECASE,
+                ):
+                    return create_line, member
+        return None
+
+    def _looks_like_parent_delete_without_member_cleanup(
+        self,
+        func_name: str,
+        lines: Sequence[ClangCfgLine],
+        release_line: ClangCfgLine,
+        parent: str,
+    ) -> bool:
+        effective_name = self._function_name_hint(func_name, lines)
+        if not re.search(r"(?:delete|remove|destroy|free|cleanup|unregister|release)", effective_name, re.IGNORECASE):
+            return False
+        declaration = self._parent_declaration_text(lines, release_line, parent)
+        if not re.search(r"(?:Node|Entry|Record|Object|Item|Session|Subscription|Group|Container)", declaration):
+            return False
+        prefix = lines[max(0, release_line.index - 60) : release_line.index]
+        if any(re.search(rf"\b{re.escape(parent)}\s*->", item.text) and self._match_release(item.text) for item in prefix):
+            return False
+        if any(re.search(r"\b(?:while|for)\b", item.text) and re.search(r"(?:child|children|head|list|next)", item.text, re.IGNORECASE) for item in prefix):
+            return False
+        return True
+
+    @staticmethod
+    def _parent_declaration_text(
+        lines: Sequence[ClangCfgLine],
+        release_line: ClangCfgLine,
+        parent: str,
+    ) -> str:
+        for item in reversed(lines[max(0, release_line.index - 40) : release_line.index + 1]):
+            if re.search(rf"\b[A-Za-z_]\w*\s*\*+\s*{re.escape(parent)}\b", item.text):
+                return item.text
+        return ""
+
+    @staticmethod
+    def _global_write_lhs(text: str) -> str:
+        stripped = str(text or "")
+        if re.search(r"\b(?:if|while|for|switch)\s*\(", stripped):
+            return ""
+        assign = re.search(
+            r"\b(?P<lhs>g_[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)?)\s*(?:=|\+=|-=|\*=|/=|%=)",
+            stripped,
+        )
+        if assign and not re.search(r"[=!<>]=", stripped[max(0, assign.end() - 3) : assign.end() + 2]):
+            return re.sub(r"\s+", "", assign.group("lhs"))
+        inc = re.search(r"\b(?P<lhs>g_[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)?)\s*(?:\+\+|--)", stripped)
+        return re.sub(r"\s+", "", inc.group("lhs")) if inc else ""
+
+    @staticmethod
+    def _global_state_family(lhs: str) -> str:
+        text = re.sub(r"\s+", "", str(lhs or ""))
+        tail = text.split("->")[-1].split(".")[-1]
+        for token in ("watermark", "rules", "map", "mode", "state", "len", "length", "size"):
+            if token in tail.lower() or token in text.lower():
+                if token in {"len", "length", "size", "map"}:
+                    base = re.sub(r"_(?:map|len|length|size|bytes|count|num)$", "", text)
+                    return base or text
+                return token
+        return re.sub(r"_(?:ptr|map|len|length|size|bytes|count|num)$", "", text)
+
+    @staticmethod
+    def _is_global_pointer_length_publication(
+        family_writes: Sequence[Tuple[ClangCfgLine, str, bool]],
+    ) -> bool:
+        if len(family_writes) < 2 or any(locked for _line, _lhs, locked in family_writes):
+            return False
+        names = {lhs.lower() for _line, lhs, _locked in family_writes}
+        has_pointer = any(re.search(r"(?:map|ptr|addr|base|buffer|window)", name) for name in names)
+        has_length = any(re.search(r"(?:len|length|size|bytes|count|num)", name) for name in names)
+        return has_pointer and has_length
+
+    def _emit_shared_state_candidate(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        *,
+        rule: str,
+        line: ClangCfgLine,
+        source: str,
+        sink: str,
+        resource: str,
+        description: str,
+        positive: List[str],
+    ) -> None:
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="unsynchronized_shared_state",
+            rule=rule,
+            line=line,
+            description=description,
+            root_cause="Global shared state is updated without a single synchronization protocol protecting all related writes/readers.",
+            suggested_fix="Protect all writes and readers of the state family with the same lock or publish an immutable snapshot atomically.",
+            source=source,
+            sink=sink,
+            confidence=0.74,
+            impact_level="high",
+            positive=positive,
+            negative=["Validator must confirm there is no higher-level serialization contract around these calls."],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [self._event("unsynchronized_global_state", line, resource, "", line.text)],
+                [line.number],
             ),
         )
 
@@ -1644,33 +2354,51 @@ class ClangAstCfgCandidateGenerator:
         )
         if has_magic_guard:
             return
-        if not has_magic_symbol and not re.search(r"(?:magic|header|protocol|parser|decode)", func_name, re.IGNORECASE):
+        name_hint = self._function_name_hint(func_name, lines)
+        if not has_magic_symbol and not re.search(r"(?:magic|header|protocol|parser|decode)", name_hint, re.IGNORECASE):
             return
+        sink_line = self._find_dependent_count_sink(lines, line, copy.group("count"))
+        concrete_sink = sink_line.text if sink_line is not None else f"{copy.group('count')} used before protocol magic validation"
+        defect_class = "bounds" if sink_line is not None else "protocol_validation"
+        rule = (
+            "clang_cfg_wide_count_before_magic_reaches_memory_sink"
+            if sink_line is not None
+            else "clang_cfg_wide_count_read_without_magic_guard"
+        )
+        positive = [
+            f"line {line.number}: protocol field is copied from a wire buffer offset",
+            "no magic/signature comparison is visible before the count read",
+        ]
+        events = [self._event("wide_count_read", line, copy.group("count"), copy.group("src"), line.text)]
+        cfg_path = [line.number]
+        if sink_line is not None:
+            positive.append(
+                f"line {sink_line.number}: unchecked `{copy.group('count')}` reaches a memory/dispatch sink"
+            )
+            events.append(self._event("wide_count_sink", sink_line, copy.group("count"), "", sink_line.text))
+            cfg_path.append(sink_line.number)
         self._emit(
             issues,
             func_name,
             file_path,
             lines,
             allowed_skills,
-            defect_class="protocol_validation",
-            rule="clang_cfg_wide_count_read_without_magic_guard",
-            line=line,
+            defect_class=defect_class,
+            rule=rule,
+            line=sink_line or line,
             description=f"Protocol field `{copy.group('count')}` is read from `{copy.group('src')} + {offset}` without a visible magic/signature guard.",
             root_cause="The parser uses a dependent protocol field before proving the record layout with the expected magic value.",
             suggested_fix="Decode and validate the magic/signature field before reading dependent count fields.",
             source=line.text,
-            sink=f"{copy.group('count')} used before protocol magic validation",
+            sink=concrete_sink,
             confidence=0.82,
             impact_level="high",
-            positive=[
-                f"line {line.number}: protocol field is copied from a wire buffer offset",
-                "no magic/signature comparison is visible before the count read",
-            ],
+            positive=positive,
             negative=["Validator must confirm whether a caller-side magic check dominates this parser."],
             ast_cfg=self._ast_cfg_pack(
                 lines,
-                [self._event("wide_count_read", line, copy.group("count"), copy.group("src"), line.text)],
-                [line.number],
+                events,
+                cfg_path,
             ),
         )
 
@@ -2067,6 +2795,66 @@ class ClangAstCfgCandidateGenerator:
             ),
         )
 
+    def _maybe_emit_header_length_copy_without_wire_bound(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        assign = re.search(
+            r"\b(?:size_t|uint(?:32|64)_t|int)\s+(?P<len>[A-Za-z_]\w*(?:len|length|size)[A-Za-z_0-9]*)\s*="
+            r"\s*(?:\([^)]*\)\s*)?(?P<header>[A-Za-z_]\w*)\s*\.\s*(?:len|length|size)\s*-\s*sizeof\s*\(",
+            line.text,
+            re.IGNORECASE,
+        )
+        if not assign:
+            return
+        len_var = assign.group("len")
+        header_var = assign.group("header")
+        prior = "\n".join(item.text for item in lines[max(0, line.index - 10) : line.index])
+        if not re.search(rf"\bmemcpy\s*\(\s*&\s*{re.escape(header_var)}\s*,", prior):
+            return
+        later = lines[line.index + 1 : line.index + 12]
+        copy_line = next((item for item in later if self._copy_uses_length(item.text, len_var)), None)
+        if copy_line is None:
+            return
+        guard_window = "\n".join(item.text for item in lines[max(0, copy_line.index - 8) : copy_line.index])
+        if re.search(rf"\b{re.escape(len_var)}\b\s*(?:<=|<)\s*(?:wire_len|packet_len|frame_len|payload_len|remaining)", guard_window):
+            return
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="bounds",
+            rule="clang_cfg_header_length_reaches_copy_without_wire_bound",
+            line=copy_line,
+            description=f"Header length `{len_var}` reaches a copy without being bounded by the input wire length.",
+            root_cause="Validating a header magic does not prove the declared body length is present in the received buffer.",
+            suggested_fix="Check declared body length against the remaining wire length before copying.",
+            source=line.text,
+            sink=copy_line.text,
+            confidence=0.84,
+            impact_level="high",
+            positive=[
+                f"line {line.number}: `{len_var}` is derived from `{header_var}.length`",
+                f"line {copy_line.number}: `{len_var}` controls a copy sink",
+            ],
+            negative=["Validator must confirm no earlier full-frame length guard dominates the copy."],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("header_length", line, len_var, header_var, line.text),
+                    self._event("header_length_copy", copy_line, len_var, "", copy_line.text),
+                ],
+                [line.number, copy_line.number],
+            ),
+        )
+
     def _maybe_emit_probe_error_returns_success(
         self,
         issues: List[Dict[str, Any]],
@@ -2239,6 +3027,8 @@ class ClangAstCfgCandidateGenerator:
             if self._has_overflow_guard(guard_window, expr):
                 continue
             if self._has_small_count_bound_proof(lines, line, expr):
+                continue
+            if self._has_narrowing_bound_proof(lines, line, expr):
                 continue
             self._emit(
                 issues,
@@ -2565,6 +3355,187 @@ class ClangAstCfgCandidateGenerator:
             ast_cfg=self._ast_cfg_pack(lines, [self._event("runtime_stack_array", line, match.group("array"), "", line.text)], [line.number]),
         )
 
+    def _maybe_emit_heap_copy_length_mismatch(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        copy_call = re.search(
+            r"\b(?P<api>memcpy|memmove)\s*\(\s*(?P<dst>[A-Za-z_]\w*)\s*,\s*[^,]+,\s*(?P<len>[^)]+)\)",
+            line.text,
+        )
+        if not copy_call:
+            return
+        dst = copy_call.group("dst")
+        copy_len = copy_call.group("len").strip()
+        alloc_data = self._find_allocation_size_assignment(lines, line, dst)
+        if alloc_data is None:
+            return
+        alloc_line, alloc_size = alloc_data
+        alloc_base = self._allocation_base_from_size(lines, alloc_line, alloc_size)
+        copy_base = self._expression_origin_base(lines, line, copy_len)
+        if not alloc_base or not copy_base or alloc_base != copy_base:
+            if not self._looks_like_external_length_pair(lines, line, alloc_size, copy_len):
+                return
+        if self._copy_length_bounded_by_alloc(lines, line, copy_len, alloc_size):
+            return
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="heap_overflow",
+            rule="clang_cfg_narrowed_allocation_original_length_copy",
+            line=line,
+            description=(
+                f"`{dst}` is allocated from narrowed size `{alloc_size}` but copied with original length `{copy_len}`."
+            ),
+            root_cause="A truncated allocation size can be smaller than the subsequent copy length.",
+            suggested_fix="Allocate from the same checked length used by the copy, or reject values that do not fit the allocation type.",
+            source=alloc_line.text,
+            sink=line.text,
+            confidence=0.88,
+            impact_level="high",
+            positive=[
+                f"line {alloc_line.number}: allocation for `{dst}` uses narrowed size `{alloc_size}`",
+                f"line {line.number}: `{copy_len}` reaches `{copy_call.group('api')}` as the copy length",
+            ],
+            negative=["Validator must confirm the original length can exceed the narrowed allocation length."],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("narrowed_heap_allocation", alloc_line, dst, alloc_size, alloc_line.text),
+                    self._event("original_length_heap_copy", line, dst, copy_len, line.text),
+                ],
+                [alloc_line.number, line.number],
+            ),
+        )
+
+    def _maybe_emit_offset_length_copy_overread(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        copy_call = re.search(
+            r"\b(?P<api>memcpy|memmove)\s*\(\s*[^,]+,\s*(?P<src>[A-Za-z_]\w*)\s*,\s*(?P<len>[^)]+)\)",
+            line.text,
+        )
+        if not copy_call:
+            return
+        src = copy_call.group("src")
+        copy_len = copy_call.group("len").strip()
+        source_line = self._find_offset_pointer_assignment(lines, line, src)
+        if source_line is None:
+            return
+        offset_expr = self._offset_expr_from_pointer_assignment(source_line.text, src)
+        if not offset_expr:
+            return
+        guard_window = "\n".join(item.text for item in lines[max(0, source_line.index - 8) : line.index + 1])
+        if re.search(
+            rf"\b{re.escape(offset_expr)}\b\s*\+\s*{re.escape(copy_len)}\s*(?:<=|<)\s*(?:[A-Za-z_]\w*len|[A-Za-z_]\w*_len|sizeof\s*\()",
+            guard_window,
+        ):
+            return
+        if not re.search(r"(?:offset|digest|header|wire|len|length|size)", f"{offset_expr} {copy_len}", re.I):
+            return
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="buffer_overread",
+            rule="clang_cfg_offset_length_copy_without_source_bound",
+            line=line,
+            description=f"`{src}` is derived from unchecked offset `{offset_expr}` and copied with `{copy_len}`.",
+            root_cause="The code validates neither the offset nor offset-plus-length against the backing input buffer.",
+            suggested_fix="Require `offset <= buffer_len` and `copy_len <= buffer_len - offset` before deriving the source pointer.",
+            source=source_line.text,
+            sink=line.text,
+            confidence=0.84,
+            impact_level="high",
+            positive=[
+                f"line {source_line.number}: `{src}` is derived from a buffer plus `{offset_expr}`",
+                f"line {line.number}: `{src}` reaches `{copy_call.group('api')}` with length `{copy_len}`",
+            ],
+            negative=["Validator must confirm no caller-side packet bound dominates the offset and length."],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("offset_pointer", source_line, src, offset_expr, source_line.text),
+                    self._event("offset_length_copy", line, src, copy_len, line.text),
+                ],
+                [source_line.number, line.number],
+            ),
+        )
+
+    def _maybe_emit_pointer_backtrack_underflow(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        sink = re.search(
+            r"\b(?P<api>memcpy|memmove|memset|strncpy)\s*\(\s*(?P<args>.*)\)",
+            line.text,
+        )
+        if not sink:
+            return
+        args = self._split_args(sink.group("args"))
+        if not args:
+            return
+        api = sink.group("api")
+        pointer_arg = args[1] if api in {"memcpy", "memmove", "strncpy"} and len(args) > 1 else args[0]
+        pointer_arg = pointer_arg.strip()
+        if not re.fullmatch(r"[A-Za-z_]\w*", pointer_arg):
+            return
+        source_line = self._find_pointer_backtrack_assignment(lines, line, pointer_arg)
+        if source_line is None:
+            return
+        defect = "buffer_underwrite" if api == "memset" or (api in {"memcpy", "memmove", "strncpy"} and args[0].strip() == pointer_arg) else "buffer_underread"
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class=defect,
+            rule="clang_cfg_unchecked_pointer_backtrack",
+            line=line,
+            description=f"`{pointer_arg}` is derived by subtracting an unchecked offset and then used by `{api}`.",
+            root_cause="A caller- or wire-controlled backtrack can move a pointer before the start of the buffer.",
+            suggested_fix="Validate the backtrack/offset against the available buffer length before deriving the pointer.",
+            source=source_line.text,
+            sink=line.text,
+            confidence=0.84,
+            impact_level="high",
+            positive=[
+                f"line {source_line.number}: `{pointer_arg}` is derived with subtraction from a buffer pointer",
+                f"line {line.number}: `{pointer_arg}` is used by `{api}`",
+            ],
+            negative=["Validator must confirm the subtracted offset is externally controlled and lacks a dominating bound."],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("pointer_backtrack", source_line, pointer_arg, "", source_line.text),
+                    self._event("backtracked_pointer_sink", line, pointer_arg, api, line.text),
+                ],
+                [source_line.number, line.number],
+            ),
+        )
+
     def _maybe_emit_invalid_free(
         self,
         issues: List[Dict[str, Any]],
@@ -2604,6 +3575,726 @@ class ClangAstCfgCandidateGenerator:
             positive=[f"line {line.number}: deallocator argument is `{cleaned}`, not a plain owner variable"],
             negative=[],
             ast_cfg=self._ast_cfg_pack(lines, [self._event("invalid_free", line, cleaned, api, line.text)], [line.number]),
+        )
+
+    def _maybe_emit_interior_free_alias(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        release = self._match_release(line.text)
+        if not release:
+            return
+        api, arg = release
+        var = arg.strip()
+        if not re.fullmatch(r"[A-Za-z_]\w*", var):
+            return
+        derivation = self._find_pointer_derivation(lines, line, var)
+        if derivation is None:
+            return
+        source_line, base, operation = derivation
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="invalid_free",
+            rule="clang_cfg_free_derived_pointer_alias",
+            line=line,
+            description=f"`{api}` is called on `{var}`, which was derived from `{base}` by pointer arithmetic.",
+            root_cause="The deallocator receives an alias to an interior/adjusted address rather than the owning allocation base.",
+            suggested_fix=f"Keep `{base}` as the owner passed to `{api}` and use a separate non-owning cursor for offsets.",
+            source=source_line.text,
+            sink=line.text,
+            confidence=0.86,
+            impact_level="high",
+            positive=[
+                f"line {source_line.number}: `{operation}` derives `{var}` from `{base}`",
+                f"line {line.number}: `{api}` releases derived alias `{var}`",
+            ],
+            negative=["Validator must confirm the base object was heap-owned and the alias does not equal the allocation base on all paths."],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("pointer_derivation", source_line, var, base, source_line.text),
+                    self._event("invalid_free_alias", line, var, api, line.text),
+                ],
+                [source_line.number, line.number],
+            ),
+        )
+
+    def _maybe_emit_unchecked_allocation_result(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        var = self._first_direct_deref_var(line.text)
+        if not var:
+            return
+        alloc_line = self._find_allocation_assignment(lines, line, var)
+        if alloc_line is None:
+            return
+        guard_window = lines[alloc_line.index + 1 : line.index + 1]
+        if any(self._is_null_guard(item.text, var) for item in guard_window):
+            return
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="unchecked_allocation",
+            rule="clang_cfg_allocation_result_used_without_null_check",
+            line=line,
+            description=f"Allocation result `{var}` is used before a visible NULL check.",
+            root_cause="The allocation return value can be NULL and the local path dereferences or indexes it first.",
+            suggested_fix=f"Check `{var}` for NULL before any dereference, indexing, or write.",
+            source=alloc_line.text,
+            sink=line.text,
+            confidence=0.76,
+            impact_level="high",
+            positive=[
+                f"line {alloc_line.number}: `{var}` receives an allocation result",
+                f"line {line.number}: `{var}` is consumed before a visible NULL guard",
+            ],
+            negative=["Validator must confirm no wrapper contract guarantees a non-NULL result."],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("allocation_result", alloc_line, var, "", alloc_line.text),
+                    self._event("unchecked_allocation_use", line, var, "", line.text),
+                ],
+                [alloc_line.number, line.number],
+            ),
+        )
+
+    def _maybe_emit_fixed_array_count_overflow(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        write = re.search(
+            r"\b(?P<array>[A-Za-z_]\w*)\s*\[\s*(?P<index>[A-Za-z_]\w*)\s*\]"
+            r"\s*(?:\.|->)?\s*[A-Za-z_0-9]*\s*=",
+            line.text,
+        )
+        if not write:
+            return
+        array = write.group("array")
+        index_var = write.group("index")
+        decl_line, array_size = self._find_fixed_array_decl(lines, line, array)
+        if decl_line is None:
+            return
+        loop_line, count_expr = self._find_count_loop_for_index(lines, line, index_var)
+        if loop_line is None:
+            return
+        if self._count_is_obviously_bounded(lines, line, array, array_size, count_expr):
+            return
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="out_of_bounds_write",
+            rule="clang_cfg_unbounded_count_indexes_fixed_array",
+            line=line,
+            description=f"Loop count `{count_expr}` indexes fixed array `{array}[{array_size}]` without a visible array-size guard.",
+            root_cause="An externally derived count can drive writes past the local fixed-size buffer.",
+            suggested_fix=f"Validate `{count_expr}` against `ARRAY_SIZE({array})` before the loop or clamp the loop bound.",
+            source=f"{array} declaration at line {decl_line.number}; loop at line {loop_line.number}",
+            sink=line.text,
+            confidence=0.82,
+            impact_level="high",
+            positive=[
+                f"line {decl_line.number}: `{array}` is a fixed-size local array",
+                f"line {loop_line.number}: loop bound is `{count_expr}`",
+                f"line {line.number}: `{array}[{index_var}]` is written inside the loop",
+            ],
+            negative=["Validator must confirm the loop count is not constrained by a caller-side or earlier protocol guard."],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("fixed_array", decl_line, array, array_size, decl_line.text),
+                    self._event("count_loop", loop_line, index_var, count_expr, loop_line.text),
+                    self._event("array_write", line, array, index_var, line.text),
+                ],
+                [decl_line.number, loop_line.number, line.number],
+            ),
+        )
+
+    def _maybe_emit_key_truncation(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        trunc = re.search(
+            r"\bstrncpy\s*\(\s*(?P<dst>[A-Za-z_]\w*\s*->\s*(?:key|name|id)|[A-Za-z_]\w*\.(?:key|name|id))\s*,\s*"
+            r"(?P<src>[A-Za-z_]\w*)\s*,\s*(?P<limit>\d+|[A-Z_][A-Z0-9_]*)\s*\)",
+            line.text,
+        )
+        if not trunc:
+            return
+        src = trunc.group("src")
+        lookup_line = self._find_prior_full_key_lookup(lines, line, src)
+        if lookup_line is None:
+            return
+        guard_window = "\n".join(item.text for item in lines[max(0, lookup_line.index - 4) : line.index + 1])
+        if re.search(rf"\bstrlen\s*\(\s*{re.escape(src)}\s*\)\s*(?:<|<=)\s*{re.escape(trunc.group('limit'))}\b", guard_window):
+            return
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="key_truncation",
+            rule="clang_cfg_full_key_lookup_truncated_key_insert",
+            line=line,
+            description=f"`{src}` is looked up at full length but stored through fixed-length `{trunc.group('dst')}`.",
+            root_cause="Lookup and insertion use different key equivalence domains, so long keys can collide or bypass an existing record.",
+            suggested_fix="Validate key length before lookup or use the same bounded key representation for lookup and insertion.",
+            source=lookup_line.text,
+            sink=line.text,
+            confidence=0.84,
+            impact_level="high",
+            positive=[
+                f"line {lookup_line.number}: lookup/find uses full key `{src}`",
+                f"line {line.number}: `{src}` is copied into `{trunc.group('dst')}` with fixed limit `{trunc.group('limit')}`",
+            ],
+            negative=["Validator must confirm the destination key length is shorter than accepted input keys."],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("full_key_lookup", lookup_line, src, "", lookup_line.text),
+                    self._event("truncated_key_store", line, src, trunc.group("limit"), line.text),
+                ],
+                [lookup_line.number, line.number],
+            ),
+        )
+
+    def _maybe_emit_wire_integer_pointer_deref(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        direct = re.search(
+            r"\*\s*\([^;)]*\*\s*\)\s*(?:\([^)]*\)\s*)?(?P<src>[A-Za-z_]\w*(?:->|\.)[A-Za-z_]\w*)",
+            line.text,
+        )
+        if direct and self._looks_wire_pointer_source(direct.group("src")):
+            source_line = line
+            var = direct.group("src")
+        else:
+            var = self._first_direct_deref_var(line.text)
+            if not var:
+                return
+            source_line = self._find_wire_pointer_assignment(lines, line, var)
+            if source_line is None:
+                return
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="untrusted_pointer",
+            rule="clang_cfg_wire_integer_cast_to_pointer_deref",
+            line=line,
+            description="A serialized/header integer is converted to a process pointer and dereferenced.",
+            root_cause="Wire data cannot be trusted as an in-process address; dereferencing it can access arbitrary memory.",
+            suggested_fix="Treat wire values as opaque offsets or handles and resolve them through a validated table.",
+            source=source_line.text,
+            sink=line.text,
+            confidence=0.88,
+            impact_level="critical",
+            positive=[
+                f"line {source_line.number}: wire/header-derived value is cast into pointer `{var}`",
+                f"line {line.number}: the resulting pointer is dereferenced",
+            ],
+            negative=[],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("wire_pointer_cast", source_line, var, "", source_line.text),
+                    self._event("wire_pointer_deref", line, var, "", line.text),
+                ],
+                [source_line.number, line.number],
+            ),
+        )
+
+    def _maybe_emit_unchecked_object_offset_access(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        var = self._first_direct_deref_var(line.text)
+        if not var:
+            return
+        offset_data = self._find_object_offset_assignment(lines, line, var)
+        if offset_data is None:
+            return
+        source_line, object_name, offset_expr = offset_data
+        guard_window = "\n".join(item.text for item in lines[source_line.index + 1 : line.index + 1])
+        if re.search(
+            rf"\b{re.escape(offset_expr)}\b\s*(?:<|<=)\s*sizeof\s*\(\s*&?\s*{re.escape(object_name)}\s*\)",
+            guard_window,
+        ):
+            return
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="out_of_range_pointer_offset",
+            rule="clang_cfg_unchecked_object_offset_deref",
+            line=line,
+            description=f"Offset `{offset_expr}` is applied inside local object `{object_name}` and then dereferenced without a `sizeof` guard.",
+            root_cause="An external offset can form a pointer outside the local object before the later access.",
+            suggested_fix=f"Validate `{offset_expr} < sizeof({object_name})` and the requested access width before deriving the pointer.",
+            source=source_line.text,
+            sink=line.text,
+            confidence=0.84,
+            impact_level="high",
+            positive=[
+                f"line {source_line.number}: `{var}` is derived from `&{object_name}` plus `{offset_expr}`",
+                f"line {line.number}: `{var}` is dereferenced",
+            ],
+            negative=["Validator must confirm the offset is externally controlled and not already range checked."],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("object_offset_pointer", source_line, var, offset_expr, source_line.text),
+                    self._event("object_offset_access", line, var, "", line.text),
+                ],
+                [source_line.number, line.number],
+            ),
+        )
+
+    def _maybe_emit_uninitialized_pointer_use(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        var = self._first_direct_deref_var(line.text)
+        if not var:
+            return
+        decl_line = self._find_uninitialized_pointer_decl(lines, line, var)
+        if decl_line is None:
+            return
+        assigns = [
+            item
+            for item in lines[decl_line.index + 1 : line.index]
+            if re.search(rf"\b{re.escape(var)}\s*=", item.text)
+        ]
+        if assigns and any(not self._is_conditional_statement(lines, item) for item in assigns):
+            return
+        if any(self._is_null_guard(item.text, var) for item in lines[decl_line.index + 1 : line.index + 1]):
+            return
+        assignment_note = "only conditional assignments appear before use" if assigns else "no assignment appears before use"
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="uninitialized_pointer",
+            rule="clang_cfg_pointer_may_be_uninitialized_before_use",
+            line=line,
+            description=f"Pointer `{var}` may be read before being initialized on all local paths.",
+            root_cause="The local CFG view finds a pointer declaration without an initializer and no unconditional assignment before use.",
+            suggested_fix=f"Initialize `{var}` to NULL and gate every dereference on a successful assignment.",
+            source=decl_line.text,
+            sink=line.text,
+            confidence=0.78,
+            impact_level="high",
+            positive=[
+                f"line {decl_line.number}: `{var}` is declared without an initializer",
+                f"line {line.number}: `{var}` is dereferenced; {assignment_note}",
+            ],
+            negative=["Validator must confirm no macro or control-flow contract initializes the pointer on all paths."],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("uninitialized_pointer_decl", decl_line, var, "", decl_line.text),
+                    self._event("uninitialized_pointer_use", line, var, "", line.text),
+                ],
+                [decl_line.number, line.number],
+            ),
+        )
+
+    def _maybe_emit_unbounded_heap_allocation(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        for api, args in self._calls(line.text):
+            if api not in self._return_acquirers and not re.search(r"(?:malloc|calloc|alloc|realloc)$", api, re.IGNORECASE):
+                continue
+            count_expr = self._allocation_count_expression(api, args)
+            if not count_expr:
+                continue
+            resolved_count_expr = count_expr
+            if not self._looks_external_size_expr(resolved_count_expr):
+                resolved = self._resolve_recent_assignment_expr(lines, line, resolved_count_expr)
+                if resolved and self._looks_external_size_expr(resolved):
+                    resolved_count_expr = resolved
+            if not self._looks_external_size_expr(resolved_count_expr):
+                continue
+            guard_window = "\n".join(item.text for item in lines[max(0, line.index - 12) : line.index])
+            if self._has_allocation_limit_guard(guard_window, resolved_count_expr):
+                continue
+            if self._has_small_count_bound_proof(lines, line, resolved_count_expr):
+                continue
+            if self._has_narrowing_bound_proof(lines, line, resolved_count_expr) and self._allocation_has_total_local_lifetime_proof(lines, line, resolved_count_expr):
+                continue
+            if self._allocation_has_total_local_lifetime_proof(lines, line, resolved_count_expr):
+                continue
+            self._emit(
+                issues,
+                func_name,
+                file_path,
+                lines,
+                allowed_skills,
+                defect_class="resource_allocation_without_limits",
+                rule="clang_cfg_external_size_allocation_without_limit",
+                line=line,
+                description=f"Heap allocation size `{resolved_count_expr}` is externally/data derived without a visible quota or protocol cap.",
+                root_cause="A caller- or wire-controlled size can allocate unbounded heap memory on this local path.",
+                suggested_fix="Enforce a protocol, per-client, or global maximum before allocating.",
+                source=resolved_count_expr,
+                sink=line.text,
+                confidence=0.7,
+                positive=[f"line {line.number}: `{api}` allocation is driven by `{resolved_count_expr}`"],
+                negative=["Validator must confirm the size is externally controlled and no earlier caller-side cap dominates this path."],
+                ast_cfg=self._ast_cfg_pack(
+                    lines,
+                    [self._event("unbounded_allocation", line, resolved_count_expr, api, line.text)],
+                    [line.number],
+                ),
+            )
+            return
+
+    def _maybe_emit_fd_leak_on_error_return(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        if not self._is_return(line.text):
+            return
+        fd_data = self._find_open_fd_without_close(lines, line)
+        if fd_data is None:
+            return
+        open_line, fd, api = fd_data
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="fd_leak",
+            rule="clang_cfg_fd_open_return_without_close",
+            line=line,
+            description=f"File descriptor `{fd}` opened by `{api}` can return from the function without a matching close.",
+            root_cause="The error/early-return path exits while the descriptor owner remains live.",
+            suggested_fix="Close the descriptor on every return path or route exits through shared cleanup.",
+            source=open_line.text,
+            sink=line.text,
+            confidence=0.78,
+            impact_level="high",
+            positive=[
+                f"line {open_line.number}: `{fd}` receives `{api}` descriptor",
+                f"line {line.number}: return occurs before a visible `close({fd})`",
+            ],
+            negative=["Validator must confirm the descriptor was not transferred to a durable owner before this return."],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("fd_open", open_line, fd, api, open_line.text),
+                    self._event("return_without_fd_close", line, fd, "", line.text),
+                ],
+                [open_line.number, line.number],
+            ),
+        )
+
+    def _maybe_emit_slot_overwrite_leak(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        body_hint = f"{self._function_name_hint(func_name, lines)}\n" + "\n".join(item.text for item in lines[: min(len(lines), 6)])
+        if not re.search(r"(?:register|upsert|insert|set|install|add|registry|slot|plugin)", body_hint, re.IGNORECASE):
+            return
+        assign = re.search(
+            r"\b(?P<slot>[A-Za-z_]\w*)\s*->\s*(?P<field>context|ctx|cleanup)\s*=\s*(?P<rhs>[^;]+);",
+            line.text,
+        )
+        if not assign:
+            return
+        slot = assign.group("slot")
+        if not self._slot_pointer_is_indexed_registry(lines, line, slot):
+            return
+        region = "\n".join(item.text for item in lines[max(0, line.index - 12) : line.index])
+        if re.search(rf"\b(?:free|SAFE_FREE|cleanup|destroy|release)[A-Za-z_0-9]*\s*\([^;]*\b{re.escape(slot)}\s*->", region, re.I):
+            return
+        if re.search(rf"\bif\s*\([^)]*\b{re.escape(slot)}\s*->\s*(?:context|ctx|cleanup|handle|name)", region):
+            return
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="memory_leak",
+            rule="clang_cfg_slot_overwrite_without_existing_owner_cleanup",
+            line=line,
+            description=f"Registry slot `{slot}` is overwritten without cleaning its existing owned fields.",
+            root_cause="A hash/registry slot update can orphan the previous plugin or context state when collisions or duplicate names reuse the slot.",
+            suggested_fix="Check whether the slot is occupied and run the old cleanup/release path before overwriting owned fields.",
+            source=self._slot_pointer_source(lines, line, slot) or slot,
+            sink=line.text,
+            confidence=0.76,
+            impact_level="high",
+            positive=[
+                f"line {line.number}: `{slot}->{assign.group('field')}` is overwritten in a registration/update path",
+                "no cleanup of the previous slot owner is visible before the overwrite",
+            ],
+            negative=["Validator must confirm the slot can already contain an owned context or plugin instance."],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [self._event("slot_overwrite", line, slot, assign.group("field"), line.text)],
+                [line.number],
+            ),
+        )
+
+    def _maybe_emit_key_generation_race(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        body_hint = f"{self._function_name_hint(func_name, lines)}\n" + "\n".join(item.text for item in lines)
+        if not re.search(r"(?:key|ftok|_file_exists|file_exists)", body_hint, re.IGNORECASE):
+            return
+        if not re.search(r"\b[A-Za-z_]\w*\s*=\s*[^;]*(?:hash|ftok|project|path)[^;]*;", line.text, re.IGNORECASE):
+            return
+        prefix = lines[max(0, line.index - 12) : line.index]
+        suffix = lines[line.index + 1 : min(len(lines), line.index + 12)]
+        path_check = next((item for item in reversed(prefix) if re.search(r"\b(?:access|stat|lstat|_file_exists|file_exists)\s*\(", item.text)), None)
+        locked_lookup = next(
+            (
+                item
+                for item in suffix
+                if re.search(r"\bLOCK\s*\(", item.text)
+                and re.search(r"\b[A-Za-z_]\w*(?:find|lookup|register|zone)[A-Za-z_0-9]*\s*\(", item.text, re.I)
+            ),
+            None,
+        )
+        if path_check is None or locked_lookup is None:
+            return
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="key_generation_race",
+            rule="clang_cfg_path_state_key_generation_before_locked_registration",
+            line=line,
+            description="Path/key state is checked and hashed before the locked registration lookup.",
+            root_cause="A file/path based key can be generated from stale path state before the lock that protects registration and collision checks.",
+            suggested_fix="Hold one lock or use an atomic create/register operation across path validation, key generation, and registration lookup.",
+            source=path_check.text,
+            sink=line.text,
+            confidence=0.74,
+            impact_level="high",
+            positive=[
+                f"line {path_check.number}: path state is checked before key generation",
+                f"line {line.number}: key material is computed outside the registration lock",
+                f"line {locked_lookup.number}: registration/collision lookup happens later under lock",
+            ],
+            negative=["Validator must confirm the path/key namespace is shared across concurrent callers."],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("path_state_check", path_check, "", "", path_check.text),
+                    self._event("key_generation", line, "", "", line.text),
+                    self._event("locked_registration_lookup", locked_lookup, "", "", locked_lookup.text),
+                ],
+                [path_check.number, line.number, locked_lookup.number],
+            ),
+        )
+
+    def _maybe_emit_file_type_validation_order(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        if not self._is_file_type_check(line.text):
+            return
+        prior = lines[max(0, line.index - 28) : line.index]
+        stat_line = self._last_line_matching(
+            prior,
+            re.compile(r"\b(?:fstat|stat|lstat|fstatat)\s*\(", re.IGNORECASE),
+        )
+        size_or_map_line = self._last_line_matching(
+            lines[(stat_line.index + 1) if stat_line is not None else max(0, line.index - 28) : line.index],
+            re.compile(
+                r"\b(?:mmap|MapViewOfFile|st_size|file_size|map_size|mapping_size|length|len|size)\b.*(?:<|>|==|!=|<=|>=)",
+                re.IGNORECASE,
+            ),
+        )
+        if size_or_map_line is None:
+            return
+        earlier_start = (stat_line.index + 1) if stat_line is not None else max(0, line.index - 28)
+        if any(self._is_file_type_check(item.text) for item in lines[earlier_start : size_or_map_line.index]):
+            return
+        metadata_line = stat_line or (lines[0] if lines else size_or_map_line)
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="file_type_validation",
+            rule="clang_cfg_file_type_validation_after_mapping_size_check",
+            line=line,
+            description="File size or mapping validation occurs before the file type is validated.",
+            root_cause=(
+                "The local path reasons about mapping size before proving the descriptor refers "
+                "to an acceptable regular/device file type."
+            ),
+            suggested_fix="Validate the file type/mode immediately after stat/fstat and before size or mmap decisions.",
+            source=size_or_map_line.text,
+            sink=line.text,
+            confidence=0.72,
+            positive=[
+                f"line {metadata_line.number}: file mode/size metadata is available",
+                f"line {size_or_map_line.number}: mapping/size decision uses metadata before type validation",
+                f"line {line.number}: file type is checked only later",
+            ],
+            negative=["Validator must confirm the earlier mapping/size decision can affect security before the type check."],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("file_metadata", metadata_line, "", "stat_or_params", metadata_line.text),
+                    self._event("mapping_size_decision", size_or_map_line, "", "", size_or_map_line.text),
+                    self._event("late_file_type_validation", line, "", "", line.text),
+                ],
+                [metadata_line.number, size_or_map_line.number, line.number],
+            ),
+        )
+
+    def _maybe_emit_active_owner_premature_destroy(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        line: ClangCfgLine,
+    ) -> None:
+        release = self._match_release(line.text)
+        if not release:
+            return
+        api, arg = release
+        resource = self._resource_expr(arg) or self._resource_var(arg)
+        if not resource:
+            return
+        if not re.search(r"(?:^g_|->|\.|pool|cache|shared|global)", resource, re.IGNORECASE):
+            return
+        branch = self._enclosing_branch_start(lines, line)
+        branch_text = branch.text if branch is not None else ""
+        if not re.search(
+            r"\b(?:active|users?|tasks?|refs?|refcount|inflight|pending|busy)[A-Za-z_0-9]*\b\s*(?:>|!=|>=)\s*0",
+            branch_text,
+            re.IGNORECASE,
+        ):
+            return
+        guard_window = "\n".join(item.text for item in lines[max(0, line.index - 12) : line.index + 1])
+        if re.search(r"\b(?:LOCK|pthread_mutex_lock|spin_lock|refcount_dec_and_test|atomic_dec_and_test)\s*\(", guard_window):
+            return
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="premature_destroy",
+            rule="clang_cfg_active_owner_destroy_without_quiescence",
+            line=line,
+            description=f"Shared resource `{resource}` is destroyed while an active-use guard is true.",
+            root_cause=(
+                "A pool/cache/global owner is released on a path that explicitly observes active users "
+                "or tasks, without a visible quiescence/refcount guard."
+            ),
+            suggested_fix="Wait for active users to drain or transfer ownership through a refcounted shutdown path before freeing.",
+            source=branch_text or line.text,
+            sink=f"{api}({arg})",
+            confidence=0.76,
+            impact_level="high",
+            positive=[
+                f"line {branch.number if branch is not None else line.number}: active-use condition guards the branch",
+                f"line {line.number}: `{resource}` is released inside that branch",
+            ],
+            negative=["Validator must confirm no external synchronization or quiescence contract dominates this release."],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("active_use_branch", branch or line, resource, "", branch_text or line.text),
+                    self._event("premature_destroy", line, resource, api, line.text),
+                ],
+                [branch.number if branch is not None else line.number, line.number],
+            ),
         )
 
     def _maybe_emit_thread_stack_escape(
@@ -3391,6 +5082,120 @@ class ClangAstCfgCandidateGenerator:
                 return True
         return False
 
+    def _has_narrowing_bound_proof(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        expr: Any,
+    ) -> bool:
+        text = str(expr or "")
+        if self._narrowed_origin_base(text):
+            return True
+        for name in self._expr_identifiers(text):
+            for item in reversed(lines[max(0, line.index - 16) : line.index]):
+                assign = re.search(rf"\b{re.escape(name)}\s*=\s*(?P<rhs>[^;]+);", item.text)
+                if assign and self._narrowed_origin_base(assign.group("rhs")):
+                    return True
+                decl = re.search(
+                    rf"\b(?:uint8_t|uint16_t|unsigned\s+short|unsigned\s+char)\s+{re.escape(name)}\b",
+                    item.text,
+                )
+                if decl:
+                    return True
+        return False
+
+    def _allocation_is_short_lived(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+    ) -> Tuple[bool, str, Optional[ClangCfgLine]]:
+        assigned = re.search(
+            r"\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?"
+            r"[A-Za-z_]\w*(?:alloc|malloc|calloc|realloc)[A-Za-z_0-9]*\s*\(",
+            line.text,
+            re.IGNORECASE,
+        )
+        if not assigned:
+            return False, "", None
+        var = assigned.group("var")
+        for item in lines[line.index + 1 : line.index + 20]:
+            if re.search(rf"\b(?:free|SAFE_FREE|safe_free|_safe_free)\s*\(\s*{re.escape(var)}\s*\)", item.text):
+                return True, var, item
+        return False, var, None
+
+    def _allocation_has_total_local_lifetime_proof(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        count_expr: str,
+    ) -> bool:
+        short_lived, var, release_line = self._allocation_is_short_lived(lines, line)
+        if not short_lived or not var or release_line is None:
+            return False
+        if self._is_lifetime_sensitive_allocation_expr(count_expr, line.text) and not self._has_narrowing_bound_proof(lines, line, count_expr):
+            return False
+        later = lines[line.index + 1 : release_line.index + 1]
+        later_text = "\n".join(item.text for item in later)
+        escapes = re.search(
+            rf"\b(?:return\s+{re.escape(var)}|g_[A-Za-z_0-9]+\s*=\s*{re.escape(var)}|"
+            rf"[A-Za-z_]\w*(?:->|\.)[A-Za-z_0-9]+\s*=\s*{re.escape(var)}|"
+            rf"\*\s*[A-Za-z_]\w+\s*=\s*{re.escape(var)})",
+            later_text,
+        )
+        if escapes:
+            return False
+        for item in later:
+            if item.index >= release_line.index:
+                break
+            text = item.text.strip()
+            if re.search(
+                rf"\bif\s*\(\s*(?:!\s*{re.escape(var)}|{re.escape(var)}\s*==\s*(?:NULL|nullptr|0)|(?:NULL|nullptr|0)\s*==\s*{re.escape(var)})\s*\)\s*return\b",
+                text,
+            ):
+                continue
+            if re.search(r"\b(?:return|goto|break|continue)\b", text):
+                return False
+            if self._is_conditional_branch_header(text):
+                return False
+        return True
+
+    @staticmethod
+    def _is_lifetime_sensitive_allocation_expr(count_expr: str, line_text: str = "") -> bool:
+        text = f"{count_expr} {line_text}".lower()
+        return bool(
+            re.search(
+                r"\b[a-z0-9_]*(?:quota|limit|reserve|reserved|segment|window|cache|tls|thread|pool|"
+                r"global|session|client|wire|header|packet|frame|record|payload|mmap|map)[a-z0-9_]*\b",
+                text,
+            )
+            and not re.search(r"\b(?:uint8_t|uint16_t|unsigned\s+char|unsigned\s+short)\b", text)
+        )
+
+    @staticmethod
+    def _resolve_recent_assignment_expr(
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        expr: str,
+    ) -> str:
+        name = str(expr or "").strip()
+        if not re.fullmatch(r"[A-Za-z_]\w*", name):
+            return ""
+        for item in reversed(lines[max(0, line.index - 10) : line.index]):
+            match = re.search(
+                rf"\b{re.escape(name)}\s*=\s*(?P<rhs>[^;]+);",
+                item.text,
+            )
+            if match:
+                return match.group("rhs").strip()
+            decl = re.search(
+                rf"\b(?:size_t|uint(?:32|64)_t|int|unsigned(?:\s+int)?|long|unsigned\s+long)\s+"
+                rf"{re.escape(name)}\s*=\s*(?P<rhs>[^;]+);",
+                item.text,
+            )
+            if decl:
+                return decl.group("rhs").strip()
+        return ""
+
     def _is_owned_pointer_array_element_release(
         self,
         lines: Sequence[ClangCfgLine],
@@ -3515,6 +5320,14 @@ class ClangAstCfgCandidateGenerator:
         skill = self._SKILL_BY_CLASS.get(defect_class, "resource_lifecycle")
         if allowed_skills is not None and skill not in allowed_skills:
             return
+        priority_group = self._candidate_priority_group(defect_class, finding_kind)
+        validation_budget_class = (
+            "generic"
+            if defect_class in self._GENERIC_VALIDATION_BUDGET_CLASSES
+            else "exact"
+            if priority_group == "exact_sink"
+            else priority_group
+        )
         candidate_id = self._candidate_id(func_name, file_path, defect_class, line.number, rule, sink)
         tooling_evidence = self._collect_tooling_evidence(func_name, file_path, lines)
         if tooling_evidence:
@@ -3558,6 +5371,8 @@ class ClangAstCfgCandidateGenerator:
             "evidence_refs": [],
             "validation_required": bool(validation_required),
             "proofs": dict(proofs or {}),
+            "candidate_priority_group": priority_group,
+            "validation_budget_class": validation_budget_class,
         }
         if audit_observation_reason:
             evidence_pack["audit_observation_reason"] = audit_observation_reason
@@ -3584,6 +5399,8 @@ class ClangAstCfgCandidateGenerator:
                 "defect_class": defect_class,
                 "finding_kind": finding_kind,
                 "candidate_source": "clang_ast_cfg",
+                "candidate_priority_group": priority_group,
+                "validation_budget_class": validation_budget_class,
                 "evidence_checker": "clang_ast_cfg_checker",
                 "rule": rule,
                 "cwe": self._CWE_BY_CLASS.get(defect_class, ""),
@@ -3608,6 +5425,17 @@ class ClangAstCfgCandidateGenerator:
         )
         if audit_observation_reason:
             issues[-1]["audit_observation_reason"] = audit_observation_reason
+
+    def _candidate_priority_group(self, defect_class: str, finding_kind: str = "") -> str:
+        if str(finding_kind or "").lower() == "audit_observation":
+            return "generic_audit"
+        if defect_class in self._GENERIC_VALIDATION_BUDGET_CLASSES:
+            return "generic_audit"
+        if defect_class in self._EXACT_SINK_CLASSES:
+            return "exact_sink"
+        if defect_class in {"race", "deadlock", "held_lock_callback", "lock_protocol_violation", "unsynchronized_shared_state"}:
+            return "graph_structural"
+        return "semantic_suspicious_point"
 
     def _parse_lines(self, code: str) -> List[ClangCfgLine]:
         result: List[ClangCfgLine] = []
@@ -3641,6 +5469,497 @@ class ClangAstCfgCandidateGenerator:
             if self._is_return(text) or text.endswith(":"):
                 block_id += 1
         return result
+
+    def _first_direct_deref_var(self, text: str) -> str:
+        patterns = [
+            r"\b(?P<var>[A-Za-z_]\w*)\s*->",
+            r"\b(?P<var>[A-Za-z_]\w*)\s*\[",
+            r"\*\s*(?P<var>[A-Za-z_]\w*)\b",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                return match.group("var")
+        return ""
+
+    def _find_allocation_assignment(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        var: str,
+    ) -> Optional[ClangCfgLine]:
+        escaped = re.escape(var)
+        for item in reversed(lines[max(0, line.index - 16) : line.index]):
+            prev = lines[item.index - 1] if item.index > 0 else None
+            if (
+                prev
+                and re.search(rf"\b{escaped}\s*=\s*$", prev.text)
+                and re.search(r"\b[A-Za-z_]\w*(?:alloc|calloc|malloc|realloc)[A-Za-z_0-9]*\s*\(", item.text, re.IGNORECASE)
+            ):
+                return item
+            for api, _args in self._calls(item.text):
+                if api not in self._return_acquirers and not re.search(r"(?:malloc|calloc|alloc|realloc)$", api, re.IGNORECASE):
+                    continue
+                if re.search(rf"\b{escaped}\s*=\s*(?:\([^)]*\)\s*)?\b{re.escape(api)}\s*\(", item.text):
+                    return item
+                if prev and re.search(rf"\b{escaped}\s*=\s*$", prev.text):
+                    return item
+        return None
+
+    def _find_allocation_size_assignment(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        var: str,
+    ) -> Optional[Tuple[ClangCfgLine, str]]:
+        for item in reversed(lines[max(0, line.index - 32) : line.index]):
+            match = re.search(
+                rf"\b(?:[A-Za-z_][\w\s\*]*\s+)?{re.escape(var)}\s*=\s*"
+                r"(?:\([^)]*\)\s*)?(?P<api>[A-Za-z_]\w*(?:alloc|malloc|calloc|realloc)[A-Za-z_0-9]*)"
+                r"\s*\((?P<args>[^;]*)\)",
+                item.text,
+                re.IGNORECASE,
+            )
+            if not match:
+                continue
+            size_expr = self._allocation_count_expression(match.group("api"), match.group("args"))
+            if size_expr:
+                return item, size_expr
+        return None
+
+    def _allocation_base_from_size(
+        self,
+        lines: Sequence[ClangCfgLine],
+        alloc_line: ClangCfgLine,
+        size_expr: str,
+    ) -> str:
+        direct = self._narrowed_origin_base(size_expr)
+        if direct:
+            return direct
+        for name in self._expr_identifiers(size_expr):
+            for item in reversed(lines[max(0, alloc_line.index - 24) : alloc_line.index]):
+                assign = re.search(
+                    rf"\b{re.escape(name)}\s*=\s*(?P<expr>[^;]+);",
+                    item.text,
+                )
+                if assign:
+                    base = self._narrowed_origin_base(assign.group("expr")) or self._expr_base_token(assign.group("expr"))
+                    if base:
+                        return base
+        return ""
+
+    def _expression_origin_base(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        expr: str,
+    ) -> str:
+        base = self._expr_base_token(expr)
+        if base and not re.fullmatch(r"[A-Za-z_]\w*", str(expr).strip()):
+            return base
+        name = str(expr or "").strip()
+        if re.fullmatch(r"[A-Za-z_]\w*", name):
+            for item in reversed(lines[max(0, line.index - 24) : line.index]):
+                assign = re.search(rf"\b{re.escape(name)}\s*=\s*(?P<rhs>[^;]+);", item.text)
+                if assign:
+                    return self._expr_base_token(assign.group("rhs"))
+        return base
+
+    def _looks_like_external_length_pair(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        alloc_size: str,
+        copy_len: str,
+    ) -> bool:
+        text = f"{alloc_size} {copy_len}"
+        for name in self._expr_identifiers(f"{alloc_size} {copy_len}"):
+            for item in reversed(lines[max(0, line.index - 24) : line.index]):
+                assign = re.search(rf"\b{re.escape(name)}\s*=\s*(?P<rhs>[^;]+);", item.text)
+                if assign:
+                    text += " " + assign.group("rhs")
+        return bool(re.search(r"(?:header|wire|packet|payload|fragment|copy|len|length|size|count)", text, re.I))
+
+    @staticmethod
+    def _narrowed_origin_base(expr: str) -> str:
+        match = re.search(
+            r"\(\s*(?:u?int(?:8|16)_t|unsigned\s+short|unsigned\s+char|short|char)\s*\)\s*(?P<src>[A-Za-z_]\w*(?:->|\.)?[A-Za-z_0-9]*)",
+            str(expr or ""),
+        )
+        return ClangAstCfgCandidateGenerator._expr_base_token(match.group("src")) if match else ""
+
+    @staticmethod
+    def _expr_base_token(expr: str) -> str:
+        text = re.sub(r"\([^)]*\)", " ", str(expr or ""))
+        candidates = re.findall(r"[A-Za-z_]\w*(?:(?:->|\.)[A-Za-z_]\w*)?", text)
+        ignored = {
+            "sizeof",
+            "size_t",
+            "uint8_t",
+            "uint16_t",
+            "uint32_t",
+            "uint64_t",
+            "int",
+            "char",
+            "short",
+            "unsigned",
+            "const",
+        }
+        candidates = [item for item in candidates if item not in ignored]
+        if not candidates:
+            return ""
+        member_candidates = [item for item in candidates if "->" in item or "." in item]
+        return (member_candidates[-1] if member_candidates else candidates[-1]).lower()
+
+    @staticmethod
+    def _expr_identifiers(expr: str) -> List[str]:
+        ignored = {
+            "sizeof",
+            "size_t",
+            "uint8_t",
+            "uint16_t",
+            "uint32_t",
+            "uint64_t",
+            "int",
+            "char",
+            "short",
+            "unsigned",
+            "const",
+        }
+        return [
+            item
+            for item in re.findall(r"\b[A-Za-z_]\w*\b", str(expr or ""))
+            if item not in ignored
+        ]
+
+    def _copy_length_bounded_by_alloc(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        copy_len: str,
+        alloc_size: str,
+    ) -> bool:
+        window = "\n".join(item.text for item in lines[max(0, line.index - 12) : line.index + 1])
+        copy_token = re.escape(str(copy_len).strip())
+        alloc_token = re.escape(str(alloc_size).strip())
+        return bool(
+            re.search(rf"\b{copy_token}\b\s*(?:<=|<)\s*\b{alloc_token}\b", window)
+            or re.search(rf"\bmin\s*\(\s*{copy_token}\s*,\s*{alloc_token}\s*\)", window)
+            or re.search(rf"\bmin\s*\(\s*{alloc_token}\s*,\s*{copy_token}\s*\)", window)
+        )
+
+    def _find_pointer_backtrack_assignment(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        var: str,
+    ) -> Optional[ClangCfgLine]:
+        for item in reversed(lines[max(0, line.index - 20) : line.index]):
+            decrement = re.search(rf"\b{re.escape(var)}\s*-=\s*(?P<offset>[^;]+);", item.text)
+            if decrement:
+                offset = decrement.group("offset")
+                if re.search(r"(?:offset|backtrack|prefix|count|size|len|length|window)", offset, re.I):
+                    guard_window = "\n".join(row.text for row in lines[max(0, item.index - 10) : item.index])
+                    if not re.search(rf"\b{re.escape(offset.strip())}\b\s*(?:<=|<)\s*(?:[A-Za-z_]\w*len|[A-Za-z_]\w*_len|sizeof\s*\()", guard_window):
+                        return item
+            match = re.search(
+                rf"\b(?:[A-Za-z_][\w\s\*]*\s+)?{re.escape(var)}\s*=\s*(?P<expr>[^;]*-[^;]+);",
+                item.text,
+            )
+            if not match:
+                continue
+            expr = match.group("expr")
+            if re.search(r"\bsizeof\s*\(", expr):
+                continue
+            offset_names = [
+                token
+                for token in self._expr_identifiers(expr.split("-", 1)[-1])
+                if re.search(r"(?:len|length|offset|backtrack|prefix|count|size|window)", token, re.I)
+            ]
+            if not offset_names:
+                continue
+            guard_window = "\n".join(row.text for row in lines[max(0, item.index - 10) : item.index])
+            if any(
+                re.search(rf"\b{re.escape(name)}\b\s*(?:<=|<)\s*(?:[A-Za-z_]\w*len|[A-Za-z_]\w*_len|sizeof\s*\()", guard_window)
+                for name in offset_names
+            ):
+                continue
+            return item
+        return None
+
+    def _find_offset_pointer_assignment(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        var: str,
+    ) -> Optional[ClangCfgLine]:
+        escaped = re.escape(var)
+        for item in reversed(lines[max(0, line.index - 24) : line.index]):
+            match = re.search(
+                rf"\b(?:[A-Za-z_][\w\s\*]*\s+)?{escaped}\s*=\s*"
+                r"(?P<base>[A-Za-z_]\w*)\s*\+\s*(?P<offset>[A-Za-z_]\w*(?:->|\.)?[A-Za-z_0-9]*)\s*;",
+                item.text,
+            )
+            if match:
+                return item
+        return None
+
+    @staticmethod
+    def _offset_expr_from_pointer_assignment(text: str, var: str) -> str:
+        match = re.search(
+            rf"\b(?:[A-Za-z_][\w\s\*]*\s+)?{re.escape(var)}\s*=\s*"
+            r"[A-Za-z_]\w*\s*\+\s*(?P<offset>[A-Za-z_]\w*(?:->|\.)?[A-Za-z_0-9]*)\s*;",
+            str(text or ""),
+        )
+        return match.group("offset") if match else ""
+
+    def _find_pointer_derivation(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        var: str,
+    ) -> Optional[Tuple[ClangCfgLine, str, str]]:
+        escaped = re.escape(var)
+        recent = lines[max(0, line.index - 18) : line.index]
+        for item in reversed(recent):
+            assign = re.search(
+                rf"\b{escaped}\s*=\s*(?:\([^)]*\)\s*)*(?P<base>[A-Za-z_]\w*)\s*(?P<op>[+-])\s*(?P<offset>[^;]+)\s*;",
+                item.text,
+            )
+            if assign:
+                return item, assign.group("base"), f"{var} = {assign.group('base')} {assign.group('op')} {assign.group('offset').strip()}"
+            object_addr = re.search(
+                rf"\b{escaped}\s*=\s*(?:\([^)]*\)\s*)*[^;]*&\s*(?P<base>[A-Za-z_]\w*)[^;]*(?:\+|-)\s*(?P<offset>[A-Za-z_]\w*|\d+)",
+                item.text,
+            )
+            if object_addr:
+                return item, object_addr.group("base"), f"{var} derived from &{object_addr.group('base')}"
+            inc = re.search(rf"\b{escaped}\s*(?:\+=|=\s*{escaped}\s*\+)\s*(?P<offset>[^;]+)\s*;", item.text)
+            if inc:
+                base = self._find_pointer_alias_base(lines, item, var)
+                return item, base or var, f"{var} += {inc.group('offset').strip()}"
+        return None
+
+    def _find_pointer_alias_base(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        var: str,
+    ) -> str:
+        escaped = re.escape(var)
+        for item in reversed(lines[max(0, line.index - 12) : line.index]):
+            assign = re.search(rf"\b{escaped}\s*=\s*(?:\([^)]*\)\s*)?(?P<base>[A-Za-z_]\w*)\s*;", item.text)
+            if assign and assign.group("base") != var:
+                return assign.group("base")
+        return ""
+
+    def _find_fixed_array_decl(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        array: str,
+    ) -> Tuple[Optional[ClangCfgLine], str]:
+        escaped = re.escape(array)
+        for item in reversed(lines[max(0, line.index - 32) : line.index]):
+            match = re.search(rf"\b{escaped}\s*\[\s*(?P<size>[A-Za-z_]\w*|\d+)\s*\]\s*(?:=|;)", item.text)
+            if match:
+                return item, match.group("size")
+        return None, ""
+
+    def _find_count_loop_for_index(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        index_var: str,
+    ) -> Tuple[Optional[ClangCfgLine], str]:
+        escaped = re.escape(index_var)
+        for item in reversed(lines[max(0, line.index - 12) : line.index]):
+            match = re.search(
+                rf"\bfor\s*\([^;]*\b{escaped}\b[^;]*;\s*\b{escaped}\b\s*<\s*(?P<count>[A-Za-z_]\w*(?:->|\.)?[A-Za-z_0-9]*)",
+                item.text,
+            )
+            if match:
+                return item, match.group("count")
+        return None, ""
+
+    def _find_prior_full_key_lookup(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        key_var: str,
+    ) -> Optional[ClangCfgLine]:
+        escaped = re.escape(key_var)
+        for item in reversed(lines[max(0, line.index - 32) : line.index]):
+            if re.search(
+                rf"\b[A-Za-z_]\w*(?:find|lookup|get|search)[A-Za-z_0-9]*\s*\([^;]*\b{escaped}\b",
+                item.text,
+                re.IGNORECASE,
+            ):
+                return item
+        return None
+
+    def _slot_pointer_is_indexed_registry(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        slot: str,
+    ) -> bool:
+        return bool(self._slot_pointer_source(lines, line, slot))
+
+    def _slot_pointer_source(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        slot: str,
+    ) -> str:
+        escaped = re.escape(slot)
+        for item in reversed(lines[max(0, line.index - 16) : line.index]):
+            if re.search(
+                rf"\b{escaped}\s*=\s*&?\s*[A-Za-z_]\w*(?:->|\.)[A-Za-z_]\w*\s*\[[^\]]+\]",
+                item.text,
+            ):
+                return item.text
+        return ""
+
+    def _count_is_obviously_bounded(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        array: str,
+        array_size: str,
+        count_expr: str,
+    ) -> bool:
+        window = "\n".join(item.text for item in lines[max(0, line.index - 16) : line.index])
+        count = re.escape(count_expr)
+        array_escaped = re.escape(array)
+        size_escaped = re.escape(array_size)
+        if re.fullmatch(r"\d+", count_expr) and re.fullmatch(r"\d+", array_size):
+            return int(count_expr) <= int(array_size)
+        patterns = [
+            rf"\b{count}\b\s*(?:<|<=)\s*(?:ARRAY_SIZE\s*\(\s*{array_escaped}\s*\)|sizeof\s*\(\s*{array_escaped}\s*\)|{size_escaped})",
+            rf"\bif\s*\([^)]*\b{count}\b\s*>\s*(?:ARRAY_SIZE\s*\(\s*{array_escaped}\s*\)|sizeof\s*\(\s*{array_escaped}\s*\)|{size_escaped})[^)]*\)\s*(?:return|goto|break)",
+            rf"\b{count}\b\s*=\s*(?:MIN|min)\s*\(\s*\b{count}\b\s*,\s*(?:ARRAY_SIZE\s*\(\s*{array_escaped}\s*\)|{size_escaped})",
+        ]
+        return any(re.search(pattern, window) for pattern in patterns)
+
+    @staticmethod
+    def _looks_wire_pointer_source(expr: str) -> bool:
+        return bool(re.search(r"\b(?:wire|header|hdr|packet|pkt|frame|request|req|msg|message|payload)\b", expr, re.IGNORECASE))
+
+    def _find_wire_pointer_assignment(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        var: str,
+    ) -> Optional[ClangCfgLine]:
+        escaped = re.escape(var)
+        for item in reversed(lines[max(0, line.index - 16) : line.index]):
+            if not re.search(rf"\b{escaped}\s*=", item.text):
+                continue
+            if not re.search(r"\([^)]*\*\s*\)|uintptr_t|intptr_t|uint64_t|uint32_t|size_t", item.text):
+                continue
+            rhs = item.text.split("=", 1)[1]
+            if self._looks_wire_pointer_source(rhs):
+                return item
+        return None
+
+    def _find_object_offset_assignment(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        var: str,
+    ) -> Optional[Tuple[ClangCfgLine, str, str]]:
+        escaped = re.escape(var)
+        for item in reversed(lines[max(0, line.index - 16) : line.index]):
+            if not re.search(rf"\b{escaped}\s*=", item.text):
+                continue
+            match = re.search(
+                r"&\s*(?P<object>[A-Za-z_]\w*)[^;]*\+\s*(?P<offset>[A-Za-z_]\w*(?:->|\.)?[A-Za-z_0-9]*)",
+                item.text,
+            )
+            if match:
+                return item, match.group("object"), match.group("offset")
+        return None
+
+    @staticmethod
+    def _find_uninitialized_pointer_decl(
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        var: str,
+    ) -> Optional[ClangCfgLine]:
+        escaped = re.escape(var)
+        for item in reversed(lines[max(0, line.index - 32) : line.index]):
+            if re.search(rf"\b(?:const\s+|volatile\s+|unsigned\s+|signed\s+|struct\s+\w+\s+)*[A-Za-z_]\w*(?:\s*\*)+\s*{escaped}\s*;", item.text):
+                return item
+        return None
+
+    @staticmethod
+    def _is_conditional_statement(lines: Sequence[ClangCfgLine], line: ClangCfgLine) -> bool:
+        if re.search(r"\b(?:if|else|switch|case)\b", line.text):
+            return True
+        for item in reversed(lines[max(0, line.index - 3) : line.index]):
+            stripped = item.text.strip()
+            if not stripped or stripped in {"{", "}"}:
+                continue
+            return bool(re.match(r"(?:if|else|switch|case)\b", stripped))
+        return False
+
+    def _allocation_count_expression(self, api: str, args: str) -> str:
+        split = self._split_args(args)
+        if not split:
+            return ""
+        if api in {"calloc", "_safe_calloc"} and len(split) >= 2:
+            return f"{split[0]} * {split[1]}"
+        return split[0]
+
+    @staticmethod
+    def _looks_external_size_expr(expr: str) -> bool:
+        clean = re.sub(r"sizeof\s*\([^)]*\)", "", expr)
+        identifiers = re.findall(r"\b[A-Za-z_]\w*\b", clean)
+        count_names = [
+            name
+            for name in identifiers
+            if re.search(r"(?:count|cnt|num|nr|len|length|size|window|batch|segment|entry|item|client|quota)", name, re.IGNORECASE)
+        ]
+        if not count_names:
+            return False
+        return not re.fullmatch(r"\d+\s*(?:\*\s*\d+)?", clean.strip())
+
+    @staticmethod
+    def _has_allocation_limit_guard(guard_window: str, expr: str) -> bool:
+        lowered = guard_window.lower()
+        if re.search(r"\b(?:max|limit|cap|quota|budget|threshold)\b", lowered):
+            return True
+        identifiers = re.findall(r"\b[A-Za-z_]\w*\b", expr)
+        for name in identifiers:
+            if re.search(r"(?:sizeof|malloc|calloc)", name, re.IGNORECASE):
+                continue
+            if re.search(rf"\b{re.escape(name)}\b\s*(?:<|<=|>|>=)\s*(?:\d+|[A-Za-z_]\w*MAX|MAX_[A-Za-z_]\w*)", guard_window):
+                return True
+        return False
+
+    def _find_open_fd_without_close(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+    ) -> Optional[Tuple[ClangCfgLine, str, str]]:
+        for item in reversed(lines[max(0, line.index - 28) : line.index]):
+            match = re.search(
+                r"\b(?P<fd>[A-Za-z_]\w*)\s*=\s*(?P<api>open|creat|socket|accept|dup|eventfd|memfd_create)\s*\(",
+                item.text,
+            )
+            if not match:
+                continue
+            fd = match.group("fd")
+            between = "\n".join(next_line.text for next_line in lines[item.index + 1 : line.index])
+            if re.search(rf"\b{re.escape(fd)}\s*(?:<\s*0|==\s*-1)\b[^;]*\breturn\b", line.text):
+                continue
+            if re.search(rf"\b(?:close|closesocket)\s*\(\s*{re.escape(fd)}\s*\)", between):
+                return None
+            if re.search(rf"\b(?:register|store|watch|cache|take|adopt)[A-Za-z_0-9]*\s*\([^;]*\b{re.escape(fd)}\b", between, re.IGNORECASE):
+                return None
+            return item, fd, match.group("api")
+        return None
 
     def _match_assignment_call(self, text: str, call_re: re.Pattern[str]) -> Optional[Tuple[str, str, str]]:
         call = call_re.search(text)
@@ -3754,14 +6073,75 @@ class ClangAstCfgCandidateGenerator:
         if not re.search(r"\breturn\s+(?:NULL|nullptr|0|-1)\s*;", line.text):
             return False
         escaped = re.escape(var)
-        recent = lines[max(0, line.index - 4) : line.index]
-        return any(
-            re.search(
-                rf"\bif\s*\([^)]*(?:!\s*{escaped}|{escaped}\s*==\s*(?:NULL|nullptr|0)|(?:NULL|nullptr|0)\s*==\s*{escaped})",
-                item.text,
-            )
-            for item in recent
+        null_guard = rf"\bif\s*\([^)]*(?:!\s*{escaped}|{escaped}\s*==\s*(?:NULL|nullptr|0)|(?:NULL|nullptr|0)\s*==\s*{escaped})"
+        if re.search(null_guard, line.text):
+            return True
+        branch_start = self._enclosing_branch_start(lines, line)
+        return bool(branch_start and re.search(null_guard, branch_start.text))
+
+    def _is_terminal_conditional_branch_line(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+    ) -> bool:
+        branch_start = self._enclosing_branch_start(lines, line)
+        if branch_start is None:
+            return False
+        for item in lines[line.index :]:
+            if item.block_id != line.block_id:
+                break
+            if self._is_return(item.text):
+                return True
+        return False
+
+    def _enclosing_branch_start(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+    ) -> Optional[ClangCfgLine]:
+        for item in reversed(lines[: line.index + 1]):
+            if item.block_id != line.block_id:
+                continue
+            if self._is_conditional_branch_header(item.text):
+                return item
+        return None
+
+    @staticmethod
+    def _is_conditional_branch_header(text: str) -> bool:
+        stripped = str(text or "").strip()
+        return bool(
+            re.match(r"(?:}\s*)?(?:else\s+)?if\b", stripped)
+            or re.match(r"(?:}\s*)?else\b", stripped)
+            or re.match(r"(?:case\b|default\b)", stripped)
         )
+
+    def _resource_released_in_terminal_branch_before_return(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        var: str,
+    ) -> bool:
+        if not self._is_terminal_conditional_branch_line(lines, line):
+            return False
+        branch_start = self._enclosing_branch_start(lines, line)
+        start_idx = branch_start.index if branch_start is not None else line.index
+        for item in lines[start_idx : line.index + 1]:
+            if item.block_id != line.block_id:
+                continue
+            if self._line_releases_resource_before_return(item.text, var):
+                return True
+        return False
+
+    def _line_releases_resource_before_return(self, text: str, var: str) -> bool:
+        release = self._release_call_re.search(text)
+        if not release:
+            return False
+        arg = self._first_arg(release.group("args"))
+        released = self._resource_expr(arg) or self._resource_var(arg)
+        if released != var:
+            return False
+        ret = re.search(r"\breturn\b", text)
+        return ret is None or release.start() < ret.start()
 
     @staticmethod
     def _release_followed_by_return(lines: Sequence[ClangCfgLine], line: ClangCfgLine) -> bool:
@@ -3776,6 +6156,20 @@ class ClangAstCfgCandidateGenerator:
                 continue
             return bool(re.search(r"\breturn\b", text))
         return False
+
+    @staticmethod
+    def _return_line_after_release(lines: Sequence[ClangCfgLine], line: ClangCfgLine) -> Optional[ClangCfgLine]:
+        for item in lines[line.index + 1 : line.index + 5]:
+            text = item.text.strip()
+            if not text or text in {"}", "};"}:
+                continue
+            if re.fullmatch(
+                r"(?:UNLOCK|pthread_mutex_unlock|spin_unlock|mtx_unlock)\s*\([^;]*\)\s*;",
+                text,
+            ):
+                continue
+            return item if re.search(r"\breturn\b", text) else None
+        return None
 
     @staticmethod
     def _release_followed_by_failure_return(lines: Sequence[ClangCfgLine], line: ClangCfgLine) -> bool:
@@ -3808,20 +6202,37 @@ class ClangAstCfgCandidateGenerator:
         return bool((name_hint or varargs_signature) and varargs_signature and forwards_to_va_sink)
 
     def _is_status_failure_return(self, text: str, status_var: str) -> bool:
+        return self._is_status_failure_condition(text, status_var) and bool(re.search(r"\breturn\b", text))
+
+    def _return_is_status_failure_exit(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        status_var: str,
+    ) -> bool:
+        if self._is_status_failure_return(line.text, status_var):
+            return True
+        if not self._is_return(line.text):
+            return False
+        branch_start = self._enclosing_branch_start(lines, line)
+        return bool(branch_start and self._is_status_failure_condition(branch_start.text, status_var))
+
+    def _is_status_guard_line(self, text: str, status_var: str) -> bool:
+        return self._is_status_failure_condition(text, status_var) or self._is_status_success_guard(text, status_var)
+
+    @staticmethod
+    def _is_status_failure_condition(text: str, status_var: str) -> bool:
         if not status_var:
             return False
         escaped = re.escape(status_var)
         patterns = [
-            rf"\bif\s*\(\s*{escaped}\s*!=\s*0\s*\)\s*return\b",
-            rf"\bif\s*\(\s*0\s*!=\s*{escaped}\s*\)\s*return\b",
-            rf"\bif\s*\(\s*{escaped}\s*<\s*0\s*\)\s*return\b",
-            rf"\bif\s*\(\s*{escaped}\s*\)\s*return\b",
-            rf"\bif\s*\(\s*(?:FAILED|IS_ERR)\s*\(\s*{escaped}\s*\)\s*\)\s*return\b",
+            rf"\bif\s*\(\s*{escaped}\s*!=\s*0\s*\)",
+            rf"\bif\s*\(\s*0\s*!=\s*{escaped}\s*\)",
+            rf"\bif\s*\(\s*{escaped}\s*<\s*0\s*\)",
+            rf"\bif\s*\(\s*{escaped}\s*\)",
+            rf"\bif\s*\(\s*(?:FAILED|IS_ERR)\s*\(\s*{escaped}\s*\)\s*\)",
         ]
         return any(re.search(pattern, text) for pattern in patterns)
-
-    def _is_status_guard_line(self, text: str, status_var: str) -> bool:
-        return self._is_status_failure_return(text, status_var) or self._is_status_success_guard(text, status_var)
 
     @staticmethod
     def _is_status_success_guard(text: str, status_var: str) -> bool:
@@ -3877,6 +6288,33 @@ class ClangAstCfgCandidateGenerator:
                 return True
         return False
 
+    def _find_dependent_count_sink(
+        self,
+        lines: Sequence[ClangCfgLine],
+        line: ClangCfgLine,
+        count_var: str,
+    ) -> Optional[ClangCfgLine]:
+        escaped = re.escape(count_var)
+        for item in lines[line.index + 1 : line.index + 18]:
+            text = item.text
+            if self._is_var_redefined(text, count_var):
+                return None
+            if re.search(
+                rf"\b(?:memcpy|memmove|strncpy|read|recv|fread|malloc|calloc|_safe_malloc|_safe_calloc)\s*"
+                rf"\([^;]*\b{escaped}\b",
+                text,
+            ):
+                return item
+            if re.search(rf"\[[^\]]*\b{escaped}\b[^\]]*\]", text):
+                return item
+            for api, args in self._calls(text):
+                if re.search(r"(?:route|dispatch|apply|process|reserve|alloc|copy|decode|parse|policy)", api, re.I) and re.search(
+                    rf"\b{escaped}\b",
+                    args,
+                ):
+                    return item
+        return None
+
     @staticmethod
     def _has_overflow_guard(guard_window: str, expr: str) -> bool:
         text = str(guard_window or "")
@@ -3898,6 +6336,16 @@ class ClangAstCfgCandidateGenerator:
                 text,
                 re.IGNORECASE,
             )
+        )
+
+    @staticmethod
+    def _is_file_type_check(text: str) -> bool:
+        return bool(
+            re.search(r"\bS_IS(?:REG|CHR|BLK|FIFO|SOCK|LNK)\s*\(", text)
+            or re.search(r"\b[A-Z_]*IS_(?:REG|CHR|BLK|FIFO|SOCK|LNK)\s*\(", text)
+            or re.search(r"\bst_mode\b\s*&\s*S_IF(?:REG|CHR|BLK|FIFO|SOCK|LNK)", text)
+            or re.search(r"\b(?:file|fd|descriptor)_[A-Za-z_0-9]*(?:type|mode)\b", text, re.IGNORECASE)
+            or re.search(r"\b(?:is|validate|check)[A-Za-z_0-9]*(?:regular|character|device|file_type|fd_type)\b", text, re.IGNORECASE)
         )
 
     @staticmethod
@@ -3944,6 +6392,55 @@ class ClangAstCfgCandidateGenerator:
     @staticmethod
     def _is_return(text: str) -> bool:
         return bool(re.search(r"\breturn\b", text))
+
+    def _emit_use_after_release(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+        var: str,
+        free_line: ClangCfgLine,
+        free_api: str,
+        use_line: ClangCfgLine,
+    ) -> None:
+        self._emit(
+            issues,
+            func_name,
+            file_path,
+            lines,
+            allowed_skills,
+            defect_class="use_after_free",
+            rule="clang_cfg_use_after_release",
+            line=use_line,
+            description=f"`{var}` is used after it has been released.",
+            root_cause=(
+                "The local CFG state marks the resource as released and no "
+                "reset, reallocation, or ownership reacquire appears before use."
+            ),
+            suggested_fix=(
+                "Move the use before release, keep a valid owned reference, or "
+                "clear and guard the pointer after release."
+            ),
+            source=f"{free_api}({var}) at line {free_line.number}",
+            sink=use_line.text,
+            confidence=0.86,
+            impact_level="high",
+            positive=[
+                f"line {free_line.number}: `{var}` released via `{free_api}`",
+                f"line {use_line.number}: `{var}` is dereferenced or passed after release",
+            ],
+            negative=[],
+            ast_cfg=self._ast_cfg_pack(
+                lines,
+                [
+                    self._event("release", free_line, var, free_api, free_line.text),
+                    self._event("use", use_line, var, "", use_line.text),
+                ],
+                [free_line.number, use_line.number],
+            ),
+        )
 
     def _calls(self, text: str) -> List[Tuple[str, str]]:
         calls = []
@@ -4118,9 +6615,6 @@ class ClangAstCfgCandidateGenerator:
                 "output parameter",
                 "writes output",
                 "returns via argument",
-                "鍑哄弬",
-                "杈撳嚭鍙傛暟",
-                "閫氳繃鍙傛暟杩斿洖",
                 "出参",
                 "输出参数",
                 "通过参数返回",
@@ -4288,7 +6782,12 @@ class ClangAstCfgCandidateGenerator:
         confidence = float(issue.get("rule_confidence") or issue.get("confidence") or 0.5)
         impact = str(issue.get("impact_level") or "medium")
         boost = 0.1 if impact == "high" else 0.0
-        return min(1.0, confidence + boost)
+        group = str(issue.get("candidate_priority_group") or "")
+        if group == "exact_sink":
+            boost += 0.12
+        elif group == "generic_audit":
+            boost -= 0.18
+        return min(1.0, max(0.0, confidence + boost))
 
     @staticmethod
     def _readable_reasoning(

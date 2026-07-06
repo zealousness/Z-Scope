@@ -5,6 +5,7 @@ from zscope.common.issue_identity import (
     deduplicate_issues,
     flatten_issue_text,
     issue_resource_signature,
+    issue_rank,
     normalize_issue_category,
     normalize_issue_fields,
     root_cause_token,
@@ -185,6 +186,30 @@ def test_missing_source_sink_locations_fall_back_to_canonical_dedup() -> None:
 
     assert len(deduped) == 1
     assert deduped[0]["dedup_key"] == "bounds|src/demo.c|80|memcpy"
+
+
+def test_issue_rank_prefers_precise_sink_over_generic_clang_candidate() -> None:
+    generic = {
+        "id": "GENERIC",
+        "category": "integer_overflow",
+        "defect_class": "integer_overflow",
+        "candidate_source": "clang_ast_cfg",
+        "candidate_priority_group": "generic_audit",
+        "location": "src/demo.c:44",
+        "confidence": 0.95,
+        "description": "Allocation arithmetic may overflow.",
+    }
+    exact = {
+        "id": "EXACT",
+        "category": "heap_overflow",
+        "defect_class": "heap_overflow",
+        "candidate_priority_group": "exact_sink",
+        "location": "src/demo.c:44",
+        "confidence": 0.75,
+        "description": "Narrowed allocation is smaller than memcpy length.",
+    }
+
+    assert issue_rank(exact) > issue_rank(generic)
 
 
 def test_dedup_merges_chinese_needs_review_with_rule_finding() -> None:

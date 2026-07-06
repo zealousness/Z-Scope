@@ -160,6 +160,92 @@ def test_validation_pipeline_keeps_uncertain_validator_result_as_observation() -
     assert issue["finding_kind"] == "needs_manual_review"
 
 
+def test_validation_pipeline_keeps_structural_uncertain_as_needs_review() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_STRUCTURAL_UNCERTAIN",
+        "defect_class": "premature_destroy",
+        "category": "premature_destroy",
+        "function": "_runtime_release_packet_pool",
+        "location": "src/lifecycle.c:2348",
+        "sink": "SAFE_FREE(g_runtime_pbuf_pool)",
+        "positive_evidence": ["active_tasks > 0 branch releases shared pool"],
+        "negative_evidence": ["no quiescence guard before release"],
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "sink": {"operation": "SAFE_FREE(g_runtime_pbuf_pool)", "line": 2348},
+        },
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {"reasoning": "Plausible structural lifetime risk, but current callers do not prove exploitability."},
+        verdict="uncertain",
+        score_data=_score(0.71),
+    )
+
+    assert outcome.report_bucket == "observations"
+    assert outcome.memory_status == "needs_review"
+    assert issue["validation_status"] == "needs_review"
+    assert issue["finding_kind"] == "needs_review"
+
+
+def test_validation_pipeline_keeps_permission_uncertain_as_needs_review() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_PERMISSION_UNCERTAIN",
+        "defect_class": "permission",
+        "category": "permission",
+        "function": "_runtime_open_named_segment",
+        "location": "src/lifecycle.c:2552",
+        "sink": "if ((requested_perm & 0004u) != 0) return -1",
+        "positive_evidence": ["requested permission is checked against hard-coded mode"],
+        "negative_evidence": ["requested permission is not applied to chmod/open mode"],
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "sink": {"operation": "requested permission check", "line": 2552},
+        },
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {"reasoning": "Plausible permission issue, but current deployment may not expose this mode."},
+        verdict="uncertain",
+        score_data=_score(0.7),
+    )
+
+    assert outcome.memory_status == "needs_review"
+    assert issue["validation_status"] == "needs_review"
+
+
+def test_validation_pipeline_keeps_strongly_disproved_permission_rejected() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_PERMISSION_SAFE",
+        "defect_class": "permission",
+        "category": "permission",
+        "function": "open_segment",
+        "location": "src/demo.c:12",
+        "sink": "requested permission check",
+        "positive_evidence": ["requested permission check"],
+        "negative_evidence": ["missing requested permission application"],
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "sink": {"operation": "requested permission check", "line": 12},
+        },
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {"reasoning": "Rejected: guard dominates all paths and all paths are protected by a later fchmod using requested permission."},
+        verdict="rejected",
+        score_data=_score(0.8),
+    )
+
+    assert outcome.report_bucket is None
+    assert issue["validation_status"] == "rejected"
+
+
 def test_validation_pipeline_discards_rejected_validator_result() -> None:
     pipeline = ValidationPipeline(FakeUserConfig())
     issue = {"id": "ISSUE_7"}
@@ -176,6 +262,226 @@ def test_validation_pipeline_discards_rejected_validator_result() -> None:
     assert issue["validation_status"] == "rejected"
     assert issue["finding_kind"] == "rejected"
     assert issue["rejection_source"] == "validator"
+
+
+def test_validation_pipeline_corrects_rejected_allocator_mismatch_to_memory_leak() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "GRAPH_ALLOC_FREE_MISMATCH_1",
+        "defect_class": "alloc_free_mismatch",
+        "category": "alloc_free_mismatch",
+        "function": "_release_node",
+        "location": "src/demo.c:88",
+        "sink": "_runtime_noop_free(node)",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "sink": {"operation": "_runtime_noop_free(node)", "line": 88},
+        },
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {
+            "reasoning": (
+                "The alloc_free_mismatch category is wrong. The actual issue is a memory leak: "
+                "_runtime_noop_free does not release the object and callers always pass use_header_pool=1."
+            ),
+            "confidence_score": 0.88,
+            "positive_evidence": ["actual memory leak through _runtime_noop_free"],
+        },
+        verdict="rejected",
+        score_data=_score(0.78),
+    )
+
+    assert outcome.report_bucket == "issues"
+    assert outcome.memory_status == "validated"
+    assert issue["category"] == "memory_leak"
+    assert issue["defect_class"] == "memory_leak"
+    assert issue["original_category"] == "alloc_free_mismatch"
+    assert issue["evidence_pack"]["original_category"] == "alloc_free_mismatch"
+    assert "alloc_free_mismatch" in issue["evidence_pack"]["alternate_categories"]
+    assert issue["validation_status"] == "validated"
+    assert issue["validator_verdict"] == "corrected"
+
+
+def test_validation_pipeline_explicit_corrected_category_can_remain_needs_review() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "CLANG_CFG_INTEGER_OVERFLOW_1",
+        "defect_class": "integer_overflow",
+        "category": "integer_overflow",
+        "function": "_copy_fragment",
+        "location": "src/demo.c:44",
+        "sink": "memcpy(fragment, source, copy_len)",
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {
+            "corrected_category": "heap_overflow",
+            "reasoning": "The overflow arithmetic claim is false, but this may instead be a heap buffer overflow.",
+            "confidence_score": 0.65,
+        },
+        verdict="rejected",
+        score_data=_score(0.68),
+    )
+
+    assert outcome.report_bucket == "observations"
+    assert outcome.memory_status == "needs_review"
+    assert issue["category"] == "heap_overflow"
+    assert issue["validation_status"] == "needs_review"
+
+
+def test_validation_pipeline_downgrades_structural_rejection_to_needs_review() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_STRUCTURAL_1",
+        "defect_class": "held_lock_callback",
+        "function": "notify",
+        "location": "src/demo.c:42",
+        "sink": "callback(entry)",
+        "description": "External callback from registry is invoked while mutex is held.",
+        "positive_evidence": ["callback sink under lock"],
+        "negative_evidence": ["no guard preventing reentrant callback"],
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "sink": {"operation": "callback(entry)", "line": 42},
+        },
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {"reasoning": "Rejected because the current callback in this sample is not attacker-controlled."},
+        verdict="rejected",
+        score_data=_score(0.82),
+    )
+
+    assert outcome.report_bucket == "observations"
+    assert outcome.memory_status == "needs_review"
+    assert issue["validation_status"] == "needs_review"
+    assert issue["finding_kind"] == "needs_review"
+    assert issue["validator_verdict"] == "rejected"
+
+
+def test_validation_pipeline_downgrades_protocol_count_sink_rejection_to_needs_review() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_PROTOCOL_COUNT",
+        "defect_class": "bounds",
+        "category": "bounds",
+        "cwe": "CWE-20",
+        "function": "_runtime_read_control_magic",
+        "location": "src/lifecycle.c:1383",
+        "sink": "memcpy(preview, seed, (size_t)count)",
+        "positive_evidence": ["count is read before magic validation", "count reaches memcpy"],
+        "negative_evidence": ["no magic/signature comparison before the count reaches the sink"],
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "sink": {"operation": "memcpy(preview, seed, (size_t)count)", "line": 1383},
+        },
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {"reasoning": "Rejected because the current sample does not prove external attacker control."},
+        verdict="rejected",
+        score_data=_score(0.82),
+    )
+
+    assert outcome.report_bucket == "observations"
+    assert outcome.memory_status == "needs_review"
+    assert issue["validation_status"] == "needs_review"
+
+
+def test_validation_pipeline_downgrades_post_release_global_deref_rejection_to_needs_review() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_PBUF_UAF",
+        "defect_class": "use_after_free",
+        "category": "use_after_free",
+        "cwe": "CWE-416",
+        "function": "_runtime_release_packet_pool",
+        "location": "src/lifecycle.c:2351",
+        "sink": "return g_runtime_pbuf_pool->active_tasks",
+        "positive_evidence": ["g_runtime_pbuf_pool is released", "g_runtime_pbuf_pool is dereferenced after release"],
+        "negative_evidence": ["no quiescence guard before release"],
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "sink": {"operation": "return g_runtime_pbuf_pool->active_tasks", "line": 2351},
+        },
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {"reasoning": "Rejected because the current caller sample does not prove exploitability."},
+        verdict="rejected",
+        score_data=_score(0.82),
+    )
+
+    assert outcome.report_bucket == "observations"
+    assert outcome.memory_status == "needs_review"
+    assert issue["validation_status"] == "needs_review"
+
+
+def test_validation_pipeline_keeps_hardcoded_empty_callback_rejected() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_STRUCTURAL_2",
+        "defect_class": "held_lock_callback",
+        "function": "notify",
+        "location": "src/demo.c:42",
+        "sink": "callback(entry)",
+        "description": "Callback is invoked while mutex is held.",
+        "negative_evidence": ["no guard preventing reentrant callback"],
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "sink": {"operation": "callback(entry)", "line": 42},
+        },
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {
+            "reasoning": (
+                "Rejected because the current code registers a hardcoded empty callback "
+                "and has no external replacement path."
+            )
+        },
+        verdict="rejected",
+        score_data=_score(0.82),
+    )
+
+    assert outcome.report_bucket is None
+    assert outcome.memory_status == "rejected"
+    assert issue["validation_status"] == "rejected"
+
+
+def test_validation_pipeline_keeps_transferred_resource_rejected() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_STRUCTURAL_3",
+        "defect_class": "memory_leak",
+        "function": "insert_node",
+        "location": "src/demo.c:77",
+        "sink": "return -1",
+        "positive_evidence": ["allocated node reaches insert helper"],
+        "negative_evidence": ["no local free after error return"],
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "sink": {"operation": "return -1", "line": 77},
+        },
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {"reasoning": "Rejected because ownership is transferred to a global owner and inserted into the global tree."},
+        verdict="rejected",
+        score_data=_score(0.82),
+    )
+
+    assert outcome.report_bucket is None
+    assert outcome.memory_status == "rejected"
+    assert issue["validation_status"] == "rejected"
 
 
 def test_validation_pipeline_keeps_validation_failure_pending() -> None:

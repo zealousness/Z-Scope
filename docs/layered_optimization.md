@@ -1,4 +1,4 @@
-﻿# Z-SCOPE Layered Optimization
+# Z-SCOPE Layered Optimization
 
 Z-SCOPE uses layered analysis so each stage has a narrow job and a reusable
 artifact. This keeps prompt size down and makes benchmark results auditable.

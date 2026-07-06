@@ -1,4 +1,4 @@
-﻿# External Benchmark Protocol
+# External Benchmark Protocol
 
 This protocol adds a three-layer external benchmark path for Z-SCOPE:
 

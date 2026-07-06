@@ -1,4 +1,4 @@
-﻿# Juliet Memory 01-05 Benchmark
+# Juliet Memory 01-05 Benchmark
 
 This benchmark is the first Z-SCOPE external benchmark layer. It uses the
 official NIST Juliet C/C++ 1.3 test suite and selects the C/C++ memory-oriented

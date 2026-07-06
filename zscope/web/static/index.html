@@ -967,7 +967,8 @@
                         <textarea
                             class="textarea textarea-bordered audit-decision-textarea"
                             placeholder="填写人工验证依据，例如：为什么确认为真阳性 / 为什么拒绝 / 还需要检查哪些路径。"
-                            x-model="selectedFinding.validation_reasoning"></textarea>
+                            :value="selectedFinding.validation_reasoning"
+                            @input="setFindingValidationReasoning(selectedFinding, $event.target.value)"></textarea>
                         <div class="audit-decision-controls">
                             <div class="audit-status-stack">
                                 <template x-for="status in validationStatusOptions" :key="status">
@@ -975,7 +976,7 @@
                                         type="button"
                                         class="btn btn-xs"
                                         :class="selectedFinding.validation_status === status ? 'btn-primary' : 'btn-outline'"
-                                        @click="selectedFinding.validation_status = status"
+                                        @click="setFindingValidationStatus(selectedFinding, status)"
                                         x-text="status"></button>
                                 </template>
                             </div>
@@ -1594,13 +1595,135 @@
                     ].join('|'));
                 },
 
+                validationStatus(issue) {
+                    return String(issue?.validation_status || 'pending');
+                },
+
+                validationReasoning(issue) {
+                    return String(issue?.validation_reasoning || '');
+                },
+
+                resetFindingValidationBaseline(issue, options = {}) {
+                    if (!issue || typeof issue !== 'object') {
+                        return issue;
+                    }
+                    issue._validation_original_status = this.validationStatus(issue);
+                    issue._validation_original_reasoning = this.validationReasoning(issue);
+                    issue._validation_dirty = false;
+                    issue._snapshot_sync_pending = Boolean(options.snapshotPending);
+                    return issue;
+                },
+
+                updateFindingDirtyFlag(issue) {
+                    if (!issue || typeof issue !== 'object') {
+                        return false;
+                    }
+                    if (issue._validation_original_status === undefined) {
+                        this.resetFindingValidationBaseline(issue);
+                    }
+                    issue._validation_dirty = this.validationStatus(issue) !== String(issue._validation_original_status || 'pending')
+                        || this.validationReasoning(issue) !== String(issue._validation_original_reasoning || '');
+                    return issue._validation_dirty;
+                },
+
+                prepareFinding(issue, view, index) {
+                    const source = issue && typeof issue === 'object' ? issue : {};
+                    const normalized = {
+                        ...source,
+                        validation_status: source.validation_status || 'pending',
+                        validation_reasoning: source.validation_reasoning || '',
+                        uid: `${view || 'view'}-${source.id || 'issue'}-${source.function || 'fn'}-${source.location || 'loc'}-${index}`
+                    };
+                    return this.resetFindingValidationBaseline(normalized);
+                },
+
+                allLoadedFindings() {
+                    const items = [];
+                    const addList = (list) => {
+                        if (Array.isArray(list)) {
+                            list.forEach(item => {
+                                if (item && typeof item === 'object') {
+                                    items.push(item);
+                                }
+                            });
+                        }
+                    };
+                    addList(this.findings);
+                    Object.values(this.reportViewCache || {}).forEach(addList);
+                    Object.values(this.reportViews || {}).forEach(view => addList(view?.issues));
+                    return items;
+                },
+
+                syncFindingValidationState(source) {
+                    const key = this.findingIdentity(source);
+                    if (!key) {
+                        return;
+                    }
+                    this.allLoadedFindings().forEach(issue => {
+                        if (issue === source || this.findingIdentity(issue) !== key) {
+                            return;
+                        }
+                        issue.validation_status = source.validation_status;
+                        issue.validation_reasoning = source.validation_reasoning;
+                        this.updateFindingDirtyFlag(issue);
+                    });
+                },
+
+                markFindingValidationDirty(issue) {
+                    this.updateFindingDirtyFlag(issue);
+                    this.syncFindingValidationState(issue);
+                },
+
+                setFindingValidationStatus(issue, status) {
+                    if (!issue) {
+                        return;
+                    }
+                    issue.validation_status = status || 'pending';
+                    this.markFindingValidationDirty(issue);
+                },
+
+                setFindingValidationReasoning(issue, reasoning) {
+                    if (!issue) {
+                        return;
+                    }
+                    issue.validation_reasoning = reasoning || '';
+                    this.markFindingValidationDirty(issue);
+                },
+
+                dirtyValidationFindings() {
+                    const unique = new Map();
+                    this.allLoadedFindings().forEach((issue, index) => {
+                        const dirty = this.updateFindingDirtyFlag(issue);
+                        if (!dirty && !issue._snapshot_sync_pending) {
+                            return;
+                        }
+                        const key = this.findingIdentity(issue) || `dirty-${index}`;
+                        if (!unique.has(key)) {
+                            unique.set(key, issue);
+                        }
+                    });
+                    return Array.from(unique.values());
+                },
+
+                markSavedFindingsClean(issues, options = {}) {
+                    const keys = new Set((Array.isArray(issues) ? issues : [])
+                        .map(issue => this.findingIdentity(issue))
+                        .filter(Boolean));
+                    if (!keys.size) {
+                        return;
+                    }
+                    this.allLoadedFindings().forEach(issue => {
+                        if (keys.has(this.findingIdentity(issue))) {
+                            this.resetFindingValidationBaseline(issue, {
+                                snapshotPending: Boolean(options.snapshotPending),
+                            });
+                        }
+                    });
+                },
+
                 normalizeFindings(issues, view) {
-                    return (Array.isArray(issues) ? issues : []).map((issue, index) => ({
-                        ...issue,
-                        validation_status: issue.validation_status || 'pending',
-                        validation_reasoning: issue.validation_reasoning || '',
-                        uid: `${view || 'view'}-${issue.id || 'issue'}-${issue.function || 'fn'}-${issue.location || 'loc'}-${index}`
-                    }));
+                    return (Array.isArray(issues) ? issues : [])
+                        .map((issue, index) => this.prepareFinding(issue, view, index));
                 },
 
                 mergeReportViewMetadata(reportViews) {
@@ -2207,7 +2330,15 @@
                     if (!issue || typeof issue !== 'object') {
                         return issue;
                     }
-                    const { uid, _offline_id, ...rest } = issue;
+                    const {
+                        uid,
+                        _offline_id,
+                        _validation_original_status,
+                        _validation_original_reasoning,
+                        _validation_dirty,
+                        _snapshot_sync_pending,
+                        ...rest
+                    } = issue;
                     return { ...rest };
                 },
 
@@ -2380,12 +2511,9 @@
                             if (!importedFindings.length) {
                                 throw new Error('离线页面中没有可导入的问题数据');
                             }
-                            this.findings = importedFindings.map((issue, index) => ({
-                                ...this.stripOfflineRuntimeFields(issue),
-                                validation_status: issue.validation_status || 'pending',
-                                validation_reasoning: issue.validation_reasoning || '',
-                                uid: `${issue.id || 'issue'}-${issue.function || 'fn'}-${issue.location || 'loc'}-${index}`
-                            }));
+                            this.findings = importedFindings.map((issue, index) =>
+                                this.prepareFinding(this.stripOfflineRuntimeFields(issue), 'offline', index)
+                            );
                             this.reportSummary = offlineState.reportSummary || this.reportSummary;
                             this.reportViews = offlineState.reportViews || this.reportViews;
                             this.reportView = offlineState.reportView || this.reportView;
@@ -2476,7 +2604,14 @@
                         return;
                     }
                     const isSingleFindingSave = options.saveScope === 'single';
-                    const issuesToSave = Array.isArray(issuesOverride) ? issuesOverride : this.findings;
+                    const explicitIssues = Array.isArray(issuesOverride);
+                    const issuesToSave = explicitIssues ? issuesOverride : this.dirtyValidationFindings();
+                    if (!issuesToSave.length) {
+                        this.saveFeedbackStatus = '没有需要回写的验证改动';
+                        this.saveFeedbackType = 'info';
+                        this.showToast('没有需要回写的验证改动', 'info');
+                        return;
+                    }
                     if (isSingleFindingSave) {
                         this.savingSingleFinding = true;
                     } else {
@@ -2503,6 +2638,9 @@
                             if (data.success) {
                                 const persistence = data.feedback_persistence || {};
                                 const snapshotPersistence = data.snapshot_persistence || {};
+                                this.markSavedFindingsClean(issuesToSave, {
+                                    snapshotPending: Boolean(snapshotPersistence.skipped),
+                                });
                                 if (isSingleFindingSave && snapshotPersistence.skipped) {
                                     const count = persistence.baseline_upserts ?? 0;
                                     const suppressions = persistence.suppression_upserts ?? 0;

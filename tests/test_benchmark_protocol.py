@@ -470,6 +470,348 @@ def test_issue_matches_custom_category_aliases() -> None:
     assert issue_matches(issue, truth, line_tolerance=8)
 
 
+def test_issue_matches_fd_leak_category_alias() -> None:
+    truth = {
+        "id": "ISSUE43-015",
+        "category": "missing_fd_release",
+        "cwe": "CWE-775",
+        "function": "_journal_metadata_validate",
+        "file": "src/lifecycle.c",
+        "line": 3312,
+        "keywords": ["journal", "descriptor", "close"],
+    }
+    issue = {
+        "category": "fd_leak",
+        "cwe": "CWE-775",
+        "function": "_journal_metadata_validate",
+        "location": "src/lifecycle.c:3320",
+        "description": "Opened journal fd returns on an error path without a close.",
+    }
+
+    assert issue_matches(issue, truth, line_tolerance=12)
+
+
+def test_issue_matches_unlock_without_lock_alias() -> None:
+    truth = {
+        "id": "ISSUE43-017",
+        "category": "unlock_without_lock",
+        "cwe": "CWE-832",
+        "function": "_runtime_lock_cache_abort",
+        "file": "src/lifecycle.c",
+        "line": 3345,
+        "keywords": ["unlock", "cache", "not held"],
+    }
+    issue = {
+        "category": "lock_protocol_violation",
+        "cwe": "CWE-832",
+        "function": "_runtime_lock_cache_abort",
+        "location": "src/lifecycle.c:3350",
+        "description": "The abort path calls pthread_mutex_unlock without owning the cache lock.",
+    }
+
+    assert issue_matches(issue, truth, line_tolerance=12)
+
+
+def test_issue_matches_thread_cache_leak_without_cross_function_match() -> None:
+    truth = {
+        "id": "THREAD-CACHE-1",
+        "category": "thread_cache_leak",
+        "cwe": "CWE-772",
+        "function": "_thread_cache_release",
+        "file": "src/lifecycle.c",
+        "line": 120,
+        "keywords": ["thread cache", "cached blocks", "leak"],
+    }
+    matching_issue = {
+        "category": "memory_leak",
+        "cwe": "CWE-772",
+        "function": "_thread_cache_release",
+        "location": "src/lifecycle.c:121",
+        "description": "Thread cache cached blocks are leaked on release.",
+    }
+    other_function_issue = {
+        **matching_issue,
+        "function": "_other_cache_release",
+        "description": "Another function has a generic memory leak.",
+    }
+
+    assert issue_matches(matching_issue, truth, line_tolerance=4)
+    assert not issue_matches(other_function_issue, truth, line_tolerance=4)
+
+
+def test_issue_matches_heap_overflow_aliases_bounds_report() -> None:
+    truth = {
+        "id": "HEAP-1",
+        "category": "heap_overflow",
+        "cwe": "CWE-122",
+        "function": "_copy_fragment",
+        "file": "src/demo.c",
+        "line": 44,
+        "keywords": ["fragment_len", "copy_len", "heap buffer"],
+    }
+    issue = {
+        "category": "bounds",
+        "function": "_copy_fragment",
+        "location": "src/demo.c:45",
+        "description": "Heap buffer overflow: fragment_len is truncated for allocation but copy_len reaches memcpy.",
+    }
+
+    assert issue_matches(issue, truth, line_tolerance=4)
+
+
+def test_issue_matches_buffer_underread_and_underwrite_aliases_underflow() -> None:
+    underread_truth = {
+        "id": "UNDERREAD-1",
+        "category": "buffer_underread",
+        "cwe": "CWE-127",
+        "function": "_read_footer",
+        "file": "src/demo.c",
+        "line": 90,
+        "keywords": ["footer_backtrack", "underread"],
+    }
+    underwrite_truth = {
+        "id": "UNDERWRITE-1",
+        "category": "buffer_underwrite",
+        "cwe": "CWE-124",
+        "function": "_compact_prefix",
+        "file": "src/demo.c",
+        "line": 120,
+        "keywords": ["prefix_len", "underwrite"],
+    }
+
+    assert issue_matches(
+        {
+            "category": "buffer_underflow",
+            "function": "_read_footer",
+            "location": "src/demo.c:91",
+            "description": "footer_backtrack can move before the buffer and cause a buffer underflow read.",
+        },
+        underread_truth,
+        line_tolerance=4,
+    )
+    assert issue_matches(
+        {
+            "category": "buffer_underflow",
+            "function": "_compact_prefix",
+            "location": "src/demo.c:121",
+            "description": "prefix_len can move before the output buffer and cause a buffer underflow write.",
+        },
+        underwrite_truth,
+        line_tolerance=4,
+    )
+
+
+def test_issue_matches_signed_unsigned_with_integer_overflow_report_when_anchored() -> None:
+    truth = {
+        "id": "SIGNED-1",
+        "category": "signed_unsigned",
+        "cwe": "CWE-195",
+        "function": "_receive_payload",
+        "file": "src/demo.c",
+        "line": 77,
+        "keywords": ["negative", "size_t", "memcpy"],
+    }
+    issue = {
+        "category": "integer_overflow",
+        "function": "_receive_payload",
+        "location": "src/demo.c:78",
+        "description": "Negative receive result is converted to a huge size_t and reaches memcpy.",
+    }
+
+    assert issue_matches(issue, truth, line_tolerance=4)
+
+
+def test_issue_matches_out_of_range_pointer_offset_alias_when_anchored() -> None:
+    truth = {
+        "id": "OFFSET-1",
+        "category": "out_of_range_pointer_offset",
+        "cwe": "CWE-823",
+        "function": "_runtime_stream_map_object_offset",
+        "file": "src/runtime.c",
+        "line": 88,
+        "keywords": ["offset", "object", "write"],
+    }
+    issue = {
+        "category": "out_of_bounds_write",
+        "function": "_runtime_stream_map_object_offset",
+        "location": "src/runtime.c:91",
+        "description": "Unchecked object offset forms an out of bounds write sink.",
+    }
+
+    assert issue_matches(issue, truth, line_tolerance=8)
+
+
+def test_issue_matches_file_type_validation_alias_when_anchored() -> None:
+    truth = {
+        "id": "FILETYPE-1",
+        "category": "file_type_validation",
+        "cwe": "CWE-20",
+        "function": "_runtime_map_reserved_region",
+        "file": "src/lifecycle.c",
+        "line": 2418,
+        "keywords": ["file type", "mapping", "validation"],
+    }
+    issue = {
+        "category": "incorrect_validation_order",
+        "function": "_runtime_map_reserved_region",
+        "location": "src/lifecycle.c:2426",
+        "description": "Incorrect validation order: mapping size is checked before file type validation.",
+    }
+
+    assert issue_matches(issue, truth, line_tolerance=12)
+
+
+def test_issue_matches_bounds_truth_with_magic_count_protocol_validation_when_anchored() -> None:
+    truth = {
+        "id": "MAGIC-COUNT-1",
+        "category": "bounds",
+        "cwe": "CWE-20",
+        "function": "_runtime_read_control_magic",
+        "file": "src/lifecycle.c",
+        "line": 1375,
+        "keywords": ["magic", "count", "memcpy"],
+    }
+    issue = {
+        "category": "protocol_validation",
+        "cwe": "CWE-20",
+        "function": "_runtime_read_control_magic",
+        "location": "src/lifecycle.c:1383",
+        "description": "Unchecked count before magic validation reaches memcpy(preview, seed, count).",
+    }
+
+    assert issue_matches(issue, truth, line_tolerance=12)
+
+
+def test_issue_matches_premature_destroy_truth_with_use_after_free_when_anchored() -> None:
+    truth = {
+        "id": "PBUF-1",
+        "category": "premature_destroy",
+        "cwe": "CWE-416",
+        "function": "_runtime_release_packet_pool",
+        "file": "src/lifecycle.c",
+        "line": 2339,
+        "keywords": ["active tasks", "pbuf pool", "use-after-free"],
+    }
+    issue = {
+        "category": "use_after_free",
+        "cwe": "CWE-416",
+        "function": "_runtime_release_packet_pool",
+        "location": "src/lifecycle.c:2351",
+        "description": "g_runtime_pbuf_pool is freed while active tasks remain and then dereferenced after release.",
+    }
+
+    assert issue_matches(issue, truth, line_tolerance=16)
+
+
+def test_issue_matches_permission_alias_when_anchored() -> None:
+    truth = {
+        "id": "PERM-1",
+        "category": "permission",
+        "cwe": "CWE-732",
+        "function": "_runtime_open_named_segment",
+        "file": "src/lifecycle.c",
+        "line": 2542,
+        "keywords": ["namedpipe", "permission", "0660"],
+    }
+    issue = {
+        "category": "incorrect_permission_check",
+        "function": "_runtime_open_named_segment",
+        "location": "src/lifecycle.c:2552",
+        "description": "Requested permission is checked against a hardcoded 0660 mode but not applied.",
+    }
+
+    assert issue_matches(issue, truth, line_tolerance=12)
+
+
+def test_issue_matches_unsynchronized_shared_state_alias_when_anchored() -> None:
+    truth = {
+        "id": "STATE-1",
+        "category": "unsynchronized_shared_state",
+        "cwe": "CWE-362",
+        "function": "_runtime_stream_update_watermark",
+        "file": "src/lifecycle.c",
+        "line": 3330,
+        "keywords": ["watermark", "shared state", "unsynchronized"],
+    }
+    issue = {
+        "category": "race",
+        "function": "_runtime_stream_update_watermark",
+        "location": "src/lifecycle.c:3341",
+        "description": "Global watermark shared state is written without synchronization.",
+    }
+
+    assert issue_matches(issue, truth, line_tolerance=12)
+
+
+def test_issue_matches_callback_deadlock_primary_anchor() -> None:
+    truth = {
+        "id": "DEADLOCK-1",
+        "category": "deadlock",
+        "cwe": "CWE-833",
+        "function": "_lifecycle_tick_timer_callback",
+        "file": "src/lifecycle.c",
+        "line": 738,
+        "secondary_function": "_lifecycle_close_pipe",
+        "secondary_line": 720,
+        "keywords": ["timer", "ctrl_lock", "deadlock"],
+    }
+    issue = {
+        "category": "deadlock",
+        "function": "_lifecycle_tick_timer_callback",
+        "location": "src/lifecycle.c:743",
+        "description": "Timer callback lock-order cycle: scheduler traversal then ctrl_lock can deadlock with close path.",
+        "related_functions": ["_lifecycle_close_pipe"],
+    }
+
+    assert issue_matches(issue, truth, line_tolerance=8)
+
+
+def test_score_report_uses_max_weight_matching_to_preserve_cardinality() -> None:
+    truth = {
+        "benchmark": "unit_suite",
+        "suite": "unit",
+        "vulnerabilities": [
+            {
+                "id": "T0",
+                "category": "race",
+                "function": "shared_path",
+                "file": "src/demo.c",
+                "line": 1,
+                "keywords": ["race", "shared"],
+            },
+            {
+                "id": "T1",
+                "category": "use_after_free",
+                "function": "sibling_path",
+                "file": "src/demo.c",
+                "line": 1,
+                "keywords": ["use after free", "sibling"],
+            },
+        ],
+    }
+    report = {
+        "issues": [
+            {
+                "category": "race",
+                "function": "shared_path",
+                "location": "src/demo.c:120",
+                "description": "shared race; sibling_path has a possible use after free on the same object",
+            },
+            {
+                "category": "data_race",
+                "function": "shared_path",
+                "location": "src/demo.c:121",
+                "description": "shared race only",
+            },
+        ]
+    }
+
+    scored = score_report(report, truth, line_tolerance=8)
+
+    assert scored["matched"] == ["T0", "T1"]
+    assert scored["true_positives"] == 2
+
+
 def test_score_report_prefers_strong_function_match_over_earlier_weak_truth() -> None:
     truth = {
         "benchmark": "unit_suite",

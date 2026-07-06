@@ -200,6 +200,68 @@ def test_report_feedback_service_saves_validation_feedback(tmp_path: Path) -> No
     assert store.get_finding_baseline("double_free|entry|src/demo.c:42")["status"] == "false_positive"
 
 
+def test_report_feedback_service_partial_updates_preserve_other_issue_statuses(
+    tmp_path: Path,
+) -> None:
+    report_path = tmp_path / "report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "issues": [
+                    {
+                        "id": "ISSUE_1",
+                        "function": "entry",
+                        "location": "src/demo.c:42",
+                        "defect_class": "double_free",
+                        "validation_status": "pending",
+                    },
+                    {
+                        "id": "ISSUE_2",
+                        "function": "entry",
+                        "location": "src/demo.c:64",
+                        "defect_class": "bounds",
+                        "validation_status": "pending",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = ReportFeedbackService(report_filename=str(report_path))
+
+    service.save_validation_feedback(
+        [
+            {
+                "id": "ISSUE_1",
+                "function": "entry",
+                "location": "src/demo.c:42",
+                "defect_class": "double_free",
+                "validation_status": "rejected",
+                "validation_reasoning": "A reviewed issue1",
+            }
+        ]
+    )
+    service.save_validation_feedback(
+        [
+            {
+                "id": "ISSUE_2",
+                "function": "entry",
+                "location": "src/demo.c:64",
+                "defect_class": "bounds",
+                "validation_status": "validated",
+                "validation_reasoning": "B reviewed issue2",
+            }
+        ]
+    )
+
+    saved = service.load_report()
+
+    assert saved["issues"][0]["validation_status"] == "rejected"
+    assert saved["issues"][0]["validation_reasoning"] == "A reviewed issue1"
+    assert saved["issues"][1]["validation_status"] == "validated"
+    assert saved["issues"][1]["validation_reasoning"] == "B reviewed issue2"
+
+
 def test_report_feedback_service_can_skip_snapshot_persistence_for_single_save(
     tmp_path: Path,
 ) -> None:

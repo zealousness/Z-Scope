@@ -192,7 +192,8 @@ def score_report(
     )
     matched_truth_indices: Set[int] = set()
     matched_issue_by_truth_index: Dict[int, int] = {}
-    for pair in potential_pairs:
+    selected_pairs = _select_max_weight_pairs(potential_pairs, len(vulns), len(issues))
+    for pair in selected_pairs:
         truth_index = int(pair.get("truth_index") or 0)
         issue_index = int(pair.get("issue_index") or 0)
         truth_id = str(pair.get("truth_id") or truth_index)
@@ -300,6 +301,14 @@ def score_report(
         "false_positive_issue_records_raw": raw_fp_issue_records,
         "duplicate_of_matched_issue_records": duplicate_records,
         "false_positive_audit": fp_audit,
+        "match_diagnostics": _match_diagnostics(
+            potential_pairs,
+            matched_truth_indices,
+            matched_issues,
+            matched_issue_by_truth_index,
+            vulns,
+            issues,
+        ),
         "scoring_contract": {
             "line_tolerance": line_tolerance,
             "count_duplicate_of_matched_as_fp": count_duplicate_of_matched_as_fp,
@@ -314,6 +323,132 @@ def score_report(
             "line_placeholder_policy": "truth line <= 1 is treated as unknown",
             "category_policy": "category/cwe aliases or at least two ground-truth keyword hits",
         },
+    }
+
+
+def _select_max_weight_pairs(
+    potential_pairs: List[Dict[str, Any]],
+    truth_count: int,
+    issue_count: int,
+) -> List[Dict[str, Any]]:
+    """Return a deterministic maximum-cardinality, maximum-score bipartite match."""
+    if not potential_pairs or not truth_count or not issue_count:
+        return []
+    source = truth_count + issue_count
+    sink = source + 1
+    graph: List[List[Dict[str, Any]]] = [[] for _ in range(sink + 1)]
+
+    def add_edge(u: int, v: int, cap: int, cost: int, payload: Optional[Dict[str, Any]] = None) -> None:
+        graph[u].append({"to": v, "rev": len(graph[v]), "cap": cap, "cost": cost, "payload": payload})
+        graph[v].append({"to": u, "rev": len(graph[u]) - 1, "cap": 0, "cost": -cost, "payload": None})
+
+    for truth_index in range(truth_count):
+        add_edge(source, truth_index, 1, 0)
+    for issue_index in range(issue_count):
+        add_edge(truth_count + issue_index, sink, 1, 0)
+
+    cardinality_bonus = 1_000_000
+    for pair in potential_pairs:
+        truth_index = int(pair.get("truth_index") or 0)
+        issue_index = int(pair.get("issue_index") or 0)
+        if not (0 <= truth_index < truth_count and 0 <= issue_index < issue_count):
+            continue
+        score = int(pair.get("score") or 0)
+        stable_tie = truth_index * (issue_count + 1) + issue_index
+        add_edge(
+            truth_index,
+            truth_count + issue_index,
+            1,
+            -cardinality_bonus - score * 1000 + stable_tie,
+            pair,
+        )
+
+    while True:
+        dist = [10**18] * len(graph)
+        prev_node = [-1] * len(graph)
+        prev_edge = [-1] * len(graph)
+        in_queue = [False] * len(graph)
+        dist[source] = 0
+        queue = [source]
+        in_queue[source] = True
+        while queue:
+            node = queue.pop(0)
+            in_queue[node] = False
+            for edge_index, edge in enumerate(graph[node]):
+                if int(edge["cap"]) <= 0:
+                    continue
+                nxt = int(edge["to"])
+                new_dist = dist[node] + int(edge["cost"])
+                if new_dist < dist[nxt]:
+                    dist[nxt] = new_dist
+                    prev_node[nxt] = node
+                    prev_edge[nxt] = edge_index
+                    if not in_queue[nxt]:
+                        queue.append(nxt)
+                        in_queue[nxt] = True
+        if prev_node[sink] < 0 or dist[sink] >= 0:
+            break
+        node = sink
+        while node != source:
+            parent = prev_node[node]
+            edge_index = prev_edge[node]
+            edge = graph[parent][edge_index]
+            edge["cap"] = int(edge["cap"]) - 1
+            graph[node][int(edge["rev"])]["cap"] = int(graph[node][int(edge["rev"])]["cap"]) + 1
+            node = parent
+
+    selected: List[Dict[str, Any]] = []
+    for truth_index in range(truth_count):
+        for edge in graph[truth_index]:
+            payload = edge.get("payload")
+            if payload is not None and int(edge.get("cap") or 0) == 0:
+                selected.append(payload)
+    selected.sort(key=lambda pair: int(pair.get("truth_index") or 0))
+    return selected
+
+
+def _match_diagnostics(
+    potential_pairs: List[Dict[str, Any]],
+    matched_truth_indices: Set[int],
+    matched_issues: Set[int],
+    matched_issue_by_truth_index: Dict[int, int],
+    vulns: List[Dict[str, Any]],
+    issues: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Explain common non-match causes without changing the scoring contract."""
+    potentials_by_truth: Dict[int, List[Dict[str, Any]]] = {}
+    for pair in potential_pairs:
+        potentials_by_truth.setdefault(int(pair.get("truth_index") or 0), []).append(pair)
+
+    issue_to_truth = {issue_index: truth_index for truth_index, issue_index in matched_issue_by_truth_index.items()}
+    matched_elsewhere: List[Dict[str, Any]] = []
+    for truth_index, vuln in enumerate(vulns):
+        if truth_index in matched_truth_indices:
+            continue
+        pairs = potentials_by_truth.get(truth_index, [])
+        diverted = [pair for pair in pairs if int(pair.get("issue_index") or 0) in matched_issues]
+        if not diverted:
+            continue
+        best = max(diverted, key=lambda pair: int(pair.get("score") or 0))
+        issue_index = int(best.get("issue_index") or 0)
+        matched_truth_index = issue_to_truth.get(issue_index)
+        matched_truth = vulns[matched_truth_index] if matched_truth_index is not None and matched_truth_index < len(vulns) else {}
+        matched_elsewhere.append(
+            {
+                "truth_id": str(vuln.get("id") or truth_index),
+                "issue_index": issue_index,
+                "issue_identity": issue_identity(issues[issue_index]) if issue_index < len(issues) else "",
+                "matched_truth_id": str(matched_truth.get("id") or matched_truth_index or ""),
+                "score": best.get("score") or 0,
+                "match": best.get("match") or {},
+            }
+        )
+
+    return {
+        "candidate_still_present_but_matched_another_truth": matched_elsewhere,
+        "unmatched_truth_with_potential_pair_count": sum(
+            1 for truth_index in potentials_by_truth if truth_index not in matched_truth_indices
+        ),
     }
 
 
@@ -762,28 +897,80 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
     category_key = category.replace("-", "_").lower()
     builtins = {
         "memory_safety": ["memory safety", "bounds", "buffer", "overflow", "leak"],
-        "integer_overflow": ["integer overflow", "overflow", "wrap", "cwe-190"],
+        "integer_overflow": ["integer overflow", "overflow", "wrap", "signed unsigned", "bounds", "cwe-190"],
+        "heap_overflow": ["heap overflow", "heap buffer overflow", "buffer overflow", "bounds", "cwe-122"],
+        "buffer_overflow": ["buffer overflow", "heap overflow", "out of bounds", "bounds", "cwe-787", "cwe-122"],
+        "out_of_bounds_write": [
+            "out of bounds write",
+            "out-of-bounds write",
+            "out of bounds",
+            "bounds",
+            "object offset",
+            "pointer offset",
+            "out of range pointer offset",
+            "cwe-787",
+            "cwe-823",
+        ],
+        "out_of_range_pointer_offset": [
+            "out of range pointer offset",
+            "out-of-range pointer offset",
+            "pointer offset",
+            "object offset",
+            "offset-derived pointer",
+            "out of bounds write",
+            "out-of-bounds write",
+            "out of bounds",
+            "bounds",
+            "cwe-823",
+            "cwe-787",
+        ],
+        "buffer_overread": ["buffer overread", "buffer over read", "out-of-bounds read", "bounds", "cwe-126"],
+        "buffer_over_read": ["buffer overread", "buffer over read", "out-of-bounds read", "bounds", "cwe-126"],
+        "buffer_underread": ["buffer underread", "buffer under read", "buffer underflow", "cwe-127"],
+        "buffer_underwrite": ["buffer underwrite", "buffer under write", "buffer underflow", "cwe-124"],
+        "buffer_underflow": ["buffer underflow", "buffer underread", "buffer underwrite", "cwe-127", "cwe-124"],
         "bounds": [
             "bounds",
             "out of bounds",
             "buffer overflow",
+            "heap overflow",
             "buffer overread",
+            "buffer over read",
+            "buffer underread",
+            "buffer underwrite",
+            "buffer underflow",
             "overread",
             "over read",
+            "protocol validation",
+            "magic validation",
+            "wide count",
+            "unchecked count",
+            "count before magic",
             "cwe-125",
             "cwe-787",
+            "cwe-20",
         ],
         "format_string": ["format string", "cwe-134"],
-        "deadlock": ["deadlock", "lock order", "recursive lock", "cwe-833"],
+        "deadlock": ["deadlock", "lock order", "recursive lock", "callback lock", "timer callback", "lock-order cycle", "cwe-833"],
         "command_injection": ["command injection", "shell injection", "system(", "cwe-78"],
-        "memory_leak": ["memory leak", "resource leak", "leak", "cwe-401"],
+        "memory_leak": ["memory leak", "resource leak", "leak", "child list", "owned member", "children", "proc head", "cwe-401", "cwe-772"],
+        "resource_lifecycle": [
+            "resource lifecycle",
+            "memory leak",
+            "resource leak",
+            "child list",
+            "owned member",
+            "children",
+            "proc head",
+            "cwe-772",
+        ],
         "double_free": ["double free", "cwe-415"],
         "use_after_free": ["use after free", "use-after-free", "uaf", "dangling", "cwe-416"],
         "invalid_free": ["invalid free", "non-heap", "cwe-590"],
         "null_pointer_dereference": ["null pointer", "null dereference", "cwe-476"],
         "stack_escape": ["stack escape", "stack address", "cwe-562"],
         "stack_overflow": ["stack overflow", "stack buffer", "vla", "cwe-121"],
-        "signed_unsigned": ["signed", "unsigned", "negative", "cwe-195"],
+        "signed_unsigned": ["signed", "unsigned", "negative", "integer overflow", "bounds", "cwe-195", "cwe-190"],
         "off_by_one": ["off by one", "off-by-one", "one byte", "cwe-193"],
         "uninitialized_read": ["uninitialized", "padding", "cwe-457"],
         "race": [
@@ -791,6 +978,8 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
             "data race",
             "toctou",
             "unsynchronized",
+            "unsynchronized shared state",
+            "shared state race",
             "without synchronization",
             "missing lock",
             "concurrent",
@@ -804,6 +993,27 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
             "cwe-367",
         ],
         "data_race": ["data race", "race", "cwe-362"],
+        "unsynchronized_shared_state": [
+            "unsynchronized shared state",
+            "shared state race",
+            "data race",
+            "race",
+            "without synchronization",
+            "global state",
+            "watermark",
+            "map/unmap",
+            "mmap",
+            "munmap",
+            "cwe-362",
+        ],
+        "shared_state_race": [
+            "shared state race",
+            "unsynchronized shared state",
+            "data race",
+            "race",
+            "global state",
+            "cwe-362",
+        ],
         "object_publication": [
             "object publication",
             "published before initialization",
@@ -814,12 +1024,58 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
         "refcount_race": ["refcount", "reference count", "ref count", "race", "cwe-362"],
         "held_lock_callback": ["held lock callback", "callback while lock", "under lock", "cwe-667"],
         "missing_unlock": ["missing unlock", "return while lock", "forgot unlock", "cwe-667"],
+        "unlock_without_lock": [
+            "unlock without lock",
+            "unlock without owning",
+            "unlock without held lock",
+            "lock protocol violation",
+            "not held",
+            "cwe-832",
+        ],
+        "lock_protocol_violation": [
+            "lock protocol violation",
+            "unlock without lock",
+            "unlock without owning",
+            "not held",
+            "cwe-832",
+        ],
         "double_checked_locking": ["double checked", "lazy initialization", "race", "cwe-362"],
         "lost_wakeup": ["lost wakeup", "condition variable", "pthread_cond_wait", "cwe-366"],
         "realloc_misuse": ["realloc misuse", "direct realloc", "old pointer", "cwe-401"],
         "alignment": ["alignment", "unaligned", "strict alias", "cwe-704"],
         "stale_fd": ["stale fd", "file descriptor", "closed fd", "cwe-672"],
-        "state_inconsistency": ["state not restored", "state inconsistency", "rollback", "cwe-672"],
+        "fd_leak": ["fd leak", "file descriptor leak", "descriptor leak", "unclosed fd", "unclosed descriptor", "cwe-775"],
+        "file_descriptor_leak": [
+            "fd leak",
+            "file descriptor leak",
+            "descriptor leak",
+            "unclosed fd",
+            "unclosed descriptor",
+            "cwe-775",
+        ],
+        "missing_fd_release": [
+            "missing fd release",
+            "fd leak",
+            "file descriptor leak",
+            "descriptor leak",
+            "unclosed fd",
+            "unclosed descriptor",
+            "cwe-775",
+        ],
+        "state_inconsistency": [
+            "state not restored",
+            "state inconsistency",
+            "rollback",
+            "race",
+            "resource lifecycle",
+            "global state",
+            "not restored",
+            "unmap",
+            "munmap",
+            "map rules",
+            "cwe-672",
+            "cwe-362",
+        ],
         "unchecked_return": ["unchecked return", "unchecked result", "return success", "cwe-252"],
         "busy_loop": ["busy loop", "infinite loop", "spin", "no delay", "resource exhaustion", "cwe-400"],
         "infinite_loop": ["infinite loop", "busy loop", "spin", "cwe-835", "cwe-400"],
@@ -827,6 +1083,33 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
         "key_truncation": ["key truncation", "truncated key", "partial comparison", "cwe-187"],
         "size_limit_mismatch": ["size limit", "fixed limit", "buffer limit", "spec", "cwe-131", "cwe-190"],
         "fd_type_mismatch": ["fd type", "reliable fd", "raw fd", "mismatched parameter", "cwe-628"],
+        "permission": [
+            "permission",
+            "incorrect permission check",
+            "mode validation",
+            "mode",
+            "chmod",
+            "requested permission",
+            "hard-coded mode",
+            "hardcoded mode",
+            "cwe-732",
+            "cwe-276",
+        ],
+        "incorrect_permission_check": [
+            "incorrect permission check",
+            "permission",
+            "mode validation",
+            "requested permission",
+            "cwe-732",
+            "cwe-276",
+        ],
+        "mode_validation": [
+            "mode validation",
+            "permission",
+            "incorrect permission check",
+            "cwe-732",
+            "cwe-276",
+        ],
         "protocol_mixup": [
             "protocol mismatch",
             "protocol mixup",
@@ -838,8 +1121,33 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
         "dynamic_array_race": ["dynamic array", "array expansion", "race", "double free", "cwe-362"],
         "version_filtering": ["version", "missing version", "low version", "filter", "cwe-20"],
         "missing_refcount": ["refcount", "reference count", "shared resource", "cleanup", "cwe-772"],
+        "thread_cache_leak": [
+            "thread cache leak",
+            "cache leak",
+            "cached blocks",
+            "memory leak",
+            "resource leak",
+            "resource allocation without limits",
+            "unbounded allocation",
+            "tls",
+            "thread cache",
+            "cwe-772",
+            "cwe-770",
+        ],
         "sigpipe_unhandled": ["sigpipe", "signal", "closed peer", "not handled", "cwe-404"],
-        "premature_destroy": ["premature destroy", "active tasks", "pool", "use after free", "cwe-416"],
+        "premature_destroy": [
+            "premature destroy",
+            "active tasks",
+            "active users",
+            "pool",
+            "shared pool",
+            "use after free",
+            "use-after-free",
+            "uaf",
+            "resource lifecycle",
+            "dangling",
+            "cwe-416",
+        ],
         "registration_race": ["registration race", "check then act", "ops registration", "race", "cwe-362"],
         "alloc_free_mismatch": ["allocator mismatch", "alloc free mismatch", "allocator pairing", "cwe-762"],
         "key_generation_race": ["ftok", "key generation", "key collision", "path state", "cwe-362"],
@@ -849,7 +1157,39 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
         "byte_order_logic": ["byte order", "endian", "ctz", "trailing zero", "cwe-682"],
         "reader_state_race": ["reader state", "reader pid", "multiple readers", "rwlock", "race", "cwe-362"],
         "uninitialized_output": ["uninitialized output", "partially initialized", "output parameter", "cwe-457"],
-        "file_type_validation": ["file type", "character device", "regular file", "mapping size", "cwe-20"],
+        "file_type_validation": [
+            "file type",
+            "character device",
+            "regular file",
+            "mapping size",
+            "incorrect validation order",
+            "validation order",
+            "validate file type",
+            "file type validation",
+            "cwe-20",
+        ],
+        "ownership_contract_violation": [
+            "ownership contract",
+            "ownership transfer",
+            "memory leak",
+            "resource lifecycle",
+            "resource leak",
+            "orphan",
+            "owner",
+            "cwe-772",
+        ],
+        "resource_allocation_without_limits": [
+            "resource allocation without limits",
+            "unbounded allocation",
+            "without limit",
+            "missing quota",
+            "no quota",
+            "resource exhaustion",
+            "memory leak",
+            "thread cache leak",
+            "cwe-770",
+            "cwe-772",
+        ],
         "log_level_misuse": ["log level", "logged at error", "alert noise", "cwe-778"],
         "logic_error": ["logic error", "wrong group", "wrong index", "cwe-682"],
         "global_mode_race": ["global mode", "qrcu", "crcu", "race", "cwe-362"],

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import Any, Callable, Dict, List, Optional
 
 from ...agents.validator_agent.agent import ValidatorAgent
@@ -68,6 +70,8 @@ class ValidationRunner:
         "thrd_create",
         "write",
     }
+    _VALIDATOR_RESULT_CACHE: Dict[str, Dict[str, Any]] = {}
+    _VALIDATOR_RESULT_CACHE_LOCK = Lock()
 
     def __init__(
         self,
@@ -238,6 +242,19 @@ class ValidationRunner:
         validator_agent: Optional[Any] = None,
     ) -> _ValidationWorkerResult:
         try:
+            cache_key = self._validator_cache_key(item)
+            cached = self._validator_cache_get(cache_key)
+            if cached is not None:
+                metadata = self._empty_token_metadata()
+                metadata["validator_cache_hit"] = 1
+                return _ValidationWorkerResult(
+                    index=item.index,
+                    raw_issue=item.raw_issue,
+                    issue_func=item.issue_func,
+                    success=True,
+                    val_data=dict(cached),
+                    metadata=metadata,
+                )
             validator_agent = validator_agent or self._build_validator_agent()
             token_metadata = self._empty_token_metadata()
             val_resp = validator_agent.run(
@@ -261,6 +278,7 @@ class ValidationRunner:
                 val_resp.data,
                 token_metadata,
             )
+            self._validator_cache_put(cache_key, val_data)
             return _ValidationWorkerResult(
                 index=item.index,
                 raw_issue=item.raw_issue,
@@ -271,6 +289,70 @@ class ValidationRunner:
             )
         finally:
             self._close_thread_llm_sessions()
+
+    @classmethod
+    def _validator_cache_get(cls, cache_key: str) -> Optional[Dict[str, Any]]:
+        if not cache_key:
+            return None
+        with cls._VALIDATOR_RESULT_CACHE_LOCK:
+            cached = cls._VALIDATOR_RESULT_CACHE.get(cache_key)
+            return dict(cached) if isinstance(cached, dict) else None
+
+    @classmethod
+    def _validator_cache_put(cls, cache_key: str, val_data: Dict[str, Any]) -> None:
+        if not cache_key or not isinstance(val_data, dict):
+            return
+        with cls._VALIDATOR_RESULT_CACHE_LOCK:
+            if len(cls._VALIDATOR_RESULT_CACHE) > 4096:
+                cls._VALIDATOR_RESULT_CACHE.clear()
+            cls._VALIDATOR_RESULT_CACHE[cache_key] = dict(val_data)
+
+    def _validator_cache_key(self, item: _PreparedValidation) -> str:
+        issue = item.raw_issue
+        pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+        stable_id = issue.get("candidate_id") or pack.get("candidate_id")
+        source_value = issue.get("source") or pack.get("source")
+        sink_value = issue.get("sink") or pack.get("sink")
+        resource_value = (
+            issue.get("resource_signature")
+            or issue.get("resource")
+            or pack.get("resource_signature")
+            or pack.get("resource")
+            or pack.get("defect_class")
+        )
+        if not stable_id:
+            source_text = self._cache_component_text(source_value)
+            sink_text = self._cache_component_text(sink_value)
+            resource_text = self._cache_component_text(resource_value)
+            if not (
+                (source_text or sink_text)
+                and resource_text
+                and (issue.get("function") or item.issue_func)
+                and (issue.get("defect_class") or issue.get("category") or pack.get("defect_class"))
+            ):
+                return ""
+        payload = {
+            "candidate_id": stable_id,
+            "category": issue.get("defect_class") or issue.get("category") or pack.get("defect_class"),
+            "function": issue.get("function") or item.issue_func,
+            "location": issue.get("location"),
+            "rule": issue.get("rule") or pack.get("rule"),
+            "source": source_value,
+            "sink": sink_value,
+            "resource": resource_value,
+        }
+        stable = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(stable.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _cache_component_text(value: Any) -> str:
+        if isinstance(value, dict):
+            return " ".join(ValidationRunner._cache_component_text(item) for item in value.values()).strip()
+        if isinstance(value, list):
+            return " ".join(ValidationRunner._cache_component_text(item) for item in value).strip()
+        if value is None:
+            return ""
+        return str(value).strip()
 
     def _close_thread_llm_sessions(self) -> None:
         seen: set[int] = set()

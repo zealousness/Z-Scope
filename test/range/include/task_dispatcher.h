@@ -1,4 +1,4 @@
-﻿#ifndef TASK_DISPATCHER_H
+#ifndef TASK_DISPATCHER_H
 #define TASK_DISPATCHER_H
 
 #include <stddef.h>
@@ -140,6 +140,14 @@ int td_runtime_schedule_event(int same_core, int fast_mode,
 int td_runtime_handle_signal(int sig, void* ucontext, int hold_sem);
 int td_runtime_shutdown_session(const char* path, int project_id,
                                 size_t reserve_size);
+int td_runtime_process_stream_batch(int fd, const char* journal_path,
+                                    const unsigned char* wire, size_t wire_len,
+                                    uint32_t queue_id,
+                                    unsigned char* out, size_t out_size);
+int td_runtime_maintain_lock_cache(const char* cache_name,
+                                   uint32_t worker_id,
+                                   uint32_t flags,
+                                   plugin_callback_t cb);
 int td_update_os_policy(const char* os_name, int pid, const char* proc_name,
                         const char* policy_key, int route_key, uint32_t delta);
 

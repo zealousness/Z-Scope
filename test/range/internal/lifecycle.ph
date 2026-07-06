@@ -1,4 +1,4 @@
-﻿#ifndef LIFECYCLE_PH
+#ifndef LIFECYCLE_PH
 #define LIFECYCLE_PH
 
 #include "../internal/types.ph"
@@ -126,6 +126,14 @@ int _runtime_dispatch_event_cycle(int same_core, int fast_mode,
 int _runtime_handle_fault_signal(int sig, void* ucontext, int hold_sem);
 int _runtime_shutdown_local_session(const char* path, int project_id,
                                     size_t reserve_size);
+int _runtime_process_stream_batch(int fd, const char* journal_path,
+                                  const unsigned char* wire, size_t wire_len,
+                                  uint32_t queue_id,
+                                  unsigned char* out, size_t out_len);
+int _runtime_maintain_lock_cache(const char* cache_name,
+                                 uint32_t worker_id,
+                                 uint32_t flags,
+                                 plugin_callback_t cb);
 int _runtime_init_sleep_window(int fd, int start_sec);
 int _runtime_close_thread_cache(size_t block_size);
 size_t _runtime_find_bitmap_delta(const unsigned char* input, size_t len);
@@ -156,5 +164,31 @@ int _runtime_make_shared_key(const char* path, int project_id);
 int _runtime_cancel_wheel_timer(int call_from_callback);
 int _runtime_write_exception_record(int sig, int hold_sem);
 int _runtime_finish_current_event(int destroy_in_callback);
+int _runtime_stream_compact_segments(const unsigned char* wire, size_t wire_len);
+int _runtime_stream_copy_fragment(const unsigned char* wire, size_t wire_len,
+                                  unsigned char* out, size_t out_len);
+int _runtime_stream_export_digest(const unsigned char* wire, size_t wire_len,
+                                  unsigned char* out, size_t out_len);
+int _runtime_stream_read_footer_marker(const unsigned char* wire,
+                                       size_t wire_len);
+int _runtime_stream_compact_prefix(unsigned char* buffer, size_t len,
+                                   uint32_t prefix_len);
+int _runtime_stream_release_cursor(uint32_t flags);
+int _runtime_stream_reserve_batch(uint32_t batch_size);
+int _runtime_stream_build_index(uint32_t entry_count);
+int _runtime_stream_follow_wire_pointer(const unsigned char* wire,
+                                        size_t wire_len);
+int _runtime_stream_map_object_offset(uint32_t object_offset);
+int _runtime_stream_commit_cursor(const unsigned char* wire, size_t wire_len,
+                                  int fail_open);
+int _runtime_stream_schedule_expired_flush(const char* journal_path);
+int _runtime_stream_reserve_replay_window(uint32_t replay_window);
+int _runtime_stream_open_segment_handles(const char* journal_path,
+                                         uint32_t segment_count);
+int _runtime_stream_open_journal(const char* journal_path,
+                                 uint32_t metadata_size);
+uint64_t _runtime_stream_update_watermark(uint64_t observed, int maintenance);
+int _runtime_lock_cache_abort_batch(int error_state);
+int _runtime_lock_cache_reset_client(const char* cache_name, uint32_t flags);
 
 #endif

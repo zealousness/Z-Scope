@@ -8,6 +8,13 @@ def _rules(code: str, *, semantics=None, overlay=None):
     return generator.generate_issues("demo", code, "src/demo.c")
 
 
+def _dir_semantics():
+    semantics = LocalPatternSemantics()
+    semantics.add_api("allocator", "opendir", "user_config")
+    semantics.add_api("deallocator", "closedir", "user_config")
+    return semantics
+
+
 def test_clang_ast_cfg_detects_double_free_and_use_after_free() -> None:
     code = """
 10 | int demo(void) {
@@ -28,6 +35,94 @@ def test_clang_ast_cfg_detects_double_free_and_use_after_free() -> None:
     assert double_free["candidate_source"] == "clang_ast_cfg"
     assert double_free["evidence_pack"]["checker"] == "clang_ast_cfg_checker"
     assert double_free["evidence_pack"]["ast_cfg"]["cfg_path"] == [12, 13]
+
+
+def test_clang_ast_cfg_suppresses_terminal_branch_release_before_normal_cleanup() -> None:
+    cases = {
+        "multiline": """
+10 | int demo(const char *path) {
+11 |     DIR *dir = opendir(path);
+12 |     if (!dir) return -1;
+13 |     if (bad()) {
+14 |         closedir(dir);
+15 |         return -1;
+16 |     }
+17 |     work(dir);
+18 |     closedir(dir);
+19 |     return 0;
+20 | }
+""",
+        "same_line": """
+30 | int demo(const char *path) {
+31 |     DIR *dir = opendir(path);
+32 |     if (!dir) return -1;
+33 |     if (bad()) { closedir(dir); return -1; }
+34 |     work(dir);
+35 |     closedir(dir);
+36 |     return 0;
+37 | }
+""",
+        "gapped": """
+40 | int demo(const char *path) {
+41 |     DIR *dir = opendir(path);
+42 |     if (!dir) return -1;
+43 |     if (bad()) {
+44 |         closedir(dir);
+45 |         log_error();
+46 |         mark_failed();
+47 |         cleanup_tmp();
+48 |         return -1;
+49 |     }
+50 |     closedir(dir);
+51 |     return 0;
+52 | }
+""",
+    }
+
+    for name, code in cases.items():
+        rules = {issue["rule"] for issue in _rules(code, semantics=_dir_semantics())}
+
+        assert "clang_cfg_same_object_released_twice" not in rules, name
+        assert "clang_cfg_use_after_release" not in rules, name
+        assert "clang_cfg_acquire_without_release_on_exit" not in rules, name
+
+
+def test_clang_ast_cfg_terminal_branch_release_does_not_hide_fallthrough_leak() -> None:
+    code = """
+10 | int demo(int bad) {
+11 |     char *p = malloc(16);
+12 |     if (!p) return -1;
+13 |     if (bad) { free(p); return -1; }
+14 |     return 0;
+15 | }
+"""
+
+    issues = _rules(code)
+
+    assert any(
+        issue["rule"] == "clang_cfg_acquire_without_release_on_exit" and issue["location"] == "src/demo.c:14"
+        for issue in issues
+    )
+    assert not any(issue["rule"] == "clang_cfg_same_object_released_twice" for issue in issues)
+
+
+def test_clang_ast_cfg_terminal_release_returning_freed_global_is_uaf() -> None:
+    code = """
+10 | int demo(int active_tasks) {
+11 |     g_runtime_pbuf_pool = _safe_calloc(1, sizeof(RuntimePbufPool));
+12 |     if (active_tasks > 0) {
+13 |         SAFE_FREE(g_runtime_pbuf_pool);
+14 |         return g_runtime_pbuf_pool->active_tasks;
+15 |     }
+16 |     return 0;
+17 | }
+"""
+
+    issue = next(issue for issue in _rules(code) if issue["rule"] == "clang_cfg_use_after_release")
+
+    assert issue["defect_class"] == "use_after_free"
+    assert issue["location"] == "src/demo.c:14"
+    assert "g_runtime_pbuf_pool" in issue["sink"]
 
 
 def test_clang_ast_cfg_safe_free_comes_from_packaged_default_semantics() -> None:
@@ -63,6 +158,59 @@ def test_clang_ast_cfg_member_releases_do_not_double_free_parent() -> None:
     rules = {issue["rule"] for issue in _rules(code, semantics=semantics)}
 
     assert "clang_cfg_same_object_released_twice" not in rules
+
+
+def test_clang_ast_cfg_detects_same_member_double_free() -> None:
+    code = """
+10 | int demo(Node *node) {
+11 |     free(node->payload);
+12 |     free(node->payload);
+13 |     SAFE_FREE(node->name);
+14 |     SAFE_FREE(node);
+15 |     return 0;
+16 | }
+"""
+
+    issues = _rules(code)
+    double_free = next(issue for issue in issues if issue["rule"] == "clang_cfg_same_object_released_twice")
+
+    assert double_free["defect_class"] == "double_free"
+    assert "node->payload" in double_free["description"]
+
+
+def test_clang_ast_cfg_detects_parent_release_without_owned_member_cleanup() -> None:
+    explicit_code = """
+10 | int demo(const char *key) {
+11 |     ServiceNode *node = make_node(key);
+12 |     node->children = make_child("proc");
+13 |     SAFE_FREE(node->name);
+14 |     SAFE_FREE(node);
+15 |     return 0;
+16 | }
+"""
+    implicit_code = """
+20 | int delete_os_node(OSNode **root) {
+21 |     OSNode *os = *root;
+22 |     *root = os->next;
+23 |     SAFE_FREE(os);
+24 |     return 0;
+25 | }
+"""
+
+    explicit = next(
+        issue
+        for issue in _rules(explicit_code)
+        if issue["rule"] == "clang_cfg_parent_release_without_owned_member_cleanup"
+    )
+    implicit = next(
+        issue
+        for issue in _rules(implicit_code)
+        if issue["rule"] == "clang_cfg_parent_release_without_owned_member_cleanup"
+    )
+
+    assert explicit["defect_class"] == "memory_leak"
+    assert "node->children" in explicit["description"]
+    assert "child/list" in implicit["description"]
 
 
 def test_clang_ast_cfg_preserves_member_allocation_identity() -> None:
@@ -284,6 +432,37 @@ def test_clang_ast_cfg_suppresses_out_param_leak_after_configured_release() -> N
     issues = _rules(code, semantics=semantics, overlay=overlay)
 
     assert not any(issue["rule"] == "clang_cfg_acquire_without_release_on_exit" for issue in issues)
+
+
+def test_clang_ast_cfg_suppresses_out_param_leak_after_braced_failure_return() -> None:
+    semantics = LocalPatternSemantics()
+    semantics.add_api("deallocator", "SHM_FileClose", "user_config")
+    overlay = {
+        "resource_models": [
+            {
+                "name": "SHM_FileMngFileCreate",
+                "kind": "resource_acquire",
+                "carrier": "argument_resource",
+                "return_semantics": "returns resource via output argument",
+                "memory_behavior": {"allocates": True},
+                "source": "user_config",
+            }
+        ],
+    }
+    code = """
+60 | int demo(const char *path) {
+61 |     int fd = -1;
+62 |     int rc = SHM_FileMngFileCreate(path, &fd);
+63 |     if (rc != 0) { return rc; }
+64 |     SHM_FileClose(fd);
+65 |     return 0;
+66 | }
+"""
+
+    issues = _rules(code, semantics=semantics, overlay=overlay)
+
+    assert not any(issue["rule"] == "clang_cfg_acquire_without_release_on_exit" for issue in issues)
+    assert not any(issue["rule"] == "clang_cfg_out_param_used_before_success_check" for issue in issues)
 
 
 def test_clang_ast_cfg_detects_out_param_use_before_status_guard() -> None:
@@ -796,6 +975,30 @@ def test_clang_ast_cfg_detects_structured_protocol_shapes() -> None:
     assert "protocol magic validation" in magic_issue["sink"]
 
 
+def test_clang_ast_cfg_promotes_wide_count_before_magic_when_count_reaches_copy_sink() -> None:
+    code = """
+10 | uint64_t read_magic(const unsigned char *blob, size_t len) {
+11 |     if (!blob || len < 16) return 0;
+12 |     uint64_t count = 0;
+13 |     memcpy(&count, blob + 8, sizeof(count));
+14 |     unsigned char preview[16];
+15 |     unsigned char seed[16] = {0};
+16 |     memcpy(preview, seed, (size_t)count);
+17 |     return count;
+18 | }
+"""
+
+    issue = next(
+        issue
+        for issue in _rules(code)
+        if issue["rule"] == "clang_cfg_wide_count_before_magic_reaches_memory_sink"
+    )
+
+    assert issue["defect_class"] == "bounds"
+    assert issue["candidate_priority_group"] == "exact_sink"
+    assert "memcpy(preview, seed" in issue["sink"]
+
+
 def test_clang_ast_cfg_callback_under_lock_is_contract_risk_not_exploit_claim() -> None:
     code = """
 10 | int demo(plugin_callback_t cb, void *ctx) {
@@ -986,6 +1189,146 @@ def test_analyzer_converts_clang_tooling_matcher_facts_to_candidates() -> None:
     assert uaf["evidence_pack"]["clang_matcher_fact"]["resource_symbol"] == "p"
 
 
+def test_clang_ast_cfg_detects_free_of_derived_pointer_alias() -> None:
+    code = """
+10 | void demo(char *base, size_t offset) {
+11 |     char *cursor = base;
+12 |     cursor += offset;
+13 |     free(cursor);
+14 | }
+"""
+
+    rules = {issue["rule"] for issue in _rules(code)}
+
+    assert "clang_cfg_free_derived_pointer_alias" in rules
+
+
+def test_clang_ast_cfg_detects_unchecked_allocation_use() -> None:
+    code = """
+10 | void demo(size_t count) {
+11 |     char *buf = malloc(count);
+12 |     buf[0] = 0;
+13 | }
+"""
+
+    issues = _rules(code)
+
+    assert any(issue["rule"] == "clang_cfg_allocation_result_used_without_null_check" for issue in issues)
+
+
+def test_clang_ast_cfg_detects_wire_integer_pointer_deref() -> None:
+    code = """
+10 | typedef struct Header { uintptr_t addr; } Header;
+11 | void demo(Header *hdr) {
+12 |     uint32_t *state = (uint32_t *)(uintptr_t)hdr->addr;
+13 |     *state = 1;
+14 | }
+"""
+
+    rules = {issue["rule"] for issue in _rules(code)}
+
+    assert "clang_cfg_wire_integer_cast_to_pointer_deref" in rules
+
+
+def test_clang_ast_cfg_detects_unchecked_object_offset_access() -> None:
+    code = """
+10 | typedef struct Record { unsigned char bytes[16]; } Record;
+11 | void demo(size_t offset) {
+12 |     Record local;
+13 |     unsigned char *field = ((unsigned char *)&local) + offset;
+14 |     field[0] = 1;
+15 | }
+"""
+
+    rules = {issue["rule"] for issue in _rules(code)}
+
+    assert "clang_cfg_unchecked_object_offset_deref" in rules
+
+
+def test_clang_ast_cfg_detects_maybe_uninitialized_pointer_use() -> None:
+    code = """
+10 | void demo(int flag, char *src) {
+11 |     char *cursor;
+12 |     if (flag) cursor = src;
+13 |     cursor[0] = 1;
+14 | }
+"""
+
+    rules = {issue["rule"] for issue in _rules(code)}
+
+    assert "clang_cfg_pointer_may_be_uninitialized_before_use" in rules
+
+
+def test_clang_ast_cfg_detects_unbounded_heap_allocation() -> None:
+    code = """
+10 | void *demo(size_t replay_window) {
+11 |     return malloc(replay_window * sizeof(int));
+12 | }
+"""
+
+    issues = _rules(code)
+
+    assert any(issue["rule"] == "clang_cfg_external_size_allocation_without_limit" for issue in issues)
+
+
+def test_clang_ast_cfg_detects_fixed_array_count_overflow() -> None:
+    code = """
+10 | void demo(size_t item_count) {
+11 |     int slots[4];
+12 |     for (size_t i = 0; i < item_count; ++i) {
+13 |         slots[i] = 0;
+14 |     }
+15 | }
+"""
+
+    rules = {issue["rule"] for issue in _rules(code)}
+
+    assert "clang_cfg_unbounded_count_indexes_fixed_array" in rules
+
+
+def test_clang_ast_cfg_detects_fd_leak_on_error_return() -> None:
+    code = """
+10 | int demo(const char *path, int bad) {
+11 |     int fd = open(path, 0);
+12 |     if (fd < 0) return -1;
+13 |     if (bad) return -2;
+14 |     close(fd);
+15 |     return 0;
+16 | }
+"""
+
+    rules = {issue["rule"] for issue in _rules(code)}
+
+    assert "clang_cfg_fd_open_return_without_close" in rules
+
+
+def test_clang_ast_cfg_detects_unlock_without_matching_lock() -> None:
+    code = """
+10 | void demo(pthread_mutex_t *lock) {
+11 |     pthread_mutex_unlock(lock);
+12 | }
+"""
+
+    issues = _rules(code)
+    rule = next(issue for issue in issues if issue["rule"] == "clang_cfg_unlock_without_matching_lock")
+
+    assert rule["category"] == "lock_protocol_violation"
+    assert rule["cwe"] == "CWE-832"
+
+
+def test_analyzer_prioritizes_dangerous_callees_for_local_rule_scan() -> None:
+    queue = [
+        ("boring_helper", 1, ["entry", "boring_helper"]),
+        ("decode_wire_offset", 1, ["entry", "decode_wire_offset"]),
+        ("cleanup_fd_owner", 1, ["entry", "cleanup_fd_owner"]),
+    ]
+
+    ordered = Analyzer._prioritize_callee_queue(queue)
+
+    assert ordered[0][0] in {"cleanup_fd_owner", "decode_wire_offset"}
+    assert ordered[-1][0] == "boring_helper"
+
+
 def test_analyzer_runs_clang_ast_cfg_checker_only_for_clang_like_backends() -> None:
     class UnifiedBackend:
         pass
@@ -1116,4 +1459,527 @@ def test_analyzer_lifts_internal_clang_sink_to_entry_call_path() -> None:
         "bounds_or_range_check",
     }
     assert guard_summary["caller_side"]["is_conclusive"] is False
+
+
+def test_clang_ast_cfg_emits_heap_overflow_for_narrowed_allocation_then_original_copy() -> None:
+    code = """
+300 | int demo(Header header, const char *source) {
+301 |     size_t alloc_len = (uint16_t)header.fragment_len;
+302 |     char *fragment = _safe_malloc(alloc_len + 1);
+303 |     size_t copy_len = header.fragment_len;
+304 |     memcpy(fragment, source, copy_len);
+305 |     SAFE_FREE(fragment);
+306 |     return 0;
+307 | }
+"""
+
+    issues = _rules(code)
+    heap = next(issue for issue in issues if issue["rule"] == "clang_cfg_narrowed_allocation_original_length_copy")
+
+    assert heap["defect_class"] == "heap_overflow"
+    assert heap["candidate_priority_group"] == "exact_sink"
+    assert "alloc_len" in heap["description"]
+    assert not any(
+        issue["defect_class"] == "integer_overflow"
+        and issue["function"] == "demo"
+        and issue["location"] == "src/demo.c:302"
+        for issue in issues
+    )
+
+
+def test_clang_ast_cfg_suppresses_bounded_short_lived_unbounded_allocation_candidate() -> None:
+    code = """
+400 | int demo(Header header) {
+401 |     size_t alloc_len = (uint16_t)header.fragment_len;
+402 |     char *fragment = _safe_malloc(alloc_len + 1);
+403 |     if (!fragment) return -1;
+404 |     SAFE_FREE(fragment);
+405 |     return 0;
+406 | }
+"""
+
+    issues = _rules(code)
+
+    assert not any(issue["defect_class"] == "resource_allocation_without_limits" for issue in issues)
+
+
+def test_clang_ast_cfg_keeps_lifetime_sensitive_external_allocation_candidate() -> None:
+    code = """
+410 | int demo(uint32_t segment_count) {
+411 |     int *fd_table = (int*)_safe_calloc(segment_count, sizeof(int));
+412 |     if (!fd_table) return -1;
+413 |     for (uint32_t i = 0; i < segment_count; i++) {
+414 |         fd_table[i] = i;
+415 |     }
+416 |     SAFE_FREE(fd_table);
+417 |     return 0;
+418 | }
+"""
+
+    issues = _rules(code)
+
+    assert any(issue["defect_class"] == "resource_allocation_without_limits" for issue in issues)
+
+
+def test_clang_ast_cfg_resolves_size_alias_for_external_allocation_candidate() -> None:
+    code = """
+419 | int demo(uint32_t replay_window) {
+420 |     size_t bytes = (size_t)replay_window * sizeof(RuntimeStreamSegment);
+421 |     g_runtime_stream_client.replay_window = _safe_malloc(bytes);
+422 |     if (!g_runtime_stream_client.replay_window) return -1;
+423 |     return 0;
+424 | }
+"""
+
+    issue = next(
+        issue
+        for issue in _rules(code)
+        if issue["rule"] == "clang_cfg_external_size_allocation_without_limit"
+    )
+
+    assert issue["defect_class"] == "resource_allocation_without_limits"
+    assert "replay_window" in issue["source"]
+
+
+def test_clang_ast_cfg_emits_file_type_validation_order() -> None:
+    code = """
+420 | void *demo(uint32_t mode, uint64_t file_size, uint64_t map_size) {
+421 |     if (map_size == 0 || map_size > (uint64_t)SIZE_MAX) return NULL;
+422 |     if (file_size < map_size) return NULL;
+423 |     if (RUNTIME_IS_CHR(mode)) {
+424 |         LOG_INFO("character device mapping accepted");
+425 |     } else if (!RUNTIME_IS_REG(mode)) {
+426 |         return NULL;
+427 |     }
+428 |     return mmap(NULL, (size_t)map_size, PROT_READ, MAP_PRIVATE, -1, 0);
+429 | }
+"""
+
+    issue = next(issue for issue in _rules(code) if issue["rule"] == "clang_cfg_file_type_validation_after_mapping_size_check")
+
+    assert issue["defect_class"] == "file_type_validation"
+    assert issue["candidate_priority_group"] == "semantic_suspicious_point"
+
+
+def test_clang_ast_cfg_emits_premature_destroy_for_active_shared_pool() -> None:
+    code = """
+430 | int demo(int active_tasks) {
+431 |     RuntimePbufPool *pool = _safe_calloc(1, sizeof(RuntimePbufPool));
+432 |     if (!pool) return -1;
+433 |     g_runtime_pbuf_pool = pool;
+434 |     if (active_tasks > 0) {
+435 |         SAFE_FREE(g_runtime_pbuf_pool->buffer);
+436 |         SAFE_FREE(g_runtime_pbuf_pool);
+437 |         return active_tasks;
+438 |     }
+439 |     SAFE_FREE(pool);
+440 |     return 0;
+441 | }
+"""
+
+    issues = _rules(code)
+
+    assert any(issue["defect_class"] == "premature_destroy" for issue in issues)
+
+
+def test_clang_ast_cfg_emits_unsynchronized_global_watermark_update() -> None:
+    code = """
+450 | uint64_t demo(uint64_t observed, int maintenance) {
+451 |     if (maintenance) {
+452 |         LOCK(&g_runtime_stream_lock);
+453 |         g_runtime_stream_client.watermark = observed;
+454 |         g_runtime_stream_watermark = observed;
+455 |         UNLOCK(&g_runtime_stream_lock);
+456 |         return observed;
+457 |     }
+458 |     uint64_t previous = g_runtime_stream_watermark;
+459 |     g_runtime_stream_watermark = observed;
+460 |     g_runtime_stream_client.watermark = previous + 1;
+461 |     return g_runtime_stream_watermark;
+462 | }
+"""
+
+    issue = next(
+        issue
+        for issue in _rules(code)
+        if issue["rule"] == "clang_cfg_global_state_written_with_and_without_lock"
+    )
+
+    assert issue["defect_class"] == "unsynchronized_shared_state"
+    assert "watermark" in issue["description"]
+
+
+def test_clang_ast_cfg_emits_global_pointer_length_publication_without_lock() -> None:
+    code = """
+470 | int demo(const char *path, size_t len) {
+471 |     int fd = open(path, O_RDONLY);
+472 |     if (fd < 0) return -1;
+473 |     g_rules_map = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);
+474 |     close(fd);
+475 |     if (g_rules_map == MAP_FAILED) return -1;
+476 |     g_rules_len = len;
+477 |     return 0;
+478 | }
+"""
+
+    issue = next(
+        issue
+        for issue in _rules(code)
+        if issue["rule"] == "clang_cfg_global_pointer_length_pair_published_without_lock"
+    )
+
+    assert issue["defect_class"] == "unsynchronized_shared_state"
+    assert "pointer/length" in issue["description"]
+
+
+def test_clang_ast_cfg_emits_permission_mode_mismatch() -> None:
+    code = """
+480 | int demo(const char *shm_name, uint32_t requested_perm) {
+481 |     g_runtime_named_pipe.fd = 42;
+482 |     g_runtime_named_pipe.perm = 0660u;
+483 |     if (shm_name && strcmp(shm_name, "product-namedpipe") == 0) {
+484 |         LOG_INFO("using product-specific named pipe");
+485 |     }
+486 |     if ((requested_perm & 0004u) != 0 && (g_runtime_named_pipe.perm & 0004u) == 0) {
+487 |         return -1;
+488 |     }
+489 |     return 0;
+490 | }
+"""
+
+    issue = next(
+        issue
+        for issue in _rules(code)
+        if issue["rule"] == "clang_cfg_requested_permission_not_applied_to_mode"
+    )
+
+    assert issue["defect_class"] == "permission"
+    assert "Requested" in issue["description"]
+
+
+def test_clang_ast_cfg_emits_timer_callback_lock_order_candidate() -> None:
+    code = """
+500 | int demo_timer_callback(int pipe_id) {
+501 |     PipeNode *pipe = g_pipe_scheduler.head;
+502 |     while (pipe) {
+503 |         if (pipe->pipe_id == pipe_id) {
+504 |             LOCK(&pipe->ctrl_lock);
+505 |             UNLOCK(&pipe->ctrl_lock);
+506 |             return 0;
+507 |         }
+508 |         pipe = pipe->next;
+509 |     }
+510 |     return -1;
+511 | }
+"""
+
+    issue = next(
+        issue
+        for issue in _rules(code)
+        if issue["rule"] == "clang_cfg_timer_callback_object_lock_without_scheduler_lock"
+    )
+
+    assert issue["defect_class"] == "deadlock"
+    assert "Timer/callback" in issue["description"]
+
+
+def test_clang_ast_cfg_emits_pointer_backtrack_underread_and_underwrite() -> None:
+    read_code = """
+500 | int demo(const char *wire, size_t wire_len, size_t footer_backtrack) {
+501 |     const char *footer = wire + wire_len - footer_backtrack;
+502 |     uint32_t marker = 0;
+503 |     memcpy(&marker, footer, sizeof(marker));
+504 |     return (int)marker;
+505 | }
+"""
+    write_code = """
+510 | int demo(char *window, size_t prefix_len) {
+511 |     char *target = window - prefix_len;
+512 |     memset(target, 0, 16);
+513 |     return 0;
+514 | }
+"""
+
+    read_issue = next(issue for issue in _rules(read_code) if issue["rule"] == "clang_cfg_unchecked_pointer_backtrack")
+    write_issue = next(issue for issue in _rules(write_code) if issue["rule"] == "clang_cfg_unchecked_pointer_backtrack")
+
+    assert read_issue["defect_class"] == "buffer_underread"
+    assert write_issue["defect_class"] == "buffer_underwrite"
+
+
+def test_clang_ast_cfg_emits_pointer_backtrack_for_decremented_footer_pointer() -> None:
+    code = """
+520 | int demo(const char *wire, size_t wire_len, Header header) {
+521 |     const char *footer = wire + wire_len - sizeof(uint32_t);
+522 |     footer -= header.footer_backtrack;
+523 |     uint32_t marker = 0;
+524 |     memcpy(&marker, footer, sizeof(marker));
+525 |     return (int)marker;
+526 | }
+"""
+
+    issue = next(issue for issue in _rules(code) if issue["rule"] == "clang_cfg_unchecked_pointer_backtrack")
+
+    assert issue["defect_class"] == "buffer_underread"
+    assert "footer_backtrack" in issue["source"]
+
+
+def test_clang_ast_cfg_emits_fixed_array_member_write_count_overflow() -> None:
+    code = """
+530 | int demo(Header header) {
+531 |     Segment segments[4];
+532 |     for (uint32_t i = 0; i < header.segment_count; i++) {
+533 |         segments[i].offset = i;
+534 |     }
+535 |     return 0;
+536 | }
+"""
+
+    issue = next(issue for issue in _rules(code) if issue["rule"] == "clang_cfg_unbounded_count_indexes_fixed_array")
+
+    assert issue["defect_class"] == "out_of_bounds_write"
+    assert "header.segment_count" in issue["description"]
+
+
+def test_clang_ast_cfg_emits_offset_length_overread() -> None:
+    code = """
+540 | int demo(const unsigned char *source, size_t source_len, Header header, unsigned char *out, size_t out_len) {
+541 |     const unsigned char *digest = source + header.digest_offset;
+542 |     size_t digest_len = MIN(header.digest_len, out_len);
+543 |     memcpy(out, digest, digest_len);
+544 |     return 0;
+545 | }
+"""
+
+    issue = next(issue for issue in _rules(code) if issue["rule"] == "clang_cfg_offset_length_copy_without_source_bound")
+
+    assert issue["defect_class"] == "buffer_overread"
+    assert "digest_offset" in issue["description"]
+
+
+def test_clang_ast_cfg_emits_heap_overflow_for_distinct_header_alloc_and_copy_lengths() -> None:
+    code = """
+550 | int demo(Header header, const char *source, size_t source_len) {
+551 |     size_t alloc_len = (uint16_t)header.fragment_len;
+552 |     size_t copy_len = MIN(header.copy_len, source_len);
+553 |     char *fragment = _safe_malloc(alloc_len + 1);
+554 |     memcpy(fragment, source, copy_len);
+555 |     SAFE_FREE(fragment);
+556 |     return 0;
+557 | }
+"""
+
+    issue = next(issue for issue in _rules(code) if issue["rule"] == "clang_cfg_narrowed_allocation_original_length_copy")
+
+    assert issue["defect_class"] == "heap_overflow"
+    assert "copy_len" in issue["sink"]
+
+
+def test_clang_ast_cfg_emits_owned_allocated_member_leaks_for_payload_and_tree_children() -> None:
+    payload_code = """
+560 | int demo(const char *key) {
+561 |     ServiceNode *node = _service_alloc_node(key, "tree");
+562 |     node->payload = _safe_strdup(key);
+563 |     SAFE_FREE(node->name);
+564 |     SAFE_FREE(node);
+565 |     return 0;
+566 | }
+"""
+    tree_code = """
+570 | int demo(const char *key) {
+571 |     ServiceNode *node = _service_alloc_node(key, "tree");
+572 |     node->left = _service_alloc_node("left", "child");
+573 |     node->right = _service_alloc_node("right", "child");
+574 |     SAFE_FREE(node->name);
+575 |     SAFE_FREE(node);
+576 |     return 0;
+577 | }
+"""
+
+    payload_leak = next(
+        issue
+        for issue in _rules(payload_code)
+        if issue["rule"] == "clang_cfg_parent_release_without_owned_member_cleanup"
+    )
+    tree_leak = next(
+        issue
+        for issue in _rules(tree_code)
+        if issue["rule"] == "clang_cfg_parent_release_without_owned_member_cleanup"
+    )
+
+    assert "node->payload" in payload_leak["description"]
+    assert "node->" in tree_leak["description"]
+
+
+def test_clang_ast_cfg_emits_slot_overwrite_leak() -> None:
+    code = """
+570 | int plugin_register(PluginRegistry *registry, const char *name, void *context) {
+571 |     size_t slot = _hash_string(name) % registry->capacity;
+572 |     Plugin *plugin = &registry->plugins[slot];
+573 |     STR_COPY(plugin->name, name);
+574 |     plugin->context = context;
+575 |     registry->count++;
+576 |     return 0;
+577 | }
+"""
+
+    issue = next(issue for issue in _rules(code) if issue["rule"] == "clang_cfg_slot_overwrite_without_existing_owner_cleanup")
+
+    assert issue["defect_class"] == "memory_leak"
+    assert "plugin->context" in issue["sink"]
+
+
+def test_clang_ast_cfg_emits_key_truncation_and_key_generation_race() -> None:
+    truncation_code = """
+580 | int demo(const char *route_key) {
+581 |     ServiceNode *existing = _service_find_locked(route_key);
+582 |     if (existing) return 0;
+583 |     ServiceNode *node = _service_alloc_node(route_key, "policy");
+584 |     strncpy(node->key, route_key, 31);
+585 |     return _service_tree_insert(node, 0);
+586 | }
+"""
+    race_code = """
+590 | int demo(const char *path, int project_id) {
+591 |     if (!_file_exists(path)) { LOG_WARN("missing"); }
+592 |     int key = (int)(_hash_string(path) & 0xffffu) | ((project_id & 0xff) << 16);
+593 |     LOCK(&g_runtime_ftok_lock); if (_runtime_find_shared_zone(path) != NULL) { LOG_WARN("collision"); }
+594 |     UNLOCK(&g_runtime_ftok_lock);
+595 |     return key;
+596 | }
+"""
+
+    truncation = next(issue for issue in _rules(truncation_code) if issue["rule"] == "clang_cfg_full_key_lookup_truncated_key_insert")
+    race = next(issue for issue in _rules(race_code) if issue["rule"] == "clang_cfg_path_state_key_generation_before_locked_registration")
+
+    assert truncation["defect_class"] == "key_truncation"
+    assert race["defect_class"] == "key_generation_race"
+
+
+def test_clang_ast_cfg_emits_header_length_copy_without_wire_bound() -> None:
+    code = """
+600 | int demo(const unsigned char *wire, size_t wire_len, unsigned char *out, size_t out_len) {
+601 |     Header header;
+602 |     memcpy(&header, wire, sizeof(header));
+603 |     if (header.magic != MAGIC) return -1;
+604 |     size_t body_len = (size_t)header.length - sizeof(Header);
+605 |     if (body_len <= out_len) {
+606 |         memcpy(out, wire + sizeof(Header), body_len);
+607 |     }
+608 |     return 0;
+609 | }
+"""
+
+    issue = next(issue for issue in _rules(code) if issue["rule"] == "clang_cfg_header_length_reaches_copy_without_wire_bound")
+
+    assert issue["defect_class"] == "bounds"
+    assert "body_len" in issue["sink"]
+
+
+def test_clang_ast_cfg_detects_multiline_allocation_used_without_null_check() -> None:
+    code = """
+610 | int demo(uint32_t entry_count) {
+611 |     RuntimeStreamSegment first = {0};
+612 |     RuntimeStreamSegment **index =
+613 |         (RuntimeStreamSegment **)_safe_calloc(entry_count,
+614 |                                              sizeof(RuntimeStreamSegment *));
+615 |     index[0] = &first;
+616 |     return (int)index[0]->length;
+617 | }
+"""
+
+    issue = next(issue for issue in _rules(code) if issue["rule"] == "clang_cfg_allocation_result_used_without_null_check")
+
+    assert issue["defect_class"] == "unchecked_allocation"
+    assert issue["location"] == "src/demo.c:615"
+
+
+def test_analyzer_candidate_budget_keeps_exact_before_generic_and_defers_excess() -> None:
+    issues = [
+        {
+            "id": "GEN1",
+            "function": "demo",
+            "category": "resource_allocation_without_limits",
+            "defect_class": "resource_allocation_without_limits",
+            "validation_budget_class": "generic",
+            "candidate_priority_group": "generic_audit",
+            "confidence": 0.9,
+            "evidence_pack": {},
+        },
+        {
+            "id": "GEN2",
+            "function": "demo",
+            "category": "resource_allocation_without_limits",
+            "defect_class": "resource_allocation_without_limits",
+            "validation_budget_class": "generic",
+            "candidate_priority_group": "generic_audit",
+            "confidence": 0.8,
+            "evidence_pack": {},
+        },
+        {
+            "id": "GEN3",
+            "function": "demo",
+            "category": "resource_allocation_without_limits",
+            "defect_class": "resource_allocation_without_limits",
+            "validation_budget_class": "generic",
+            "candidate_priority_group": "generic_audit",
+            "confidence": 0.7,
+            "evidence_pack": {},
+        },
+        {
+            "id": "EXACT",
+            "function": "demo",
+            "category": "heap_overflow",
+            "defect_class": "heap_overflow",
+            "validation_budget_class": "exact",
+            "candidate_priority_group": "exact_sink",
+            "confidence": 0.75,
+            "evidence_pack": {},
+        },
+    ]
+
+    budgeted = Analyzer._apply_candidate_validation_budget(issues)
+
+    assert budgeted[0]["id"] == "EXACT"
+    assert [issue["id"] for issue in budgeted if issue.get("validation_required") is False] == ["GEN3"]
+    assert budgeted[-1]["finding_kind"] == "audit_observation"
+
+
+def test_analyzer_candidate_budget_keeps_quota_lifetime_sensitive_generic() -> None:
+    issues = [
+        {
+            "id": f"GEN{index}",
+            "function": "demo",
+            "category": "resource_allocation_without_limits",
+            "defect_class": "resource_allocation_without_limits",
+            "validation_budget_class": "generic",
+            "candidate_priority_group": "generic_audit",
+            "confidence": 0.7,
+            "source": "segment_count",
+            "sink": "fd_table = _safe_calloc(segment_count, sizeof(int))",
+            "description": "thread segment allocation has no quota",
+            "evidence_pack": {},
+        }
+        for index in range(4)
+    ]
+
+    budgeted = Analyzer._apply_candidate_validation_budget(issues)
+
+    assert all(issue.get("validation_required") is not False for issue in budgeted)
+    assert {issue["validation_budget_class"] for issue in budgeted} == {"quota_lifetime_sensitive_generic"}
+
+
+def test_analyzer_balanced_callee_queue_preserves_original_prefix_before_danger_sort() -> None:
+    queue = [
+        ("first_plain", 1, ["root", "first_plain"]),
+        ("second_plain", 1, ["root", "second_plain"]),
+        ("late_release_helper", 1, ["root", "late_release_helper"]),
+        ("late_alloc_helper", 1, ["root", "late_alloc_helper"]),
+        ("late_plain", 1, ["root", "late_plain"]),
+    ]
+
+    selected = Analyzer._balanced_callee_queue(queue, 4)
+
+    assert [item[0] for item in selected[:2]] == ["first_plain", "second_plain"]
+    assert {item[0] for item in selected[2:]} == {"late_alloc_helper", "late_release_helper"}
 
