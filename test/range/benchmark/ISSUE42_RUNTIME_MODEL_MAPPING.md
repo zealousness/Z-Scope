@@ -1,4 +1,4 @@
-﻿# Issue #42 Runtime/Shared-Memory Model Mapping
+# Issue #42 Runtime/Shared-Memory Model Mapping
 
 This file documents how the 28 scored models from
 https://github.com/zealousness/Z-Scope/issues/42 are represented in the

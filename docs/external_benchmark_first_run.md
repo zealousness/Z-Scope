@@ -1,4 +1,4 @@
-﻿# External Benchmark First Run
+# External Benchmark First Run
 
 Date: 2026-05-16
 

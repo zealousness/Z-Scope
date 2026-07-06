@@ -593,6 +593,94 @@
     {
       "function_name": "platform_execute_task",
       "file_path": "src/platform_linux.c"
+    },
+    {
+      "function_name": "td_runtime_process_stream_batch",
+      "file_path": "src/main.c"
+    },
+    {
+      "function_name": "td_runtime_maintain_lock_cache",
+      "file_path": "src/main.c"
+    },
+    {
+      "function_name": "_runtime_process_stream_batch",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_runtime_maintain_lock_cache",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_runtime_stream_compact_segments",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_runtime_stream_copy_fragment",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_runtime_stream_export_digest",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_runtime_stream_read_footer_marker",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_runtime_stream_compact_prefix",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_runtime_stream_release_cursor",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_runtime_stream_reserve_batch",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_runtime_stream_build_index",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_runtime_stream_follow_wire_pointer",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_runtime_stream_map_object_offset",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_runtime_stream_commit_cursor",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_runtime_stream_schedule_expired_flush",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_runtime_stream_reserve_replay_window",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_runtime_stream_open_segment_handles",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_runtime_stream_open_journal",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_runtime_stream_update_watermark",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_runtime_lock_cache_abort_batch",
+      "file_path": "src/lifecycle.c"
+    },
+    {
+      "function_name": "_runtime_lock_cache_reset_client",
+      "file_path": "src/lifecycle.c"
     }
   ]
 }

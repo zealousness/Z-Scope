@@ -6,10 +6,12 @@ must not be included in Z-SCOPE analysis prompts.
 
 ## Overview
 
-The current benchmark contains 121 valid vulnerabilities. Version 13 removes
-the ISSUE42-012 log-level style-only case and strengthens the issue #41/#42
-impact chains. Version 12 neutralizes benchmark function names and refreshes
-issue #42 to natural runtime API flows. Version 11 adds the GitHub issue #42
+The current benchmark contains 139 valid vulnerabilities. Version 14 adds
+GitHub issue #43 stream-journal and lock-cache runtime models for missing C
+memory, concurrency, and resource CWE coverage. Version 13 removes the
+ISSUE42-012 log-level style-only case and strengthens the issue #41/#42 impact
+chains. Version 12 neutralizes benchmark function names and refreshes issue #42
+to natural runtime API flows. Version 11 adds the GitHub issue #42
 shared-memory/runtime callback model suite. Version 10 promotes manually
 verified extra findings from the `auto_unified_wsl_structured_20260520_2`
 benchmark run and adds alternate public-wrapper anchors for already-known
@@ -41,7 +43,6 @@ file is a human-readable maintenance view.
 | RANGE-020 | CWE-416 | use_after_free | `src/lifecycle.c:140-144`, `src/lifecycle.c:152-159` | `_lifecycle_get_value` returns a borrowed value after unlocking while `_lifecycle_remove_entry` can free it. |
 | RANGE-021 | CWE-362 | refcount_race | `src/lifecycle.c:174-181`, `src/lifecycle.c:190-199` | `_lifecycle_ref_get` and `_lifecycle_ref_put` update `ref_count` after dropping the cache lock. |
 | RANGE-022 | CWE-416 | use_after_free | `src/lifecycle.c:209-221`, `src/lifecycle.c:152-159` | Callback registration stores a cache-entry context that can later be removed and freed. |
-| RANGE-023 | CWE-667 | held_lock_callback | `src/lifecycle.c:225-230` | `_lifecycle_notify_entry_callback` invokes an externally supplied callback while holding the cache mutex. |
 | RANGE-024 | CWE-562 | stack_escape | `src/lifecycle.c:247-259`, `src/lifecycle.c:234-238` | `_lifecycle_schedule_flush` passes the address of a stack `FlushJob` to a detached worker thread. |
 | RANGE-025 | CWE-667 | missing_unlock | `src/lifecycle.c:263-267` | `_lifecycle_reload_config` returns on allocation failure while still holding `g_config_lock`. |
 | RANGE-026 | CWE-362 | double_checked_locking | `src/lifecycle.c:277-285` | `_lifecycle_get_config_length` checks `g_active_config` outside the mutex before lazy initialization. |
@@ -112,6 +113,35 @@ helper remains a direct benchmark entry.
 | ISSUE42-028 | CWE-479/CWE-667 | signal_deadlock | `src/lifecycle.c:2768-2776` | Exception signal path performs semaphore-protected work from a signal handler. |
 | ISSUE42-029 | CWE-362/CWE-416 | callback_self_destroy_race | `src/lifecycle.c:2787-2817` | Trigger-mode WORK callback can destroy the current event before post-callback state updates. |
 
+## Version 14 Additions
+
+GitHub issue #43 contributes 18 scored stream-journal, zero-copy, lock-cache,
+resource quota, pointer, and cleanup models. They are routed through natural
+runtime public APIs: `td_runtime_process_stream_batch` and
+`td_runtime_maintain_lock_cache`, while each helper remains a direct benchmark
+entry.
+
+| ID | CWE | Category | Location | Summary |
+| --- | --- | --- | --- | --- |
+| ISSUE43-001 | CWE-787 | out_of_bounds_write | `src/lifecycle.c:3076-3089` | Stream compaction writes caller-declared segments past a fixed segment table. |
+| ISSUE43-002 | CWE-122 | heap_overflow | `src/lifecycle.c:3091-3111` | Zero-copy fragment copy allocates a truncated heap buffer but copies the original wire length. |
+| ISSUE43-003 | CWE-126 | buffer_overread | `src/lifecycle.c:3113-3129` | Digest export trusts a wire digest length and can read past a short packet. |
+| ISSUE43-004 | CWE-127 | buffer_underread | `src/lifecycle.c:3131-3147` | Footer marker parsing can backtrack before the beginning of the stream buffer. |
+| ISSUE43-005 | CWE-124 | buffer_underwrite | `src/lifecycle.c:3149-3162` | Journal prefix compaction can write before the start of the output buffer. |
+| ISSUE43-006 | CWE-761 | invalid_free | `src/lifecycle.c:3164-3176` | Stream cursor cleanup frees an advanced heap pointer instead of the allocation base. |
+| ISSUE43-007 | CWE-789 | excessive_allocation | `src/lifecycle.c:3178-3188` | Stream batch reservation allocates directly from an externally declared batch size. |
+| ISSUE43-008 | CWE-690 | unchecked_allocation | `src/lifecycle.c:3190-3204` | Stream index builder writes through a failed allocation without checking for NULL. |
+| ISSUE43-009 | CWE-822 | untrusted_pointer | `src/lifecycle.c:3206-3216` | Stream header `trusted_address` is treated as a valid process pointer and dereferenced. |
+| ISSUE43-010 | CWE-823 | out_of_range_pointer_offset | `src/lifecycle.c:3218-3228` | Object mapping applies an unchecked wire offset inside a stack object. |
+| ISSUE43-011 | CWE-824 | uninitialized_pointer | `src/lifecycle.c:3230-3243` | Stream cursor commit can read from an uninitialized cursor on fail-open input paths. |
+| ISSUE43-012 | CWE-825 | expired_pointer | `src/lifecycle.c:3259-3278` | Async stream flush keeps a snapshot pointer after the cache snapshot has expired. |
+| ISSUE43-013 | CWE-770 | resource_allocation_without_limits | `src/lifecycle.c:3280-3291` | Replay-window reservation allocates stream cache memory without enforcing a per-client limit. |
+| ISSUE43-014 | CWE-774 | fd_allocation_without_limits | `src/lifecycle.c:3293-3310` | Segment-handle preparation opens one descriptor per declared stream segment without throttling. |
+| ISSUE43-015 | CWE-775 | missing_fd_release | `src/lifecycle.c:3312-3328` | Journal metadata validation returns without closing the opened journal descriptor. |
+| ISSUE43-016 | CWE-567 | unsynchronized_shared_state | `src/lifecycle.c:3330-3343` | Runtime stream watermark is updated by maintenance and public cache paths without a common lock. |
+| ISSUE43-017 | CWE-832 | unlock_without_lock | `src/lifecycle.c:3345-3355` | Lock-cache abort path unlocks the cache mutex without owning it. |
+| ISSUE43-018 | CWE-459 | incomplete_cleanup | `src/lifecycle.c:3357-3370` | Lock-cache reset releases only the primary buffer and leaves replay, scratch, and journal state behind. |
+
 ## Retired Findings
 
 The following original findings are retained in
@@ -123,6 +153,9 @@ purposes, but they are no longer scored:
 | RANGE-003 | The post-multiplication check `total_size < size` catches unsigned wrap for multiplication by 2, and `_allocate_buffer` is not currently reachable from benchmark entry paths. |
 | RANGE-008 | `_validate_task` validates a freshly parsed task before it is queued to workers; the fixture does not provide a concrete concurrent writer for `task->payload.command.command`. |
 | RANGE-010 | `_plugin_dispatch` and `_executor_execute_task` acquire opposite field names, but on different mutex objects (`g_shared_resources` vs. `g_exec_resources`), so the deadlock is not concrete. |
+| RANGE-023 | The current fixture registers only a hardcoded empty callback and does not expose an external callback replacement or reentrant path, so this remains a design-risk pattern rather than a scored vulnerability. |
+| RANGE-037 | Retired as a duplicate/overlap of concrete control-session leak coverage; the `_lifecycle_mesh_disconnect` anchor describes a missing hook rather than a distinct reachable leak sink. |
+| REAL-012 | `_service_tree_insert()` links the node into the global service tree before returning the injected error, so ownership is not lost under the current code contract. |
 | ISSUE42-012 | The log-level fixture modeled code style / observability hygiene rather than a concrete security vulnerability with an exploitable or security-impacting path. |
 
 ## Maintenance Notes

@@ -1149,9 +1149,13 @@ class ParallelAnalyzer:
 
         candidate_clusters: List[List[Dict[str, Any]]] = []
         seen_cluster_sets: Set[tuple[int, ...]] = set()
+        prefilter_skipped = 0
         for group in clusters.values():
             for candidate_group in self._split_semantic_dedup_cluster(group, max_cluster_size):
                 if len(candidate_group) < 2:
+                    continue
+                if not self._semantic_dedup_cluster_needs_llm(candidate_group):
+                    prefilter_skipped += 1
                     continue
                 cluster_ids = tuple(sorted(id(issue) for issue in candidate_group))
                 if cluster_ids in seen_cluster_sets:
@@ -1166,6 +1170,7 @@ class ParallelAnalyzer:
             "llm_merge_count": 0,
             "llm_rejected_merge_count": 0,
             "llm_failed_cluster_count": 0,
+            "llm_prefilter_skipped_count": prefilter_skipped,
         }
         if not candidate_clusters:
             return issues, summary
@@ -1221,6 +1226,42 @@ class ParallelAnalyzer:
             summary["llm_rejected_merge_count"] += rejected
 
         return [issue for issue_id, issue in zip(issue_order, issues) if issue_id not in removed], summary
+
+    @staticmethod
+    def _semantic_dedup_cluster_needs_llm(group: List[Dict[str, Any]]) -> bool:
+        for left_index, left in enumerate(group):
+            for right in group[left_index + 1 :]:
+                if not ParallelAnalyzer._semantic_dedup_pair_needs_llm(left, right):
+                    continue
+                return True
+        return False
+
+    @staticmethod
+    def _semantic_dedup_pair_needs_llm(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+        left_file, _ = parse_issue_location(str(left.get("location") or left.get("file") or ""))
+        right_file, _ = parse_issue_location(str(right.get("location") or right.get("file") or ""))
+        same_file = bool(left_file and right_file and normalize_issue_key_part(left_file) == normalize_issue_key_part(right_file))
+        left_funcs = {
+            normalize_issue_key_part(str(value or ""))
+            for value in (left.get("function"), left.get("sink_function"), left.get("entry_function"))
+            if value
+        }
+        right_funcs = {
+            normalize_issue_key_part(str(value or ""))
+            for value in (right.get("function"), right.get("sink_function"), right.get("entry_function"))
+            if value
+        }
+        same_function = bool(left_funcs & right_funcs)
+        same_family = semantic_category_family(
+            normalize_issue_category(str(left.get("category") or left.get("defect_class") or left.get("subcategory") or ""))
+        ) == semantic_category_family(
+            normalize_issue_category(str(right.get("category") or right.get("defect_class") or right.get("subcategory") or ""))
+        )
+        shared_resource_or_sink = bool(
+            issue_resource_signature(left)
+            and issue_resource_signature(left) == issue_resource_signature(right)
+        ) or bool(issue_sink_signature(left) and issue_sink_signature(left) == issue_sink_signature(right))
+        return bool(same_family and ((same_file and same_function) or shared_resource_or_sink))
 
     @staticmethod
     def _split_semantic_dedup_cluster(

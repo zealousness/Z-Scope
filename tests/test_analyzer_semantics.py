@@ -896,7 +896,7 @@ def test_resolve_issue_locations_fills_observation_line_only_locations() -> None
             "function": "_lifecycle_recv_packet",
             "location": "318-322",
             "category": "memory_safety",
-            "description": "褰揰net_recv_data杩斿洖-1鏃讹紝(size_t)received杞崲涓篠IZE_MAX锛屽鑷磎emcpy瓒婄晫璇诲啓",
+            "description": "当_net_recv_data返回-1时，(size_t)received转换为SIZE_MAX，导致memcpy越界读写",
         }
     ]
 
@@ -952,9 +952,9 @@ def test_validator_source_sink_contribute_to_score_components() -> None:
         "subcategory": "stack_escape",
         "confidence": 0.95,
         "rule_confidence": 0.95,
-        "reasoning": "鍏ュ彛 api_send test reasoning",
-        "validation_reasoning": "鍏ュ彛 api_send test reasoning",
-        "source": "api_send 鍙傛暟 len",
+        "reasoning": "入口 api_send test reasoning",
+        "validation_reasoning": "入口 api_send test reasoning",
+        "source": "api_send 参数 len",
         "positive_evidence": ["pthread_create(&tid, NULL, _flush_worker, &job)"],
     }
     validator = type(
@@ -963,7 +963,7 @@ def test_validator_source_sink_contribute_to_score_components() -> None:
         {
             "input_data": {
                 "evidence_pack": {
-                    "validation_requirements": ["涓枃"],
+                    "validation_requirements": ["中文"],
                 }
             }
         },
@@ -979,10 +979,10 @@ def test_validator_source_sink_contribute_to_score_components() -> None:
     assert score["path_completeness"] == 0.75
     assert score["contract_consistency"] == 0.8
     assert score["final_score"] >= 0.8
-    assert issue["reasoning"].startswith("鍏ュ彛 api_send")
+    assert issue["reasoning"].startswith("入口 api_send")
     assert issue["validation_reasoning"] == issue["reasoning"]
-    assert issue["source"] == "api_send 鍙傛暟 len"
-    assert "涓枃" in "\n".join(validator.input_data["evidence_pack"]["validation_requirements"])
+    assert issue["source"] == "api_send 参数 len"
+    assert "中文" in "\n".join(validator.input_data["evidence_pack"]["validation_requirements"])
 
 
 def test_validator_rejections_are_not_persisted_as_broad_baselines() -> None:

@@ -21,6 +21,15 @@ VALIDATOR_DETAIL_FIELDS = (
     "positive_evidence",
     "negative_evidence",
 )
+_CWE_BY_CORRECTED_CATEGORY = {
+    "memory_leak": "CWE-772",
+    "heap_overflow": "CWE-122",
+    "buffer_overflow": "CWE-787",
+    "buffer_overread": "CWE-126",
+    "buffer_underread": "CWE-127",
+    "buffer_underwrite": "CWE-124",
+    "signed_unsigned": "CWE-195",
+}
 LOCATION_FILE_FIELDS = ("file", "file_path", "module_path")
 LOCATION_LINE_FIELDS = ("line", "start_line")
 LOCATION_END_LINE_FIELDS = ("end_line",)
@@ -287,7 +296,7 @@ class ValidationPipeline:
 
         if verdict == "uncertain":
             requested_kind = str(val_data.get("finding_kind") or "").strip().lower()
-            if requested_kind == "needs_review":
+            if requested_kind == "needs_review" or self._should_keep_structural_uncertain_for_review(issue, val_data):
                 issue["validation_status"] = "needs_review"
                 issue["finding_kind"] = "needs_review"
                 memory_status = "needs_review"
@@ -296,10 +305,77 @@ class ValidationPipeline:
                 issue["finding_kind"] = val_data.get("finding_kind") or "audit_observation"
                 memory_status = "uncertain"
             issue["validation_reasoning"] = val_data.get("reasoning")
+            self._copy_validator_detail_fields(issue, val_data)
             preserve_issue_location(issue, val_data)
             return ValidationOutcome(
                 report_bucket="observations",
                 memory_status=memory_status,
+                verdict=verdict,
+                final_score=final_score,
+            )
+
+        corrected_category = self._corrected_category_from_validator(issue, val_data)
+        if corrected_category:
+            original_category = self.suppression_category(issue)
+            issue["original_category"] = original_category
+            issue["corrected_from_category"] = original_category
+            pack = issue.get("evidence_pack")
+            if isinstance(pack, dict):
+                pack["original_category"] = original_category
+                categories = pack.get("alternate_categories")
+                if isinstance(categories, list):
+                    if original_category not in categories:
+                        categories.append(original_category)
+                else:
+                    pack["alternate_categories"] = [original_category]
+            issue["category"] = corrected_category
+            issue["subcategory"] = corrected_category
+            issue["defect_class"] = corrected_category
+            if corrected_category in _CWE_BY_CORRECTED_CATEGORY:
+                issue["cwe"] = _CWE_BY_CORRECTED_CATEGORY[corrected_category]
+            issue["validator_verdict"] = "corrected"
+            issue["validation_reasoning"] = (
+                "Validator rejected the original category but identified a concrete "
+                f"`{corrected_category}` on the same code evidence. Original validator reasoning: "
+                f"{str(val_data.get('reasoning') or '').strip()}"
+            ).strip()
+            issue["confidence"] = val_data.get(
+                "confidence_score",
+                issue.get("confidence", 0.5),
+            )
+            self._copy_validator_detail_fields(issue, val_data)
+            preserve_issue_location(issue, val_data)
+            corrected_status = (
+                "validated"
+                if self._corrected_category_is_high_confidence(val_data, final_score)
+                else "needs_review"
+            )
+            issue["validation_status"] = corrected_status
+            issue["finding_kind"] = (
+                "verified_vulnerability" if corrected_status == "validated" else "needs_review"
+            )
+            return ValidationOutcome(
+                report_bucket="issues" if corrected_status == "validated" else "observations",
+                memory_status=corrected_status,
+                verdict="corrected",
+                final_score=final_score,
+            )
+
+        if self._should_downgrade_structural_rejection(issue, val_data):
+            original_reason = str(val_data.get("reasoning") or "").strip()
+            issue["validation_status"] = "needs_review"
+            issue["finding_kind"] = "needs_review"
+            issue["rejection_source"] = "validator_structural_review"
+            issue["validation_reasoning"] = (
+                "Validator rejected this structural-risk candidate, but the candidate has "
+                "concrete code evidence and the rejection is based on current controllability "
+                f"rather than proof that the sink is safe. Original validator reasoning: {original_reason}"
+            ).strip()
+            self._copy_validator_detail_fields(issue, val_data)
+            preserve_issue_location(issue, val_data)
+            return ValidationOutcome(
+                report_bucket="observations",
+                memory_status="needs_review",
                 verdict=verdict,
                 final_score=final_score,
             )
@@ -334,6 +410,307 @@ class ValidationPipeline:
             return float(score_data.get("final_score", 0.0) or 0.0)
         except (TypeError, ValueError):
             return 0.0
+
+    def _should_downgrade_structural_rejection(
+        self,
+        issue: Dict[str, Any],
+        val_data: Dict[str, Any],
+    ) -> bool:
+        category = self._normalized_category(issue)
+        cwe = str(issue.get("cwe") or val_data.get("cwe") or "").lower()
+        structural_categories = {
+            "held_lock_callback",
+            "size_limit_mismatch",
+            "memory_leak",
+            "double_free",
+            "resource_lifecycle",
+            "resource_leak",
+            "resource_allocation_without_limits",
+            "lock_protocol_violation",
+            "unlock_without_lock",
+            "fd_leak",
+            "file_descriptor_leak",
+            "missing_fd_release",
+            "premature_destroy",
+            "out_of_range_pointer_offset",
+            "unsynchronized_shared_state",
+            "state_inconsistency",
+            "file_type_validation",
+            "permission",
+            "incorrect_permission_check",
+            "deadlock",
+            "race",
+            "use_after_free",
+            "protocol_validation",
+            "bounds",
+        }
+        structural_cwes = {"cwe-772", "cwe-775", "cwe-832", "cwe-667", "cwe-770", "cwe-416", "cwe-823", "cwe-362", "cwe-732", "cwe-276", "cwe-20"}
+        if category not in structural_categories and cwe not in structural_cwes:
+            return False
+
+        reason_text = self._flatten_for_validation(val_data)
+        issue_text = self._flatten_for_validation(issue)
+        combined = f"{reason_text}\n{issue_text}".lower()
+        if self._has_strong_safety_disproof(category, combined):
+            return False
+        if category == "held_lock_callback" and not self._callback_under_lock_should_review(combined):
+            return False
+
+        weak_reachability_reason = re.search(
+            r"(?:current|currently|sample|example|specific caller|current caller|current callback|"
+            r"not attacker[- ]controlled|cannot prove controll|no evidence of external|"
+            r"当前|目前|样例|示例|当前调用|当前回调|不可控|无法证明|未证明|没有外部|缺少外部)",
+            reason_text,
+            re.IGNORECASE,
+        )
+        if not weak_reachability_reason:
+            return False
+
+        has_sink = self._has_concrete_sink(issue, val_data)
+        has_path = self._has_reachable_path_evidence(issue)
+        has_missing_guard_evidence = self._has_missing_guard_evidence(issue, val_data)
+        if category in {"memory_leak", "resource_lifecycle", "resource_leak", "fd_leak", "file_descriptor_leak", "missing_fd_release"}:
+            has_missing_guard_evidence = has_missing_guard_evidence or "no matching" in issue_text or "without close" in issue_text or "without release" in issue_text
+        if category in {"lock_protocol_violation", "unlock_without_lock", "held_lock_callback"}:
+            has_missing_guard_evidence = has_missing_guard_evidence or "without" in issue_text or "under lock" in issue_text
+        if category == "file_type_validation":
+            has_missing_guard_evidence = has_missing_guard_evidence or "before type" in issue_text or "validation order" in issue_text
+        if category == "premature_destroy":
+            has_missing_guard_evidence = has_missing_guard_evidence or "active" in issue_text or "quiescence" in issue_text
+        if category in {"protocol_validation", "bounds"}:
+            has_missing_guard_evidence = has_missing_guard_evidence or "magic" in issue_text or "signature" in issue_text or "unchecked" in issue_text
+        if category in {"permission", "incorrect_permission_check"}:
+            has_missing_guard_evidence = has_missing_guard_evidence or "hard-coded mode" in issue_text or "requested permission" in issue_text
+        if category in {"unsynchronized_shared_state", "race", "deadlock"}:
+            has_missing_guard_evidence = has_missing_guard_evidence or "without" in issue_text or "lock" in issue_text or "synchronization" in issue_text
+        return bool(has_sink and has_path and has_missing_guard_evidence)
+
+    def _should_keep_structural_uncertain_for_review(
+        self,
+        issue: Dict[str, Any],
+        val_data: Dict[str, Any],
+    ) -> bool:
+        category = self._normalized_category(issue)
+        cwe = str(issue.get("cwe") or val_data.get("cwe") or "").lower()
+        review_categories = {
+            "premature_destroy",
+            "resource_allocation_without_limits",
+            "out_of_range_pointer_offset",
+            "unsynchronized_shared_state",
+            "state_inconsistency",
+            "file_type_validation",
+            "permission",
+            "incorrect_permission_check",
+            "deadlock",
+            "race",
+            "memory_leak",
+            "resource_lifecycle",
+            "double_free",
+            "use_after_free",
+            "protocol_validation",
+            "bounds",
+        }
+        if category not in review_categories and cwe not in {"cwe-770", "cwe-772", "cwe-416", "cwe-823", "cwe-20", "cwe-362", "cwe-732", "cwe-276"}:
+            return False
+        combined = f"{self._flatten_for_validation(issue)}\n{self._flatten_for_validation(val_data)}".lower()
+        if self._has_strong_safety_disproof(category, combined):
+            return False
+        has_missing_guard = self._has_missing_guard_evidence(issue, val_data)
+        if category == "file_type_validation":
+            has_missing_guard = has_missing_guard or "before type" in combined or "validation order" in combined
+        if category == "premature_destroy":
+            has_missing_guard = has_missing_guard or "active" in combined or "quiescence" in combined
+        if category in {"protocol_validation", "bounds"}:
+            has_missing_guard = has_missing_guard or "magic" in combined or "signature" in combined or "unchecked" in combined
+        if category in {"permission", "incorrect_permission_check"}:
+            has_missing_guard = has_missing_guard or "hard-coded mode" in combined or "requested permission" in combined
+        if category in {"unsynchronized_shared_state", "race", "deadlock"}:
+            has_missing_guard = has_missing_guard or "without" in combined or "lock" in combined or "synchronization" in combined
+        return bool(self._has_concrete_sink(issue, val_data) and self._has_reachable_path_evidence(issue) and has_missing_guard)
+
+    def _corrected_category_from_validator(
+        self,
+        issue: Dict[str, Any],
+        val_data: Dict[str, Any],
+    ) -> str:
+        explicit = val_data.get("corrected_category")
+        corrected_issue = val_data.get("corrected_issue")
+        if not explicit and isinstance(corrected_issue, dict):
+            explicit = corrected_issue.get("category") or corrected_issue.get("defect_class")
+        explicit_category = self._normalize_corrected_category(explicit)
+        if explicit_category:
+            return explicit_category
+
+        original = self._normalized_category(issue)
+        text = self._flatten_for_validation(val_data).lower()
+        if self._has_strong_safety_disproof(original, text) and not re.search(
+            r"(?:actual|real|instead|rather than|实际|真正|而非|不是.*而是)",
+            text,
+            re.IGNORECASE,
+        ):
+            return ""
+
+        if original == "alloc_free_mismatch" and re.search(
+            r"(?:actual|real|instead|rather than|实际|真正|而非|不是.*而是|属于).*"
+            r"(?:memory leak|leak|内存泄漏|未释放|不释放|no[- ]op free|noop_free|_noop_free|_runtime_noop_free)",
+            text,
+            re.IGNORECASE,
+        ):
+            return "memory_leak"
+        if original in {"integer_overflow", "resource_allocation_without_limits"} and re.search(
+            r"(?:actual|real|potential|instead|rather than|实际|真正|而非|不是.*而是).*"
+            r"(?:heap buffer overflow|heap overflow|buffer overflow|堆.*溢出|缓冲区溢出)",
+            text,
+            re.IGNORECASE,
+        ):
+            return "heap_overflow"
+        return ""
+
+    @staticmethod
+    def _normalize_corrected_category(value: Any) -> str:
+        category = str(value or "").replace("-", "_").lower().strip()
+        aliases = {
+            "buffer_over_read": "buffer_overread",
+            "buffer_under_read": "buffer_underread",
+            "buffer_under_write": "buffer_underwrite",
+            "resource_leak": "memory_leak",
+        }
+        category = aliases.get(category, category)
+        return category if category in _CWE_BY_CORRECTED_CATEGORY else ""
+
+    @staticmethod
+    def _corrected_category_is_high_confidence(val_data: Dict[str, Any], final_score: float) -> bool:
+        text = ValidationPipeline._flatten_for_validation(val_data).lower()
+        try:
+            validator_confidence = float(val_data.get("confidence_score", 0) or 0)
+        except (TypeError, ValueError):
+            validator_confidence = 0.0
+        strong_language = re.search(
+            r"(?:confirmed|definite|actual|real|must|always|必然|明确|实际存在|真正存在|固定传入)",
+            text,
+            re.IGNORECASE,
+        )
+        return bool(strong_language and (validator_confidence >= 0.8 or final_score >= 0.72))
+
+    def _normalized_category(self, issue: Dict[str, Any]) -> str:
+        category = self.suppression_category(issue)
+        return re.sub(r"[^a-z0-9]+", "_", category.lower()).strip("_")
+
+    @staticmethod
+    def _flatten_for_validation(value: Any) -> str:
+        if isinstance(value, dict):
+            return " ".join(ValidationPipeline._flatten_for_validation(item) for item in value.values())
+        if isinstance(value, list):
+            return " ".join(ValidationPipeline._flatten_for_validation(item) for item in value)
+        if value is None:
+            return ""
+        return str(value)
+
+    @staticmethod
+    def _has_concrete_sink(issue: Dict[str, Any], val_data: Dict[str, Any]) -> bool:
+        evidence = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+        sink = evidence.get("sink") if isinstance(evidence.get("sink"), dict) else {}
+        sink_text = " ".join(
+            str(value or "")
+            for value in (
+                issue.get("sink"),
+                val_data.get("sink"),
+                sink.get("operation") if isinstance(sink, dict) else "",
+            )
+        )
+        if re.search(r"\b(?:free|close|unlock|pthread_mutex_unlock|memcpy|malloc|calloc|realloc|return|callback|->|\[|\*)", sink_text):
+            return True
+        return bool(sink_text.strip() and (issue.get("location") or sink.get("line") if isinstance(sink, dict) else ""))
+
+    @staticmethod
+    def _has_reachable_path_evidence(issue: Dict[str, Any]) -> bool:
+        evidence = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+        path = evidence.get("path") if isinstance(evidence.get("path"), dict) else {}
+        if path.get("complete") is True or path.get("complete_in_function") is True:
+            return True
+        if path.get("current_analysis_entry") or path.get("entry") or path.get("function"):
+            return True
+        if issue.get("call_path") or issue.get("entry_func") or issue.get("function"):
+            return True
+        return bool(issue.get("location"))
+
+    @staticmethod
+    def _has_missing_guard_evidence(issue: Dict[str, Any], val_data: Dict[str, Any]) -> bool:
+        evidence_text = " ".join(
+            [
+                ValidationPipeline._flatten_for_validation(issue.get("negative_evidence")),
+                ValidationPipeline._flatten_for_validation(issue.get("positive_evidence")),
+                ValidationPipeline._flatten_for_validation(val_data.get("guard_analysis")),
+                ValidationPipeline._flatten_for_validation(issue.get("evidence_pack")),
+            ]
+        ).lower()
+        return bool(
+            re.search(
+                r"(?:no |without |missing |lacks |lack |not checked|unchecked|no matching|"
+                r"缺少|没有|未检查|无匹配|未释放|未关闭)",
+                evidence_text,
+            )
+        )
+
+    @staticmethod
+    def _has_strong_safety_disproof(category: str, text: str) -> bool:
+        generic_disproof = [
+            r"\bno sink\b",
+            r"\bsink (?:does not exist|is absent)\b",
+            r"\bguard (?:dominates|covers|protects) all paths\b",
+            r"\ball paths (?:are )?(?:guarded|protected|closed|released)\b",
+            r"\bmatching (?:close|release|unlock)\b",
+            r"\bownership (?:is )?(?:transferred|handed off|retained)\b",
+            r"\bglobal owner\b",
+            r"\blinked into (?:the )?global\b",
+            r"\binserted into (?:the )?global\b",
+            r"资源所有权.*(?:转移|保留)",
+            r"所有路径.*(?:保护|释放|关闭|解锁)",
+            r"guard.*支配",
+            r"已插入.*全局",
+            r"全局.*拥有",
+        ]
+        if any(re.search(pattern, text, re.IGNORECASE) for pattern in generic_disproof):
+            return True
+        if category == "held_lock_callback":
+            callback_disproof = [
+                r"hardcoded empty callback",
+                r"hard-coded empty callback",
+                r"no-op callback",
+                r"empty callback",
+                r"callback is empty",
+                r"empty and only local",
+                r"callback .* only local",
+                r"硬编码.*空回调",
+                r"空回调",
+                r"无外部替换路径",
+            ]
+            if any(re.search(pattern, text, re.IGNORECASE) for pattern in callback_disproof):
+                return True
+        if category in {"lock_protocol_violation", "unlock_without_lock"}:
+            lock_disproof = [
+                r"caller (?:always )?holds (?:the )?lock",
+                r"called only while .*lock.*held",
+                r"same lock protocol is complete",
+                r"调用者.*持有.*锁",
+                r"同一锁协议.*完整",
+            ]
+            if any(re.search(pattern, text, re.IGNORECASE) for pattern in lock_disproof):
+                return True
+        return False
+
+    @staticmethod
+    def _callback_under_lock_should_review(text: str) -> bool:
+        if re.search(r"(?:hardcoded empty callback|hard-coded empty callback|no-op callback|empty callback|硬编码.*空回调|空回调)", text, re.IGNORECASE):
+            return False
+        return bool(
+            re.search(
+                r"(?:callback|handler|function pointer|registry|plugin|global function pointer|external parameter|"
+                r"回调|函数指针|注册表|插件|外部参数|全局函数指针)",
+                text,
+                re.IGNORECASE,
+            )
+        )
 
     @staticmethod
     def _coerce_score(value: Any, default: float = 0.5) -> float:

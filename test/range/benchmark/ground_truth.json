@@ -1,8 +1,8 @@
 {
   "benchmark": "zscope-range-service-runtime",
-  "version": 13,
-  "total_vulnerabilities": 121,
-  "notes": "Canonical scorer truth. Do not expose to Z-SCOPE analysis context. Version 13 removes ISSUE42-012/log_level_misuse as a code-style-only case and strengthens issue #41/#42 models with concrete impact chains; version 12 neutralizes benchmark function names, refreshes ISSUE42 to natural runtime API flows, and adds wrapper/evidence anchors for scoring; version 11 adds the GitHub issue #42 shared-memory/runtime callback model suite; version 10 promotes manually verified extra findings from the auto_unified_wsl_structured_20260520_2 run and adds alternate public-wrapper anchors.",
+  "version": 14,
+  "total_vulnerabilities": 136,
+  "notes": "Canonical scorer truth. Do not expose to Z-SCOPE analysis context. Version 14 adds ISSUE43 stream-journal and lock-cache runtime models for missing C memory, concurrency, and resource CWE coverage; version 13 removes ISSUE42-012/log_level_misuse as a code-style-only case and strengthens issue #41/#42 models with concrete impact chains; version 12 neutralizes benchmark function names, refreshes ISSUE42 to natural runtime API flows, and adds wrapper/evidence anchors for scoring; version 11 adds the GitHub issue #42 shared-memory/runtime callback model suite; version 10 promotes manually verified extra findings from the auto_unified_wsl_structured_20260520_2 run and adds alternate public-wrapper anchors.",
   "vulnerabilities": [
     {
       "id": "RANGE-001",
@@ -379,24 +379,6 @@
       ]
     },
     {
-      "id": "RANGE-023",
-      "cwe": "CWE-667",
-      "category": "held_lock_callback",
-      "title": "Lifecycle callback is invoked while holding the cache mutex",
-      "file": "src/lifecycle.c",
-      "function": "_lifecycle_notify_entry_callback",
-      "line": 225,
-      "end_line": 230,
-      "severity": "medium",
-      "keywords": [
-        "LOCK",
-        "g_entry_callback",
-        "callback",
-        "under lock",
-        "deadlock"
-      ]
-    },
-    {
       "id": "RANGE-024",
       "cwe": "CWE-562",
       "category": "stack_escape",
@@ -662,29 +644,6 @@
         "g_rules_len",
         "use-after-free",
         "mmap"
-      ]
-    },
-    {
-      "id": "RANGE-037",
-      "cwe": "CWE-772",
-      "category": "memory_leak",
-      "title": "Mesh control sessions are registered globally but the disconnect cleanup hook is never initialized",
-      "file": "src/lifecycle.c",
-      "function": "_lifecycle_mesh_disconnect",
-      "line": 577,
-      "end_line": 585,
-      "secondary_file": "src/lifecycle.c",
-      "secondary_function": "_lifecycle_mesh_authorize_init",
-      "secondary_line": 546,
-      "secondary_end_line": 550,
-      "severity": "high",
-      "subtype": "GCR-A",
-      "keywords": [
-        "pfnDropSession",
-        "NULL",
-        "pfnAddSession",
-        "global container",
-        "missing hook"
       ]
     },
     {
@@ -1342,30 +1301,6 @@
       ]
     },
     {
-      "id": "REAL-012",
-      "cwe": "CWE-252",
-      "category": "memory_leak",
-      "title": "AVL insertion failure is ignored after linking the node, losing ownership and cleanup state",
-      "file": "src/lifecycle.c",
-      "function": "_runtime_insert_policy_node",
-      "line": 1358,
-      "end_line": 1359,
-      "severity": "critical",
-      "tier": "real_project_issue40",
-      "weight": 3,
-      "source_issue": "https://github.com/zealousness/Z-Scope/issues/40",
-      "source_model": "VM-012",
-      "keywords": [
-        "issue-40",
-        "VM-012",
-        "AVL",
-        "insert return",
-        "unchecked",
-        "linked node",
-        "leak"
-      ]
-    },
-    {
       "id": "REAL-013",
       "cwe": "CWE-682",
       "category": "bounds",
@@ -1401,11 +1336,11 @@
       "id": "REAL-014",
       "cwe": "CWE-20",
       "category": "bounds",
-      "title": "Offline parser reads record count before validating the expected 64-bit magic value",
+      "title": "Offline parser lets an unchecked record count reach a copy sink before validating the 64-bit magic value",
       "file": "src/lifecycle.c",
       "function": "_runtime_read_control_magic",
-      "line": 1367,
-      "end_line": 1374,
+      "line": 1375,
+      "end_line": 1384,
       "severity": "high",
       "tier": "real_project_issue40",
       "weight": 3,
@@ -1418,6 +1353,10 @@
         "64-bit",
         "parser",
         "count",
+        "unchecked count",
+        "count before magic",
+        "memcpy",
+        "preview",
         "validation",
         "td_handle_protocol_message",
         "_runtime_process_protocol_task",
@@ -1425,8 +1364,8 @@
       ],
       "secondary_file": "src/lifecycle.c",
       "secondary_function": "_service_decode_protocol_header",
-      "secondary_line": 1591,
-      "secondary_end_line": 1610,
+      "secondary_line": 1602,
+      "secondary_end_line": 1621,
       "flow": "real_protocol_message_flow"
     },
     {
@@ -2381,8 +2320,8 @@
       "title": "Pbuf pool can be destroyed while active tasks still reference it",
       "file": "src/lifecycle.c",
       "function": "_runtime_release_packet_pool",
-      "line": 2336,
-      "end_line": 2354,
+      "line": 2339,
+      "end_line": 2355,
       "severity": "critical",
       "tier": "real_project_issue42",
       "weight": 3,
@@ -2394,14 +2333,17 @@
         "active tasks",
         "premature destroy",
         "use-after-free",
+        "dangling global",
+        "post-release read",
+        "g_runtime_pbuf_pool",
         "td_runtime_apply_shared_memory_event",
         "td_runtime_refresh_cache",
         "_runtime_refresh_worker_context"
       ],
       "secondary_file": "src/lifecycle.c",
       "secondary_function": "_runtime_refresh_worker_context",
-      "secondary_line": 2882,
-      "secondary_end_line": 2890,
+      "secondary_line": 2886,
+      "secondary_end_line": 2894,
       "additional_locations": [
         {
           "file": "src/main.c",
@@ -3512,6 +3454,755 @@
         "td_runtime_schedule_event",
         "_runtime_dispatch_event_cycle"
       ]
+    },
+    {
+      "id": "ISSUE43-001",
+      "cwe": "CWE-787",
+      "category": "out_of_bounds_write",
+      "title": "Stream compaction writes caller-declared segments past a fixed segment table",
+      "file": "src/lifecycle.c",
+      "function": "_runtime_stream_compact_segments",
+      "line": 3076,
+      "end_line": 3089,
+      "severity": "high",
+      "tier": "real_project_issue43",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/43",
+      "source_model": "Runtime stream journal and lock-cache maintenance model",
+      "keywords": [
+        "issue-43",
+        "stream segment",
+        "segment_count",
+        "fixed table",
+        "out-of-bounds write",
+        "_runtime_process_stream_batch"
+      ],
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_process_stream_batch",
+          "line": 741,
+          "end_line": 747
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_run_runtime_maintenance",
+          "line": 757,
+          "end_line": 797
+        }
+      ],
+      "flow": "runtime_stream_journal_flow",
+      "related_functions": [
+        "td_runtime_process_stream_batch",
+        "_runtime_process_stream_batch"
+      ]
+    },
+    {
+      "id": "ISSUE43-002",
+      "cwe": "CWE-122",
+      "category": "heap_overflow",
+      "title": "Zero-copy fragment copy allocates a truncated heap buffer but copies the original wire length",
+      "file": "src/lifecycle.c",
+      "function": "_runtime_stream_copy_fragment",
+      "line": 3091,
+      "end_line": 3111,
+      "severity": "high",
+      "tier": "real_project_issue43",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/43",
+      "source_model": "Runtime stream journal and lock-cache maintenance model",
+      "keywords": [
+        "issue-43",
+        "fragment_len",
+        "copy_len",
+        "heap buffer",
+        "memcpy",
+        "zero-copy"
+      ],
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_process_stream_batch",
+          "line": 741,
+          "end_line": 747
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_run_runtime_maintenance",
+          "line": 757,
+          "end_line": 797
+        }
+      ],
+      "flow": "runtime_stream_journal_flow",
+      "related_functions": [
+        "td_runtime_process_stream_batch",
+        "_runtime_process_stream_batch"
+      ]
+    },
+    {
+      "id": "ISSUE43-003",
+      "cwe": "CWE-126",
+      "category": "buffer_overread",
+      "title": "Digest export trusts a wire digest length and can read past a short packet",
+      "file": "src/lifecycle.c",
+      "function": "_runtime_stream_export_digest",
+      "line": 3113,
+      "end_line": 3129,
+      "severity": "high",
+      "tier": "real_project_issue43",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/43",
+      "source_model": "Runtime stream journal and lock-cache maintenance model",
+      "keywords": [
+        "issue-43",
+        "digest_offset",
+        "digest_len",
+        "short packet",
+        "out-of-bounds read",
+        "memcpy"
+      ],
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_process_stream_batch",
+          "line": 741,
+          "end_line": 747
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_run_runtime_maintenance",
+          "line": 757,
+          "end_line": 797
+        }
+      ],
+      "flow": "runtime_stream_journal_flow",
+      "related_functions": [
+        "td_runtime_process_stream_batch",
+        "_runtime_process_stream_batch"
+      ]
+    },
+    {
+      "id": "ISSUE43-004",
+      "cwe": "CWE-127",
+      "category": "buffer_underread",
+      "title": "Footer marker parsing can backtrack before the beginning of the stream buffer",
+      "file": "src/lifecycle.c",
+      "function": "_runtime_stream_read_footer_marker",
+      "line": 3131,
+      "end_line": 3147,
+      "severity": "high",
+      "tier": "real_project_issue43",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/43",
+      "source_model": "Runtime stream journal and lock-cache maintenance model",
+      "keywords": [
+        "issue-43",
+        "footer_backtrack",
+        "footer marker",
+        "buffer under-read",
+        "record footer"
+      ],
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_process_stream_batch",
+          "line": 741,
+          "end_line": 747
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_run_runtime_maintenance",
+          "line": 757,
+          "end_line": 797
+        }
+      ],
+      "flow": "runtime_stream_journal_flow",
+      "related_functions": [
+        "td_runtime_process_stream_batch",
+        "_runtime_process_stream_batch"
+      ]
+    },
+    {
+      "id": "ISSUE43-005",
+      "cwe": "CWE-124",
+      "category": "buffer_underwrite",
+      "title": "Journal prefix compaction can write before the start of the output buffer",
+      "file": "src/lifecycle.c",
+      "function": "_runtime_stream_compact_prefix",
+      "line": 3149,
+      "end_line": 3162,
+      "severity": "high",
+      "tier": "real_project_issue43",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/43",
+      "source_model": "Runtime stream journal and lock-cache maintenance model",
+      "keywords": [
+        "issue-43",
+        "prefix_len",
+        "window - prefix_len",
+        "buffer underwrite",
+        "journal prefix"
+      ],
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_process_stream_batch",
+          "line": 741,
+          "end_line": 747
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_run_runtime_maintenance",
+          "line": 757,
+          "end_line": 797
+        }
+      ],
+      "flow": "runtime_stream_journal_flow",
+      "related_functions": [
+        "td_runtime_process_stream_batch",
+        "_runtime_process_stream_batch"
+      ]
+    },
+    {
+      "id": "ISSUE43-006",
+      "cwe": "CWE-761",
+      "category": "invalid_free",
+      "title": "Stream cursor cleanup frees an advanced heap pointer instead of the allocation base",
+      "file": "src/lifecycle.c",
+      "function": "_runtime_stream_release_cursor",
+      "line": 3164,
+      "end_line": 3176,
+      "severity": "high",
+      "tier": "real_project_issue43",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/43",
+      "source_model": "Runtime stream journal and lock-cache maintenance model",
+      "keywords": [
+        "issue-43",
+        "advanced cursor",
+        "free(cursor)",
+        "allocation base",
+        "cursor cleanup"
+      ],
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_process_stream_batch",
+          "line": 741,
+          "end_line": 747
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_run_runtime_maintenance",
+          "line": 757,
+          "end_line": 797
+        }
+      ],
+      "flow": "runtime_stream_journal_flow",
+      "related_functions": [
+        "td_runtime_process_stream_batch",
+        "_runtime_process_stream_batch"
+      ]
+    },
+    {
+      "id": "ISSUE43-007",
+      "cwe": "CWE-789",
+      "category": "excessive_allocation",
+      "title": "Stream batch reservation allocates directly from an externally declared batch size",
+      "file": "src/lifecycle.c",
+      "function": "_runtime_stream_reserve_batch",
+      "line": 3178,
+      "end_line": 3188,
+      "severity": "high",
+      "tier": "real_project_issue43",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/43",
+      "source_model": "Runtime stream journal and lock-cache maintenance model",
+      "keywords": [
+        "issue-43",
+        "batch_size",
+        "allocation size",
+        "no upper bound",
+        "resource exhaustion"
+      ],
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_process_stream_batch",
+          "line": 741,
+          "end_line": 747
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_run_runtime_maintenance",
+          "line": 757,
+          "end_line": 797
+        }
+      ],
+      "flow": "runtime_stream_journal_flow",
+      "related_functions": [
+        "td_runtime_process_stream_batch",
+        "_runtime_process_stream_batch"
+      ]
+    },
+    {
+      "id": "ISSUE43-008",
+      "cwe": "CWE-690",
+      "category": "unchecked_allocation",
+      "title": "Stream index builder writes through a failed allocation without checking for NULL",
+      "file": "src/lifecycle.c",
+      "function": "_runtime_stream_build_index",
+      "line": 3190,
+      "end_line": 3204,
+      "severity": "high",
+      "tier": "real_project_issue43",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/43",
+      "source_model": "Runtime stream journal and lock-cache maintenance model",
+      "keywords": [
+        "issue-43",
+        "_safe_calloc",
+        "index[0]",
+        "unchecked allocation",
+        "NULL dereference"
+      ],
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_process_stream_batch",
+          "line": 741,
+          "end_line": 747
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_run_runtime_maintenance",
+          "line": 757,
+          "end_line": 797
+        }
+      ],
+      "flow": "runtime_stream_journal_flow",
+      "related_functions": [
+        "td_runtime_process_stream_batch",
+        "_runtime_process_stream_batch"
+      ]
+    },
+    {
+      "id": "ISSUE43-009",
+      "cwe": "CWE-822",
+      "category": "untrusted_pointer",
+      "title": "Stream header trusted_address is treated as a valid process pointer and dereferenced",
+      "file": "src/lifecycle.c",
+      "function": "_runtime_stream_follow_wire_pointer",
+      "line": 3206,
+      "end_line": 3216,
+      "severity": "high",
+      "tier": "real_project_issue43",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/43",
+      "source_model": "Runtime stream journal and lock-cache maintenance model",
+      "keywords": [
+        "issue-43",
+        "trusted_address",
+        "wire pointer",
+        "dereference",
+        "untrusted pointer"
+      ],
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_process_stream_batch",
+          "line": 741,
+          "end_line": 747
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_run_runtime_maintenance",
+          "line": 757,
+          "end_line": 797
+        }
+      ],
+      "flow": "runtime_stream_journal_flow",
+      "related_functions": [
+        "td_runtime_process_stream_batch",
+        "_runtime_process_stream_batch"
+      ]
+    },
+    {
+      "id": "ISSUE43-010",
+      "cwe": "CWE-823",
+      "category": "out_of_range_pointer_offset",
+      "title": "Object mapping applies an unchecked wire offset inside a stack object",
+      "file": "src/lifecycle.c",
+      "function": "_runtime_stream_map_object_offset",
+      "line": 3218,
+      "end_line": 3228,
+      "severity": "high",
+      "tier": "real_project_issue43",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/43",
+      "source_model": "Runtime stream journal and lock-cache maintenance model",
+      "keywords": [
+        "issue-43",
+        "object_offset",
+        "stack object",
+        "pointer offset",
+        "field write"
+      ],
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_process_stream_batch",
+          "line": 741,
+          "end_line": 747
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_run_runtime_maintenance",
+          "line": 757,
+          "end_line": 797
+        }
+      ],
+      "flow": "runtime_stream_journal_flow",
+      "related_functions": [
+        "td_runtime_process_stream_batch",
+        "_runtime_process_stream_batch"
+      ]
+    },
+    {
+      "id": "ISSUE43-011",
+      "cwe": "CWE-824",
+      "category": "uninitialized_pointer",
+      "title": "Stream cursor commit can read from an uninitialized cursor on fail-open input paths",
+      "file": "src/lifecycle.c",
+      "function": "_runtime_stream_commit_cursor",
+      "line": 3230,
+      "end_line": 3243,
+      "severity": "high",
+      "tier": "real_project_issue43",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/43",
+      "source_model": "Runtime stream journal and lock-cache maintenance model",
+      "keywords": [
+        "issue-43",
+        "cursor",
+        "fail_open",
+        "uninitialized pointer",
+        "commit cursor"
+      ],
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_process_stream_batch",
+          "line": 741,
+          "end_line": 747
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_run_runtime_maintenance",
+          "line": 757,
+          "end_line": 797
+        }
+      ],
+      "flow": "runtime_stream_journal_flow",
+      "related_functions": [
+        "td_runtime_process_stream_batch",
+        "_runtime_process_stream_batch"
+      ]
+    },
+    {
+      "id": "ISSUE43-012",
+      "cwe": "CWE-825",
+      "category": "expired_pointer",
+      "title": "Async stream flush keeps a snapshot pointer after the cache snapshot has expired",
+      "file": "src/lifecycle.c",
+      "function": "_runtime_stream_schedule_expired_flush",
+      "line": 3259,
+      "end_line": 3278,
+      "severity": "critical",
+      "tier": "real_project_issue43",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/43",
+      "source_model": "Runtime stream journal and lock-cache maintenance model",
+      "keywords": [
+        "issue-43",
+        "expired snapshot",
+        "async flush",
+        "pthread_create",
+        "use after lifetime"
+      ],
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_process_stream_batch",
+          "line": 741,
+          "end_line": 747
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_run_runtime_maintenance",
+          "line": 757,
+          "end_line": 797
+        }
+      ],
+      "flow": "runtime_stream_journal_flow",
+      "related_functions": [
+        "td_runtime_process_stream_batch",
+        "_runtime_process_stream_batch"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_runtime_stream_flush_worker",
+      "secondary_line": 3245,
+      "secondary_end_line": 3257
+    },
+    {
+      "id": "ISSUE43-013",
+      "cwe": "CWE-770",
+      "category": "resource_allocation_without_limits",
+      "title": "Replay-window reservation allocates stream cache memory without enforcing a per-client limit",
+      "file": "src/lifecycle.c",
+      "function": "_runtime_stream_reserve_replay_window",
+      "line": 3280,
+      "end_line": 3291,
+      "severity": "high",
+      "tier": "real_project_issue43",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/43",
+      "source_model": "Runtime stream journal and lock-cache maintenance model",
+      "keywords": [
+        "issue-43",
+        "replay_window",
+        "no quota",
+        "resource allocation",
+        "stream cache"
+      ],
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_process_stream_batch",
+          "line": 741,
+          "end_line": 747
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_run_runtime_maintenance",
+          "line": 757,
+          "end_line": 797
+        }
+      ],
+      "flow": "runtime_stream_journal_flow",
+      "related_functions": [
+        "td_runtime_process_stream_batch",
+        "_runtime_process_stream_batch"
+      ]
+    },
+    {
+      "id": "ISSUE43-014",
+      "cwe": "CWE-774",
+      "category": "fd_allocation_without_limits",
+      "title": "Segment-handle preparation opens one descriptor per declared stream segment without throttling",
+      "file": "src/lifecycle.c",
+      "function": "_runtime_stream_open_segment_handles",
+      "line": 3293,
+      "end_line": 3310,
+      "severity": "high",
+      "tier": "real_project_issue43",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/43",
+      "source_model": "Runtime stream journal and lock-cache maintenance model",
+      "keywords": [
+        "issue-43",
+        "segment_count",
+        "open",
+        "file descriptors",
+        "no throttling"
+      ],
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_process_stream_batch",
+          "line": 741,
+          "end_line": 747
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_run_runtime_maintenance",
+          "line": 757,
+          "end_line": 797
+        }
+      ],
+      "flow": "runtime_stream_journal_flow",
+      "related_functions": [
+        "td_runtime_process_stream_batch",
+        "_runtime_process_stream_batch"
+      ]
+    },
+    {
+      "id": "ISSUE43-015",
+      "cwe": "CWE-775",
+      "category": "missing_fd_release",
+      "title": "Journal metadata validation returns without closing the opened journal descriptor",
+      "file": "src/lifecycle.c",
+      "function": "_runtime_stream_open_journal",
+      "line": 3312,
+      "end_line": 3328,
+      "severity": "high",
+      "tier": "real_project_issue43",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/43",
+      "source_model": "Runtime stream journal and lock-cache maintenance model",
+      "keywords": [
+        "issue-43",
+        "journal fd",
+        "metadata_size",
+        "missing close",
+        "validation failure"
+      ],
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_process_stream_batch",
+          "line": 741,
+          "end_line": 747
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_run_runtime_maintenance",
+          "line": 757,
+          "end_line": 797
+        }
+      ],
+      "flow": "runtime_stream_journal_flow",
+      "related_functions": [
+        "td_runtime_process_stream_batch",
+        "_runtime_process_stream_batch"
+      ]
+    },
+    {
+      "id": "ISSUE43-016",
+      "cwe": "CWE-567",
+      "category": "unsynchronized_shared_state",
+      "title": "Runtime stream watermark is updated by maintenance and public cache paths without a common lock",
+      "file": "src/lifecycle.c",
+      "function": "_runtime_stream_update_watermark",
+      "line": 3330,
+      "end_line": 3343,
+      "severity": "high",
+      "tier": "real_project_issue43",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/43",
+      "source_model": "Runtime stream journal and lock-cache maintenance model",
+      "keywords": [
+        "issue-43",
+        "watermark",
+        "shared state",
+        "maintenance",
+        "unsynchronized"
+      ],
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_process_stream_batch",
+          "line": 741,
+          "end_line": 747
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_run_runtime_maintenance",
+          "line": 757,
+          "end_line": 797
+        }
+      ],
+      "flow": "runtime_stream_journal_flow",
+      "related_functions": [
+        "td_runtime_process_stream_batch",
+        "_runtime_process_stream_batch"
+      ],
+      "secondary_file": "src/lifecycle.c",
+      "secondary_function": "_runtime_maintain_lock_cache",
+      "secondary_line": 3408,
+      "secondary_end_line": 3420
+    },
+    {
+      "id": "ISSUE43-017",
+      "cwe": "CWE-832",
+      "category": "unlock_without_lock",
+      "title": "Lock-cache abort path unlocks the cache mutex without owning it",
+      "file": "src/lifecycle.c",
+      "function": "_runtime_lock_cache_abort_batch",
+      "line": 3345,
+      "end_line": 3355,
+      "severity": "high",
+      "tier": "real_project_issue43",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/43",
+      "source_model": "Runtime stream journal and lock-cache maintenance model",
+      "keywords": [
+        "issue-43",
+        "unlock without lock",
+        "abort path",
+        "cache mutex",
+        "td_runtime_maintain_lock_cache"
+      ],
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_maintain_lock_cache",
+          "line": 749,
+          "end_line": 754
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_run_runtime_maintenance",
+          "line": 757,
+          "end_line": 797
+        }
+      ],
+      "flow": "runtime_lock_cache_flow",
+      "related_functions": [
+        "td_runtime_maintain_lock_cache",
+        "_runtime_maintain_lock_cache"
+      ]
+    },
+    {
+      "id": "ISSUE43-018",
+      "cwe": "CWE-459",
+      "category": "incomplete_cleanup",
+      "title": "Lock-cache reset releases only the primary buffer and leaves replay, scratch, and journal state behind",
+      "file": "src/lifecycle.c",
+      "function": "_runtime_lock_cache_reset_client",
+      "line": 3357,
+      "end_line": 3370,
+      "severity": "medium",
+      "tier": "real_project_issue43",
+      "weight": 3,
+      "source_issue": "https://github.com/zealousness/Z-Scope/issues/43",
+      "source_model": "Runtime stream journal and lock-cache maintenance model",
+      "keywords": [
+        "issue-43",
+        "incomplete cleanup",
+        "replay_window",
+        "scratch",
+        "journal_fd"
+      ],
+      "additional_locations": [
+        {
+          "file": "src/main.c",
+          "function": "td_runtime_maintain_lock_cache",
+          "line": 749,
+          "end_line": 754
+        },
+        {
+          "file": "src/main.c",
+          "function": "td_run_runtime_maintenance",
+          "line": 757,
+          "end_line": 797
+        }
+      ],
+      "flow": "runtime_lock_cache_flow",
+      "related_functions": [
+        "td_runtime_maintain_lock_cache",
+        "_runtime_maintain_lock_cache"
+      ]
     }
   ],
   "excluded_vulnerabilities": [
@@ -3529,6 +4220,21 @@
       "id": "RANGE-010",
       "former_title": "Plugin dispatch and executor task path acquire lock_a/lock_b in opposite order",
       "reason": "_plugin_dispatch locks g_shared_resources.lock_b then lock_a, while _executor_execute_task locks g_exec_resources.lock_a then lock_b. These are different mutex objects, so the original lock-order deadlock claim is not concrete in the current fixture."
+    },
+    {
+      "id": "RANGE-023",
+      "former_title": "Lifecycle callback is invoked while holding the cache mutex",
+      "reason": "The current fixture registers only a hardcoded empty callback and does not expose an external callback replacement or reentrant path. With the current code this is a hardening/design-risk pattern rather than a concrete scored held-lock callback vulnerability."
+    },
+    {
+      "id": "RANGE-037",
+      "former_title": "Mesh control sessions are registered globally but the disconnect cleanup hook is never initialized",
+      "reason": "Retired as a duplicate/overlap of the concrete control-session leak coverage. The `_lifecycle_mesh_disconnect` anchor describes a missing hook rather than a distinct reachable leak sink under the current fixture."
+    },
+    {
+      "id": "REAL-012",
+      "former_title": "AVL insertion failure is ignored after linking the node, losing ownership and cleanup state",
+      "reason": "`_service_tree_insert()` links the node into the global service tree before returning the injected error, so ownership is not lost in the current code contract. Treating this as a memory leak ground truth would penalize a reasonable validator rejection."
     },
     {
       "id": "ISSUE42-012",
@@ -3552,6 +4258,10 @@
     "real_project_issue42": {
       "weight": 3,
       "description": "Higher-priority shared-memory, runtime callback, signal, and allocator models imported from GitHub issue #42."
+    },
+    "real_project_issue43": {
+      "weight": 3,
+      "description": "Higher-priority stream journal, zero-copy, lock-cache, and resource quota models imported from GitHub issue #43."
     }
   }
 }

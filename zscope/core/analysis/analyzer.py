@@ -1,4 +1,4 @@
-﻿"""
+"""
 Main analyzer logic for Z-SCOPE.
 Orchestrates the analysis process using LLM, CodeIndex, and SnapshotStore.
 """
@@ -1172,6 +1172,7 @@ class Analyzer:
                 )
             )
         issues = dedupe_rule_candidates(issues)
+        issues = self._apply_candidate_validation_budget(issues)
         return self._annotate_candidate_issues(
             issues,
             checker=self._local_candidate_checker(),
@@ -1295,6 +1296,7 @@ class Analyzer:
         if not issues:
             return []
         issues = dedupe_rule_candidates(issues)
+        issues = self._apply_candidate_validation_budget(issues)
         issues = self._annotate_candidate_issues(
             issues,
             checker=self._local_candidate_checker(),
@@ -1305,7 +1307,108 @@ class Analyzer:
             if issue.get("candidate_source") == "clang_ast_cfg" and clang_generator is not None
             else (generator or RegexCandidateGenerator(self._get_local_pattern_semantics())).issue_to_ticket(issue)
             for issue in issues
+            if issue.get("validation_required") is not False
+            and str(issue.get("finding_kind") or "").lower() != "audit_observation"
         ]
+
+    @staticmethod
+    def _apply_candidate_validation_budget(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Keep exact sink candidates ahead of broad audit-style rules."""
+        generic_categories = {
+            "integer_overflow",
+            "protocol_validation",
+            "resource_allocation_without_limits",
+            "version_filtering",
+        }
+        per_function_category_limit = 2
+        counters: Dict[tuple[str, str], int] = {}
+        ordered = sorted(issues, key=Analyzer._candidate_validation_sort_key)
+        for issue in ordered:
+            category = str(
+                issue.get("defect_class") or issue.get("category") or issue.get("subcategory") or ""
+            ).replace("-", "_").lower()
+            budget_class = str(issue.get("validation_budget_class") or "").lower()
+            if category not in generic_categories and budget_class != "generic":
+                continue
+            if Analyzer._is_tp_sensitive_generic_candidate(issue):
+                issue["validation_budget_class"] = "quota_lifetime_sensitive_generic"
+                pack = issue.get("evidence_pack")
+                if isinstance(pack, dict):
+                    pack["validation_budget_class"] = "quota_lifetime_sensitive_generic"
+                continue
+            function = str(issue.get("function") or issue.get("func_name") or "")
+            key = (function, category)
+            count = counters.get(key, 0)
+            counters[key] = count + 1
+            if count < per_function_category_limit:
+                continue
+            issue["validation_required"] = False
+            issue["finding_kind"] = "audit_observation"
+            issue["validation_budget_class"] = "generic_deferred"
+            reason = (
+                "Deferred broad static candidate after the per-function generic validation budget; "
+                "exact sink candidates retain validator priority."
+            )
+            issue["audit_observation_reason"] = reason
+            pack = issue.get("evidence_pack")
+            if isinstance(pack, dict):
+                pack["validation_required"] = False
+                pack["audit_observation_reason"] = reason
+                pack["validation_budget_class"] = "generic_deferred"
+        return ordered
+
+    @staticmethod
+    def _is_tp_sensitive_generic_candidate(issue: Dict[str, Any]) -> bool:
+        category = str(
+            issue.get("defect_class") or issue.get("category") or issue.get("subcategory") or ""
+        ).replace("-", "_").lower()
+        if category != "resource_allocation_without_limits":
+            return False
+        text = Analyzer._flatten_candidate_text(issue).lower()
+        if not re.search(
+            r"\b(?:quota|limit|reserve|reserved|segment|window|cache|tls|thread|pool|"
+            r"global|session|client|wire|header|packet|frame|record|payload|map|mmap|"
+            r"error path|cleanup|owner|field|g_[a-z0-9_]+)\b",
+            text,
+        ):
+            return False
+        return bool(
+            re.search(r"\b(?:malloc|calloc|alloc|realloc|_safe_malloc|_safe_calloc)\b", text)
+            or re.search(r"\b(?:allocation|allocate|heap|resource)\b", text)
+        )
+
+    @staticmethod
+    def _flatten_candidate_text(value: Any) -> str:
+        if isinstance(value, dict):
+            return " ".join(Analyzer._flatten_candidate_text(item) for item in value.values())
+        if isinstance(value, list):
+            return " ".join(Analyzer._flatten_candidate_text(item) for item in value)
+        if value is None:
+            return ""
+        return str(value)
+
+    @staticmethod
+    def _candidate_validation_sort_key(issue: Dict[str, Any]) -> tuple[int, int, float, str]:
+        group = str(issue.get("candidate_priority_group") or "")
+        category = str(issue.get("defect_class") or issue.get("category") or "")
+        group_order = {
+            "exact_sink": 0,
+            "semantic_suspicious_point": 1,
+            "graph_structural": 2,
+            "generic_audit": 3,
+        }.get(group, 2)
+        generic_categories = {
+            "integer_overflow",
+            "protocol_validation",
+            "resource_allocation_without_limits",
+            "version_filtering",
+        }
+        generic_penalty = 1 if category in generic_categories else 0
+        try:
+            confidence = float(issue.get("rule_confidence") or issue.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        return (group_order, generic_penalty, -confidence, str(issue.get("candidate_id") or issue.get("id") or ""))
 
     def _direct_callee_rule_scan_budget(self, state: Dict[str, Any]) -> Dict[str, int]:
         budget = self._current_effective_budget(state)
@@ -1343,11 +1446,12 @@ class Analyzer:
         issues: List[Dict[str, Any]] = []
         root = str(entry_func or impl.get("function") or impl.get("name") or "").strip()
         queued: List[tuple[str, int, List[str]]] = []
-        for item in impl.get("callees", [])[:limit]:
+        for item in impl.get("callees", []):
             name = self._callee_item_name(item)
             if not name or name == root:
                 continue
             queued.append((name, 1, [root, name] if root else [name]))
+        queued = self._balanced_callee_queue(queued, limit)
         impl_cache: Dict[str, Dict[str, Any]] = {root: impl} if root else {}
         visited: Set[str] = set()
         analyzed = 0
@@ -1410,11 +1514,63 @@ class Analyzer:
             )
             if depth >= max_depth and not expand_dispatcher_siblings:
                 continue
-            for nested in callee_impl.get("callees", [])[:limit]:
+            nested_queue: List[tuple[str, int, List[str]]] = []
+            for nested in callee_impl.get("callees", []):
                 nested_name = self._callee_item_name(nested)
                 if nested_name and nested_name not in visited and nested_name not in call_path:
-                    queued.append((nested_name, depth + 1, call_path + [nested_name]))
+                    nested_queue.append((nested_name, depth + 1, call_path + [nested_name]))
+            queued.extend(self._balanced_callee_queue(nested_queue, limit))
+            queued = self._order_callee_work_queue(queued)
         return issues
+
+    @staticmethod
+    def _balanced_callee_queue(
+        queue: List[tuple[str, int, List[str]]],
+        limit: int,
+    ) -> List[tuple[str, int, List[str]]]:
+        if limit <= 0 or len(queue) <= limit:
+            return list(queue)
+        original_quota = max(1, min(len(queue), limit // 2))
+        selected = list(queue[:original_quota])
+        selected_names = {item[0] for item in selected}
+        remaining = [item for item in queue[original_quota:] if item[0] not in selected_names]
+        selected.extend(Analyzer._prioritize_callee_queue(remaining)[: max(0, limit - len(selected))])
+        return selected
+
+    @staticmethod
+    def _order_callee_work_queue(queue: List[tuple[str, int, List[str]]]) -> List[tuple[str, int, List[str]]]:
+        return sorted(queue, key=lambda item: item[1])
+
+    @staticmethod
+    def _prioritize_callee_queue(queue: List[tuple[str, int, List[str]]]) -> List[tuple[str, int, List[str]]]:
+        """Prefer callees whose names hint at memory, descriptor, lock, parser, or quota primitives."""
+        return sorted(
+            queue,
+            key=lambda item: (
+                item[1],
+                -Analyzer._callee_danger_score(item[0]),
+                item[0],
+            ),
+        )
+
+    @staticmethod
+    def _callee_danger_score(name: str) -> int:
+        text = str(name or "").lower()
+        score = 0
+        patterns = {
+            r"(?:alloc|calloc|malloc|realloc|free|release|destroy|cleanup|unload|detach|unlink)": 5,
+            r"(?:open|close|socket|accept|dup|fd|descriptor|journal|segment)": 4,
+            r"(?:lock|unlock|mutex|rwlock|cache|callback|handler)": 4,
+            r"(?:copy|memcpy|memmove|parse|decode|serialize|packet|frame|wire|header|offset|cursor)": 4,
+            r"(?:count|size|quota|limit|window|batch|stream|replay)": 3,
+            r"(?:commit|abort|reset|flush|dispatch|process|handle)": 2,
+        }
+        for pattern, weight in patterns.items():
+            if re.search(pattern, text):
+                score += weight
+        if text.startswith("_"):
+            score += 1
+        return score
 
     @staticmethod
     def _callee_item_name(item: Any) -> str:
@@ -2950,9 +3106,13 @@ class Analyzer:
 
         candidate_clusters: List[List[Dict[str, Any]]] = []
         seen_cluster_sets: Set[tuple[int, ...]] = set()
+        prefilter_skipped = 0
         for group in clusters.values():
             for candidate_group in self._split_semantic_dedup_cluster(group, max_cluster_size):
                 if len(candidate_group) < 2:
+                    continue
+                if not self._semantic_dedup_cluster_needs_llm(candidate_group):
+                    prefilter_skipped += 1
                     continue
                 cluster_ids = tuple(sorted(id(issue) for issue in candidate_group))
                 if cluster_ids in seen_cluster_sets:
@@ -2966,6 +3126,7 @@ class Analyzer:
             "llm_merge_count": 0,
             "llm_rejected_merge_count": 0,
             "llm_failed_cluster_count": 0,
+            "llm_prefilter_skipped_count": prefilter_skipped,
         }
         if not candidate_clusters:
             return issues, summary
@@ -3016,6 +3177,41 @@ class Analyzer:
             summary["llm_rejected_merge_count"] += rejected
 
         return [issue for issue_id, issue in zip(issue_order, issues) if issue_id not in removed], summary
+
+    @staticmethod
+    def _semantic_dedup_cluster_needs_llm(group: List[Dict[str, Any]]) -> bool:
+        for left_index, left in enumerate(group):
+            for right in group[left_index + 1 :]:
+                if Analyzer._semantic_dedup_pair_needs_llm(left, right):
+                    return True
+        return False
+
+    @staticmethod
+    def _semantic_dedup_pair_needs_llm(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+        left_file, _ = parse_issue_location(str(left.get("location") or left.get("file") or ""))
+        right_file, _ = parse_issue_location(str(right.get("location") or right.get("file") or ""))
+        same_file = bool(left_file and right_file and normalize_issue_key_part(left_file) == normalize_issue_key_part(right_file))
+        left_funcs = {
+            normalize_issue_key_part(str(value or ""))
+            for value in (left.get("function"), left.get("sink_function"), left.get("entry_function"))
+            if value
+        }
+        right_funcs = {
+            normalize_issue_key_part(str(value or ""))
+            for value in (right.get("function"), right.get("sink_function"), right.get("entry_function"))
+            if value
+        }
+        same_function = bool(left_funcs & right_funcs)
+        same_family = semantic_category_family(
+            normalize_issue_category(str(left.get("category") or left.get("defect_class") or left.get("subcategory") or ""))
+        ) == semantic_category_family(
+            normalize_issue_category(str(right.get("category") or right.get("defect_class") or right.get("subcategory") or ""))
+        )
+        shared_resource_or_sink = bool(
+            issue_resource_signature(left)
+            and issue_resource_signature(left) == issue_resource_signature(right)
+        ) or bool(issue_sink_signature(left) and issue_sink_signature(left) == issue_sink_signature(right))
+        return bool(same_family and ((same_file and same_function) or shared_resource_or_sink))
 
     @staticmethod
     def _split_semantic_dedup_cluster(
@@ -3958,7 +4154,7 @@ class Analyzer:
                 )
                 last_progress_log = now
 
-        # 2. 闁棙瀚囬幍鎴炲笓鎼村骏绱伴崣璺虹摍閸戣姤鏆熸导妯哄帥
+        # 2. 逆拓扑排序：叶子函数优先
         if capped_depths:
             logger.info(
                 "[premodel] Breadth cap reached for '%s' at depth(s): %s",
@@ -3967,7 +4163,7 @@ class Analyzer:
             )
 
         order = self._topo_sort(callee_graph, entry_func)
-        # 鏉╁洦鎶ら幒澶婂弳閸欙絽鍤遍弫鐗堟拱闊偓绱欓悽鍙樺瘜濞翠胶鈻煎鐑樐侀敍?
+        # 过滤掉入口函数本身（由主流程建模）
         order = [f for f in order if f != entry_func]
 
         if not order:
@@ -3975,7 +4171,7 @@ class Analyzer:
 
         logger.info(f"[premodel] {len(order)} reachable callees to pre-model for '{entry_func}'")
 
-        # 3. 闁劒閲滃鐑樐?
+        # 3. 逐个建模
         semantic_agent = SemanticModeler(
             sm_client,
             self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
@@ -3986,13 +4182,13 @@ class Analyzer:
         total_tokens = 0
 
         for func in order:
-            # 韫囶偊鈧喐顥呴弻銉窗瀹稿弶婀佽箛顐ゅ弾閸掓瑨鐑︽潻?
+            # 快速检查：已有快照则跳过
             existing = self.snapshot_store.load_snapshot(func)
             if existing is not None:
                 skipped += 1
                 continue
 
-            # 鐠恒劎鍤庣粙瀣敚娣囨繃濮?
+            # 跨线程锁保护
             lock_started = time.monotonic()
             logger.info(
                 "[snapshot-lock] waiting context=premodel entry=%s func=%s",
@@ -4015,7 +4211,7 @@ class Analyzer:
                 logger.warning(f"[premodel] Timeout waiting for '{func}', skipping.")
                 continue
 
-            # status == "acquired"閿涙氨鏁辫ぐ鎾冲 Worker 瀵ょ儤膩
+            # status == "acquired"：由当前 Worker 建模
             try:
                 impl = impl_cache.get(func) or self.code_index.get_function_impl(
                     func,
@@ -4036,7 +4232,7 @@ class Analyzer:
                     modeled += 1
                     continue
 
-                # 妤傛ɑ鏅ラ幏锔藉焻閿涙艾閽╅崙鈥冲毐閺侀绗夐棁鈧憰浣筋唨婢堆勀侀崹瀣箙
+                # 高效拦截：平凡函数不需要让大模型看
                 if self._is_trivial_function(impl["code"], self.config.analysis.trivial_function_max_lines):
                     logger.info(f"[premodel] Auto-summarizing trivial function '{func}'")
                     snapshot = self._build_trivial_snapshot(func, impl, location)
