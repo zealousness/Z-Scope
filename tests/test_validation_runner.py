@@ -113,6 +113,37 @@ def _issue(**overrides):
     return issue
 
 
+def test_validation_runner_cache_key_uses_stable_evidence_fingerprint_without_candidate_id() -> None:
+    runner = _runner(None)
+    issue = _issue(
+        id="ISSUE_VOLATILE",
+        candidate_id="",
+        category="resource_allocation_without_limits",
+        defect_class="resource_allocation_without_limits",
+        function="demo",
+        source="segment_count",
+        sink="_safe_calloc(segment_count, sizeof(int))",
+        evidence_pack={
+            "resource": "segment_count",
+            "source": {"expression": "segment_count"},
+            "sink": {"operation": "_safe_calloc(segment_count, sizeof(int))"},
+        },
+    )
+    item = SimpleNamespace(raw_issue=issue, issue_func="demo")
+
+    key = runner._validator_cache_key(item)
+
+    assert key
+
+
+def test_validation_runner_cache_key_rejects_weak_fingerprint_without_candidate_id() -> None:
+    runner = _runner(None)
+    issue = _issue(id="ISSUE_WEAK", candidate_id="", source="", sink="", evidence_pack={})
+    item = SimpleNamespace(raw_issue=issue, issue_func="demo")
+
+    assert runner._validator_cache_key(item) == ""
+
+
 def test_validation_runner_validates_issue_and_remembers_outcome() -> None:
     memory = []
     agent = FakeValidatorAgent(

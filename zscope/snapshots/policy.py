@@ -181,6 +181,59 @@ def trivial_suspicious_points(
             confidence=0.7,
         )
 
+    local_danger_patterns = [
+        (
+            r"\bfree\s*\([^;]*(?:\+|-|&|\[[^]]+\])",
+            "invalid_free_primitive",
+            "invalid_free",
+            "Short helper releases a pointer expression that may not be the owning allocation base.",
+            "Pointer-expression deallocation remains security-relevant even in a short helper.",
+            0.82,
+        ),
+        (
+            r"\b(?:malloc|calloc|realloc|_safe_malloc|_safe_calloc|_safe_realloc)\s*\([^;]*(?:count|size|len|window|batch|segment)",
+            "unbounded_allocation_primitive",
+            "resource_allocation_without_limits",
+            "Short helper allocates heap memory from a data-derived size/count.",
+            "Allocation quota and protocol-size checks can be hidden by short helper summaries.",
+            0.74,
+        ),
+        (
+            r"\*\s*\([^;)]*\*\s*\)\s*(?:\([^)]*\)\s*)?[A-Za-z_]\w*(?:->|\.)[A-Za-z_]\w*",
+            "wire_pointer_primitive",
+            "untrusted_pointer",
+            "Short helper casts a structured field into a pointer and dereferences it.",
+            "Wire/header pointer casts should remain visible to focused validation.",
+            0.86,
+        ),
+        (
+            r"\bfor\s*\([^;]*;\s*[A-Za-z_]\w*\s*<\s*[A-Za-z_]\w*(?:->|\.)?[A-Za-z_0-9]*[^;]*;[^)]*\).*?\[[A-Za-z_]\w*\]\s*=",
+            "fixed_array_count_primitive",
+            "out_of_bounds_write",
+            "Short helper writes a fixed array through a count-driven loop index.",
+            "Count-driven local writes should remain auditable even when semantic modeling is skipped.",
+            0.78,
+        ),
+        (
+            r"\b(?:pthread_mutex_unlock|UNLOCK|spin_unlock|mtx_unlock)\s*\(",
+            "unlock_primitive",
+            "lock_protocol_violation",
+            "Short helper releases a lock and may rely on a caller-held-lock contract.",
+            "Lock-protocol boundaries should remain visible to later validation.",
+            0.7,
+        ),
+    ]
+    for pattern, kind, category, description, reason, confidence in local_danger_patterns:
+        if re.search(pattern, code, re.IGNORECASE | re.DOTALL):
+            add(
+                kind=kind,
+                category=category,
+                description=description,
+                reason=reason,
+                pattern=pattern,
+                confidence=confidence,
+            )
+
     callees = [
         str(callee)
         for callee in (impl.get("callees") or [])

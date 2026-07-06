@@ -130,15 +130,23 @@ Unregister a previously registered plugin.
 
 Cleanup and shutdown the dispatcher.
 
+### Runtime maintenance APIs
+
+The runtime maintenance surface also includes stream-journal and lock-cache
+entry points used by the benchmark:
+
+- `td_runtime_process_stream_batch(...)`
+- `td_runtime_maintain_lock_cache(...)`
+
 ## Security Testing
 
-This project contains intentionally planted security vulnerabilities for testing purposes. The current benchmark contains 121 scored findings. See `GROUND_TRUTH.md` for complete documentation and `benchmark/PATTERN_COVERAGE.md` for the C memory/concurrency pattern matrix.
+This project contains intentionally planted security vulnerabilities for testing purposes. The current benchmark contains 139 scored findings. See `GROUND_TRUTH.md` for complete documentation and `benchmark/PATTERN_COVERAGE.md` for the C memory/concurrency pattern matrix.
 
 ### Vulnerability Categories
 
-1. **Memory Corruption**: Bounds bugs, off-by-one writes, stack overflow, integer overflow, signed/unsigned conversion, format string
-2. **Lifetime Issues**: Use-after-free, double free, memory leak, null pointer dereference, invalid free, stale fd, stale mmap pointer
-3. **Concurrency**: Data race, refcount race, deadlock, missing unlock, lost wakeup, unsafe publication, callback under lock, TOCTOU
+1. **Memory Corruption**: Bounds bugs, heap overflow, under-read/underwrite, off-by-one writes, stack overflow, integer overflow, signed/unsigned conversion, format string
+2. **Lifetime Issues**: Use-after-free, double free, memory leak, null pointer dereference, invalid free, stale fd, stale mmap pointer, expired pointer
+3. **Concurrency and Resources**: Data race, refcount race, deadlock, missing/invalid unlock, lost wakeup, unsafe publication, callback under lock, TOCTOU, resource allocation without limits
 
 ### Testing Tools
 

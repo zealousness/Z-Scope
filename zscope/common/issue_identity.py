@@ -256,7 +256,7 @@ def semantic_category_alias(structured_category: str, inferred_category: str = "
     return ""
 
 
-def issue_rank(issue: Dict[str, Any]) -> tuple[int, int, int, float, int]:
+def issue_rank(issue: Dict[str, Any]) -> tuple[int, int, int, int, float, int]:
     status_order = {
         "validated": 4,
         "verified": 4,
@@ -276,9 +276,49 @@ def issue_rank(issue: Dict[str, Any]) -> tuple[int, int, int, float, int]:
         confidence = float(issue.get("confidence", 0) or 0)
     except (TypeError, ValueError):
         confidence = 0.0
+    precision = issue_precision_rank(issue)
     source_rank = structured_evidence_rank(issue)
     detail_len = len(str(issue.get("reasoning") or issue.get("description") or ""))
-    return status, severity, source_rank, confidence, detail_len
+    return status, severity, precision, source_rank, confidence, detail_len
+
+
+def issue_precision_rank(issue: Dict[str, Any]) -> int:
+    """Prefer precise sink/category reports over broad static audit candidates."""
+    category = str(
+        issue.get("category") or issue.get("subcategory") or issue.get("defect_class") or ""
+    ).replace("-", "_").lower()
+    group = str(issue.get("candidate_priority_group") or "").lower()
+    finding_kind = str(issue.get("finding_kind") or "").lower()
+    generic_categories = {
+        "integer_overflow",
+        "protocol_validation",
+        "resource_allocation_without_limits",
+        "version_filtering",
+    }
+    exact_categories = {
+        "bounds",
+        "buffer_overflow",
+        "heap_overflow",
+        "buffer_overread",
+        "buffer_over_read",
+        "buffer_underread",
+        "buffer_underwrite",
+        "buffer_underflow",
+        "double_free",
+        "fd_leak",
+        "invalid_free",
+        "memory_leak",
+        "signed_unsigned",
+        "stack_overflow",
+        "use_after_free",
+    }
+    if finding_kind == "audit_observation" or group == "generic_audit" or category in generic_categories:
+        return 0
+    if group == "exact_sink" or category in exact_categories:
+        return 3
+    if category:
+        return 2
+    return 1
 
 
 def structured_evidence_rank(issue: Dict[str, Any]) -> int:
@@ -291,6 +331,16 @@ def structured_evidence_rank(issue: Dict[str, Any]) -> int:
         or ""
     ).lower()
     rule = str(issue.get("rule") or pack.get("rule") or issue.get("id") or "").lower()
+    category = str(
+        issue.get("category") or issue.get("subcategory") or issue.get("defect_class") or ""
+    ).replace("-", "_").lower()
+    if source == "clang_ast_cfg" and category in {
+        "integer_overflow",
+        "protocol_validation",
+        "resource_allocation_without_limits",
+        "version_filtering",
+    }:
+        return 0
     if source in {
         "clang_ast_cfg",
         "graph",
@@ -1823,7 +1873,12 @@ _KNOWN_CATEGORIES = {
     "api_contract_violation",
     "backend_signal",
     "bounds",
+    "buffer_overread",
+    "buffer_over_read",
     "buffer_overflow",
+    "buffer_underflow",
+    "buffer_underread",
+    "buffer_underwrite",
     "busy_loop",
     "busy_wait_loop",
     "command_injection",
@@ -1842,6 +1897,7 @@ _KNOWN_CATEGORIES = {
     "format_string",
     "global_mode_race",
     "held_lock_callback",
+    "heap_overflow",
     "integer_overflow",
     "integer_truncation",
     "invalid_free",
@@ -1849,9 +1905,11 @@ _KNOWN_CATEGORIES = {
     "logic_error",
     "log_amplification",
     "lost_wakeup",
+    "lock_protocol_violation",
     "memory_leak",
     "memory_safety",
     "missing_refcount",
+    "missing_fd_release",
     "missing_unlock",
     "null_pointer_dereference",
     "object_publication",
@@ -1869,6 +1927,7 @@ _KNOWN_CATEGORIES = {
     "resource_leak",
     "resource_lifecycle",
     "resource_management",
+    "resource_allocation_without_limits",
     "semantic_mismatch",
     "shared_state_race",
     "shared_memory_race",
@@ -1891,7 +1950,12 @@ _KNOWN_CATEGORIES = {
     "toctou",
     "toctou_race",
     "uninitialized_output",
+    "uninitialized_pointer",
     "uninitialized_read",
+    "unchecked_allocation",
+    "untrusted_pointer",
+    "out_of_bounds_write",
+    "out_of_range_pointer_offset",
     "use_after_free",
     "use_after_close",
     "version_filtering",
@@ -1906,6 +1970,7 @@ _COMMAND_VALIDATION_ALIASES = {
 
 
 _CATEGORY_ALIASES = {
+    "buffer_over_read": "buffer_overread",
     "busy_wait_loop": "busy_loop",
     "file_descriptor_leak": "fd_leak",
     "integer_truncation": "signed_unsigned",
@@ -1951,6 +2016,7 @@ _CATEGORY_FAMILIES = {
         "resource_lifecycle",
         "resource_management",
         "partial_resource_leak",
+        "resource_allocation_without_limits",
         "missing_refcount",
         "realloc_misuse",
     },
@@ -1964,13 +2030,24 @@ _CATEGORY_FAMILIES = {
     },
     "bounds": {
         "bounds",
+        "buffer_overread",
+        "buffer_over_read",
         "buffer_overflow",
+        "buffer_underflow",
+        "buffer_underread",
+        "buffer_underwrite",
+        "heap_overflow",
         "integer_overflow",
         "integer_truncation",
         "size_limit_mismatch",
         "off_by_one",
         "stack_overflow",
         "signed_unsigned",
+        "out_of_bounds_write",
+        "out_of_range_pointer_offset",
+        "unchecked_allocation",
+        "untrusted_pointer",
+        "uninitialized_pointer",
         "alignment",
     },
     "type_contract": {
@@ -1988,6 +2065,7 @@ _CATEGORY_FAMILIES = {
     },
     "lock": {
         "deadlock",
+        "lock_protocol_violation",
         "missing_unlock",
         "held_lock_callback",
         "lost_wakeup",

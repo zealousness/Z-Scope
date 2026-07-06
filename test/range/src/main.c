@@ -1,4 +1,4 @@
-﻿#include "../include/task_dispatcher.h"
+#include "../include/task_dispatcher.h"
 #include "../include/common.h"
 #include "../internal/network.ph"
 #include "../internal/parser.ph"
@@ -738,6 +738,21 @@ int td_runtime_shutdown_session(const char* path, int project_id,
     return _runtime_shutdown_local_session(path, project_id, reserve_size);
 }
 
+int td_runtime_process_stream_batch(int fd, const char* journal_path,
+                                    const unsigned char* wire, size_t wire_len,
+                                    uint32_t queue_id,
+                                    unsigned char* out, size_t out_size) {
+    return _runtime_process_stream_batch(fd, journal_path, wire, wire_len,
+                                         queue_id, out, out_size);
+}
+
+int td_runtime_maintain_lock_cache(const char* cache_name,
+                                   uint32_t worker_id,
+                                   uint32_t flags,
+                                   plugin_callback_t cb) {
+    return _runtime_maintain_lock_cache(cache_name, worker_id, flags, cb);
+}
+
 int td_run_runtime_maintenance(int shm_fd, const char* shm_name,
                          const unsigned char* wire, size_t wire_len,
                          unsigned char* out, size_t out_size) {
@@ -773,6 +788,10 @@ int td_run_runtime_maintenance(int shm_fd, const char* shm_name,
     rc |= td_runtime_schedule_event(1, 1, 1);
     rc |= td_runtime_handle_signal(11, response, 1);
     rc |= td_runtime_shutdown_session(stable_name, 3, 4096);
+    rc |= td_runtime_process_stream_batch(shm_fd, stable_name, local_wire,
+                                          sizeof(local_wire), 3,
+                                          response, response_len);
+    rc |= td_runtime_maintain_lock_cache(stable_name, 7, 0, NULL);
 
     return rc;
 }
