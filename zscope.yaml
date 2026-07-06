@@ -168,15 +168,16 @@ indexing:                                  # 代码索引和确定性后端配�
   #     conflicts_with: ["liteos"]          # 可选：声明该共享池不能被哪些互斥池拉入
 
 analysis:                                  # 分析流程和缓存行为配置
-  max_recursion_depth: 3                   # 函数调用递归分析最大深度
+  max_recursion_depth: 3                   # 函数调用递归分析最大深度，0表示禁用，-1表示无限制
   max_function_lines: 500                  # 单个函数超过该行数时限制深度分析，避免上下文过大
   max_tool_iterations: 50                  # 单个 Agent 最大工具调用轮数
   snapshot_dir: .zscope_snapshots          # 快照、检查点、用户配置默认存放目录
   enable_snapshot_cache: true              # 是否启用函数实现和语义快照缓存
   user_config_db: ""                       # 用户配置 workbook 或目录；为空时使用 {snapshot_dir}/user_config.xlsx
   parallel_workers: 5                      # 批量入口扫描时的并发 worker 数
+  enable_global_model: false               # 是否在批量入口分析前启用全局建模；默认关闭以保留现有 per-entry 逻辑
   max_premodel_depth: 3                    # 语义预建模时向下展开 callee 的最大深度，0表示禁用，-1表示无限制
-  max_premodel_callees: 20                 # 语义预建模每层最多展开的 callee 数量，0表示禁用，-1表示无限制
+  max_premodel_callees: 5                  # 语义预建模每层最多展开的 callee 数量，0表示禁用，-1表示无限制
   trivial_function_max_lines: 5            # 小于等于该有效行数的函数可视为 trivial，减少建模开销
   enable_subagent_workers: true            # 是否允许全局启用 Deep Worker 子 Agent
   max_subagent_tickets: 4                  # Deep Worker 执行预算；候选点仍会全量保留并传给主 Agent
