@@ -7,7 +7,7 @@ if [[ ! -r /proc/version ]] || ! grep -qiE 'microsoft|wsl' /proc/version; then
   exit 2
 fi
 
-cd ~/Z-Scope
+cd ~/Z-Scope-baseline
 
 if [[ -f test/range/zscope.local.env ]]; then
   # Local secret-bearing config. This file is ignored by git.

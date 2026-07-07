@@ -1322,6 +1322,203 @@ class CodeIndex:
                 funcs = [f for f in funcs if f.startswith(pattern)]
         return sorted(funcs)[:limit]
 
+    def find_function_infos(
+        self,
+        func_name: str,
+        file_path: str = "",
+        callers_limit: int = 30,
+        callees_limit: int = 30,
+    ) -> List[Dict[str, Any]]:
+        """Return structured function metadata for every matching function record."""
+        query_variants = set(self._function_query_variants(func_name))
+        if not query_variants:
+            return []
+
+        try:
+            callers_limit = max(0, int(callers_limit))
+        except (TypeError, ValueError):
+            callers_limit = 30
+        try:
+            callees_limit = max(0, int(callees_limit))
+        except (TypeError, ValueError):
+            callees_limit = 30
+
+        records: List[Tuple[str, Dict[str, Any]]] = []
+        if file_path:
+            records = self._function_records_for_file_hint(file_path)
+        if not records:
+            with self._cache_lock:
+                records = [(key, dict(info)) for key, info in self._function_index.items()]
+
+        matches: List[Tuple[str, Dict[str, Any]]] = []
+        for index_key, info in records:
+            if file_path and not self._record_matches_file_hint(info, file_path):
+                continue
+            record_variants = self._function_record_query_variants(index_key, info)
+            if query_variants.intersection(record_variants):
+                matches.append((index_key, info))
+
+        matches.sort(
+            key=lambda item: (
+                self._function_info_match_rank(query_variants, item[0], item[1]),
+                str(item[1].get("file") or item[1].get("filename") or ""),
+                int(item[1].get("start_line") or item[1].get("lineNumber") or 0),
+                item[0],
+            )
+        )
+        return [
+            self._function_info_payload(
+                index_key,
+                info,
+                callers_limit=callers_limit,
+                callees_limit=callees_limit,
+            )
+            for index_key, info in matches
+        ]
+
+    def _function_info_match_rank(
+        self,
+        query_variants: set[str],
+        index_key: str,
+        info: Dict[str, Any],
+    ) -> int:
+        if index_key in query_variants or str(info.get("index_name") or "") in query_variants:
+            return 0
+        if str(info.get("qualified_name") or "") in query_variants:
+            return 1
+        if str(info.get("name") or "") in query_variants:
+            return 2
+        return 3
+
+    def _function_info_payload(
+        self,
+        index_key: str,
+        info: Dict[str, Any],
+        *,
+        callers_limit: int,
+        callees_limit: int,
+    ) -> Dict[str, Any]:
+        raw_file = str(info.get("file") or info.get("filename") or "")
+        function_name = str(
+            info.get("name")
+            or info.get("qualified_name")
+            or index_key
+        )
+        payload = {
+            "function_name": function_name,
+            "file_path": self._normalize_index_file_value(raw_file),
+            "index_name": str(info.get("index_name") or index_key),
+            "start_line": self._safe_int(info.get("start_line") or info.get("lineNumber")),
+            "end_line": self._safe_int(info.get("end_line") or info.get("lineNumberEnd")),
+            "signature": str(info.get("signature") or f"{function_name}(...)"),
+            "callers": self._function_info_callers(
+                index_key,
+                raw_file,
+                limit=callers_limit,
+            ),
+            "callees": self._function_info_callees(
+                index_key,
+                limit=callees_limit,
+            ),
+        }
+        return payload
+
+    def _function_info_callers(
+        self,
+        index_key: str,
+        raw_file: str,
+        *,
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        if limit <= 0 or not self._backend:
+            return []
+        try:
+            callers = self.get_callers(index_key, limit=limit, callee_file=raw_file)
+        except Exception as exc:
+            logger.debug("Caller lookup failed for %s: %s", index_key, exc)
+            return []
+        return [self._normalize_function_info_caller(row) for row in callers[:limit]]
+
+    def _function_info_callees(
+        self,
+        index_key: str,
+        *,
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        if limit <= 0 or not self._backend:
+            return []
+        try:
+            callees = self.get_callees(index_key, limit=limit)
+        except Exception as exc:
+            logger.debug("Callee lookup failed for %s: %s", index_key, exc)
+            return []
+        return [self._normalize_function_info_callee(row) for row in callees[:limit]]
+
+    def _normalize_function_info_caller(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "caller_name": str(row.get("name") or row.get("caller_name") or ""),
+            "caller_file": self._normalize_index_file_value(
+                str(row.get("filename") or row.get("caller_file") or row.get("file") or "")
+            ),
+            "callsite_line": self._safe_int(
+                row.get("lineNumber")
+                or row.get("callsite_line")
+                or row.get("call_line")
+                or row.get("line")
+            ),
+        }
+
+    def _normalize_function_info_callee(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        callee_name = str(row.get("name") or row.get("callee_name") or "")
+        callee_file = str(row.get("filename") or row.get("callee_file") or row.get("file") or "")
+        if not callee_file and callee_name:
+            callee_file = self._function_file_for_query(callee_name)
+        return {
+            "callee_name": callee_name,
+            "callee_file": self._normalize_index_file_value(callee_file),
+            "callsite_line": self._safe_int(
+                row.get("lineNumber")
+                or row.get("callsite_line")
+                or row.get("call_line")
+                or row.get("line")
+            ),
+            "call_type": self._function_info_call_type(row),
+        }
+
+    def _function_info_call_type(self, row: Dict[str, Any]) -> str:
+        backend_name = str(getattr(self, "backend_name", "") or "").lower()
+        if backend_name not in {"svf", "unified"}:
+            return "direct"
+        raw = str(row.get("call_type") or "").strip().lower()
+        if raw in {"direct", "indirect"}:
+            return raw
+        indirect_markers = ("source", "svf_group", "svf_groups", "confidence")
+        if any(row.get(marker) not in (None, "", []) for marker in indirect_markers):
+            return "indirect"
+        return "direct"
+
+    def _function_file_for_query(self, func_name: str) -> str:
+        lookup_name = self._resolve_function_name(func_name)
+        with self._cache_lock:
+            info = self._function_index.get(lookup_name) or {}
+        return str(info.get("file") or info.get("filename") or "")
+
+    def _normalize_index_file_value(self, file_value: str) -> str:
+        normalized = str(file_value or "").replace("\\", "/").strip()
+        if not normalized or normalized.startswith("[") or normalized.startswith("<"):
+            return normalized
+        try:
+            return self._normalize_path(self._resolve_file_path(normalized))
+        except Exception:
+            return normalized
+
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
     # ── New Joern-powered methods ──
 
     def get_callers(
