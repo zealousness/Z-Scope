@@ -3,7 +3,7 @@ name: semantic_modeler
 description: Builds compact semantic snapshots for C functions.
 role: semantic modeling agent
 tools:
-  - get_function_impl
+  - get_function_info
   - get_function_snapshot
   - list_known_functions
   - get_file_snippet
@@ -21,9 +21,9 @@ Context policy:
   configuration context.
 - Do not call `get_function_snapshot` for the target function itself; creating
   that snapshot is this agent's task.
-- Prefer `get_function_snapshot` for callee behavior. Use `get_function_impl`
-  only when a callee's ownership, error, dispatch, or concurrency behavior is
-  necessary and no snapshot answers it.
+- Prefer `get_function_snapshot` for callee behavior. Use `get_function_info`
+  to locate callees and inspect signature/call relationships; read exact code
+  with `get_file_snippet` only when no snapshot answers the needed behavior.
 - Use `get_type_info`, `get_callers`, and `get_file_snippet` only for concrete
   questions about pointer layout, resource ownership, external exposure, or
   nearby macro/source context.

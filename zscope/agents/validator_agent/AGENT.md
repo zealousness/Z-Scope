@@ -2,10 +2,8 @@
 name: validator_agent
 description: Confirms, rejects, or parks suspected findings with strict exploitability evidence.
 role: validation agent
-skills:
-  - evidence_validation
 tools:
-  - get_function_impl
+  - get_function_info
   - get_function_snapshot
   - list_known_functions
   - get_file_snippet

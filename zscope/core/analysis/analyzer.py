@@ -3823,6 +3823,7 @@ class Analyzer:
         from ...tools.data_flow import GetDataFlowTool
         from ...tools.deep_call_context import GetDeepCallContextTool
         from ...tools.file_snippet import GetFileSnippetTool
+        from ...tools.function_info import GetFunctionInfoTool
         from ...tools.function_pointers import FindFunctionPointersTool
         from ...tools.list_functions import ListFunctionsTool
         from ...tools.pointer_alias import QueryPointerAliasTool
@@ -3835,6 +3836,7 @@ class Analyzer:
         )
         tools = [
             GetFunctionImplTool(self.code_index, self.user_config),
+            GetFunctionInfoTool(self.code_index, self.user_config),
             GetFunctionSnapshotTool(self.snapshot_store, resolver=snapshot_resolver),
             ListFunctionsTool(self.code_index),
             GetFileSnippetTool(self.code_index),
