@@ -5,14 +5,14 @@ category: validation
 triggers:
   - candidate finding has been produced
 allowed_tools:
-  - get_function_impl
+  - get_function_info
   - get_function_snapshot
   - list_known_functions
   - get_file_snippet
   - get_call_graph
   - get_type_info
 allowed_mcp_tools:
-  - zscope.code.get_function_impl
+  - zscope.code.get_function_info
   - zscope.get_function_snapshot
 ---
 

@@ -6,13 +6,13 @@ triggers:
   - function implementation is first seen
   - callee snapshot is missing or stale
 allowed_tools:
-  - get_function_impl
+  - get_function_info
   - get_function_snapshot
   - get_file_snippet
   - get_callers
   - get_type_info
 allowed_mcp_tools:
-  - zscope.code.get_function_impl
+  - zscope.code.get_function_info
   - zscope.get_function_snapshot
 allowed_mcp_resources:
   - zscope://snapshots/list

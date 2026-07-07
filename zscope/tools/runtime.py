@@ -120,6 +120,31 @@ class ToolsRuntime:
             max_lines = arguments.get("max_lines")
             if max_lines is not None:
                 return ensure_type(max_lines, int, "max_lines")
+        elif tool_name == "get_function_info":
+            func_name = arguments.get("func_name")
+            error = (
+                ensure_type(func_name, str, "func_name")
+                if func_name is not None
+                else {
+                    "success": False,
+                    "error": "'func_name' is required; please correct and retry.",
+                }
+            )
+            if error:
+                return error
+            file_path = arguments.get("file_path")
+            if file_path is not None:
+                error = ensure_type(file_path, str, "file_path")
+                if error:
+                    return error
+            callers_limit = arguments.get("callers_limit")
+            if callers_limit is not None:
+                error = ensure_type(callers_limit, int, "callers_limit")
+                if error:
+                    return error
+            callees_limit = arguments.get("callees_limit")
+            if callees_limit is not None:
+                return ensure_type(callees_limit, int, "callees_limit")
         elif tool_name == "get_function_snapshot":
             func_name = arguments.get("func_name")
             error = (
@@ -225,6 +250,32 @@ class ToolsRuntime:
                         "properties": {
                             "func_name": {"type": "string", "description": "Function name"},
                             "max_lines": {"type": "integer", "default": 200},
+                        },
+                        "required": ["func_name"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_function_info",
+                    "description": (
+                        "Retrieve structured metadata and caller/callee relationships "
+                        "for a function by name, optionally scoped by file path."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "func_name": {
+                                "type": "string",
+                                "description": "Function name, qualified name, or index_name",
+                            },
+                            "file_path": {
+                                "type": "string",
+                                "description": "Optional source file path for same-name functions",
+                            },
+                            "callers_limit": {"type": "integer", "default": 30},
+                            "callees_limit": {"type": "integer", "default": 30},
                         },
                         "required": ["func_name"],
                     },
@@ -477,6 +528,8 @@ class ToolsRuntime:
                     return cached
             if tool_name == "get_function_impl":
                 result = self._get_function_impl(**effective_args)
+            elif tool_name == "get_function_info":
+                result = self._get_function_info(**effective_args)
             elif tool_name == "get_function_snapshot":
                 result = self._get_function_snapshot(**effective_args)
             elif tool_name == "list_known_functions":
@@ -558,6 +611,45 @@ class ToolsRuntime:
             end_line=result.get("end_line"),
         )
         return {"success": True, "data": result}
+
+    def _get_function_info(
+        self,
+        func_name: str,
+        file_path: str = "",
+        callers_limit: int = 30,
+        callees_limit: int = 30,
+    ) -> Dict[str, Any]:
+        """Get structured function metadata and call relationships."""
+        matches = self.code_index.find_function_infos(
+            func_name,
+            file_path=file_path,
+            callers_limit=callers_limit,
+            callees_limit=callees_limit,
+        )
+        if not matches and self.user_config:
+            ext = self.user_config.get_external_function(func_name)
+            if ext:
+                matches = [
+                    {
+                        "function_name": func_name,
+                        "file_path": "[external]",
+                        "index_name": func_name,
+                        "start_line": 0,
+                        "end_line": 0,
+                        "signature": f"{func_name}(...)",
+                        "callers": [],
+                        "callees": [],
+                        "is_external": True,
+                    }
+                ]
+        if matches:
+            first = matches[0]
+            self._update_location_context(
+                file_path=first.get("file_path"),
+                start_line=first.get("start_line"),
+                end_line=first.get("end_line"),
+            )
+        return {"success": True, "data": {"match_count": len(matches), "matches": matches}}
 
     def _get_function_snapshot(
         self, func_name: str, file_path: Optional[str] = None
