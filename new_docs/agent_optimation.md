@@ -872,24 +872,6 @@
 - backend-backed macro symbol context 缺少 regex 降级的问题仍存在，详见 `new_docs/known_issues.md` 的 `KI-002`。
 - 用户配置工作簿的两个既有宏资源推断失败仍未处理，与本轮 deterministic snapshot 重构无关。
 
-## 2026-07-20 Snapshot callee call type 保留数组
-
-### 实施完成
-
-- 根据后续决策，snapshot 中 `callees[].call_type` 保留 function info 的聚合数组，不再转换为 scalar。
-- 单一调用类型输出 `["direct"]` 或 `["indirect"]`；同一 callee 同时存在两类调用边时完整保留 `["direct", "indirect"]`。
-- normalization 会过滤非法值、按输入顺序去重，并将历史 scalar 输入兼容为单元素数组。
-- 该变化只作用于 snapshot callee 结构；`callers[].call_type` 和后端原始调用边记录仍保持各自现有结构。
-- 已同步 Semantic Modeler schema、`AGENT.md`、deterministic snapshot policy、测试以及 agent/tool/snapshot redesign 文档。
-- 本阶段覆盖上文阶段 3 中“转换为 scalar、mixed 类型省略”的旧决策；保留旧记录用于说明实施演进。
-
-### 验证
-
-- 聚焦测试通过：`81 passed`。
-- `schema.py` 与 `policy.py` 的 `compileall` 通过。
-- 全量回归：`722 passed, 2 failed`；失败仍为已知的 `ZIP_ALLOC` 和 `ANYXML_MALLOC` 宏资源推断问题，与本次变化无关。
-- 聚焦 `git diff --check` 只报告 `schema.py:146` 的既有行尾空格；本阶段未修改该无关用户内容。
-
 ## 2026-07-20 删除 deterministic suspicious point confidence
 
 ### 实施完成
