@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Runs the full benchmark entry list through the global semantic-modeling path.
-# It intentionally omits benchmark evaluation and disables vulnerability mining,
-# validation, and subagents through zscope.global_model.benchmark.yaml.
+# Continues a completed global-model run with the full benchmark workflow.
+# The existing entry/callee snapshots are reused, then vulnerability mining,
+# validation, reporting, evaluation, and metrics generation are executed.
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../../.." && pwd)"
@@ -31,12 +31,35 @@ export LD_LIBRARY_PATH="$HOME/.local/svf/SVF-SVF-3.2/build/lib:$HOME/.local/svf/
 export LLVM_COMPILER=clang
 export LLVM_CC_NAME=clang-18
 
-run_id="${1:-global_model_$(date +%Y%m%d_%H%M%S)}"
-run_dir="test/range/benchmark_runs/${run_id}"
-mkdir -p "${run_dir}"
-printf '%s\n' "${run_dir}" > test/range/benchmark_runs/latest_global_model_wsl.txt
+latest_run_file="test/range/benchmark_runs/latest_global_model_wsl.txt"
+if [[ -n "${1:-}" ]]; then
+  if [[ -d "$1" ]]; then
+    run_dir="${1%/}"
+  else
+    run_dir="test/range/benchmark_runs/${1%/}"
+  fi
+elif [[ -f "${latest_run_file}" ]]; then
+  run_dir="$(<"${latest_run_file}")"
+else
+  echo "[global-model] ERROR: no previous global-model run was found." >&2
+  echo "[global-model] Pass a run ID/path or create ${latest_run_file}." >&2
+  exit 2
+fi
 
-export Z_SCOPE_GLOBAL_MODEL_SNAPSHOT_DIR="${repo_root}/${run_dir}/snapshots"
+if [[ ! -d "${run_dir}" ]]; then
+  echo "[global-model] ERROR: run directory does not exist: ${run_dir}" >&2
+  exit 2
+fi
+if [[ ! -d "${run_dir}/snapshots" ]]; then
+  echo "[global-model] ERROR: snapshot directory does not exist: ${run_dir}/snapshots" >&2
+  exit 2
+fi
+
+if [[ "${run_dir}" = /* ]]; then
+  export Z_SCOPE_GLOBAL_MODEL_SNAPSHOT_DIR="${run_dir}/snapshots"
+else
+  export Z_SCOPE_GLOBAL_MODEL_SNAPSHOT_DIR="${repo_root}/${run_dir}/snapshots"
+fi
 config_path="test/range/zscope.global_model.benchmark.yaml"
 
 echo "[global-model] repo_root=${repo_root}"
@@ -59,21 +82,24 @@ if ((${#missing_svf[@]})); then
   exit 2
 fi
 
-echo "[global-model] configure CMake"
+echo "[global-model] refresh CMake configuration"
 cmake -S test/range -B test/range/build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-  > "${run_dir}/cmake.log" 2>&1
+  > "${run_dir}/cmake.full_benchmark.log" 2>&1
 
 echo "[global-model] entry coverage preflight"
 python3 test/range/benchmark/check_entry_coverage.py \
   --config "${config_path}" \
   --truth test/range/benchmark/ground_truth.json \
-  > "${run_dir}/entry_coverage.json"
+  > "${run_dir}/entry_coverage.full_benchmark.json"
 
-echo "[global-model] build unified CPG"
-python3 -m zscope.cli.cli -c "${config_path}" --build-cpg \
-  > "${run_dir}/build_cpg.log" 2>&1
+if [[ -f "${run_dir}/zscope_run.log" && ! -f "${run_dir}/global_model_only.log" ]]; then
+  cp "${run_dir}/zscope_run.log" "${run_dir}/global_model_only.log"
+fi
+if [[ -f "${run_dir}/global_model_metrics.json" && ! -f "${run_dir}/global_model_only_metrics.json" ]]; then
+  cp "${run_dir}/global_model_metrics.json" "${run_dir}/global_model_only_metrics.json"
+fi
 
-echo "[global-model] scan: global modeling plus entry snapshot reuse"
+echo "[global-model] scan: reuse snapshots, then run the full benchmark workflow"
 start_epoch="$(date +%s)"
 set +e
 python3 -m zscope.cli.cli -c "${config_path}" --verbose \
@@ -87,6 +113,18 @@ if [[ -f test/range/zscope_batch_report.json ]]; then
 fi
 if [[ -f test/range/zscope_batch_report.md ]]; then
   cp test/range/zscope_batch_report.md "${run_dir}/zscope_batch_report.md"
+fi
+
+if [[ -f "${run_dir}/zscope_batch_report.json" ]]; then
+  python3 scripts/external_benchmark.py evaluate \
+    --report "${run_dir}/zscope_batch_report.json" \
+    --truth test/range/benchmark/ground_truth.json \
+    --output "${run_dir}/evaluation.json"
+  python3 scripts/external_benchmark.py evaluate \
+    --report "${run_dir}/zscope_batch_report.json" \
+    --truth test/range/benchmark/ground_truth.json \
+    --output "${run_dir}/evaluation.with_needs_review.json" \
+    --view with_needs_review
 fi
 
 python3 - "${run_dir}" "${scan_rc}" "$((end_epoch - start_epoch))" <<'PY'
@@ -109,6 +147,9 @@ metrics = {
     "per_entry_premodel_log_count": len(re.findall(r"\[premodel\]", log_text)),
     "per_entry_llm_snapshot_count": len(re.findall(r"\[snapshot-llm\] completed context=entry .*success=true", log_text)),
 }
+evaluation_path = run_dir / "evaluation.json"
+if evaluation_path.exists():
+    metrics["evaluation"] = json.loads(evaluation_path.read_text(encoding="utf-8"))
 (run_dir / "global_model_metrics.json").write_text(
     json.dumps(metrics, ensure_ascii=False, indent=2) + "\n",
     encoding="utf-8",
@@ -118,5 +159,8 @@ PY
 
 python3 test_scripts/generate_global_model_metrics.py "${run_dir}"
 
-echo "[global-model] inspect ${run_dir}/metrics.md, ${run_dir}/global_model_metrics.json, and ${run_dir}/zscope_run.log"
+echo "[global-model] inspect ${run_dir}/evaluation.json, ${run_dir}/metrics.md, ${run_dir}/global_model_metrics.json, and ${run_dir}/zscope_run.log"
+if [[ -f "${run_dir}/evaluation.json" ]]; then
+  exit 0
+fi
 exit "${scan_rc}"
