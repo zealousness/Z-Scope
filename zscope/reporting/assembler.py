@@ -85,9 +85,8 @@ class ReportAssembler:
         report_dict = cast(Dict[str, Any], final_report.to_dict())
         if self.snapshot_store:
             self.snapshot_store.save_final_report(
-                state["entry_func"],
+                state["entry_index_name"],
                 report_dict,
-                state["agent_context"]["location"],
             )
         return report_dict
 

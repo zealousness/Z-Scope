@@ -592,6 +592,19 @@ class JoernClient:
             return cast(Dict[str, Any], result[0])
         return None
 
+    def get_type_decls(self, name: str) -> List[Dict[str, Any]]:
+        """Get every same-name type declaration with its source definition."""
+        escaped_name = str(name or "").replace('"', '\\"')
+        result = self.query(
+            f'cpg.typeDecl.name("{escaped_name}").map(t => Map('
+            f'"name" -> t.name, "filename" -> t.filename, '
+            f'"lineNumber" -> t.lineNumber.getOrElse(-1), '
+            f'"lineNumberEnd" -> t.lineNumberEnd.getOrElse(-1), '
+            f'"full_definition" -> t.code'
+            f')).l.toJson'
+        )
+        return result if isinstance(result, list) else []
+
     def get_type_members(self, name: str) -> List[Dict[str, Any]]:
         """Get members of a type declaration."""
         result = self.query(

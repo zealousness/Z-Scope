@@ -328,7 +328,9 @@ def test_code_index_lists_only_functions_under_file_root(tmp_path):
     code_index = CodeIndex(tmp_path, source_root=tmp_path)
 
     try:
-        assert code_index.list_functions(limit=20, file_root=net_dir) == ["NetRecv"]
+        assert code_index.list_functions(limit=20, file_root=net_dir) == [
+            "NetRecv@src/net/net.c:1-1"
+        ]
     finally:
         code_index.close()
 
@@ -351,7 +353,9 @@ def test_code_index_file_root_filter_uses_source_root_relative_paths(tmp_path):
     code_index = CodeIndex(project_root, source_root=source_root)
 
     try:
-        assert code_index.list_functions(limit=20, file_root="net") == ["NetRecv"]
+        assert code_index.list_functions(limit=20, file_root="net") == [
+            "NetRecv@net/net.c:1-1"
+        ]
     finally:
         code_index.close()
 

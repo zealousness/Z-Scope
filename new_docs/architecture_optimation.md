@@ -2,7 +2,7 @@
 
 ## 2026-07-03
 
-### 已完成
+### 已完成 全局语义建模
 
 - 在 `AnalysisConfig` 中新增 `analysis.enable_global_model`，默认值为 `False`。
 - 在配置加载逻辑中支持从 `zscope.yaml` 读取 `analysis.enable_global_model`。

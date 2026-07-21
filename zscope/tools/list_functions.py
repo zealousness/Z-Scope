@@ -20,7 +20,14 @@ class ListFunctionsTool(BaseTool):
         pattern = arguments.get("pattern")
         limit = arguments.get("limit", 50)
         functions = self.code_index.list_functions(pattern=pattern, limit=limit)
-        return {"success": True, "data": {"functions": functions, "count": len(functions)}}
+        return {
+            "success": True,
+            "data": {
+                "functions": functions,
+                "count": len(functions),
+                "pattern": pattern,
+            },
+        }
 
     def get_schema(self) -> Dict[str, Any]:
         return {
@@ -31,7 +38,10 @@ class ListFunctionsTool(BaseTool):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "pattern": {"type": "string", "description": "Regex pattern to filter function names"},
+                        "pattern": {
+                            "type": "string",
+                            "description": "Regex pattern to filter function names",
+                        },
                         "limit": {"type": "integer", "default": 50},
                     },
                 },

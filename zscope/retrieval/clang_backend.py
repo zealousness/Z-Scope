@@ -21,6 +21,8 @@ class ClangBackend(CodeBackend):
     """
 
     MACRO_EXTRACTOR_VERSION = "1"
+    SYMBOL_CONTEXT_EXTRACTOR_VERSION = "1"
+    TYPE_EXTRACTOR_VERSION = "1"
 
     def __init__(
         self,
@@ -106,6 +108,8 @@ class ClangBackend(CodeBackend):
             db = self._db
             source_root = self._source_path
             force_macro_refresh = self._macro_index_needs_refresh(db)
+            force_symbol_context_refresh = self._symbol_context_index_needs_refresh(db)
+            force_type_refresh = self._type_index_needs_refresh(db)
             if force_macro_refresh:
                 clear_macros = getattr(db, "clear_macro_definitions", None)
                 if callable(clear_macros):
@@ -142,6 +146,8 @@ class ClangBackend(CodeBackend):
             if not file_list:
                 logger.warning("No source files found in %s", self._source_path)
                 self._mark_macro_index_current(db)
+                self._mark_symbol_context_index_current(db)
+                self._mark_type_index_current(db)
                 self._status = "ready"
                 return True
 
@@ -150,7 +156,10 @@ class ClangBackend(CodeBackend):
                 file_hash = ClangExtractor._compute_file_hash(fp)
                 tu_id, changed = db.register_tu_hash(str(fp), file_hash)
                 if not changed and (
-                    normalize_db_path(str(fp)) in force_refresh_paths or force_macro_refresh
+                    normalize_db_path(str(fp)) in force_refresh_paths
+                    or force_macro_refresh
+                    or force_symbol_context_refresh
+                    or force_type_refresh
                 ):
                     changed = True
                     db.mark_tu_pending(tu_id)
@@ -164,6 +173,8 @@ class ClangBackend(CodeBackend):
                     len(file_list),
                 )
                 self._mark_macro_index_current(db)
+                self._mark_symbol_context_index_current(db)
+                self._mark_type_index_current(db)
                 self._status = "ready"
                 return True
 
@@ -198,6 +209,8 @@ class ClangBackend(CodeBackend):
                 stats["success"], stats["skipped"], stats["failed"],
             )
             self._mark_macro_index_current(db)
+            self._mark_symbol_context_index_current(db)
+            self._mark_type_index_current(db)
             self._status = "ready"
             return True
         except Exception as e:
@@ -218,6 +231,43 @@ class ClangBackend(CodeBackend):
         set_metadata = getattr(db, "set_metadata", None)
         if callable(set_metadata):
             set_metadata("macro_extractor_version", self.MACRO_EXTRACTOR_VERSION)
+
+    def _symbol_context_index_needs_refresh(self, db: Any) -> bool:
+        get_metadata = getattr(db, "get_metadata", None)
+        if not callable(get_metadata):
+            return False
+        try:
+            return (
+                str(get_metadata("symbol_context_extractor_version") or "")
+                != self.SYMBOL_CONTEXT_EXTRACTOR_VERSION
+            )
+        except Exception:
+            return False
+
+    def _mark_symbol_context_index_current(self, db: Any) -> None:
+        set_metadata = getattr(db, "set_metadata", None)
+        if callable(set_metadata):
+            set_metadata(
+                "symbol_context_extractor_version",
+                self.SYMBOL_CONTEXT_EXTRACTOR_VERSION,
+            )
+
+    def _type_index_needs_refresh(self, db: Any) -> bool:
+        get_metadata = getattr(db, "get_metadata", None)
+        if not callable(get_metadata):
+            return False
+        try:
+            return (
+                str(get_metadata("type_extractor_version") or "")
+                != self.TYPE_EXTRACTOR_VERSION
+            )
+        except Exception:
+            return False
+
+    def _mark_type_index_current(self, db: Any) -> None:
+        set_metadata = getattr(db, "set_metadata", None)
+        if callable(set_metadata):
+            set_metadata("type_extractor_version", self.TYPE_EXTRACTOR_VERSION)
 
     def _is_path_allowed(self, p: Path) -> bool:
         """Check if a path passes include/exclude filters."""
@@ -310,12 +360,22 @@ class ClangBackend(CodeBackend):
             "lineNumber": func["start_line"],
             "lineNumberEnd": func["end_line"],
             "signature": func.get("signature", f"{name}(...)"),
+            "is_static": bool(func.get("is_static")),
         }
 
     def get_macro_definitions(self, name: str, limit: int = 20) -> List[Dict[str, Any]]:
         if not self._db:
             return []
         return self._db.get_macro_definitions(name, limit=limit)
+
+    def get_function_symbol_context(
+        self,
+        func_name: str,
+        file_path: str = "",
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        if not self._db:
+            return {"referenced_globals": [], "referenced_macros": []}
+        return self._db.get_function_symbol_context(func_name, file_path)
 
     def get_method_callees(self, name: str, limit: int = 30) -> List[Dict[str, Any]]:
         if not self._db:
@@ -337,10 +397,28 @@ class ClangBackend(CodeBackend):
             return []
         return self._db.get_callees(func_name, limit=limit)
 
+    def get_function_info_callees(
+        self,
+        func_name: str,
+        file_path: str = "",
+    ) -> List[Dict[str, Any]]:
+        if not self._db:
+            return []
+        return self._db.get_all_callees(func_name, caller_file=file_path)
+
     def get_type_info(self, type_name: str) -> Optional[Dict[str, Any]]:
         if not self._db:
             return None
         return self._db.get_type_info(type_name)
+
+    def find_type_infos(
+        self,
+        type_name: str,
+        file_path: str = "",
+    ) -> List[Dict[str, Any]]:
+        if not self._db:
+            return []
+        return self._db.find_type_infos(type_name, file_path=file_path)
 
     def get_data_flow(
         self, source_func: str, source_param: str, sink_pattern: str

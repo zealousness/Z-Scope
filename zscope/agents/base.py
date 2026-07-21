@@ -55,10 +55,18 @@ class ToolCallingAgent(BaseAgent):
         )
         self._tool_by_name = {tool.name: tool for tool in self.tools}
 
-    def _tool_executor(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    def _tool_executor(self, name: str, args: Any) -> Dict[str, Any]:
         tool = self._tool_by_name.get(name)
         if not tool:
             return {"error": f"Unknown tool: {name}"}
+        if not isinstance(args, dict):
+            validation_error = tool.validate_arguments(args)
+            if validation_error:
+                return validation_error
+            return {
+                "success": False,
+                "error": "Tool arguments must be a JSON object; please correct the payload and retry.",
+            }
         policy_error = self.tool_policy.enforce_tool(
             name,
             args,
@@ -67,6 +75,9 @@ class ToolCallingAgent(BaseAgent):
         )
         if policy_error:
             return policy_error
+        validation_error = tool.validate_arguments(args)
+        if validation_error:
+            return validation_error
         start = time.perf_counter()
         result = cast(Dict[str, Any], tool.execute(args))
         self.tool_policy.run_post_hooks(
@@ -204,6 +215,7 @@ class JsonToolAgent(ToolCallingAgent):
         truncated_error: str = "Max iterations reached without finding a JSON result in history",
         post_process: Optional[PostProcessor] = None,
         json_output_spec: Optional[JsonOutputSpec] = None,
+        require_structured_finalization: bool = False,
     ) -> AgentResponse:
         try:
             result = self._run_tool_conversation(
@@ -214,6 +226,22 @@ class JsonToolAgent(ToolCallingAgent):
             content = str(result.get("content") or "")
             conversation = result.get("conversation", [])
             ctx_tokens = int(result.get("context_tokens", 0) or 0)
+
+            if (
+                require_structured_finalization
+                and json_output_spec
+                and not result.get("loop_guard_triggered")
+            ):
+                return self._run_json_structured_finalization(
+                    messages,
+                    result,
+                    json_output_spec=json_output_spec,
+                    extractor=extractor,
+                    trace_label=trace_label,
+                    parse_label=parse_label,
+                    max_json_retries=max_json_retries,
+                    post_process=post_process,
+                )
 
             parsed = self._extract_json_output(
                 content,
@@ -455,6 +483,187 @@ class JsonToolAgent(ToolCallingAgent):
             return None
         return data if isinstance(data, dict) else None
 
+    def _run_json_structured_finalization(
+        self,
+        messages: List[Dict[str, Any]],
+        result: Dict[str, Any],
+        *,
+        json_output_spec: JsonOutputSpec,
+        extractor: JsonExtractor,
+        trace_label: str,
+        parse_label: str,
+        max_json_retries: int = 1,
+        post_process: Optional[PostProcessor] = None,
+    ) -> AgentResponse:
+        """Finalize a tool conversation through the schema-aware API path."""
+        chat_completion = getattr(self.llm_client, "chat_completion", None)
+        metadata = self._json_result_metadata(result, json_output_spec)
+        if not callable(chat_completion):
+            return AgentResponse(
+                success=False,
+                data={},
+                error=f"Failed to finalize {parse_label}: chat completion is unavailable",
+                metadata=metadata,
+            )
+
+        final_tool_schema = self._final_json_tool_schema(json_output_spec)
+        result_conversation = result.get("conversation")
+        base_messages = (
+            list(result_conversation)
+            if isinstance(result_conversation, list) and result_conversation
+            else list(messages)
+        )
+        last_result = result
+        last_error = "structured_finalization_failed"
+        total_attempts = 1 + max(0, max_json_retries)
+
+        for attempt in range(1, total_attempts + 1):
+            if attempt == 1:
+                self._increment_metadata_counter(
+                    metadata,
+                    json_output_spec,
+                    "finalization_attempted",
+                )
+                final_prompt = self._json_finalization_prompt(
+                    parse_label,
+                    json_output_spec=json_output_spec,
+                )
+                trace_phase = "json_finalization"
+            else:
+                self._increment_metadata_counter(
+                    metadata,
+                    json_output_spec,
+                    "repair_attempted",
+                )
+                final_prompt = self._json_repair_prompt(
+                    parse_label,
+                    error_type=last_error,
+                    result=last_result,
+                    json_output_spec=json_output_spec,
+                )
+                trace_phase = "json_finalization_repair"
+
+            final_messages = [
+                *base_messages,
+                {"role": "user", "content": final_prompt},
+            ]
+            response = self._call_json_repair_completion(
+                chat_completion,
+                final_messages,
+                final_tool_schema=final_tool_schema,
+                json_output_spec=json_output_spec,
+                trace_label=f"{trace_label}; {trace_phase}={attempt}",
+                trace_iteration=attempt,
+                force_final_tool=True,
+            )
+            if response is None:
+                last_error = "finalization_call_failed"
+                continue
+
+            choice = response.get("choices", [{}])[0]
+            message = choice.get("message", {})
+            self._merge_chat_metadata(
+                metadata,
+                response,
+                final_messages,
+                message,
+                json_output_spec,
+            )
+            final_conversation = [*final_messages, message]
+            tool_calls = message.get("tool_calls") or []
+            if tool_calls:
+                self._increment_metadata_counter(
+                    metadata,
+                    json_output_spec,
+                    "final_tool_call_count",
+                    len(tool_calls),
+                )
+
+            final_result = {
+                "content": str(message.get("content") or ""),
+                "conversation": final_conversation,
+                "message": message,
+                "reasoning_content": message.get("reasoning_content"),
+                "finish_reason": choice.get("finish_reason"),
+                "provider_model": response.get("model")
+                or (getattr(self.llm_client, "models", []) or [""])[0],
+                "tool_call_count": 0,
+                "final_tool_call_count": len(tool_calls),
+                "last_assistant_preview": self._message_preview(message),
+            }
+            parsed = self._extract_json_output(
+                str(final_result.get("content") or ""),
+                final_result,
+                final_conversation,
+                extractor=extractor,
+                json_output_spec=json_output_spec,
+            )
+            if parsed is not None:
+                if post_process:
+                    parsed = post_process(parsed)
+                if attempt == 1:
+                    self._increment_metadata_counter(
+                        metadata,
+                        json_output_spec,
+                        "finalization_accepted",
+                    )
+                else:
+                    self._increment_metadata_counter(
+                        metadata,
+                        json_output_spec,
+                        "repair_accepted",
+                    )
+                    if isinstance(parsed, dict):
+                        parsed.setdefault(
+                            f"{json_output_spec.metadata_prefix}_json_repaired",
+                            True,
+                        )
+                        parsed.setdefault(
+                            f"{json_output_spec.metadata_prefix}_repair_error_type",
+                            last_error,
+                        )
+                return AgentResponse(success=True, data=parsed, metadata=metadata)
+
+            last_error, json_blocks_found = self._classify_json_result_failure(
+                str(final_result.get("content") or ""),
+                final_result,
+                final_conversation,
+                json_output_spec=json_output_spec,
+            )
+            self._log_json_result_failure(
+                attempt=attempt,
+                max_retries=total_attempts,
+                error_type=last_error,
+                phase="structured_finalize",
+                parse_label=parse_label,
+                result=final_result,
+                content=str(final_result.get("content") or ""),
+                json_blocks_found=json_blocks_found,
+            )
+            last_result = final_result
+            base_messages = final_conversation
+
+        if json_output_spec.fallback_empty_payload is not None:
+            fallback = dict(json_output_spec.fallback_empty_payload)
+            self._increment_metadata_counter(
+                metadata,
+                json_output_spec,
+                "repair_fallback_used",
+            )
+            fallback.setdefault(
+                f"{json_output_spec.metadata_prefix}_repair_error_type",
+                last_error,
+            )
+            return AgentResponse(success=True, data=fallback, metadata=metadata)
+
+        metadata[f"{json_output_spec.metadata_prefix}_last_error_type"] = last_error
+        return AgentResponse(
+            success=False,
+            data={},
+            error=f"Failed to finalize {parse_label}: {last_error}",
+            metadata=metadata,
+        )
+
     def _run_json_final_repair(
         self,
         messages: List[Dict[str, Any]],
@@ -480,9 +689,15 @@ class JsonToolAgent(ToolCallingAgent):
 
         final_tool_schema = self._final_json_tool_schema(json_output_spec)
         last_error = error_type
+        result_conversation = result.get("conversation")
+        base_messages = (
+            list(result_conversation)
+            if isinstance(result_conversation, list) and result_conversation
+            else list(messages)
+        )
         for retry in range(1, max(1, max_json_retries) + 1):
             self._increment_metadata_counter(metadata, json_output_spec, "repair_attempted")
-            repair_messages = list(messages)
+            repair_messages = list(base_messages)
             repair_messages.append(
                 {
                     "role": "user",
@@ -502,6 +717,7 @@ class JsonToolAgent(ToolCallingAgent):
                 json_output_spec=json_output_spec,
                 trace_label=f"{trace_label}; json_repair={retry}; error={last_error}",
                 trace_iteration=retry,
+                force_final_tool=True,
             )
             if response is None:
                 last_error = "repair_call_failed"
@@ -564,6 +780,7 @@ class JsonToolAgent(ToolCallingAgent):
                 content=str(repair_result.get("content") or ""),
                 json_blocks_found=json_blocks_found,
             )
+            base_messages = repair_messages
 
         if json_output_spec.fallback_empty_payload is not None:
             fallback = dict(json_output_spec.fallback_empty_payload)
@@ -588,6 +805,7 @@ class JsonToolAgent(ToolCallingAgent):
         json_output_spec: JsonOutputSpec,
         trace_label: str,
         trace_iteration: int,
+        force_final_tool: bool = False,
     ) -> Optional[Dict[str, Any]]:
         response_format = (
             self._json_response_format(json_output_spec)
@@ -595,11 +813,21 @@ class JsonToolAgent(ToolCallingAgent):
             else None
         )
         tools = None if response_format else [final_tool_schema]
+        tool_choice: Any = None
+        if tools:
+            tool_choice = (
+                {
+                    "type": "function",
+                    "function": {"name": json_output_spec.final_tool_name},
+                }
+                if force_final_tool
+                else "auto"
+            )
         try:
             return chat_completion(
                 prompt_messages,
                 tools=tools,
-                tool_choice="auto" if tools else None,
+                tool_choice=tool_choice,
                 response_format=response_format,
                 trace_agent=self.name,
                 trace_label=trace_label,
@@ -625,7 +853,14 @@ class JsonToolAgent(ToolCallingAgent):
                 return chat_completion(
                     prompt_messages,
                     tools=[final_tool_schema],
-                    tool_choice="auto",
+                    tool_choice=(
+                        {
+                            "type": "function",
+                            "function": {"name": json_output_spec.final_tool_name},
+                        }
+                        if force_final_tool
+                        else "auto"
+                    ),
                     trace_agent=self.name,
                     trace_label=f"{trace_label}; structured_fallback=tool",
                     trace_iteration=trace_iteration,
@@ -671,6 +906,20 @@ class JsonToolAgent(ToolCallingAgent):
             f"Diagnostics:\n{json.dumps(diagnostics, ensure_ascii=False, indent=2)}\n\n"
             f"Return by calling {json_output_spec.final_tool_name}, or return exactly "
             f"one JSON object with type={json_output_spec.type_name}."
+        )
+
+    @staticmethod
+    def _json_finalization_prompt(
+        parse_label: str,
+        *,
+        json_output_spec: JsonOutputSpec,
+    ) -> str:
+        return (
+            f"Finalize {parse_label} from the evidence already collected in this "
+            "conversation. Do not request more tools or context. Produce exactly one "
+            f"{json_output_spec.type_name} payload using "
+            f"{json_output_spec.final_tool_name} or the configured structured-output "
+            "schema."
         )
 
     @staticmethod

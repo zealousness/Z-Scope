@@ -452,6 +452,7 @@ class ClangExtractor:
         func_rows: List[Tuple[Any, ...]],
         call_rows: List[Tuple[Any, ...]],
         scope: Optional[List[str]] = None,
+        parent_kind: int = 0,
     ):
         """递归处理单个 LSP DocumentSymbol 节点。"""
         scope = list(scope or [])
@@ -464,8 +465,13 @@ class ClangExtractor:
 
         if kind in (self.SK_FUNCTION, self.SK_METHOD, self.SK_CONSTRUCTOR):
             stored_name = self._qualify_cpp_symbol_name(name, scope)
-            signature = f"{detail} {name}" if detail else f"{name}(...)"
-            is_static = "static" in detail if detail else False
+            backend_signature = f"{detail} {name}" if detail else f"{name}(...)"
+            signature = (
+                self._source_function_signature(file_path, start_line, end_line)
+                or backend_signature
+            )
+            static_text = f"{detail} {signature.split('(', 1)[0]}"
+            is_static = bool(re.search(r"\bstatic\b", static_text))
             is_inline = "inline" in detail if detail else False
             is_decl = self._is_function_declaration_symbol(
                 file_path,
@@ -495,10 +501,20 @@ class ClangExtractor:
                 )
 
         elif kind in (self.SK_STRUCT, self.SK_CLASS, self.SK_ENUM):
-            kind_str = {self.SK_STRUCT: "struct", self.SK_CLASS: "class", self.SK_ENUM: "enum"}.get(
-                kind, "struct"
+            full_definition = self._source_range_text(file_path, range_info)
+            kind_str = self._source_type_kind(
+                full_definition,
+                kind,
             )
-            type_id = db.insert_type(name, kind_str, rel_path, start_line, end_line, tu_id=tu_id)
+            type_id = db.insert_type(
+                name,
+                kind_str,
+                rel_path,
+                start_line,
+                end_line,
+                full_definition=full_definition,
+                tu_id=tu_id,
+            )
             # 处理子成员
             for idx, child in enumerate(sym.get("children", [])):
                 child_name = child.get("name", "")
@@ -506,13 +522,30 @@ class ClangExtractor:
                 if child_name:
                     db.insert_type_member(type_id, child_name, child_detail, idx)
 
-        elif kind == self.SK_VARIABLE and start_line <= 5 or "extern" in detail:
-            # 全局变量（粗略判断：文件顶部或 extern）
-            db._conn.execute(
-                "INSERT OR REPLACE INTO global_variables "
-                "(name, type_str, file_path, line, is_extern) VALUES (?, ?, ?, ?, ?)",
-                (name, detail, rel_path, start_line, int("extern" in detail)),
+        elif kind == self.SK_VARIABLE and parent_kind not in {
+            self.SK_FUNCTION,
+            self.SK_METHOD,
+            self.SK_CONSTRUCTOR,
+            self.SK_STRUCT,
+            self.SK_CLASS,
+            self.SK_ENUM,
+        }:
+            metadata = self._global_variable_metadata(
+                file_path,
+                name,
+                start_line,
+                end_line,
+                detail,
             )
+            insert_global = getattr(db, "insert_global_variable", None)
+            if callable(insert_global):
+                insert_global(name, detail, rel_path, start_line, **metadata)
+            else:
+                db._conn.execute(
+                    "INSERT OR REPLACE INTO global_variables "
+                    "(name, type_str, file_path, line, is_extern) VALUES (?, ?, ?, ?, ?)",
+                    (name, detail, rel_path, start_line, int(metadata["is_extern"])),
+                )
 
         # 递归处理子符号
         child_scope = scope
@@ -528,7 +561,130 @@ class ClangExtractor:
                 func_rows,
                 call_rows,
                 child_scope,
+                kind,
             )
+
+    def _global_variable_metadata(
+        self,
+        file_path: Path,
+        name: str,
+        start_line: int,
+        end_line: int,
+        detail: str,
+    ) -> Dict[str, Any]:
+        lines = self._read_source_lines(file_path) or []
+        start_idx = max(0, int(start_line or 1) - 1)
+        end_idx = min(len(lines), max(start_idx + 1, int(end_line or start_line or 1)))
+        declaration = re.sub(r"\s+", " ", "".join(lines[start_idx:end_idx])).strip()
+        detail_text = str(detail or "")
+        combined = f"{declaration} {detail_text}"
+        is_extern = bool(re.search(r"\bextern\b", combined))
+        if re.search(r"\bstatic\b", combined):
+            storage_class = "static"
+        elif is_extern:
+            storage_class = "extern"
+        elif re.search(r"\b(?:_Thread_local|thread_local)\b", combined):
+            storage_class = "thread_local"
+        else:
+            storage_class = "global"
+
+        qualifiers = [
+            qualifier
+            for qualifier, pattern in (
+                ("const", r"\bconst\b"),
+                ("volatile", r"\bvolatile\b"),
+                ("atomic", r"\b(?:_Atomic|atomic_)"),
+            )
+            if re.search(pattern, combined)
+        ]
+        initializer = ""
+        assignment = re.search(r"(?<![=!<>])=(?!=)(?P<value>.*?);?\s*$", declaration)
+        if assignment:
+            initializer = str(assignment.group("value") or "").strip()[:500]
+        definition_kind = "declaration" if is_extern and not initializer else "definition"
+        return {
+            "is_extern": is_extern,
+            "storage_class": storage_class,
+            "qualifiers": ",".join(qualifiers),
+            "initializer": initializer,
+            "definition_kind": definition_kind,
+        }
+
+    def _source_function_signature(
+        self,
+        file_path: Path,
+        start_line: int,
+        end_line: int,
+    ) -> str:
+        lines = self._read_source_lines(file_path)
+        if lines is None or start_line <= 0:
+            return ""
+
+        start_idx = max(0, start_line - 1)
+        end_idx = min(len(lines), max(start_idx + 1, end_line))
+        head_lines: List[str] = []
+        for raw in lines[start_idx:min(len(lines), end_idx + 40)]:
+            line = str(raw or "").strip()
+            if not line:
+                continue
+            before_brace = line.split("{", 1)[0].strip()
+            if before_brace:
+                head_lines.append(before_brace)
+            if "{" in line or ";" in line:
+                break
+
+        signature = re.sub(r"\s+", " ", "\n".join(head_lines)).strip()
+        if not signature or "(" not in signature:
+            return ""
+        if signature.endswith(";"):
+            signature = signature[:-1].strip()
+        return signature
+
+    def _source_range_text(
+        self,
+        file_path: Path,
+        range_info: Dict[str, Any],
+    ) -> str:
+        lines = self._read_source_lines(file_path)
+        if not lines:
+            return ""
+
+        start = range_info.get("start") or {}
+        end = range_info.get("end") or {}
+        start_line = max(0, int(start.get("line") or 0))
+        end_line = max(start_line, int(end.get("line") or start_line))
+        if start_line >= len(lines):
+            return ""
+        end_line = min(end_line, len(lines) - 1)
+        start_character = max(0, int(start.get("character") or 0))
+        has_end_character = "character" in end
+        end_character = max(0, int(end.get("character") or 0))
+
+        if start_line == end_line:
+            raw = lines[start_line]
+            if has_end_character:
+                raw = raw[start_character:end_character]
+            else:
+                raw = raw[start_character:]
+            return raw.strip()
+
+        parts = list(lines[start_line : end_line + 1])
+        parts[0] = parts[0][start_character:]
+        if has_end_character:
+            parts[-1] = parts[-1][:end_character]
+        return "".join(parts).strip()
+
+    def _source_type_kind(self, definition: str, symbol_kind: int) -> str:
+        masked = self._mask_c_comments_and_literals(str(definition or ""))
+        header = masked.split("{", 1)[0]
+        match = re.search(r"\b(struct|union|enum|class)\b", header)
+        if match:
+            return match.group(1)
+        return {
+            self.SK_STRUCT: "struct",
+            self.SK_CLASS: "class",
+            self.SK_ENUM: "enum",
+        }.get(symbol_kind, "unknown")
 
     def _qualify_cpp_symbol_name(self, name: str, scope: List[str]) -> str:
         clean_name = str(name or "").strip()
@@ -588,6 +744,291 @@ class ClangExtractor:
 
         return rows
 
+    def rebuild_function_symbol_refs(self, db: KnowledgeDB) -> int:
+        get_functions = getattr(db, "get_function_records", None)
+        get_globals = getattr(db, "get_global_variables", None)
+        get_macros = getattr(db, "get_all_macro_definitions", None)
+        clear_refs = getattr(db, "clear_function_symbol_refs", None)
+        insert_refs = getattr(db, "insert_function_symbol_refs_batch", None)
+        if not all(
+            callable(method)
+            for method in (get_functions, get_globals, get_macros, clear_refs, insert_refs)
+        ):
+            return 0
+
+        functions = [row for row in get_functions() if not row.get("is_declaration")]
+        globals_by_name = self._records_by_name(get_globals())
+        macros_by_name = self._records_by_name(get_macros())
+        aggregated: Dict[Tuple[str, str, str, str, str, int], str] = {}
+
+        functions_by_file: Dict[str, List[Dict[str, Any]]] = {}
+        for function in functions:
+            functions_by_file.setdefault(str(function.get("file_path") or ""), []).append(function)
+
+        for function_file, file_functions in sorted(functions_by_file.items()):
+            source_path = self._resolve_indexed_source_path(function_file)
+            lines = self._read_source_lines(source_path)
+            if not lines:
+                continue
+            document_opened = False
+            try:
+                document_opened = bool(self.open_document(source_path))
+            except Exception:
+                document_opened = False
+
+            try:
+                for function in file_functions:
+                    self._collect_function_symbol_refs(
+                        function,
+                        function_file,
+                        source_path,
+                        lines,
+                        globals_by_name,
+                        macros_by_name,
+                        aggregated,
+                    )
+            finally:
+                if document_opened:
+                    try:
+                        self.close_document(source_path)
+                    except Exception:
+                        pass
+
+        rows = [(*key, access) for key, access in sorted(aggregated.items())]
+        clear_refs()
+        insert_refs(rows)
+        db.commit()
+        return len(rows)
+
+    def _collect_function_symbol_refs(
+        self,
+        function: Dict[str, Any],
+        function_file: str,
+        source_path: Path,
+        lines: List[str],
+        globals_by_name: Dict[str, List[Dict[str, Any]]],
+        macros_by_name: Dict[str, List[Dict[str, Any]]],
+        aggregated: Dict[Tuple[str, str, str, str, str, int], str],
+    ) -> None:
+        start_line = max(1, int(function.get("start_line") or 1))
+        end_line = min(len(lines), max(start_line, int(function.get("end_line") or start_line)))
+        body_lines = lines[start_line - 1:end_line]
+        local_declarations = self._local_identifier_declaration_lines(
+            "".join(body_lines),
+            str(function.get("signature") or ""),
+            start_line,
+        )
+        for offset, raw_line in enumerate(body_lines):
+            absolute_line = start_line + offset
+            if raw_line.lstrip().startswith("#"):
+                continue
+            masked_line = self._mask_c_comments_and_literals(raw_line)
+            for match in re.finditer(r"\b[A-Za-z_]\w*\b", masked_line):
+                name = match.group(0)
+                global_candidates = globals_by_name.get(name, [])
+                macro_candidates = macros_by_name.get(name, [])
+                if not global_candidates and not macro_candidates:
+                    continue
+
+                definitions = self._definition_locations(
+                    source_path,
+                    absolute_line,
+                    match.start(),
+                )
+                local_line = local_declarations.get(name)
+                is_shadowed = local_line is not None and absolute_line >= local_line
+                if global_candidates and not is_shadowed and not self._is_field_access(
+                    masked_line,
+                    match.start(),
+                ):
+                    global_record = self._resolve_symbol_candidate(
+                        global_candidates,
+                        function_file,
+                        definitions,
+                    )
+                    if global_record is not None:
+                        symbol_file = str(global_record.get("file_path") or "")
+                        key = (
+                            str(function.get("name") or ""),
+                            function_file,
+                            name,
+                            "global",
+                            symbol_file,
+                            absolute_line,
+                        )
+                        aggregated[key] = self._merge_access_kind(
+                            aggregated.get(key, "unknown"),
+                            self._global_access_kind(masked_line, match.start(), match.end()),
+                        )
+
+                if macro_candidates:
+                    macro_record = self._resolve_symbol_candidate(
+                        macro_candidates,
+                        function_file,
+                        definitions,
+                    )
+                    if macro_record is None:
+                        continue
+                    if bool(macro_record.get("is_function_like")) and not re.match(
+                        r"\s*\(", masked_line[match.end():]
+                    ):
+                        continue
+                    symbol_file = str(macro_record.get("file_path") or "")
+                    key = (
+                        str(function.get("name") or ""),
+                        function_file,
+                        name,
+                        "macro",
+                        symbol_file,
+                        absolute_line,
+                    )
+                    aggregated[key] = "unknown"
+
+    @staticmethod
+    def _records_by_name(records: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+        result: Dict[str, List[Dict[str, Any]]] = {}
+        for record in records:
+            name = str(record.get("name") or "")
+            if name:
+                result.setdefault(name, []).append(dict(record))
+        for rows in result.values():
+            rows.sort(key=lambda row: (str(row.get("file_path") or ""), int(row.get("line") or 0)))
+        return result
+
+    def _resolve_indexed_source_path(self, file_path: str) -> Path:
+        path = Path(str(file_path or ""))
+        if not path.is_absolute():
+            path = self.project_root / path
+        return path.resolve()
+
+    def _definition_locations(
+        self,
+        file_path: Path,
+        line: int,
+        character: int,
+    ) -> List[Tuple[str, int]]:
+        try:
+            definitions = self.get_definition(file_path, max(0, line - 1), max(0, character))
+        except Exception:
+            return []
+        locations: List[Tuple[str, int]] = []
+        for definition in definitions or []:
+            if not isinstance(definition, dict):
+                continue
+            uri = definition.get("targetUri") or definition.get("uri") or ""
+            target_file = self._uri_to_project_path(str(uri))
+            range_info = (
+                definition.get("targetSelectionRange")
+                or definition.get("targetRange")
+                or definition.get("range")
+                or {}
+            )
+            start = range_info.get("start", {}) if isinstance(range_info, dict) else {}
+            target_line = int(start.get("line") or 0) + 1
+            if target_file:
+                locations.append((target_file, target_line))
+        return locations
+
+    def _resolve_symbol_candidate(
+        self,
+        candidates: List[Dict[str, Any]],
+        function_file: str,
+        definitions: List[Tuple[str, int]],
+    ) -> Optional[Dict[str, Any]]:
+        if definitions:
+            for target_file, target_line in definitions:
+                for candidate in candidates:
+                    candidate_file = str(candidate.get("file_path") or "")
+                    candidate_line = int(candidate.get("line") or 0)
+                    if self._paths_match(target_file, candidate_file) and (
+                        target_line <= 0 or candidate_line <= 0 or target_line == candidate_line
+                    ):
+                        return candidate
+            return None
+
+        ranked = sorted(
+            candidates,
+            key=lambda candidate: (
+                0 if self._paths_match(function_file, str(candidate.get("file_path") or "")) else 1,
+                0 if str(candidate.get("definition_kind") or "") == "definition" else 1,
+                int(bool(candidate.get("is_extern"))),
+                str(candidate.get("file_path") or ""),
+                int(candidate.get("line") or 0),
+            ),
+        )
+        return ranked[0] if ranked else None
+
+    @staticmethod
+    def _paths_match(left: str, right: str) -> bool:
+        left_value = str(left or "").replace("\\", "/").lstrip("./")
+        right_value = str(right or "").replace("\\", "/").lstrip("./")
+        if not left_value or not right_value:
+            return False
+        return (
+            left_value == right_value
+            or left_value.endswith("/" + right_value)
+            or right_value.endswith("/" + left_value)
+        )
+
+    @staticmethod
+    def _is_field_access(line: str, start: int) -> bool:
+        prefix = line[:start].rstrip()
+        return prefix.endswith(".") or prefix.endswith("->")
+
+    @staticmethod
+    def _local_identifier_declaration_lines(
+        body: str,
+        signature: str,
+        start_line: int,
+    ) -> Dict[str, int]:
+        names: Dict[str, int] = {}
+        signature_text = str(signature or "")
+        if "(" in signature_text and ")" in signature_text:
+            params = signature_text[signature_text.find("(") + 1:signature_text.rfind(")")]
+            for parameter in params.split(","):
+                identifiers = re.findall(r"\b[A-Za-z_]\w*\b", parameter)
+                if identifiers and identifiers[-1] not in {"void", "const", "volatile"}:
+                    names[identifiers[-1]] = start_line
+
+        declaration_pattern = re.compile(
+            r"(?:^|[;{}])\s*(?:const\s+|volatile\s+|static\s+|register\s+|auto\s+|"
+            r"signed\s+|unsigned\s+|short\s+|long\s+|_Atomic\s+)*"
+            r"(?:void|char|int|float|double|size_t|ssize_t|bool|_Bool|"
+            r"struct\s+[A-Za-z_]\w*|union\s+[A-Za-z_]\w*|enum\s+[A-Za-z_]\w*)"
+            r"(?:\s+|\s*\*+\s*)(?P<name>[A-Za-z_]\w*)\s*(?=[=;,\[])"
+        )
+        for match in declaration_pattern.finditer(body):
+            declaration_line = start_line + body[:match.start("name")].count("\n")
+            name = match.group("name")
+            names[name] = min(names.get(name, declaration_line), declaration_line)
+        return names
+
+    @staticmethod
+    def _global_access_kind(line: str, start: int, end: int) -> str:
+        prefix = line[:start].rstrip()
+        suffix = line[end:]
+        if prefix.endswith("++") or prefix.endswith("--"):
+            return "read_write"
+        operation = re.match(
+            r"\s*(?:\[[^\]]*\]|\.\s*[A-Za-z_]\w*|->\s*[A-Za-z_]\w*)*\s*"
+            r"(?P<op>\+\+|--|\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<=|>>=|=(?!=))",
+            suffix,
+        )
+        if not operation:
+            return "read"
+        return "write" if operation.group("op") == "=" else "read_write"
+
+    @staticmethod
+    def _merge_access_kind(left: str, right: str) -> str:
+        values = {left or "unknown", right or "unknown"}
+        if "read_write" in values or {"read", "write"}.issubset(values):
+            return "read_write"
+        if "write" in values:
+            return "write"
+        if "read" in values:
+            return "read"
+        return "unknown"
+
     def run_batch_extraction(
         self,
         file_list: List[Path],
@@ -641,6 +1082,8 @@ class ClangExtractor:
                 stats["failed"],
             )
 
+        ref_count = self.rebuild_function_symbol_refs(db)
+        logger.info("Rebuilt %d function symbol references", ref_count)
         return stats
 
     def _extract_call_edges(

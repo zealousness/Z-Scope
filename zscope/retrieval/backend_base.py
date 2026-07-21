@@ -95,6 +95,27 @@ class CodeBackend(ABC):
         """获取结构体/联合体/枚举定义及成员。"""
         ...
 
+    def find_type_infos(
+        self,
+        type_name: str,
+        file_path: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Return all available type definitions matching the query."""
+        info = self.get_type_info(type_name)
+        if not info:
+            return []
+        if file_path:
+            stored = str(info.get("file_path") or info.get("filename") or "")
+            stored = stored.replace("\\", "/").strip().lstrip("./")
+            hint = str(file_path or "").replace("\\", "/").strip().lstrip("./")
+            if not (
+                stored == hint
+                or stored.endswith(f"/{hint}")
+                or hint.endswith(f"/{stored}")
+            ):
+                return []
+        return [dict(info)]
+
     @abstractmethod
     def get_data_flow(
         self, source_func: str, source_param: str, sink_pattern: str
@@ -122,6 +143,34 @@ class CodeBackend(ABC):
     def get_macro_definitions(self, name: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Return macro definitions by name when the backend has macro facts."""
         return []
+
+    def get_function_symbol_context(
+        self,
+        func_name: str,
+        file_path: str = "",
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Return globals and macros referenced by one function."""
+        return {"referenced_globals": [], "referenced_macros": []}
+
+    def get_function_info_callees(
+        self,
+        func_name: str,
+        file_path: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Return the complete callee edge set used by get_function_info."""
+        return self.get_callees(func_name, limit=1_000_000)
+
+    def get_function_info_callers(
+        self,
+        func_name: str,
+        file_path: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Return the complete caller edge set used by structured caller tools."""
+        return self.get_callers(
+            func_name,
+            limit=1_000_000,
+            callee_file=file_path,
+        )
 
     @abstractmethod
     def get_method_callees(self, name: str, limit: int = 30) -> List[Dict[str, Any]]:

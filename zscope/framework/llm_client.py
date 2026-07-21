@@ -1662,8 +1662,6 @@ class LLMClient:
             }
             if tool_name == "get_function_impl" and "max_lines" not in normalized:
                 normalized["max_lines"] = 200
-            if tool_name == "get_callers" and "limit" not in normalized:
-                normalized["limit"] = 20
             if tool_name in {"get_call_graph", "query_pointer_alias"} and "limit" not in normalized:
                 normalized["limit"] = 30
             return normalized

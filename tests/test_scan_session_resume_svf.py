@@ -30,6 +30,54 @@ def _config(tmp_path: Path) -> ZScopeConfig:
     )
 
 
+class _ResumeCodeIndex:
+    def __init__(self, indexes, referenced_macros=None):
+        self.indexes = dict(indexes)
+        self.referenced_macros = dict(referenced_macros or {})
+
+    def find_function_infos(self, func_name: str, file_path: str = ""):
+        index_name = self.indexes.get(file_path)
+        if not index_name:
+            return []
+        start_end = index_name.rsplit(":", 1)[-1].split("-", 1)
+        return [
+            {
+                "function_name": func_name.split("@", 1)[0],
+                "index_name": index_name,
+                "file_path": file_path,
+                "start_line": int(start_end[0]),
+                "end_line": int(start_end[-1]),
+                "signature": "int handle_request(void)",
+                "is_static": False,
+                "is_macro": False,
+                "callees": [],
+                "referenced_globals": [],
+                "referenced_macros": list(self.referenced_macros.get(file_path) or []),
+            }
+        ]
+
+    def get_function_impl(self, func_name: str, **kwargs):
+        file_path = str(kwargs.get("file_path") or "")
+        index_name = self.indexes.get(file_path)
+        if not index_name:
+            for candidate_file, candidate_index in self.indexes.items():
+                if func_name == candidate_index:
+                    file_path = candidate_file
+                    index_name = candidate_index
+                    break
+        if not index_name:
+            return None
+        start_end = index_name.rsplit(":", 1)[-1].split("-", 1)
+        return {
+            "func_name": "handle_request",
+            "index_name": index_name,
+            "file": file_path,
+            "start_line": int(start_end[0]),
+            "end_line": int(start_end[-1]),
+            "code": "int handle_request(void) { return 0; }\n",
+        }
+
+
 def test_diff_repo_root_defaults_to_source_root(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     source_root = project_root / "src"
@@ -203,22 +251,39 @@ def test_resume_does_not_skip_entry_when_only_other_path_has_final_report(
 ) -> None:
     cfg = _config(tmp_path)
     store = SnapshotStore(Path(cfg.analysis.snapshot_dir))
+    left_index = "handle_request@src/a.c:10-10"
+    right_index = "handle_request@src/b.c:20-20"
     store.save_snapshot(
-        "handle_request",
-        {"summary": "a"},
+        left_index,
+        {
+            "func_name": "handle_request",
+            "index_name": left_index,
+            "file_path": "src/a.c",
+            "start_line": 10,
+            "end_line": 10,
+            "summary": "a",
+            "referenced_globals": [],
+            "referenced_macros": [],
+        },
         "int handle_request(void) { return 1; }\n",
-        "src/a.c:10",
     )
     store.save_snapshot(
-        "handle_request",
-        {"summary": "b"},
+        right_index,
+        {
+            "func_name": "handle_request",
+            "index_name": right_index,
+            "file_path": "src/b.c",
+            "start_line": 20,
+            "end_line": 20,
+            "summary": "b",
+            "referenced_globals": [],
+            "referenced_macros": [],
+        },
         "int handle_request(void) { return 2; }\n",
-        "src/b.c:20",
     )
     store.save_final_report(
-        "handle_request",
+        left_index,
         {"overall_verdict": "no_issue_found", "issues": []},
-        "src/a.c:10",
     )
 
     runner = ScanSessionRunner(cfg, resume=True)
@@ -227,6 +292,12 @@ def test_resume_does_not_skip_entry_when_only_other_path_has_final_report(
         "entries_loaded": True,
         "batch_mode": True,
         "entries": [entry],
+        "code_index": _ResumeCodeIndex(
+            {
+                "src/a.c": left_index,
+                "src/b.c": right_index,
+            }
+        ),
     }
 
     runner._handle_plan_resume_entries(state, None)  # type: ignore[arg-type]
@@ -243,13 +314,22 @@ def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path) 
         "src/b.c": {"overall_verdict": "no_issue_found", "issues": [{"source": "b"}]},
     }
     for file_path, report in reports.items():
+        index_name = f"handle_request@{file_path}:10-10"
         store.save_snapshot(
-            "handle_request",
-            {"summary": file_path},
+            index_name,
+            {
+                "func_name": "handle_request",
+                "index_name": index_name,
+                "file_path": file_path,
+                "start_line": 10,
+                "end_line": 10,
+                "summary": file_path,
+                "referenced_globals": [],
+                "referenced_macros": [],
+            },
             "int handle_request(void) { return 0; }\n",
-            f"{file_path}:10",
         )
-        store.save_final_report("handle_request", report, f"{file_path}:10")
+        store.save_final_report(index_name, report)
 
     entries = [
         FunctionEntry("handle_request", file_path="src/a.c"),
@@ -260,6 +340,12 @@ def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path) 
         "entries_loaded": True,
         "batch_mode": True,
         "entries": list(entries),
+        "code_index": _ResumeCodeIndex(
+            {
+                "src/a.c": "handle_request@src/a.c:10-10",
+                "src/b.c": "handle_request@src/b.c:10-10",
+            }
+        ),
     }
 
     runner._handle_plan_resume_entries(state, None)  # type: ignore[arg-type]
@@ -271,6 +357,56 @@ def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path) 
     assert set(state["results"]) == expected_keys
     assert state["results"]["default:handle_request@src/a.c"].issues == [{"source": "a"}]
     assert state["results"]["default:handle_request@src/b.c"].issues == [{"source": "b"}]
+
+
+def test_resume_does_not_skip_when_symbol_context_changed(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    store = SnapshotStore(Path(cfg.analysis.snapshot_dir))
+    file_path = "src/a.c"
+    index_name = "handle_request@src/a.c:10-10"
+    old_macro = {
+        "name": "LIMIT",
+        "file_path": "include/limits.h",
+        "line": 3,
+        "definition": "#define LIMIT 8",
+        "is_function_like": False,
+        "reference_lines": [10],
+    }
+    store.save_snapshot(
+        index_name,
+        {
+            "func_name": "handle_request",
+            "index_name": index_name,
+            "file_path": file_path,
+            "start_line": 10,
+            "end_line": 10,
+            "summary": "old",
+            "referenced_globals": [],
+            "referenced_macros": [old_macro],
+        },
+        "int handle_request(void) { return 0; }\n",
+    )
+    store.save_final_report(
+        index_name,
+        {"overall_verdict": "no_issue_found", "issues": []},
+    )
+    current_macro = {**old_macro, "definition": "#define LIMIT 16"}
+    runner = ScanSessionRunner(cfg, resume=True)
+    entry = FunctionEntry("handle_request", file_path=file_path)
+    state = {
+        "entries_loaded": True,
+        "batch_mode": True,
+        "entries": [entry],
+        "code_index": _ResumeCodeIndex(
+            {file_path: index_name},
+            referenced_macros={file_path: [current_macro]},
+        ),
+    }
+
+    runner._handle_plan_resume_entries(state, None)  # type: ignore[arg-type]
+
+    assert state["entries"] == [entry]
+    assert state["skipped_entries"] == []
 
 
 def test_resume_with_no_remaining_entries_defers_svf_initialization(

@@ -259,11 +259,18 @@ def validate_json_schema(data: dict, required_fields: list[str]) -> bool:
 
 def is_valid_snapshot(d: dict) -> bool:
     """Check if dictionary looks like a function snapshot."""
-    snapshot_keys = {"type", "func_name", "summary", "key_semantics", "inputs"}
-    return isinstance(d, dict) and (
-        d.get("type") == "function_snapshot" or 
-        any(k in d for k in snapshot_keys)
-    )
+    if not isinstance(d, dict):
+        return False
+    semantic_fields = {
+        "summary",
+        "parameters",
+        "return_values",
+        "effects",
+        "error_handling",
+        "callees",
+        "suspicious_points",
+    }
+    return semantic_fields.issubset(d) or d.get("type") == "function_snapshot"
 
 
 def is_valid_report(d: dict) -> bool:

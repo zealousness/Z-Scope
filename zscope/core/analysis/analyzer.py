@@ -20,6 +20,11 @@ from ...config.config import ZScopeConfig
 from ...config.user_config_store import UserConfigStore
 from ...retrieval.code_index import CodeIndex
 from ...snapshots.store import SnapshotStore
+from ...snapshots.modeling_input import (
+    SemanticModelInputError,
+    build_semantic_model_input,
+    resolve_function_info,
+)
 from ..candidates.evidence import (
     SemanticOverlayCompiler,
     annotate_candidate_evidence,
@@ -300,15 +305,27 @@ class Analyzer:
         lookup_started = time.monotonic()
         logger.info("[code-index] lookup start entry=%s", entry_func)
         try:
-            impl_result = self.code_index.get_function_impl(
+            semantic_model_input = build_semantic_model_input(
+                self.code_index,
                 entry_func,
                 file_path=entry_file_path,
+                include_context=True,
             )
-        except TypeError:
-            impl_result = self.code_index.get_function_impl(entry_func)
+            impl_result = self.code_index.get_function_impl(
+                semantic_model_input["index_name"],
+                max_lines=self.config.analysis.max_function_lines,
+                file_path=semantic_model_input["file_path"],
+            )
+        except SemanticModelInputError as exc:
+            return {
+                "error": str(exc),
+                "reason": exc.reason,
+                "llm_called": False,
+            }
         logger.info(
-            "[code-index] lookup end entry=%s found=%s duration=%.2fs",
+            "[code-index] lookup end entry=%s index_name=%s found=%s duration=%.2fs",
             entry_func,
+            semantic_model_input["index_name"],
             bool(impl_result),
             time.monotonic() - lookup_started,
         )
@@ -316,29 +333,33 @@ class Analyzer:
             return {"error": "Entry function not found"}
 
         agent_context = {
-            "func_name": entry_func,
+            "func_name": semantic_model_input["func_name"],
             "code": impl_result["code"],
             "location": f"{impl_result['file']}:{impl_result['start_line']}",
         }
 
         user_config_context = relevant_user_config_context(
             self.user_config,
-            entry_func,
-            impl_result["code"],
-            impl_result.get("file", ""),
+            semantic_model_input["func_name"],
+            semantic_model_input["code"],
+            semantic_model_input["file_path"],
         )
         if user_config_context:
             agent_context["user_config_context"] = user_config_context
+            semantic_model_input["user_config_context"] = user_config_context
 
         diff_focus = getattr(self.config.project, "entry_diff_focus", None)
         if isinstance(diff_focus, dict) and diff_focus:
             agent_context["diff_focus"] = self._build_diff_focus_agent_context(diff_focus)
+            semantic_model_input["diff_focus"] = agent_context["diff_focus"]
 
         state = {
             "entry_func": entry_func,
+            "entry_index_name": semantic_model_input["index_name"],
             "run_id": uuid.uuid4().hex,
             "impl_result": impl_result,
             "agent_context": agent_context,
+            "semantic_model_input": semantic_model_input,
             "diff_focus": deepcopy(diff_focus) if isinstance(diff_focus, dict) else {},
             "notes": [],
             "issues": [],
@@ -563,6 +584,7 @@ class Analyzer:
             self.history_reconciler.load_state(
                 state["entry_func"],
                 state["impl_result"],
+                state["semantic_model_input"],
             )
         )
 
@@ -676,17 +698,17 @@ class Analyzer:
         if self.config.analysis.enable_global_model:
             impl_result = state.get("impl_result") if isinstance(state.get("impl_result"), dict) else {}
             entry_func = str(state.get("entry_func") or "")
-            file_path = str(impl_result.get("file") or "")
-            snapshot = self.snapshot_store.load_snapshot(entry_func, file_path or None)
+            entry_index_name = str(state.get("entry_index_name") or "")
+            snapshot = self.snapshot_store.load_snapshot(entry_index_name)
             if snapshot:
                 try:
                     needs_refresh, reason = self.snapshot_store.needs_refresh(
-                        entry_func,
+                        entry_index_name,
                         str(impl_result.get("code") or ""),
-                        file_path or None,
+                        state["semantic_model_input"],
                     )
                 except Exception:
-                    needs_refresh, reason = False, "snapshot_loaded"
+                    needs_refresh, reason = True, "snapshot_refresh_check_failed"
                 if not needs_refresh:
                     state["notes"].append(
                         f"Reused globally modeled snapshot for {entry_func}."
@@ -717,29 +739,41 @@ class Analyzer:
             tool_policy=self._tool_policy_for_agent("semantic_modeler"),
         )
         agent_context = state["agent_context"]
+        semantic_context = deepcopy(state["semantic_model_input"])
 
         logger.info("Running Semantic Modeler agent with '%s' LLM...", sm_llm_ref)
-        self._attach_agent_contract(agent_context, "semantic_modeler")
-        response = semantic_agent.run(agent_context)
+        self._attach_agent_contract(semantic_context, "semantic_modeler")
+        response = semantic_agent.run(semantic_context)
         sm_tokens = response.metadata.get("context_tokens", 0) if response.metadata else 0
         state["total_context_tokens"] += sm_tokens
         self._accumulate_cumulative_token_metadata(state, response.metadata if response.metadata else {})
 
         if response.success:
             self.snapshot_store.save_snapshot(
-                state["entry_func"],
+                state["entry_index_name"],
                 response.data,
-                agent_context["code"],
-                agent_context["location"],
+                semantic_context["code"],
+                dependency_context=semantic_context,
             )
             logger.info(
-                "Successfully modeled function: %s (ctx ≈%s tokens)",
-                state["entry_func"],
-                f"{sm_tokens:,}",
+                "[snapshot-llm] completed context=entry index_name=%s "
+                "success=true context_tokens=%d",
+                state["entry_index_name"],
+                sm_tokens,
             )
             state["notes"].append(f"Successfully modeled function: {state['entry_func']}")
         else:
-            logger.warning("Semantic modeling failed: %s (ctx ≈%s tokens)", response.error, f"{sm_tokens:,}")
+            failure_reason = str(
+                (response.metadata or {}).get("reason") or "semantic_model_failed"
+            )
+            logger.warning(
+                "[snapshot-llm] completed context=entry index_name=%s "
+                "success=false context_tokens=%d reason=%s error=%s",
+                state["entry_index_name"],
+                sm_tokens,
+                failure_reason,
+                response.error,
+            )
             state["notes"].append(f"Semantic modeling failed: {response.error}")
 
     def _step_focused_subagent_planning(self, state: Dict[str, Any]) -> None:
@@ -781,7 +815,7 @@ class Analyzer:
         snapshot_candidate_count = self._add_snapshot_candidates_to_ledger(
             ledger,
             orchestrator,
-            state["entry_func"],
+            state["entry_index_name"],
             selection.skills,
             local_records,
             max_depth=collection_budget.premodel_depth,
@@ -969,7 +1003,7 @@ class Analyzer:
         self,
         ledger: CandidateLedger,
         orchestrator: SubAgentOrchestrator,
-        entry_func: str,
+        entry_index_name: str,
         active_skills: List[str],
         local_records: List[Any],
         *,
@@ -979,7 +1013,9 @@ class Analyzer:
         """Add semantic-snapshot suspicious points from reachable functions to the ledger."""
         added = 0
         visited: Set[str] = set()
-        queue: List[tuple[str, List[str], int]] = [(entry_func, [entry_func], 0)]
+        queue: List[tuple[str, List[str], int]] = [
+            (entry_index_name, [entry_index_name], 0)
+        ]
 
         while queue:
             func, path, depth = queue.pop(0)
@@ -3816,45 +3852,25 @@ class Analyzer:
         active_skill_names: Optional[List[str]] = None,
     ) -> List[Any]:
         """Initialize and return the set of tools."""
-        from ...tools.code_retrieval import GetFunctionImplTool
-        from ...tools.snapshot_tool import GetFunctionSnapshotTool
-        from ...tools.call_graph import GetCallGraphTool
-        from ...tools.callers import GetCallersTool
-        from ...tools.data_flow import GetDataFlowTool
-        from ...tools.deep_call_context import GetDeepCallContextTool
-        from ...tools.file_snippet import GetFileSnippetTool
-        from ...tools.function_info import GetFunctionInfoTool
-        from ...tools.function_pointers import FindFunctionPointersTool
-        from ...tools.list_functions import ListFunctionsTool
-        from ...tools.pointer_alias import QueryPointerAliasTool
-        from ...tools.taint_reachability import VerifyTaintReachabilityTool
-        from ...tools.type_info import GetTypeInfoTool
+        from ...tools.registry import build_tool_registry
 
-        # Base tools universally supported by all backends (including regex/clangd)
         snapshot_resolver = (
             self._get_or_build_snapshot if enable_on_demand_snapshots else None
         )
-        tools = [
-            GetFunctionImplTool(self.code_index, self.user_config),
-            GetFunctionInfoTool(self.code_index, self.user_config),
-            GetFunctionSnapshotTool(self.snapshot_store, resolver=snapshot_resolver),
-            ListFunctionsTool(self.code_index),
-            GetFileSnippetTool(self.code_index),
-            GetCallersTool(self.code_index),
-            GetTypeInfoTool(self.code_index),
-        ]
-        
-        # Heavy CPG tools only supported by advanced graph backends
-        advanced_backends = ["joern", "svf", "unified"]
-        if hasattr(self.code_index, "backend_name") and self.code_index.backend_name in advanced_backends:
-            tools.extend([
-                GetCallGraphTool(self.code_index),
-                GetDataFlowTool(self.code_index),
-                FindFunctionPointersTool(self.code_index),
-                QueryPointerAliasTool(self.code_index),
-                VerifyTaintReachabilityTool(self.code_index),
-                GetDeepCallContextTool(self.code_index),
-            ])
+        include_advanced = getattr(self.code_index, "backend_name", "") in {
+            "joern",
+            "svf",
+            "unified",
+        }
+        tools = list(
+            build_tool_registry(
+                self.code_index,
+                self.snapshot_store,
+                self.user_config,
+                snapshot_resolver=snapshot_resolver,
+                include_advanced=include_advanced,
+            ).values()
+        )
         if agent_name:
             agent_spec = self.spec_registry.get_agent(agent_name)
             allowed = set(agent_spec.tools) if agent_spec else set()
@@ -3888,181 +3904,79 @@ class Analyzer:
         self, func_name: str, file_path: Optional[str] = None
     ) -> Dict[str, Any]:
         """Load a snapshot, or build and persist one under the snapshot lock."""
-        prelock_impl = None
-        lock_file_path = file_path
-        existing = self.snapshot_store.load_snapshot(func_name, file_path=file_path)
-        if existing is not None:
-            try:
-                impl_for_refresh = self.code_index.get_function_impl(
-                    func_name,
-                    warn_missing=False,
-                    file_path=file_path or "",
-                )
-            except TypeError:
-                impl_for_refresh = self.code_index.get_function_impl(func_name, warn_missing=False)
-            if not impl_for_refresh:
-                return {"success": True, "data": existing}
-            prelock_impl = impl_for_refresh
-            impl_file_for_refresh = str(impl_for_refresh.get("file") or "unknown")
-            if file_path and impl_file_for_refresh != file_path:
-                return {"success": True, "data": existing}
-            refresh_file = file_path or impl_file_for_refresh
-            lock_file_path = refresh_file
-            needs_refresh, reason = self.snapshot_store.needs_refresh(
+        try:
+            context = build_semantic_model_input(
+                self.code_index,
                 func_name,
-                str(impl_for_refresh.get("code") or ""),
-                refresh_file,
+                file_path=file_path or "",
+                include_context=True,
+            )
+        except SemanticModelInputError as exc:
+            return {"success": False, "error": str(exc), "reason": exc.reason}
+
+        index_name = str(context["index_name"])
+        existing = self.snapshot_store.load_snapshot(index_name)
+        if existing is not None:
+            needs_refresh, reason = self.snapshot_store.needs_refresh(
+                index_name,
+                context["code"],
+                context,
             )
             if not needs_refresh:
                 return {
                     "success": True,
                     "data": existing,
-                    "message": (
-                        f"Snapshot is current ({reason})."
-                        if reason
-                        else "Snapshot is current."
-                    ),
+                    "message": f"Snapshot is current ({reason})." if reason else "Snapshot is current.",
                 }
-            self.snapshot_store.lock_manager.invalidate(func_name, file_path=lock_file_path)
-
-        if prelock_impl is None:
-            try:
-                prelock_impl = self.code_index.get_function_impl(
-                    func_name,
-                    warn_missing=False,
-                    file_path=file_path or "",
-                )
-            except TypeError:
-                prelock_impl = self.code_index.get_function_impl(func_name, warn_missing=False)
-            if prelock_impl is not None:
-                impl_file_for_lock = str(prelock_impl.get("file") or "unknown")
-                if not file_path or impl_file_for_lock == file_path:
-                    lock_file_path = file_path or impl_file_for_lock
+            self.snapshot_store.lock_manager.invalidate(index_name)
 
         lock_started = time.monotonic()
         logger.info(
-            "[snapshot-lock] waiting context=on_demand func=%s file=%s",
-            func_name,
-            lock_file_path or "",
+            "[snapshot-lock] waiting context=on_demand index_name=%s",
+            index_name,
         )
-        status = self.snapshot_store.lock_manager.acquire(
-            func_name,
-            timeout=120.0,
-            file_path=lock_file_path,
-        )
-        lock_wait = time.monotonic() - lock_started
+        status = self.snapshot_store.lock_manager.acquire(index_name, timeout=120.0)
         logger.info(
-            "[snapshot-lock] outcome context=on_demand func=%s file=%s status=%s waited=%.2fs",
-            func_name,
-            lock_file_path or "",
+            "[snapshot-lock] outcome context=on_demand index_name=%s status=%s waited=%.2fs",
+            index_name,
             status,
-            lock_wait,
+            time.monotonic() - lock_started,
         )
         if status == "done":
-            snapshot = self.snapshot_store.load_snapshot(
-                func_name,
-                file_path=file_path or lock_file_path,
-            )
+            snapshot = self.snapshot_store.load_snapshot(index_name)
             return {
                 "success": True,
                 "data": snapshot,
-                "message": (
-                    "Snapshot was built concurrently by another worker."
-                    if snapshot is not None
-                    else f"No snapshot exists for '{func_name}'"
-                ),
+                "message": "Snapshot was built concurrently by another worker.",
             }
         if status == "timeout":
             return {
                 "success": False,
-                "error": f"Timed out waiting for snapshot build of '{func_name}'",
+                "error": f"Timed out waiting for snapshot build of '{index_name}'",
+                "reason": "snapshot_lock_timeout",
             }
 
+        success = False
         try:
-            snapshot = self.snapshot_store.load_snapshot(
-                func_name,
-                file_path=file_path or lock_file_path,
-            )
-            impl = prelock_impl
-            if impl is None:
-                try:
-                    impl = self.code_index.get_function_impl(
-                        func_name,
-                        warn_missing=False,
-                        file_path=file_path or "",
-                    )
-                except TypeError:
-                    impl = self.code_index.get_function_impl(func_name, warn_missing=False)
-            if not impl:
-                self.snapshot_store.lock_manager.release(
-                    func_name,
-                    success=snapshot is not None,
-                    file_path=lock_file_path,
-                )
-                if snapshot is not None:
-                    return {"success": True, "data": snapshot}
-                return {
-                    "success": True,
-                    "data": None,
-                    "message": (
-                        f"No snapshot exists for '{func_name}' and implementation was not found"
-                    ),
-                }
-
-            impl_file = str(impl.get("file") or "unknown")
-            if file_path and impl_file != file_path:
-                self.snapshot_store.lock_manager.release(
-                    func_name,
-                    success=snapshot is not None,
-                    file_path=lock_file_path,
-                )
-                if snapshot is not None:
-                    return {"success": True, "data": snapshot}
-                return {
-                    "success": True,
-                    "data": None,
-                    "message": (
-                        f"No snapshot exists for '{func_name}' at '{file_path}'. "
-                        f"Indexed implementation is at '{impl_file}'."
-                    ),
-                }
-
-            if snapshot is not None:
+            existing = self.snapshot_store.load_snapshot(index_name)
+            if existing is not None:
                 needs_refresh, reason = self.snapshot_store.needs_refresh(
-                    func_name,
-                    str(impl.get("code") or ""),
-                    file_path or impl_file,
+                    index_name,
+                    context["code"],
+                    context,
                 )
                 if not needs_refresh:
-                    self.snapshot_store.lock_manager.release(
-                        func_name,
-                        success=True,
-                        file_path=lock_file_path,
-                    )
+                    success = True
                     return {
                         "success": True,
-                        "data": snapshot,
-                        "message": (
-                            f"Snapshot is current ({reason})."
-                            if reason
-                            else "Snapshot is current."
-                        ),
+                        "data": existing,
+                        "message": f"Snapshot is current ({reason})." if reason else "Snapshot is current.",
                     }
 
-            location = f"{impl_file}:{impl.get('start_line', 0)}"
-            if self._is_lightweight_snapshot_candidate(func_name, impl):
-                snapshot = self._build_lightweight_snapshot(func_name, impl, location)
-                self.snapshot_store.save_snapshot(
-                    func_name,
-                    snapshot,
-                    str(impl.get("code") or ""),
-                    location,
-                )
-                self.snapshot_store.lock_manager.release(
-                    func_name,
-                    success=True,
-                    file_path=lock_file_path,
-                )
+            if self._is_lightweight_snapshot_candidate(context["func_name"], context):
+                snapshot = self._build_lightweight_snapshot(context["func_name"], context)
+                self.snapshot_store.save_snapshot(index_name, snapshot, context["code"])
+                success = True
                 return {
                     "success": True,
                     "data": snapshot,
@@ -4070,21 +3984,12 @@ class Analyzer:
                 }
 
             if self._is_trivial_function(
-                str(impl.get("code") or ""),
+                context["code"],
                 self.config.analysis.trivial_function_max_lines,
             ):
-                snapshot = self._build_trivial_snapshot(func_name, impl, location)
-                self.snapshot_store.save_snapshot(
-                    func_name,
-                    snapshot,
-                    str(impl.get("code") or ""),
-                    location,
-                )
-                self.snapshot_store.lock_manager.release(
-                    func_name,
-                    success=True,
-                    file_path=lock_file_path,
-                )
+                snapshot = self._build_trivial_snapshot(context["func_name"], context)
+                self.snapshot_store.save_snapshot(index_name, snapshot, context["code"])
+                success = True
                 return {
                     "success": True,
                     "data": snapshot,
@@ -4098,77 +4003,89 @@ class Analyzer:
             sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
             sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients.get("default"))
             if sm_client is None:
-                self.snapshot_store.lock_manager.release(
-                    func_name,
-                    success=False,
-                    file_path=lock_file_path,
-                )
-                return {"success": False, "error": "No LLM client configured for snapshot build"}
+                return {
+                    "success": False,
+                    "error": "No LLM client configured for snapshot build",
+                    "reason": "semantic_model_llm_missing",
+                }
 
             semantic_agent = SemanticModeler(
                 sm_client,
                 self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
                 tool_policy=self._tool_policy_for_agent("semantic_modeler"),
             )
-            context = {
-                "func_name": func_name,
-                "code": impl["code"],
-                "location": location,
-            }
             self._attach_agent_contract(context, "semantic_modeler")
-            logger.info("[snapshot] On-demand modeling function '%s' ...", func_name)
+            logger.info("[snapshot] On-demand modeling index_name=%s", index_name)
             response = semantic_agent.run(context)
-            if response.success:
-                self.snapshot_store.save_snapshot(
-                    func_name,
-                    response.data,
-                    impl["code"],
-                    location,
+            response_metadata = response.metadata or {}
+            context_tokens = int(
+                response_metadata.get("context_tokens", 0)
+                or response_metadata.get("total_tokens", 0)
+                or 0
+            )
+            if not response.success:
+                failure_reason = str(
+                    response_metadata.get("reason") or "semantic_model_failed"
                 )
-                self.snapshot_store.lock_manager.release(
-                    func_name,
-                    success=True,
-                    file_path=lock_file_path,
+                logger.warning(
+                    "[snapshot-llm] completed context=on_demand index_name=%s "
+                    "success=false context_tokens=%d reason=%s error=%s",
+                    index_name,
+                    context_tokens,
+                    failure_reason,
+                    response.error,
                 )
                 return {
-                    "success": True,
-                    "data": response.data,
+                    "success": False,
+                    "error": f"On-demand snapshot build failed for '{index_name}': {response.error}",
                     "metadata": response.metadata,
-                    "message": "Generated and saved semantic snapshot on demand.",
+                    "reason": failure_reason,
                 }
-
-            self.snapshot_store.lock_manager.release(
-                func_name,
-                success=False,
-                file_path=lock_file_path,
+            self.snapshot_store.save_snapshot(
+                index_name,
+                response.data,
+                context["code"],
+                dependency_context=context,
+            )
+            logger.info(
+                "[snapshot-llm] completed context=on_demand index_name=%s "
+                "success=true context_tokens=%d",
+                index_name,
+                context_tokens,
+            )
+            success = True
+            return {
+                "success": True,
+                "data": response.data,
+                "metadata": response.metadata,
+                "message": "Generated and saved semantic snapshot on demand.",
+            }
+        except Exception as exc:
+            logger.exception(
+                "[snapshot-llm] failed context=on_demand index_name=%s "
+                "success=false reason=semantic_model_exception",
+                index_name,
             )
             return {
                 "success": False,
-                "error": f"On-demand snapshot build failed for '{func_name}': {response.error}",
-                "metadata": response.metadata,
+                "error": str(exc),
+                "reason": "semantic_model_exception",
             }
-        except Exception as exc:
-            self.snapshot_store.lock_manager.release(
-                func_name,
-                success=False,
-                file_path=lock_file_path,
-            )
-            logger.exception("On-demand snapshot build failed for '%s'", func_name)
-            return {"success": False, "error": str(exc)}
+        finally:
+            self.snapshot_store.lock_manager.release(index_name, success=success)
 
     @staticmethod
     def _build_trivial_snapshot(
-        func_name: str, impl: Dict[str, Any], location: str
+        func_name: str, impl: Dict[str, Any]
     ) -> Dict[str, Any]:
-        return build_trivial_snapshot(func_name, impl, location)
+        return build_trivial_snapshot(func_name, impl)
 
     @staticmethod
     def _trivial_suspicious_points(
         func_name: str,
         impl: Dict[str, Any],
-        location: str,
     ) -> List[Dict[str, Any]]:
-        return trivial_suspicious_points(func_name, impl, location)
+        return trivial_suspicious_points(func_name, impl)
 
     @staticmethod
     def _is_lightweight_snapshot_candidate(func_name: str, impl: Dict[str, Any]) -> bool:
@@ -4176,9 +4093,9 @@ class Analyzer:
 
     @staticmethod
     def _build_lightweight_snapshot(
-        func_name: str, impl: Dict[str, Any], location: str
+        func_name: str, impl: Dict[str, Any]
     ) -> Dict[str, Any]:
-        return build_lightweight_snapshot(func_name, impl, location)
+        return build_lightweight_snapshot(func_name, impl)
 
     def _premodel_callees(self, entry_func: str, sm_client: 'LLMClient',
                           max_depth: int = 3, max_callees: int = 20) -> tuple[int, int, int]:
@@ -4307,38 +4224,52 @@ class Analyzer:
             if not impl:
                 continue
             impl_file = str(impl.get("file") or "")
-
-            # 快速检查：已有当前实现文件对应的快照则跳过。
             try:
-                existing = self.snapshot_store.load_snapshot(
+                context = build_semantic_model_input(
+                    self.code_index,
                     func,
-                    file_path=impl_file or None,
+                    file_path=impl_file,
+                    index_name=str(impl.get("index_name") or ""),
+                    start_line=int(impl.get("start_line") or 0) or None,
+                    include_context=True,
                 )
-            except TypeError:
-                existing = self.snapshot_store.load_snapshot(func)
-            if existing is not None:
-                skipped += 1
+            except SemanticModelInputError as exc:
+                logger.warning(
+                    "[premodel] Skipping unresolved semantic input func=%s reason=%s",
+                    func,
+                    exc.reason,
+                )
                 continue
+            index_name = str(context["index_name"])
+
+            existing = self.snapshot_store.load_snapshot(index_name)
+            if existing is not None:
+                needs_refresh, _reason = self.snapshot_store.needs_refresh(
+                    index_name,
+                    context["code"],
+                    context,
+                )
+                if not needs_refresh:
+                    skipped += 1
+                    continue
+                self.snapshot_store.lock_manager.invalidate(index_name)
 
             # 跨线程锁保护。
             lock_started = time.monotonic()
             logger.info(
-                "[snapshot-lock] waiting context=premodel entry=%s func=%s file=%s",
+                "[snapshot-lock] waiting context=premodel entry=%s index_name=%s",
                 entry_func,
-                func,
-                impl_file,
+                index_name,
             )
             status = self.snapshot_store.lock_manager.acquire(
-                func,
+                index_name,
                 timeout=120.0,
-                file_path=impl_file or None,
             )
             lock_wait = time.monotonic() - lock_started
             logger.info(
-                "[snapshot-lock] outcome context=premodel entry=%s func=%s file=%s status=%s waited=%.2fs",
+                "[snapshot-lock] outcome context=premodel entry=%s index_name=%s status=%s waited=%.2fs",
                 entry_func,
-                func,
-                impl_file,
+                index_name,
                 status,
                 lock_wait,
             )
@@ -4350,77 +4281,70 @@ class Analyzer:
                 continue
 
             # status == "acquired"：由当前 Worker 建模
+            success = False
             try:
-                location = f"{impl['file']}:{impl['start_line']}"
-
-                if self._is_lightweight_snapshot_candidate(func, impl):
+                if self._is_lightweight_snapshot_candidate(func, context):
                     logger.info(f"[premodel] Auto-summarizing lightweight helper '{func}'")
-                    snapshot = self._build_lightweight_snapshot(func, impl, location)
-                    self.snapshot_store.save_snapshot(func, snapshot, impl["code"], location)
-                    self.snapshot_store.lock_manager.release(
-                        func,
-                        success=True,
-                        file_path=impl_file or None,
-                    )
+                    snapshot = self._build_lightweight_snapshot(context["func_name"], context)
+                    self.snapshot_store.save_snapshot(index_name, snapshot, context["code"])
+                    success = True
                     modeled += 1
                     continue
 
                 # 高效拦截：平凡函数不需要让大模型看
-                if self._is_trivial_function(impl["code"], self.config.analysis.trivial_function_max_lines):
+                if self._is_trivial_function(context["code"], self.config.analysis.trivial_function_max_lines):
                     logger.info(f"[premodel] Auto-summarizing trivial function '{func}'")
-                    snapshot = self._build_trivial_snapshot(func, impl, location)
-                    self.snapshot_store.save_snapshot(func, snapshot, impl["code"], location)
-                    self.snapshot_store.lock_manager.release(
-                        func,
-                        success=True,
-                        file_path=impl_file or None,
-                    )
+                    snapshot = self._build_trivial_snapshot(context["func_name"], context)
+                    self.snapshot_store.save_snapshot(index_name, snapshot, context["code"])
+                    success = True
                     modeled += 1
                     continue
-
-                impl = self.code_index.get_function_impl(
-                    func,
-                    warn_missing=False,
-                    include_context=True,
-                ) or impl
-                location = f"{impl['file']}:{impl['start_line']}"
-
-                context = {
-                    "func_name": func,
-                    "code": impl["code"],
-                    "location": location,
-                }
                 self._attach_agent_contract(context, "semantic_modeler")
 
-                logger.info(f"[premodel] Modeling callee '{func}' ...")
+                logger.info(
+                    "[premodel] Modeling callee index_name=%s ...",
+                    context["index_name"],
+                )
                 resp = semantic_agent.run(context)
                 call_tokens = resp.metadata.get("context_tokens", 0) if resp.metadata else 0
                 total_tokens += call_tokens
 
                 if resp.success:
                     self.snapshot_store.save_snapshot(
-                        func, resp.data, impl["code"], location
+                        index_name,
+                        resp.data,
+                        context["code"],
+                        dependency_context=context,
                     )
-                    self.snapshot_store.lock_manager.release(
-                        func,
-                        success=True,
-                        file_path=impl_file or None,
+                    logger.info(
+                        "[snapshot-llm] completed context=premodel index_name=%s "
+                        "success=true context_tokens=%d",
+                        index_name,
+                        call_tokens,
                     )
+                    success = True
                     modeled += 1
                 else:
-                    self.snapshot_store.lock_manager.release(
-                        func,
-                        success=False,
-                        file_path=impl_file or None,
+                    failure_reason = str(
+                        (resp.metadata or {}).get("reason") or "semantic_model_failed"
                     )
-                    logger.warning(f"[premodel] Failed to model '{func}': {resp.error}")
+                    logger.warning(
+                        "[snapshot-llm] completed context=premodel index_name=%s "
+                        "success=false context_tokens=%d reason=%s error=%s",
+                        index_name,
+                        call_tokens,
+                        failure_reason,
+                        resp.error,
+                    )
             except Exception as e:
-                self.snapshot_store.lock_manager.release(
-                    func,
-                    success=False,
-                    file_path=impl_file or None,
+                logger.exception(
+                    "[snapshot-llm] failed context=premodel index_name=%s "
+                    "success=false reason=semantic_model_exception error=%s",
+                    index_name,
+                    e,
                 )
-                logger.error(f"[premodel] Error modeling '{func}': {e}")
+            finally:
+                self.snapshot_store.lock_manager.release(index_name, success=success)
 
         logger.info(f"[premodel] Done: {modeled} modeled, {skipped} reused from cache (ctx ≈{total_tokens:,} tokens)")
         return modeled, skipped, total_tokens
@@ -4470,15 +4394,41 @@ class Analyzer:
             return impl_result
         
         current_code = impl_result["data"]["code"]
-        file_path = impl_result["data"]["file"]  # Extract file path
-        
-        # 2. Check snapshot status with file_path
-        needs_refresh, reason = self.snapshot_store.needs_refresh(func_name, current_code, file_path)
+        index_name = str(impl_result["data"].get("index_name") or "")
+        if not index_name:
+            return impl_result
+
+        try:
+            symbol_context = resolve_function_info(
+                self.code_index,
+                index_name,
+                file_path=str(impl_result["data"].get("file") or ""),
+                index_name=index_name,
+                start_line=int(impl_result["data"].get("start_line") or 0) or None,
+            )
+        except SemanticModelInputError as exc:
+            logger.warning(
+                "Snapshot refresh context unavailable index_name=%s reason=%s",
+                index_name,
+                exc.reason,
+            )
+            return impl_result
+
+        # 2. Check snapshot status with canonical index name
+        needs_refresh, reason = self.snapshot_store.needs_refresh(
+            index_name,
+            current_code,
+            symbol_context,
+        )
         
         if not needs_refresh and reason != "no_snapshot":
             # Snapshot is valid and up to date (or only cosmetic changes)
-            logger.info(f"Using cached snapshot for '{func_name}' in '{file_path}' (reason: {reason})")
-            snapshot = self.snapshot_store.load_snapshot(func_name, file_path)
+            logger.info(
+                "Using cached snapshot index_name=%s reason=%s",
+                index_name,
+                reason,
+            )
+            snapshot = self.snapshot_store.load_snapshot(index_name)
             return {
                 "success": True, 
                 "data": impl_result["data"], 
@@ -4489,8 +4439,11 @@ class Analyzer:
         if reason == "code_changed":
             # 3. Ask LLM if we really need to refresh (semantic check)
             # This requires a mini-LLM call.
-            logger.info(f"Code changed for '{func_name}' in '{file_path}', checking with LLM if refresh needed...")
-            snapshot = self.snapshot_store.load_snapshot(func_name, file_path)
+            logger.info(
+                "Code changed index_name=%s; checking with LLM if refresh is needed",
+                index_name,
+            )
+            snapshot = self.snapshot_store.load_snapshot(index_name)
             decision = self._ask_refresh_decision(func_name, snapshot or {}, current_code)
             
             if not decision.get("refresh_needed"):
@@ -4620,19 +4573,38 @@ class Analyzer:
 
     def _save_snapshot_from_llm(self, snapshot_data: Dict[str, Any]) -> None:
         """Save a snapshot emitted by LLM."""
-        func_name = snapshot_data.get("func_name")
-        if not func_name:
+        index_name = str(snapshot_data.get("index_name") or "")
+        if not index_name:
             return
-            
-        # We need the code implementation to calculate hash for the snapshot
-        # Since we might be inside the analysis loop, we can fetch it again from index
-        impl = self.code_index.get_function_impl(func_name)
-        if impl:
+        try:
+            context = build_semantic_model_input(
+                self.code_index,
+                index_name,
+                index_name=index_name,
+                include_context=False,
+            )
+        except SemanticModelInputError as exc:
+            logger.warning(
+                "Skipping LLM snapshot save index_name=%s reason=%s",
+                index_name,
+                exc.reason,
+            )
+            return
+
+        for field in (
+            "referenced_globals",
+            "referenced_macros",
+            "referenced_globals_truncation",
+            "referenced_macros_truncation",
+        ):
+            if field in context:
+                snapshot_data[field] = deepcopy(context[field])
+        if context.get("code"):
             self.snapshot_store.save_snapshot(
-                func_name=func_name,
+                index_name=index_name,
                 snapshot=snapshot_data,
-                code=impl["code"],
-                location=f"{impl['file']}:{impl['start_line']}"
+                code=context["code"],
+                dependency_context=context,
             )
 
     def _resolve_issue_locations(self, issues: List[Dict[str, Any]]) -> None:

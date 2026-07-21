@@ -30,15 +30,52 @@ class FakeCodeIndex:
         return {
             "func_name": name,
             "file": f"src/{name}.c",
+            "index_name": f"{name}@src/{name}.c:1-8",
             "start_line": 1,
             "end_line": 8,
             "signature": f"int {name}(void)",
+            "is_static": False,
+            "is_macro": False,
             "code": f"1 | int {name}(void) {{\n2 |     return external_{name}();\n3 | }}\n",
             "callees": list(callees),
         }
 
     def get_function_impl(self, func_name, **kwargs):
-        return self.impls.get(func_name)
+        for impl in self.impls.values():
+            if func_name in {impl["func_name"], impl["index_name"]}:
+                return impl
+        return None
+
+    def find_function_infos(self, func_name, file_path=""):
+        matches = []
+        for impl in self.impls.values():
+            if func_name not in {impl["func_name"], impl["index_name"]}:
+                continue
+            if file_path and impl["file"] != file_path:
+                continue
+            matches.append(
+                {
+                    "function_name": impl["func_name"],
+                    "file_path": impl["file"],
+                    "index_name": impl["index_name"],
+                    "start_line": impl["start_line"],
+                    "end_line": impl["end_line"],
+                    "signature": impl["signature"],
+                    "is_static": impl["is_static"],
+                    "is_macro": impl["is_macro"],
+                    "callees": [
+                        {
+                            "callee_index_name": callee,
+                            "callsite_lines": [2],
+                            "call_type": ["direct"],
+                        }
+                        for callee in impl["callees"]
+                    ],
+                    "referenced_globals": [],
+                    "referenced_macros": [],
+                }
+            )
+        return matches
 
     def get_callees(self, func_name, limit=30):
         impl = self.impls.get(func_name) or {}
@@ -51,26 +88,59 @@ class SameNameCodeIndex:
             "src/a/handler.c": {
                 "func_name": "handle",
                 "file": "src/a/handler.c",
+                "index_name": "handle@src/a/handler.c:1-8",
                 "start_line": 1,
                 "end_line": 8,
                 "signature": "int handle(void)",
+                "is_static": False,
+                "is_macro": False,
                 "code": "1 | int handle(void) {\n2 |     return external_a();\n3 | }\n",
                 "callees": [],
             },
             "src/b/handler.c": {
                 "func_name": "handle",
                 "file": "src/b/handler.c",
+                "index_name": "handle@src/b/handler.c:1-8",
                 "start_line": 1,
                 "end_line": 8,
                 "signature": "int handle(void)",
+                "is_static": False,
+                "is_macro": False,
                 "code": "1 | int handle(void) {\n2 |     return external_b();\n3 | }\n",
                 "callees": [],
             },
         }
 
     def get_function_impl(self, func_name, **kwargs):
+        for impl in self.impls.values():
+            if func_name == impl["index_name"]:
+                return impl
         assert func_name == "handle"
         return self.impls.get(kwargs.get("file_path"))
+
+    def find_function_infos(self, func_name, file_path=""):
+        matches = []
+        for impl in self.impls.values():
+            if func_name not in {impl["func_name"], impl["index_name"]}:
+                continue
+            if file_path and impl["file"] != file_path:
+                continue
+            matches.append(
+                {
+                    "function_name": impl["func_name"],
+                    "file_path": impl["file"],
+                    "index_name": impl["index_name"],
+                    "start_line": impl["start_line"],
+                    "end_line": impl["end_line"],
+                    "signature": impl["signature"],
+                    "is_static": impl["is_static"],
+                    "is_macro": impl["is_macro"],
+                    "callees": [],
+                    "referenced_globals": [],
+                    "referenced_macros": [],
+                }
+            )
+        return matches
 
     def get_callees(self, func_name, limit=30):
         return []
@@ -88,14 +158,23 @@ class RecordingAgent:
             data={
                 "type": "function_snapshot",
                 "func_name": name,
-                "location": context["location"],
+                "index_name": context["index_name"],
+                "file_path": context["file_path"],
+                "start_line": context["start_line"],
+                "end_line": context["end_line"],
+                "signature": context["signature"],
+                "snapshot_kind": "LLM-modeled",
+                "is_static": context["is_static"],
+                "is_macro": context["is_macro"],
+                "referenced_globals": context["referenced_globals"],
+                "referenced_macros": context["referenced_macros"],
                 "summary": f"modeled {name}",
                 "inputs": [],
                 "outputs": [],
                 "resources": {},
                 "error_handling": {},
                 "concurrency": {},
-                "semantic_fingerprint": {"key_semantics": [name]},
+                "key_semantics": [name],
                 "suspicious_points": [],
                 "callees": [],
             },
@@ -141,7 +220,7 @@ def test_global_modeler_models_children_before_parents(tmp_path):
     assert stats.llm_snapshot_count == 4
     assert stats.total_context_tokens == 28
     assert calls.index("leaf") < calls.index("mid") < calls.index("entry")
-    assert store.load_snapshot("entry", "src/entry.c")["summary"] == "modeled entry"
+    assert store.load_snapshot("entry@src/entry.c:1-8")["summary"] == "modeled entry"
 
 
 def test_global_modeler_models_same_name_entries_in_different_files(tmp_path):
@@ -167,8 +246,8 @@ def test_global_modeler_models_same_name_entries_in_different_files(tmp_path):
 
     assert stats.llm_snapshot_count == 2
     assert calls == ["handle", "handle"]
-    assert store.load_snapshot("handle", "src/a/handler.c")["summary"] == "modeled handle"
-    assert store.load_snapshot("handle", "src/b/handler.c")["summary"] == "modeled handle"
+    assert store.load_snapshot("handle@src/a/handler.c:1-8")["summary"] == "modeled handle"
+    assert store.load_snapshot("handle@src/b/handler.c:1-8")["summary"] == "modeled handle"
 
 
 def test_global_modeler_reuses_existing_snapshots(tmp_path):
@@ -178,23 +257,31 @@ def test_global_modeler_reuses_existing_snapshots(tmp_path):
     user_config = UserConfigStore(Path(config.analysis.user_config_db))
     impl = FakeCodeIndex().impls["leaf"]
     store.save_snapshot(
-        "leaf",
+        impl["index_name"],
         {
             "type": "function_snapshot",
             "func_name": "leaf",
-            "location": "src/leaf.c:1",
+            "index_name": impl["index_name"],
+            "file_path": impl["file"],
+            "start_line": impl["start_line"],
+            "end_line": impl["end_line"],
+            "signature": impl["signature"],
+            "snapshot_kind": "LLM-modeled",
+            "is_static": False,
+            "is_macro": False,
+            "referenced_globals": [],
+            "referenced_macros": [],
             "summary": "cached leaf",
             "inputs": [],
             "outputs": [],
             "resources": {},
             "error_handling": {},
             "concurrency": {},
-            "semantic_fingerprint": {"key_semantics": ["cached"]},
+            "key_semantics": ["cached"],
             "suspicious_points": [],
             "callees": [],
         },
         impl["code"],
-        "src/leaf.c:1",
     )
     modeler = GlobalModeler(
         config,
@@ -238,21 +325,27 @@ def test_global_modeler_uses_deterministic_snapshot_for_trivial_function(tmp_pat
     config.analysis.trivial_function_max_lines = 5
     index = FakeCodeIndex()
     index.impls = {
-        "entry": {
-            "func_name": "entry",
-            "file": "src/entry.c",
-            "start_line": 1,
-            "end_line": 4,
-            "signature": "int entry(void)",
+            "entry": {
+                "func_name": "entry",
+                "file": "src/entry.c",
+                "index_name": "entry@src/entry.c:1-4",
+                "start_line": 1,
+                "end_line": 4,
+                "signature": "int entry(void)",
+                "is_static": False,
+                "is_macro": False,
             "code": "1 | int entry(void) {\n2 |     return tiny();\n3 | }\n",
             "callees": ["tiny"],
         },
-        "tiny": {
-            "func_name": "tiny",
-            "file": "src/tiny.c",
-            "start_line": 1,
-            "end_line": 3,
-            "signature": "int tiny(void)",
+            "tiny": {
+                "func_name": "tiny",
+                "file": "src/tiny.c",
+                "index_name": "tiny@src/tiny.c:1-3",
+                "start_line": 1,
+                "end_line": 3,
+                "signature": "int tiny(void)",
+                "is_static": False,
+                "is_macro": False,
             "code": "1 | int tiny(void) {\n2 |     return 0;\n3 | }\n",
             "callees": [],
         }
@@ -271,7 +364,10 @@ def test_global_modeler_uses_deterministic_snapshot_for_trivial_function(tmp_pat
 
     assert stats.deterministic_snapshot_count == 1
     assert calls == ["entry"]
-    assert store.load_snapshot("tiny", "src/tiny.c")["snapshot_kind"] == "syntactic"
+    tiny_snapshot = store.load_snapshot("tiny@src/tiny.c:1-3")
+    assert tiny_snapshot["snapshot_kind"] == "syntactic"
+    assert tiny_snapshot["referenced_globals"] == []
+    assert tiny_snapshot["referenced_macros"] == []
 
 
 def test_entry_model_reuses_global_snapshot_without_llm(tmp_path):
@@ -280,23 +376,31 @@ def test_entry_model_reuses_global_snapshot_without_llm(tmp_path):
     store = SnapshotStore(Path(config.analysis.snapshot_dir))
     code = "1 | int entry(void) {\n2 |     return 0;\n3 | }\n"
     store.save_snapshot(
-        "entry",
+        "entry@src/entry.c:1-3",
         {
             "type": "function_snapshot",
             "func_name": "entry",
-            "location": "src/entry.c:1",
+            "index_name": "entry@src/entry.c:1-3",
+            "file_path": "src/entry.c",
+            "start_line": 1,
+            "end_line": 3,
+            "signature": "int entry(void)",
+            "snapshot_kind": "LLM-modeled",
+            "is_static": False,
+            "is_macro": False,
+            "referenced_globals": [],
+            "referenced_macros": [],
             "summary": "global entry",
             "inputs": [],
             "outputs": [],
             "resources": {},
             "error_handling": {},
             "concurrency": {},
-            "semantic_fingerprint": {"key_semantics": ["global"]},
+            "key_semantics": ["global"],
             "suspicious_points": [],
             "callees": [],
         },
         code,
-        "src/entry.c:1",
     )
     analyzer = Analyzer.__new__(Analyzer)
     analyzer.config = config
@@ -304,7 +408,12 @@ def test_entry_model_reuses_global_snapshot_without_llm(tmp_path):
 
     state = {
         "entry_func": "entry",
+        "entry_index_name": "entry@src/entry.c:1-3",
         "impl_result": {"file": "src/entry.c", "code": code},
+        "semantic_model_input": {
+            "referenced_globals": [],
+            "referenced_macros": [],
+        },
         "notes": [],
     }
 
@@ -324,20 +433,29 @@ def test_on_demand_snapshot_build_uses_file_qualified_lock(monkeypatch, tmp_path
             pass
 
         def run(self, context):
-            calls.append(context["location"])
+            calls.append(context["index_name"])
             return AgentResponse(
                 success=True,
                 data={
                     "type": "function_snapshot",
                     "func_name": context["func_name"],
-                    "location": context["location"],
-                    "summary": context["location"],
+                    "index_name": context["index_name"],
+                    "file_path": context["file_path"],
+                    "start_line": context["start_line"],
+                    "end_line": context["end_line"],
+                    "signature": context["signature"],
+                    "snapshot_kind": "LLM-modeled",
+                        "is_static": context["is_static"],
+                        "is_macro": context["is_macro"],
+                        "referenced_globals": context["referenced_globals"],
+                        "referenced_macros": context["referenced_macros"],
+                        "summary": context["index_name"],
                     "inputs": [],
                     "outputs": [],
                     "resources": {},
                     "error_handling": {},
                     "concurrency": {},
-                    "semantic_fingerprint": {"key_semantics": [context["location"]]},
+                    "key_semantics": [context["index_name"]],
                     "suspicious_points": [],
                     "callees": [],
                 },
@@ -359,6 +477,13 @@ def test_on_demand_snapshot_build_uses_file_qualified_lock(monkeypatch, tmp_path
 
     assert first["success"] is True
     assert second["success"] is True
-    assert calls == ["src/a/handler.c:1", "src/b/handler.c:1"]
-    assert store.load_snapshot("handle", "src/a/handler.c")["summary"] == "src/a/handler.c:1"
-    assert store.load_snapshot("handle", "src/b/handler.c")["summary"] == "src/b/handler.c:1"
+    assert calls == [
+        "handle@src/a/handler.c:1-8",
+        "handle@src/b/handler.c:1-8",
+    ]
+    assert store.load_snapshot("handle@src/a/handler.c:1-8")["summary"] == (
+        "handle@src/a/handler.c:1-8"
+    )
+    assert store.load_snapshot("handle@src/b/handler.c:1-8")["summary"] == (
+        "handle@src/b/handler.c:1-8"
+    )

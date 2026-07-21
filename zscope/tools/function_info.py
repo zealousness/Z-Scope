@@ -8,7 +8,7 @@ if TYPE_CHECKING:
 
 
 class GetFunctionInfoTool(BaseTool):
-    """Tool to retrieve structured function metadata and call relationships."""
+    """Tool to retrieve structured function metadata and symbol context."""
 
     def __init__(
         self,
@@ -18,8 +18,10 @@ class GetFunctionInfoTool(BaseTool):
         super().__init__(
             name="get_function_info",
             description=(
-                "Retrieve structured metadata and caller/callee relationships for "
-                "a function by name, optionally scoped by file path."
+                "Retrieve function identity, callees, referenced globals, and referenced "
+                "macros by name, optionally scoped by file path. Function-like macro matches "
+                "additionally return complete definition code. Any truncation field means "
+                "the corresponding array was truncated and is not exhaustive."
             ),
         )
         self.code_index = code_index
@@ -34,35 +36,47 @@ class GetFunctionInfoTool(BaseTool):
         if not isinstance(file_path, str):
             return {"success": False, "error": "file_path must be a string"}
 
-        callers_limit = arguments.get("callers_limit", 30)
-        callees_limit = arguments.get("callees_limit", 30)
-        if not isinstance(callers_limit, int):
-            return {"success": False, "error": "callers_limit must be an integer"}
-        if not isinstance(callees_limit, int):
-            return {"success": False, "error": "callees_limit must be an integer"}
-
         matches = self.code_index.find_function_infos(
             func_name,
             file_path=file_path,
-            callers_limit=callers_limit,
-            callees_limit=callees_limit,
         )
-        if not matches and self.user_config:
-            ext = self.user_config.get_external_function(func_name)
-            if ext:
-                matches = [
-                    {
-                        "function_name": func_name,
-                        "file_path": "[external]",
-                        "index_name": func_name,
-                        "start_line": 0,
-                        "end_line": 0,
-                        "signature": f"{func_name}(...)",
-                        "callers": [],
-                        "callees": [],
-                        "is_external": True,
-                    }
-                ]
+        if not matches:
+            external_name = self.code_index.fallback_function_name(func_name) or func_name
+            if self.user_config:
+                ext = self.user_config.get_external_function(external_name)
+                if ext:
+                    matches = [
+                        {
+                            "function_name": external_name,
+                            "file_path": "[external]",
+                            "start_line": 0,
+                            "end_line": 0,
+                            "signature": f"{external_name}(...)",
+                            "code": (
+                                f"/* 外部函数 (来自 {ext.get('library', '未知库')})\n"
+                                f" * 描述: {ext['description']}\n"
+                                f" * 内存行为: {ext.get('memory_behavior', '{}')}\n"
+                                f" * 并发行为: {ext.get('concurrency_behavior', '{}')}\n"
+                                f" * 返回语义: {ext.get('return_semantics', '')}\n"
+                                " */"
+                            ),
+                            "callees": [],
+                            "referenced_globals": [],
+                            "referenced_macros": [],
+                            "is_external": True,
+                        }
+                    ]
+                else:
+                    self.user_config.add_config_warning(
+                        "missing_external_func",
+                        external_name,
+                        f"函数 '{external_name}' 的实现未找到，且无用户提供的外部函数描述。",
+                    )
+            if not matches:
+                return {
+                    "success": False,
+                    "error": f"Function '{external_name}' not found",
+                }
 
         return {
             "success": True,
@@ -83,24 +97,11 @@ class GetFunctionInfoTool(BaseTool):
                     "properties": {
                         "func_name": {
                             "type": "string",
-                            "description": "Function name, qualified name, or index_name",
+                            "description": "Function name, qualified name, or index_name for exact match.",
                         },
                         "file_path": {
                             "type": "string",
-                            "description": (
-                                "Optional source file path used to disambiguate "
-                                "same-name functions"
-                            ),
-                        },
-                        "callers_limit": {
-                            "type": "integer",
-                            "default": 30,
-                            "description": "Maximum callers returned per matched function",
-                        },
-                        "callees_limit": {
-                            "type": "integer",
-                            "default": 30,
-                            "description": "Maximum callees returned per matched function",
+                            "description": "Optional source file path used to disambiguate same-name functions.",
                         },
                     },
                     "required": ["func_name"],
