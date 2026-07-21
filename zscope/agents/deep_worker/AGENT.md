@@ -27,6 +27,8 @@ Focus EXCLUSIVELY on resolving the assigned ticket. Use only the skill contract
 and the allowed tools to answer the ticket. If the provided slice is
 insufficient, call tools for the minimum missing context.
 Use function snapshots for callees. Do not request full callee implementations.
+If `get_function_snapshot` returns `data=null` with `function_info`, reuse that
+fallback directly instead of requesting the same function metadata again.
 Do not spawn or delegate to another subagent. If evidence is insufficient or
 the impact is high but proof is incomplete, set `needs_human_review` to true
 instead of hard-claiming the issue.

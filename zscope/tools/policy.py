@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Union
 
+from ..framework.base import validate_function_arguments
 
 Hook = Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]
 
@@ -151,15 +152,6 @@ class ToolPolicy:
     """
 
     SENSITIVE_ARG_PARTS = SENSITIVE_ARG_PARTS
-
-    TYPE_MAP = {
-        "array": list,
-        "boolean": bool,
-        "integer": int,
-        "number": (int, float),
-        "object": dict,
-        "string": str,
-    }
 
     def __init__(
         self,
@@ -413,41 +405,7 @@ class ToolPolicy:
         schema: Optional[Dict[str, Any]],
         arguments: Dict[str, Any],
     ) -> Optional[str]:
-        if schema is None:
-            return "tool schema is missing"
-        if not isinstance(arguments, dict):
-            return "tool arguments must be a JSON object"
-        params = schema.get("function", {}).get("parameters", {})
-        if not isinstance(params, dict):
-            return "tool schema parameters must be an object schema"
-        properties = params.get("properties") or {}
-        if not isinstance(properties, dict):
-            return "tool schema properties must be an object"
-        required = set(params.get("required") or [])
-        missing = sorted(name for name in required if name not in arguments)
-        if missing:
-            return f"missing required argument(s): {', '.join(missing)}"
-        extra = sorted(name for name in arguments if name not in properties)
-        if extra:
-            return f"unknown argument(s): {', '.join(extra)}"
-        for name, value in arguments.items():
-            expected = properties.get(name, {}).get("type")
-            if expected is None:
-                continue
-            if not cls._value_matches_type(value, str(expected)):
-                return f"argument {name!r} must be {expected}"
-        return None
-
-    @classmethod
-    def _value_matches_type(cls, value: Any, expected: str) -> bool:
-        expected_type = cls.TYPE_MAP.get(expected)
-        if expected_type is None:
-            return True
-        if expected == "integer":
-            return isinstance(value, int) and not isinstance(value, bool)
-        if expected == "number":
-            return isinstance(value, (int, float)) and not isinstance(value, bool)
-        return isinstance(value, expected_type)
+        return validate_function_arguments(schema, arguments, reject_unknown=True)
 
     @staticmethod
     def schema_name(schema: Dict[str, Any]) -> str:

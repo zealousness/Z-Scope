@@ -102,6 +102,40 @@ def test_knowledge_db_uses_thread_local_connections_for_parallel_access(tmp_path
         db.close()
 
 
+def test_knowledge_db_function_index_preserves_is_static(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_function(
+            "hidden",
+            "src/demo.c",
+            1,
+            3,
+            signature="static int hidden(void)",
+            is_static=True,
+        )
+        db.insert_function(
+            "visible",
+            "src/demo.c",
+            5,
+            7,
+            signature="int visible(void)",
+            is_static=False,
+        )
+        db.commit()
+
+        index = db.get_all_functions()
+        records = db.get_function_records()
+
+        assert index["hidden"]["is_static"] is True
+        assert index["visible"]["is_static"] is False
+        assert {row["name"]: row["is_static"] for row in records} == {
+            "hidden": 1,
+            "visible": 0,
+        }
+    finally:
+        db.close()
+
+
 def test_knowledge_db_caches_direct_callee_queries_and_invalidates_on_write(tmp_path: Path) -> None:
     db_path = tmp_path / "knowledge.db"
     db = KnowledgeDB(str(db_path))
@@ -182,6 +216,20 @@ def test_get_callers_filters_duplicate_callee_names_by_file(tmp_path: Path) -> N
         db.close()
 
 
+def test_get_all_callees_filters_duplicate_caller_names_by_file(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_call_edge("shared", "src/left.c", "left_target", "src/left_target.c", 5)
+        db.insert_call_edge("shared", "src/right.c", "right_target", "src/right_target.c", 7)
+        db.commit()
+
+        rows = db.get_all_callees("shared", caller_file="src/right.c")
+
+        assert [row["name"] for row in rows] == ["right_target"]
+    finally:
+        db.close()
+
+
 def test_knowledge_db_macro_definitions_round_trip_and_clear(tmp_path: Path) -> None:
     db = KnowledgeDB(str(tmp_path / "knowledge.db"))
     try:
@@ -204,6 +252,71 @@ def test_knowledge_db_macro_definitions_round_trip_and_clear(tmp_path: Path) -> 
 
         assert db.get_macro_definitions("Z_ALLOC") == []
         assert db.stats()["macro_definitions"] == 0
+    finally:
+        db.close()
+
+
+def test_knowledge_db_function_symbol_context_round_trip(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_global_variable(
+            "g_state",
+            "volatile int",
+            "src/state.c",
+            4,
+            storage_class="static",
+            qualifiers="volatile",
+            initializer="0",
+            definition_kind="definition",
+        )
+        db.insert_macro_definitions_batch(
+            [("STATE_SET", "include/state.h", 8, "#define STATE_SET(v) ((v) != 0)\n", 1)]
+        )
+        db.insert_function_symbol_refs_batch(
+            [
+                ("update", "src/update.c", "g_state", "global", "src/state.c", 20, "read"),
+                ("update", "src/update.c", "g_state", "global", "src/state.c", 24, "write"),
+                (
+                    "update",
+                    "src/update.c",
+                    "STATE_SET",
+                    "macro",
+                    "include/state.h",
+                    23,
+                    "unknown",
+                ),
+            ]
+        )
+        db.commit()
+
+        context = db.get_function_symbol_context("update", "src/update.c")
+
+        assert context["referenced_globals"] == [
+            {
+                "name": "g_state",
+                "type": "volatile int",
+                "file_path": "src/state.c",
+                "line": 4,
+                "is_extern": False,
+                "storage_class": "static",
+                "qualifiers": "volatile",
+                "initializer": "0",
+                "definition_kind": "definition",
+                "access": "read_write",
+                "reference_lines": [20, 24],
+            }
+        ]
+        assert context["referenced_macros"] == [
+            {
+                "name": "STATE_SET",
+                "file_path": "include/state.h",
+                "line": 8,
+                "definition": "#define STATE_SET(v) ((v) != 0)\n",
+                "is_function_like": True,
+                "reference_lines": [23],
+            }
+        ]
+        assert db.stats()["function_symbol_refs"] == 3
     finally:
         db.close()
 
@@ -248,6 +361,19 @@ def test_delete_tu_removes_file_owned_facts_and_related_call_edges(tmp_path: Pat
             "VALUES (?, ?, ?, ?)",
             ("gone_global", "int", "include/deleted.h", 4),
         )
+        db.insert_function_symbol_refs_batch(
+            [
+                (
+                    "gone",
+                    "include/deleted.h",
+                    "gone_global",
+                    "global",
+                    "include/deleted.h",
+                    5,
+                    "read",
+                )
+            ]
+        )
         stmt = db.upsert_ir_statement("include/deleted.h", 5, "gone", normalized_code="x = 1")
         other_stmt = db.upsert_ir_statement("src/keep.c", 2, "keep", normalized_code="y = 1")
         db._conn.execute(
@@ -282,6 +408,7 @@ def test_delete_tu_removes_file_owned_facts_and_related_call_edges(tmp_path: Pat
         for table in (
             "macro_definitions",
             "global_variables",
+            "function_symbol_refs",
             "ir_resource_events",
             "ir_lock_events",
             "ir_shared_accesses",

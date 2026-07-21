@@ -25,21 +25,28 @@ class HistoryReconciler:
         self.snapshot_store = snapshot_store
         self.force_ignore_history = force_ignore_history
 
-    def load_state(self, entry_func: str, impl_result: Dict[str, Any]) -> Dict[str, Any]:
+    def load_state(
+        self,
+        entry_func: str,
+        impl_result: Dict[str, Any],
+        symbol_context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        del entry_func
+        index_name = str(impl_result.get("index_name") or "")
         historical_report = None
-        if self.snapshot_store and not self.force_ignore_history:
-            historical_report = self.snapshot_store.load_final_report(entry_func, impl_result["file"])
+        if self.snapshot_store and not self.force_ignore_history and index_name:
+            historical_report = self.snapshot_store.load_final_report(index_name)
 
         hist_issues = historical_report.get("issues", []) if historical_report else []
         valid_hist_issues, user_rejected_hist_issues = self.partition_issues(hist_issues)
 
         needs_refresh = True
         reason = "no_snapshot"
-        if self.snapshot_store and not self.force_ignore_history:
+        if self.snapshot_store and not self.force_ignore_history and index_name:
             needs_refresh, reason_value = self.snapshot_store.needs_refresh(
-                entry_func,
+                index_name,
                 impl_result["code"],
-                impl_result["file"],
+                symbol_context,
             )
             reason = str(reason_value)
 

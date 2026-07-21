@@ -2,6 +2,7 @@ from pathlib import Path
 
 from zscope.retrieval.clang_backend import ClangBackend
 from zscope.retrieval.clang_extractor import ClangExtractor
+from zscope.retrieval.knowledge_db import KnowledgeDB
 
 
 class _FakeDB:
@@ -130,7 +131,7 @@ def test_clang_extractor_keeps_header_inline_body_as_implementation(
         {
             "kind": extractor.SK_FUNCTION,
             "name": "helper",
-            "detail": "static inline int",
+            "detail": "",
             "range": {"start": {"line": 0}, "end": {"line": 2}},
         },
         header,
@@ -142,7 +143,201 @@ def test_clang_extractor_keeps_header_inline_body_as_implementation(
     )
 
     assert func_rows[0][0] == "helper"
+    assert func_rows[0][5] == 1
     assert func_rows[0][7] == 0
+
+
+def test_clang_backend_preserves_is_static_in_index_and_method(tmp_path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    backend = ClangBackend()
+    try:
+        db.insert_function(
+            "hidden",
+            "src/hidden.c",
+            1,
+            3,
+            signature="static int hidden(void)",
+            is_static=True,
+        )
+        db.commit()
+        backend._db = db
+
+        index = backend.build_function_index()
+        method = backend.get_method("hidden")
+
+        assert index["hidden"]["is_static"] is True
+        assert method is not None and method["is_static"] is True
+    finally:
+        backend._db = None
+        db.close()
+
+
+def test_clang_extractor_stores_source_signature_in_function_rows(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "executor.c"
+    source.write_text(
+        "int _executor_validate_command(const char* command) {\n"
+        "    return command ? 0 : -1;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    extractor = ClangExtractor(project_root=tmp_path)
+    monkeypatch.setattr(extractor, "_extract_call_edges", lambda *args, **kwargs: None)
+    func_rows = []
+
+    extractor._process_symbol(
+        {
+            "kind": extractor.SK_FUNCTION,
+            "name": "_executor_validate_command",
+            "detail": "int (const char *)",
+            "range": {"start": {"line": 0}, "end": {"line": 2}},
+        },
+        source,
+        "executor.c",
+        1,
+        _SymbolDB(),
+        func_rows,
+        [],
+    )
+
+    assert func_rows[0][0] == "_executor_validate_command"
+    assert func_rows[0][4] == "int _executor_validate_command(const char* command)"
+
+
+def test_clang_extractor_only_stores_file_scope_globals(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "state.c"
+    source.write_text(
+        "\n" * 7
+        + "static volatile int g_state = 1;\n"
+        + "int update(void) {\n"
+        + "    int local_state = 0;\n"
+        + "    return local_state;\n"
+        + "}\n",
+        encoding="utf-8",
+    )
+
+    class GlobalDB(_SymbolDB):
+        def __init__(self):
+            self.globals = []
+
+        def insert_global_variable(self, *args, **kwargs):
+            self.globals.append((args, kwargs))
+
+    extractor = ClangExtractor(project_root=tmp_path)
+    monkeypatch.setattr(extractor, "_extract_call_edges", lambda *args, **kwargs: None)
+    db = GlobalDB()
+
+    extractor._process_symbol(
+        {
+            "kind": extractor.SK_VARIABLE,
+            "name": "g_state",
+            "detail": "static volatile int",
+            "range": {"start": {"line": 7}, "end": {"line": 7}},
+        },
+        source,
+        "state.c",
+        1,
+        db,
+        [],
+        [],
+    )
+    extractor._process_symbol(
+        {
+            "kind": extractor.SK_FUNCTION,
+            "name": "update",
+            "detail": "int",
+            "range": {"start": {"line": 8}, "end": {"line": 11}},
+            "children": [
+                {
+                    "kind": extractor.SK_VARIABLE,
+                    "name": "local_state",
+                    "detail": "int",
+                    "range": {"start": {"line": 9}, "end": {"line": 9}},
+                }
+            ],
+        },
+        source,
+        "state.c",
+        1,
+        db,
+        [],
+        [],
+    )
+
+    assert len(db.globals) == 1
+    args, metadata = db.globals[0]
+    assert args[:4] == ("g_state", "static volatile int", "state.c", 8)
+    assert metadata == {
+        "is_extern": False,
+        "storage_class": "static",
+        "qualifiers": "volatile",
+        "initializer": "1",
+        "definition_kind": "definition",
+    }
+
+
+def test_clang_extractor_rebuilds_function_global_and_macro_refs(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "state.c"
+    source.write_text(
+        "#define STATE_SET(v) ((v) != 0)\n"
+        "int g_state = 0;\n"
+        "int update(int value) {\n"
+        "    int g_state = value;\n"
+        "    return STATE_SET(g_state);\n"
+        "}\n"
+        "int use_global(void) {\n"
+        "    if (g_state) {\n"
+        "        g_state = STATE_SET(1);\n"
+        "    }\n"
+        "    return g_state;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_function(
+            "update",
+            "state.c",
+            3,
+            6,
+            signature="int update(int value)",
+        )
+        db.insert_function(
+            "use_global",
+            "state.c",
+            7,
+            12,
+            signature="int use_global(void)",
+        )
+        db.insert_global_variable(
+            "g_state",
+            "int",
+            "state.c",
+            2,
+            initializer="0",
+            definition_kind="definition",
+        )
+        db.insert_macro_definitions_batch(
+            [("STATE_SET", "state.c", 1, "#define STATE_SET(v) ((v) != 0)\n", 1)]
+        )
+        db.commit()
+
+        extractor = ClangExtractor(project_root=tmp_path)
+        monkeypatch.setattr(extractor, "open_document", lambda _path: False)
+        monkeypatch.setattr(extractor, "get_definition", lambda *args, **kwargs: [])
+
+        assert extractor.rebuild_function_symbol_refs(db) == 5
+
+        update_context = db.get_function_symbol_context("update", "state.c")
+        use_context = db.get_function_symbol_context("use_global", "state.c")
+        assert update_context["referenced_globals"] == []
+        assert update_context["referenced_macros"][0]["reference_lines"] == [5]
+        assert use_context["referenced_globals"][0]["access"] == "read_write"
+        assert use_context["referenced_globals"][0]["reference_lines"] == [8, 9, 11]
+        assert use_context["referenced_macros"][0]["reference_lines"] == [9]
+    finally:
+        db.close()
 
 
 def test_clang_extractor_writes_macro_definitions_for_tu(tmp_path, monkeypatch) -> None:
@@ -446,6 +641,8 @@ def test_clang_backend_refreshes_unchanged_files_when_macro_metadata_missing(
     assert backend._db.pending == [61]
     assert backend._extractor.received_prescanned_tus == {str(source.resolve()): (61, True)}
     assert backend._db.metadata["macro_extractor_version"] == "1"
+    assert backend._db.metadata["symbol_context_extractor_version"] == "1"
+    assert backend._db.metadata["type_extractor_version"] == "1"
     assert backend._status == "ready"
 
 

@@ -15,6 +15,7 @@ from ..config.function_entry import FunctionEntry, FunctionListLoader
 from ..core.analysis.analyzer import Analyzer
 from .parallel_analyzer import ParallelAnalysisResult, ParallelAnalyzer
 from ..snapshots.store import SnapshotStore
+from ..snapshots.modeling_input import SemanticModelInputError, build_semantic_model_input
 from ..retrieval.code_index import CodeIndex
 from .entry_discovery import EntryDiscovery
 from .diff_impact import DiffImpactPlanner
@@ -253,13 +254,15 @@ class ScanSessionRunner:
 
         self.emit("Resuming scan: determining skip points from snapshot store...")
         snapshot_store = SnapshotStore(Path(self.config.analysis.snapshot_dir))
+        code_index = self._ensure_code_index(state, defer_svf=True)
         remaining: List[FunctionEntry] = []
         skipped: List[FunctionEntry] = []
 
         for entry in state["entries"]:
-            saved_report = snapshot_store.load_final_report(
-                entry.function_name,
-                file_path=self._entry_report_file_path(entry),
+            saved_report = self._load_current_saved_report(
+                snapshot_store,
+                code_index,
+                entry,
             )
             if saved_report and saved_report.get("overall_verdict") != "error":
                 issues = saved_report.get("issues", [])
@@ -292,6 +295,31 @@ class ScanSessionRunner:
         file_path = str(entry.file_path or focus.get("entry_file_path") or "").strip()
         return file_path or None
 
+    def _load_current_saved_report(
+        self,
+        snapshot_store: SnapshotStore,
+        code_index: Any,
+        entry: FunctionEntry,
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            context = build_semantic_model_input(
+                code_index,
+                entry.function_name,
+                file_path=self._entry_report_file_path(entry) or "",
+                include_context=False,
+            )
+        except SemanticModelInputError:
+            return None
+        index_name = str(context["index_name"])
+        needs_refresh, _reason = snapshot_store.needs_refresh(
+            index_name,
+            str(context["code"]),
+            context,
+        )
+        if needs_refresh:
+            return None
+        return snapshot_store.load_final_report(index_name)
+
     def _handle_merge_skipped_reports(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
         skipped_entries: List[FunctionEntry] = state.get("skipped_entries", [])
         if not skipped_entries:
@@ -299,6 +327,7 @@ class ScanSessionRunner:
 
         results: Dict[str, ParallelAnalysisResult] = state["results"]
         snapshot_store = SnapshotStore(Path(self.config.analysis.snapshot_dir))
+        code_index = self._ensure_code_index(state, defer_svf=True)
         merged_count = 0
         for entry in skipped_entries:
             fname = entry.function_name
@@ -306,9 +335,10 @@ class ScanSessionRunner:
             if entry_key in results:
                 continue
 
-            saved_report = snapshot_store.load_final_report(
-                fname,
-                file_path=self._entry_report_file_path(entry),
+            saved_report = self._load_current_saved_report(
+                snapshot_store,
+                code_index,
+                entry,
             )
             if saved_report:
                 metadata = saved_report.get("metadata", {})

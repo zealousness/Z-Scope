@@ -1,23 +1,47 @@
-"""
-Snapshot storage and cache management for function semantic snapshots.
-"""
+"""Snapshot storage, cache management, and index-name schema migration."""
 
+from __future__ import annotations
+
+import hashlib
 import json
 import logging
-import os
 import re
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple, Iterable, List, cast
+from typing import Any, Dict, Optional, cast
 
 from ..common.utils import compute_code_hash, compute_semantic_fingerprint
+from .policy import (
+    DETERMINISTIC_SNAPSHOT_KINDS,
+    is_current_deterministic_snapshot_shape,
+)
 
 logger = logging.getLogger(__name__)
 
 _SQLITE_PRAGMA_LOCK = threading.Lock()
-_SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx"}
-_HEADER_SUFFIXES = {".h", ".hh", ".hpp", ".hxx", ".ph", ".inc", ".inl"}
+_INDEX_FILENAME_PREFIX_LIMIT = 140
+_SYMBOL_CONTEXT_ARRAY_FIELDS = (
+    "referenced_globals",
+    "referenced_macros",
+)
+_SYMBOL_CONTEXT_OPTIONAL_FIELDS = (
+    "referenced_globals_truncation",
+    "referenced_macros_truncation",
+    "callees_truncation",
+)
+_GLOBAL_STORAGE_CLASSES = {
+    "static",
+    "extern",
+    "thread_local",
+    "global",
+    "unknown",
+}
+_GLOBAL_QUALIFIER_ORDER = (
+    "const",
+    "volatile",
+    "atomic",
+)
 
 
 def _clone_json_value(value: Any) -> Any:
@@ -34,721 +58,832 @@ def _clone_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     return {str(key): _clone_json_value(value) for key, value in snapshot.items()}
 
 
-class SnapshotLockManager:
-    """
-    管理函数实现级别的建模互斥锁。
-    确保并行扫描时，同一个函数实现同时只有一个 Worker 在建模。
-    """
+def _ensure_snapshot_symbol_context(snapshot: Dict[str, Any]) -> bool:
+    changed = False
+    for field in _SYMBOL_CONTEXT_ARRAY_FIELDS:
+        if not isinstance(snapshot.get(field), list):
+            snapshot[field] = []
+            changed = True
+    for item in snapshot["referenced_globals"]:
+        if not isinstance(item, dict):
+            continue
+        storage_class = str(item.get("storage_class") or "unknown")
+        if storage_class not in _GLOBAL_STORAGE_CLASSES:
+            item["storage_class"] = "unknown"
+            changed = True
+        qualifiers = item.get("qualifiers")
+        if isinstance(qualifiers, str):
+            raw_qualifiers = [part.strip() for part in qualifiers.split(",")]
+        elif isinstance(qualifiers, (list, tuple, set)):
+            raw_qualifiers = [str(part).strip() for part in qualifiers]
+        else:
+            raw_qualifiers = []
+        selected = {value for value in raw_qualifiers if value}
+        normalized = [
+            qualifier
+            for qualifier in _GLOBAL_QUALIFIER_ORDER
+            if qualifier in selected
+        ]
+        if qualifiers != normalized:
+            item["qualifiers"] = normalized
+            changed = True
+    return changed
 
-    def __init__(self):
+
+def _canonical_symbol_records(value: Any) -> list[Any]:
+    records = list(value) if isinstance(value, list) else []
+    return sorted(
+        records,
+        key=lambda item: json.dumps(
+            item,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ),
+    )
+
+
+def _canonical_callee_records(value: Any) -> list[Dict[str, Any]]:
+    groups: Dict[str, Dict[str, Any]] = {}
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        index_name = str(item.get("callee_index_name") or "").strip()
+        if not index_name:
+            continue
+        entry = groups.setdefault(
+            index_name,
+            {
+                "callee_index_name": index_name,
+                "callsite_lines": set(),
+                "call_type": set(),
+            },
+        )
+        raw_lines = item.get("callsite_lines")
+        if isinstance(raw_lines, (list, tuple, set)):
+            entry["callsite_lines"].update(
+                int(line)
+                for line in raw_lines
+                if isinstance(line, int) and not isinstance(line, bool) and line > 0
+            )
+        raw_call_types = item.get("call_type")
+        if not isinstance(raw_call_types, (list, tuple, set)):
+            raw_call_types = [raw_call_types]
+        entry["call_type"].update(
+            str(call_type)
+            for call_type in raw_call_types
+            if str(call_type) in {"direct", "indirect"}
+        )
+
+    call_type_order = {"direct": 0, "indirect": 1}
+    return [
+        {
+            "callee_index_name": index_name,
+            "callsite_lines": sorted(entry["callsite_lines"]),
+            "call_type": sorted(
+                entry["call_type"],
+                key=lambda call_type: call_type_order[call_type],
+            ),
+        }
+        for index_name, entry in sorted(groups.items())
+    ]
+
+
+def compute_symbol_context_hash(payload: Dict[str, Any]) -> str:
+    """Hash the program-extracted callee, global, and macro dependencies."""
+
+    context: Dict[str, Any] = {
+        field: _canonical_symbol_records(payload.get(field))
+        for field in _SYMBOL_CONTEXT_ARRAY_FIELDS
+    }
+    context["callees"] = _canonical_callee_records(payload.get("callees"))
+    for field in _SYMBOL_CONTEXT_OPTIONAL_FIELDS:
+        if field in payload:
+            context[field] = payload[field]
+    encoded = json.dumps(
+        context,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+class SnapshotLockManager:
+    """Serialize snapshot builds by canonical function index name."""
+
+    def __init__(self) -> None:
         self._global_lock = threading.Lock()
         self._func_locks: Dict[str, threading.Lock] = {}
-        self._modeling_status: Dict[str, str] = {}  # "idle" | "modeling" | "done" | "failed"
+        self._modeling_status: Dict[str, str] = {}
 
     @staticmethod
-    def _lock_key(func_name: str, file_path: Optional[str] = None) -> str:
-        normalized_path = SnapshotStore._normalize_path_hint(str(file_path or ""))
-        if not normalized_path:
-            return str(func_name)
-        return f"{func_name}@@{normalized_path}"
+    def _lock_key(index_name: str) -> str:
+        key = str(index_name or "").strip()
+        if not key:
+            raise ValueError("snapshot lock requires a non-empty index_name")
+        return key
 
-    def acquire(
-        self,
-        func_name: str,
-        timeout: float = 120.0,
-        file_path: Optional[str] = None,
-    ) -> str:
-        """
-        尝试获取某个函数实现的建模权。
+    def acquire(self, index_name: str, timeout: float = 120.0) -> str:
+        """Return acquired, done, or timeout for one canonical function."""
 
-        Returns:
-            "acquired"  — 你拿到了锁，你负责建模
-            "done"      — 其他 Worker 已经建模完毕，直接用快照
-            "timeout"   — 等待超时，放弃
-        """
-        lock_key = self._lock_key(func_name, file_path)
+        lock_key = self._lock_key(index_name)
         with self._global_lock:
             if lock_key not in self._func_locks:
                 self._func_locks[lock_key] = threading.Lock()
                 self._modeling_status[lock_key] = "idle"
-
-            # Fast path: 已经建模完成
             if self._modeling_status[lock_key] == "done":
                 return "done"
 
         lock = self._func_locks[lock_key]
-        acquired = lock.acquire(timeout=timeout)
-
-        if not acquired:
+        if not lock.acquire(timeout=timeout):
             return "timeout"
-
-        # Double-check：拿到锁后再看一次状态
         with self._global_lock:
             if self._modeling_status[lock_key] == "done":
                 lock.release()
                 return "done"
             self._modeling_status[lock_key] = "modeling"
-
         return "acquired"
 
-    def release(
-        self,
-        func_name: str,
-        success: bool = True,
-        file_path: Optional[str] = None,
-    ):
-        """释放建模权并标记状态。"""
-        lock_key = self._lock_key(func_name, file_path)
+    def release(self, index_name: str, success: bool = True) -> None:
+        lock_key = self._lock_key(index_name)
         with self._global_lock:
             self._modeling_status[lock_key] = "done" if success else "failed"
-
         lock = self._func_locks.get(lock_key)
         if lock:
             try:
                 lock.release()
             except RuntimeError:
-                pass  # already released
+                pass
 
-    def invalidate(self, func_name: str, file_path: Optional[str] = None) -> None:
-        """Allow a stale snapshot to be rebuilt in the current process."""
-        lock_key = self._lock_key(func_name, file_path)
+    def invalidate(self, index_name: str) -> None:
+        lock_key = self._lock_key(index_name)
         with self._global_lock:
             if lock_key in self._modeling_status:
                 self._modeling_status[lock_key] = "failed"
 
 
 class SnapshotStore:
-    """
-    Manages persistent storage of function semantic snapshots.
-    Uses SQLite for metadata and JSON files for snapshot content.
-    """
+    """Persist snapshots and final reports using index_name as the only key."""
 
     def __init__(self, snapshot_dir: Path):
-        """Initialize snapshot store."""
         self.snapshot_dir = Path(snapshot_dir)
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.snapshot_dir / "snapshots.db"
         self.lock_manager = SnapshotLockManager()
-        self._snapshot_cache: Dict[Tuple[str, Optional[str]], Dict[str, Any]] = {}
+        self._snapshot_cache: Dict[str, Dict[str, Any]] = {}
         self._snapshot_cache_lock = threading.Lock()
-        self._final_report_cache: Dict[Tuple[str, Optional[str]], Dict[str, Any]] = {}
+        self._final_report_cache: Dict[str, Dict[str, Any]] = {}
         self._final_report_cache_lock = threading.Lock()
         self._init_db()
 
-    def _cached_snapshot(self, func_name: str, file_path: Optional[str]) -> Optional[Dict[str, Any]]:
-        with self._snapshot_cache_lock:
-            snapshot = self._snapshot_cache.get((func_name, file_path))
-            if snapshot is None:
-                return None
-            return _clone_snapshot(snapshot)
-
-    def _cache_snapshot(self, func_name: str, file_path: Optional[str], snapshot: Dict[str, Any]) -> None:
-        with self._snapshot_cache_lock:
-            self._snapshot_cache[(func_name, file_path)] = _clone_snapshot(snapshot)
-
-    def _invalidate_snapshot_cache(self, func_name: str, file_path: Optional[str] = None) -> None:
-        with self._snapshot_cache_lock:
-            self._snapshot_cache.pop((func_name, None), None)
-            if file_path is None:
-                for key in list(self._snapshot_cache):
-                    if key[0] == func_name:
-                        self._snapshot_cache.pop(key, None)
-            else:
-                self._snapshot_cache.pop((func_name, file_path), None)
-
-    def _cached_final_report(self, func_name: str, file_path: Optional[str]) -> Optional[Dict[str, Any]]:
-        with self._final_report_cache_lock:
-            report = self._final_report_cache.get((func_name, file_path))
-            if report is None:
-                return None
-            return _clone_snapshot(report)
-
-    def _cache_final_report(self, func_name: str, file_path: Optional[str], report: Dict[str, Any]) -> None:
-        with self._final_report_cache_lock:
-            self._final_report_cache[(func_name, file_path)] = _clone_snapshot(report)
-
-    def _invalidate_final_report_cache(self, func_name: str, file_path: Optional[str] = None) -> None:
-        with self._final_report_cache_lock:
-            self._final_report_cache.pop((func_name, None), None)
-            if file_path is None:
-                for key in list(self._final_report_cache):
-                    if key[0] == func_name:
-                        self._final_report_cache.pop(key, None)
-            else:
-                self._final_report_cache.pop((func_name, file_path), None)
+    @staticmethod
+    def _encoded_index_name(index_name: str) -> str:
+        raw = str(index_name or "").strip()
+        if not raw:
+            raise ValueError("snapshot storage requires a non-empty index_name")
+        readable = re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("._-")
+        readable = readable[:_INDEX_FILENAME_PREFIX_LIMIT] or "snapshot"
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+        return f"{readable}_{digest}"
 
     @classmethod
-    def _preferred_rows_by_file_path(
-        cls,
-        rows: Iterable[Tuple[Any, ...]],
-        *,
-        file_path_index: int,
-    ) -> List[Tuple[Any, ...]]:
-        return sorted(
-            list(rows),
-            key=lambda row: cls._file_path_preference(str(row[file_path_index] or "")),
-        )
-
-    @staticmethod
-    def _file_path_preference(file_path: str) -> Tuple[int, str]:
-        suffix = Path(file_path).suffix.lower()
-        if suffix in _SOURCE_SUFFIXES:
-            category = 0
-        elif suffix in _HEADER_SUFFIXES:
-            category = 2
-        else:
-            category = 1
-        normalized = file_path.replace("\\", "/").lstrip("./").lower()
-        return category, normalized
-
-    @staticmethod
-    def _normalize_path_hint(file_path: str) -> str:
-        normalized = str(file_path or "").replace("\\", "/").strip().lstrip("./")
-        while "//" in normalized:
-            normalized = normalized.replace("//", "/")
-        return normalized.lower() if os.name == "nt" else normalized
+    def _snapshot_filename(cls, index_name: str) -> str:
+        return f"{cls._encoded_index_name(index_name)}.json"
 
     @classmethod
-    def _paths_match_hint(cls, stored_path: str, hint_path: str) -> bool:
-        stored = cls._normalize_path_hint(stored_path)
-        hint = cls._normalize_path_hint(hint_path)
-        if not stored or not hint:
-            return False
-        return (
-            stored == hint
-            or stored.endswith(f"/{hint}")
-            or hint.endswith(f"/{stored}")
-        )
+    def _final_report_filename(cls, index_name: str) -> str:
+        return f"{cls._encoded_index_name(index_name)}_final.json"
 
-    @classmethod
-    def _rows_matching_file_path(
-        cls,
-        rows: Iterable[Tuple[Any, ...]],
-        *,
-        file_path: str,
-        file_path_index: int,
-    ) -> List[Tuple[Any, ...]]:
-        row_list = list(rows)
-        normalized_hint = cls._normalize_path_hint(file_path)
-        exact_rows = [
-            row
-            for row in row_list
-            if cls._normalize_path_hint(str(row[file_path_index] or "")) == normalized_hint
-        ]
-        if exact_rows:
-            return cls._preferred_rows_by_file_path(
-                exact_rows,
-                file_path_index=file_path_index,
-            )
-        return cls._preferred_rows_by_file_path(
-            [
-                row
-                for row in row_list
-                if cls._paths_match_hint(str(row[file_path_index] or ""), file_path)
-            ],
-            file_path_index=file_path_index,
-        )
+    def _cached_snapshot(self, index_name: str) -> Optional[Dict[str, Any]]:
+        with self._snapshot_cache_lock:
+            snapshot = self._snapshot_cache.get(index_name)
+            return _clone_snapshot(snapshot) if snapshot is not None else None
 
-    @staticmethod
-    def _file_path_from_location(location: str) -> str:
-        text = str(location or "").strip()
-        if not text:
-            return "unknown"
-        line_suffix = re.match(r"^(.*):\d+(?:-\d+)?$", text)
-        if line_suffix:
-            return line_suffix.group(1) or "unknown"
-        return text
+    def _cache_snapshot(self, index_name: str, snapshot: Dict[str, Any]) -> None:
+        with self._snapshot_cache_lock:
+            self._snapshot_cache[index_name] = _clone_snapshot(snapshot)
+
+    def _invalidate_snapshot_cache(self, index_name: str) -> None:
+        with self._snapshot_cache_lock:
+            self._snapshot_cache.pop(index_name, None)
+
+    def _cached_final_report(self, index_name: str) -> Optional[Dict[str, Any]]:
+        with self._final_report_cache_lock:
+            report = self._final_report_cache.get(index_name)
+            return _clone_snapshot(report) if report is not None else None
+
+    def _cache_final_report(self, index_name: str, report: Dict[str, Any]) -> None:
+        with self._final_report_cache_lock:
+            self._final_report_cache[index_name] = _clone_snapshot(report)
+
+    def _invalidate_final_report_cache(self, index_name: str) -> None:
+        with self._final_report_cache_lock:
+            self._final_report_cache.pop(index_name, None)
 
     def _connect(self) -> sqlite3.Connection:
-        """Create a configured SQLite connection."""
         conn = sqlite3.connect(str(self.db_path), timeout=30.0)
         conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
+    @staticmethod
+    def _create_schema(conn: sqlite3.Connection, table_name: str = "snapshots") -> None:
+        conn.execute(
+            f"""
+            CREATE TABLE {table_name} (
+                index_name TEXT PRIMARY KEY,
+                func_name TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                start_line INTEGER NOT NULL,
+                end_line INTEGER NOT NULL,
+                code_hash TEXT NOT NULL,
+                semantic_hash TEXT NOT NULL,
+                symbol_context_hash TEXT NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                snapshot_file TEXT NOT NULL,
+                final_report_file TEXT
+            )
+            """
+        )
+
     def _init_db(self) -> None:
-        """Initialize SQLite database for snapshot metadata."""
         conn = self._connect()
         try:
             with _SQLITE_PRAGMA_LOCK:
                 conn.execute("PRAGMA journal_mode=WAL")
-            # Check if we need to migrate from old schema
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='snapshots'"
-            )
-            table_exists = cursor.fetchone() is not None
-            
-            if table_exists:
-                # Check if old schema (func_name only primary key)
-                cursor = conn.execute("PRAGMA table_info(snapshots)")
-                columns = {row[1]: row for row in cursor.fetchall()}
-                
-                # If file_path column doesn't exist, we need to migrate
-                if 'file_path' not in columns:
-                    logger.info("Migrating snapshot database from v1 to v2 schema...")
-                    self._migrate_v1_to_v2(conn)
-                    # continue checking for next migrations
-                    cursor = conn.execute("PRAGMA table_info(snapshots)")
-                    columns = {row[1]: row for row in cursor.fetchall()}
-                
-                if 'final_report_file' not in columns:
-                    logger.info("Migrating snapshot database to v3 schema (adding final_report_file)...")
-                    conn.execute("ALTER TABLE snapshots ADD COLUMN final_report_file TEXT")
-                    conn.commit()
-                    return
+            table_exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='snapshots'"
+            ).fetchone()
+            if not table_exists:
+                self._create_schema(conn)
+                conn.commit()
+                return
 
-            # Create v3 schema with composite primary key and final_report_file
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS snapshots (
-                    func_name TEXT NOT NULL,
-                    file_path TEXT NOT NULL,
-                    code_hash TEXT NOT NULL,
-                    semantic_hash TEXT NOT NULL,
-                    location TEXT NOT NULL,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    snapshot_file TEXT NOT NULL,
-                    final_report_file TEXT,
-                    PRIMARY KEY (func_name, file_path)
-                )
-                """
-            )
-            conn.commit()
+            columns = {row[1]: row for row in conn.execute("PRAGMA table_info(snapshots)")}
+            if "index_name" in columns and int(columns["index_name"][5] or 0) == 1:
+                self._ensure_symbol_context_column(conn, columns)
+                return
+            self._migrate_to_index_schema(conn)
         finally:
             conn.close()
-    
-    def _migrate_v1_to_v2(self, conn: sqlite3.Connection) -> None:
-        """
-        Migrate from v1 schema (func_name-only PK) to v2 schema (composite PK).
-        Extracts file_path from location field.
-        """
-        # Read all existing snapshots
-        cursor = conn.execute("SELECT func_name, code_hash, semantic_hash, location, snapshot_file FROM snapshots")
-        old_data = cursor.fetchall()
-        
-        # Drop old table
-        conn.execute("DROP TABLE snapshots")
-        
-        # Create new schema
+
+    def _ensure_symbol_context_column(
+        self,
+        conn: sqlite3.Connection,
+        columns: Dict[str, Any],
+    ) -> None:
+        if "symbol_context_hash" in columns:
+            return
+
+        empty_hash = compute_symbol_context_hash({})
         conn.execute(
-            """
-            CREATE TABLE snapshots (
-                func_name TEXT NOT NULL,
-                file_path TEXT NOT NULL,
-                code_hash TEXT NOT NULL,
-                semantic_hash TEXT NOT NULL,
-                location TEXT NOT NULL,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                snapshot_file TEXT NOT NULL,
-                final_report_file TEXT,
-                PRIMARY KEY (func_name, file_path)
-            )
-            """
+            "ALTER TABLE snapshots ADD COLUMN symbol_context_hash "
+            f"TEXT NOT NULL DEFAULT '{empty_hash}'"
         )
-        
-        # Migrate data
-        for func_name, code_hash, semantic_hash, location, snapshot_file in old_data:
-            # Extract file_path from location (format: "path/to/file.c:start-end")
-            file_path = self._file_path_from_location(location)
-            
-            conn.execute(
-                """
-                INSERT INTO snapshots 
-                (func_name, file_path, code_hash, semantic_hash, location, snapshot_file)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (func_name, file_path, code_hash, semantic_hash, location, snapshot_file)
-            )
-        
+        rows = conn.execute(
+            "SELECT index_name, snapshot_file FROM snapshots"
+        ).fetchall()
+        migrated = 0
+        failed = 0
+        for index_name, snapshot_file in rows:
+            snapshot_path = self.snapshot_dir / str(snapshot_file or "")
+            try:
+                snapshot = cast(
+                    Dict[str, Any],
+                    json.loads(snapshot_path.read_text(encoding="utf-8")),
+                )
+                changed = _ensure_snapshot_symbol_context(snapshot)
+                if changed:
+                    self._write_json_atomic(snapshot_path, snapshot)
+                symbol_hash = compute_symbol_context_hash(snapshot)
+                conn.execute(
+                    "UPDATE snapshots SET symbol_context_hash = ? WHERE index_name = ?",
+                    (symbol_hash, str(index_name)),
+                )
+                migrated += 1
+            except Exception as exc:
+                failed += 1
+                logger.warning(
+                    "[snapshot-migration] symbol context backfill failed "
+                    "index_name=%s snapshot_file=%s "
+                    "reason=symbol_context_backfill_failed error=%s",
+                    index_name,
+                    snapshot_file,
+                    exc,
+                )
         conn.commit()
-        logger.info(f"Migrated {len(old_data)} snapshots to v2 schema")
+        logger.info(
+            "[snapshot-migration] symbol context column completed "
+            "total=%d migrated=%d failed=%d",
+            len(rows),
+            migrated,
+            failed,
+        )
 
+    def _legacy_table_name(self, conn: sqlite3.Connection) -> str:
+        base = "snapshots_legacy"
+        candidate = base
+        suffix = 1
+        while conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (candidate,),
+        ).fetchone():
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        return candidate
 
-    def save_snapshot(
-        self, func_name: str, snapshot: Dict[str, Any], code: str, location: str
-    ) -> None:
-        """
-        Save a function snapshot with code fingerprints.
+    @staticmethod
+    def _legacy_index_name(snapshot: Dict[str, Any], row: sqlite3.Row) -> str:
+        existing = str(snapshot.get("index_name") or "").strip()
+        if existing:
+            return existing
+        row_keys = set(row.keys())
+        func_name = str(
+            snapshot.get("func_name")
+            or (row["func_name"] if "func_name" in row_keys else "")
+            or ""
+        ).strip()
+        file_path = str(
+            snapshot.get("file_path")
+            or (row["file_path"] if "file_path" in row_keys else "")
+            or ""
+        ).strip()
+        start_line = int(snapshot.get("start_line") or 0)
+        end_line = int(snapshot.get("end_line") or 0)
+        if not func_name or not file_path or start_line <= 0 or end_line < start_line:
+            return ""
+        return f"{func_name}@{file_path}:{start_line}-{end_line}"
 
-        Args:
-            func_name: Function name
-            snapshot: Snapshot JSON data
-            code: Function source code
-            location: Function location (file:line-line)
-        """
-        code_hash = compute_code_hash(code)
-        semantic_hash = compute_semantic_fingerprint(code)
-        
-        # Extract file_path from location
-        file_path = self._file_path_from_location(location)
-        
-        # Create unique snapshot filename with sanitized path
-        safe_path = file_path.replace('/', '_').replace('\\', '_').replace(':', '')
-        snapshot_file = f"{func_name}_{safe_path}.json"
-        snapshot_path = self.snapshot_dir / snapshot_file
+    def _migrate_to_index_schema(self, conn: sqlite3.Connection) -> None:
+        previous_row_factory = conn.row_factory
+        conn.row_factory = sqlite3.Row
+        rows = list(conn.execute("SELECT * FROM snapshots"))
+        conn.row_factory = previous_row_factory
+        created_files: list[Path] = []
+        migrated: list[tuple[Any, ...]] = []
+        seen: set[str] = set()
+        failed = 0
+        collisions = 0
+        logger.info("[snapshot-migration] start total=%d", len(rows))
 
-        # Save snapshot JSON
-        with open(snapshot_path, "w", encoding="utf-8") as f:
-            json.dump(snapshot, f, indent=2, ensure_ascii=False)
-
-        # Update metadata
-        conn = self._connect()
         try:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO snapshots 
-                (func_name, file_path, code_hash, semantic_hash, location, snapshot_file)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (func_name, file_path, code_hash, semantic_hash, location, snapshot_file),
-            )
-            conn.commit()
-            self._invalidate_snapshot_cache(func_name, file_path)
-            self._invalidate_final_report_cache(func_name, file_path)
-            self._cache_snapshot(func_name, file_path, snapshot)
-            logger.info(f"Saved snapshot for function '{func_name}' at '{file_path}'")
-        finally:
-            conn.close()
-
-    def save_final_report(
-        self, func_name: str, final_report: Dict[str, Any], location: str
-    ) -> None:
-        """
-        Save the final vulnerability report to disk and update metadata in DB.
-        """
-        file_path = self._file_path_from_location(location)
-
-        conn = self._connect()
-        try:
-            target_file_path = file_path
-            cursor = conn.execute(
-                "SELECT file_path FROM snapshots WHERE func_name = ?",
-                (func_name,),
-            )
-            rows = self._rows_matching_file_path(
-                cursor.fetchall(),
-                file_path=file_path,
-                file_path_index=0,
-            )
-            if len(rows) > 1:
-                paths = [r[0] for r in rows]
-                logger.warning(
-                    "Not attaching final report for function '%s' with ambiguous path hint '%s'; matched %s.",
-                    func_name,
-                    file_path,
-                    paths,
-                )
-                rows = []
-            if rows:
-                target_file_path = str(rows[0][0] or file_path)
-
-            safe_path = target_file_path.replace('/', '_').replace('\\', '_').replace(':', '')
-            final_file = f"{func_name}_{safe_path}_final.json"
-            final_path = self.snapshot_dir / final_file
-
-            with open(final_path, "w", encoding="utf-8") as f:
-                json.dump(final_report, f, indent=2, ensure_ascii=False)
-
-            cursor = conn.execute(
-                """
-                UPDATE snapshots 
-                SET final_report_file = ?
-                WHERE func_name = ? AND file_path = ?
-                """,
-                (final_file, func_name, target_file_path),
-            )
-            conn.commit()
-            self._invalidate_final_report_cache(func_name, target_file_path)
-            if cursor.rowcount > 0:
-                self._cache_final_report(func_name, target_file_path, final_report)
-            else:
-                logger.warning(
-                    "Saved final report file for function '%s' at '%s', but no matching snapshot row was found.",
-                    func_name,
-                    file_path,
-                )
-            logger.info(f"Saved final report for function '{func_name}' at '{target_file_path}'")
-        finally:
-            conn.close()
-
-    def load_snapshot(self, func_name: str, file_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """
-        Load a function snapshot if it exists.
-
-        Args:
-            func_name: Function name
-            file_path: Optional file path for disambiguation. If None and multiple
-                      snapshots exist, prefers source files over headers.
-
-        Returns:
-            Snapshot data or None if not found
-        """
-        cached = self._cached_snapshot(func_name, file_path)
-        if cached is not None:
-            return cached
-
-        conn = self._connect()
-        try:
-            if file_path:
-                cursor = conn.execute(
-                    "SELECT snapshot_file, file_path FROM snapshots WHERE func_name = ?",
-                    (func_name,)
-                )
-                rows = self._rows_matching_file_path(
-                    cursor.fetchall(),
-                    file_path=file_path,
-                    file_path_index=1,
-                )
-            else:
-                # Query all matches for this function name
-                cursor = conn.execute(
-                    "SELECT snapshot_file, file_path FROM snapshots WHERE func_name = ?",
-                    (func_name,)
-                )
-                rows = self._preferred_rows_by_file_path(
-                    cursor.fetchall(),
-                    file_path_index=1,
-                )
-                
-            if not rows:
-                return None
-            
-            # If no file_path specified, check if there are multiple matches
-            if not file_path:
-                if len(rows) > 1:
-                    paths = [r[1] for r in rows]
-                    logger.warning(
-                        f"Multiple snapshots found for '{func_name}' in {paths}. "
-                        f"Using preferred match '{rows[0][1]}'. "
-                        f"Specify file_path for exact match."
-                    )
-            elif len(rows) > 1:
-                paths = [r[1] for r in rows]
-                logger.warning(
-                    f"Multiple snapshots matched '{func_name}' with path hint '{file_path}' in {paths}. "
-                    "Skipping ambiguous match."
-                )
-                return None
             for row in rows:
-                selected_file_path = row[1]
-                snapshot_path = self.snapshot_dir / row[0]
+                snapshot_file = str(row["snapshot_file"] or "")
+                snapshot_path = self.snapshot_dir / snapshot_file
                 if not snapshot_path.exists():
-                    logger.warning(f"Snapshot file missing for '{func_name}' at '{selected_file_path}'")
-                    if file_path:
-                        return None
-                    continue
-
-                with open(snapshot_path, "r", encoding="utf-8") as f:
-                    snapshot = cast(Dict[str, Any], json.load(f))
-                self._cache_snapshot(func_name, selected_file_path, snapshot)
-                if not file_path:
-                    self._cache_snapshot(func_name, None, snapshot)
-                return _clone_snapshot(snapshot)
-            return None
-        finally:
-            conn.close()
-
-    def load_final_report(self, func_name: str, file_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """
-        Load a final vulnerability report if it exists.
-        """
-        cached = self._cached_final_report(func_name, file_path)
-        if cached is not None:
-            return cached
-
-        conn = self._connect()
-        try:
-            if file_path:
-                cursor = conn.execute(
-                    "SELECT final_report_file, file_path FROM snapshots WHERE func_name = ?",
-                    (func_name,)
-                )
-                rows = self._rows_matching_file_path(
-                    cursor.fetchall(),
-                    file_path=file_path,
-                    file_path_index=1,
-                )
-            else:
-                cursor = conn.execute(
-                    "SELECT final_report_file, file_path FROM snapshots WHERE func_name = ?",
-                    (func_name,)
-                )
-                rows = self._preferred_rows_by_file_path(
-                    cursor.fetchall(),
-                    file_path_index=1,
-                )
-                
-            rows = [row for row in rows if row[0]]
-            if not rows:
-                return None
-            
-            if not file_path:
-                if len(rows) > 1:
-                    paths = [r[1] for r in rows]
+                    failed += 1
                     logger.warning(
-                        f"Multiple final reports found for '{func_name}' in {paths}. "
-                        f"Using preferred match '{rows[0][1]}'. "
-                        f"Specify file_path for exact match."
+                        "[snapshot-migration] snapshot file missing snapshot_file=%s "
+                        "reason=migration_snapshot_file_missing",
+                        snapshot_file,
                     )
-            elif len(rows) > 1:
-                paths = [r[1] for r in rows]
-                logger.warning(
-                    f"Multiple final reports matched '{func_name}' with path hint '{file_path}' in {paths}. "
-                    "Skipping ambiguous match."
-                )
-                return None
-
-            for row in rows:
-                selected_file_path = row[1]
-                final_path = self.snapshot_dir / row[0]
-                if not final_path.exists():
-                    logger.warning(f"Final report file missing for '{func_name}' at '{selected_file_path}'")
-                    if file_path:
-                        return None
+                    continue
+                try:
+                    snapshot = cast(
+                        Dict[str, Any],
+                        json.loads(snapshot_path.read_text(encoding="utf-8")),
+                    )
+                except Exception as exc:
+                    failed += 1
+                    logger.warning(
+                        "[snapshot-migration] snapshot unreadable snapshot_file=%s "
+                        "reason=migration_snapshot_unreadable error=%s",
+                        snapshot_file,
+                        exc,
+                    )
                     continue
 
-                with open(final_path, "r", encoding="utf-8") as f:
-                    report = cast(Dict[str, Any], json.load(f))
-                self._cache_final_report(func_name, selected_file_path, report)
-                if not file_path:
-                    self._cache_final_report(func_name, None, report)
-                return _clone_snapshot(report)
-            return None
-        finally:
-            conn.close()
-
-    def get_fingerprints(self, func_name: str, file_path: Optional[str] = None) -> Optional[Dict[str, str]]:
-        """
-        Get code fingerprints for a function.
-
-        Args:
-            func_name: Function name
-            file_path: Optional file path for disambiguation
-
-        Returns:
-            Dict with 'code_hash' and 'semantic_hash', or None if not found
-        """
-        conn = self._connect()
-        try:
-            if file_path:
-                cursor = conn.execute(
-                    "SELECT code_hash, semantic_hash, file_path FROM snapshots WHERE func_name = ?",
-                    (func_name,),
-                )
-                rows = self._rows_matching_file_path(
-                    cursor.fetchall(),
-                    file_path=file_path,
-                    file_path_index=2,
-                )
-                if len(rows) > 1:
-                    paths = [r[2] for r in rows]
+                index_name = self._legacy_index_name(snapshot, row)
+                if not index_name:
+                    failed += 1
                     logger.warning(
-                        "Multiple fingerprints matched '%s' with path hint '%s' in %s. Skipping ambiguous match.",
+                        "[snapshot-migration] identity incomplete snapshot_file=%s "
+                        "reason=migration_identity_incomplete",
+                        snapshot_file,
+                    )
+                    continue
+                if index_name in seen:
+                    collisions += 1
+                    logger.error(
+                        "[snapshot-migration] index collision index_name=%s snapshot_file=%s "
+                        "reason=migration_index_collision",
+                        index_name,
+                        snapshot_file,
+                    )
+                    continue
+                seen.add(index_name)
+
+                snapshot["index_name"] = index_name
+                _ensure_snapshot_symbol_context(snapshot)
+                row_keys = set(row.keys())
+                func_name = str(
+                    snapshot.get("func_name")
+                    or (row["func_name"] if "func_name" in row_keys else "")
+                    or ""
+                )
+                file_path = str(
+                    snapshot.get("file_path")
+                    or (row["file_path"] if "file_path" in row_keys else "")
+                    or ""
+                )
+                start_line = int(snapshot.get("start_line") or 0)
+                end_line = int(snapshot.get("end_line") or 0)
+                new_snapshot_file = self._snapshot_filename(index_name)
+                new_snapshot_path = self.snapshot_dir / new_snapshot_file
+                self._write_json_atomic(new_snapshot_path, snapshot)
+                created_files.append(new_snapshot_path)
+
+                final_report_file = str(row["final_report_file"] or "") if "final_report_file" in row.keys() else ""
+                new_final_file: Optional[str] = None
+                if final_report_file:
+                    old_final_path = self.snapshot_dir / final_report_file
+                    if old_final_path.exists():
+                        report = json.loads(old_final_path.read_text(encoding="utf-8"))
+                        new_final_file = self._final_report_filename(index_name)
+                        new_final_path = self.snapshot_dir / new_final_file
+                        self._write_json_atomic(new_final_path, report)
+                        created_files.append(new_final_path)
+                    else:
+                        logger.warning(
+                            "[snapshot-migration] final report file missing index_name=%s file=%s "
+                            "reason=migration_final_report_file_missing",
+                            index_name,
+                            final_report_file,
+                        )
+
+                migrated.append(
+                    (
+                        index_name,
                         func_name,
                         file_path,
-                        paths,
+                        start_line,
+                        end_line,
+                        str(row["code_hash"] or ""),
+                        str(row["semantic_hash"] or ""),
+                        compute_symbol_context_hash(snapshot),
+                        new_snapshot_file,
+                        new_final_file,
                     )
-                    return None
-                row = rows[0] if rows else None
-            else:
-                cursor = conn.execute(
-                    "SELECT code_hash, semantic_hash, file_path FROM snapshots WHERE func_name = ?",
-                    (func_name,),
                 )
-                rows = self._preferred_rows_by_file_path(
-                    cursor.fetchall(),
-                    file_path_index=2,
+
+            if failed or collisions:
+                raise RuntimeError(
+                    f"snapshot migration failed: failed={failed}, collisions={collisions}"
                 )
-                row = rows[0] if rows else None
-            if not row:
-                return None
-            return {"code_hash": row[0], "semantic_hash": row[1]}
+
+            conn.execute("BEGIN IMMEDIATE")
+            self._create_schema(conn, "snapshots_v4")
+            conn.executemany(
+                """
+                INSERT INTO snapshots_v4 (
+                    index_name, func_name, file_path, start_line, end_line,
+                    code_hash, semantic_hash, symbol_context_hash,
+                    snapshot_file, final_report_file
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                migrated,
+            )
+            legacy_table = self._legacy_table_name(conn)
+            conn.execute(f"ALTER TABLE snapshots RENAME TO {legacy_table}")
+            conn.execute("ALTER TABLE snapshots_v4 RENAME TO snapshots")
+            conn.commit()
+            logger.info(
+                "[snapshot-migration] completed total=%d migrated=%d skipped=0 failed=0 collisions=0 legacy_table=%s",
+                len(rows),
+                len(migrated),
+                legacy_table,
+            )
+        except Exception:
+            conn.rollback()
+            for path in created_files:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            logger.exception(
+                "[snapshot-migration] failed total=%d migrated=%d failed=%d collisions=%d "
+                "reason=snapshot_migration_failed",
+                len(rows),
+                len(migrated),
+                failed,
+                collisions,
+            )
+            raise
+
+    @staticmethod
+    def _write_json_atomic(path: Path, payload: Any) -> None:
+        temp_path = path.with_suffix(path.suffix + ".tmp")
+        with open(temp_path, "w", encoding="utf-8") as file_obj:
+            json.dump(payload, file_obj, indent=2, ensure_ascii=False)
+        temp_path.replace(path)
+
+    def save_snapshot(
+        self,
+        index_name: str,
+        snapshot: Dict[str, Any],
+        code: str,
+        dependency_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        payload_index = str(snapshot.get("index_name") or "").strip()
+        index_name = str(index_name or "").strip()
+        if not index_name or payload_index != index_name:
+            logger.error(
+                "[snapshot-store] index mismatch argument=%s payload=%s "
+                "reason=snapshot_index_mismatch",
+                index_name,
+                payload_index,
+            )
+            raise ValueError("snapshot index_name does not match save argument")
+
+        func_name = str(snapshot.get("func_name") or "").strip()
+        file_path = str(snapshot.get("file_path") or "").strip()
+        start_line = int(snapshot.get("start_line") or 0)
+        end_line = int(snapshot.get("end_line") or 0)
+        if not func_name or not file_path or start_line <= 0 or end_line < start_line:
+            logger.error(
+                "[snapshot-store] identity incomplete index_name=%s reason=snapshot_identity_incomplete",
+                index_name,
+            )
+            raise ValueError("snapshot identity fields are incomplete")
+        invalid_symbol_fields = [
+            field
+            for field in _SYMBOL_CONTEXT_ARRAY_FIELDS
+            if not isinstance(snapshot.get(field), list)
+        ]
+        if invalid_symbol_fields:
+            logger.error(
+                "[snapshot-store] symbol context incomplete index_name=%s missing=%s "
+                "reason=snapshot_symbol_context_incomplete",
+                index_name,
+                invalid_symbol_fields,
+            )
+            raise ValueError("snapshot symbol context fields are incomplete")
+
+        try:
+            snapshot_file = self._snapshot_filename(index_name)
+            snapshot_path = self.snapshot_dir / snapshot_file
+            self._write_json_atomic(snapshot_path, snapshot)
+            code_hash = compute_code_hash(code)
+            semantic_hash = compute_semantic_fingerprint(code)
+            symbol_context_hash = compute_symbol_context_hash(
+                dependency_context if dependency_context is not None else snapshot
+            )
+
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO snapshots (
+                        index_name, func_name, file_path, start_line, end_line,
+                        code_hash, semantic_hash, symbol_context_hash,
+                        snapshot_file, final_report_file
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                    ON CONFLICT(index_name) DO UPDATE SET
+                        func_name=excluded.func_name,
+                        file_path=excluded.file_path,
+                        start_line=excluded.start_line,
+                        end_line=excluded.end_line,
+                        code_hash=excluded.code_hash,
+                        semantic_hash=excluded.semantic_hash,
+                        symbol_context_hash=excluded.symbol_context_hash,
+                        timestamp=CURRENT_TIMESTAMP,
+                        snapshot_file=excluded.snapshot_file,
+                        final_report_file=NULL
+                    """,
+                    (
+                        index_name,
+                        func_name,
+                        file_path,
+                        start_line,
+                        end_line,
+                        code_hash,
+                        semantic_hash,
+                        symbol_context_hash,
+                        snapshot_file,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            logger.exception(
+                "[snapshot-store] save failed index_name=%s reason=snapshot_save_failed",
+                index_name,
+            )
+            raise
+        self._invalidate_snapshot_cache(index_name)
+        self._invalidate_final_report_cache(index_name)
+        self._cache_snapshot(index_name, snapshot)
+        logger.info(
+            "[snapshot-store] saved index_name=%s snapshot_file=%s",
+            index_name,
+            snapshot_file,
+        )
+
+    def save_final_report(self, index_name: str, final_report: Dict[str, Any]) -> None:
+        index_name = str(index_name or "").strip()
+        try:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT snapshot_file FROM snapshots WHERE index_name = ?",
+                    (index_name,),
+                ).fetchone()
+                if not row:
+                    logger.warning(
+                        "[snapshot-store] final report has no snapshot index_name=%s "
+                        "reason=final_report_snapshot_missing",
+                        index_name,
+                    )
+                    return
+                final_file = self._final_report_filename(index_name)
+                self._write_json_atomic(self.snapshot_dir / final_file, final_report)
+                conn.execute(
+                    "UPDATE snapshots SET final_report_file = ? WHERE index_name = ?",
+                    (final_file, index_name),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            logger.exception(
+                "[snapshot-store] final report save failed index_name=%s "
+                "reason=final_report_save_failed",
+                index_name,
+            )
+            raise
+        self._invalidate_final_report_cache(index_name)
+        self._cache_final_report(index_name, final_report)
+        logger.info(
+            "[snapshot-store] saved final report index_name=%s final_report_file=%s",
+            index_name,
+            final_file,
+        )
+
+    def load_snapshot(self, index_name: str) -> Optional[Dict[str, Any]]:
+        index_name = str(index_name or "").strip()
+        cached = self._cached_snapshot(index_name)
+        if cached is not None:
+            return cached
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT snapshot_file FROM snapshots WHERE index_name = ?",
+                (index_name,),
+            ).fetchone()
         finally:
             conn.close()
+        if not row:
+            logger.debug("[snapshot-store] snapshot miss index_name=%s", index_name)
+            return None
+        snapshot_path = self.snapshot_dir / str(row[0])
+        if not snapshot_path.exists():
+            logger.warning(
+                "[snapshot-store] snapshot file missing index_name=%s snapshot_file=%s "
+                "reason=snapshot_file_missing",
+                index_name,
+                row[0],
+            )
+            return None
+        try:
+            snapshot = cast(
+                Dict[str, Any],
+                json.loads(snapshot_path.read_text(encoding="utf-8")),
+            )
+        except Exception:
+            logger.exception(
+                "[snapshot-store] snapshot read failed index_name=%s snapshot_file=%s "
+                "reason=snapshot_read_failed",
+                index_name,
+                row[0],
+            )
+            return None
+        if str(snapshot.get("index_name") or "") != index_name:
+            logger.error(
+                "[snapshot-store] persisted index mismatch requested=%s payload=%s "
+                "reason=persisted_snapshot_index_mismatch",
+                index_name,
+                snapshot.get("index_name"),
+            )
+            return None
+        _ensure_snapshot_symbol_context(snapshot)
+        self._cache_snapshot(index_name, snapshot)
+        return _clone_snapshot(snapshot)
 
-    def needs_refresh(self, func_name: str, current_code: str, file_path: Optional[str] = None) -> tuple[bool, Optional[str]]:
-        """
-        Check if a snapshot needs refresh based on code changes.
+    def load_final_report(self, index_name: str) -> Optional[Dict[str, Any]]:
+        index_name = str(index_name or "").strip()
+        cached = self._cached_final_report(index_name)
+        if cached is not None:
+            return cached
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT final_report_file FROM snapshots WHERE index_name = ?",
+                (index_name,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row or not row[0]:
+            logger.debug("[snapshot-store] final report miss index_name=%s", index_name)
+            return None
+        final_path = self.snapshot_dir / str(row[0])
+        if not final_path.exists():
+            logger.warning(
+                "[snapshot-store] final report file missing index_name=%s final_report_file=%s "
+                "reason=final_report_file_missing",
+                index_name,
+                row[0],
+            )
+            return None
+        try:
+            report = cast(
+                Dict[str, Any],
+                json.loads(final_path.read_text(encoding="utf-8")),
+            )
+        except Exception:
+            logger.exception(
+                "[snapshot-store] final report read failed index_name=%s final_report_file=%s "
+                "reason=final_report_read_failed",
+                index_name,
+                row[0],
+            )
+            return None
+        self._cache_final_report(index_name, report)
+        return _clone_snapshot(report)
 
-        Args:
-            func_name: Function name
-            current_code: Current function source code
-            file_path: Optional file path for disambiguation
+    def get_fingerprints(self, index_name: str) -> Optional[Dict[str, str]]:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT code_hash, semantic_hash, symbol_context_hash "
+                "FROM snapshots WHERE index_name = ?",
+                (index_name,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return None
+        return {
+            "code_hash": str(row[0]),
+            "semantic_hash": str(row[1]),
+            "symbol_context_hash": str(row[2]),
+        }
 
-        Returns:
-            (needs_refresh, reason) tuple
-            - If no snapshot exists: (True, "no_snapshot")
-            - If code identical: (False, None)
-            - If semantic change detected: (True, "code_changed")
-            - If only cosmetic change: (False, None) but reason explains what changed
-        """
-        fingerprints = self.get_fingerprints(func_name, file_path)
+    def needs_refresh(
+        self,
+        index_name: str,
+        current_code: str,
+        current_symbol_context: Dict[str, Any],
+    ) -> tuple[bool, Optional[str]]:
+        snapshot = self.load_snapshot(index_name)
+        if (
+            snapshot is not None
+            and str(snapshot.get("snapshot_kind") or "")
+            in DETERMINISTIC_SNAPSHOT_KINDS
+            and not is_current_deterministic_snapshot_shape(snapshot)
+        ):
+            return True, "snapshot_shape_changed"
+        fingerprints = self.get_fingerprints(index_name)
         if not fingerprints:
-            return (True, "no_snapshot")
-
-        current_hash = compute_code_hash(current_code)
-        current_semantic = compute_semantic_fingerprint(current_code)
-
-        # Exact match - no refresh needed
-        if current_hash == fingerprints["code_hash"]:
-            return (False, None)
-
-        # Semantic match - likely just cosmetic changes
-        if current_semantic == fingerprints["semantic_hash"]:
-            return (False, "cosmetic_change_only")
-
-        # Semantic change detected - needs refresh
-        return (True, "code_changed")
+            return True, "no_snapshot"
+        if (
+            compute_symbol_context_hash(current_symbol_context)
+            != fingerprints["symbol_context_hash"]
+        ):
+            return True, "symbol_context_changed"
+        if compute_code_hash(current_code) == fingerprints["code_hash"]:
+            return False, None
+        if compute_semantic_fingerprint(current_code) == fingerprints["semantic_hash"]:
+            return False, "cosmetic_change_only"
+        return True, "code_changed"
 
     def list_snapshots(self) -> list[str]:
-        """List all function names with snapshots."""
         conn = self._connect()
         try:
-            cursor = conn.execute("SELECT func_name, file_path FROM snapshots ORDER BY func_name")
-            return [f"{row[0]} ({row[1]})" for row in cursor.fetchall()]
+            rows = conn.execute(
+                "SELECT index_name FROM snapshots ORDER BY index_name"
+            ).fetchall()
         finally:
             conn.close()
+        return [str(row[0]) for row in rows]
 
-    def delete_snapshot(self, func_name: str, file_path: Optional[str] = None) -> None:
-        """Delete a snapshot."""
+    def delete_snapshot(self, index_name: str) -> None:
         conn = self._connect()
         try:
-            if file_path:
-                cursor = conn.execute(
-                    "SELECT snapshot_file, final_report_file FROM snapshots WHERE func_name = ? AND file_path = ?",
-                    (func_name, file_path)
-                )
-                row = cursor.fetchone()
-                if row:
-                    snapshot_path = self.snapshot_dir / row[0]
-                    if snapshot_path.exists(): snapshot_path.unlink()
-                    if row[1]:
-                        final_path = self.snapshot_dir / row[1]
-                        if final_path.exists(): final_path.unlink()
-                conn.execute(
-                        "DELETE FROM snapshots WHERE func_name = ? AND file_path = ?",
-                        (func_name, file_path)
-                )
-                conn.commit()
-                self._invalidate_snapshot_cache(func_name, file_path)
-                self._invalidate_final_report_cache(func_name, file_path)
-                logger.info(f"Deleted snapshot for '{func_name}' at '{file_path}'")
-            else:
-                # Delete all snapshots
-                cursor = conn.execute(
-                    "SELECT snapshot_file, final_report_file FROM snapshots WHERE func_name = ?",
-                    (func_name,)
-                )
-                for row in cursor.fetchall():
-                    snapshot_path = self.snapshot_dir / row[0]
-                    if snapshot_path.exists(): snapshot_path.unlink()
-                    if row[1]:
-                        final_path = self.snapshot_dir / row[1]
-                        if final_path.exists(): final_path.unlink()
-                conn.execute("DELETE FROM snapshots WHERE func_name = ?", (func_name,))
-                conn.commit()
-                self._invalidate_snapshot_cache(func_name)
-                self._invalidate_final_report_cache(func_name)
-                logger.info(f"Deleted all snapshots for '{func_name}'")
+            row = conn.execute(
+                "SELECT snapshot_file, final_report_file FROM snapshots WHERE index_name = ?",
+                (index_name,),
+            ).fetchone()
+            if row:
+                (self.snapshot_dir / str(row[0])).unlink(missing_ok=True)
+                if row[1]:
+                    (self.snapshot_dir / str(row[1])).unlink(missing_ok=True)
+            conn.execute("DELETE FROM snapshots WHERE index_name = ?", (index_name,))
+            conn.commit()
         finally:
             conn.close()
+        self._invalidate_snapshot_cache(index_name)
+        self._invalidate_final_report_cache(index_name)
+        self.lock_manager.invalidate(index_name)
+        logger.info("[snapshot-store] deleted index_name=%s", index_name)

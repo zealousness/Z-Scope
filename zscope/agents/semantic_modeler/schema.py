@@ -2,221 +2,410 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Dict
+
+PROGRAM_GENERATED_SNAPSHOT_FIELDS = (
+    "func_name",
+    "index_name",
+    "file_path",
+    "start_line",
+    "end_line",
+    "signature",
+    "snapshot_kind",
+    "is_static",
+    "is_macro",
+)
+
+PROGRAM_PASSTHROUGH_SNAPSHOT_FIELDS = (
+    "referenced_globals",
+    "referenced_macros",
+)
+
+PROGRAM_OPTIONAL_PASSTHROUGH_SNAPSHOT_FIELDS = (
+    "referenced_globals_truncation",
+    "referenced_macros_truncation",
+)
+
+LLM_EXCLUDED_SNAPSHOT_FIELDS = (
+    *PROGRAM_GENERATED_SNAPSHOT_FIELDS,
+    *PROGRAM_PASSTHROUGH_SNAPSHOT_FIELDS,
+    *PROGRAM_OPTIONAL_PASSTHROUGH_SNAPSHOT_FIELDS,
+)
+
+EFFECT_CATEGORY_ENUM = [
+    "memory",
+    "resource",
+    "ownership",
+    "alias",
+    "bounds",
+    "shared_state",
+    "lock",
+    "thread",
+    "sync_protocol",
+    "io",
+    "callback",
+    "global_state",
+    "registry",
+    "other",
+]
+
+SUSPICIOUS_POINT_CATEGORY_ENUM = [
+    "memory_safety",
+    "resource_lifecycle",
+    "bounds",
+    "integer",
+    "string_format",
+    "null_error",
+    "ownership",
+    "concurrency",
+    "state_protocol",
+    "type_confusion",
+    "input_validation",
+    "error_handling",
+    "global_state",
+    "callback",
+    "api_contract",
+    "other",
+]
+
+EXIT_STATE_ENUM = [
+    "not_acquired",
+    "acquired",
+    "partially_initialized",
+    "released",
+    "still_held",
+    "transferred",
+    "invalid",
+    "not_held",
+    "held",
+    "not_retained",
+    "retained",
+    "unchanged",
+    "updated",
+    "partially_updated",
+    "inconsistent",
+    "unknown",
+]
 
 DEFAULT_FUNCTION_SNAPSHOT_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "required": [
-        "type",
         "func_name",
-        "location",
+        "index_name",
+        "file_path",
+        "start_line",
+        "end_line",
+        "signature",
+        "snapshot_kind",
+        "is_static",
+        "is_macro",
+        "referenced_globals",
+        "referenced_macros",
         "summary",
-        "role",
-        "inputs",
-        "outputs",
-        "memory",
-        "resources",
-        "error_paths",
-        "concurrency",
+        "parameters",
+        "return_values",
+        "effects",
+        "error_handling",
         "callees",
-        "key_semantics",
         "suspicious_points",
     ],
     "properties": {
-        "type": {"const": "function_snapshot"},
         "func_name": {"type": "string"},
-        "location": {"type": "string", "description": "file:start_line or similar location"},
-        "summary": {"type": "string", "description": "Chinese summary of observable behavior"},
-        "role": {"type": "string", "description": "Chinese API role and caller-visible contract"},
-        "inputs": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "required": ["name", "meaning", "trust", "nullable", "constraints"],
-                "properties": {
-                    "name": {"type": "string"},
-                    "meaning": {"type": "string"},
-                    "trust": {"enum": ["trusted", "untrusted", "mixed", "unknown"]},
-                    "nullable": {"enum": ["yes", "no", "unknown"]},
-                    "constraints": {"type": "array", "items": {"type": "string"}},
-                },
-            },
+        "index_name": {
+            "type": "string",
+            "description": "Canonical function index key, for example func_name@file_path:start_line-end_line",
         },
-        "outputs": {
+        "file_path": {"type": "string"},
+        "start_line": {"type": "integer"},
+        "end_line": {"type": "integer"},
+        "signature": {"type": "string"},
+        "snapshot_kind": {"const": "LLM-modeled"},
+        "is_static": {"type": "boolean"},
+        "is_macro": {"type": "boolean"},
+        "referenced_globals": {
             "type": "array",
+            "description": "Program-extracted global symbol references. This is raw evidence, not an LLM summary of global-state effects.",
             "items": {
                 "type": "object",
                 "required": [
                     "name",
-                    "meaning",
-                    "success_values",
-                    "failure_values",
-                    "caller_obligation",
+                    "type",
+                    "file_path",
+                    "line",
+                    "storage_class",
+                    "qualifiers",
+                    "initializer",
+                    "access",
+                    "reference_lines",
                 ],
                 "properties": {
                     "name": {"type": "string"},
-                    "meaning": {"type": "string"},
-                    "success_values": {"type": "array", "items": {"type": "string"}},
-                    "failure_values": {"type": "array", "items": {"type": "string"}},
-                    "caller_obligation": {"type": "string"},
+                    "type": {"type": "string"},
+                    "file_path": {"type": "string"},
+                    "line": {"type": "integer"}, 
+                    "storage_class": {"enum": ["static","extern","thread_local","global","unknown",]},
+                    "qualifiers": {
+                        "type": "array",
+                        "items": {"enum": ["const","volatile","atomic",]},
+                        "uniqueItems": True,
+                    },
+                    "initializer": {"type": "string"},
+                    "access": {"enum": ["read", "write", "read_write", "unknown"]},
+                    "reference_lines": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                    },
                 },
             },
         },
-        "memory": {
+        "referenced_macros": {
+            "type": "array",
+            "description": "Program-extracted macro references, including the indexed definition observed when the snapshot was built.",
+            "items": {
+                "type": "object",
+                "required": [
+                    "name",
+                    "file_path",
+                    "line",
+                    "definition",
+                    "is_function_like",
+                    "reference_lines",
+                ],
+                "properties": {
+                    "name": {"type": "string"},
+                    "file_path": {"type": "string"},
+                    "line": {"type": "integer"},
+                    "definition": {"type": "string"},
+                    "is_function_like": {"type": "boolean"},
+                    "reference_lines": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                    },
+                },
+            },
+        },
+        "referenced_globals_truncation": {
             "type": "object",
+            "required": ["truncated", "returned", "total"],
+            "properties": {
+                "truncated": {"const": True},
+                "returned": {"type": "integer"},
+                "total": {"type": "integer"},
+            },
+        },
+        "referenced_macros_truncation": {
+            "type": "object",
+            "required": ["truncated", "returned", "total"],
+            "properties": {
+                "truncated": {"const": True},
+                "returned": {"type": "integer"},
+                "total": {"type": "integer"},
+            },
+        },
+        "summary": {"type": "string"},
+        "parameters": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [
+                    "parameter_name",
+                    "parameter_type",
+                    "meaning",
+                    "input_origin",
+                    "nullable",
+                ],
+                "properties": {
+                    "parameter_name": {"type": "string"},
+                    "parameter_type": {"type": "string"},
+                    "meaning": {"type": "string"},
+                    "input_origin": {"enum": ["external","internal","mixed","unknown",]},
+                    "nullable": {"enum": ["yes", "no", "unknown", "not_applicable"]},
+                    "ownership_effect": {
+                        "description": "How the callee treats ownership of a pointer, handle, reference, or resource parameter. Omit for scalar parameters.",
+                        "enum": [
+                            "borrow",
+                            "consume",
+                            "retain",
+                            "share",
+                            "release",
+                            "produce",
+                            "initialize",
+                            "mutate_borrowed",
+                            "unknown",
+                        ]
+                    },
+                    "constraints": {
+                        "type": "array",
+                        "description": "Constraints, invariants, size relationships, valid ranges, or caller requirements for this parameter. Omit when no constraint exists.",
+                        "items": {"type": "string"},
+                    },
+                },
+            },
+        },
+        "return_values": {
+            "type": "object",
+            "description": "Caller-visible return value contract. For void functions, set return_type to void and omit all the other fields.",
             "required": [
-                "allocations",
-                "releases",
-                "ownership_transfers",
-                "aliases",
-                "buffer_bounds",
+                "return_type",
             ],
             "properties": {
-                "allocations": {"$ref": "#/$defs/events"},
-                "releases": {"$ref": "#/$defs/events"},
-                "ownership_transfers": {"$ref": "#/$defs/events"},
-                "aliases": {
+                "return_type": {"type": "string"},
+                "meaning": {"type": "string"},
+                "nullable": {"enum": ["yes", "no", "unknown", "not_applicable"]},
+                "ownership": {
+                    "description": "Ownership state after return for a pointer, handle, reference, or resource value. Omit for void or scalar return types.",
+                    "enum": [
+                        "caller_owned",
+                        "borrowed",
+                        "shared",
+                        "static_storage",
+                        "unknown",
+                    ]
+                },
+                "success_cases": {
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "required": ["line", "source", "target", "relationship", "lifetime_note"],
+                        "required": ["value", "condition"],
                         "properties": {
-                            "line": {"type": ["integer", "null"]},
-                            "source": {"type": "string"},
-                            "target": {"type": "string"},
-                            "relationship": {"type": "string"},
-                            "lifetime_note": {"type": "string"},
+                            "value": {"type": "string"},
+                            "condition": {"type": "string"},
                         },
                     },
                 },
-                "buffer_bounds": {
+                "failure_cases": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["value", "condition"],
+                        "properties": {
+                            "value": {"type": "string"},
+                            "condition": {"type": "string"},
+                        },
+                    },
+                },
+                "caller_obligations": {
+                    "type": "string",
+                    "description": "Additional caller actions required by the return contract. Omit when no additional obligation exists.",
+                },
+            },
+        },
+        "effects": {
+            "type": "array",
+            "description": (
+                "Unified effect facts covering memory, resources, ownership, bounds, shared state, locks, threads, IO, callbacks, and global state. "
+                "Use an empty array when the function has no observable effects."
+            ),
+            "items": {
+                "type": "object",
+                "required": [
+                    "category",
+                    "description",
+                    "line",
+                    "object",
+                ],
+                "properties": {
+                    "category": {"enum": EFFECT_CATEGORY_ENUM},
+                    "description": {"type": "string"},
+                    "line": {"type": ["integer", "null"]},
+                    "object": {"type": "string"},
+                    "api": {"type": "string"},
+                    "condition": {"type": "string"},
+                    "state_before": {"type": "string"},
+                    "state_after": {"type": "string"},
+                    "related_parameters": {"type": "array", "items": {"type": "string"}},
+                    "guard": {
+                        "type": "string",
+                        "description": (
+                            "Protections of this effect such as a held lock, bounds or null check, reference-count requirement, object-state precondition, "
+                            "or protocol phase constraint. Omit when no guard applies or no guard can be established."
+                        ),
+                    },
+                    "details": {
+                        "type": "object",
+                        "description": (
+                            "Optional category-specific structured evidence that has no equivalent standard effect field. The object may be empty. "
+                            "Do not duplicate object, api, line, condition, state_before, state_after, or guard. "
+                            "Suggested keys by category: "
+                            "memory: size_expression, count_expression, allocation_kind, alignment, failure_value; "
+                            "resource: resource_kind, success_value, failure_value, flags; "
+                            "ownership: owner_before, owner_after, transfer_kind, lifetime_requirement; "
+                            "alias: source, target, alias_kind, escape_scope; "
+                            "bounds: operation_kind, size_expression, capacity_expression, validation_status; "
+                            "shared_state: access_kind, shared_scope; "
+                            "lock: lock_kind, lock_order, recursive; "
+                            "thread: entry_function, execution_context, shared_objects, lifetime_requirement; "
+                            "sync_protocol: protocol_kind, atomic_operation, reference_delta, expected_state; "
+                            "io: direction, endpoint, byte_count_expression, blocking; "
+                            "callback: target_function, execution_context, reentrant, lifetime_requirement; "
+                            "global_state: access_kind; "
+                            "registry: operation_kind, key, value, replacement_behavior."
+                        ),
+                    },
+                },
+            },
+        },
+        "error_handling": {
+            "type": "object",
+            "description": "Error path summary for this function. Use an empty error_paths array when no error path exists.",
+            "required": ["error_paths"],
+            "properties": {
+                "error_paths": {
                     "type": "array",
                     "items": {
                         "type": "object",
                         "required": [
-                            "line",
-                            "buffer",
-                            "size_source",
-                            "operation",
-                            "bounds_relation",
+                            "trigger",
+                            "exit_line",
+                            "exit_action",
                         ],
                         "properties": {
-                            "line": {"type": ["integer", "null"]},
-                            "buffer": {"type": "string"},
-                            "size_source": {"type": "string"},
-                            "operation": {"type": "string"},
-                            "bounds_relation": {"type": "string"},
-                        },
-                    },
-                },
-            },
-        },
-        "resources": {
-            "type": "object",
-            "required": ["events", "final_state_by_exit"],
-            "properties": {
-                "events": {"$ref": "#/$defs/events"},
-                "final_state_by_exit": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "required": ["exit", "line", "condition", "resource_states"],
-                        "properties": {
-                            "exit": {"type": "string"},
-                            "line": {"type": ["integer", "null"]},
-                            "condition": {"type": "string"},
-                            "resource_states": {
+                            "trigger": {"type": "string"},
+                            "exit_line": {"type": ["integer", "null"]},
+                            "exit_action": {"type": "string"},
+                            "exit_states": {
                                 "type": "array",
+                                "description": (
+                                    "Final states of memory objects, resources, locks, references, or state variables relevant to this error path. "
+                                    "Omit when no relevant object has a path-specific exit state."
+                                ),
                                 "items": {
                                     "type": "object",
-                                    "required": ["resource", "state", "owner", "risk"],
+                                    "required": ["kind", "object", "state"],
                                     "properties": {
-                                        "resource": {"type": "string"},
-                                        "state": {
-                                            "enum": [
-                                                "released",
-                                                "transferred",
-                                                "retained",
-                                                "still_held",
-                                                "leaked",
-                                                "unknown",
-                                            ]
-                                        },
+                                        "kind": {"enum": ["memory", "resource", "lock", "reference", "state", "other"]},
+                                        "object": {"type": "string"},
+                                        "state": {"enum": EXIT_STATE_ENUM},
                                         "owner": {"type": "string"},
-                                        "risk": {"type": "string"},
                                     },
                                 },
                             },
+                            "return_value": {"type": "string"},
                         },
                     },
                 },
             },
         },
-        "error_paths": {
+        "callers": {
             "type": "array",
             "items": {
                 "type": "object",
-                "required": ["line", "condition", "exit", "cleanup_actions", "state_consistency"],
+                "required": [
+                    "caller_index_name",
+                    "callsite_lines",
+                ],
                 "properties": {
-                    "line": {"type": ["integer", "null"]},
-                    "condition": {"type": "string"},
-                    "exit": {"type": "string"},
-                    "cleanup_actions": {"type": "array", "items": {"type": "string"}},
-                    "state_consistency": {"type": "string"},
-                },
-            },
-        },
-        "concurrency": {
-            "type": "object",
-            "required": [
-                "shared_state_accesses",
-                "locks",
-                "lock_order_by_path",
-                "thread_effects",
-                "atomic_or_refcount_protocols",
-            ],
-            "properties": {
-                "shared_state_accesses": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "required": ["line", "object", "access", "protection", "race_risk"],
-                        "properties": {
-                            "line": {"type": ["integer", "null"]},
-                            "object": {"type": "string"},
-                            "access": {"enum": ["read", "write", "read_write", "unknown"]},
-                            "protection": {"type": "string"},
-                            "race_risk": {"type": "string"},
-                        },
+                    "caller_index_name": {"type": "string"},
+                    "callsite_lines": {
+                        "type": "array",
+                        "items": {"type": "integer"},
                     },
-                },
-                "locks": {"$ref": "#/$defs/events"},
-                "lock_order_by_path": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "required": ["path", "order", "released_on_all_exits", "held_at_exit"],
-                        "properties": {
-                            "path": {"type": "string"},
-                            "order": {"type": "array", "items": {"type": "string"}},
-                            "released_on_all_exits": {"enum": ["yes", "no", "unknown"]},
-                            "held_at_exit": {"type": "array", "items": {"type": "string"}},
-                        },
-                    },
-                },
-                "thread_effects": {"$ref": "#/$defs/events"},
-                "atomic_or_refcount_protocols": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "required": ["line", "object", "operation", "protocol", "risk"],
-                        "properties": {
-                            "line": {"type": ["integer", "null"]},
-                            "object": {"type": "string"},
-                            "operation": {"type": "string"},
-                            "protocol": {"type": "string"},
-                            "risk": {"type": "string"},
-                        },
+                    "call_type": {
+                        "type": "array",
+                        "items": {"enum": ["direct", "indirect"]},
+                        "minItems": 1,
+                        "uniqueItems": True,
                     },
                 },
             },
@@ -226,89 +415,57 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA: Dict[str, Any] = {
             "items": {
                 "type": "object",
                 "required": [
-                    "name",
-                    "line",
-                    "known_semantics",
-                    "contract_summary",
-                    "risk_relevance",
+                    "callee_index_name",
+                    "callsite_lines",
+                    "callee_behavior",
                 ],
                 "properties": {
-                    "name": {"type": "string"},
-                    "line": {"type": ["integer", "null"]},
-                    "known_semantics": {
-                        "enum": ["snapshot", "external_config", "inferred", "unknown"]
+                    "callee_index_name": {"type": "string"},
+                    "callsite_lines": {
+                        "type": "array",
+                        "items": {"type": "integer"}
                     },
-                    "contract_summary": {"type": "string"},
-                    "risk_relevance": {"type": "string"},
+                    "call_type": {
+                        "type": "array",
+                        "items": {"enum": ["direct", "indirect"]},
+                        "minItems": 1,
+                        "uniqueItems": True,
+                    },
+                    "callee_behavior": {"type": "string"},
                 },
             },
         },
-        "key_semantics": {"type": "array", "items": {"type": "string"}},
         "suspicious_points": {
             "type": "array",
-            "items": {
-                "type": "object",
-                "required": ["skill", "type", "location", "description", "reason", "confidence"],
-                "properties": {
-                    "skill": {
-                        "enum": [
-                            "resource_lifecycle",
-                            "temporal_memory",
-                            "bounds_and_integer",
-                            "string_and_format",
-                            "null_and_failure",
-                            "ownership_contract",
-                            "concurrency_lock_order",
-                            "shared_state_race",
-                            "stack_escape",
-                            "unknown",
-                        ]
-                    },
-                    "type": {"type": "string"},
-                    "location": {"type": "string"},
-                    "description": {"type": "string"},
-                    "reason": {"type": "string"},
-                    "confidence": {"enum": ["low", "medium", "high"]},
-                },
-            },
-        },
-    },
-    "$defs": {
-        "events": {
-            "type": "array",
+            "description": "Audit-relevant suspicious points for later validation. Use an empty array when no suspicious point is present.",
             "items": {
                 "type": "object",
                 "required": [
-                    "line",
-                    "kind",
-                    "resource",
-                    "operation",
-                    "owner_before",
-                    "owner_after",
-                    "condition",
+                    "category",
+                    "lines",
+                    "description"
                 ],
                 "properties": {
-                    "line": {"type": ["integer", "null"]},
-                    "kind": {
-                        "enum": [
-                            "memory",
-                            "file",
-                            "socket",
-                            "mmap",
-                            "lock",
-                            "thread",
-                            "refcount",
-                            "shared_state",
-                            "other",
-                        ]
-                    },
-                    "resource": {"type": "string"},
-                    "operation": {"type": "string"},
-                    "owner_before": {"type": "string"},
-                    "owner_after": {"type": "string"},
-                    "condition": {"type": "string"},
+                    "category": {"enum": SUSPICIOUS_POINT_CATEGORY_ENUM},
+                    "lines": {"type": "string"},
+                    "description": {"type": "string"}
                 },
             },
-        }
+        },
     },
 }
+
+
+def llm_function_snapshot_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the semantic-only schema exposed to the LLM finalizer."""
+
+    result = deepcopy(schema)
+    generated = set(LLM_EXCLUDED_SNAPSHOT_FIELDS)
+    required = result.get("required")
+    if isinstance(required, list):
+        result["required"] = [field for field in required if field not in generated]
+    properties = result.get("properties")
+    if isinstance(properties, dict):
+        for field in generated:
+            properties.pop(field, None)
+    return result

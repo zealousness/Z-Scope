@@ -1362,9 +1362,24 @@ def _scan_roots(code_index: Any) -> List[Path]:
 
 
 def _skip_path(code_index: Any, path: Path) -> bool:
-    parts = set(path.parts)
-    if parts & {".git", ".venv", ".mypy_cache", ".pytest_cache", ".zscope_snapshots", "build", "tmp"}:
-        return True
+    skipped_directories = {
+        ".git",
+        ".venv",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".zscope_snapshots",
+        "build",
+        "tmp",
+    }
+    absolute_path = path.absolute()
+    for root in _scan_roots(code_index):
+        try:
+            relative_path = absolute_path.relative_to(root.absolute())
+        except ValueError:
+            continue
+        if set(relative_path.parts[:-1]) & skipped_directories:
+            return True
+        break
     is_allowed = getattr(code_index, "_is_path_allowed", None)
     if callable(is_allowed):
         try:
@@ -1643,4 +1658,3 @@ def _stems_match(left: str, right: str) -> bool:
         return True
     short, long = sorted((left, right), key=len)
     return len(short) >= 4 and long.startswith(short)
-

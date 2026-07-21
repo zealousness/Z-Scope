@@ -139,6 +139,38 @@ class JoernBackend(CodeBackend):
         decl["members"] = members
         return decl
 
+    def find_type_infos(
+        self,
+        type_name: str,
+        file_path: str = "",
+    ) -> List[Dict[str, Any]]:
+        matches = [dict(item) for item in self._joern.get_type_decls(type_name)]
+        if file_path:
+            normalized_hint = str(file_path).replace("\\", "/").strip().lstrip("./")
+            matches = [
+                item
+                for item in matches
+                if self._paths_match_type_file(
+                    str(item.get("filename") or ""),
+                    normalized_hint,
+                )
+            ]
+        return matches
+
+    @staticmethod
+    def _paths_match_type_file(stored_path: str, hint_path: str) -> bool:
+        stored = str(stored_path or "").replace("\\", "/").strip().lstrip("./")
+        hint = str(hint_path or "").replace("\\", "/").strip().lstrip("./")
+        return bool(
+            stored
+            and hint
+            and (
+                stored == hint
+                or stored.endswith(f"/{hint}")
+                or hint.endswith(f"/{stored}")
+            )
+        )
+
     def get_data_flow(
         self, source_func: str, source_param: str, sink_pattern: str
     ) -> List[Dict[str, Any]]:

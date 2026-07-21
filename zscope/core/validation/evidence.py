@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List, Optional
 
 from ...common.issue_identity import canonical_issue_key, flatten_issue_text, parse_issue_location
+from ...snapshots.modeling_input import SemanticModelInputError, resolve_function_info
 
 
 def validation_verdict(val_data: Dict[str, Any]) -> str:
@@ -92,7 +93,16 @@ def build_validation_evidence_pack(
             line + 12,
         )
 
-    snapshot = snapshot_store.load_snapshot(issue_func)
+    snapshot = None
+    try:
+        info = resolve_function_info(
+            code_index,
+            issue_func,
+            file_path=file_path or "",
+        )
+        snapshot = snapshot_store.load_snapshot(str(info["index_name"]))
+    except (SemanticModelInputError, AttributeError):
+        snapshot = None
     try:
         callers = code_index.get_callers(issue_func, limit=8)
     except Exception:
@@ -348,14 +358,25 @@ def trim_code(code: str, max_lines: int = 140) -> str:
 def compact_snapshot(snapshot: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not isinstance(snapshot, dict):
         return None
-    return {
+    compact = {
         "summary": snapshot.get("summary"),
-        "resources": snapshot.get("resources"),
+        "parameters": snapshot.get("parameters"),
+        "return_values": snapshot.get("return_values"),
+        "effects": snapshot.get("effects"),
         "error_handling": snapshot.get("error_handling"),
-        "concurrency": snapshot.get("concurrency"),
+        "callees": snapshot.get("callees"),
+        "referenced_globals": snapshot.get("referenced_globals"),
+        "referenced_macros": snapshot.get("referenced_macros"),
         "suspicious_points": snapshot.get("suspicious_points"),
-        "semantic_fingerprint": snapshot.get("semantic_fingerprint"),
     }
+    for field in (
+        "callees_truncation",
+        "referenced_globals_truncation",
+        "referenced_macros_truncation",
+    ):
+        if field in snapshot:
+            compact[field] = snapshot[field]
+    return compact
 
 
 def _entry_root_reachable(evidence_pack: Dict[str, Any]) -> bool:
