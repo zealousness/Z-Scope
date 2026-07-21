@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from zscope.core.analysis.analyzer import Analyzer
 from zscope.core.candidates.regex import (
     RegexCandidateGenerator,
@@ -10,7 +12,11 @@ from zscope.core.candidates.backend_signals import (
     split_config_pair_names,
 )
 from zscope.common.issue_identity import normalize_issue_category, normalize_issue_fields
-from zscope.semantics.inference import add_api_from_semantic_text
+from zscope.semantics.inference import add_api_from_semantic_text, snapshot_contract_text
+from zscope.snapshots.policy import (
+    DETERMINISTIC_SNAPSHOT_OPTIONAL_FIELDS,
+    DETERMINISTIC_SNAPSHOT_REQUIRED_FIELDS,
+)
 from zscope.rules.engine import RuleMatch
 
 
@@ -56,6 +62,30 @@ def test_snapshot_semantic_text_does_not_reclassify_described_function_as_api() 
     assert "_lifecycle_tick_timer_callback" not in semantics.lock_apis
     assert "_lifecycle_tick_timer_callback" not in semantics.unlock_apis
     assert "_lifecycle_tick_timer_callback" not in semantics.deallocators
+
+
+def test_snapshot_contract_text_prefers_new_fields_and_keeps_legacy_fallback() -> None:
+    current = snapshot_contract_text(
+        {
+            "summary": "checked allocation wrapper",
+            "return_values": {"failure_cases": [{"value": "NULL"}]},
+            "effects": [{"category": "memory", "api": "malloc"}],
+            "error_handling": {"error_paths": [{"exit_action": "return NULL"}]},
+        }
+    )
+    legacy = snapshot_contract_text(
+        {
+            "summary": "legacy wrapper",
+            "outputs": ["pointer"],
+            "resources": {"allocation": "malloc"},
+            "concurrency": {},
+            "key_semantics": ["caller owned"],
+        }
+    )
+
+    assert "failure_cases" in current
+    assert "malloc" in current
+    assert "caller owned" in legacy
 
 
 def test_facade_callee_candidates_recurse_into_internal_helpers() -> None:
@@ -549,23 +579,55 @@ def test_premodel_callee_collection_uses_per_level_cap_and_light_impls() -> None
             warn_missing: bool = False,
             include_context: bool = True,
         ):
+            del warn_missing
             self.impl_context_flags.append(include_context)
+            simple_name = name.split("@", 1)[0]
             return {
-                "func_name": name,
+                "func_name": simple_name,
                 "file": "src/demo.c",
+                "index_name": f"{simple_name}@src/demo.c:1-4",
                 "start_line": 1,
                 "end_line": 4,
-                "code": f"1 | int {name}(void) {{\n2 |     return 0;\n3 | }}\n",
+                "signature": f"int {simple_name}(void)",
+                "is_static": False,
+                "is_macro": False,
+                "code": f"1 | int {simple_name}(void) {{\n2 |     return 0;\n3 | }}\n",
                 "callees": [],
             }
+
+        def find_function_infos(self, name: str, file_path: str = ""):
+            del file_path
+            simple_name = name.split("@", 1)[0]
+            return [
+                {
+                    "function_name": simple_name,
+                    "file_path": "src/demo.c",
+                    "index_name": f"{simple_name}@src/demo.c:1-4",
+                    "start_line": 1,
+                    "end_line": 4,
+                    "signature": f"int {simple_name}(void)",
+                    "is_static": False,
+                    "is_macro": False,
+                    "callees": [],
+                    "referenced_globals": [],
+                    "referenced_macros": [],
+                }
+            ]
 
     class SnapshotStore:
         def load_snapshot(self, func: str):
             return {"func_name": func}
 
+        def needs_refresh(self, index_name, code, symbol_context):
+            del index_name, code, symbol_context
+            return False, None
+
     analyzer = object.__new__(Analyzer)
     analyzer.code_index = FanoutIndex()
     analyzer.snapshot_store = SnapshotStore()
+    analyzer.config = SimpleNamespace(
+        analysis=SimpleNamespace(max_function_lines=500)
+    )
     analyzer._get_tools = lambda *args, **kwargs: []
     analyzer._tool_policy_for_agent = lambda *args, **kwargs: None
 
@@ -578,14 +640,23 @@ def test_premodel_callee_collection_uses_per_level_cap_and_light_impls() -> None
 
     assert (modeled, skipped, tokens) == (0, 4, 0)
     assert analyzer.code_index.callee_calls == ["entry", "a0", "a1"]
-    assert analyzer.code_index.impl_context_flags == [False, False, False, False]
+    assert analyzer.code_index.impl_context_flags == [
+        False,
+        False,
+        False,
+        False,
+        True,
+        True,
+        True,
+        True,
+    ]
 
 
 def test_trivial_snapshot_keeps_security_contract_points_auditable() -> None:
     cases = [
         (
             "_issue41_lax_protocol_mismatch",
-            "protocol_mixup",
+            "state_protocol",
             """
 1731 | int _issue41_lax_protocol_mismatch(int detected_protocol, int auth_level) {
 1732 |     if (detected_protocol != ISSUE41_PROTOCOL_RPC) {
@@ -599,7 +670,7 @@ def test_trivial_snapshot_keeps_security_contract_points_auditable() -> None:
         ),
         (
             "_issue41_missing_version_filter",
-            "version_filtering",
+            "input_validation",
             """
 1790 | int _issue41_missing_version_filter(const unsigned char* report, size_t len) {
 1791 |     uint8_t version = report[0];
@@ -611,7 +682,7 @@ def test_trivial_snapshot_keeps_security_contract_points_auditable() -> None:
         ),
         (
             "_issue41_raw_fd_missing_encode",
-            "fd_encoding_mismatch",
+            "type_confusion",
             """
 1843 | int _issue41_raw_fd_missing_encode(int listen_fd, int work_fd) {
 1844 |     int raw_work_fd = work_fd + 1;
@@ -621,7 +692,7 @@ def test_trivial_snapshot_keeps_security_contract_points_auditable() -> None:
         ),
         (
             "_issue41_reliable_fd_to_raw_interface",
-            "fd_type_mismatch",
+            "type_confusion",
             """
 1727 | int _issue41_reliable_fd_to_raw_interface(int reliable_fd) {
 1728 |     return _issue41_is_inter_fd(reliable_fd);
@@ -630,7 +701,7 @@ def test_trivial_snapshot_keeps_security_contract_points_auditable() -> None:
         ),
         (
             "_real_model_syscall_state_not_restored",
-            "state_inconsistency",
+            "state_protocol",
             """
 1461 | int _real_model_syscall_state_not_restored(int fd) {
 1462 |     int previous = g_real_registry.state;
@@ -668,18 +739,25 @@ def test_trivial_snapshot_keeps_security_contract_points_auditable() -> None:
             func_name,
             {
                 "file": "src/lifecycle.c",
+                "index_name": f"{func_name}@src/lifecycle.c:1700-1900",
                 "start_line": 1700,
                 "end_line": 1900,
                 "signature": f"int {func_name}(void)",
+                "is_static": False,
+                "is_macro": False,
                 "code": code,
                 "callees": [],
             },
-            "src/lifecycle.c:1700",
         )
 
         assert snapshot["snapshot_kind"] == "syntactic"
-        assert snapshot["is_trivial"] is True
+        assert tuple(snapshot) == DETERMINISTIC_SNAPSHOT_REQUIRED_FIELDS
+        assert snapshot["parameters"] == []
+        assert snapshot["return_values"]["return_type"] == "unknown"
+        assert snapshot["effects"] == []
+        assert snapshot["error_handling"] == {"error_paths": []}
         assert any(point["category"] == category for point in snapshot["suspicious_points"])
+        assert all("confidence" not in point for point in snapshot["suspicious_points"])
 
     assert not Analyzer._is_trivial_function(cases[-1][2], max_lines_threshold=10)
 
@@ -689,9 +767,12 @@ def test_trivial_snapshot_marks_facade_forwarding_as_auditable() -> None:
         "td_runtime_apply_shared_memory_event",
         {
             "file": "src/main.c",
+            "index_name": "td_runtime_apply_shared_memory_event@src/main.c:100-106",
             "start_line": 100,
             "end_line": 106,
             "signature": "int td_runtime_apply_shared_memory_event(...)",
+            "is_static": False,
+            "is_macro": False,
             "code": """
 100 | int td_runtime_apply_shared_memory_event(int fd, const unsigned char* wire) {
 101 |     return _runtime_accept_session_frame(fd, wire);
@@ -699,14 +780,24 @@ def test_trivial_snapshot_marks_facade_forwarding_as_auditable() -> None:
 """,
             "callees": ["_runtime_accept_session_frame"],
         },
-        "src/main.c:100",
     )
 
     assert any(
         point["type"] == "facade_forwarding_contract"
-        and point["category"] == "entry_forwarding"
+        and point["category"] == "api_contract"
+        and point["lines"] == "100"
         for point in snapshot["suspicious_points"]
     )
+    assert all("confidence" not in point for point in snapshot["suspicious_points"])
+    assert "semantic_fingerprint" not in snapshot
+    assert "key_semantics" not in snapshot
+    assert snapshot["callees"] == [
+        {
+            "callee_index_name": "_runtime_accept_session_frame",
+            "callsite_lines": [],
+            "callee_behavior": "Deterministic snapshot does not model callee behavior.",
+        }
+    ]
 
 
 def test_checked_allocator_wrappers_use_lightweight_snapshots() -> None:
@@ -722,9 +813,12 @@ def test_checked_allocator_wrappers_use_lightweight_snapshots() -> None:
 """
     impl = {
         "file": "src/utils.c",
+        "index_name": "_safe_malloc@src/utils.c:13-20",
         "start_line": 13,
         "end_line": 20,
         "signature": "void* _safe_malloc(size_t size)",
+        "is_static": True,
+        "is_macro": False,
         "code": code,
         "callees": ["malloc", "LOG_ERROR"],
     }
@@ -735,17 +829,149 @@ def test_checked_allocator_wrappers_use_lightweight_snapshots() -> None:
     snapshot = Analyzer._build_lightweight_snapshot(
         "_safe_malloc",
         impl,
-        "src/utils.c:13",
     )
 
     assert snapshot["snapshot_kind"] == "lightweight"
-    assert snapshot["resources"]["allocation"] == "malloc"
-    assert snapshot["error_handling"]["caller_obligation"]
+    assert snapshot["return_values"]["ownership"] == "caller_owned"
+    assert snapshot["return_values"]["caller_obligation"]
+    assert [effect["category"] for effect in snapshot["effects"]] == [
+        "memory",
+        "ownership",
+    ]
+    assert snapshot["error_handling"]["error_paths"][0]["return_value"] == "NULL"
     assert snapshot["suspicious_points"] == []
+    assert "semantic_fingerprint" not in snapshot
+    assert "resources" not in snapshot
+    assert "key_semantics" not in snapshot
+
+
+def test_lightweight_snapshot_variants_use_unified_semantic_fields() -> None:
+    cases = [
+        ("LOG_INFO", "io", None),
+        ("LOCK", "lock", "acquire"),
+        ("UNLOCK", "lock", "release"),
+        ("MIN", None, None),
+        ("RETURN_IF_ERR", None, "return"),
+        ("GOTO_IF_ERR", None, "goto"),
+    ]
+
+    for offset, (name, effect_category, operation) in enumerate(cases, start=1):
+        snapshot = Analyzer._build_lightweight_snapshot(
+            name,
+            {
+                "file": "include/helpers.h",
+                "index_name": f"{name}@include/helpers.h:{offset}-{offset}",
+                "start_line": offset,
+                "end_line": offset,
+                "signature": f"#define {name}(x)",
+                "is_static": False,
+                "is_macro": True,
+                "code": f"{offset} | #define {name}(x) (x)",
+                "callees": [],
+                "referenced_globals": [],
+                "referenced_macros": [],
+            },
+        )
+
+        assert tuple(snapshot) == DETERMINISTIC_SNAPSHOT_REQUIRED_FIELDS
+        assert snapshot["parameters"] == []
+        assert snapshot["return_values"]["return_type"] == "unknown"
+        if effect_category is None:
+            assert snapshot["effects"] == []
+        else:
+            assert snapshot["effects"][0]["category"] == effect_category
+        if name in {"LOCK", "UNLOCK"}:
+            assert snapshot["effects"][0]["details"]["operation_kind"] == operation
+        if name in {"RETURN_IF_ERR", "GOTO_IF_ERR"}:
+            assert snapshot["error_handling"]["error_paths"][0]["exit_action"] == operation
+        else:
+            assert snapshot["error_handling"] == {"error_paths": []}
+
+
+def test_deterministic_snapshot_preserves_context_truncation_and_isolation() -> None:
+    referenced_globals = [{"name": "g_state", "reference_lines": [2]}]
+    referenced_macros = [{"name": "LIMIT", "reference_lines": [2]}]
+    globals_truncation = {"truncated": True, "returned": 50, "total": 51}
+    macros_truncation = {"truncated": True, "returned": 30, "total": 31}
+    callees_truncation = {"truncated": True, "returned": 30, "total": 32}
+    snapshot = Analyzer._build_trivial_snapshot(
+        "tiny",
+        {
+            "file": "src/tiny.c",
+            "index_name": "tiny@src/tiny.c:1-3",
+            "start_line": 1,
+            "end_line": 3,
+            "signature": "int tiny(void)",
+            "is_static": False,
+            "is_macro": False,
+            "code": "1 | int tiny(void) {\n2 | return helper();\n3 | }",
+            "referenced_globals": referenced_globals,
+            "referenced_macros": referenced_macros,
+            "referenced_globals_truncation": globals_truncation,
+            "referenced_macros_truncation": macros_truncation,
+            "callees": [
+                {
+                    "callee_index_name": "helper@src/helper.c:10-12",
+                    "callsite_lines": [2],
+                    "call_type": ["direct"],
+                },
+                {
+                    "callee_index_name": "dispatch@src/dispatch.c:20-24",
+                    "callsite_lines": [2],
+                    "call_type": ["direct", "indirect"],
+                }
+            ],
+            "callees_truncation": callees_truncation,
+        },
+    )
+
+    expected_fields = list(DETERMINISTIC_SNAPSHOT_REQUIRED_FIELDS)
+    symbol_index = expected_fields.index("referenced_macros") + 1
+    expected_fields[symbol_index:symbol_index] = [
+        "referenced_globals_truncation",
+        "referenced_macros_truncation",
+    ]
+    callee_index = expected_fields.index("callees") + 1
+    expected_fields.insert(callee_index, "callees_truncation")
+    assert list(snapshot) == expected_fields
+    assert set(snapshot) <= set(DETERMINISTIC_SNAPSHOT_REQUIRED_FIELDS) | set(
+        DETERMINISTIC_SNAPSHOT_OPTIONAL_FIELDS
+    )
+    assert snapshot["callees"][0]["call_type"] == ["direct"]
+    assert snapshot["callees"][1]["call_type"] == ["direct", "indirect"]
+    assert snapshot["code"].endswith("3 | }")
+
+    snapshot["referenced_globals"][0]["name"] = "changed"
+    snapshot["referenced_macros"][0]["name"] = "changed"
+    snapshot["referenced_globals_truncation"]["total"] = 99
+    snapshot["referenced_macros_truncation"]["total"] = 99
+    snapshot["callees_truncation"]["total"] = 99
+    assert referenced_globals[0]["name"] == "g_state"
+    assert referenced_macros[0]["name"] == "LIMIT"
+    assert globals_truncation["total"] == 51
+    assert macros_truncation["total"] == 31
+    assert callees_truncation["total"] == 32
 
 
 def test_validation_evidence_pack_preserves_entry_reachability_context() -> None:
     class FakeIndex:
+        def find_function_infos(self, name: str, file_path: str = ""):
+            return [
+                {
+                    "function_name": name,
+                    "file_path": file_path,
+                    "index_name": f"{name}@{file_path}:1241-1241",
+                    "start_line": 1241,
+                    "end_line": 1241,
+                    "signature": f"int {name}(void)",
+                    "is_static": False,
+                    "is_macro": False,
+                    "callees": [],
+                    "referenced_globals": [],
+                    "referenced_macros": [],
+                }
+            ]
+
         def get_file_snippet(self, path: str, start: int, end: int):
             return "10 | sink();"
 
@@ -757,7 +983,30 @@ def test_validation_evidence_pack_preserves_entry_reachability_context() -> None
 
     class FakeSnapshotStore:
         def load_snapshot(self, name: str):
-            return {"summary": "internal sink"}
+            return {
+                "summary": "internal sink",
+                "parameters": [],
+                "return_values": {
+                    "return_type": "unknown",
+                    "meaning": "unknown",
+                    "nullable": "unknown",
+                    "success_cases": [],
+                    "failure_cases": [],
+                },
+                "effects": [
+                    {
+                        "category": "memory",
+                        "description": "validation contract",
+                        "line": 1241,
+                        "object": "allocation",
+                    }
+                ],
+                "error_handling": {"error_paths": []},
+                "callees": [],
+                "referenced_globals": [],
+                "referenced_macros": [],
+                "suspicious_points": [],
+            }
 
     analyzer = object.__new__(Analyzer)
     analyzer.code_index = FakeIndex()
@@ -803,6 +1052,9 @@ def test_validation_evidence_pack_preserves_entry_reachability_context() -> None
     assert "zero repository callers" in requirements
     assert "entry_is_external_root is true" in requirements
     assert "real_model" not in requirements
+    snapshot_summary = pack["function_context"]["snapshot_summary"]
+    assert snapshot_summary["effects"][0]["description"] == "validation contract"
+    assert "semantic_fingerprint" not in snapshot_summary
 
 
 def test_entry_root_dead_code_rejection_is_detected() -> None:
@@ -839,6 +1091,23 @@ def test_entry_root_contract_scope_rejection_is_not_rewritten() -> None:
 
 def test_validation_pack_marks_current_entry_as_reachable() -> None:
     class FakeIndex:
+        def find_function_infos(self, name: str, file_path: str = ""):
+            return [
+                {
+                    "function_name": name,
+                    "file_path": file_path,
+                    "index_name": f"{name}@{file_path}:210-210",
+                    "start_line": 210,
+                    "end_line": 210,
+                    "signature": f"int {name}(void)",
+                    "is_static": False,
+                    "is_macro": False,
+                    "callees": [],
+                    "referenced_globals": [],
+                    "referenced_macros": [],
+                }
+            ]
+
         def get_file_snippet(self, file_path: str, line: int, context: int = 20):
             return ""
 
@@ -1212,5 +1481,3 @@ def test_clang_pair_row_normalizes_to_candidate() -> None:
 def test_config_pair_names_split_csv() -> None:
     assert split_config_pair_names("CloseA, CloseB") == ["CloseA", "CloseB"]
  
-
-

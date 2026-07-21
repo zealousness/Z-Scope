@@ -116,6 +116,14 @@ def test_get_file_snippet_validation_uses_code_index_line_cache(tmp_path) -> Non
     assert result["success"] is True
     assert code_index.line_count_calls == 1
     assert code_index.snippet_calls == 1
+    schema = next(
+        schema["function"]
+        for schema in runtime.get_tools_schema()
+        if schema["function"]["name"] == "get_file_snippet"
+    )
+    assert "max_lines" not in schema["parameters"]["properties"]
+    assert "default_max_lines" not in schema["parameters"]["properties"]
+    assert schema["parameters"]["required"] == ["file_path", "start_line"]
 
 
 def test_tool_policy_redacts_sensitive_audit_arguments() -> None:
@@ -143,7 +151,9 @@ def test_tool_policy_redacts_sensitive_audit_results() -> None:
     )
 
     assert policy.audit_events[-1].result_summary["data.token"] == "[redacted]"
-    assert policy.audit_events[-1].result_summary["error"] == "Authorization: Bearer [redacted] failed"
+    assert (
+        policy.audit_events[-1].result_summary["error"] == "Authorization: Bearer [redacted] failed"
+    )
     assert "secret-value" not in json.dumps(policy.audit_events[-1].to_dict())
 
 

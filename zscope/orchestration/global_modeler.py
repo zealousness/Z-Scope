@@ -21,6 +21,7 @@ from ..snapshots.policy import (
     is_trivial_function,
 )
 from ..snapshots.store import SnapshotStore
+from ..snapshots.modeling_input import SemanticModelInputError, build_semantic_model_input
 from ..tools.policy import ToolPolicy
 
 logger = logging.getLogger(__name__)
@@ -337,33 +338,59 @@ class GlobalModeler:
         *,
         force_llm: bool = False,
     ) -> Tuple[str, int]:
-        if self._has_current_snapshot(key, impl):
+        try:
+            context = build_semantic_model_input(
+                self.code_index,
+                key.name,
+                file_path=str(impl.get("file") or key.file_path or ""),
+                index_name=str(impl.get("index_name") or ""),
+                start_line=int(impl.get("start_line") or 0) or None,
+                include_context=False,
+            )
+        except SemanticModelInputError as exc:
+            logger.warning(
+                "[global-model] Skipping LLM snapshot key=%s reason=%s llm_called=false",
+                self._format_key(key),
+                exc.reason,
+            )
+            return "failed", 0
+        index_name = str(context["index_name"])
+        if self._has_current_snapshot(key, context):
             return "cache_hit", 0
 
-        lock_file_path = str(impl.get("file") or key.file_path or "")
-        lock_status = self.snapshot_store.lock_manager.acquire(
-            key.name,
-            file_path=lock_file_path or None,
+        lock_started = time.monotonic()
+        logger.info(
+            "[snapshot-lock] waiting context=global index_name=%s",
+            index_name,
+        )
+        lock_status = self.snapshot_store.lock_manager.acquire(index_name)
+        logger.info(
+            "[snapshot-lock] outcome context=global index_name=%s status=%s waited=%.2fs",
+            index_name,
+            lock_status,
+            time.monotonic() - lock_started,
         )
         if lock_status == "done":
             return "cache_hit", 0
         if lock_status == "timeout":
-            logger.warning("[global-model] Timeout waiting for '%s'", key.name)
+            logger.warning(
+                "[global-model] Timeout waiting index_name=%s",
+                index_name,
+            )
             return "failed", 0
 
         success = False
         context_tokens = 0
         try:
-            if self._has_current_snapshot(key, impl):
+            if self._has_current_snapshot(key, context):
                 success = True
                 return "cache_hit", 0
 
-            location = f"{impl.get('file', key.file_path or 'unknown')}:{impl.get('start_line', 0)}"
-            code = str(impl.get("code") or "")
+            code = str(context.get("code") or "")
 
-            if not force_llm and is_lightweight_snapshot_candidate(key.name, impl):
-                snapshot = build_lightweight_snapshot(key.name, impl, location)
-                self.snapshot_store.save_snapshot(key.name, snapshot, code, location)
+            if not force_llm and is_lightweight_snapshot_candidate(key.name, context):
+                snapshot = build_lightweight_snapshot(context["func_name"], context)
+                self.snapshot_store.save_snapshot(index_name, snapshot, code)
                 success = True
                 return "deterministic", 0
 
@@ -371,21 +398,16 @@ class GlobalModeler:
                 code,
                 self.config.analysis.trivial_function_max_lines,
             ):
-                snapshot = build_trivial_snapshot(key.name, impl, location)
-                self.snapshot_store.save_snapshot(key.name, snapshot, code, location)
+                snapshot = build_trivial_snapshot(context["func_name"], context)
+                self.snapshot_store.save_snapshot(index_name, snapshot, code)
                 success = True
                 return "deterministic", 0
 
-            context = {
-                "func_name": key.name,
-                "code": code,
-                "location": location,
-            }
             user_context = relevant_user_config_context(
                 self.user_config,
-                key.name,
-                code,
-                str(impl.get("file") or key.file_path or ""),
+                context["func_name"],
+                context["code"],
+                context["file_path"],
             )
             if user_context:
                 context["user_config_context"] = user_context
@@ -398,34 +420,72 @@ class GlobalModeler:
                 or 0
             )
             if response.success:
-                self.snapshot_store.save_snapshot(key.name, response.data, code, location)
+                self.snapshot_store.save_snapshot(
+                    index_name,
+                    response.data,
+                    context["code"],
+                    dependency_context=context,
+                )
+                logger.info(
+                    "[snapshot-llm] completed context=global index_name=%s "
+                    "success=true context_tokens=%d",
+                    index_name,
+                    context_tokens,
+                )
                 success = True
                 return "llm", context_tokens
-            logger.warning("[global-model] Failed to model '%s': %s", key.name, response.error)
+            failure_reason = str(
+                metadata.get("reason") or "semantic_model_failed"
+            )
+            logger.warning(
+                "[snapshot-llm] completed context=global index_name=%s "
+                "success=false context_tokens=%d reason=%s error=%s",
+                index_name,
+                context_tokens,
+                failure_reason,
+                response.error,
+            )
             return "failed", context_tokens
         except Exception as exc:
-            logger.exception("[global-model] Error modeling '%s': %s", key.name, exc)
+            logger.exception(
+                "[snapshot-llm] failed context=global index_name=%s "
+                "success=false context_tokens=%d reason=semantic_model_exception error=%s",
+                index_name,
+                context_tokens,
+                exc,
+            )
             return "failed", context_tokens
         finally:
             self.snapshot_store.lock_manager.release(
-                key.name,
+                index_name,
                 success=success,
-                file_path=lock_file_path or None,
             )
 
-    def _has_current_snapshot(self, key: FunctionKey, impl: Dict[str, Any]) -> bool:
-        file_path = str(impl.get("file") or key.file_path or "")
-        snapshot = self.snapshot_store.load_snapshot(key.name, file_path or None)
+    def _has_current_snapshot(self, key: FunctionKey, context: Dict[str, Any]) -> bool:
+        del key
+        index_name = str(context.get("index_name") or "")
+        if not index_name:
+            return False
+        snapshot = self.snapshot_store.load_snapshot(index_name)
         if not snapshot:
+            self.snapshot_store.lock_manager.invalidate(index_name)
             return False
         try:
             needs_refresh, _reason = self.snapshot_store.needs_refresh(
-                key.name,
-                str(impl.get("code") or ""),
-                file_path or None,
+                index_name,
+                str(context.get("code") or ""),
+                context,
             )
-        except Exception:
-            return True
+        except Exception as exc:
+            logger.warning(
+                "[global-model] Snapshot refresh check failed index_name=%s "
+                "reason=snapshot_refresh_check_failed error=%s",
+                index_name,
+                exc,
+            )
+            return False
+        if needs_refresh:
+            self.snapshot_store.lock_manager.invalidate(index_name)
         return not needs_refresh
 
     def _get_impl(self, key: FunctionKey, *, include_context: bool) -> Optional[Dict[str, Any]]:

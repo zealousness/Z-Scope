@@ -8,11 +8,10 @@ class FakeSnapshotStore:
     def __init__(self):
         self.saved = None
 
-    def save_final_report(self, entry_func, report, location):
+    def save_final_report(self, index_name, report):
         self.saved = {
-            "entry_func": entry_func,
+            "index_name": index_name,
             "report": report,
-            "location": location,
         }
 
 
@@ -36,6 +35,7 @@ def test_report_assembler_builds_views_and_persists(tmp_path: Path) -> None:
     state = {
         "run_id": "RUN1",
         "entry_func": "entry",
+        "entry_index_name": "entry@src/demo.c:1-20",
         "agent_context": {"location": "src/demo.c:1"},
         "issues": [
             {
@@ -66,7 +66,7 @@ def test_report_assembler_builds_views_and_persists(tmp_path: Path) -> None:
     assert "report_view_summary" in saved["metadata"]
     assert (tmp_path / "report.json").exists()
     assert (tmp_path / "report.md").exists()
-    assert snapshot_store.saved["entry_func"] == "entry"
+    assert snapshot_store.saved["index_name"] == "entry@src/demo.c:1-20"
     assert resolved == [1, 2]
 
 
@@ -82,6 +82,7 @@ def test_report_assembler_can_skip_root_report_files(tmp_path: Path) -> None:
     state = {
         "run_id": "RUN_BATCH",
         "entry_func": "entry",
+        "entry_index_name": "entry@src/demo.c:1-20",
         "agent_context": {"location": "src/demo.c:1"},
         "issues": [],
         "verified_hist_issues": [],
@@ -96,7 +97,7 @@ def test_report_assembler_can_skip_root_report_files(tmp_path: Path) -> None:
     assert saved["entry_function"] == "entry"
     assert not (tmp_path / "report.json").exists()
     assert not (tmp_path / "report.md").exists()
-    assert snapshot_store.saved["entry_func"] == "entry"
+    assert snapshot_store.saved["index_name"] == "entry@src/demo.c:1-20"
 
 
 def test_report_assembler_preserves_returned_report_metadata(tmp_path: Path) -> None:

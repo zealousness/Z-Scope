@@ -71,6 +71,7 @@ venv.bak/
 dependency/
 
 # ZScope specific
+/llm_dialogue/
 .zscope.local.env
 zscope.local.yaml
 .zscope_snapshots*/

@@ -25,6 +25,24 @@ DECLARATION_LINE_RE = re.compile(
     r"(?:[A-Za-z_]\w*[\s*]+)+(?P<name>[A-Za-z_]\w*)\s*\([^;{}]*\)\s*;"
 )
 
+FUNCTION_INFO_CALLEES_LIMIT = 30
+FUNCTION_INFO_GLOBALS_LIMIT = 50
+FUNCTION_INFO_MACROS_LIMIT = 30
+FUNCTION_INFO_STORAGE_CLASSES = {
+    "static",
+    "extern",
+    "thread_local",
+    "global",
+    "unknown",
+}
+FUNCTION_INFO_QUALIFIER_ORDER = (
+    "const",
+    "volatile",
+    "atomic",
+)
+DEFAULT_FILE_SNIPPET_MAX_LINES = 50
+MAX_FILE_SNIPPET_MAX_LINES = 500
+
 
 class CodeIndex:
     """
@@ -70,9 +88,13 @@ class CodeIndex:
         self._cache_lock = threading.RLock()
         self._declaration_comment_index_lock = threading.Lock()
         self._macro_definition_index_lock = threading.Lock()
+        self._global_definition_index_lock = threading.Lock()
         self._file_lines_cache: Dict[str, Tuple[str, ...]] = {}
-        self._function_impl_cache: Dict[Tuple[str, int, bool], Dict[str, Any]] = {}
+        self._function_impl_cache: Dict[
+            Tuple[str, Optional[int], bool, str], Dict[str, Any]
+        ] = {}
         self._macro_definition_index: Optional[Dict[str, List[Dict[str, Any]]]] = None
+        self._global_definition_index: Optional[Dict[str, List[Dict[str, Any]]]] = None
         self._macro_definition_miss_cache: set[str] = set()
 
         # 向后兼容：如果传入了 joern_client，包装为 JoernBackend
@@ -257,6 +279,8 @@ class CodeIndex:
         record = dict(info)
         record["name"] = raw_name
         record["qualified_name"] = canonical_name
+        if "is_static" in record:
+            record["is_static"] = self._coerce_bool(record.get("is_static"))
 
         signature = str(record.get("signature") or f"{canonical_name}(...)")
         record["signature"] = signature
@@ -297,33 +321,13 @@ class CodeIndex:
             return index_key
 
     def _unique_function_index_key(self, canonical_name: str, record: Dict[str, Any]) -> str:
-        existing = self._function_index.get(canonical_name)
-        if not existing or self._same_function_location(existing, record):
-            return canonical_name
-
-        params = record.get("params")
-        signature_key = (
-            self._function_signature_key(canonical_name, str(params))
-            if params is not None
-            else ""
-        )
-        if signature_key:
-            existing_sig = self._function_index.get(signature_key)
-            if not existing_sig or self._same_function_location(existing_sig, record):
-                return signature_key
-
-        file_part = str(record.get("file") or record.get("filename") or "").replace("\\", "/")
-        line_part = str(record.get("start_line") or record.get("lineNumber") or "0")
-        fallback = f"{canonical_name}@{file_part}:{line_part}"
-        key = fallback
-        suffix = 2
-        while key in self._function_index and not self._same_function_location(
-            self._function_index[key],
-            record,
-        ):
-            key = f"{fallback}#{suffix}"
-            suffix += 1
-        return key
+        file_value = str(record.get("file") or record.get("filename") or "")
+        file_part = self._normalize_index_file_value(file_value).replace("\\", "/")
+        start_line = self._safe_int(record.get("start_line") or record.get("lineNumber"))
+        end_line = self._safe_int(record.get("end_line") or record.get("lineNumberEnd"))
+        if end_line < start_line:
+            end_line = start_line
+        return f"{canonical_name}@{file_part}:{start_line}-{end_line}"
 
     @staticmethod
     def _same_function_location(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
@@ -350,61 +354,168 @@ class CodeIndex:
 
     def _resolve_function_name(self, func_name: str, file_path: str = "") -> str:
         if file_path:
-            scoped_name = self._resolve_function_name_by_file(func_name, file_path)
-            if scoped_name:
-                return scoped_name
-        for variant in self._function_query_variants(func_name):
+            cache_key = self._function_file_resolution_cache_key(func_name, file_path)
             with self._cache_lock:
-                if variant in self._function_index:
-                    return variant
-                alias = self._function_alias_index.get(variant)
-                if alias:
-                    return alias
+                cached = self._function_file_resolution_cache.get(cache_key)
+            if cached is not None:
+                return cached or func_name
+        matches = self._find_function_matches(func_name, file_path=file_path)
+        if matches:
+            result = matches[0][0]
+            if file_path:
+                with self._cache_lock:
+                    self._function_file_resolution_cache[cache_key] = result
+            return result
+        if file_path:
+            with self._cache_lock:
+                self._function_file_resolution_cache[cache_key] = ""
         return func_name
 
-    def _resolve_function_name_by_file(self, func_name: str, file_path: str) -> str:
+    def _find_function_matches(
+        self,
+        func_name: str,
+        file_path: str = "",
+        *,
+        allow_simple_fallback: bool = False,
+    ) -> List[Tuple[str, Dict[str, Any]]]:
+        """Return all strict function matches, with optional structured name fallback."""
+        strict_matches = self._match_function_records(func_name, file_path=file_path)
+        if file_path:
+            cache_key = self._function_file_resolution_cache_key(func_name, file_path)
+            with self._cache_lock:
+                self._function_file_resolution_cache[cache_key] = (
+                    strict_matches[0][0] if strict_matches else ""
+                )
+        if strict_matches or not allow_simple_fallback:
+            return strict_matches
+
+        fallback_name = self._fallback_function_name(func_name)
+        if not fallback_name or fallback_name == str(func_name or "").strip():
+            return []
+        _, inferred_file, _, _ = self._function_location_query_parts(func_name)
+        fallback_file = str(file_path or inferred_file or "")
+        return self._match_function_records(fallback_name, file_path=fallback_file)
+
+    def _match_function_records(
+        self,
+        func_name: str,
+        *,
+        file_path: str = "",
+    ) -> List[Tuple[str, Dict[str, Any]]]:
         query_variants = set(self._function_query_variants(func_name))
         if not query_variants:
-            return ""
-        cache_key = self._function_file_resolution_cache_key(func_name, file_path)
-        with self._cache_lock:
-            if cache_key in self._function_file_resolution_cache:
-                return self._function_file_resolution_cache[cache_key]
+            return []
 
-        records = self._function_records_for_file_hint(file_path)
+        if not file_path:
+            ordered_variants = self._function_query_variants(func_name)
+            with self._cache_lock:
+                for variant in ordered_variants:
+                    info = self._function_index.get(variant)
+                    if info is not None:
+                        return [(variant, dict(info))]
+                for variant in ordered_variants:
+                    alias = self._function_alias_index.get(variant)
+                    if alias and alias in self._function_index:
+                        return [(alias, dict(self._function_index[alias]))]
+
+        records: List[Tuple[str, Dict[str, Any]]] = []
+        if file_path:
+            records = self._function_records_for_file_hint(file_path)
         if not records:
             with self._cache_lock:
                 records = [(key, dict(info)) for key, info in self._function_index.items()]
 
-        result = self._resolve_function_match_from_records(query_variants, file_path, records)
-        with self._cache_lock:
-            self._function_file_resolution_cache[cache_key] = result
-        return result
-
-    def _resolve_function_match_from_records(
-        self,
-        query_variants: set[str],
-        file_path: str,
-        records: Sequence[Tuple[str, Dict[str, Any]]],
-    ) -> str:
         matches: List[Tuple[str, Dict[str, Any]]] = []
-        for key, info in records:
-            if not self._record_matches_file_hint(info, file_path):
+        for index_key, info in records:
+            if file_path and not self._record_matches_file_hint(info, file_path):
                 continue
-            record_variants = self._function_record_query_variants(key, info)
+            record_variants = self._function_record_query_variants(index_key, info)
             if query_variants.intersection(record_variants):
-                matches.append((key, info))
-        if not matches:
-            return ""
+                matches.append((index_key, info))
+
         matches.sort(
             key=lambda item: (
-                0 if item[0] in query_variants else 1,
+                self._function_info_match_rank(query_variants, item[0], item[1]),
                 str(item[1].get("file") or item[1].get("filename") or ""),
                 int(item[1].get("start_line") or item[1].get("lineNumber") or 0),
                 item[0],
             )
         )
-        return matches[0][0]
+        return matches
+
+    def _try_backend_function_lookup(self, func_name: str, *, file_path: str = "") -> bool:
+        if not self._backend:
+            return False
+        for candidate in self._function_query_variants(func_name):
+            try:
+                method = self._backend.get_method(candidate)
+            except Exception as exc:
+                logger.debug("Backend function lookup failed for %s: %s", candidate, exc)
+                return False
+            if not method or not method.get("filename"):
+                continue
+            method_file = str(method.get("filename") or "")
+            if file_path and not self._paths_match_hint(method_file, file_path):
+                continue
+            method_record = {
+                "file": method_file,
+                "start_line": method.get("lineNumber", -1),
+                "end_line": method.get("lineNumberEnd", -1),
+                "signature": method.get("signature", f"{candidate}(...)"),
+            }
+            if "is_static" in method:
+                method_record["is_static"] = method.get("is_static")
+            self._add_function_index_entry(
+                str(method.get("name") or candidate),
+                method_record,
+            )
+            return True
+        return False
+
+    def fallback_function_name(self, query: str) -> str:
+        """Return a conservative simple or qualified name for final lookup fallback."""
+        return self._fallback_function_name(query)
+
+    def _fallback_function_name(self, query: str) -> str:
+        raw = str(query or "").strip()
+        if not raw or raw.startswith("#define"):
+            return ""
+
+        location_name, _, _, _ = self._function_location_query_parts(raw)
+        if location_name:
+            return self._validated_fallback_function_name(location_name)
+
+        if "(" not in raw or re.search(r"\(\s*[*&]\s*[A-Za-z_]\w*\s*\)", raw):
+            return ""
+        before_params = raw.split("(", 1)[0].strip()
+        candidate = self._normalize_cpp_function_name(before_params)
+        candidate = self._strip_cpp_template_args(candidate)
+        return self._validated_fallback_function_name(candidate)
+
+    @staticmethod
+    def _validated_fallback_function_name(candidate: str) -> str:
+        normalized = re.sub(r"\s*::\s*", "::", str(candidate or "").strip())
+        if not normalized:
+            return ""
+        segment = r"~?[A-Za-z_]\w*"
+        if not re.fullmatch(rf"{segment}(?:::{segment})*", normalized):
+            return ""
+        return normalized
+
+    @staticmethod
+    def _function_location_query_parts(query: str) -> Tuple[str, str, int, int]:
+        match = re.match(
+            r"^(?P<name>.+?)@(?P<file>.+):(?P<start>\d+)-(?P<end>\d+)$",
+            str(query or "").strip(),
+        )
+        if not match:
+            return "", "", 0, 0
+        return (
+            match.group("name"),
+            match.group("file"),
+            int(match.group("start")),
+            int(match.group("end")),
+        )
 
     def _register_function_file_index(self, index_key: str, record: Dict[str, Any]) -> None:
         file_path = str(record.get("file") or record.get("filename") or "")
@@ -451,6 +562,11 @@ class CodeIndex:
             str(info.get("name") or ""),
             str(info.get("qualified_name") or ""),
         }
+        for value in list(values):
+            normalized = self._normalize_cpp_function_name(value)
+            if "::" in normalized:
+                values.add(self._cpp_simple_name(normalized))
+                values.add(self._cpp_tail_name(normalized, 2))
         params = info.get("params")
         if params is not None:
             for name in list(values):
@@ -850,6 +966,9 @@ class CodeIndex:
                     "end_line": end_line,
                     "signature": parsed.get("signature") or f"{func_name}(...)",
                     "params": parsed.get("params", ""),
+                    "is_static": bool(
+                        re.search(r"\bstatic\b", before_brace.split("(", 1)[0])
+                    ),
                 },
             )
             pending_signature = []
@@ -987,7 +1106,7 @@ class CodeIndex:
 
     def _get_cached_function_impl(
         self,
-        cache_key: Tuple[str, int, bool],
+        cache_key: Tuple[str, Optional[int], bool, str],
     ) -> Optional[Dict[str, Any]]:
         with self._cache_lock:
             cached = self._function_impl_cache.get(cache_key)
@@ -997,7 +1116,7 @@ class CodeIndex:
 
     def _store_function_impl_cache(
         self,
-        cache_key: Tuple[str, int, bool],
+        cache_key: Tuple[str, Optional[int], bool, str],
         result: Dict[str, Any],
     ) -> Dict[str, Any]:
         with self._cache_lock:
@@ -1009,6 +1128,7 @@ class CodeIndex:
             self._function_impl_cache.clear()
             self._function_file_resolution_cache.clear()
             self._macro_definition_index = None
+            self._global_definition_index = None
             self._macro_definition_miss_cache.clear()
 
     def _find_leading_c_comment_block(
@@ -1068,12 +1188,15 @@ class CodeIndex:
         max_blocks: int = 3,
     ) -> List[Dict[str, Any]]:
         """Find leading comments above C function declarations/prototypes."""
-        func_name = self._resolve_function_name(func_name)
+        index_key = self._resolve_function_name(func_name)
         index = self._get_declaration_comment_index()
         results = []
         with self._cache_lock:
-            impl_info = dict(self._function_index.get(func_name) or {})
-        for block in index.get(func_name, []):
+            impl_info = dict(self._function_index.get(index_key) or {})
+        lookup_name = str(
+            impl_info.get("qualified_name") or impl_info.get("name") or func_name
+        )
+        for block in index.get(lookup_name, []):
             block_file = self._resolve_file_path(str(block.get("file") or ""))
             if block_file == implementation_file and block.get("start_line") == impl_info.get(
                 "start_line"
@@ -1138,53 +1261,110 @@ class CodeIndex:
     def get_function_impl(
         self,
         func_name: str,
-        max_lines: int = 500,
+        max_lines: Optional[int] = 500,
         warn_missing: bool = True,
         include_context: bool = True,
         file_path: str = "",
     ) -> Optional[Dict[str, Any]]:
-        """Get function implementation."""
-        if not is_likely_function_call_identifier(func_name):
-            logger.debug("Identifier '%s' is not a function call target", func_name)
+        """Get function implementation; ``max_lines=None`` returns the full body."""
+        raw_query = str(func_name or "").strip()
+        if not is_likely_function_call_identifier(raw_query):
+            logger.debug("Identifier '%s' is not a function call target", raw_query)
             return None
 
-        lookup_name = self._resolve_function_name(func_name, file_path=file_path)
-        cache_key = (lookup_name, max_lines, bool(include_context))
+        macro_results: List[Dict[str, Any]] = []
+        selected_match: Optional[Tuple[str, Dict[str, Any]]] = None
+        if raw_query.startswith("#define"):
+            macro_results = self._find_macro_impls(
+                raw_query,
+                file_path=file_path,
+                max_lines=max_lines,
+            )
+        else:
+            strict_matches = self._find_function_matches(raw_query, file_path=file_path)
+            if not strict_matches and self._try_backend_function_lookup(
+                raw_query,
+                file_path=file_path,
+            ):
+                strict_matches = self._find_function_matches(raw_query, file_path=file_path)
+            if strict_matches:
+                selected_match = strict_matches[0]
+            else:
+                location_name, inferred_file, _, _ = self._function_location_query_parts(
+                    raw_query
+                )
+                if location_name:
+                    macro_results = self._find_macro_impls(
+                        raw_query,
+                        file_path=file_path,
+                        max_lines=max_lines,
+                        exact_location_only=True,
+                    )
+
+                if not macro_results:
+                    fallback_name = self._fallback_function_name(raw_query)
+                    fallback_matches = self._find_function_matches(
+                        raw_query,
+                        file_path=file_path,
+                        allow_simple_fallback=True,
+                    )
+                    fallback_file = str(file_path or inferred_file or "")
+                    if not fallback_matches and fallback_name:
+                        if self._try_backend_function_lookup(
+                            fallback_name,
+                            file_path=fallback_file,
+                        ):
+                            fallback_matches = self._match_function_records(
+                                fallback_name,
+                                file_path=fallback_file,
+                            )
+                    if len(fallback_matches) > 1:
+                        logger.warning(
+                            "Function fallback for %r is ambiguous across %d matches",
+                            raw_query,
+                            len(fallback_matches),
+                        )
+                        return None
+                    if fallback_matches:
+                        selected_match = fallback_matches[0]
+                    else:
+                        macro_results = self._find_macro_impls(
+                            raw_query,
+                            file_path=file_path,
+                            max_lines=max_lines,
+                        )
+
+        if macro_results:
+            macro_result = dict(macro_results[0])
+            if len(macro_results) > 1:
+                macro_result["macro_alternates_count"] = len(macro_results) - 1
+            macro_cache_key = (
+                self._macro_impl_index_name(macro_result),
+                max_lines,
+                bool(include_context),
+                "",
+            )
+            cached_result = self._get_cached_function_impl(macro_cache_key)
+            if cached_result is not None:
+                return cached_result
+            return self._store_function_impl_cache(macro_cache_key, macro_result)
+
+        if selected_match is None:
+            if warn_missing:
+                logger.warning("Function '%s' not found in index", raw_query)
+            return None
+
+        lookup_name, selected_info = selected_match
+        cache_key = (lookup_name, max_lines, bool(include_context), "")
         cached_result = self._get_cached_function_impl(cache_key)
         if cached_result is not None:
             return cached_result
 
-        # Try backend lookup if not in index
-        with self._cache_lock:
-            func_info = self._function_index.get(lookup_name)
-        if func_info is None and self._backend:
-            for candidate in self._function_query_variants(func_name):
-                m = self._backend.get_method(candidate)
-                if m and m.get("filename"):
-                    self._add_function_index_entry(
-                        str(m.get("name") or candidate),
-                        {
-                            "file": m["filename"],
-                            "start_line": m.get("lineNumber", -1),
-                            "end_line": m.get("lineNumberEnd", -1),
-                            "signature": m.get("signature", f"{candidate}(...)"),
-                        },
-                    )
-                    lookup_name = self._resolve_function_name(candidate, file_path=file_path)
-                    break
-
-        with self._cache_lock:
-            func_info = dict(self._function_index.get(lookup_name) or {})
-
-        indexed_file = func_info.get("file", "")
+        func_info = dict(selected_info)
+        indexed_file = str(func_info.get("file") or func_info.get("filename") or "")
         if not indexed_file or indexed_file.startswith("<"):
-            macro_result = self._find_backend_macro_definition(func_name, max_lines=max_lines)
-            if not macro_result:
-                macro_result = self._find_macro_definition(func_name, max_lines=max_lines)
-            if macro_result:
-                return self._store_function_impl_cache(cache_key, macro_result)
             if warn_missing:
-                logger.warning(f"Function '{func_name}' not found in index")
+                logger.warning("Function '%s' has no indexed source file", raw_query)
             return None
 
         file_path = self._resolve_file_path(func_info["file"])
@@ -1192,14 +1372,14 @@ class CodeIndex:
             lines = self._read_file_lines(file_path)
             start = func_info["start_line"] - 1
             end = func_info["end_line"]
-            if end - start > max_lines:
+            if max_lines is not None and end - start > max_lines:
                 end = start + max_lines
             code_lines = lines[start:end]
             if not self._code_range_has_function_body(code_lines):
                 if warn_missing:
                     logger.warning(
                         "Function '%s' matched a declaration without a body at %s",
-                        func_name,
+                        raw_query,
                         func_info["file"],
                     )
                 return None
@@ -1243,40 +1423,66 @@ class CodeIndex:
                 callees = self._filter_callee_names(extract_function_calls(code))
 
             result = {
-                "func_name": lookup_name,
+                "func_name": str(
+                    func_info.get("qualified_name") or func_info.get("name") or raw_query
+                ),
                 "file": normalize_path(file_path, self.source_root),
                 "index_name": lookup_name,
                 "start_line": func_info["start_line"],
-                "end_line": min(func_info["end_line"], start + max_lines + 1),
+                "end_line": (
+                    func_info["end_line"]
+                    if max_lines is None
+                    else min(func_info["end_line"], start + max_lines + 1)
+                ),
                 "code": code,
                 "callees": callees,
-                "signature": func_info.get("signature", f"{func_name}(...)"),
-                "truncated": (func_info["end_line"] - func_info["start_line"] + 1) > max_lines,
+                "signature": func_info.get("signature", f"{raw_query}(...)"),
+                "is_static": self._function_record_is_static(func_info),
+                "truncated": (
+                    max_lines is not None
+                    and (func_info["end_line"] - func_info["start_line"] + 1)
+                    > max_lines
+                ),
                 "comment_blocks": comment_blocks,
             }
             return self._store_function_impl_cache(cache_key, result)
         except Exception as e:
-            logger.exception("Failed to read function '%s': %s", func_name, e)
+            logger.exception("Failed to read function '%s': %s", raw_query, e)
             return None
 
     def get_file_snippet(
-        self, file_path: str, start_line: Optional[int], end_line: Optional[int]
+        self,
+        file_path: str,
+        start_line: Optional[int],
+        end_line: Optional[int],
+        max_lines: int = MAX_FILE_SNIPPET_MAX_LINES,
+        default_max_lines: int = DEFAULT_FILE_SNIPPET_MAX_LINES,
     ) -> Optional[Dict[str, Any]]:
-        """Get a snippet from a file."""
+        """Get a snippet with separate explicit and implicit range limits."""
         full_path = self._resolve_file_path(file_path)
         if not full_path.exists() or full_path.is_dir():
             return None
         try:
+            max_lines = max(1, int(max_lines))
+            default_max_lines = max(1, int(default_max_lines))
             lines = self._read_file_lines(full_path)
             total_lines = len(lines)
             if total_lines == 0:
                 return {"file": self._normalize_path(full_path), "start_line": 1, "end_line": 0, "code": ""}
             if start_line is None or start_line < 1:
                 start_line = 1
-            if end_line is None or end_line < 1:
-                end_line = min(total_lines, start_line + 199)
-            if end_line < start_line:
-                end_line = min(total_lines, start_line + 199)
+            try:
+                requested_end_line = int(end_line) if end_line is not None else None
+            except (TypeError, ValueError):
+                requested_end_line = None
+            if (
+                requested_end_line is None
+                or requested_end_line < start_line
+                or requested_end_line > total_lines
+            ):
+                end_line = min(total_lines, start_line + default_max_lines - 1)
+            else:
+                end_line = min(requested_end_line, start_line + max_lines - 1)
             start = max(0, start_line - 1)
             end = min(total_lines, end_line)
             code_lines = lines[start:end]
@@ -1326,55 +1532,227 @@ class CodeIndex:
         self,
         func_name: str,
         file_path: str = "",
-        callers_limit: int = 30,
-        callees_limit: int = 30,
     ) -> List[Dict[str, Any]]:
         """Return structured function metadata for every matching function record."""
-        query_variants = set(self._function_query_variants(func_name))
-        if not query_variants:
-            return []
-
-        try:
-            callers_limit = max(0, int(callers_limit))
-        except (TypeError, ValueError):
-            callers_limit = 30
-        try:
-            callees_limit = max(0, int(callees_limit))
-        except (TypeError, ValueError):
-            callees_limit = 30
-
-        records: List[Tuple[str, Dict[str, Any]]] = []
-        if file_path:
-            records = self._function_records_for_file_hint(file_path)
-        if not records:
-            with self._cache_lock:
-                records = [(key, dict(info)) for key, info in self._function_index.items()]
-
-        matches: List[Tuple[str, Dict[str, Any]]] = []
-        for index_key, info in records:
-            if file_path and not self._record_matches_file_hint(info, file_path):
-                continue
-            record_variants = self._function_record_query_variants(index_key, info)
-            if query_variants.intersection(record_variants):
-                matches.append((index_key, info))
-
-        matches.sort(
-            key=lambda item: (
-                self._function_info_match_rank(query_variants, item[0], item[1]),
-                str(item[1].get("file") or item[1].get("filename") or ""),
-                int(item[1].get("start_line") or item[1].get("lineNumber") or 0),
-                item[0],
+        raw_query = str(func_name or "").strip()
+        if raw_query.startswith("#define"):
+            macro_impls = self._find_macro_impls(
+                raw_query,
+                file_path=file_path,
+                max_lines=None,
+                function_like_only=True,
+                include_callees=False,
             )
+            return [self._macro_function_info_payload(impl) for impl in macro_impls]
+
+        strict_matches = self._find_function_matches(raw_query, file_path=file_path)
+        if strict_matches:
+            return [
+                self._function_info_payload(index_key, info)
+                for index_key, info in strict_matches
+            ]
+
+        location_name, _, _, _ = self._function_location_query_parts(raw_query)
+        if location_name:
+            exact_macro_impls = self._find_macro_impls(
+                raw_query,
+                file_path=file_path,
+                max_lines=None,
+                function_like_only=True,
+                include_callees=False,
+                exact_location_only=True,
+            )
+            if exact_macro_impls:
+                return [
+                    self._macro_function_info_payload(impl)
+                    for impl in exact_macro_impls
+                ]
+
+        fallback_matches = self._find_function_matches(
+            raw_query,
+            file_path=file_path,
+            allow_simple_fallback=True,
         )
-        return [
-            self._function_info_payload(
-                index_key,
-                info,
-                callers_limit=callers_limit,
-                callees_limit=callees_limit,
+        if fallback_matches:
+            return [
+                self._function_info_payload(index_key, info)
+                for index_key, info in fallback_matches
+            ]
+
+        macro_impls = self._find_macro_impls(
+            raw_query,
+            file_path=file_path,
+            max_lines=None,
+            function_like_only=True,
+            include_callees=False,
+        )
+        return [self._macro_function_info_payload(impl) for impl in macro_impls]
+
+    def find_function_callers(
+        self,
+        func_name: str,
+        file_path: str = "",
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        """Return canonical caller records when the target function is unique."""
+        raw_query = str(func_name or "").strip()
+        matches = self._find_function_matches(raw_query, file_path=file_path)
+        if not matches:
+            matches = self._find_function_matches(
+                raw_query,
+                file_path=file_path,
+                allow_simple_fallback=True,
             )
-            for index_key, info in matches
+        if len(matches) != 1:
+            return {"match_count": len(matches), "callers": []}
+
+        index_key, info = matches[0]
+        callers = self._function_info_callers(
+            index_key,
+            str(info.get("file") or info.get("filename") or ""),
+            limit=max(0, int(limit)),
+        )
+        return {"match_count": 1, "callers": callers}
+
+    def _macro_function_info_payload(self, impl: Dict[str, Any]) -> Dict[str, Any]:
+        function_name = str(impl.get("func_name") or "")
+        file_path = self._normalize_index_file_value(str(impl.get("file") or ""))
+        start_line = self._safe_int(impl.get("start_line"))
+        end_line = self._safe_int(impl.get("end_line"))
+        if end_line < start_line:
+            end_line = start_line
+        symbol_context = self._macro_function_info_symbol_context(function_name, impl)
+        return {
+            "function_name": function_name,
+            "file_path": file_path,
+            "index_name": f"{function_name}@{file_path}:{start_line}-{end_line}",
+            "start_line": start_line,
+            "end_line": end_line,
+            "signature": str(impl.get("signature") or f"#define {function_name}"),
+            "is_static": False,
+            "is_macro": True,
+            "code": str(impl.get("code") or ""),
+            "callees": self._macro_function_info_callees(function_name, impl),
+            "referenced_globals": symbol_context["referenced_globals"],
+            "referenced_macros": symbol_context["referenced_macros"],
+        }
+
+    def _macro_function_info_callees(
+        self,
+        macro_name: str,
+        impl: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        groups: Dict[str, Dict[str, Any]] = {}
+        for raw_line in str(impl.get("code") or "").splitlines():
+            match = re.match(r"^\s*(\d+)\s*\|\s?(.*)$", raw_line)
+            line_no = self._safe_int(match.group(1)) if match else 0
+            source_line = match.group(2) if match else raw_line
+            for callee_name in self._filter_callee_names(extract_function_calls(source_line)):
+                if callee_name == macro_name:
+                    continue
+                entry = groups.setdefault(
+                    callee_name,
+                    {
+                        "callee_index_name": self._function_info_callee_index_name(
+                            callee_name,
+                            self._function_file_for_query(callee_name),
+                        ),
+                        "callsite_lines": [],
+                        "call_type": ["direct"],
+                    },
+                )
+                if line_no > 0 and line_no not in entry["callsite_lines"]:
+                    entry["callsite_lines"].append(line_no)
+        return sorted(
+            groups.values(),
+            key=lambda item: str(item.get("callee_index_name") or ""),
+        )[:FUNCTION_INFO_CALLEES_LIMIT]
+
+    def _macro_function_info_symbol_context(
+        self,
+        macro_name: str,
+        impl: Dict[str, Any],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        globals_index = {} if self._backend else self._get_global_definition_index()
+        macros_index = {} if self._backend else self._get_macro_definition_index()
+        file_path = str(impl.get("file") or "")
+        signature = str(impl.get("signature") or "")
+        parameters_match = re.search(r"\(([^)]*)\)", signature)
+        parameters = {
+            value.strip()
+            for value in str(parameters_match.group(1) if parameters_match else "").split(",")
+            if value.strip()
+        }
+        global_groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        macro_groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+        for raw_line in str(impl.get("code") or "").splitlines():
+            match = re.match(r"^\s*(\d+)\s*\|\s?(.*)$", raw_line)
+            line_no = self._safe_int(match.group(1)) if match else 0
+            source_line = match.group(2) if match else raw_line
+            masked_line = self._mask_function_info_source_line(source_line)
+            for token in re.finditer(r"\b[A-Za-z_]\w*\b", masked_line):
+                name = token.group(0)
+                if name == macro_name or name in parameters:
+                    continue
+                if name in globals_index and not self._function_info_field_access(
+                    masked_line,
+                    token.start(),
+                ):
+                    record = self._preferred_function_info_record(globals_index[name], file_path)
+                    key = (name, str(record.get("file_path") or ""))
+                    entry = global_groups.setdefault(
+                        key,
+                        {
+                            **record,
+                            "type": str(record.get("type") or record.get("type_str") or ""),
+                            "access": "unknown",
+                            "reference_lines": [],
+                        },
+                    )
+                    entry["access"] = self._merge_function_info_access(
+                        str(entry.get("access") or "unknown"),
+                        self._function_info_regex_access(
+                            masked_line,
+                            token.start(),
+                            token.end(),
+                        ),
+                    )
+                    if line_no > 0 and line_no not in entry["reference_lines"]:
+                        entry["reference_lines"].append(line_no)
+                if name in macros_index:
+                    record = self._preferred_function_info_record(macros_index[name], file_path)
+                    key = (name, str(record.get("file_path") or ""))
+                    entry = macro_groups.setdefault(
+                        key,
+                        {**record, "reference_lines": []},
+                    )
+                    if line_no > 0 and line_no not in entry["reference_lines"]:
+                        entry["reference_lines"].append(line_no)
+
+        referenced_globals = [
+            self._normalize_function_info_global(item)
+            for item in global_groups.values()
         ]
+        referenced_macros = [
+            self._normalize_function_info_macro(item)
+            for item in macro_groups.values()
+        ]
+        referenced_globals.sort(key=lambda item: (item["name"], item["file_path"], item["line"]))
+        referenced_macros.sort(key=lambda item: (item["name"], item["file_path"], item["line"]))
+        return {
+            "referenced_globals": referenced_globals[:FUNCTION_INFO_GLOBALS_LIMIT],
+            "referenced_macros": referenced_macros[:FUNCTION_INFO_MACROS_LIMIT],
+        }
+
+    def _macro_impl_index_name(self, impl: Dict[str, Any]) -> str:
+        function_name = str(impl.get("func_name") or "")
+        file_path = self._normalize_index_file_value(str(impl.get("file") or ""))
+        start_line = self._safe_int(impl.get("start_line"))
+        end_line = self._safe_int(impl.get("end_line"))
+        if end_line < start_line:
+            end_line = start_line
+        return f"{function_name}@{file_path}:{start_line}-{end_line}"
 
     def _function_info_match_rank(
         self,
@@ -1394,9 +1772,6 @@ class CodeIndex:
         self,
         index_key: str,
         info: Dict[str, Any],
-        *,
-        callers_limit: int,
-        callees_limit: int,
     ) -> Dict[str, Any]:
         raw_file = str(info.get("file") or info.get("filename") or "")
         function_name = str(
@@ -1411,16 +1786,17 @@ class CodeIndex:
             "start_line": self._safe_int(info.get("start_line") or info.get("lineNumber")),
             "end_line": self._safe_int(info.get("end_line") or info.get("lineNumberEnd")),
             "signature": str(info.get("signature") or f"{function_name}(...)"),
-            "callers": self._function_info_callers(
-                index_key,
-                raw_file,
-                limit=callers_limit,
-            ),
-            "callees": self._function_info_callees(
-                index_key,
-                limit=callees_limit,
-            ),
+            "is_static": self._function_record_is_static(info),
+            "is_macro": False,
         }
+        callees, callee_total = self._function_info_callees(index_key)
+        payload["callees"] = callees
+        if callee_total > len(callees):
+            payload["callees_truncation"] = self._truncation_payload(
+                len(callees),
+                callee_total,
+            )
+        payload.update(self._function_info_symbol_context(index_key, raw_file))
         return payload
 
     def _function_info_callers(
@@ -1433,26 +1809,481 @@ class CodeIndex:
         if limit <= 0 or not self._backend:
             return []
         try:
-            callers = self.get_callers(index_key, limit=limit, callee_file=raw_file)
+            with self._cache_lock:
+                info = self._function_index.get(index_key) or {}
+            backend_lookup = str(
+                info.get("qualified_name") or info.get("name") or index_key
+            )
+            getter = getattr(self._backend, "get_function_info_callers", None)
+            if callable(getter):
+                try:
+                    callers = getter(backend_lookup, raw_file)
+                except TypeError:
+                    callers = getter(backend_lookup)
+            else:
+                callers = self.get_callers(
+                    index_key,
+                    limit=self._function_info_raw_edge_limit(limit),
+                    callee_file=raw_file,
+                )
+            target_matches = self._find_function_matches(backend_lookup)
+            if len(target_matches) > 1:
+                callers = [
+                    row
+                    for row in callers
+                    if self._function_info_call_type(row) != "indirect"
+                ]
         except Exception as exc:
             logger.debug("Caller lookup failed for %s: %s", index_key, exc)
             return []
-        return [self._normalize_function_info_caller(row) for row in callers[:limit]]
+        return self._aggregate_function_info_callers(callers)[:limit]
 
     def _function_info_callees(
         self,
         index_key: str,
-        *,
-        limit: int,
-    ) -> List[Dict[str, Any]]:
-        if limit <= 0 or not self._backend:
-            return []
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        if not self._backend:
+            return self._function_info_callees_regex(index_key)
         try:
-            callees = self.get_callees(index_key, limit=limit)
+            with self._cache_lock:
+                info = self._function_index.get(index_key) or {}
+            backend_lookup = str(
+                info.get("qualified_name") or info.get("name") or index_key
+            )
+            getter = getattr(self._backend, "get_function_info_callees", None)
+            if callable(getter):
+                try:
+                    callees = getter(backend_lookup, str(info.get("file") or ""))
+                except TypeError:
+                    callees = getter(backend_lookup)
+            else:
+                callees = self._backend.get_callees(backend_lookup, limit=1_000_000)
         except Exception as exc:
             logger.debug("Callee lookup failed for %s: %s", index_key, exc)
+            return [], 0
+        aggregated = self._aggregate_function_info_callees(callees)
+        aggregated.sort(
+            key=lambda item: str(item.get("callee_index_name") or "")
+        )
+        return aggregated[:FUNCTION_INFO_CALLEES_LIMIT], len(aggregated)
+
+    def _function_info_callees_regex(
+        self,
+        index_key: str,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        with self._cache_lock:
+            info = dict(self._function_index.get(index_key) or {})
+        file_value = str(info.get("file") or info.get("filename") or "")
+        try:
+            lines = self._read_file_lines(self._resolve_file_path(file_value))
+        except Exception:
+            return [], 0
+        start_line = max(1, self._safe_int(info.get("start_line") or info.get("lineNumber")))
+        end_line = min(
+            len(lines),
+            max(start_line, self._safe_int(info.get("end_line") or info.get("lineNumberEnd"))),
+        )
+        groups: Dict[str, Dict[str, Any]] = {}
+        function_name = str(info.get("name") or info.get("qualified_name") or index_key)
+        for offset, raw_line in enumerate(lines[start_line - 1:end_line]):
+            absolute_line = start_line + offset
+            for name in self._filter_callee_names(extract_function_calls(raw_line)):
+                if name == function_name:
+                    continue
+                entry = groups.setdefault(
+                    name,
+                    {
+                        "callee_index_name": self._function_info_callee_index_name(
+                            name,
+                            self._function_file_for_query(name),
+                        ),
+                        "callsite_lines": [],
+                        "call_type": ["direct"],
+                    },
+                )
+                if absolute_line not in entry["callsite_lines"]:
+                    entry["callsite_lines"].append(absolute_line)
+        result = sorted(
+            groups.values(),
+            key=lambda item: item["callee_index_name"],
+        )
+        return result[:FUNCTION_INFO_CALLEES_LIMIT], len(result)
+
+    def _function_info_callee_index_name(
+        self,
+        callee_name: str,
+        callee_file: str = "",
+    ) -> str:
+        resolved = self._resolve_function_name(callee_name, file_path=callee_file)
+        with self._cache_lock:
+            if resolved in self._function_index:
+                return resolved
+        return str(callee_name or "")
+
+    def _function_info_caller_index_name(
+        self,
+        caller_name: str,
+        caller_file: str = "",
+    ) -> str:
+        matches = self._find_function_matches(
+            caller_name,
+            file_path=caller_file,
+            allow_simple_fallback=True,
+        )
+        if len(matches) == 1:
+            return matches[0][0]
+        return str(caller_name or "")
+
+    def _function_info_symbol_context(
+        self,
+        index_key: str,
+        raw_file: str,
+    ) -> Dict[str, Any]:
+        context: Dict[str, Any] = {
+            "referenced_globals": [],
+            "referenced_macros": [],
+        }
+        if not self._backend:
+            raw_context = self._function_info_symbol_context_regex(index_key, raw_file)
+        else:
+            try:
+                with self._cache_lock:
+                    info = self._function_index.get(index_key) or {}
+                backend_lookup = str(
+                    info.get("qualified_name") or info.get("name") or index_key
+                )
+                getter = getattr(self._backend, "get_function_symbol_context", None)
+                if not callable(getter):
+                    return context
+                raw_context = getter(backend_lookup, raw_file)
+            except Exception as exc:
+                logger.debug("Symbol context lookup failed for %s: %s", index_key, exc)
+                return context
+
+        globals_result = [
+            self._normalize_function_info_global(item)
+            for item in list((raw_context or {}).get("referenced_globals") or [])
+            if isinstance(item, dict) and str(item.get("name") or "")
+        ]
+        macros_result = [
+            self._normalize_function_info_macro(item)
+            for item in list((raw_context or {}).get("referenced_macros") or [])
+            if isinstance(item, dict) and str(item.get("name") or "")
+        ]
+        globals_result.sort(
+            key=lambda item: (item["name"], item["file_path"], item["line"])
+        )
+        macros_result.sort(
+            key=lambda item: (item["name"], item["file_path"], item["line"])
+        )
+
+        context["referenced_globals"] = globals_result[:FUNCTION_INFO_GLOBALS_LIMIT]
+        context["referenced_macros"] = macros_result[:FUNCTION_INFO_MACROS_LIMIT]
+        if len(globals_result) > FUNCTION_INFO_GLOBALS_LIMIT:
+            context["referenced_globals_truncation"] = self._truncation_payload(
+                FUNCTION_INFO_GLOBALS_LIMIT,
+                len(globals_result),
+            )
+        if len(macros_result) > FUNCTION_INFO_MACROS_LIMIT:
+            context["referenced_macros_truncation"] = self._truncation_payload(
+                FUNCTION_INFO_MACROS_LIMIT,
+                len(macros_result),
+            )
+        return context
+
+    def _normalize_function_info_global(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        access = str(item.get("access") or "unknown")
+        if access not in {"read", "write", "read_write", "unknown"}:
+            access = "unknown"
+        storage_class = str(item.get("storage_class") or "unknown")
+        if storage_class not in FUNCTION_INFO_STORAGE_CLASSES:
+            storage_class = "unknown"
+        return {
+            "name": str(item.get("name") or ""),
+            "type": str(item.get("type") or item.get("type_str") or ""),
+            "file_path": self._normalize_index_file_value(str(item.get("file_path") or "")),
+            "line": self._safe_int(item.get("line")),
+            "storage_class": storage_class,
+            "qualifiers": self._normalize_function_info_qualifiers(
+                item.get("qualifiers")
+            ),
+            "initializer": str(item.get("initializer") or ""),
+            "access": access,
+            "reference_lines": self._normalized_line_list(item.get("reference_lines")),
+        }
+
+    @staticmethod
+    def _normalize_function_info_qualifiers(value: Any) -> List[str]:
+        if isinstance(value, str):
+            raw_values = [part.strip() for part in value.split(",")]
+        elif isinstance(value, (list, tuple, set)):
+            raw_values = [str(part).strip() for part in value]
+        else:
+            raw_values = []
+        selected = {part for part in raw_values if part}
+        return [
+            qualifier
+            for qualifier in FUNCTION_INFO_QUALIFIER_ORDER
+            if qualifier in selected
+        ]
+
+    def _normalize_function_info_macro(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "name": str(item.get("name") or ""),
+            "file_path": self._normalize_index_file_value(str(item.get("file_path") or "")),
+            "line": self._safe_int(item.get("line")),
+            "definition": str(item.get("definition") or ""),
+            "is_function_like": bool(item.get("is_function_like")),
+            "reference_lines": self._normalized_line_list(item.get("reference_lines")),
+        }
+
+    def _normalized_line_list(self, value: Any) -> List[int]:
+        if not isinstance(value, (list, tuple, set)):
             return []
-        return [self._normalize_function_info_callee(row) for row in callees[:limit]]
+        return sorted({self._safe_int(line) for line in value if self._safe_int(line) > 0})
+
+    @staticmethod
+    def _truncation_payload(returned: int, total: int) -> Dict[str, Any]:
+        return {
+            "truncated": True,
+            "returned": int(returned),
+            "total": int(total),
+        }
+
+    def _function_info_symbol_context_regex(
+        self,
+        index_key: str,
+        raw_file: str,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        with self._cache_lock:
+            info = dict(self._function_index.get(index_key) or {})
+        file_path = self._resolve_file_path(raw_file)
+        try:
+            lines = self._read_file_lines(file_path)
+        except Exception:
+            return {"referenced_globals": [], "referenced_macros": []}
+        start_line = max(1, self._safe_int(info.get("start_line") or info.get("lineNumber")))
+        end_line = min(
+            len(lines),
+            max(start_line, self._safe_int(info.get("end_line") or info.get("lineNumberEnd"))),
+        )
+        body_lines = lines[start_line - 1:end_line]
+        local_names = self._function_info_regex_local_names(
+            "".join(body_lines),
+            str(info.get("signature") or ""),
+        )
+        globals_index = self._get_global_definition_index()
+        macros_index = self._get_macro_definition_index()
+        global_groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        macro_groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+        for offset, raw_line in enumerate(body_lines):
+            absolute_line = start_line + offset
+            if raw_line.lstrip().startswith("#"):
+                continue
+            masked_line = self._mask_function_info_source_line(raw_line)
+            for match in re.finditer(r"\b[A-Za-z_]\w*\b", masked_line):
+                name = match.group(0)
+                if name in globals_index and name not in local_names and not self._function_info_field_access(
+                    masked_line,
+                    match.start(),
+                ):
+                    record = self._preferred_function_info_record(globals_index[name], raw_file)
+                    key = (name, str(record.get("file_path") or ""))
+                    entry = global_groups.get(key)
+                    if entry is None:
+                        entry = {
+                            **record,
+                            "type": str(record.get("type") or record.get("type_str") or ""),
+                            "access": "unknown",
+                            "reference_lines": [],
+                        }
+                        global_groups[key] = entry
+                    entry["access"] = self._merge_function_info_access(
+                        str(entry.get("access") or "unknown"),
+                        self._function_info_regex_access(masked_line, match.start(), match.end()),
+                    )
+                    if absolute_line not in entry["reference_lines"]:
+                        entry["reference_lines"].append(absolute_line)
+
+                if name in macros_index:
+                    record = self._preferred_function_info_record(macros_index[name], raw_file)
+                    if bool(record.get("is_function_like")) and not re.match(
+                        r"\s*\(", masked_line[match.end():]
+                    ):
+                        continue
+                    key = (name, str(record.get("file_path") or ""))
+                    entry = macro_groups.get(key)
+                    if entry is None:
+                        entry = {**record, "reference_lines": []}
+                        macro_groups[key] = entry
+                    if absolute_line not in entry["reference_lines"]:
+                        entry["reference_lines"].append(absolute_line)
+
+        return {
+            "referenced_globals": list(global_groups.values()),
+            "referenced_macros": list(macro_groups.values()),
+        }
+
+    @staticmethod
+    def _preferred_function_info_record(
+        records: List[Dict[str, Any]],
+        function_file: str,
+    ) -> Dict[str, Any]:
+        normalized_file = str(function_file or "").replace("\\", "/").lstrip("./")
+        ranked = sorted(
+            records,
+            key=lambda record: (
+                0
+                if str(record.get("file_path") or "").replace("\\", "/").lstrip("./")
+                == normalized_file
+                else 1,
+                str(record.get("file_path") or ""),
+                int(record.get("line") or 0),
+            ),
+        )
+        return dict(ranked[0])
+
+    @staticmethod
+    def _function_info_regex_local_names(body: str, signature: str) -> set[str]:
+        names: set[str] = set()
+        if "(" in signature and ")" in signature:
+            params = signature[signature.find("(") + 1:signature.rfind(")")]
+            for parameter in params.split(","):
+                identifiers = re.findall(r"\b[A-Za-z_]\w*\b", parameter)
+                if identifiers and identifiers[-1] not in {"void", "const", "volatile"}:
+                    names.add(identifiers[-1])
+        declaration_pattern = re.compile(
+            r"(?:^|[;{}])\s*(?:const\s+|volatile\s+|static\s+|register\s+|auto\s+|"
+            r"signed\s+|unsigned\s+|short\s+|long\s+|_Atomic\s+)*"
+            r"(?:void|char|int|float|double|size_t|ssize_t|bool|_Bool|"
+            r"struct\s+[A-Za-z_]\w*|union\s+[A-Za-z_]\w*|enum\s+[A-Za-z_]\w*)"
+            r"(?:\s+|\s*\*+\s*)(?P<name>[A-Za-z_]\w*)\s*(?=[=;,\[])"
+        )
+        names.update(match.group("name") for match in declaration_pattern.finditer(body))
+        return names
+
+    @staticmethod
+    def _function_info_field_access(line: str, start: int) -> bool:
+        prefix = line[:start].rstrip()
+        return prefix.endswith(".") or prefix.endswith("->")
+
+    @staticmethod
+    def _function_info_regex_access(line: str, start: int, end: int) -> str:
+        prefix = line[:start].rstrip()
+        suffix = line[end:]
+        if prefix.endswith("++") or prefix.endswith("--"):
+            return "read_write"
+        operation = re.match(
+            r"\s*(?:\[[^\]]*\]|\.\s*[A-Za-z_]\w*|->\s*[A-Za-z_]\w*)*\s*"
+            r"(?P<op>\+\+|--|\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<=|>>=|=(?!=))",
+            suffix,
+        )
+        if not operation:
+            return "read"
+        return "write" if operation.group("op") == "=" else "read_write"
+
+    @staticmethod
+    def _merge_function_info_access(left: str, right: str) -> str:
+        values = {left or "unknown", right or "unknown"}
+        if "read_write" in values or {"read", "write"}.issubset(values):
+            return "read_write"
+        if "write" in values:
+            return "write"
+        if "read" in values:
+            return "read"
+        return "unknown"
+
+    @staticmethod
+    def _mask_function_info_source_line(line: str) -> str:
+        masked = re.sub(r"//.*$", "", str(line or ""))
+        masked = re.sub(r"/\*.*?\*/", " ", masked)
+        masked = re.sub(r'"(?:\\.|[^"\\])*"', " ", masked)
+        masked = re.sub(r"'(?:\\.|[^'\\])*'", " ", masked)
+        return masked
+
+    @staticmethod
+    def _function_info_raw_edge_limit(limit: int) -> int:
+        # Fetch enough raw edges to group multiple callsites before slicing.
+        return max(int(limit) * 100, 1000)
+
+    def _aggregate_function_info_callers(
+        self,
+        rows: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        groups: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            caller_name = str(row.get("name") or row.get("caller_name") or "")
+            caller_file = self._normalize_index_file_value(
+                str(
+                    row.get("filename")
+                    or row.get("caller_file")
+                    or row.get("call_file")
+                    or row.get("file")
+                    or ""
+                )
+            )
+            caller_index_name = self._function_info_caller_index_name(
+                caller_name,
+                caller_file,
+            )
+            if not caller_index_name:
+                continue
+            call_type = self._function_info_call_type(row)
+            entry = groups.get(caller_index_name)
+            if entry is None:
+                entry = {
+                    "caller_index_name": caller_index_name,
+                    "callsite_lines": [],
+                    "call_type": [],
+                }
+                groups[caller_index_name] = entry
+            if call_type not in entry["call_type"]:
+                entry["call_type"].append(call_type)
+            self._append_callsite_line(entry, row)
+        for entry in groups.values():
+            entry["callsite_lines"] = sorted(entry["callsite_lines"])
+            entry["call_type"] = [
+                call_type
+                for call_type in ("direct", "indirect")
+                if call_type in entry["call_type"]
+            ]
+        return list(groups.values())
+
+    def _aggregate_function_info_callees(
+        self,
+        rows: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for row in rows:
+            callee_name = str(row.get("name") or row.get("callee_name") or "")
+            callee_file = str(row.get("filename") or row.get("callee_file") or row.get("file") or "")
+            if not callee_file and callee_name:
+                callee_file = self._function_file_for_query(callee_name)
+            callee_index_name = self._function_info_callee_index_name(
+                callee_name,
+                callee_file,
+            )
+            call_type = self._function_info_call_type(row)
+            entry = groups.get(callee_index_name)
+            if entry is None:
+                entry = {
+                    "callee_index_name": callee_index_name,
+                    "callsite_lines": [],
+                    "call_type": [],
+                }
+                groups[callee_index_name] = entry
+            if call_type not in entry["call_type"]:
+                entry["call_type"].append(call_type)
+            self._append_callsite_line(entry, row)
+        for entry in groups.values():
+            entry["callsite_lines"] = sorted(entry["callsite_lines"])
+            entry["call_type"] = [
+                call_type
+                for call_type in ("direct", "indirect")
+                if call_type in entry["call_type"]
+            ]
+        return list(groups.values())
 
     def _normalize_function_info_caller(self, row: Dict[str, Any]) -> Dict[str, Any]:
         return {
@@ -1460,12 +2291,7 @@ class CodeIndex:
             "caller_file": self._normalize_index_file_value(
                 str(row.get("filename") or row.get("caller_file") or row.get("file") or "")
             ),
-            "callsite_line": self._safe_int(
-                row.get("lineNumber")
-                or row.get("callsite_line")
-                or row.get("call_line")
-                or row.get("line")
-            ),
+            "callsite_lines": self._callsite_lines_from_row(row),
         }
 
     def _normalize_function_info_callee(self, row: Dict[str, Any]) -> Dict[str, Any]:
@@ -1474,16 +2300,30 @@ class CodeIndex:
         if not callee_file and callee_name:
             callee_file = self._function_file_for_query(callee_name)
         return {
-            "callee_name": callee_name,
-            "callee_file": self._normalize_index_file_value(callee_file),
-            "callsite_line": self._safe_int(
-                row.get("lineNumber")
-                or row.get("callsite_line")
-                or row.get("call_line")
-                or row.get("line")
+            "callee_index_name": self._function_info_callee_index_name(
+                callee_name,
+                callee_file,
             ),
-            "call_type": self._function_info_call_type(row),
+            "callsite_lines": self._callsite_lines_from_row(row),
+            "call_type": [self._function_info_call_type(row)],
         }
+
+    def _append_callsite_line(self, entry: Dict[str, Any], row: Dict[str, Any]) -> None:
+        line = self._callsite_line_from_row(row)
+        if line > 0 and line not in entry["callsite_lines"]:
+            entry["callsite_lines"].append(line)
+
+    def _callsite_lines_from_row(self, row: Dict[str, Any]) -> List[int]:
+        line = self._callsite_line_from_row(row)
+        return [line] if line > 0 else []
+
+    def _callsite_line_from_row(self, row: Dict[str, Any]) -> int:
+        return self._safe_int(
+            row.get("lineNumber")
+            or row.get("callsite_line")
+            or row.get("call_line")
+            or row.get("line")
+        )
 
     def _function_info_call_type(self, row: Dict[str, Any]) -> str:
         backend_name = str(getattr(self, "backend_name", "") or "").lower()
@@ -1518,6 +2358,55 @@ class CodeIndex:
             return int(value)
         except (TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _coerce_bool(value: Any) -> bool:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"", "0", "false", "no", "off"}:
+                return False
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+        return bool(value)
+
+    def _function_record_is_static(self, info: Dict[str, Any]) -> bool:
+        if "is_static" in info:
+            return self._coerce_bool(info.get("is_static"))
+
+        function_name = str(info.get("qualified_name") or info.get("name") or "")
+        signature = str(info.get("signature") or "")
+        if self._function_header_has_static(signature, function_name):
+            return True
+
+        file_value = str(info.get("file") or info.get("filename") or "")
+        start_line = self._safe_int(info.get("start_line") or info.get("lineNumber"))
+        if not file_value or start_line <= 0:
+            return False
+        try:
+            lines = self._read_file_lines(self._resolve_file_path(file_value))
+        except Exception:
+            return False
+        if start_line > len(lines):
+            return False
+
+        indexed_end = self._safe_int(
+            info.get("end_line") or info.get("lineNumberEnd"),
+            start_line,
+        )
+        scan_end = min(len(lines), max(start_line, indexed_end, start_line + 20))
+        header = "".join(lines[start_line - 1 : scan_end]).split("{", 1)[0]
+        return self._function_header_has_static(header, function_name)
+
+    def _function_header_has_static(self, text: str, function_name: str) -> bool:
+        masked = self._mask_c_comments_and_literals(str(text or ""))
+        simple_name = self._cpp_simple_name(self._strip_cpp_template_args(function_name))
+        simple_name = simple_name.lstrip("~")
+        prefix = masked.split("(", 1)[0]
+        if simple_name:
+            matches = list(re.finditer(rf"\b{re.escape(simple_name)}\s*\(", masked))
+            if matches:
+                prefix = masked[: matches[-1].start()]
+        return bool(re.search(r"\bstatic\b", prefix))
 
     # ── New Joern-powered methods ──
 
@@ -1561,6 +2450,54 @@ class CodeIndex:
         if not self._backend:
             return None
         return self._backend.get_type_info(type_name)
+
+    def find_type_infos(
+        self,
+        type_name: str,
+        file_path: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Return normalized public type records for every matching definition."""
+        if not self._backend:
+            return []
+        getter = getattr(self._backend, "find_type_infos", None)
+        if callable(getter):
+            try:
+                raw_matches = getter(type_name, file_path=file_path)
+            except TypeError:
+                raw_matches = getter(type_name, file_path)
+        else:
+            info = self._backend.get_type_info(type_name)
+            raw_matches = [info] if info else []
+
+        matches: List[Dict[str, Any]] = []
+        for raw_match in raw_matches or []:
+            if not isinstance(raw_match, dict):
+                continue
+            item = dict(raw_match)
+            raw_file = str(item.get("file_path") or item.get("filename") or "")
+            if file_path and not self._paths_match_hint(raw_file, file_path):
+                continue
+            item["file_path"] = self._normalize_index_file_value(raw_file)
+            item.pop("filename", None)
+            if "start_line" not in item and "lineNumber" in item:
+                item["start_line"] = self._safe_int(item.get("lineNumber"))
+            if "end_line" not in item and "lineNumberEnd" in item:
+                item["end_line"] = self._safe_int(item.get("lineNumberEnd"))
+            item.pop("lineNumber", None)
+            item.pop("lineNumberEnd", None)
+            item.pop("id", None)
+            item.pop("tu_id", None)
+            item.pop("members", None)
+            matches.append(item)
+        matches.sort(
+            key=lambda item: (
+                str(item.get("file_path") or ""),
+                self._safe_int(item.get("start_line")),
+                str(item.get("kind") or ""),
+                str(item.get("name") or ""),
+            )
+        )
+        return matches
 
     def get_data_flow(
         self, source_func: str, source_param: str, sink_pattern: str
@@ -1663,52 +2600,223 @@ class CodeIndex:
 
     # ── Macro and path helpers ──
 
-    def _find_macro_definition(
-        self, macro_name: str, max_lines: int = 500
-    ) -> Optional[Dict[str, Any]]:
-        """Find a macro definition using regex scanning."""
-        clean_name = str(macro_name or "").strip()
+    def _find_macro_impls(
+        self,
+        macro_name: str,
+        *,
+        file_path: str = "",
+        max_lines: Optional[int] = 500,
+        function_like_only: bool = False,
+        include_callees: bool = True,
+        exact_location_only: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Return stable macro implementation candidates from backend or regex facts."""
+        clean_name, inferred_file = self._macro_query_parts(macro_name)
+        file_hint = str(file_path or inferred_file or "")
         if not clean_name:
-            return None
-        with self._cache_lock:
-            if clean_name in self._macro_definition_miss_cache:
-                return None
+            return []
 
-        records = self._get_macro_definition_index().get(clean_name, [])
+        records: List[Dict[str, Any]] = []
+        getter = (
+            getattr(self._backend, "get_macro_definitions", None)
+            if self._backend
+            else None
+        )
+        if callable(getter):
+            try:
+                records = [
+                    dict(record)
+                    for record in list(getter(clean_name, limit=1_000_000) or [])
+                    if isinstance(record, dict)
+                ]
+                for record in records:
+                    record.setdefault("name", clean_name)
+            except Exception as exc:
+                logger.debug("Backend macro lookup failed for %s: %s", clean_name, exc)
+
+        records = self._filter_macro_definition_records(
+            records,
+            file_path=file_hint,
+            function_like_only=function_like_only,
+        )
         if not records:
             with self._cache_lock:
-                self._macro_definition_miss_cache.add(clean_name)
-            return None
-        return self._macro_definition_payload(
-            clean_name,
-            records[0],
-            max_lines=max_lines,
-            macro_alternates_count=max(0, len(records) - 1),
+                known_missing = clean_name in self._macro_definition_miss_cache
+            regex_records = [] if known_missing else list(
+                self._get_macro_definition_index().get(clean_name, [])
+            )
+            if not regex_records and not known_missing:
+                with self._cache_lock:
+                    self._macro_definition_miss_cache.add(clean_name)
+            records = self._filter_macro_definition_records(
+                regex_records,
+                file_path=file_hint,
+                function_like_only=function_like_only,
+            )
+
+        if exact_location_only:
+            _, _, query_start, query_end = self._function_location_query_parts(macro_name)
+            if query_start <= 0:
+                return []
+            records = [
+                record
+                for record in records
+                if self._safe_int(record.get("line") or record.get("start_line"), 1)
+                == query_start
+                and self._macro_record_end_line(record) == query_end
+            ]
+
+        payloads = [
+            self._macro_definition_payload(
+                clean_name,
+                record,
+                max_lines=max_lines,
+                include_callees=include_callees,
+            )
+            for record in records
+        ]
+        return payloads
+
+    def _filter_macro_definition_records(
+        self,
+        records: Iterable[Dict[str, Any]],
+        *,
+        file_path: str,
+        function_like_only: bool,
+    ) -> List[Dict[str, Any]]:
+        filtered: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
+        for raw_record in records:
+            record = dict(raw_record or {})
+            record_file = str(record.get("file_path") or record.get("file") or "")
+            if file_path and not self._paths_match_hint(record_file, file_path):
+                continue
+            if function_like_only and not self._macro_record_is_function_like(record):
+                continue
+            normalized_file = self._normalize_index_file_value(record_file)
+            line = self._safe_int(record.get("line") or record.get("start_line"), 1)
+            key = (str(record.get("name") or ""), normalized_file, line)
+            filtered.setdefault(key, record)
+        return sorted(
+            filtered.values(),
+            key=lambda record: (
+                self._normalize_index_file_value(
+                    str(record.get("file_path") or record.get("file") or "")
+                ),
+                self._safe_int(record.get("line") or record.get("start_line"), 1),
+            ),
         )
 
-    def _find_backend_macro_definition(
-        self, macro_name: str, max_lines: int = 500
-    ) -> Optional[Dict[str, Any]]:
-        if not self._backend:
-            return None
-        getter = getattr(self._backend, "get_macro_definitions", None)
-        if not callable(getter):
-            return None
-        for candidate in self._function_query_variants(macro_name):
-            try:
-                records = getter(candidate, limit=20)
-            except Exception as exc:
-                logger.debug("Backend macro lookup failed for %s: %s", candidate, exc)
-                return None
-            if not records:
-                continue
-            return self._macro_definition_payload(
-                candidate,
-                records[0],
-                max_lines=max_lines,
-                macro_alternates_count=max(0, len(records) - 1),
+    @staticmethod
+    def _macro_record_is_function_like(record: Dict[str, Any]) -> bool:
+        if "is_function_like" in record:
+            return bool(record.get("is_function_like"))
+        first_line = str(record.get("definition") or "").splitlines()[0:1]
+        if not first_line:
+            return False
+        parsed = CodeIndex._parse_macro_definition_line(first_line[0])
+        return bool(parsed and parsed.get("is_function_like"))
+
+    @staticmethod
+    def _macro_record_end_line(record: Dict[str, Any]) -> int:
+        start_line = int(record.get("line") or record.get("start_line") or 1)
+        definition_lines = str(record.get("definition") or "").splitlines()
+        return start_line + max(1, len(definition_lines)) - 1
+
+    @staticmethod
+    def _macro_query_parts(query: str) -> Tuple[str, str]:
+        raw = str(query or "").strip()
+        if raw.startswith("#define"):
+            raw = raw[len("#define") :].strip()
+        index_match = re.match(
+            r"^(?P<name>[A-Za-z_]\w*)@(?P<file>.+):\d+-\d+$",
+            raw,
+        )
+        if index_match:
+            return index_match.group("name"), index_match.group("file")
+        name_match = re.match(r"^(?P<name>[A-Za-z_]\w*)(?:\s*\(|$)", raw)
+        if not name_match:
+            return "", ""
+        return name_match.group("name"), ""
+
+    def _get_global_definition_index(self) -> Dict[str, List[Dict[str, Any]]]:
+        with self._cache_lock:
+            if self._global_definition_index is not None:
+                return self._global_definition_index
+
+        with self._global_definition_index_lock:
+            with self._cache_lock:
+                if self._global_definition_index is not None:
+                    return self._global_definition_index
+
+            declaration_re = re.compile(
+                r"^\s*(?P<prefix>(?:(?:extern|static|const|volatile|register|signed|unsigned|"
+                r"short|long|_Atomic)\s+)*(?:struct\s+[A-Za-z_]\w*|union\s+[A-Za-z_]\w*|"
+                r"enum\s+[A-Za-z_]\w*|[A-Za-z_]\w*)(?:\s+|\s*\*+\s*))"
+                r"(?P<name>[A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*"
+                r"(?:=(?P<initializer>.*?))?;\s*$"
             )
-        return None
+            index: Dict[str, List[Dict[str, Any]]] = {}
+            for file_name in sorted(self._find_all_files()):
+                file_path = self._resolve_file_path(file_name)
+                try:
+                    lines = self._read_file_lines(file_path)
+                except Exception:
+                    continue
+                brace_depth = 0
+                for line_no, raw_line in enumerate(lines, start=1):
+                    masked_line = self._mask_function_info_source_line(raw_line)
+                    if brace_depth == 0 and not masked_line.lstrip().startswith("#"):
+                        match = declaration_re.match(masked_line)
+                        if match and "(" not in str(match.group("prefix") or ""):
+                            prefix = str(match.group("prefix") or "").strip()
+                            initializer = str(match.group("initializer") or "").strip()
+                            is_extern = bool(re.search(r"\bextern\b", prefix))
+                            if re.search(r"\bstatic\b", prefix):
+                                storage_class = "static"
+                            elif is_extern:
+                                storage_class = "extern"
+                            else:
+                                storage_class = "global"
+                            qualifiers = ",".join(
+                                qualifier
+                                for qualifier in ("const", "volatile", "atomic")
+                                if (
+                                    re.search(rf"\b{qualifier}\b", prefix)
+                                    if qualifier != "atomic"
+                                    else re.search(r"\b_Atomic\b", prefix)
+                                )
+                            )
+                            name = match.group("name")
+                            index.setdefault(name, []).append(
+                                {
+                                    "name": name,
+                                    "type": prefix,
+                                    "file_path": normalize_path(file_path, self.project_root),
+                                    "line": line_no,
+                                    "is_extern": is_extern,
+                                    "storage_class": storage_class,
+                                    "qualifiers": qualifiers,
+                                    "initializer": initializer[:500],
+                                    "definition_kind": (
+                                        "declaration"
+                                        if is_extern and not initializer
+                                        else "definition"
+                                    ),
+                                }
+                            )
+                    brace_depth += masked_line.count("{") - masked_line.count("}")
+                    brace_depth = max(0, brace_depth)
+
+            for records in index.values():
+                records.sort(
+                    key=lambda row: (
+                        str(row.get("file_path") or ""),
+                        int(row.get("line") or 0),
+                    )
+                )
+            with self._cache_lock:
+                self._global_definition_index = index
+                return self._global_definition_index
 
     def _get_macro_definition_index(self) -> Dict[str, List[Dict[str, Any]]]:
         with self._cache_lock:
@@ -1779,8 +2887,9 @@ class CodeIndex:
         macro_name: str,
         record: Dict[str, Any],
         *,
-        max_lines: int = 500,
+        max_lines: Optional[int] = 500,
         macro_alternates_count: int = 0,
+        include_callees: bool = True,
     ) -> Dict[str, Any]:
         definition = str(record.get("definition") or "")
         definition_lines = definition.splitlines(True)
@@ -1788,18 +2897,28 @@ class CodeIndex:
             definition_lines = [definition]
         start_line = int(record.get("line") or record.get("start_line") or 1)
         full_line_count = max(1, len(definition_lines))
-        code_lines = definition_lines[: max(0, int(max_lines or 500))]
+        if max_lines is None:
+            code_lines = definition_lines
+        else:
+            code_lines = definition_lines[: max(0, int(max_lines or 500))]
         end_line = start_line + len(code_lines) - 1 if code_lines else start_line - 1
         code = self._numbered_code(code_lines, start_line - 1)
         file_value = str(record.get("file_path") or record.get("file") or "")
         resolved_file = self._resolve_file_path(file_value) if file_value else self.project_root
+        callees: List[str] = []
+        if include_callees:
+            replacement_body = self._macro_replacement_body(
+                macro_name,
+                code_lines,
+            )
+            callees = self._filter_callee_names(extract_function_calls(replacement_body))
         result = {
             "func_name": macro_name,
             "file": normalize_path(resolved_file, self.project_root),
             "start_line": start_line,
             "end_line": end_line,
             "code": code,
-            "callees": self._filter_callee_names(extract_function_calls(code)),
+            "callees": callees,
             "signature": self._macro_signature(
                 macro_name,
                 definition_lines[0] if definition_lines else "",
@@ -1808,9 +2927,40 @@ class CodeIndex:
             "truncated": full_line_count > len(code_lines),
             "is_macro": True,
         }
+        result["index_name"] = self._macro_impl_index_name(result)
         if macro_alternates_count:
             result["macro_alternates_count"] = macro_alternates_count
         return result
+
+    @staticmethod
+    def _macro_replacement_body(macro_name: str, definition_lines: Sequence[str]) -> str:
+        if not definition_lines:
+            return ""
+        first_line = str(definition_lines[0] or "")
+        match = re.match(
+            rf"^\s*#\s*define\s+{re.escape(macro_name)}(?P<tail>(?:\s.*|\(.*|$))$",
+            first_line,
+        )
+        if not match:
+            return "".join(definition_lines)
+
+        tail = str(match.group("tail") or "")
+        if tail.startswith("("):
+            depth = 0
+            body_start = len(tail)
+            for idx, char in enumerate(tail):
+                if char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                    if depth == 0:
+                        body_start = idx + 1
+                        break
+            first_body = tail[body_start:]
+        else:
+            first_body = tail
+
+        return first_body + "".join(definition_lines[1:])
 
     @staticmethod
     def _macro_signature(macro_name: str, first_line: str, is_function_like: bool) -> str:
@@ -1892,6 +3042,7 @@ class CodeIndex:
             self._function_alias_index.clear()
             self._ambiguous_function_aliases.clear()
             self._macro_definition_index = None
+            self._global_definition_index = None
             self._macro_definition_miss_cache.clear()
         if self._backend:
             self._backend.close()

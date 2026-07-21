@@ -204,12 +204,21 @@ def snapshot_contract_text(snapshot: Dict[str, Any]) -> str:
     fields = [
         snapshot.get("summary"),
         snapshot.get("role"),
-        snapshot.get("outputs"),
-        snapshot.get("key_semantics"),
+        snapshot.get("return_values"),
+        snapshot.get("effects"),
+        snapshot.get("error_handling"),
         snapshot.get("semantic_fingerprint"),
     ]
-    if snapshot.get("snapshot_kind") == "lightweight":
-        fields.extend([snapshot.get("resources"), snapshot.get("concurrency")])
+    if "return_values" not in snapshot:
+        fields.append(snapshot.get("outputs"))
+    if "effects" not in snapshot:
+        fields.extend(
+            [
+                snapshot.get("resources"),
+                snapshot.get("concurrency"),
+                snapshot.get("key_semantics"),
+            ]
+        )
     return " ".join(json.dumps(field, ensure_ascii=False) for field in fields if field).lower()
 
 

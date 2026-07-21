@@ -179,11 +179,25 @@ class UnifiedBackend(CodeBackend):
     def get_macro_definitions(self, name: str, limit: int = 20) -> List[Dict[str, Any]]:
         return self._clang.get_macro_definitions(name, limit=limit)
 
+    def get_function_symbol_context(
+        self,
+        func_name: str,
+        file_path: str = "",
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        return self._clang.get_function_symbol_context(func_name, file_path)
+
     def get_method_callees(self, name: str, limit: int = 30) -> List[Dict[str, Any]]:
         return self._clang.get_method_callees(name, limit)
 
     def get_type_info(self, type_name: str) -> Optional[Dict[str, Any]]:
         return self._clang.get_type_info(type_name)
+
+    def find_type_infos(
+        self,
+        type_name: str,
+        file_path: str = "",
+    ) -> List[Dict[str, Any]]:
+        return self._clang.find_type_infos(type_name, file_path=file_path)
 
     def get_header_declared_functions(self, header_files=None) -> List[Dict[str, Any]]:
         return self._clang.get_header_declared_functions(header_files)
@@ -217,6 +231,39 @@ class UnifiedBackend(CodeBackend):
                 )
         return cast(List[Dict[str, Any]], direct[:limit])
 
+    def get_function_info_callers(
+        self,
+        func_name: str,
+        file_path: str = "",
+    ) -> List[Dict[str, Any]]:
+        db = self.db
+        if not db:
+            return []
+        direct = cast(
+            List[Dict[str, Any]],
+            db.get_all_callers(
+                func_name,
+                callee_file=file_path,
+            ),
+        )
+        indirect = cast(
+            List[Dict[str, Any]],
+            db.get_indirect_callers(func_name, limit=2_147_483_647),
+        )
+        for row in indirect:
+            direct.append(
+                {
+                    "name": row["name"],
+                    "filename": row.get("call_file", ""),
+                    "call_line": row.get("call_line", 0),
+                    "source": row.get("source", "svf"),
+                    "confidence": row.get("confidence"),
+                    "svf_groups": row.get("svf_groups", []),
+                    "call_type": "indirect",
+                }
+            )
+        return direct
+
     def get_callees(self, func_name: str, limit: int = 30) -> List[Dict[str, Any]]:
         db = self.db
         if not db:
@@ -237,6 +284,41 @@ class UnifiedBackend(CodeBackend):
                     }
                 )
         return cast(List[Dict[str, Any]], direct[:limit])
+
+    def get_function_info_callees(
+        self,
+        func_name: str,
+        file_path: str = "",
+    ) -> List[Dict[str, Any]]:
+        db = self.db
+        if not db:
+            return []
+        direct = cast(
+            List[Dict[str, Any]],
+            db.get_all_callees(func_name, caller_file=file_path),
+        )
+        indirect = cast(
+            List[Dict[str, Any]],
+            db.get_indirect_callees(func_name, limit=2_147_483_647),
+        )
+        if file_path:
+            indirect = [
+                row
+                for row in indirect
+                if db._paths_match_hint(str(row.get("call_file") or ""), file_path)
+            ]
+        for row in indirect:
+            direct.append(
+                {
+                    "name": row["name"],
+                    "source": row.get("source", "svf"),
+                    "confidence": row.get("confidence"),
+                    "call_file": row.get("call_file", ""),
+                    "call_line": row.get("call_line", 0),
+                    "svf_group": row.get("svf_group", ""),
+                }
+            )
+        return direct
 
     def get_data_flow(
         self,

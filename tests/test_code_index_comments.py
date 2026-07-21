@@ -139,12 +139,12 @@ void cleanup() {}
 
     functions = set(index.list_functions(limit=50))
     assert {
-        "Widget::Widget",
-        "Widget::~Widget",
-        "Widget::bar",
-        "Widget::helper",
-        "Widget::inlineMethod",
-        "cleanup",
+        "Widget::Widget@widget.cpp:10-10",
+        "Widget::~Widget@widget.cpp:12-12",
+        "Widget::bar@widget.cpp:14-14",
+        "Widget::helper@widget.cpp:6-6",
+        "Widget::inlineMethod@widget.cpp:5-5",
+        "cleanup@widget.cpp:16-16",
     }.issubset(functions)
 
     ctor = index.get_function_impl("Widget::Widget")
@@ -177,8 +177,8 @@ def test_regex_index_keeps_cpp_overloads_addressable_by_signature(tmp_path) -> N
     )
 
     functions = index.list_functions(limit=20)
-    assert "Item::Item" in functions
-    assert "Item::Item(int value)" in functions
+    assert "Item::Item@item.cpp:2-2" in functions
+    assert "Item::Item@item.cpp:3-3" in functions
     assert index.get_function_impl("Item::Item") is not None
     assert index.get_function_impl("Item::Item(int value)") is not None
 

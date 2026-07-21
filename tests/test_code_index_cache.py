@@ -113,6 +113,66 @@ def test_function_impl_cache_reuses_file_content_and_returns_isolated_results(
     assert index._declaration_comment_index is None
 
 
+def test_file_snippet_applies_explicit_and_implicit_line_limits(tmp_path) -> None:
+    source_path = tmp_path / "snippet.c"
+    source_path.write_text(
+        "".join(f"line_{line}\n" for line in range(1, 601)),
+        encoding="utf-8",
+    )
+    index = CodeIndex(
+        tmp_path,
+        source_root=tmp_path,
+        indexing_config=SimpleNamespace(backend="regex"),
+    )
+
+    omitted = index.get_file_snippet("snippet.c", 1, None)
+    invalid = index.get_file_snippet("snippet.c", 1, 0)
+    explicit = index.get_file_snippet("snippet.c", 1, 600)
+    narrowed = index.get_file_snippet("snippet.c", 1, 300, max_lines=25)
+
+    assert omitted is not None
+    assert omitted["end_line"] == 50
+    assert len(omitted["code"].splitlines()) == 50
+    assert invalid is not None
+    assert invalid["end_line"] == 50
+    assert explicit is not None
+    assert explicit["end_line"] == 500
+    assert len(explicit["code"].splitlines()) == 500
+    assert narrowed is not None
+    assert narrowed["end_line"] == 25
+
+
+def test_function_impl_supports_unbounded_source_for_semantic_modeling(tmp_path) -> None:
+    source_path = tmp_path / "long.c"
+    body_lines = ["int long_function(void) {\n"]
+    body_lines.extend(f"    int value_{line} = {line};\n" for line in range(1, 550))
+    body_lines.extend(["    return semantic_modeler_tail_marker;\n", "}\n"])
+    source_path.write_text("".join(body_lines), encoding="utf-8")
+
+    backend = MultiFunctionBackend(
+        {
+            "long_function": {
+                "file": str(source_path),
+                "start_line": 1,
+                "end_line": len(body_lines),
+                "signature": "int long_function(void)",
+            }
+        }
+    )
+    index = CodeIndex(tmp_path, source_root=tmp_path, backend=backend)
+
+    limited = index.get_function_impl("long_function", max_lines=500)
+    complete = index.get_function_impl("long_function", max_lines=None)
+
+    assert limited is not None
+    assert limited["truncated"] is True
+    assert "semantic_modeler_tail_marker" not in limited["code"]
+    assert complete is not None
+    assert complete["truncated"] is False
+    assert complete["end_line"] == len(body_lines)
+    assert "semantic_modeler_tail_marker" in complete["code"]
+
+
 def test_code_index_ensures_linux_nofile_limit(tmp_path, monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
@@ -215,7 +275,7 @@ def test_function_impl_prefers_backend_macro_definitions(tmp_path, monkeypatch) 
     def fail_fallback(*args, **kwargs):
         raise AssertionError("backend macro hit should not use regex fallback")
 
-    monkeypatch.setattr(index, "_find_macro_definition", fail_fallback)
+    monkeypatch.setattr(index, "_get_macro_definition_index", fail_fallback)
 
     result = index.get_function_impl("DB_ALLOC", warn_missing=False)
 
@@ -223,6 +283,7 @@ def test_function_impl_prefers_backend_macro_definitions(tmp_path, monkeypatch) 
     assert result["is_macro"] is True
     assert result["signature"] == "#define DB_ALLOC(sz)"
     assert result["file"].replace("\\", "/") == "include/macros.h"
+    assert result["callees"] == ["alloc"]
     assert backend.macro_calls == 1
 
 
@@ -341,6 +402,7 @@ def test_macro_fallback_returns_multiline_function_like_macro(tmp_path) -> None:
     assert result["end_line"] == 3
     assert "1 | #define ALLOC_WRAP(sz)" in result["code"]
     assert "3 |     + 1" in result["code"]
+    assert result["callees"] == ["alloc"]
 
 
 def test_file_scoped_function_lookup_avoids_full_path_scan(tmp_path, monkeypatch) -> None:
@@ -469,3 +531,118 @@ def test_file_resolution_cache_clears_on_index_rebuild(tmp_path) -> None:
     )
     assert second is not None
     assert second["file"].replace("\\", "/") == "src/second.c"
+
+
+def test_function_impl_uses_unique_fallback_and_reuses_canonical_cache(tmp_path) -> None:
+    source = tmp_path / "src" / "target.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int Target(int value) { return value; }\n", encoding="utf-8")
+    backend = MultiFunctionBackend(
+        {
+            "Target": {
+                "name": "Target",
+                "file": "src/target.c",
+                "start_line": 1,
+                "end_line": 1,
+                "signature": "int Target(int value)",
+            }
+        }
+    )
+    index = CodeIndex(tmp_path, source_root=tmp_path, backend=backend)
+
+    fallback = index.get_function_impl(
+        "Target@src/target.c:10-20",
+        include_context=False,
+    )
+    exact = index.get_function_impl(
+        "Target@src/target.c:1-1",
+        include_context=False,
+    )
+
+    assert fallback is not None
+    assert exact == fallback
+    assert fallback["index_name"] == "Target@src/target.c:1-1"
+    assert len(index._function_impl_cache) == 1
+
+
+def test_function_impl_rejects_ambiguous_derived_fallback(tmp_path) -> None:
+    left = tmp_path / "src" / "a.c"
+    right = tmp_path / "src" / "b.c"
+    left.parent.mkdir(parents=True)
+    left.write_text("int Target(int left) { return left; }\n", encoding="utf-8")
+    right.write_text("int Target(int right) { return right; }\n", encoding="utf-8")
+    backend = MultiFunctionBackend(
+        {
+            "TargetLeft": {
+                "name": "Target",
+                "file": "src/a.c",
+                "start_line": 1,
+                "end_line": 1,
+                "signature": "int Target(int left)",
+            },
+            "TargetRight": {
+                "name": "Target",
+                "file": "src/b.c",
+                "start_line": 1,
+                "end_line": 1,
+                "signature": "int Target(int right)",
+            },
+        }
+    )
+    index = CodeIndex(tmp_path, source_root=tmp_path, backend=backend)
+
+    ambiguous = index.get_function_impl(
+        "Target(int)",
+        include_context=False,
+        warn_missing=False,
+    )
+    simple = index.get_function_impl(
+        "Target",
+        include_context=False,
+        warn_missing=False,
+    )
+
+    assert ambiguous is None
+    assert simple is not None
+    assert simple["index_name"] == "Target@src/a.c:1-1"
+
+
+def test_function_impl_uses_fallback_name_for_backend_lookup(tmp_path) -> None:
+    source = tmp_path / "src" / "target.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int Target(int value) { return value; }\n", encoding="utf-8")
+
+    class LazyBackend(MultiFunctionBackend):
+        def __init__(self):
+            super().__init__({})
+            self.method_queries = []
+
+        def get_method(self, name: str):
+            self.method_queries.append(name)
+            if name != "Target":
+                return None
+            return {
+                "name": "Target",
+                "filename": "src/target.c",
+                "lineNumber": 1,
+                "lineNumberEnd": 1,
+                "signature": "int Target(int value)",
+            }
+
+    backend = LazyBackend()
+    index = CodeIndex(
+        tmp_path,
+        source_root=tmp_path,
+        backend=backend,
+        wait_for_cpg=False,
+    )
+
+    result = index.get_function_impl(
+        "Target(int)",
+        include_context=False,
+        warn_missing=False,
+    )
+
+    assert result is not None
+    assert result["index_name"] == "Target@src/target.c:1-1"
+    assert backend.method_queries == ["Target(int)", "Target"]

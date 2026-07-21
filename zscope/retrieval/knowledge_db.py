@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class KnowledgeDB:
     """SQLite-backed code knowledge store."""
 
-    SCHEMA_VERSION = "7"
+    SCHEMA_VERSION = "8"
     CALLGRAPH_READ_CONCURRENCY = 8
 
     def __init__(self, db_path: str):
@@ -180,8 +180,35 @@ class KnowledgeDB:
                 file_path   TEXT NOT NULL,
                 line        INTEGER NOT NULL,
                 is_extern   INTEGER DEFAULT 0,
+                storage_class TEXT DEFAULT 'unknown',
+                qualifiers  TEXT DEFAULT '',
+                initializer TEXT DEFAULT '',
+                definition_kind TEXT DEFAULT 'unknown',
                 UNIQUE(name, file_path)
             );
+
+            CREATE TABLE IF NOT EXISTS function_symbol_refs (
+                id          INTEGER PRIMARY KEY,
+                function_name TEXT NOT NULL,
+                function_file TEXT NOT NULL,
+                symbol_name TEXT NOT NULL,
+                symbol_kind TEXT NOT NULL,
+                symbol_file TEXT DEFAULT '',
+                reference_line INTEGER DEFAULT 0,
+                access_kind TEXT DEFAULT 'unknown',
+                UNIQUE(
+                    function_name,
+                    function_file,
+                    symbol_name,
+                    symbol_kind,
+                    symbol_file,
+                    reference_line
+                )
+            );
+            CREATE INDEX IF NOT EXISTS idx_symbol_refs_function
+                ON function_symbol_refs(function_name, function_file);
+            CREATE INDEX IF NOT EXISTS idx_symbol_refs_symbol
+                ON function_symbol_refs(symbol_name, symbol_kind);
 
             CREATE TABLE IF NOT EXISTS include_edges (
                 id          INTEGER PRIMARY KEY,
@@ -365,6 +392,18 @@ class KnowledgeDB:
         except sqlite3.OperationalError:
             pass
 
+        for column_sql in (
+            "ALTER TABLE global_variables ADD COLUMN storage_class TEXT DEFAULT 'unknown'",
+            "ALTER TABLE global_variables ADD COLUMN qualifiers TEXT DEFAULT ''",
+            "ALTER TABLE global_variables ADD COLUMN initializer TEXT DEFAULT ''",
+            "ALTER TABLE global_variables ADD COLUMN definition_kind TEXT DEFAULT 'unknown'",
+        ):
+            try:
+                c.execute(column_sql)
+                c.commit()
+            except sqlite3.OperationalError:
+                pass
+
     # ── Translation Units ──
 
     def register_tu(self, file_path: str, mtime: float) -> int:
@@ -515,6 +554,15 @@ class KnowledgeDB:
                 f"DELETE FROM global_variables WHERE file_path IN ({placeholders})",
                 path_variants,
             )
+            self._conn.execute(
+                f"DELETE FROM function_symbol_refs WHERE function_file IN ({placeholders})",
+                path_variants,
+            )
+            if purge_incoming_refs:
+                self._conn.execute(
+                    f"DELETE FROM function_symbol_refs WHERE symbol_file IN ({placeholders})",
+                    path_variants,
+                )
             self._conn.execute(
                 f"DELETE FROM macro_definitions WHERE file_path IN ({placeholders})",
                 path_variants,
@@ -812,7 +860,7 @@ class KnowledgeDB:
 
     def get_all_functions(self) -> Dict[str, Dict[str, Any]]:
         rows = self._conn.execute(
-            "SELECT name, file_path, start_line, end_line, signature "
+            "SELECT name, file_path, start_line, end_line, signature, is_static "
             "FROM functions WHERE is_declaration = 0 ORDER BY name, file_path, start_line"
         ).fetchall()
         index = {}
@@ -829,8 +877,180 @@ class KnowledgeDB:
                 "start_line": r["start_line"],
                 "end_line": r["end_line"],
                 "signature": r["signature"] or f"{name}(...)",
+                "is_static": bool(r["is_static"]),
             }
         return index
+
+    def get_function_records(self) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT name, file_path, start_line, end_line, signature, is_static, "
+            "is_declaration "
+            "FROM functions ORDER BY file_path, start_line, name"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    # -- Global variables and function symbol references --
+
+    def insert_global_variable(
+        self,
+        name: str,
+        type_str: str,
+        file_path: str,
+        line: int,
+        *,
+        is_extern: bool = False,
+        storage_class: str = "unknown",
+        qualifiers: str = "",
+        initializer: str = "",
+        definition_kind: str = "unknown",
+    ) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO global_variables "
+            "(name, type_str, file_path, line, is_extern, storage_class, qualifiers, "
+            "initializer, definition_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                name,
+                type_str,
+                file_path,
+                int(line),
+                int(bool(is_extern)),
+                storage_class,
+                qualifiers,
+                initializer,
+                definition_kind,
+            ),
+        )
+
+    def get_global_variables(self) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT name, type_str, file_path, line, is_extern, storage_class, "
+            "qualifiers, initializer, definition_kind FROM global_variables "
+            "ORDER BY name, file_path, line"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_all_macro_definitions(self) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT name, file_path, line, definition, is_function_like "
+            "FROM macro_definitions ORDER BY name, file_path, line"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def insert_function_symbol_refs_batch(self, rows: List[tuple]) -> None:
+        if not rows:
+            return
+        self._conn.executemany(
+            "INSERT OR REPLACE INTO function_symbol_refs "
+            "(function_name, function_file, symbol_name, symbol_kind, symbol_file, "
+            "reference_line, access_kind) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+
+    def clear_function_symbol_refs(self) -> None:
+        self._conn.execute("DELETE FROM function_symbol_refs")
+
+    def get_function_symbol_context(
+        self,
+        function_name: str,
+        function_file: str = "",
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        rows = self._conn.execute(
+            "SELECT function_file, symbol_name, symbol_kind, symbol_file, "
+            "reference_line, access_kind FROM function_symbol_refs "
+            "WHERE function_name = ? ORDER BY symbol_kind, symbol_name, symbol_file, reference_line",
+            (function_name,),
+        ).fetchall()
+        if function_file:
+            rows = [
+                row
+                for row in rows
+                if self._paths_match_hint(str(row["function_file"] or ""), function_file)
+            ]
+
+        globals_by_key = {
+            (str(row["name"]), str(row["file_path"])): dict(row)
+            for row in self._conn.execute(
+                "SELECT name, type_str, file_path, line, is_extern, storage_class, "
+                "qualifiers, initializer, definition_kind FROM global_variables"
+            ).fetchall()
+        }
+        macros_by_key = {
+            (str(row["name"]), str(row["file_path"])): dict(row)
+            for row in self._conn.execute(
+                "SELECT name, file_path, line, definition, is_function_like "
+                "FROM macro_definitions"
+            ).fetchall()
+        }
+
+        global_groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        macro_groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for row in rows:
+            name = str(row["symbol_name"] or "")
+            symbol_file = str(row["symbol_file"] or "")
+            reference_line = int(row["reference_line"] or 0)
+            if row["symbol_kind"] == "global":
+                key = (name, symbol_file)
+                entry = global_groups.get(key)
+                if entry is None:
+                    metadata = globals_by_key.get(key, {})
+                    entry = {
+                        "name": name,
+                        "type": str(metadata.get("type_str") or ""),
+                        "file_path": symbol_file,
+                        "line": int(metadata.get("line") or 0),
+                        "is_extern": bool(metadata.get("is_extern")),
+                        "storage_class": str(metadata.get("storage_class") or "unknown"),
+                        "qualifiers": str(metadata.get("qualifiers") or ""),
+                        "initializer": str(metadata.get("initializer") or ""),
+                        "definition_kind": str(metadata.get("definition_kind") or "unknown"),
+                        "access": "unknown",
+                        "reference_lines": [],
+                    }
+                    global_groups[key] = entry
+                entry["access"] = self._merge_access_kind(
+                    str(entry.get("access") or "unknown"),
+                    str(row["access_kind"] or "unknown"),
+                )
+                if reference_line > 0 and reference_line not in entry["reference_lines"]:
+                    entry["reference_lines"].append(reference_line)
+            elif row["symbol_kind"] == "macro":
+                key = (name, symbol_file)
+                entry = macro_groups.get(key)
+                if entry is None:
+                    metadata = macros_by_key.get(key, {})
+                    entry = {
+                        "name": name,
+                        "file_path": symbol_file,
+                        "line": int(metadata.get("line") or 0),
+                        "definition": str(metadata.get("definition") or ""),
+                        "is_function_like": bool(metadata.get("is_function_like")),
+                        "reference_lines": [],
+                    }
+                    macro_groups[key] = entry
+                if reference_line > 0 and reference_line not in entry["reference_lines"]:
+                    entry["reference_lines"].append(reference_line)
+
+        globals_result = list(global_groups.values())
+        macros_result = list(macro_groups.values())
+        for entry in globals_result + macros_result:
+            entry["reference_lines"] = sorted(entry["reference_lines"])
+        globals_result.sort(key=lambda item: (item["name"], item["file_path"], item["line"]))
+        macros_result.sort(key=lambda item: (item["name"], item["file_path"], item["line"]))
+        return {
+            "referenced_globals": globals_result,
+            "referenced_macros": macros_result,
+        }
+
+    @staticmethod
+    def _merge_access_kind(left: str, right: str) -> str:
+        values = {left or "unknown", right or "unknown"}
+        if "read_write" in values or {"read", "write"}.issubset(values):
+            return "read_write"
+        if "write" in values:
+            return "write"
+        if "read" in values:
+            return "read"
+        return "unknown"
 
     # -- Macro definitions --
 
@@ -905,6 +1125,31 @@ class KnowledgeDB:
         result["members"] = [dict(m) for m in members]
         return result
 
+    def find_type_infos(
+        self,
+        name: str,
+        file_path: str = "",
+    ) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM type_definitions WHERE name = ? "
+            "ORDER BY file_path, start_line, kind, name",
+            (name,),
+        ).fetchall()
+        if file_path:
+            rows = [
+                row
+                for row in rows
+                if self._paths_match_hint(str(row["file_path"] or ""), file_path)
+            ]
+
+        result: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item.pop("id", None)
+            item.pop("tu_id", None)
+            result.append(item)
+        return result
+
     # ── Call Edges ──
 
     def insert_call_edge(self, caller_name: str, caller_file: str,
@@ -954,6 +1199,37 @@ class KnowledgeDB:
                  "callee_filename": r["callee_file"],
                  "lineNumber": r["call_line"]} for r in rows]
 
+    def get_all_callers(
+        self,
+        func_name: str,
+        callee_file: str = "",
+    ) -> List[Dict[str, Any]]:
+        self._callgraph_read_semaphore.acquire()
+        try:
+            rows = self._conn.execute(
+                "SELECT DISTINCT caller_name, caller_file, callee_file, call_line, call_type "
+                "FROM call_edges WHERE callee_name = ? "
+                "ORDER BY caller_name, caller_file, call_type, call_line",
+                (func_name,),
+            ).fetchall()
+        finally:
+            self._callgraph_read_semaphore.release()
+        if callee_file:
+            rows = [
+                row
+                for row in rows
+                if self._paths_match_hint(str(row["callee_file"] or ""), callee_file)
+            ]
+        return [
+            {
+                "name": row["caller_name"],
+                "filename": row["caller_file"],
+                "lineNumber": row["call_line"],
+                "call_type": row["call_type"],
+            }
+            for row in rows
+        ]
+
     def get_callees(
         self,
         func_name: str,
@@ -999,6 +1275,37 @@ class KnowledgeDB:
             if cache_version == self._callgraph_cache_version:
                 self._callee_cache[cache_key] = self._clone_query_rows(result)
         return result
+
+    def get_all_callees(
+        self,
+        func_name: str,
+        caller_file: str = "",
+    ) -> List[Dict[str, Any]]:
+        self._callgraph_read_semaphore.acquire()
+        try:
+            rows = self._conn.execute(
+                "SELECT DISTINCT callee_name, callee_file, call_line, call_type, caller_file "
+                "FROM call_edges WHERE caller_name = ? "
+                "ORDER BY callee_name, callee_file, call_type, call_line",
+                (func_name,),
+            ).fetchall()
+        finally:
+            self._callgraph_read_semaphore.release()
+        if caller_file:
+            rows = [
+                row
+                for row in rows
+                if self._paths_match_hint(str(row["caller_file"] or ""), caller_file)
+            ]
+        return [
+            {
+                "name": row["callee_name"],
+                "filename": row["callee_file"],
+                "lineNumber": row["call_line"],
+                "call_type": row["call_type"],
+            }
+            for row in rows
+        ]
 
     @staticmethod
     def _paths_match_hint(stored_path: str, hint_path: str) -> bool:
@@ -1148,13 +1455,25 @@ class KnowledgeDB:
 
     def get_indirect_callers(self, func_name: str, limit: int = 20) -> List[Dict[str, Any]]:
         rows = self._conn.execute(
-            "SELECT caller_name, source, GROUP_CONCAT(DISTINCT svf_group) AS svf_groups "
+            "SELECT caller_name, source, MAX(confidence) AS confidence, "
+            "GROUP_CONCAT(DISTINCT svf_group) AS svf_groups, "
+            "MAX(call_file) AS call_file, MAX(call_line) AS call_line "
             "FROM indirect_calls WHERE callee_name = ? "
-            "GROUP BY caller_name, callee_name, source LIMIT ?",
+            "GROUP BY caller_name, callee_name, source "
+            "ORDER BY confidence DESC LIMIT ?",
             (func_name, limit),
         ).fetchall()
-        return [{"name": r["caller_name"], "source": r["source"],
-                 "svf_groups": self._split_svf_groups(r["svf_groups"])} for r in rows]
+        return [
+            {
+                "name": r["caller_name"],
+                "source": r["source"],
+                "confidence": r["confidence"],
+                "svf_groups": self._split_svf_groups(r["svf_groups"]),
+                "call_file": r["call_file"],
+                "call_line": r["call_line"],
+            }
+            for r in rows
+        ]
 
     # ── Taint Signatures (SVF/Saber) ──
 
@@ -1258,7 +1577,8 @@ class KnowledgeDB:
     def stats(self) -> Dict[str, int]:
         result = {}
         for table in ("functions", "type_definitions", "call_edges",
-                       "macro_definitions", "translation_units",
+                       "macro_definitions", "global_variables",
+                       "function_symbol_refs", "translation_units",
                        "indirect_calls", "taint_signatures",
                        "ir_statements", "ir_resource_events", "ir_lock_events",
                        "ir_shared_accesses", "ir_path_slices",
