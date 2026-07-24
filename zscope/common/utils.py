@@ -267,7 +267,6 @@ def is_valid_snapshot(d: dict) -> bool:
         "return_values",
         "effects",
         "error_handling",
-        "callees",
         "suspicious_points",
     }
     return semantic_fields.issubset(d) or d.get("type") == "function_snapshot"

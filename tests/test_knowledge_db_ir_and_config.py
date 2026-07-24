@@ -1,10 +1,44 @@
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import sqlite3
 
 from zscope.config.user_config_store import UserConfigStore
 from zscope.retrieval.knowledge_db import KnowledgeDB
 from zscope.web import server as web_server
 from zscope.web.services import ReportFeedbackService
+
+
+def test_knowledge_db_migrates_legacy_macro_identity_and_range(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE macro_definitions ("
+            "id INTEGER PRIMARY KEY, name TEXT NOT NULL, file_path TEXT NOT NULL, "
+            "line INTEGER NOT NULL, definition TEXT, is_function_like INTEGER DEFAULT 0, "
+            "UNIQUE(name, file_path, line))"
+        )
+        conn.execute(
+            "INSERT INTO macro_definitions "
+            "(name, file_path, line, definition, is_function_like) VALUES (?, ?, ?, ?, ?)",
+            (
+                "WRAP",
+                "include/wrap.h",
+                10,
+                "#define WRAP(x) \\\n    helper(x)\n",
+                1,
+            ),
+        )
+        conn.commit()
+
+    db = KnowledgeDB(str(db_path))
+    try:
+        macro = db.get_macro_definitions("WRAP")[0]
+        assert macro["macro_index_name"] == "WRAP@include/wrap.h:10-11"
+        assert macro["start_line"] == 10
+        assert macro["end_line"] == 11
+        assert db.get_metadata("schema_version") == "10"
+    finally:
+        db.close()
 
 
 def test_knowledge_db_ir_tables_round_trip(tmp_path: Path) -> None:
@@ -136,6 +170,148 @@ def test_knowledge_db_function_index_preserves_is_static(tmp_path: Path) -> None
         db.close()
 
 
+def test_knowledge_db_function_type_context_round_trip_and_optional_unresolved(
+    tmp_path: Path,
+) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_function(
+            "register_plugin",
+            "src/plugin.c",
+            10,
+            20,
+            signature="int register_plugin(PluginRegistry *registry)",
+        )
+        type_id = db.insert_type(
+            "PluginRegistry",
+            "struct",
+            "include/types.h",
+            90,
+            98,
+            full_definition="typedef struct { void *plugins; } PluginRegistry;",
+        )
+        db.commit()
+        function_id = next(
+            row["id"] for row in db.get_function_records()
+            if row["name"] == "register_plugin"
+        )
+        type_info = next(
+            row for row in db.get_all_type_definitions()
+            if row["name"] == "PluginRegistry"
+        )
+        type_index_name = db.type_index_name(type_info)
+        db.replace_function_type_refs(
+            [
+                (
+                    function_id,
+                    type_id,
+                    type_index_name,
+                    "PluginRegistry",
+                    "src/plugin.c",
+                    10,
+                    "parameter",
+                    "",
+                ),
+                (
+                    function_id,
+                    type_id,
+                    type_index_name,
+                    "PluginRegistry",
+                    "src/plugin.c",
+                    15,
+                    "member_access",
+                    "",
+                ),
+                (
+                    function_id,
+                    None,
+                    "",
+                    "MissingType",
+                    "src/plugin.c",
+                    16,
+                    "cast",
+                    "type_definition_not_found",
+                ),
+            ]
+        )
+        db.commit()
+
+        context = db.get_function_type_context(
+            "register_plugin",
+            "src/plugin.c",
+            10,
+        )
+
+        assert context["referenced_types"] == [
+            {
+                "type_index_name": "PluginRegistry@include/types.h:90-98",
+                "name": "PluginRegistry",
+                "kind": "struct",
+                "file_path": "include/types.h",
+                "start_line": 90,
+                "end_line": 98,
+                "full_definition": "typedef struct { void *plugins; } PluginRegistry;",
+                "reference_kinds": ["parameter", "member_access"],
+                "reference_lines": [10, 15],
+            }
+        ]
+        assert context["unresolved_referenced_types"] == [
+            {
+                "name": "MissingType",
+                "reference_kinds": ["cast"],
+                "reference_lines": [16],
+                "reason": "type_definition_not_found",
+            }
+        ]
+        assert db.stats()["function_type_refs"] == 3
+    finally:
+        db.close()
+
+
+def test_knowledge_db_purge_tu_removes_owned_and_incoming_type_refs(
+    tmp_path: Path,
+) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        source_tu = db.register_tu("src/plugin.c", 1.0)
+        header_tu = db.register_tu("include/types.h", 1.0)
+        db.insert_function("register_plugin", "src/plugin.c", 10, 20, tu_id=source_tu)
+        type_id = db.insert_type(
+            "PluginRegistry",
+            "struct",
+            "include/types.h",
+            90,
+            98,
+            tu_id=header_tu,
+        )
+        db.commit()
+        function_id = db.get_function_records()[0]["id"]
+        type_info = db.get_all_type_definitions()[0]
+        db.replace_function_type_refs(
+            [
+                (
+                    function_id,
+                    type_id,
+                    db.type_index_name(type_info),
+                    "PluginRegistry",
+                    "src/plugin.c",
+                    10,
+                    "parameter",
+                    "",
+                )
+            ]
+        )
+        db.commit()
+
+        impact = db.get_tu_delete_impact(header_tu)
+        assert "src/plugin.c" in impact["related_files"]
+
+        db.purge_tu_data(header_tu, purge_incoming_refs=True)
+        assert db.stats()["function_type_refs"] == 0
+    finally:
+        db.close()
+
+
 def test_knowledge_db_caches_direct_callee_queries_and_invalidates_on_write(tmp_path: Path) -> None:
     db_path = tmp_path / "knowledge.db"
     db = KnowledgeDB(str(db_path))
@@ -191,6 +367,81 @@ def test_knowledge_db_caches_indirect_callee_queries_and_invalidates_on_write(tm
         db.commit()
 
         assert {row["name"] for row in db.get_indirect_callees("caller", limit=30)} == {"target", "later"}
+    finally:
+        db.close()
+
+
+def test_knowledge_db_preserves_llvm_intrinsic_indirect_call_facts(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_indirect_call(
+            "entry",
+            "llvm.memset.p0.i64",
+            call_file="src/entry.c",
+            call_line=0,
+            source="svf-ander",
+        )
+        db.commit()
+
+        assert db.get_indirect_callees("entry") == [
+            {
+                "name": "llvm.memset.p0.i64",
+                "source": "svf-ander",
+                "confidence": 1.0,
+                "svf_group": "default",
+                "svf_groups": ["default"],
+                "call_file": "src/entry.c",
+                "call_line": 0,
+            }
+        ]
+    finally:
+        db.close()
+
+
+def test_knowledge_db_get_macro_definitions_batch(
+    tmp_path: Path,
+) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_global_variable(
+            "g_lock",
+            "pthread_mutex_t",
+            "src/demo.c",
+            7,
+            storage_class="static",
+            initializer="PTHREAD_MUTEX_INITIALIZER",
+        )
+        db.insert_macro_definitions_batch(
+            [
+                (
+                    "UNLOCK",
+                    "include/common.h",
+                    34,
+                    "#define UNLOCK(mutex) unlock_impl(mutex)\n",
+                    1,
+                )
+            ]
+        )
+        db.commit()
+
+        result = db.get_macro_definitions_batch(
+            ["UNLOCK", "g_lock", "UNLOCK", "missing"]
+        )
+
+        assert result == [
+            {
+                "id": 1,
+                "macro_index_name": "UNLOCK@include/common.h:34-34",
+                "name": "UNLOCK",
+                "file_path": "include/common.h",
+                "line": 34,
+                "start_line": 34,
+                "end_line": 34,
+                "definition": "#define UNLOCK(mutex) unlock_impl(mutex)\n",
+                "is_function_like": 1,
+            }
+        ]
+        assert db.get_macro_definitions_batch([]) == []
     finally:
         db.close()
 
@@ -272,21 +523,16 @@ def test_knowledge_db_function_symbol_context_round_trip(tmp_path: Path) -> None
         db.insert_macro_definitions_batch(
             [("STATE_SET", "include/state.h", 8, "#define STATE_SET(v) ((v) != 0)\n", 1)]
         )
+        db.insert_function("update", "src/update.c", 18, 26)
         db.insert_function_symbol_refs_batch(
             [
                 ("update", "src/update.c", "g_state", "global", "src/state.c", 20, "read"),
                 ("update", "src/update.c", "g_state", "global", "src/state.c", 24, "write"),
-                (
-                    "update",
-                    "src/update.c",
-                    "STATE_SET",
-                    "macro",
-                    "include/state.h",
-                    23,
-                    "unknown",
-                ),
             ]
         )
+        function_id = db.get_function("update", "src/update.c")["id"]
+        macro_id = db.get_macro_definitions("STATE_SET")[0]["id"]
+        db.insert_function_macro_refs_batch([(function_id, macro_id, 23)])
         db.commit()
 
         context = db.get_function_symbol_context("update", "src/update.c")
@@ -308,15 +554,13 @@ def test_knowledge_db_function_symbol_context_round_trip(tmp_path: Path) -> None
         ]
         assert context["referenced_macros"] == [
             {
-                "name": "STATE_SET",
-                "file_path": "include/state.h",
-                "line": 8,
-                "definition": "#define STATE_SET(v) ((v) != 0)\n",
+                "macro_index_name": "STATE_SET@include/state.h:8-8",
                 "is_function_like": True,
                 "reference_lines": [23],
             }
         ]
-        assert db.stats()["function_symbol_refs"] == 3
+        assert db.stats()["function_symbol_refs"] == 2
+        assert db.stats()["function_macro_refs"] == 1
     finally:
         db.close()
 
@@ -409,6 +653,7 @@ def test_delete_tu_removes_file_owned_facts_and_related_call_edges(tmp_path: Pat
             "macro_definitions",
             "global_variables",
             "function_symbol_refs",
+            "function_macro_refs",
             "ir_resource_events",
             "ir_lock_events",
             "ir_shared_accesses",

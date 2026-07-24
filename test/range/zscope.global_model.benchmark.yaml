@@ -66,21 +66,16 @@ project:
       llm_ref: default
 
     - name: vulnerability_analyzer
-      enabled: true
+      enabled: false
       llm_ref: smart_model
-      can_spawn_subagents: true
-      task: >
-        Audit this C service-runtime benchmark for memory corruption,
-        integer/bounds mistakes, ownership/lifetime bugs, command/file security
-        flaws, and concurrency defects. Use source evidence and call paths.
-        Do not rely on benchmark answer-key files.
+      can_spawn_subagents: false
 
     - name: validator_agent
-      enabled: true
+      enabled: false
       llm_ref: smart_model
 
     - name: issue_reconciler_agent
-      enabled: true
+      enabled: false
       llm_ref: default
 
 indexing:
@@ -112,5 +107,5 @@ analysis:
   max_premodel_depth: 5
   max_premodel_callees: 20
   trivial_function_max_lines: 10
-  enable_subagent_workers: true
-  max_subagent_tickets: 8
+  enable_subagent_workers: false
+  max_subagent_tickets: 0

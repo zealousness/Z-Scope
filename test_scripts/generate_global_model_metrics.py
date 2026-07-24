@@ -9,7 +9,7 @@ import re
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional
 
 
 LOG_TS = "%Y-%m-%d %H:%M:%S"
@@ -19,7 +19,8 @@ GLOBAL_END_RE = re.compile(
     r"\[global-model\] end entries=(?P<entries>\d+) "
     r"reachable=(?P<reachable>\d+) modeled=(?P<modeled>\d+) "
     r"cache_hits=(?P<cache_hits>\d+) deterministic=(?P<deterministic>\d+) "
-    r"llm=(?P<llm>\d+) failed=(?P<failed>\d+) duration=(?P<duration>[\d.]+)s"
+    r"llm=(?P<llm>\d+) failed=(?P<failed>\d+)(?: .*?)? "
+    r"duration=(?P<duration>[\d.]+)s"
 )
 SHARED_END_RE = re.compile(
     r"\[entry-worker\] shared-semantics end entries=(?P<entries>\d+) "
@@ -31,6 +32,7 @@ LLM_TRACE_RE = re.compile(
     r"Total ≈ (?P<total>[\d,]+) tk"
 )
 RUN_STAMP_RE = re.compile(r"(?P<stamp>\d{8}_\d{6})")
+CONVERSATION_DIR_RE = re.compile(r"LLM conversation recording enabled: (?P<path>.+)$")
 
 
 def read_json(path: Path, default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -247,10 +249,11 @@ def conversation_files(conv_dir: Path) -> Iterable[Path]:
 def parse_conversations(conv_dir: Path) -> Dict[str, Any]:
     by_tool: Dict[str, Dict[str, int]] = defaultdict(empty_tool_bucket)
     error_types: Dict[str, Counter[str]] = defaultdict(Counter)
+    failure_records: Dict[str, list[Dict[str, Any]]] = defaultdict(list)
     seen_calls: set[str] = set()
     seen_results: set[str] = set()
     signatures: Counter[str] = Counter()
-    call_meta: Dict[str, Tuple[str, str]] = {}
+    call_meta: Dict[str, Dict[str, Any]] = {}
     totals = Counter()
 
     for path in conversation_files(conv_dir):
@@ -282,9 +285,29 @@ def parse_conversations(conv_dir: Path) -> Dict[str, Any]:
                         seen_calls.add(call_id)
                         function = tool_call.get("function") or {}
                         tool_name = str(function.get("name") or "unknown")
-                        signature = f"{tool_name}|{normalize_args(function.get('arguments'))}"
+                        raw_arguments = function.get("arguments")
+                        normalized_arguments = normalize_args(raw_arguments)
+                        signature = f"{tool_name}|{normalized_arguments}"
                         signatures[signature] += 1
-                        call_meta[call_id] = (tool_name, signature)
+                        try:
+                            arguments = (
+                                json.loads(raw_arguments)
+                                if isinstance(raw_arguments, str)
+                                else raw_arguments
+                            )
+                        except Exception:
+                            arguments = normalized_arguments
+                        session = event.get("session") or {}
+                        call_meta[call_id] = {
+                            "tool": tool_name,
+                            "signature": signature,
+                            "arguments": arguments,
+                            "conversation_file": path.name,
+                            "session_id": str(session.get("id") or ""),
+                            "session_label": str(session.get("label") or ""),
+                            "timestamp": str(event.get("timestamp") or ""),
+                            "iteration": int(event.get("iteration") or 0),
+                        }
                         bucket = by_tool[tool_name]
                         bucket["calls"] += 1
                         if signatures[signature] > 1:
@@ -295,7 +318,8 @@ def parse_conversations(conv_dir: Path) -> Dict[str, Any]:
                     if call_id in seen_results or call_id not in call_meta:
                         continue
                     seen_results.add(call_id)
-                    tool_name, _signature = call_meta[call_id]
+                    meta = call_meta[call_id]
+                    tool_name = str(meta["tool"])
                     result = parse_tool_result(str(message.get("content") or ""))
                     bucket = by_tool[tool_name]
                     bucket["results"] += 1
@@ -307,6 +331,17 @@ def parse_conversations(conv_dir: Path) -> Dict[str, Any]:
                         error_class = classify_error(error)
                         bucket[error_class] += 1
                         error_types[tool_name][normalize_error(error)] += 1
+                        failure_records[tool_name].append(
+                            {
+                                "conversation_file": meta["conversation_file"],
+                                "session_id": meta["session_id"],
+                                "session_label": meta["session_label"],
+                                "timestamp": meta["timestamp"],
+                                "iteration": meta["iteration"],
+                                "arguments": meta["arguments"],
+                                "error": error,
+                            }
+                        )
                     if is_empty_result(tool_name, result):
                         bucket["empty_results"] += 1
                     if result.get("repeat_call_warning") or result.get("cached_tool_result"):
@@ -325,6 +360,9 @@ def parse_conversations(conv_dir: Path) -> Dict[str, Any]:
         "error_types_by_tool": {
             name: dict(counter.most_common()) for name, counter in sorted(error_types.items())
         },
+        "failure_records_by_tool": {
+            name: list(failure_records.get(name) or []) for name in sorted(by_tool)
+        },
     }
 
 
@@ -334,6 +372,16 @@ def infer_conversation_dir(run_dir: Path, explicit: Optional[Path]) -> Path:
         if not path.is_dir():
             raise FileNotFoundError(f"Conversation directory not found: {path}")
         return path
+
+    log_path = run_dir / "zscope_run.log"
+    if log_path.exists():
+        for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            recorded = CONVERSATION_DIR_RE.search(line)
+            if not recorded:
+                continue
+            path = Path(recorded.group("path").strip()).resolve()
+            if path.is_dir():
+                return path
 
     match = RUN_STAMP_RE.search(run_dir.name)
     if not match:
@@ -365,6 +413,10 @@ def fmt_float(value: Any, digits: int = 2) -> str:
 
 def row(values: Iterable[Any]) -> str:
     return "| " + " | ".join(str(value) for value in values) + " |"
+
+
+def markdown_cell(value: Any) -> str:
+    return str(value).replace("|", "\\|").replace("\n", "<br>")
 
 
 def render_markdown(data: Dict[str, Any], model: str) -> str:
@@ -517,6 +569,51 @@ def render_markdown(data: Dict[str, Any], model: str) -> str:
                 lines.append(row([f"`{tool_name}`", error.replace("|", "\\|"), fmt_int(count)]))
     else:
         lines.append("本次运行未记录工具错误。")
+
+    lines.extend(
+        [
+            "",
+            "### 2.4 全部工具的失败对话记录",
+            "",
+            f"> Conversation 目录：`{data['run']['conversation_dir']}`",
+            "",
+        ]
+    )
+    failure_records = tools.get("failure_records_by_tool") or {}
+    tool_names = sorted(
+        tools["by_tool"],
+        key=lambda name: (-int(tools["by_tool"][name].get("calls") or 0), name),
+    )
+    for tool_name in tool_names:
+        records = list(failure_records.get(tool_name) or [])
+        lines.extend(
+            [
+                f"#### `{tool_name}`（{len(records)} 条）",
+                "",
+                "| # | 时间 | 目标函数 / Session | Conversation 文件 | 调用参数 | 错误结果 |",
+                "|---:|---|---|---|---|---|",
+            ]
+        )
+        for index, record in enumerate(records, 1):
+            arguments = json.dumps(
+                record.get("arguments"), ensure_ascii=False, sort_keys=True
+            )
+            label = record.get("session_label") or record.get("session_id") or "-"
+            lines.append(
+                row(
+                    [
+                        index,
+                        markdown_cell(record.get("timestamp") or "-"),
+                        f"`{markdown_cell(label)}`",
+                        f"`{markdown_cell(record.get('conversation_file') or '-')}`",
+                        f"`{markdown_cell(arguments)}`",
+                        markdown_cell(record.get("error") or "-"),
+                    ]
+                )
+            )
+        if not records:
+            lines.append(row(["-", "-", "-", "-", "-", "无失败记录"]))
+        lines.append("")
 
     lines.extend(
         [

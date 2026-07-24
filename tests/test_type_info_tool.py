@@ -142,7 +142,10 @@ def test_get_type_info_schema_accepts_optional_file_path() -> None:
             },
             "file_path": {
                 "type": "string",
-                "description": "Optional source or header path used to disambiguate same-name types.",
+                "description": (
+                    "Optional source or header path used to disambiguate same-name types. "
+                    "If it has no matches, the tool retries once without this filter."
+                ),
             },
         },
         "required": ["type_name"],
@@ -186,6 +189,61 @@ def test_get_type_info_passes_file_path_and_keeps_missing_failure() -> None:
     assert index.calls == [
         ("State", "include/a.h"),
         ("State", "include/missing.h"),
+        ("State", ""),
+    ]
+
+
+def test_get_type_info_retries_without_wrong_file_path_and_returns_all_matches() -> None:
+    index = RecordingTypeIndex(
+        {
+            "": [
+                _match("include/a.h", "left"),
+                _match("include/b.h", "right"),
+            ]
+        }
+    )
+    tool = GetTypeInfoTool(index)
+
+    result = tool.execute(
+        {"type_name": "State", "file_path": "include/wrong.h"}
+    )
+
+    assert result == {
+        "success": True,
+        "file_path_fallback": {
+            "reason": "file_path_not_matched",
+            "requested_file_path": "include/wrong.h",
+            "message": (
+                "The supplied file_path did not match the requested type. "
+                "The following matches are results from a query without file_path."
+            ),
+        },
+        "data": {
+            "match_count": 2,
+            "matches": [
+                {
+                    "name": "State",
+                    "kind": "struct",
+                    "file_path": "include/a.h",
+                    "start_line": 1,
+                    "end_line": 4,
+                    "full_definition": "struct State { int value; };",
+                },
+                {
+                    "name": "State",
+                    "kind": "struct",
+                    "file_path": "include/b.h",
+                    "start_line": 1,
+                    "end_line": 4,
+                    "full_definition": "struct State { int value; };",
+                },
+            ],
+        },
+    }
+    assert "query_scope" not in result["file_path_fallback"]
+    assert index.calls == [
+        ("State", "include/wrong.h"),
+        ("State", ""),
     ]
 
 
@@ -375,7 +433,31 @@ def test_runtime_type_info_negative_cache_is_scoped_by_file_path() -> None:
     assert other_file["success"] is True
     assert index.calls == [
         ("State", "include/a.h"),
+        ("State", ""),
         ("State", "include/b.h"),
+    ]
+
+
+def test_runtime_does_not_negative_cache_successful_file_path_fallback() -> None:
+    index = RecordingTypeIndex({"": [_match("include/b.h")]})
+    runtime = ToolsRuntime(
+        index,
+        EmptySnapshotStore(),
+        tools=[GetTypeInfoTool(index)],
+    )
+    arguments = {"type_name": "State", "file_path": "include/wrong.h"}
+
+    first = runtime.execute_tool("get_type_info", arguments)
+    second = runtime.execute_tool("get_type_info", arguments)
+
+    assert first["success"] is True
+    assert second["success"] is True
+    assert "cached_negative_result" not in second
+    assert index.calls == [
+        ("State", "include/wrong.h"),
+        ("State", ""),
+        ("State", "include/wrong.h"),
+        ("State", ""),
     ]
 
 

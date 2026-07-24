@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from zscope.retrieval.code_index import CodeIndex
+from zscope.snapshots.modeling_input import build_semantic_model_input
 from zscope.tools.code_retrieval import GetFunctionImplTool
 from zscope.tools.function_info import GetFunctionInfoTool
 from zscope.tools.policy import ToolPolicy
@@ -9,7 +10,15 @@ from zscope.tools.runtime import ToolsRuntime
 
 
 class FunctionInfoBackend:
-    def __init__(self, function_index, *, callers=None, callees=None, symbol_context=None):
+    def __init__(
+        self,
+        function_index,
+        *,
+        callers=None,
+        callees=None,
+        symbol_context=None,
+        type_context=None,
+    ):
         self.function_index = function_index
         self.callers = callers or []
         self.callees = callees or []
@@ -17,7 +26,9 @@ class FunctionInfoBackend:
             "referenced_globals": [],
             "referenced_macros": [],
         }
+        self.type_context = type_context or {"referenced_types": []}
         self.caller_calls = 0
+        self.type_context_calls = 0
 
     def build_function_index(self):
         return self.function_index
@@ -38,6 +49,18 @@ class FunctionInfoBackend:
             "referenced_macros": list(self.symbol_context.get("referenced_macros") or []),
         }
 
+    def get_function_type_context(
+        self,
+        func_name: str,
+        file_path: str = "",
+        start_line: int = 0,
+    ):
+        self.type_context_calls += 1
+        return {
+            key: [dict(item) for item in value] if isinstance(value, list) else dict(value)
+            for key, value in self.type_context.items()
+        }
+
     def get_method(self, name: str):
         return None
 
@@ -46,6 +69,29 @@ class FunctionInfoBackend:
 
     def close(self) -> None:
         pass
+
+
+class MacroSymbolBackend(FunctionInfoBackend):
+    def __init__(self, macro_definitions, symbol_definitions):
+        super().__init__({})
+        self.macro_definitions = macro_definitions
+        self.symbol_definitions = symbol_definitions
+        self.symbol_definition_queries = []
+
+    def get_macro_definitions(self, name: str, limit: int = 20):
+        return [
+            dict(record)
+            for record in self.macro_definitions.get(name, [])[:limit]
+        ]
+
+    def get_macro_definitions_batch(self, names):
+        requested = set(names)
+        self.symbol_definition_queries.append(sorted(requested))
+        return [
+            dict(record)
+            for record in self.symbol_definitions.get("macros", [])
+            if record.get("name") in requested
+        ]
 
 
 class EmptySnapshotStore:
@@ -118,6 +164,170 @@ def test_function_info_returns_all_same_name_matches_and_file_scopes(tmp_path) -
     }
     assert scoped[0]["file_path"].replace("\\", "/") == "src/b/shared.c"
     assert scoped[0]["index_name"] in {match["index_name"] for match in matches}
+    assert all(match["referenced_types"] == [] for match in matches)
+
+
+def test_function_info_normalizes_and_budgets_direct_type_context(tmp_path) -> None:
+    source = tmp_path / "src" / "caller.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int Caller(void) { return 0; }\n", encoding="utf-8")
+    header = tmp_path / "include" / "types.h"
+    header.parent.mkdir()
+    header.write_text(
+        "".join(f"typedef int Type{idx:02d};\n" for idx in range(30))
+        + "\n" * 69
+        + "typedef int ZSignature;\n",
+        encoding="utf-8",
+    )
+    types = [
+        {
+            "type_index_name": f"Type{idx:02d}@include/types.h:{idx + 1}-{idx + 1}",
+            "name": f"Type{idx:02d}",
+            "kind": "typedef",
+            "file_path": "include/types.h",
+            "start_line": idx + 1,
+            "end_line": idx + 1,
+            "full_definition": f"typedef int Type{idx:02d};",
+            "reference_kinds": ["local"],
+            "reference_lines": [1],
+            "definition_hash": "must-not-leak",
+            "dependency_depth": 3,
+        }
+        for idx in range(30)
+    ]
+    types.append(
+        {
+            "type_index_name": "ZSignature@include/types.h:100-100",
+            "name": "ZSignature",
+            "kind": "typedef",
+            "file_path": "include/types.h",
+            "start_line": 100,
+            "end_line": 100,
+            "full_definition": "typedef int ZSignature;",
+            "reference_kinds": ["parameter"],
+            "reference_lines": [1],
+        }
+    )
+    backend = FunctionInfoBackend(
+        {
+            "Caller": {
+                "name": "Caller",
+                "file": "src/caller.c",
+                "start_line": 1,
+                "end_line": 1,
+                "signature": "int Caller(void)",
+            }
+        },
+        type_context={"referenced_types": types},
+    )
+    index = _index(tmp_path, backend, "unified")
+
+    info = index.find_function_infos("Caller")[0]
+
+    assert len(info["referenced_types"]) == 30
+    assert any(
+        item["type_index_name"] == "ZSignature@include/types.h:100-100"
+        for item in info["referenced_types"]
+    )
+    assert info["referenced_types"][-1]["full_definition"] == (
+        "100 | typedef int ZSignature;\n"
+    )
+    assert all(
+        set(item)
+        == {
+            "type_index_name",
+            "kind",
+            "full_definition",
+            "reference_kinds",
+            "reference_lines",
+        }
+        for item in info["referenced_types"]
+    )
+    assert all("definition_hash" not in item for item in info["referenced_types"])
+    assert all("dependency_depth" not in item for item in info["referenced_types"])
+    assert info["referenced_types_truncation"] == {
+        "truncated": True,
+        "returned": 30,
+        "total": 31,
+        "definition_bytes_returned": sum(
+            len(item["full_definition"].encode("utf-8"))
+            for item in info["referenced_types"]
+        ),
+        "definition_bytes_limit": 32768,
+    }
+    assert backend.type_context_calls == 1
+
+
+def test_get_function_info_omits_code_index_type_fields() -> None:
+    match = {
+        "function_name": "Target",
+        "referenced_types": [{"type_index_name": "T@include/t.h:1-1"}],
+        "unresolved_referenced_types": [{"name": "U", "reason": "ambiguous"}],
+        "referenced_types_truncation": {"truncated": True, "returned": 1, "total": 2},
+    }
+
+    class StubIndex:
+        def find_function_infos(self, func_name, file_path=""):
+            assert func_name == "Target"
+            assert file_path == "src/target.c"
+            return [match]
+
+    result = GetFunctionInfoTool(StubIndex()).execute(
+        {"func_name": "Target", "file_path": "src/target.c"}
+    )
+
+    assert result["success"] is True
+    assert result["data"]["matches"] == [{"function_name": "Target"}]
+
+
+def test_get_function_info_retries_without_wrong_file_path_and_returns_all_matches() -> None:
+    matches = [
+        {
+            "function_name": "Target",
+            "index_name": "Target@src/a.c:1-2",
+            "file_path": "src/a.c",
+        },
+        {
+            "function_name": "Target",
+            "index_name": "Target@src/b.c:3-4",
+            "file_path": "src/b.c",
+        },
+    ]
+
+    class RecordingIndex:
+        def __init__(self):
+            self.calls = []
+
+        def find_function_infos(self, func_name, file_path=""):
+            self.calls.append((func_name, file_path))
+            return list(matches) if not file_path else []
+
+    index = RecordingIndex()
+
+    result = GetFunctionInfoTool(index).execute(
+        {"func_name": "Target", "file_path": "src/wrong.c"}
+    )
+
+    assert result == {
+        "success": True,
+        "file_path_fallback": {
+            "reason": "file_path_not_matched",
+            "requested_file_path": "src/wrong.c",
+            "message": (
+                "The supplied file_path did not match the requested function. "
+                "The following matches are results from a query without file_path."
+            ),
+        },
+        "data": {
+            "match_count": 2,
+            "matches": matches,
+        },
+    }
+    assert "query_scope" not in result["file_path_fallback"]
+    assert index.calls == [
+        ("Target", "src/wrong.c"),
+        ("Target", ""),
+    ]
 
 
 def test_function_info_preserves_svf_call_type_without_querying_callers(tmp_path) -> None:
@@ -161,10 +371,103 @@ def test_function_info_preserves_svf_call_type_without_querying_callers(tmp_path
 
         assert "callers" not in info
         assert backend.caller_calls == 0
-        assert [callee["call_type"] for callee in info["callees"]] == [
+        assert [callee["call_type"] for callee in info["external_callees"]] == [
             ["direct"],
             ["indirect"],
         ]
+
+
+def test_get_callees_filters_llvm_intrinsics_before_applying_limit(tmp_path) -> None:
+    source = tmp_path / "src" / "caller.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int Caller(void) { return 0; }\n", encoding="utf-8")
+    backend = FunctionInfoBackend(
+        {
+            "Caller": {
+                "name": "Caller",
+                "file": "src/caller.c",
+                "start_line": 1,
+                "end_line": 1,
+                "signature": "int Caller(void)",
+            }
+        },
+        callees=[
+            {"name": "llvm.memset.p0.i64", "source": "svf-ander"},
+            {"name": "project_func", "filename": "src/project.c"},
+            {"name": "llvm.memcpy.p0.p0.i64", "source": "svf-ander"},
+            {"name": "external_api"},
+            {"name": "project_func", "filename": "src/project.c"},
+        ],
+    )
+    index = _index(tmp_path, backend, "unified")
+
+    records = index.get_callees("Caller", limit=2)
+    impl = index.get_function_impl("Caller", warn_missing=False)
+
+    assert [record["name"] for record in records] == [
+        "project_func",
+        "external_api",
+    ]
+    assert impl is not None
+    assert impl["callees"] == ["project_func", "external_api"]
+
+
+def test_function_info_filters_llvm_intrinsics_before_classification_and_truncation(
+    tmp_path,
+) -> None:
+    source = tmp_path / "src" / "caller.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int Caller(void) { return 0; }\n", encoding="utf-8")
+    backend = FunctionInfoBackend(
+        {
+            "Caller": {
+                "name": "Caller",
+                "file": "src/caller.c",
+                "start_line": 1,
+                "end_line": 1,
+                "signature": "int Caller(void)",
+            },
+            "llvm.memset.p0.i64": {
+                "name": "llvm.memset.p0.i64",
+                "file": "src/generated.ll",
+                "start_line": 1,
+                "end_line": 1,
+                "signature": "void llvm.memset.p0.i64(...)",
+            },
+        },
+        callees=[
+            {
+                "name": f"external_{idx:02d}",
+                "lineNumber": idx + 1,
+                "call_type": "direct",
+            }
+            for idx in range(20)
+        ]
+        + [
+            {
+                "name": "llvm.memset.p0.i64",
+                "call_file": "src/caller.c",
+                "call_line": 0,
+                "source": "svf-ander",
+            },
+            {
+                "name": "llvm.memcpy.p0.p0.i64",
+                "call_file": "src/caller.c",
+                "call_line": 0,
+                "source": "svf-ander",
+            },
+        ],
+    )
+    index = _index(tmp_path, backend, "unified")
+
+    info = index.find_function_infos("Caller")[0]
+
+    assert info["project_callees"] == []
+    assert [item["callee_index_name"] for item in info["external_callees"]] == [
+        f"external_{idx:02d}" for idx in range(20)
+    ]
+    assert "project_callees_truncation" not in info
+    assert "external_callees_truncation" not in info
 
 
 def test_function_info_aggregates_callee_callsites(tmp_path) -> None:
@@ -212,7 +515,8 @@ def test_function_info_aggregates_callee_callsites(tmp_path) -> None:
     info = index.find_function_infos("Caller")[0]
 
     assert "callers" not in info
-    assert info["callees"] == [
+    assert info["project_callees"] == []
+    assert info["external_callees"] == [
         {
             "callee_index_name": "OtherTarget",
             "callsite_lines": [60],
@@ -269,13 +573,15 @@ def test_function_info_aggregates_direct_and_indirect_types_by_callee(tmp_path) 
 
     info = index.find_function_infos("Caller")[0]
 
-    assert info["callees"] == [
+    assert info["project_callees"] == [
         {
             "callee_index_name": "Target@src/target.c:1-1",
-            "callsite_lines": [10, 20],
-            "call_type": ["direct", "indirect"],
-        }
+                "callsite_lines": [10, 20],
+                "call_type": ["direct", "indirect"],
+                "is_static": False,
+            }
     ]
+    assert info["external_callees"] == []
 
 
 def test_function_info_downgrades_call_type_to_direct_for_clang_backends(tmp_path) -> None:
@@ -307,13 +613,19 @@ def test_function_info_downgrades_call_type_to_direct_for_clang_backends(tmp_pat
 
         info = index.find_function_infos("Caller")[0]
 
-        assert info["callees"][0]["call_type"] == ["direct"]
+        assert info["external_callees"][0]["call_type"] == ["direct"]
 
 
 def test_function_info_applies_fixed_limits_and_independent_truncation(tmp_path) -> None:
     source = tmp_path / "src" / "caller.c"
+    macros = tmp_path / "include" / "macros.h"
     source.parent.mkdir(parents=True)
+    macros.parent.mkdir(parents=True)
     source.write_text("int Caller(void) { return 0; }\n", encoding="utf-8")
+    macros.write_text(
+        "".join(f"#define MACRO_{idx:02d} {idx}\n" for idx in range(51)),
+        encoding="utf-8",
+    )
     backend = FunctionInfoBackend(
         {
             "Caller": {
@@ -356,7 +668,7 @@ def test_function_info_applies_fixed_limits_and_independent_truncation(tmp_path)
                     "is_function_like": False,
                     "reference_lines": [idx + 20],
                 }
-                for idx in range(31)
+                for idx in range(51)
             ],
         },
     )
@@ -364,10 +676,11 @@ def test_function_info_applies_fixed_limits_and_independent_truncation(tmp_path)
 
     info = index.find_function_infos("Caller")[0]
 
-    assert len(info["callees"]) == 30
-    assert info["callees_truncation"] == {
+    assert info["project_callees"] == []
+    assert len(info["external_callees"]) == 20
+    assert info["external_callees_truncation"] == {
         "truncated": True,
-        "returned": 30,
+        "returned": 20,
         "total": 35,
     }
     assert len(info["referenced_globals"]) == 50
@@ -389,18 +702,21 @@ def test_function_info_applies_fixed_limits_and_independent_truncation(tmp_path)
         "returned": 50,
         "total": 52,
     }
-    assert len(info["referenced_macros"]) == 30
+    assert len(info["referenced_macros"]) == 50
     assert info["referenced_macros_truncation"] == {
         "truncated": True,
-        "returned": 30,
-        "total": 31,
+        "returned": 50,
+        "total": 51,
     }
 
 
 def test_function_info_omits_truncation_for_untruncated_arrays(tmp_path) -> None:
     source = tmp_path / "src" / "caller.c"
+    macros = tmp_path / "include" / "macros.h"
     source.parent.mkdir(parents=True)
+    macros.parent.mkdir(parents=True)
     source.write_text("int Caller(void) { return 0; }\n", encoding="utf-8")
+    macros.write_text("#define ONLY_MACRO 1\n", encoding="utf-8")
     backend = FunctionInfoBackend(
         {
             "Caller": {
@@ -429,7 +745,8 @@ def test_function_info_omits_truncation_for_untruncated_arrays(tmp_path) -> None
 
     info = index.find_function_infos("Caller")[0]
 
-    assert "callees_truncation" not in info
+    assert "project_callees_truncation" not in info
+    assert "external_callees_truncation" not in info
     assert "referenced_globals_truncation" not in info
     assert "referenced_macros_truncation" not in info
 
@@ -456,13 +773,15 @@ def test_function_info_regex_backend_returns_exact_symbol_context(tmp_path) -> N
 
     info = index.find_function_infos("update")[0]
 
-    assert info["callees"] == [
+    assert info["project_callees"] == [
         {
             "callee_index_name": "helper@demo.c:3-3",
-            "callsite_lines": [6],
-            "call_type": ["direct"],
-        }
+                "callsite_lines": [6],
+                "call_type": ["direct"],
+                "is_static": False,
+            }
     ]
+    assert info["external_callees"] == []
     assert info["referenced_globals"][0]["name"] == "g_state"
     assert set(info["referenced_globals"][0]) == {
         "name",
@@ -477,8 +796,91 @@ def test_function_info_regex_backend_returns_exact_symbol_context(tmp_path) -> N
     }
     assert info["referenced_globals"][0]["access"] == "read_write"
     assert info["referenced_globals"][0]["reference_lines"] == [6, 8]
-    assert info["referenced_macros"][0]["name"] == "ENABLED"
+    assert info["referenced_macros"][0]["macro_index_name"] == "ENABLED@demo.c:1-1"
+    assert info["referenced_macros"][0]["definition"] == "1 | #define ENABLED 1\n"
     assert info["referenced_macros"][0]["reference_lines"] == [5]
+
+
+def test_function_info_regex_backend_resolves_only_direct_visible_types(tmp_path) -> None:
+    source = tmp_path / "src" / "plugin.c"
+    header = tmp_path / "include" / "types.h"
+    source.parent.mkdir(parents=True)
+    header.parent.mkdir(parents=True)
+    header.write_text(
+        "typedef struct Plugin { int id; } Plugin;\n"
+        "typedef struct PluginRegistry { Plugin *plugins; } PluginRegistry;\n",
+        encoding="utf-8",
+    )
+    source.write_text(
+        '#include "../include/types.h"\n'
+        "int register_plugin(PluginRegistry *registry) {\n"
+        "    Plugin *plugin = (Plugin *)0;\n"
+        "    return registry->plugins != plugin;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    index = CodeIndex(
+        tmp_path,
+        source_root=tmp_path,
+        indexing_config=SimpleNamespace(backend="regex"),
+    )
+
+    info = index.find_function_infos("register_plugin")[0]
+
+    assert [item["type_index_name"] for item in info["referenced_types"]] == [
+        "Plugin@include/types.h:1-1",
+        "PluginRegistry@include/types.h:2-2",
+    ]
+    by_identity = {
+        item["type_index_name"]: item for item in info["referenced_types"]
+    }
+    assert by_identity["Plugin@include/types.h:1-1"]["reference_kinds"] == [
+        "local",
+        "cast",
+    ]
+    assert by_identity["PluginRegistry@include/types.h:2-2"]["reference_kinds"] == [
+        "parameter",
+        "member_access",
+    ]
+    assert by_identity["Plugin@include/types.h:1-1"]["full_definition"] == (
+        "1 | typedef struct Plugin { int id; } Plugin;\n"
+    )
+    assert "unresolved_referenced_types" not in info
+
+
+def test_function_info_classifies_static_functions_and_function_like_macros(tmp_path) -> None:
+    source = tmp_path / "demo.c"
+    source.write_text(
+        "#define WRAP(value) helper(value)\n"
+        "static int helper(int value) { return value; }\n"
+        "int caller(int value) { return WRAP(value) + helper(value); }\n",
+        encoding="utf-8",
+    )
+    index = CodeIndex(
+        tmp_path,
+        source_root=tmp_path,
+        indexing_config=SimpleNamespace(backend="regex"),
+    )
+
+    info = index.find_function_infos("caller")[0]
+
+    assert info["external_callees"] == []
+    assert info["project_callees"] == [
+        {
+            "callee_index_name": "helper@demo.c:2-2",
+            "callsite_lines": [3],
+            "call_type": ["direct"],
+            "is_static": True,
+        },
+    ]
+    assert info["referenced_macros"] == [
+        {
+            "macro_index_name": "WRAP@demo.c:1-1",
+            "definition": "1 | #define WRAP(value) helper(value)\n",
+            "is_function_like": True,
+            "reference_lines": [3],
+        }
+    ]
 
 
 def test_function_tools_return_is_static_for_project_functions_only(tmp_path) -> None:
@@ -598,11 +1000,19 @@ def test_get_function_info_tool_and_runtime_return_match_count(tmp_path) -> None
     assert tool_result["data"]["match_count"] == 1
     assert tool_result["data"]["matches"][0]["index_name"] == "Target@src/target.c:1-1"
     assert set(properties) == {"func_name", "file_path"}
-    assert "not exhaustive" in tool_schema["description"]
-    assert "not exhaustive" in runtime_schema["description"]
+    assert "does not include referenced" in tool_schema["description"]
+    assert "does not include referenced" in runtime_schema["description"]
     assert "callers" not in tool_result["data"]["matches"][0]
-    assert tool_result["data"]["matches"][0]["referenced_globals"] == []
-    assert tool_result["data"]["matches"][0]["referenced_macros"] == []
+    for field in (
+        "referenced_globals",
+        "referenced_macros",
+        "referenced_types",
+        "referenced_globals_truncation",
+        "referenced_macros_truncation",
+        "referenced_types_truncation",
+        "unresolved_referenced_types",
+    ):
+        assert field not in tool_result["data"]["matches"][0]
     assert runtime_result["success"] is True
     assert runtime_result["data"]["match_count"] == 1
 
@@ -647,28 +1057,256 @@ def test_get_function_info_returns_function_like_macro_context(tmp_path) -> None
             "2 |     alloc(sz) \\\n"
             "3 |     + GLOBAL_LIMIT\n"
         ),
-        "callees": [
+        "project_callees": [],
+        "external_callees": [
             {
                 "callee_index_name": "alloc",
                 "callsite_lines": [2],
                 "call_type": ["direct"],
             }
         ],
-        "referenced_globals": [],
-        "referenced_macros": [
-            {
-                "name": "GLOBAL_LIMIT",
-                "file_path": "include/macros.h",
-                "line": 4,
-                "definition": "#define GLOBAL_LIMIT 8\n",
-                "is_function_like": False,
-                "reference_lines": [3],
-            }
-        ],
     }
     assert runtime_result == result
-    assert index.find_function_infos(match["index_name"]) == [match]
+    raw_match = index.find_function_infos(match["index_name"])[0]
+    assert raw_match["referenced_macros"] == [
+        {
+            "macro_index_name": "GLOBAL_LIMIT@include/macros.h:4-4",
+            "definition": "4 | #define GLOBAL_LIMIT 8\n",
+            "is_function_like": False,
+            "reference_lines": [3],
+        }
+    ]
+    for field in (
+        "referenced_globals",
+        "referenced_macros",
+        "referenced_types",
+        "referenced_globals_truncation",
+        "referenced_macros_truncation",
+        "referenced_types_truncation",
+        "unresolved_referenced_types",
+    ):
+        assert field not in match
     assert index.find_function_infos("GLOBAL_LIMIT") == []
+
+
+def test_backend_macro_symbol_context_uses_regex_candidates_and_db_definitions(
+    tmp_path,
+) -> None:
+    source = tmp_path / "src" / "macro.c"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "#define TARGET(arg) do { \\\n"
+        "    UNLOCK(&g_lock); \\\n"
+        "    consume((arg), OBJECT_LIMIT, NOT_CALLED, \"GHOST_GLOBAL\"); \\\n"
+        "    AMBIG(); /* GHOST_MACRO */ \\\n"
+        "} while (0)\n"
+        "static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;\n",
+        encoding="utf-8",
+    )
+    include = tmp_path / "include"
+    include.mkdir()
+    common_lines = ["\n"] * 42
+    common_lines[33] = "#define UNLOCK(mutex) unlock_impl(mutex)\n"
+    common_lines[39] = "#define OBJECT_LIMIT 64\n"
+    common_lines[40] = "#define NOT_CALLED() 1\n"
+    common_lines[41] = "#define GHOST_MACRO 1\n"
+    (include / "common.h").write_text("".join(common_lines), encoding="utf-8")
+    (include / "left.h").write_text("#define AMBIG() left_impl()\n", encoding="utf-8")
+    (include / "right.h").write_text("#define AMBIG() right_impl()\n", encoding="utf-8")
+    macro_definitions = {
+        "TARGET": [
+            {
+                "name": "TARGET",
+                "file_path": "src/macro.c",
+                "line": 1,
+                "definition": source.read_text(encoding="utf-8").split(
+                    "static pthread_mutex_t", 1
+                )[0],
+                "is_function_like": 1,
+            }
+        ],
+        "UNLOCK": [
+            {
+                "name": "UNLOCK",
+                "file_path": "include/common.h",
+                "line": 34,
+                "definition": "#define UNLOCK(mutex) unlock_impl(mutex)\n",
+                "is_function_like": 1,
+            }
+        ],
+        "AMBIG": [
+            {
+                "name": "AMBIG",
+                "file_path": "include/left.h",
+                "line": 1,
+                "definition": "#define AMBIG() left_impl()\n",
+                "is_function_like": 1,
+            },
+            {
+                "name": "AMBIG",
+                "file_path": "include/right.h",
+                "line": 1,
+                "definition": "#define AMBIG() right_impl()\n",
+                "is_function_like": 1,
+            },
+        ],
+    }
+    symbol_definitions = {
+        "globals": [
+            {
+                "name": "g_lock",
+                "type_str": "pthread_mutex_t",
+                "file_path": "src/macro.c",
+                "line": 6,
+                "storage_class": "static",
+                "qualifiers": "",
+                "initializer": "PTHREAD_MUTEX_INITIALIZER",
+            },
+            {
+                "name": "g_lock",
+                "type_str": "pthread_mutex_t",
+                "file_path": "src/other.c",
+                "line": 10,
+                "storage_class": "static",
+                "qualifiers": "",
+                "initializer": "",
+            },
+            {
+                "name": "GHOST_GLOBAL",
+                "type_str": "int",
+                "file_path": "src/macro.c",
+                "line": 7,
+                "storage_class": "static",
+            },
+        ],
+        "macros": [
+            *macro_definitions["UNLOCK"],
+            {
+                "name": "OBJECT_LIMIT",
+                "file_path": "include/common.h",
+                "line": 40,
+                "definition": "#define OBJECT_LIMIT 64\n",
+                "is_function_like": 0,
+            },
+            {
+                "name": "NOT_CALLED",
+                "file_path": "include/common.h",
+                "line": 41,
+                "definition": "#define NOT_CALLED() 1\n",
+                "is_function_like": 1,
+            },
+            *macro_definitions["AMBIG"],
+            {
+                "name": "GHOST_MACRO",
+                "file_path": "include/common.h",
+                "line": 42,
+                "definition": "#define GHOST_MACRO 1\n",
+                "is_function_like": 0,
+            },
+        ],
+    }
+    backend = MacroSymbolBackend(macro_definitions, symbol_definitions)
+    index = _index(tmp_path, backend, "unified")
+
+    info = index.find_function_infos("TARGET")[0]
+    semantic_input = build_semantic_model_input(
+        index,
+        "TARGET",
+        index_name="TARGET@src/macro.c:1-5",
+        file_path="src/macro.c",
+        start_line=1,
+    )
+
+    assert info["referenced_globals"] == []
+    assert info["referenced_macros"] == [
+        {
+            "macro_index_name": "OBJECT_LIMIT@include/common.h:40-40",
+            "definition": "40 | #define OBJECT_LIMIT 64\n",
+            "is_function_like": False,
+            "reference_lines": [3],
+        },
+        {
+            "macro_index_name": "UNLOCK@include/common.h:34-34",
+            "definition": "34 | #define UNLOCK(mutex) unlock_impl(mutex)\n",
+            "is_function_like": True,
+            "reference_lines": [2],
+        },
+    ]
+    assert semantic_input["referenced_globals"] == []
+    assert semantic_input["referenced_macros"] == info["referenced_macros"]
+    assert "UNLOCK@include/common.h:34-34" not in {
+        item["callee_index_name"] for item in info["project_callees"]
+    }
+    assert all("GHOST" not in name for name in backend.symbol_definition_queries[0])
+
+
+def test_backend_macro_symbol_context_truncates_only_resolved_macros(tmp_path) -> None:
+    source = tmp_path / "many.h"
+    macros = tmp_path / "macros.h"
+    names = [f"MACRO_{idx:02d}" for idx in range(51)]
+    source.write_text(
+        f"#define MANY() ({' + '.join(names + ['AMBIGUOUS'])})\n",
+        encoding="utf-8",
+    )
+    macros.write_text(
+        "".join(f"#define {name} {idx}\n" for idx, name in enumerate(names)),
+        encoding="utf-8",
+    )
+    (tmp_path / "left.h").write_text("#define AMBIGUOUS 1\n", encoding="utf-8")
+    (tmp_path / "right.h").write_text("#define AMBIGUOUS 1\n", encoding="utf-8")
+    macro_definitions = {
+        "MANY": [
+            {
+                "name": "MANY",
+                "file_path": "many.h",
+                "line": 1,
+                "definition": source.read_text(encoding="utf-8"),
+                "is_function_like": 1,
+            }
+        ]
+    }
+    symbol_definitions = {
+        "globals": [],
+        "macros": [
+            {
+                "name": name,
+                "file_path": "macros.h",
+                "line": idx + 1,
+                "definition": f"#define {name} {idx}\n",
+                "is_function_like": 0,
+            }
+            for idx, name in enumerate(names)
+        ]
+        + [
+            {
+                "name": "AMBIGUOUS",
+                "file_path": file_path,
+                "line": 1,
+                "definition": "#define AMBIGUOUS 1\n",
+                "is_function_like": 0,
+            }
+            for file_path in ("left.h", "right.h")
+        ],
+    }
+    index = _index(
+        tmp_path,
+        MacroSymbolBackend(macro_definitions, symbol_definitions),
+        "unified",
+    )
+
+    info = index.find_function_infos("MANY")[0]
+
+    assert info["referenced_globals"] == []
+    assert len(info["referenced_macros"]) == 50
+    assert info["referenced_macros_truncation"] == {
+        "truncated": True,
+        "returned": 50,
+        "total": 51,
+    }
+    assert all(
+        not item["macro_index_name"].startswith("AMBIGUOUS@")
+        for item in info["referenced_macros"]
+    )
 
 
 def test_get_function_info_returns_all_macro_matches_and_file_scopes(tmp_path) -> None:
@@ -779,9 +1417,11 @@ def test_get_function_info_prefers_backend_macro_facts(tmp_path, monkeypatch) ->
         "is_static",
         "is_macro",
         "code",
-        "callees",
+        "project_callees",
+        "external_callees",
         "referenced_globals",
         "referenced_macros",
+        "referenced_types",
     }
 
 
@@ -954,9 +1594,8 @@ def test_get_function_info_returns_configured_external_function(tmp_path) -> Non
         "end_line": 0,
         "signature": "external_api(...)",
         "code": impl_result["data"]["code"],
-        "callees": [],
-        "referenced_globals": [],
-        "referenced_macros": [],
+        "project_callees": [],
+        "external_callees": [],
         "is_external": True,
     }
     assert "is_static" not in match

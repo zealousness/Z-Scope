@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Callable, Dict, List, Optional
 
 from ...common.issue_identity import canonical_issue_key, flatten_issue_text, parse_issue_location
@@ -364,19 +365,48 @@ def compact_snapshot(snapshot: Optional[Dict[str, Any]]) -> Optional[Dict[str, A
         "return_values": snapshot.get("return_values"),
         "effects": snapshot.get("effects"),
         "error_handling": snapshot.get("error_handling"),
-        "callees": snapshot.get("callees"),
+        "project_callees": snapshot.get("project_callees"),
+        "external_callees": snapshot.get("external_callees"),
         "referenced_globals": snapshot.get("referenced_globals"),
         "referenced_macros": snapshot.get("referenced_macros"),
+        "referenced_types": _compact_referenced_types_for_evidence(
+            snapshot.get("referenced_types")
+        ),
         "suspicious_points": snapshot.get("suspicious_points"),
     }
     for field in (
-        "callees_truncation",
+        "project_callees_truncation",
+        "external_callees_truncation",
         "referenced_globals_truncation",
         "referenced_macros_truncation",
+        "unresolved_referenced_types",
+        "referenced_types_truncation",
     ):
         if field in snapshot:
             compact[field] = snapshot[field]
     return compact
+
+
+def _compact_referenced_types_for_evidence(
+    value: Any,
+    definition_bytes_limit: int = 16 * 1024,
+) -> List[Dict[str, Any]]:
+    """Keep every type identity while bounding definition text in validator prompts."""
+    result: List[Dict[str, Any]] = []
+    used = 0
+    for raw_item in value if isinstance(value, list) else []:
+        if not isinstance(raw_item, dict):
+            continue
+        item = deepcopy(raw_item)
+        definition = str(item.get("full_definition") or "")
+        definition_bytes = len(definition.encode("utf-8"))
+        if used + definition_bytes <= definition_bytes_limit:
+            used += definition_bytes
+        else:
+            item.pop("full_definition", None)
+            item["definition_omitted"] = "validation_evidence_byte_budget"
+        result.append(item)
+    return result
 
 
 def _entry_root_reachable(evidence_pack: Dict[str, Any]) -> bool:

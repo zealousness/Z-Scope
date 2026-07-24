@@ -163,6 +163,10 @@ class ParallelAnalyzer:
             )
             if self.base_config.analysis.enable_global_model:
                 self._global_modeling_succeeded = self._run_global_modeling(entries)
+                if not self._global_modeling_succeeded:
+                    raise RuntimeError(
+                        "Global semantic modeling did not complete; entry analysis was not started."
+                    )
 
         scheduled_entries = self._prioritize_entries_for_execution(entries)
         
@@ -255,7 +259,8 @@ class ParallelAnalyzer:
             self._last_global_model_stats = stats.to_dict()
             logger.info(
                 "[global-model] end entries=%d reachable=%d modeled=%d cache_hits=%d "
-                "deterministic=%d llm=%d failed=%d duration=%.2fs",
+                "deterministic=%d llm=%d failed=%d unresolved_entries=%d "
+                "reconciled=%d reconcile_failed=%d duration=%.2fs",
                 len(entries),
                 stats.reachable_functions,
                 stats.modeled_functions,
@@ -263,14 +268,24 @@ class ParallelAnalyzer:
                 stats.deterministic_snapshot_count,
                 stats.llm_snapshot_count,
                 stats.failed_functions,
+                stats.unresolved_entry_functions,
+                stats.reconciled_functions,
+                stats.reconciliation_failures,
                 time.time() - started,
             )
+            if not stats.stage_complete:
+                logger.error(
+                    "[global-model] stage gate rejected entry fan-out "
+                    "failed=%d unresolved_entries=%d reconcile_failed=%d",
+                    stats.failed_functions,
+                    stats.unresolved_entry_functions,
+                    stats.reconciliation_failures,
+                )
+                return False
             return True
         except Exception as exc:
             self._last_global_model_stats = {"error": str(exc)}
-            logger.exception(
-                "[global-model] failed before entry fan-out; falling back to per-entry modeling."
-            )
+            logger.exception("[global-model] failed before entry fan-out.")
             return False
 
     @staticmethod
@@ -568,11 +583,6 @@ class ParallelAnalyzer:
 
         config = copy(self.base_config)
         config.project = project
-        if config.analysis.enable_global_model and not self._global_modeling_succeeded:
-            analysis = copy(config.analysis)
-            analysis.enable_global_model = False
-            config.analysis = analysis
-
         # Keep entry-specific focus separate from the configured task so skill
         # routing remains driven by the global vulnerability scope.
         return config

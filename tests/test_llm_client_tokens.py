@@ -71,6 +71,271 @@ def test_run_conversation_with_tools_accumulates_api_tokens(monkeypatch) -> None
     assert result["context_tokens"] < result["cumulative_total_tokens"]
 
 
+def test_run_conversation_stops_on_valid_terminal_tool(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+    )
+    calls = []
+    executed = []
+
+    def fake_chat_completion(messages, **kwargs):
+        calls.append((list(messages), kwargs))
+        if len(calls) == 1:
+            tool_name = "lookup"
+            arguments = {"name": "demo"}
+        else:
+            tool_name = "emit_result"
+            arguments = {"type": "result", "value": 7}
+        return {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": f"call_{len(calls)}",
+                                "type": "function",
+                                "function": {
+                                    "name": tool_name,
+                                    "arguments": json.dumps(arguments),
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+        }
+
+    monkeypatch.setattr(client, "chat_completion", fake_chat_completion)
+    result = client.run_conversation_with_tools(
+        messages=[{"role": "user", "content": "start"}],
+        tools_schema=[
+            {"type": "function", "function": {"name": "lookup", "parameters": {}}},
+            {"type": "function", "function": {"name": "emit_result", "parameters": {}}},
+        ],
+        tool_executor=lambda name, args: executed.append((name, args)) or {"success": True},
+        terminal_tool_name="emit_result",
+        terminal_tool_handler=lambda payload: {
+            "valid": payload.get("type") == "result",
+            "payload": payload,
+        },
+        terminal_tool_required=True,
+        max_iterations=4,
+    )
+
+    assert executed == [("lookup", {"name": "demo"})]
+    assert result["terminal_tool_payload"] == {"type": "result", "value": 7}
+    assert result["terminal_tool_valid"] is True
+    assert result["tool_call_count"] == 1
+    assert result["terminal_tool_call_count"] == 1
+    assert result["final_tool_call_count"] == 1
+    assert result["api_call_count"] == 2
+    assert result["cumulative_total_tokens"] == 28
+
+
+def test_invalid_terminal_tool_repairs_in_same_conversation(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+    )
+    calls = []
+
+    def fake_chat_completion(messages, **kwargs):
+        calls.append((list(messages), kwargs))
+        payload = {"value": 1} if len(calls) == 1 else {"type": "result", "value": 1}
+        return {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": f"call_{len(calls)}",
+                                "type": "function",
+                                "function": {
+                                    "name": "emit_result",
+                                    "arguments": json.dumps(payload),
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+        }
+
+    monkeypatch.setattr(client, "chat_completion", fake_chat_completion)
+    result = client.run_conversation_with_tools(
+        messages=[{"role": "user", "content": "start"}],
+        tools_schema=[
+            {"type": "function", "function": {"name": "emit_result", "parameters": {}}},
+        ],
+        tool_executor=lambda name, args: (_ for _ in ()).throw(
+            AssertionError(f"terminal tool executed as normal tool: {name} {args}")
+        ),
+        terminal_tool_name="emit_result",
+        terminal_tool_handler=lambda payload: {
+            "valid": payload.get("type") == "result",
+            "payload": payload,
+            "error": "missing type",
+        },
+        terminal_tool_required=True,
+        max_iterations=3,
+    )
+
+    second_messages = calls[1][0]
+    terminal_errors = [
+        message for message in second_messages
+        if message.get("role") == "tool" and message.get("terminal_tool_result")
+    ]
+    assert len(terminal_errors) == 1
+    assert "missing type" in terminal_errors[0]["content"]
+    assert result["terminal_tool_valid"] is True
+    assert result["terminal_tool_call_count"] == 2
+    assert result["tool_call_count"] == 0
+
+
+def test_terminal_tool_required_reprompts_prose_until_budget(monkeypatch) -> None:
+    client = LLMClient(api_key="test", base_url="http://example.invalid", models=["unit-model"])
+    calls = []
+
+    def fake_chat_completion(messages, **kwargs):
+        calls.append(list(messages))
+        return {
+            "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "draft"}}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+        }
+
+    monkeypatch.setattr(client, "chat_completion", fake_chat_completion)
+    result = client.run_conversation_with_tools(
+        messages=[{"role": "user", "content": "start"}],
+        tools_schema=[{"type": "function", "function": {"name": "emit_result", "parameters": {}}}],
+        tool_executor=lambda name, args: {"success": True},
+        terminal_tool_name="emit_result",
+        terminal_tool_required=True,
+        max_iterations=3,
+    )
+
+    assert len(calls) == 3
+    assert result["terminal_tool_valid"] is False
+    assert result.get("truncated", False) is False
+    assert result["terminal_tool_call_count"] == 0
+
+
+def test_xml_terminal_invoke_uses_terminal_handler(monkeypatch) -> None:
+    client = LLMClient(api_key="test", base_url="http://example.invalid", models=["unit-model"])
+
+    def fake_chat_completion(messages, **kwargs):
+        return {
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": '<invoke name="emit_result"><parameter name="value">7</parameter></invoke>',
+                },
+            }],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+        }
+
+    monkeypatch.setattr(client, "chat_completion", fake_chat_completion)
+    result = client.run_conversation_with_tools(
+        messages=[{"role": "user", "content": "start"}],
+        tools_schema=[{"type": "function", "function": {"name": "emit_result", "parameters": {}}}],
+        tool_executor=lambda name, args: (_ for _ in ()).throw(AssertionError("not normal")),
+        terminal_tool_name="emit_result",
+        terminal_tool_handler=lambda payload: {"valid": payload == {"value": 7}, "payload": payload},
+        terminal_tool_required=True,
+        max_iterations=3,
+    )
+
+    assert result["terminal_tool_payload"] == {"value": 7}
+    assert result["terminal_tool_valid"] is True
+    assert result["terminal_tool_call_count"] == 1
+
+
+def test_mixed_terminal_and_regular_calls_reject_terminal_then_continue(monkeypatch) -> None:
+    client = LLMClient(api_key="test", base_url="http://example.invalid", models=["unit-model"])
+    calls = []
+    executed = []
+
+    def fake_chat_completion(messages, **kwargs):
+        calls.append(list(messages))
+        if len(calls) == 1:
+            tool_calls = [
+                {"id": "lookup", "type": "function", "function": {"name": "lookup", "arguments": "{}"}},
+                {"id": "emit", "type": "function", "function": {"name": "emit_result", "arguments": json.dumps({"value": 7})}},
+            ]
+        else:
+            tool_calls = [{"id": "emit2", "type": "function", "function": {"name": "emit_result", "arguments": json.dumps({"value": 7})}}]
+        return {
+            "choices": [{"finish_reason": "tool_calls", "message": {"role": "assistant", "content": "", "tool_calls": tool_calls}}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+        }
+
+    monkeypatch.setattr(client, "chat_completion", fake_chat_completion)
+    result = client.run_conversation_with_tools(
+        messages=[{"role": "user", "content": "start"}],
+        tools_schema=[
+            {"type": "function", "function": {"name": "lookup", "parameters": {}}},
+            {"type": "function", "function": {"name": "emit_result", "parameters": {}}},
+        ],
+        tool_executor=lambda name, args: executed.append(name) or {"success": True},
+        terminal_tool_name="emit_result",
+        terminal_tool_handler=lambda payload: {"valid": payload == {"value": 7}, "payload": payload},
+        terminal_tool_required=True,
+        max_iterations=3,
+    )
+
+    assert executed == ["lookup"]
+    assert result["terminal_tool_valid"] is True
+    assert result["tool_call_count"] == 1
+    assert any(message.get("terminal_tool_result") for message in calls[1] if message.get("role") == "tool")
+
+
+def test_duplicate_terminal_calls_are_rejected_before_single_retry(monkeypatch) -> None:
+    client = LLMClient(api_key="test", base_url="http://example.invalid", models=["unit-model"])
+    calls = []
+
+    def fake_chat_completion(messages, **kwargs):
+        calls.append(list(messages))
+        count = 2 if len(calls) == 1 else 1
+        tool_calls = [
+            {
+                "id": f"emit_{len(calls)}_{index}",
+                "type": "function",
+                "function": {"name": "emit_result", "arguments": json.dumps({"value": 7})},
+            }
+            for index in range(count)
+        ]
+        return {
+            "choices": [{"finish_reason": "tool_calls", "message": {"role": "assistant", "content": "", "tool_calls": tool_calls}}],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+        }
+
+    monkeypatch.setattr(client, "chat_completion", fake_chat_completion)
+    result = client.run_conversation_with_tools(
+        messages=[{"role": "user", "content": "start"}],
+        tools_schema=[{"type": "function", "function": {"name": "emit_result", "parameters": {}}}],
+        tool_executor=lambda name, args: (_ for _ in ()).throw(AssertionError("not normal")),
+        terminal_tool_name="emit_result",
+        terminal_tool_handler=lambda payload: {"valid": True, "payload": payload},
+        terminal_tool_required=True,
+        max_iterations=3,
+    )
+
+    assert result["terminal_tool_valid"] is True
+    assert result["terminal_tool_call_count"] == 3
+    assert sum(1 for message in calls[1] if message.get("terminal_tool_result")) == 2
+
+
 def test_run_conversation_with_tools_compacts_old_tool_results(monkeypatch) -> None:
     client = LLMClient(
         api_key="test",

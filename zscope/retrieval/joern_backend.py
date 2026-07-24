@@ -157,6 +157,110 @@ class JoernBackend(CodeBackend):
             ]
         return matches
 
+    def get_function_type_context(
+        self,
+        func_name: str,
+        file_path: str = "",
+        start_line: int = 0,
+    ) -> Dict[str, Any]:
+        references = self._joern.get_function_type_references(func_name, file_path=file_path)
+        resolved: Dict[str, Dict[str, Any]] = {}
+        unresolved: Dict[tuple[str, str], Dict[str, Any]] = {}
+        for reference in references:
+            type_name = self._direct_type_name(str(reference.get("typeFullName") or ""))
+            if not type_name:
+                continue
+            reference_kind = str(reference.get("referenceKind") or "local")
+            reference_line = int(reference.get("lineNumber") or start_line or 0)
+            definitions = self.find_type_infos(type_name)
+            if len(definitions) != 1:
+                reason = "type_definition_not_found" if not definitions else "type_definition_ambiguous"
+                entry = unresolved.setdefault(
+                    (type_name, reason),
+                    {
+                        "name": type_name,
+                        "reference_kinds": [],
+                        "reference_lines": [],
+                        "reason": reason,
+                    },
+                )
+            else:
+                definition = definitions[0]
+                full_definition = str(definition.get("full_definition") or "")
+                if not full_definition:
+                    reason = "definition_incomplete"
+                    entry = unresolved.setdefault(
+                        (type_name, reason),
+                        {
+                            "name": type_name,
+                            "reference_kinds": [],
+                            "reference_lines": [],
+                            "reason": reason,
+                        },
+                    )
+                else:
+                    definition_file = str(
+                        definition.get("file_path") or definition.get("filename") or ""
+                    ).replace("\\", "/").lstrip("./")
+                    definition_start = int(
+                        definition.get("start_line") or definition.get("lineNumber") or 0
+                    )
+                    definition_end = int(
+                        definition.get("end_line")
+                        or definition.get("lineNumberEnd")
+                        or definition_start
+                    )
+                    identity = (
+                        f"{type_name}@{definition_file}:{definition_start}-{definition_end}"
+                    )
+                    entry = resolved.setdefault(
+                        identity,
+                        {
+                            "type_index_name": identity,
+                            "name": type_name,
+                            "kind": self._definition_kind(full_definition),
+                            "file_path": definition_file,
+                            "start_line": definition_start,
+                            "end_line": definition_end,
+                            "full_definition": full_definition,
+                            "reference_kinds": [],
+                            "reference_lines": [],
+                        },
+                    )
+            if reference_kind not in entry["reference_kinds"]:
+                entry["reference_kinds"].append(reference_kind)
+            if reference_line > 0 and reference_line not in entry["reference_lines"]:
+                entry["reference_lines"].append(reference_line)
+
+        referenced_types = sorted(resolved.values(), key=lambda item: item["type_index_name"])
+        unresolved_types = sorted(
+            unresolved.values(), key=lambda item: (item["name"], item["reason"])
+        )
+        for entry in referenced_types + unresolved_types:
+            entry["reference_kinds"] = sorted(entry["reference_kinds"])
+            entry["reference_lines"] = sorted(entry["reference_lines"])
+        result: Dict[str, Any] = {"referenced_types": referenced_types}
+        if unresolved_types:
+            result["unresolved_referenced_types"] = unresolved_types
+        return result
+
+    @staticmethod
+    def _direct_type_name(type_full_name: str) -> str:
+        clean = re.sub(r"\b(?:const|volatile|restrict|struct|union|enum|class)\b", " ", type_full_name)
+        clean = re.sub(r"[\[\]*&<>(),]", " ", clean)
+        identifiers = re.findall(r"[A-Za-z_]\w*", clean)
+        builtins = {
+            "void", "char", "signed", "unsigned", "short", "int", "long",
+            "float", "double", "bool", "size_t", "ssize_t",
+        }
+        identifiers = [item for item in identifiers if item not in builtins]
+        return identifiers[-1] if identifiers else ""
+
+    @staticmethod
+    def _definition_kind(full_definition: str) -> str:
+        match = re.search(r"\b(typedef|struct|union|enum|class)\b", full_definition)
+        return match.group(1) if match else "unknown"
+
     @staticmethod
     def _paths_match_type_file(stored_path: str, hint_path: str) -> bool:
         stored = str(stored_path or "").replace("\\", "/").strip().lstrip("./")

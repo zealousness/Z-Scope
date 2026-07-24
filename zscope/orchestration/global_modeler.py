@@ -21,7 +21,12 @@ from ..snapshots.policy import (
     is_trivial_function,
 )
 from ..snapshots.store import SnapshotStore
-from ..snapshots.modeling_input import SemanticModelInputError, build_semantic_model_input
+from ..snapshots.modeling_input import (
+    SemanticModelInputError,
+    build_semantic_model_input,
+    hydrate_project_callee_summaries,
+    hydrate_project_callee_summaries_from_map,
+)
 from ..tools.policy import ToolPolicy
 
 logger = logging.getLogger(__name__)
@@ -49,6 +54,11 @@ class GlobalModelStats:
     breadth_capped_edges: int = 0
     failed_functions: int = 0
     failed_dependencies: int = 0
+    unresolved_entry_functions: int = 0
+    reconciled_functions: int = 0
+    reconciliation_unchanged_functions: int = 0
+    reconciliation_failures: int = 0
+    unknown_project_callees: int = 0
     components: int = 0
     cyclic_components: int = 0
     total_context_tokens: int = 0
@@ -67,12 +77,26 @@ class GlobalModelStats:
             "breadth_capped_edges": self.breadth_capped_edges,
             "failed_functions": self.failed_functions,
             "failed_dependencies": self.failed_dependencies,
+            "unresolved_entry_functions": self.unresolved_entry_functions,
+            "reconciled_functions": self.reconciled_functions,
+            "reconciliation_unchanged_functions": self.reconciliation_unchanged_functions,
+            "reconciliation_failures": self.reconciliation_failures,
+            "unknown_project_callees": self.unknown_project_callees,
+            "stage_complete": self.stage_complete,
             "components": self.components,
             "cyclic_components": self.cyclic_components,
             "total_context_tokens": self.total_context_tokens,
             "duration_seconds": self.duration_seconds,
             "modeled_order": list(self.modeled_order),
         }
+
+    @property
+    def stage_complete(self) -> bool:
+        return (
+            self.failed_functions == 0
+            and self.unresolved_entry_functions == 0
+            and self.reconciliation_failures == 0
+        )
 
 
 @dataclass
@@ -161,6 +185,7 @@ class GlobalModeler:
             unresolved_external_callees=len(graph.unresolved),
             depth_capped_edges=graph.depth_capped_edges,
             breadth_capped_edges=graph.breadth_capped_edges,
+            unresolved_entry_functions=len(graph.entry_keys & graph.unresolved),
         )
         if not graph.impls:
             stats.duration_seconds = time.time() - started
@@ -222,22 +247,25 @@ class GlobalModeler:
                         if pending_children[parent_idx] == 0 and parent_idx not in done_components:
                             ready.append(parent_idx)
 
+        if stats.failed_functions == 0 and stats.unresolved_entry_functions == 0:
+            self._reconcile_project_callee_summaries(graph, stats)
+
         stats.duration_seconds = time.time() - started
         return stats
 
     def _collect_graph(self, entries: Sequence[FunctionEntry]) -> _Graph:
         graph = _Graph()
-        max_depth = int(self.config.analysis.max_premodel_depth)
-        max_callees = int(self.config.analysis.max_premodel_callees)
-        if max_depth == 0 or max_callees == 0:
-            return graph
-        callee_query_limit = max_callees + 1 if max_callees > 0 else 1_000_000
-
         queue: List[Tuple[FunctionKey, int]] = [
             (FunctionKey(entry.function_name, str(entry.file_path or "")), 0)
             for entry in entries
         ]
         graph.entry_keys = {key for key, _depth in queue}
+        max_depth = int(self.config.analysis.max_premodel_depth)
+        max_callees = int(self.config.analysis.max_premodel_callees)
+        if max_depth == 0 or max_callees == 0:
+            graph.unresolved.update(graph.entry_keys)
+            return graph
+        callee_query_limit = max_callees + 1 if max_callees > 0 else 1_000_000
         best_depth: Dict[FunctionKey, int] = {}
 
         while queue:
@@ -281,6 +309,71 @@ class GlobalModeler:
 
         self._canonicalize_graph_edges(graph)
         return graph
+
+    def _reconcile_project_callee_summaries(
+        self,
+        graph: _Graph,
+        stats: GlobalModelStats,
+    ) -> None:
+        summary_map: Dict[str, str] = {}
+        for impl in graph.impls.values():
+            index_name = str(impl.get("index_name") or "").strip()
+            snapshot = self.snapshot_store.load_snapshot(index_name) if index_name else None
+            summary = str(snapshot.get("summary") or "").strip() if snapshot else ""
+            if not index_name or not summary:
+                stats.reconciliation_failures += 1
+                logger.warning(
+                    "[snapshot-reconcile] summary map missing index_name=%s "
+                    "reason=global_summary_missing",
+                    index_name or "unknown",
+                )
+                continue
+            summary_map[index_name] = summary
+
+        if stats.reconciliation_failures:
+            return
+
+        for key, impl in sorted(graph.impls.items()):
+            try:
+                context = build_semantic_model_input(
+                    self.code_index,
+                    key.name,
+                    file_path=str(impl.get("file") or key.file_path or ""),
+                    index_name=str(impl.get("index_name") or ""),
+                    start_line=int(impl.get("start_line") or 0) or None,
+                    include_context=False,
+                )
+                context = hydrate_project_callee_summaries_from_map(
+                    context,
+                    summary_map,
+                )
+                stats.unknown_project_callees += sum(
+                    1
+                    for item in context.get("project_callees", [])
+                    if str(item.get("callee_summary") or "").strip() == "unknown"
+                )
+                status = self.snapshot_store.reconcile_project_callee_summaries(
+                    str(context["index_name"]),
+                    context,
+                )
+            except Exception as exc:
+                status = "failed"
+                logger.exception(
+                    "[snapshot-reconcile] global refresh failed key=%s error=%s",
+                    self._format_key(key),
+                    exc,
+                )
+            if status == "refreshed":
+                stats.reconciled_functions += 1
+            elif status == "unchanged":
+                stats.reconciliation_unchanged_functions += 1
+            else:
+                stats.reconciliation_failures += 1
+                logger.warning(
+                    "[snapshot-reconcile] global refresh incomplete key=%s status=%s",
+                    self._format_key(key),
+                    status,
+                )
 
     @staticmethod
     def _canonicalize_graph_edges(graph: _Graph) -> None:
@@ -346,6 +439,11 @@ class GlobalModeler:
                 index_name=str(impl.get("index_name") or ""),
                 start_line=int(impl.get("start_line") or 0) or None,
                 include_context=False,
+            )
+            context = hydrate_project_callee_summaries(
+                context,
+                self.code_index,
+                self.snapshot_store,
             )
         except SemanticModelInputError as exc:
             logger.warning(
@@ -414,6 +512,10 @@ class GlobalModeler:
             self.attach_contract(context, "semantic_modeler")
             response = self.semantic_agent_factory().run(context)
             metadata = response.metadata if response.metadata else {}
+            finalization_mode = str(metadata.get("finalization_mode") or "legacy")
+            terminal_tool = str(metadata.get("terminal_tool_name") or "")
+            terminal_valid = bool(metadata.get("terminal_tool_valid", False))
+            terminal_calls = int(metadata.get("terminal_tool_call_count", 0) or 0)
             context_tokens = int(
                 metadata.get("context_tokens", 0)
                 or metadata.get("total_tokens", 0)
@@ -428,9 +530,14 @@ class GlobalModeler:
                 )
                 logger.info(
                     "[snapshot-llm] completed context=global index_name=%s "
-                    "success=true context_tokens=%d",
+                    "success=true context_tokens=%d finalization_mode=%s "
+                    "terminal_tool=%s terminal_tool_valid=%s terminal_tool_call_count=%d",
                     index_name,
                     context_tokens,
+                    finalization_mode,
+                    terminal_tool or "none",
+                    terminal_valid,
+                    terminal_calls,
                 )
                 success = True
                 return "llm", context_tokens
@@ -439,9 +546,15 @@ class GlobalModeler:
             )
             logger.warning(
                 "[snapshot-llm] completed context=global index_name=%s "
-                "success=false context_tokens=%d reason=%s error=%s",
+                "success=false context_tokens=%d finalization_mode=%s "
+                "terminal_tool=%s terminal_tool_valid=%s terminal_tool_call_count=%d "
+                "reason=%s error=%s",
                 index_name,
                 context_tokens,
+                finalization_mode,
+                terminal_tool or "none",
+                terminal_valid,
+                terminal_calls,
                 failure_reason,
                 response.error,
             )

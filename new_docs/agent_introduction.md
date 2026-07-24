@@ -344,7 +344,7 @@ thread, sync_protocol, io, callback, global_state, registry, other
 
 ### 7.6 Callees
 
-预加载 callee 提供 identity、调用行和调用类型，LLM 负责补充 `callee_behavior`。
+预加载的 `project_callees` 提供 identity、调用行、调用类型和程序当前能够取得的 `callee_summary`。`callee_summary` 只逐字复用 canonical callee snapshot 的顶层 `summary`；缺失时为 `unknown`。Semantic Modeler 可以查看 unknown callee 的 snapshot 或代码以完善当前函数语义，但不负责生成或输出 callee summary。
 
 最终每个 callee 使用：
 
@@ -353,11 +353,12 @@ thread, sync_protocol, io, callback, global_state, registry, other
   "callee_index_name": "decode@src/decode.c:10-80",
   "callsite_lines": [65],
   "call_type": ["direct"],
-  "callee_behavior": "解析输入缓冲区并返回解码后的对象。"
+  "is_static": false,
+  "callee_summary": "解析输入缓冲区并返回解码后的对象。"
 }
 ```
 
-如果完整源码中出现 function info 未提供的新 callee，agent 使用相同字段输出，并在必要时通过工具解析 canonical identity。不能解析时不得伪造 identity 或行为。
+`project_callees` 已从 Semantic Modeler 的 LLM 输出 schema 完全移除；最终数组、调用边、static 标记和 summary 均由程序透传。该数组只包含真实项目函数，不包含 `is_macro` 字段；function-like macro 只由 `referenced_macros` 表达。全局建模成功后会冻结所有 current function snapshot 的顶层 summary，并执行一次不调用 LLM 的 program-only reconciliation，从而补齐自递归、互递归或并发顺序造成的暂时 unknown。`external_callees` 同样进入 prompt 作为只读 effect 证据，但不生成 summary，也不进入 LLM 输出。
 
 `call_type` 保持数组结构。同一 `callee_index_name` 聚合到 direct 和 indirect 两类调用边时返回 `["direct", "indirect"]`，不丢弃任一调用类型。
 
@@ -435,7 +436,7 @@ category 必须使用 schema enum。
       "callee_index_name": "decode@src/decode.c:10-80",
       "callsite_lines": [78],
       "call_type": ["direct"],
-      "callee_behavior": "解码请求数据并返回解析对象。"
+      "callee_summary": "解码请求数据并返回解析对象。"
     }
   ],
   "suspicious_points": []
@@ -517,3 +518,19 @@ LLM 调用前的稳定失败原因：
 - direct call 提取通常较可靠，函数指针和回调目标仍取决于 backend/SVF 能力。
 - agent 可以从完整源码补充新 callee，但当前主要依靠 prompt 约束，尚未对新增 callee 执行统一的程序化 callsite/identity 验证。
 - `is_valid_snapshot()` 对新 payload 要求完整 semantic field set，并保留 `type=function_snapshot` 的历史兼容入口；LLM 严格字段约束仍主要依赖 structured output schema，deterministic snapshot 由 policy shape checker 约束。
+## Project / External Callee 上下文
+
+Semantic Modeler 的预加载 metadata 将运行时调用目标分为 `project_callees` 与 `external_callees`，两侧都进入 prompt。程序复用 current project function snapshot 的顶层 `summary`；模型不生成 callee summary。可唯一解析的 function-like macro 不进入任一 callee 数组，而是通过 `referenced_macros` 的 `macro_index_name`、带绝对行号 definition、`is_function_like` 和 `reference_lines` 提供。程序原样保留 external identity、callsite 和 call type，且不为 external 生成 summary。当前不增加 snapshot 查询的 runtime allowlist，外部函数配置与查询策略待 `external_function.config` 接入后统一定义。
+
+## Referenced Types 程序上下文
+
+Semantic Modeler 的统一输入新增 required `referenced_types`。每项只表示目标函数 signature/body 直接引用的项目类型，包含编码了声明位置的 canonical `type_index_name`、kind、带绝对行号的完整源码定义、reference kinds 和 reference lines；不会递归展开类型定义内部依赖。`full_definition` 复用 `CodeIndex.get_file_snippet()` 的 `N | source` 格式，不再独立输出 name、file path 或行范围。
+
+可选字段：
+
+- `unresolved_referenced_types`：仅在非空时存在，记录无法唯一映射到项目定义的直接类型。
+- `referenced_types_truncation`：仅在 30 项、8 KiB 单项或 32 KiB 总定义预算实际触发时存在。
+
+这些字段全部由程序拥有：LLM final schema 不包含它们，模型伪造或修改同名字段不会影响最终 snapshot。完整定义已出现在 `referenced_types` 时，Semantic Modeler 不应再次调用 `get_type_info`；只有 unresolved、预算省略或目标源码中新发现的必要项目类型才允许查询。`get_type_info` 的参数、路径限定、fallback、返回 payload 和错误语义没有因本功能改变。
+
+SnapshotStore 使用独立 `type_context_hash` 跟踪类型 identity、定义、direct reference kinds/lines、unresolved 和 truncation。定义文本 hash 只在程序内部即时计算，不写入 snapshot 或 Prompt。类型上下文变化返回 `type_context_changed` 并重新执行语义建模，不能使用 callee-summary-only patch。

@@ -922,3 +922,484 @@
 - 完整回归通过：`726 passed`。
 - 修改文件编译检查和 `git diff --check` 通过。
 - 修复前全量回归：`724 passed, 2 failed`；失败为 `ZIP_ALLOC` 和 `ANYXML_MALLOC` 未进入宏资源推断结果。
+
+## 2026-07-21 Snapshot callee 分流：阶段 1（CodeIndex 与 Function Info）
+
+### 实施完成
+
+- `find_function_infos()` 的 callee 上下文改为 `project_callees` 与 `external_callees`：项目函数和 function-like macro 进入 project 侧，其他未解析目标保留在 external 侧。
+- project/external 两侧先独立聚合调用行与 direct/indirect 类型，再分别施加 30 / 20 的上限和 truncation metadata。
+- project callee 现在携带程序生成的 `is_static`、`is_macro`；external callee 不推断这两个属性。
+- `get_function_info` 的外部函数 payload、描述和测试已迁移至双数组契约。
+- 未修改任何 fallback 文件，也未变更 snapshot runtime allowlist。
+
+### 验证
+
+- `python -m py_compile zscope/retrieval/code_index.py` 通过。
+- Function Info 聚焦回归：`23 passed`；本阶段已修复已发现的 backend macro-fact 回归。
+
+## 2026-07-21 Snapshot callee 分流：阶段 2（Semantic Modeler）
+
+### 实施完成
+
+- 统一建模输入改为透传 `project_callees`、`external_callees` 及各自 truncation metadata。
+- Semantic Modeler prompt 只投影 project 侧；external 侧不进入 LLM metadata，最终 snapshot 由程序 passthrough。
+- LLM 返回的 project callee 仅用于读取 `callee_behavior`；程序写回 canonical identity、调用边、`is_static` 与 `is_macro`，缺失 behavior 记为 `unknown`。
+- 未增加 callee item 内容 validation；迁移仅维持 required 顶层字段存在性契约。未修改 snapshot runtime allowlist。
+- 更新 Semantic Modeler agent policy、agent/tool introduction 文档；未修改 fallback 文件。
+
+### 验证
+
+- `py_compile` 通过：建模输入、schema、agent 与 snapshot validator。
+- 聚焦 Semantic Modeler 回归：`7 passed`（覆盖 structured finalizer、program passthrough、prompt schema 和 target-query guard）。
+
+## 2026-07-21 Snapshot callee 分流：阶段 3（Deterministic snapshot 与 refresh，已完成）
+
+### 已完成部分
+
+- deterministic snapshot 顶层 `callees` 已替换为 `project_callees`、`external_callees`，并使用独立 truncation 字段；project 侧保留 `is_static`、`is_macro` 与 deterministic behavior。
+- SnapshotStore dependency hash 已分别投影 project/external 调用边；project linkage/macro 标记、任一数组或 truncation 变化均会影响 refresh。
+- 历史 snapshot 若仍含旧 `callees` / `callees_truncation`，统一返回 `snapshot_shape_changed`，没有加入旧字段 fallback。
+- snapshot tool fallback 与 validation evidence compact payload 已迁移为双数组。
+
+### 当前验证
+
+- SnapshotStore 聚焦回归：`16 passed`。
+- Snapshot Tool 聚焦回归：`5 passed`。
+- Function Info、建模输入、SnapshotStore、Snapshot Tool 与 analyzer deterministic 聚焦集合：`84 passed`（一次 facade fixture 迁移后已修复）。
+- 完整 `pytest` 目前在 collection 时报两个既有环境错误：`scripts` 包不存在，影响 `test_benchmark_protocol.py` 与 `test_range_benchmark_regression.py`；未修改该范围外问题。
+
+### 阶段完成与最终验证
+
+- 已完成 global model、entry reuse 与四条 snapshot 保存路径的兼容性测试迁移；global-model 聚焦回归：`7 passed`。
+- 增加 regex CodeIndex 直接测试，覆盖 static 项目函数与 function-like macro 的 project 分类、canonical identity、`is_static`、`is_macro`。
+- 最终核心聚焦回归：`56 passed`。
+- 全部可收集测试（排除两个缺失 `scripts` 模块的 benchmark 测试）结果：`706 passed, 2 failed`。两个失败是本轮开始前已存在的 `test_json_output_agents.py` schema 断言与当前 schema 字段定义不一致（`constraints`、`exit_states`），本轮未回退用户的 schema 修改。
+- 修改模块 `compileall` 和工作树 `git diff --check` 均通过。
+- 第十三节计划状态更新为“已实施”。
+
+### 计划偏差
+
+- 按用户后续决定，本期未实施 `get_function_snapshot` runtime allowlist 或 `callee_snapshot_not_allowed`；外部函数的查询权限、语义注入与 `external_function.config` 的集成留待后续单独设计。
+- 按用户后续决定，未新增或强化 Semantic Modeler 对 callee item 内容的 validation；只保留迁移后 required 顶层字段存在性契约。程序拼接仍负责写回 project identity/callsite/linkage 和 external 调用边。
+- benchmark 实跑未在本期执行：当前测试环境无法收集两个依赖 `scripts` 包的 benchmark 测试，且不修改该范围外环境缺失。
+- 更激进的方法：callee.behavior直接复用callee snapshot的summary，不由当前semantic modeler生成。
+
+### 已知问题
+
+- 因未设置 runtime allowlist，模型即使在 prompt 中看不到 `external_callees`，仍可能依据源码自行请求外部函数 snapshot；prompt 分流只能降低诱因，不能强制阻止。该行为将在 `external_function.config` 集成时统一处理。
+- 使用具备 macro-definition API 的 backend 时，若 backend 未返回某个 macro 定义，callee 会按“当前不可解析”归入 `external_callees`；不会根据名称猜测其项目 macro 身份。
+- 完整测试仍受两个环境 collection 错误影响；上述两个 schema 断言失败已于 2026-07-22 修复。
+
+## 2026-07-22 Semantic Modeler 单会话 Final Tool
+
+### 阶段 0：现状审计完成
+
+- 以 `new_docs/plan_docs/snapshot_redesign.md` 第十四节为实施基线。
+- 确认当前 Semantic Modeler 使用 `require_structured_finalization=True`：先运行普通检索工具 conversation，再创建独立 `json_finalization=1` 会话强制调用 `emit_function_snapshot`。
+- 确认 global-model benchmark 中 234 个 LLM snapshot 对应 468 个 Semantic Modeler session；`platform_execute_task` 的探索与 finalization 分别生成 1,133 和 989 completion tokens，存在重复完整输出。
+- 确认 `LLMClient.run_conversation_with_tools()` 当前会把所有 function tool call 交给普通 `tool_executor`，没有 terminal tool 捕获与立即结束协议。
+- 确认 `JsonToolAgent` 已有 final tool schema、payload coercion、schema/semantic validator、program post-process 和 repair helper，可复用这些能力实现 opt-in 单会话路径。
+- 确认工作树已有第十三节 project/external callee 双数组改动；本轮在其上增量实现，不回退或覆盖现有 schema、prompt、snapshot 和测试修改。
+- 本轮只为 Semantic Modeler 启用 single-pass final tool；其他 JSON Agent 保持原 finalization/repair 行为，且不新增 callee runtime allowlist。
+
+### 阶段 0 验证
+
+- 完成 `zscope/framework/llm_client.py`、`zscope/agents/base.py`、Semantic Modeler、conversation recorder 和相关 JSON/loop-guard/token 测试的静态审计。
+- 本阶段未修改运行时代码，未运行行为测试。
+
+### 阶段 1：底层 terminal tool 会话协议完成
+
+- `LLMClient.run_conversation_with_tools()` 增加默认关闭的 `terminal_tool_name`、`terminal_tool_handler` 和 `terminal_tool_required` 参数；未传入时沿用原有普通工具循环。
+- terminal tool 不进入普通 `tool_executor`。单独调用且 handler 校验成功时，直接返回 terminal payload、终止工具名称、有效性和独立计数，并结束当前 recorder session。
+- 非法 payload、同一响应中的重复 terminal call 或 terminal 与普通工具混用时，写入结构化 tool error 后继续同一 conversation；普通工具仍按原有重复调用保护和执行流程处理。
+- 强制 terminal 模式下，模型返回 prose 会收到短提示并继续当前会话；最后一轮仅暴露 terminal tool，避免因关闭全部 tools 而丢失最终提交机会。
+- `tool_call_count` 继续只统计普通工具结果；新增 `terminal_tool_call_count` / `final_tool_call_count` 用于单独观测最终提交，累计 token 仍按所有 API response 求和。
+
+### 阶段 1 验证
+
+- `pytest -q tests/test_llm_client_tokens.py`：`7 passed`。
+- 新增普通工具 → terminal tool 的单 session 收束测试，以及非法 terminal payload 在同一 conversation 修复的测试；确认 terminal tool 不会调用普通 executor，且不会计入普通 tool call 数。
+
+### 阶段 2：JsonToolAgent 单会话 opt-in 完成
+
+- `_run_json_conversation()` 增加默认 `False` 的 `single_pass_final_tool` 参数；仅显式开启时把当前 `JsonOutputSpec` 的 final tool schema 合并到初始工具集合。
+- single-pass handler 复用现有 payload coercion、nested key 和 validator 契约；合法 terminal payload 继续经过既有 `post_process`，因此 Semantic Modeler 的 program-owned 字段覆盖和 project callee behavior merge 顺序不变。
+- single-pass 模式不再进入 `_run_json_structured_finalization()` 或独立 `_run_json_final_repair()`；非法 terminal payload 由底层在同一 conversation 回灌错误并重试，耗尽 iteration 后返回带稳定 metadata 的失败响应。
+- 默认 JSON Agent 路径未改变；`require_structured_finalization` 仍只在未开启 single-pass 时运行。
+- recorder 新增独立 terminal tool summary，记录名称、参数键、有效性和错误；不增加普通 tool result count。
+
+### 阶段 2 验证
+
+- `pytest -q tests/test_json_output_agents.py tests/test_llm_client_tokens.py`：`28 passed`。
+- 新增 Semantic Modeler 无效 terminal payload → 同 conversation 修复 → program merge 成功测试；确认第二次请求包含结构化 terminal error，普通 `tool_call_count=0`，terminal call 独立计数为 2。
+- 修改模块 `py_compile` 通过。
+
+### 阶段 3：Semantic Modeler 单会话 final tool 启用完成
+
+- Semantic Modeler 将原 `require_structured_finalization=True` 替换为 `single_pass_final_tool=True`；`emit_function_snapshot` 从第一轮起与检索工具同时可见。
+- user prompt 新增阶段约束：检索阶段不得输出完整 snapshot prose/JSON，证据充分后必须调用 `emit_function_snapshot` 提交一次最终 payload。
+- `semantic_modeler/AGENT.md` 同步终止工具契约；保留现有 target-query guard、project/external callee 分流、LLM semantic-only schema 和 program field merge。
+- 即使 provider 标记支持 structured output，本路径也使用 terminal function tool；其他 JSON Agent 仍可继续使用既有 response-format finalization。
+
+### 阶段 3 验证
+
+- Semantic Modeler 测试确认 final tool schema 已在初始 `tools_schema`，有效 schema 覆盖 custom schema，prompt 包含禁止重复完整输出的约束。
+- program-owned identity、referenced globals/macros 与 truncation metadata 覆盖测试通过。
+
+### 阶段 4：异常路径与兼容性保护完成
+
+- terminal tool 在 max iteration 的最后一轮仍可被调用；若模型只返回 prose，则仅在预算内追加 terminal 要求，耗尽预算后明确失败，不把 prose 写入 snapshot。
+- XML `<invoke>` fallback 产生同名 terminal tool 时复用 capture/handler 分支；不再落入未知普通工具执行。
+- 同一响应的多个 terminal call 或 terminal 与普通工具混用均拒绝 terminal payload，并回灌稳定错误；普通工具部分仍按旧流程执行。
+- loop guard 和旧的 tools-disabled 行为保持兼容；未开启 single-pass 的 JSON Agent 继续使用独立 finalization/repair。
+
+### 阶段 4 验证
+
+- `pytest -q tests/test_llm_client_tokens.py tests/test_json_output_agents.py tests/test_json_agent_loop_guard.py tests/test_conversation_recorder.py`：`37 passed`。
+- 覆盖 prose、XML invoke、mixed tool calls、invalid terminal payload、loop guard 和 recorder 兼容路径。
+
+### 阶段 5：指标、日志与 recorder 完成
+
+- 单会话结果统一提供 `api_call_count`、`tool_call_count`、`terminal_tool_call_count`、`final_tool_call_count`、累计 Prompt/Completion/Total Tokens；structured finalization 的额外请求也会累计 API calls。
+- `JsonToolAgent` single-pass metadata 增加 `finalization_mode=single_pass_tool`、`terminal_tool_name`、`terminal_tool_valid` 和 `single_pass=true`，与旧 finalization metadata 可区分。
+- global semantic-model 日志增加 finalization mode、terminal tool、有效性与 terminal call count，便于 benchmark 从日志和 metadata 双向汇总。
+- conversation recorder 以 `terminal_tool_summary` 单独保存 terminal 提交，Markdown 与 JSONL 均能区分普通工具结果和最终提交；成功路径不会创建 `json_finalization=1` session。
+
+### 阶段 5 验证
+
+- 计数测试确认普通工具 → terminal tool 的 `api_call_count=2`、`tool_call_count=1`、`terminal_tool_call_count=1`；非法 terminal → repair 的 `api_call_count=2`、普通 tool count 为 0。
+- `py_compile`（LLM client、JSON agent、Semantic Modeler、global modeler、conversation recorder）通过。
+
+### 阶段 6：回归与交付完成
+
+- 核心集合：`pytest -q tests/test_json_output_agents.py tests/test_llm_client_tokens.py tests/test_json_agent_loop_guard.py tests/test_conversation_recorder.py tests/test_semantic_model_input.py tests/test_global_modeler.py tests/test_snapshot_store.py tests/test_snapshot_tool.py tests/test_analyzer_semantics.py`，结果 `105 passed`。
+- 全量 `pytest -q` 因缺少 `scripts` 包而在两个 benchmark 测试收集阶段停止；排除 `test_benchmark_protocol.py` 和 `test_range_benchmark_regression.py` 后，结果 `716 passed`。
+- `python -m compileall -q zscope` 与 `git diff --check` 通过。
+- 未修改 fallback 文件、未触碰 `/home/jager/Z-Scope-baseline`，并保留了工作区中既有的 project/external callee 及其他用户改动。
+
+### 本计划偏差
+
+- terminal payload 验证以通用 handler 注入 `LLMClient`，没有将 Semantic Modeler schema 逻辑写入底层客户端；语义校验和 program field merge 仍由 `JsonToolAgent`/Semantic Modeler 负责。
+- terminal 参数无效时只在同一 conversation 的剩余 iteration 内修复；预算耗尽后返回失败，不再调用旧的独立 `json_finalization` repair session。
+- recorder 新增 terminal summary 而未破坏既有 JSONL 事件格式；global 路径的 `[snapshot-llm]` 日志已增加单会话字段，entry/on-demand/premodel 日志本轮未逐处扩展。
+- XML fallback 使用既有扁平参数解析；未额外实现复杂嵌套 XML 的 JSON 专用解码。
+
+### 已知问题
+
+- 当前环境无法导入 `scripts` 包，导致完整 pytest 无法收集两个 benchmark 相关文件；这与本计划实现无关，已通过其余 `716` 项回归验证。
+- 尚未重新执行同配置 global-model benchmark，因此 Completion Tokens、Total Tokens、API Calls 的实际降幅尚待实测；本轮提供了按普通工具、terminal tool、API calls 与累计 token 分离统计的基础。
+- 个别 provider 若持续生成 schema-invalid terminal payload，会耗尽单会话 iteration 后失败；不会持久化不完整 snapshot，但需由上层重试任务处理。
+- 如果模型把 terminal tool 与普通检索工具放在同一 assistant 响应中，terminal 会被拒绝、普通工具仍执行，随后需要额外一轮重新提交最终 payload。
+
+## 2026-07-22 Callee Summary 程序透传与无 LLM Refresh
+
+### 实施完成
+
+最终职责如下：
+
+- Semantic Modeler 只生成当前函数的 summary、parameters、return_values、effects、error_handling 和 suspicious_points。
+- project_callees、external_callees、symbol context、truncation metadata 和 identity 全部由程序生成或透传。
+- callee_summary 只逐字来自 canonical callee snapshot 的顶层 summary。
+- unknown callee 可以被模型查询以完善当前函数语义，但模型不得输出 callee summary 或任何 callee item。
+- callee summary 晚到或变化时只执行 program-only snapshot refresh，不启动 LLM。
+
+### Schema、Prompt 与 Agent 合并
+
+- project_callees 已加入 PROGRAM_PASSTHROUGH_SNAPSHOT_FIELDS，因此 Semantic Modeler 输入必须提供 array，最终 AgentResponse.data 始终深拷贝程序记录。
+- llm_function_snapshot_schema 的 properties 和 required 均完全排除 project_callees；旧的 required callee_index_name/callee_summary item schema不再暴露给模型。
+- Semantic Modeler prompt 继续包含 project_callees、external_callees 及两侧 truncation metadata，保留 known/unknown summary 作为当前函数建模证据。
+- AGENT.md 已改为：unknown callee 的 snapshot/function info/code 查询只用于当前函数语义，不生成 callee summary，不输出 external 或 program-owned callee 字段。
+- agent.py 已删除 llm_summaries 映射、canonical identity merge、known/unknown override 和重复 identity 处理；program-owned 字段最后统一覆盖。
+- 即使测试 LLM payload 伪造、乱序、稀疏或重复 project_callees，最终数组仍完整等于 program input。
+
+### Hydration 与非全局消费路径
+
+- hydrate_project_callee_summaries 继续在 LLM 前读取 current callee snapshot summary，缺失时写入 unknown，不增加 API Calls。
+- self recursion 若已有自身 snapshot，可直接复用自身 summary；首次建模保持 unknown。
+- hydration 在已有 caller snapshot 正式消费前调用 SnapshotStore program-only reconciliation。
+- reconciliation timeout 或失败会以 callee_summary_reconcile_failed 终止语义输入构造，避免返回已知过期 snapshot。
+- global、entry、premodel、on-demand、scan-session 与 snapshot tool 均复用该路径。
+- Analyzer 的通用 LLM snapshot 保存路径也补齐 project/external callee 及其 truncation program override。
+- deterministic snapshot 保持程序透传，不因 unknown 调用 LLM。
+
+### SnapshotStore Fingerprint 与原子刷新
+
+- symbol_context_hash 已移除 callee summary，只跟踪 project identity/调用边/static-macro、external callee、globals/macros 和 truncation。结构变化继续返回 symbol_context_changed 并要求重新建模。
+- 新增 callee_summary_hash，只跟踪 canonical project identity 与透传 summary。
+- SQLite 新表包含 callee_summary_hash；已有 index-name 数据库启动时回填新列并按新规则重算 symbol_context_hash；旧表迁移同步写入两个 hash。
+- needs_refresh 对 summary-only 变化返回 (False, callee_summary_changed)，不会把它升级成 LLM refresh。
+- reconcile_project_callee_summaries 使用 canonical index lock：
+  - 先校验结构 hash 一致；
+  - 深拷贝完整 program project_callees；
+  - 原子更新 snapshot JSON；
+  - 只更新 callee_summary_hash、timestamp 和 snapshot cache；
+  - 完整保留当前函数所有 LLM semantic fields。
+- 并发相同 reconciliation 会串行化为一次 refreshed 和后续 unchanged，不产生部分 JSON。
+
+### Global Model 阶段末 Reconciliation
+
+- Global Modeler 在所有 component 完成且没有建模失败、unresolved entry 时，从成功 current snapshot 冻结 summary_map。
+- 每个 caller 重新构造 canonical program input，并以程序数组数量和顺序为准 exact match summary_map。
+- summary_map 在任何 patch 前冻结，一轮即可补齐 self recursion、mutual SCC 和并发顺序造成的暂时 unknown。
+- 新增统计：
+  - unresolved_entry_functions
+  - reconciled_functions
+  - reconciliation_unchanged_functions
+  - reconciliation_failures
+  - unknown_project_callees
+  - stage_complete
+- summary_map 缺失 current snapshot/summary，或 reconciliation 返回 missing、llm_refresh_required、timeout、failed 时，计入 reconciliation_failures。
+
+### 全局阶段门禁与断点恢复
+
+- stage_complete 仅在 failed_functions=0、unresolved_entry_functions=0、reconciliation_failures=0 时成立。
+- ParallelAnalyzer 在 global stage 未完成时直接停止，不再关闭 enable_global_model 后降级到逐入口分析。
+- API、网络或模型失败不会合成 fallback summary，也不会继续漏洞挖掘和验证。
+- 恢复后重新运行时，已成功 snapshot 命中 cache，仅重试失败或缺失函数。
+- 完整入口列表使每个列出的函数成为 depth-0 root；普通运行仍受入口范围和 global depth/breadth 配置限制。
+
+### Backend 与截断边界
+
+- backend 未解析出的调用边不进入 callee 数组，因而没有 callee summary。
+- 无法唯一解析为项目函数的调用进入 external_callees，只作为 prompt 证据，不生成 summary。
+- project/external 继续分别应用 30/20 上限和独立 truncation metadata。
+- 被 backend 遗漏或截断的函数即使独立拥有 snapshot，也不会被程序猜测并拼回 caller。
+- runtime snapshot allowlist 未实施；external_function.config 未接入；fallback 文件未修改。
+
+### 验证
+
+新增或更新的验证覆盖：
+
+- LLM schema properties/required 完全没有 project_callees。
+- LLM 伪造 callee 输出无法改变 program records。
+- known、unknown、self-recursive hydration。
+- summary-only refresh 不调用 LLM，semantic fields 保持不变。
+- summary_map 忽略额外 identity，缺失 identity 保持 unknown。
+- self recursion 和 mutual SCC 一轮收敛，Semantic Modeler 调用次数不增加。
+- 并发 reconciliation 串行化。
+- failed function 和 unresolved entry 使 stage_complete=false。
+- global stage failure 阻止 entry fan-out。
+- SQLite split-hash migration/backfill。
+
+执行结果：
+
+- 聚焦集合：68 passed。
+- 可收集完整回归：728 passed。
+- python -m compileall -q zscope：通过。
+- git diff --check：通过。
+- 完整 pytest 仍有 test_benchmark_protocol.py 和 test_range_benchmark_regression.py 因环境缺少 scripts Python package 无法收集。
+
+### 计划偏差
+
+- 没有新增名为 semantic_input_hash 的数据库列；实际收窄既有 symbol_context_hash 作为需要重新建模的结构 fingerprint，并新增 callee_summary_hash。行为与计划一致，同时避免无必要的列重命名。
+- 非全局路径没有实现常驻反向依赖监听器；通过统一 hydration 在 snapshot 消费前局部 reconciliation。Global Model 仍执行完整阶段末 reconciliation。
+- SnapshotStore 的 program-only refresh 不清除 final report，因为当前函数 LLM semantic fields 未变化；结构或代码变化仍走原有 LLM refresh 和报告失效路径。
+
+### 已知问题
+
+- 尚未重新运行同配置 global-model benchmark，因此 Completion Tokens、Total Tokens、API Calls 和 program-only refreshed snapshot 数的实测变化仍待收集。
+- 普通配置受 global depth/breadth 和 Function Info 30/20 截断限制，unknown_project_callees 可能非零；这不代表 reconciliation 失败。
+- backend 没有提供的调用边无法通过 summary reconciliation 恢复。
+- 当前环境缺少 scripts package 的两个 benchmark 测试收集问题仍存在，与本次实现无关。
+
+## 2026-07-23 Referenced Types 程序注入与类型上下文刷新
+
+### 阶段 1：KnowledgeDB 与直接类型引用提取完成
+
+- KnowledgeDB schema version 从 8 升至 9，新增 `function_type_refs` 表及 function/type/name 三组索引。resolved 引用保存 `function_id`、`type_id` 和 canonical `type_index_name`；unresolved 引用使用空 identity、`type_id=NULL` 与稳定 `resolution_reason`。
+- 新增 `KnowledgeDB.type_index_name()`、`get_all_type_definitions()`、`replace_function_type_refs()`、`get_function_type_context()` 和 transitive include closure 查询。公开 resolved item 不含 definition hash/dependency depth；unresolved 数组仅在非空时输出。
+- function/type TU 清理同步删除 owned/incoming type refs；删除类型 TU 前会把引用该类型的函数文件加入 delete impact，供增量索引重新标记。
+- `ClangExtractor` 在全部 TU 的 function/type/include facts 更新后原子重建直接引用。候选覆盖 signature return/parameter/function pointer，以及 body local/cast/sizeof/alignof/offsetof/compound literal/member access；只聚合目标函数直接使用的类型，不扫描 `full_definition` 展开依赖。
+- resolved 主路径使用 clangd definition location 与 `type_definitions` 范围匹配；definition 不可用时仅在规范化 include closure 内唯一候选可见时保守解析，多候选和不可见类型进入 unresolved。
+- quote include edge 规范化为 source-root 相对路径；相对路径、project-root 路径和唯一 suffix 候选统一为同一 include graph 节点。
+- 新增 `function_type_ref_extractor_version=1`；metadata 缺失或变化时强制 unchanged TU 重建，成功完成全部引用重建后才写入当前版本。
+- 本阶段未修改 `get_type_info` Tool、任何 fallback 文件或 baseline 工作树。
+
+### 阶段 1 验证
+
+- 新增 KnowledgeDB resolved/unresolved 聚合与 optional 输出测试。
+- 新增 type TU incoming refs、function TU owned refs 清理和 delete impact 测试。
+- 新增 `_plugin_register` 同类 fixture，验证 `PluginRegistry` 的 parameter/member_access 与 `Plugin` 的 local/cast/sizeof 均解析到 `include/types.h`。
+- 新增 include edge canonical path 与 transitive closure 测试。
+- 聚焦测试结果：`4 passed`。
+- 修改模块 `py_compile` 与相关文件 `git diff --check` 通过。
+
+### 阶段 2：Backend、CodeIndex 与 Function Info Tool 完成
+
+- `CodeBackend` 新增默认 `get_function_type_context()` 契约；ClangBackend 从 KnowledgeDB 查询，UnifiedBackend 透明委托 Clang 主结果。
+- JoernClient 新增 method return/parameter/local 的 `typeFullName` 直接引用查询；JoernBackend 将唯一且具有完整源码的 typeDecl 转为统一 resolved item，缺失、歧义或定义不完整时输出 optional unresolved，不递归展开 typeDecl 内部依赖。
+- CodeIndex 集中执行 canonical normalization、去重、稳定排序和预算：direct type 最多 30 项，单项 `full_definition` 最大 8 KiB，总定义最大 32 KiB，signature return/parameter/function-pointer 优先。超大定义整项转为 `definition_too_large`，不注入残缺文本。
+- CodeIndex 明确删除 backend 输入中的 `definition_hash`、`dependency_depth` 和其他非契约字段；最终 resolved item 只保留 `type_index_name`、`kind`、`full_definition`、`reference_kinds`、`reference_lines`。定义位置编码在 `type_index_name`，`full_definition` 复用 `get_file_snippet()` 的绝对行号格式。
+- regex backend 增加保守 type definition index 与 transitive quote-include closure；复用 Clang 路径的直接引用分类器，只有 closure 内唯一 exact definition 才 resolved，歧义和不可见候选不按排序猜测。
+- 普通函数的 `find_function_infos()` 每个 match 均返回 required `referenced_types`；function-like macro 固定返回空数组，optional unresolved/truncation 只在实际存在时输出。
+- `get_function_info` Tool 不重新查询、解析、排序或截断类型上下文，直接返回 CodeIndex match；配置的 external function 补齐 required `referenced_types=[]`。Tool description 已说明三类 type-context 字段。
+- 本阶段保持 `zscope/tools/type_info.py` 未修改，未改变 `get_type_info` 参数、路径限定、fallback、返回 payload 或错误语义。
+
+### 阶段 2 验证
+
+- 覆盖 31 个直接类型触发 count truncation、signature 类型优先、内部字段不泄漏及 30/32 KiB 契约。
+- 覆盖 `get_function_info` 对 required resolved 和 optional unresolved/truncation 的透明透传。
+- 覆盖 ordinary function、macro、configured external、Joern resolved/unresolved 与 regex include-closure 解析。
+- 阶段相关回归：`73 passed`。
+- 修改模块 `py_compile`、相关文件 `git diff --check` 通过；`zscope/tools/type_info.py` 工作树无修改。
+
+### 阶段 3：Semantic Model 输入、Program Ownership 与 Deterministic Snapshot 完成
+
+- `build_semantic_model_input()` 将 `referenced_types` 作为 required CodeIndex 字段深拷贝；optional `unresolved_referenced_types` 仅接受非空数组，`referenced_types_truncation` 仅接受 object，并与其他 program context 一起透传。
+- 输入边界校验 resolved item 的五个公开字段，明确拒绝 `name`、`file_path`、`start_line`、`end_line`、`definition_hash` 和 `dependency_depth`；非法上下文以 `reason=semantic_model_input_invalid`、`llm_called=false` 在调用 LLM 前终止。
+- persisted snapshot schema 新增 required `referenced_types` 及 optional unresolved/truncation 完整结构；`definition_hash` 不属于公开 schema。
+- 三个 type-context 字段加入 program passthrough/excluded fields。LLM terminal tool schema和 structured schema均不暴露这些字段；模型即使伪造同名字段，也会在 merge 前删除并由程序输入最后覆盖。
+- Semantic Modeler 首轮 metadata 直接包含完整 direct type definitions、optional unresolved 和 truncation，内部 hash 不进入 Prompt。
+- `AGENT.md` 明确禁止重复查询 `referenced_types` 中已有完整定义的类型；只有 unresolved、被预算省略或目标源码中新发现的必要项目类型才允许调用现有 `get_type_info`。只知道 use-site 时不伪装成 declaration path，本轮不改变 Tool 行为。
+- trivial/syntactic 与 lightweight deterministic snapshot 新增 required `referenced_types`，按 canonical 字段顺序复制 optional unresolved/truncation，并进行深拷贝和 shape 校验。
+- Analyzer 通用 LLM snapshot 保存路径同步覆盖 type-context program fields，避免非 global 路径保存模型伪造或缺失的类型事实。
+
+### 阶段 3 验证
+
+- 覆盖统一输入 required/optional 校验、非法内部 hash 拒绝和深拷贝隔离。
+- 覆盖 Prompt 含完整类型定义、LLM schema 排除 type fields、LLM 伪造无法覆盖 program context。
+- 覆盖 deterministic snapshot required/optional 字段顺序、shape 与嵌套内容深拷贝。
+- 本阶段测试中一个旧手写 Function Info fixture 因缺少 required `referenced_types` 失败；按约束只更新该测试 fixture，未为此改变生产实现。
+- 阶段相关回归：`70 passed`。
+- 修改模块 `py_compile` 与相关文件 `git diff --check` 通过。
+
+### 阶段 4：Type Context Fingerprint、Refresh 与消费者接入完成
+
+- SnapshotStore SQLite schema 新增独立 `type_context_hash`。新库直接创建该列；已有 index-name 数据库以 canonical empty type context 增量补列；旧主键 schema 迁移到新表时从 snapshot 当前 program context 计算。
+- `compute_type_context_hash()` 对每个规范化 `full_definition` 即时计算 SHA-256，只把临时 definition digest 放入内部投影；snapshot item、数据库 JSON 和 LLM context 均不保存 `definition_hash`。
+- fingerprint 同时覆盖 canonical type identity、kind、带行号定义的内部 digest、direct reference kinds/lines、resolved/unresolved 转换和 truncation。数组顺序、reference kinds/lines 顺序、CRLF/LF 与行尾空白不影响 hash。
+- `save_snapshot()` 要求 persisted snapshot 含 required `referenced_types`，并同时保存 code/semantic/symbol/callee-summary/type 五类 fingerprint。
+- `needs_refresh()` 在类型 fingerprint 变化时返回 `(True, "type_context_changed")`；类型变化不会走 callee-summary program-only patch。旧 snapshot 缺少 required types、optional unresolved 为空或 truncation 类型错误时返回 `snapshot_shape_changed`。
+- callee summary reconciliation 增加 type hash 门禁；只要当前类型上下文与已建模版本不同，就返回 `llm_refresh_required`，不得在旧语义上只更新 callee summary。
+- type refresh 日志只记录 index identity 与 old/new hash 短前缀，不记录完整定义或 context JSON。
+- snapshot Tool 的 missing/stale fallback 透传 required resolved 与 optional unresolved/truncation；类型变化时不返回 stale snapshot。
+- validation evidence 保留全部 type identity/reference/truncation 状态，并对 `full_definition` 使用 16 KiB 明确预算；超预算项只在 evidence projection 标记 definition omitted，不修改 persisted snapshot。
+- local semantic inference 的 snapshot contract text 可消费已持久化类型上下文，不需要再次调用 LLM Tool。
+- global、entry、premodel、on-demand、history、scan resume 继续复用统一 input builder 与 `needs_refresh()`，因此自动获得相同 type refresh 行为。
+
+### 阶段 4 验证
+
+- 覆盖 definition/member 文本与 direct reference kind 变化触发 `type_context_changed`，以及换行/尾空白/数组顺序不触发误刷新。
+- 覆盖旧 snapshot shape 一次性重建、SQLite type hash 新建/迁移、fingerprint 查询和 program-only reconciliation 门禁。
+- 覆盖 snapshot Tool 不返回 stale 类型证据、validation evidence 字节预算、scan resume 在类型变化时不复用旧 final report。
+- 扩大消费者回归时 12 个旧测试双件因缺少 required `referenced_types` 失败；按约束只更新测试 fixture/伪 Agent 输出，未用生产兼容分支掩盖旧 shape。
+- 阶段相关回归：`129 passed`。
+- 修改模块 `py_compile` 与相关文件 `git diff --check` 通过。
+
+### 阶段 5：最终验收与交付完成
+
+- extractor 候选回归在首次本地 CPG build 中发现 parenthesized value/function argument 被 cast 正则误判为 type；已收紧为“类型右括号后必须存在 cast operand”，并要求候选为已索引类型、CamelCase 或 `_t` 风格，固定宽度整数 typedef 作为 builtin 排除。
+- 增加 `path`、宏实参、`sizeof(variable)`、`uint32_t` cast 与真实 `RuntimeEvent*` 对照 fixture；range 全函数只读候选扫描的已知 false candidate 数降为 0。
+- 候选语义修正后将 `function_type_ref_extractor_version` 升至 2，确保已写入 v1 metadata 的 unchanged TU 也会自动重建。存在失败 TU 时不推进该版本。
+- range 本地索引仅重建 type refs（未运行全量 scan）：共 887 条 direct refs，858 resolved、29 unresolved；154 个函数存在 resolved type，15 个函数存在 unresolved type。
+- 29 条 unresolved 仅涉及 `pthread_t`、`pthread_mutex_t`、`pthread_rwlock_t`、`FILE`、`pid_t`、`socklen_t`、Windows `BOOL/DWORD/OSVERSIONINFO/STARTUPINFO/PROCESS_INFORMATION` 等未进入项目 `type_definitions` 的系统/平台类型。
+- `_plugin_register` 离线结果：
+  - `Plugin@include/types.h:90-98`：`local/member_access`；
+  - `PluginRegistry@include/types.h:110-115`：`parameter/member_access`；
+  - `plugin_handle_t@include/types.h:9-9`：`cast`；
+  - `task_handler_t@include/types.h:86-86`：`parameter`；
+  - unresolved 为 0。
+- 非 benchmark 全回归：`751 passed`。
+- `python -m compileall -q zscope` 与全工作树 `git diff --check` 通过。
+- 完整 pytest 两次均在 range benchmark regression 子流程开始附近无 pytest summary 异常终止；遵循用户“不运行全量 benchmark”的后续要求，不再运行这两个 benchmark 文件，也未修改生产代码规避该测试进程行为。
+- `zscope/tools/type_info.py` 保持未修改；未修改 fallback 文件和 `/home/jager/Z-Scope-baseline`。
+
+### 计划偏差
+
+- `function_type_ref_extractor_version` 最终为 2，而非计划初始值 1：v1 本地索引暴露 cast/parenthesized value 误识别，修复候选语义后必须再次失效旧索引。
+- UnifiedBackend 的实际架构是 Clang + SVF，不包含 Joern 双源合并；实现中 Unified 直接采用 Clang/KnowledgeDB type context，JoernBackend 独立提供兼容契约，没有人为合并两个同时不存在于该 backend 的结果源。
+- Joern 路径首期只覆盖稳定可获取的 method return、parameter 和 local `typeFullName`；cast/sizeof/offsetof/compound literal/member owner 的完整覆盖仍以 Clang/KnowledgeDB 主路径为准。
+- validation evidence 对类型定义采用独立 16 KiB 投影预算；超预算只省略 evidence 中的 definition text并保留 identity/reference/truncation，persisted snapshot 仍遵循 32 KiB 总预算。
+- 按用户后续明确指令未执行完整 global-model benchmark，因此没有实施前后 token、API calls 和 wall time 的可比完整结果。曾启动的两个临时 run 均被主动终止；重试 run 在终止前产生 1 条 snapshot-llm 日志和 3 个临时 snapshot，不能作为 benchmark 指标。
+
+### 已知问题
+
+- 系统头和平台 SDK 类型不写入项目 `type_definitions`，因此 `pthread_t`、`FILE` 和 Windows API structs 等会以 unresolved 进入上下文；本期按计划不改变外部类型配置语义。
+- Joern-only backend 的 direct type role 覆盖低于 Clang 主路径，且没有 source-backed full definition 时会输出 `definition_incomplete`。
+- regex type definition fallback 使用保守源码模式，对包含复杂嵌套匿名 record、宏展开或模板语法的定义可能无法完整识别；无法唯一证明时保持 unresolved，不选择第一项。
+- full definition 注入的实际 Prompt/Total Token 成本尚未通过完整 benchmark 验证，不能宣称总体 token 或 wall time 已下降；当前只证明工具调用需求和路径误用来源被程序上下文消除。
+- 两个 range benchmark pytest 文件在当前全套运行中会使 pytest 进程于约 63% 无总结终止；非 benchmark 的 751 项回归全部通过。
+
+## 2026-07-23 Backend-backed 宏 `referenced_macros` Regex Fallback
+
+### 已完成
+
+- 为 `KnowledgeDB` 增加批量 `get_macro_definitions_batch(names)` 查询，一次返回候选名称对应的 `macro_definitions` 完整记录；查询按 500 个名称分批，避免逐 token N+1 查询和 SQLite 参数上限问题。
+- `CodeBackend` 增加默认 capability，`ClangBackend` 与 `UnifiedBackend` 透传 KnowledgeDB 实现；没有该能力的 backend 保守返回空定义集合。
+- 重构 `CodeIndex._macro_function_info_symbol_context()`：
+  - 先对完整宏定义执行 regex 引用发现；
+  - 去除注释、字符串和字符字面量，排除目标宏名、宏形参、字段访问和预处理关键字；
+  - 记录绝对引用行和 function-like 调用行；
+  - 再由 KnowledgeDB 补全 macro 的定义位置、完整 definition 和 `is_function_like`。
+- backend-backed macro 定义消歧采用保守规则：目标宏同文件的唯一候选优先；无同文件候选时只接受全项目唯一候选；多个候选不按排序猜测并写 debug 日志。
+- object-like macro 使用全部引用行；function-like macro 只有在 token 后存在调用括号时才进入 `referenced_macros`，避免把仅作为普通标识符出现的同名 token 误识别为宏调用。
+- `referenced_macros` 在成功解析、排序和去重后应用独立 limit；truncation `total` 不包含数据库未命中或歧义候选。
+- 撤销宏体 regex + global name lookup 产生 `referenced_globals` 的方案：宏展开位置可能存在局部变量遮蔽，同名 global definition 不能证明实际绑定。宏目标的 `referenced_globals` 当前固定为空数组，等待后续 `search_global` 工具提供显式证据。
+- 保留当前 function-like macro 的 `project_callees` 行为。本轮只补齐 `referenced_macros`，不提前实施 snapshot redesign 第八章的宏单一归属重构。
+- 纯 regex/no-backend 的 `referenced_macros` 继续使用现有源码定义索引，普通函数的 `function_symbol_refs` 查询路径未改变；未修改 fallback 文件。
+
+### 原问题离线验证
+
+使用 `test/range/.zscope_knowledge/global_model_benchmark.db` 和现有 range 源码直接查询 `COUNTER_SLOT_UNLOCK@src/lifecycle.c:961-961`，未重建索引、未调用 LLM，最终结果为：
+
+- `referenced_globals`：空数组；不再用名称匹配推断 `g_lifecycle_counter_lock`。
+- `referenced_macros`：`UNLOCK`，定义于 `include/common.h:34`，`is_function_like=true`，完整 definition 与引用行 `[961]` 均已补齐。
+
+### 新增测试
+
+- KnowledgeDB macro 批量查询覆盖名称去重、缺失名称、同名 global 不混入结果以及空输入。
+- backend-backed 多行宏覆盖对象式宏、function-like macro、宏形参、注释、字符串、非调用 token、`referenced_globals=[]` 和 Semantic Model 输入透传。
+- 覆盖跨文件 macro 多候选保守省略，以及 function-like macro 暂时同时保留在 `project_callees`。
+- 覆盖 51 个成功解析 macro 加一个歧义候选：返回 50 个，truncation `total=51`，歧义候选不计入 total。
+
+### 测试结果
+
+- 实施前基线：`python -m pytest tests/test_function_info_tool.py tests/test_knowledge_db_ir_and_config.py -q`，49 个测试通过。
+- 新增聚焦回归：3 个测试通过。
+- 相关回归：`python -m pytest tests/test_function_info_tool.py tests/test_knowledge_db_ir_and_config.py tests/test_semantic_model_input.py tests/test_global_modeler.py tests/test_snapshot_tool.py -q`，79 个测试通过。
+- 非完整 range benchmark 回归：`python -m pytest -q --ignore=tests/test_range_benchmark_regression.py`，793 个测试通过，最终耗时 20.86 秒。
+- `python -m py_compile zscope/retrieval/backend_base.py zscope/retrieval/knowledge_db.py zscope/retrieval/clang_backend.py zscope/retrieval/unified_backend.py zscope/retrieval/code_index.py` 通过。
+- `git diff --check` 通过。
+
+### 未执行项与剩余限制
+
+- 未运行 `tests/test_range_benchmark_regression.py`，也未调用外部 LLM；本轮只使用现有 benchmark KnowledgeDB 做离线结果验证。
+- Joern 等没有 KnowledgeDB macro-definition capability 的 backend 仍不能补齐数据库字段。
+- 条件编译下同名定义的精确可见性尚未建模；存在多个无法唯一证明的候选时保持省略，不选择第一项。
+- 宏 `referenced_globals` 暂不自动推断；后续由 `search_global` 工具按需查询并提供证据。
+
+## 2026-07-23 Project Callee 宏去重与 Canonical Macro Context
+
+### 实施完成
+
+- `project_callees` 现在只包含真实项目函数；可唯一解析的 function-like macro 只进入 `referenced_macros`，不会转入 `external_callees`。
+- 完整 snapshot schema、Function Info/Semantic input、deterministic builder、hash/reconciliation projection 均删除 `project_callees[].is_macro`。
+- `referenced_macros` 统一为 `macro_index_name/definition/is_function_like/reference_lines`；公开 payload 不再包含 `name/file_path/line`。
+- macro definition 复用 `CodeIndex.get_file_snippet()` 按 canonical range 读取，保留绝对 1-based 行号。
+
+### 数据库与 Extractor
+
+- KnowledgeDB schema 升至 v10；`macro_definitions` 新增 `macro_index_name/start_line/end_line` 和 canonical unique index。
+- 新增 `function_macro_refs`，通过 function/macro 外键保存引用行；旧通用 symbol refs 继续承载 globals。
+- macro 与 symbol-context extractor version 升至 2，旧索引强制重建。
+- macro migration 记录 total/migrated/collision/failed；canonical collision 不覆盖旧记录。
+
+### Snapshot 与 Global Model
+
+- 历史 macro callee 或旧 macro item shape 返回 `snapshot_shape_changed` 并重建。
+- macro summary 不再参与 caller 的 hydration、callee-summary hash 或 program-only reconciliation。
+- Global Model 内部 raw callee 图遍历保持不变，避免静默丢失 macro expansion dependency；持久化 caller snapshot 不再序列化 macro callee。
+
+### 验证
+
+- 聚焦集合：`199 passed`。
+- 排除两个 range benchmark regression 文件的可收集完整回归：`762 passed`。
+- `python -m compileall -q zscope` 与 `git diff --check` 通过。
+- 完整 pytest 在既有 range benchmark 区域无总结终止；终止前未出现失败。
+
+### 计划偏差与已知问题
+
+- 数据库内部保留旧宏字段用于查询和迁移，但所有公开上下文只使用 canonical 新 shape。
+- 内部 batch insert 暂时接受旧五字段宏行并立即规范化，不形成旧数据库记录或旧 LLM payload。
+- 未运行外部 LLM 或 global-model benchmark，因此只确认上下文去重和契约收敛，不宣称 token/API/wall-time 改善。

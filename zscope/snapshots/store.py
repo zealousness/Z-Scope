@@ -28,7 +28,8 @@ _SYMBOL_CONTEXT_ARRAY_FIELDS = (
 _SYMBOL_CONTEXT_OPTIONAL_FIELDS = (
     "referenced_globals_truncation",
     "referenced_macros_truncation",
-    "callees_truncation",
+    "project_callees_truncation",
+    "external_callees_truncation",
 )
 _GLOBAL_STORAGE_CLASSES = {
     "static",
@@ -103,7 +104,12 @@ def _canonical_symbol_records(value: Any) -> list[Any]:
     )
 
 
-def _canonical_callee_records(value: Any) -> list[Dict[str, Any]]:
+def _canonical_callee_records(
+    value: Any,
+    *,
+    include_project_flags: bool = False,
+    include_summary: bool = False,
+) -> list[Dict[str, Any]]:
     groups: Dict[str, Dict[str, Any]] = {}
     for item in value if isinstance(value, list) else []:
         if not isinstance(item, dict):
@@ -117,6 +123,8 @@ def _canonical_callee_records(value: Any) -> list[Dict[str, Any]]:
                 "callee_index_name": index_name,
                 "callsite_lines": set(),
                 "call_type": set(),
+                "is_static": False,
+                "callee_summary": "unknown",
             },
         )
         raw_lines = item.get("callsite_lines")
@@ -134,10 +142,17 @@ def _canonical_callee_records(value: Any) -> list[Dict[str, Any]]:
             for call_type in raw_call_types
             if str(call_type) in {"direct", "indirect"}
         )
+        if include_project_flags:
+            entry["is_static"] = bool(item.get("is_static"))
+        if include_summary:
+            candidate_summary = str(item.get("callee_summary") or "").strip()
+            if candidate_summary and candidate_summary != "unknown":
+                entry["callee_summary"] = candidate_summary
 
     call_type_order = {"direct": 0, "indirect": 1}
-    return [
-        {
+    result = []
+    for index_name, entry in sorted(groups.items()):
+        record = {
             "callee_index_name": index_name,
             "callsite_lines": sorted(entry["callsite_lines"]),
             "call_type": sorted(
@@ -145,8 +160,12 @@ def _canonical_callee_records(value: Any) -> list[Dict[str, Any]]:
                 key=lambda call_type: call_type_order[call_type],
             ),
         }
-        for index_name, entry in sorted(groups.items())
-    ]
+        if include_project_flags:
+            record["is_static"] = entry["is_static"]
+        if include_summary:
+            record["callee_summary"] = entry["callee_summary"]
+        result.append(record)
+    return result
 
 
 def compute_symbol_context_hash(payload: Dict[str, Any]) -> str:
@@ -156,12 +175,125 @@ def compute_symbol_context_hash(payload: Dict[str, Any]) -> str:
         field: _canonical_symbol_records(payload.get(field))
         for field in _SYMBOL_CONTEXT_ARRAY_FIELDS
     }
-    context["callees"] = _canonical_callee_records(payload.get("callees"))
+    context["project_callees"] = _canonical_callee_records(
+        payload.get("project_callees"),
+        include_project_flags=True,
+    )
+    context["external_callees"] = _canonical_callee_records(
+        payload.get("external_callees")
+    )
     for field in _SYMBOL_CONTEXT_OPTIONAL_FIELDS:
         if field in payload:
             context[field] = payload[field]
     encoded = json.dumps(
         context,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def compute_callee_summary_hash(payload: Dict[str, Any]) -> str:
+    """Hash only canonical project-callee identities and passthrough summaries."""
+
+    summaries: Dict[str, str] = {}
+    raw_callees = payload.get("project_callees")
+    for item in raw_callees if isinstance(raw_callees, list) else []:
+        if not isinstance(item, dict):
+            continue
+        index_name = str(item.get("callee_index_name") or "").strip()
+        if not index_name:
+            continue
+        summary = str(item.get("callee_summary") or "").strip() or "unknown"
+        existing = summaries.get(index_name)
+        if existing is None or (existing == "unknown" and summary != "unknown"):
+            summaries[index_name] = summary
+    encoded = json.dumps(
+        [
+            {"callee_index_name": index_name, "callee_summary": summaries[index_name]}
+            for index_name in sorted(summaries)
+        ],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _normalized_type_definition(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.rstrip() for line in text.split("\n")]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines)
+
+
+def compute_type_context_hash(payload: Dict[str, Any]) -> str:
+    """Hash direct type identities/references using internal definition digests."""
+    resolved: Dict[str, Dict[str, Any]] = {}
+    raw_types = payload.get("referenced_types")
+    for item in raw_types if isinstance(raw_types, list) else []:
+        if not isinstance(item, dict):
+            continue
+        identity = str(item.get("type_index_name") or "").strip()
+        if not identity:
+            continue
+        definition = _normalized_type_definition(item.get("full_definition"))
+        resolved[identity] = {
+            "type_index_name": identity,
+            "kind": str(item.get("kind") or ""),
+            "definition_hash": hashlib.sha256(definition.encode("utf-8")).hexdigest(),
+            "reference_kinds": sorted(
+                {str(value) for value in item.get("reference_kinds", [])}
+            ),
+            "reference_lines": sorted(
+                {
+                    int(value)
+                    for value in item.get("reference_lines", [])
+                    if isinstance(value, int) and not isinstance(value, bool) and value > 0
+                }
+            ),
+        }
+
+    unresolved_records = []
+    raw_unresolved = payload.get("unresolved_referenced_types")
+    for item in raw_unresolved if isinstance(raw_unresolved, list) else []:
+        if not isinstance(item, dict):
+            continue
+        unresolved_records.append(
+            {
+                "name": str(item.get("name") or ""),
+                "reason": str(item.get("reason") or ""),
+                "reference_kinds": sorted(
+                    {str(value) for value in item.get("reference_kinds", [])}
+                ),
+                "reference_lines": sorted(
+                    {
+                        int(value)
+                        for value in item.get("reference_lines", [])
+                        if isinstance(value, int)
+                        and not isinstance(value, bool)
+                        and value > 0
+                    }
+                ),
+            }
+        )
+    unresolved_records.sort(
+        key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"))
+    )
+    projection: Dict[str, Any] = {
+        "referenced_types": [resolved[key] for key in sorted(resolved)],
+        "unresolved_referenced_types": unresolved_records,
+    }
+    if "referenced_types_truncation" in payload:
+        projection["referenced_types_truncation"] = payload[
+            "referenced_types_truncation"
+        ]
+    encoded = json.dumps(
+        projection,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -205,6 +337,21 @@ class SnapshotLockManager:
             self._modeling_status[lock_key] = "modeling"
         return "acquired"
 
+    def acquire_refresh(self, index_name: str, timeout: float = 120.0) -> str:
+        """Acquire the per-index lock even when a completed snapshot already exists."""
+
+        lock_key = self._lock_key(index_name)
+        with self._global_lock:
+            if lock_key not in self._func_locks:
+                self._func_locks[lock_key] = threading.Lock()
+                self._modeling_status[lock_key] = "idle"
+            lock = self._func_locks[lock_key]
+        if not lock.acquire(timeout=timeout):
+            return "timeout"
+        with self._global_lock:
+            self._modeling_status[lock_key] = "modeling"
+        return "acquired"
+
     def release(self, index_name: str, success: bool = True) -> None:
         lock_key = self._lock_key(index_name)
         with self._global_lock:
@@ -242,10 +389,10 @@ class SnapshotStore:
         raw = str(index_name or "").strip()
         if not raw:
             raise ValueError("snapshot storage requires a non-empty index_name")
-        readable = re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("._-")
+        readable = re.sub(r"[^A-Za-z0-9._-]+", "_", raw)
         readable = readable[:_INDEX_FILENAME_PREFIX_LIMIT] or "snapshot"
         digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-        return f"{readable}_{digest}"
+        return f"{readable}"
 
     @classmethod
     def _snapshot_filename(cls, index_name: str) -> str:
@@ -300,6 +447,8 @@ class SnapshotStore:
                 code_hash TEXT NOT NULL,
                 semantic_hash TEXT NOT NULL,
                 symbol_context_hash TEXT NOT NULL,
+                callee_summary_hash TEXT NOT NULL,
+                type_context_hash TEXT NOT NULL,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 snapshot_file TEXT NOT NULL,
                 final_report_file TEXT
@@ -323,6 +472,8 @@ class SnapshotStore:
             columns = {row[1]: row for row in conn.execute("PRAGMA table_info(snapshots)")}
             if "index_name" in columns and int(columns["index_name"][5] or 0) == 1:
                 self._ensure_symbol_context_column(conn, columns)
+                self._ensure_callee_summary_column(conn, columns)
+                self._ensure_type_context_column(conn, columns)
                 return
             self._migrate_to_index_schema(conn)
         finally:
@@ -379,6 +530,78 @@ class SnapshotStore:
             len(rows),
             migrated,
             failed,
+        )
+
+    def _ensure_callee_summary_column(
+        self,
+        conn: sqlite3.Connection,
+        columns: Dict[str, Any],
+    ) -> None:
+        if "callee_summary_hash" in columns:
+            return
+
+        empty_hash = compute_callee_summary_hash({})
+        conn.execute(
+            "ALTER TABLE snapshots ADD COLUMN callee_summary_hash "
+            f"TEXT NOT NULL DEFAULT '{empty_hash}'"
+        )
+        rows = conn.execute(
+            "SELECT index_name, snapshot_file FROM snapshots"
+        ).fetchall()
+        migrated = 0
+        failed = 0
+        for index_name, snapshot_file in rows:
+            snapshot_path = self.snapshot_dir / str(snapshot_file or "")
+            try:
+                snapshot = cast(
+                    Dict[str, Any],
+                    json.loads(snapshot_path.read_text(encoding="utf-8")),
+                )
+                conn.execute(
+                    "UPDATE snapshots SET symbol_context_hash = ?, "
+                    "callee_summary_hash = ? WHERE index_name = ?",
+                    (
+                        compute_symbol_context_hash(snapshot),
+                        compute_callee_summary_hash(snapshot),
+                        str(index_name),
+                    ),
+                )
+                migrated += 1
+            except Exception as exc:
+                failed += 1
+                logger.warning(
+                    "[snapshot-migration] callee summary backfill failed "
+                    "index_name=%s snapshot_file=%s "
+                    "reason=callee_summary_backfill_failed error=%s",
+                    index_name,
+                    snapshot_file,
+                    exc,
+                )
+        conn.commit()
+        logger.info(
+            "[snapshot-migration] callee summary column completed "
+            "total=%d migrated=%d failed=%d",
+            len(rows),
+            migrated,
+            failed,
+        )
+
+    def _ensure_type_context_column(
+        self,
+        conn: sqlite3.Connection,
+        columns: Dict[str, Any],
+    ) -> None:
+        if "type_context_hash" in columns:
+            return
+        empty_hash = compute_type_context_hash({"referenced_types": []})
+        conn.execute(
+            "ALTER TABLE snapshots ADD COLUMN type_context_hash "
+            f"TEXT NOT NULL DEFAULT '{empty_hash}'"
+        )
+        conn.commit()
+        logger.info(
+            "[snapshot-migration] type context column completed "
+            "default=canonical_empty_type_context"
         )
 
     def _legacy_table_name(self, conn: sqlite3.Connection) -> str:
@@ -522,6 +745,8 @@ class SnapshotStore:
                         str(row["code_hash"] or ""),
                         str(row["semantic_hash"] or ""),
                         compute_symbol_context_hash(snapshot),
+                        compute_callee_summary_hash(snapshot),
+                        compute_type_context_hash(snapshot),
                         new_snapshot_file,
                         new_final_file,
                     )
@@ -533,20 +758,20 @@ class SnapshotStore:
                 )
 
             conn.execute("BEGIN IMMEDIATE")
-            self._create_schema(conn, "snapshots_v4")
+            self._create_schema(conn, "snapshots_v5")
             conn.executemany(
                 """
-                INSERT INTO snapshots_v4 (
+                INSERT INTO snapshots_v5 (
                     index_name, func_name, file_path, start_line, end_line,
-                    code_hash, semantic_hash, symbol_context_hash,
-                    snapshot_file, final_report_file
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    code_hash, semantic_hash, symbol_context_hash, callee_summary_hash,
+                    type_context_hash, snapshot_file, final_report_file
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 migrated,
             )
             legacy_table = self._legacy_table_name(conn)
             conn.execute(f"ALTER TABLE snapshots RENAME TO {legacy_table}")
-            conn.execute("ALTER TABLE snapshots_v4 RENAME TO snapshots")
+            conn.execute("ALTER TABLE snapshots_v5 RENAME TO snapshots")
             conn.commit()
             logger.info(
                 "[snapshot-migration] completed total=%d migrated=%d skipped=0 failed=0 collisions=0 legacy_table=%s",
@@ -619,6 +844,13 @@ class SnapshotStore:
                 invalid_symbol_fields,
             )
             raise ValueError("snapshot symbol context fields are incomplete")
+        if not isinstance(snapshot.get("referenced_types"), list):
+            logger.error(
+                "[snapshot-store] type context incomplete index_name=%s "
+                "reason=snapshot_type_context_incomplete",
+                index_name,
+            )
+            raise ValueError("snapshot referenced_types field is incomplete")
 
         try:
             snapshot_file = self._snapshot_filename(index_name)
@@ -629,6 +861,12 @@ class SnapshotStore:
             symbol_context_hash = compute_symbol_context_hash(
                 dependency_context if dependency_context is not None else snapshot
             )
+            callee_summary_hash = compute_callee_summary_hash(
+                dependency_context if dependency_context is not None else snapshot
+            )
+            type_context_hash = compute_type_context_hash(
+                dependency_context if dependency_context is not None else snapshot
+            )
 
             conn = self._connect()
             try:
@@ -636,9 +874,9 @@ class SnapshotStore:
                     """
                     INSERT INTO snapshots (
                         index_name, func_name, file_path, start_line, end_line,
-                        code_hash, semantic_hash, symbol_context_hash,
-                        snapshot_file, final_report_file
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                        code_hash, semantic_hash, symbol_context_hash, callee_summary_hash,
+                        type_context_hash, snapshot_file, final_report_file
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                     ON CONFLICT(index_name) DO UPDATE SET
                         func_name=excluded.func_name,
                         file_path=excluded.file_path,
@@ -647,6 +885,8 @@ class SnapshotStore:
                         code_hash=excluded.code_hash,
                         semantic_hash=excluded.semantic_hash,
                         symbol_context_hash=excluded.symbol_context_hash,
+                        callee_summary_hash=excluded.callee_summary_hash,
+                        type_context_hash=excluded.type_context_hash,
                         timestamp=CURRENT_TIMESTAMP,
                         snapshot_file=excluded.snapshot_file,
                         final_report_file=NULL
@@ -660,6 +900,8 @@ class SnapshotStore:
                         code_hash,
                         semantic_hash,
                         symbol_context_hash,
+                        callee_summary_hash,
+                        type_context_hash,
                         snapshot_file,
                     ),
                 )
@@ -816,7 +1058,8 @@ class SnapshotStore:
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT code_hash, semantic_hash, symbol_context_hash "
+                "SELECT code_hash, semantic_hash, symbol_context_hash, callee_summary_hash, "
+                "type_context_hash "
                 "FROM snapshots WHERE index_name = ?",
                 (index_name,),
             ).fetchone()
@@ -828,7 +1071,105 @@ class SnapshotStore:
             "code_hash": str(row[0]),
             "semantic_hash": str(row[1]),
             "symbol_context_hash": str(row[2]),
+            "callee_summary_hash": str(row[3]),
+            "type_context_hash": str(row[4]),
         }
+
+    def reconcile_project_callee_summaries(
+        self,
+        index_name: str,
+        current_symbol_context: Dict[str, Any],
+    ) -> str:
+        """Refresh program-owned project callee summaries without invoking an LLM.
+
+        Returns one of refreshed, unchanged, missing, llm_refresh_required, timeout,
+        or failed.
+        """
+
+        index_name = str(index_name or "").strip()
+        project_callees = current_symbol_context.get("project_callees")
+        if not index_name or not isinstance(project_callees, list):
+            return "failed"
+        if any(
+            not isinstance(item, dict) or "is_macro" in item
+            for item in project_callees
+        ):
+            return "llm_refresh_required"
+
+        lock_status = self.lock_manager.acquire_refresh(index_name)
+        if lock_status == "timeout":
+            return "timeout"
+
+        success = False
+        try:
+            snapshot = self.load_snapshot(index_name)
+            fingerprints = self.get_fingerprints(index_name)
+            if snapshot is None or fingerprints is None:
+                return "missing"
+            if (
+                compute_symbol_context_hash(current_symbol_context)
+                != fingerprints["symbol_context_hash"]
+            ):
+                return "llm_refresh_required"
+            if (
+                compute_type_context_hash(current_symbol_context)
+                != fingerprints["type_context_hash"]
+            ):
+                return "llm_refresh_required"
+
+            desired = _clone_json_value(project_callees)
+            desired_hash = compute_callee_summary_hash(
+                {"project_callees": desired}
+            )
+            if snapshot.get("project_callees") == desired:
+                if desired_hash != fingerprints["callee_summary_hash"]:
+                    conn = self._connect()
+                    try:
+                        conn.execute(
+                            "UPDATE snapshots SET callee_summary_hash = ?, "
+                            "timestamp = CURRENT_TIMESTAMP WHERE index_name = ?",
+                            (desired_hash, index_name),
+                        )
+                        conn.commit()
+                    finally:
+                        conn.close()
+                success = True
+                return "unchanged"
+
+            refreshed = _clone_snapshot(snapshot)
+            refreshed["project_callees"] = desired
+            snapshot_file = self._snapshot_filename(index_name)
+            self._write_json_atomic(self.snapshot_dir / snapshot_file, refreshed)
+            conn = self._connect()
+            try:
+                conn.execute(
+                    "UPDATE snapshots SET callee_summary_hash = ?, "
+                    "timestamp = CURRENT_TIMESTAMP, snapshot_file = ? "
+                    "WHERE index_name = ?",
+                    (desired_hash, snapshot_file, index_name),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            self._invalidate_snapshot_cache(index_name)
+            self._cache_snapshot(index_name, refreshed)
+            logger.info(
+                "[snapshot-reconcile] refreshed index_name=%s project_callees=%d",
+                index_name,
+                len(desired),
+            )
+            success = True
+            return "refreshed"
+        except Exception as exc:
+            logger.exception(
+                "[snapshot-reconcile] failed index_name=%s "
+                "reason=callee_summary_reconcile_failed error=%s",
+                index_name,
+                exc,
+            )
+            return "failed"
+        finally:
+            self.lock_manager.release(index_name, success=success)
 
     def needs_refresh(
         self,
@@ -837,6 +1178,47 @@ class SnapshotStore:
         current_symbol_context: Dict[str, Any],
     ) -> tuple[bool, Optional[str]]:
         snapshot = self.load_snapshot(index_name)
+        if snapshot is not None and (
+            "callees" in snapshot
+            or "callees_truncation" in snapshot
+            or not isinstance(snapshot.get("referenced_macros"), list)
+            or any(
+                isinstance(item, dict)
+                and (
+                    "callee_behavior" in item
+                    or "callee_summary" not in item
+                    or "is_macro" in item
+                )
+                for item in snapshot.get("project_callees", [])
+            )
+            or any(
+                not isinstance(item, dict)
+                or set(item)
+                != {
+                    "macro_index_name",
+                    "definition",
+                    "is_function_like",
+                    "reference_lines",
+                }
+                for item in snapshot.get("referenced_macros", [])
+            )
+        ):
+            return True, "snapshot_shape_changed"
+        if snapshot is not None and (
+            not isinstance(snapshot.get("referenced_types"), list)
+            or (
+                "unresolved_referenced_types" in snapshot
+                and (
+                    not isinstance(snapshot.get("unresolved_referenced_types"), list)
+                    or not snapshot.get("unresolved_referenced_types")
+                )
+            )
+            or (
+                "referenced_types_truncation" in snapshot
+                and not isinstance(snapshot.get("referenced_types_truncation"), dict)
+            )
+        ):
+            return True, "snapshot_shape_changed"
         if (
             snapshot is not None
             and str(snapshot.get("snapshot_kind") or "")
@@ -852,11 +1234,31 @@ class SnapshotStore:
             != fingerprints["symbol_context_hash"]
         ):
             return True, "symbol_context_changed"
-        if compute_code_hash(current_code) == fingerprints["code_hash"]:
+        current_type_hash = compute_type_context_hash(current_symbol_context)
+        if current_type_hash != fingerprints["type_context_hash"]:
+            logger.info(
+                "[type-context] refresh index_name=%s old_hash=%s new_hash=%s "
+                "reason=type_context_changed",
+                index_name,
+                fingerprints["type_context_hash"][:12],
+                current_type_hash[:12],
+            )
+            return True, "type_context_changed"
+        code_unchanged = compute_code_hash(current_code) == fingerprints["code_hash"]
+        semantic_unchanged = (
+            code_unchanged
+            or compute_semantic_fingerprint(current_code) == fingerprints["semantic_hash"]
+        )
+        if not semantic_unchanged:
+            return True, "code_changed"
+        if (
+            compute_callee_summary_hash(current_symbol_context)
+            != fingerprints["callee_summary_hash"]
+        ):
+            return False, "callee_summary_changed"
+        if code_unchanged:
             return False, None
-        if compute_semantic_fingerprint(current_code) == fingerprints["semantic_hash"]:
-            return False, "cosmetic_change_only"
-        return True, "code_changed"
+        return False, "cosmetic_change_only"
 
     def list_snapshots(self) -> list[str]:
         conn = self._connect()
