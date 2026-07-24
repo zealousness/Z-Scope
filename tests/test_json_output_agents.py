@@ -81,6 +81,47 @@ class StructuredOutputLLM:
         }
 
 
+class SinglePassLLM:
+    """Minimal LLM loop fake for the Semantic Modeler terminal-tool protocol."""
+
+    models = ["unit-model"]
+
+    def __init__(self, payload: dict, *, supports_structured_output: bool = False):
+        self.payload = payload
+        self.supports_structured_output = supports_structured_output
+        self.calls = []
+
+    def run_conversation_with_tools(self, **kwargs):
+        self.calls.append(kwargs)
+        tool_call = {
+            "id": "call_emit",
+            "type": "function",
+            "function": {
+                "name": "emit_function_snapshot",
+                "arguments": json.dumps(self.payload),
+            },
+        }
+        message = {"role": "assistant", "content": "", "tool_calls": [tool_call]}
+        return {
+            "content": "",
+            "conversation": [*kwargs["messages"], message],
+            "message": message,
+            "terminal_tool_payload": self.payload,
+            "terminal_tool_name": "emit_function_snapshot",
+            "terminal_tool_valid": True,
+            "terminal_tool_call_count": 1,
+            "final_tool_call_count": 1,
+            "iterations": 1,
+            "tool_call_count": 0,
+            "context_tokens": 10,
+            "cumulative_prompt_tokens": 8,
+            "cumulative_completion_tokens": 4,
+            "cumulative_total_tokens": 12,
+            "finish_reason": "tool_calls",
+            "provider_model": "unit-model",
+        }
+
+
 class GetCallersTool:
     name = "get_callers"
 
@@ -156,7 +197,7 @@ def _snapshot_payload() -> dict:
         "effects": [],
         "error_handling": {"error_paths": []},
         "callers": [],
-        "callees": [],
+        "project_callees": [],
         "suspicious_points": [],
     }
 
@@ -172,7 +213,8 @@ def _semantic_model_input(**overrides) -> dict:
         "is_static": False,
         "is_macro": False,
         "code": "void api_entry(void) {}",
-        "callees": [],
+        "project_callees": [],
+        "external_callees": [],
         "referenced_globals": [
             {
                 "name": "global_state",
@@ -190,11 +232,18 @@ def _semantic_model_input(**overrides) -> dict:
         ],
         "referenced_macros": [
             {
-                "name": "LIMIT",
-                "file_path": "demo.h",
-                "line": 2,
-                "definition": "#define LIMIT 8",
+                "macro_index_name": "LIMIT@demo.h:2-2",
+                "definition": "2 | #define LIMIT 8\n",
                 "is_function_like": False,
+                "reference_lines": [1],
+            }
+        ],
+        "referenced_types": [
+            {
+                "type_index_name": "ApiContext@demo.h:4-6",
+                "kind": "struct",
+                "full_definition": "4 | typedef struct { int value; } ApiContext;\n",
+                "reference_kinds": ["parameter"],
                 "reference_lines": [1],
             }
         ],
@@ -208,26 +257,9 @@ def _semantic_model_input(**overrides) -> dict:
     return payload
 
 
-def test_semantic_modeler_finalizes_function_snapshot_with_forced_tool(monkeypatch) -> None:
-    llm = RepairLLM("emit_function_snapshot", _snapshot_payload())
+def test_semantic_modeler_finalizes_function_snapshot_in_one_tool_conversation() -> None:
+    llm = SinglePassLLM(_snapshot_payload())
     agent = SemanticModeler(llm, [])
-    exploration_result = _prose_result()
-    exploration_result["conversation"] = [
-        {"role": "user", "content": "model api_entry"},
-        {"role": "assistant", "content": "collected-evidence-marker"},
-    ]
-    exploration_messages = []
-
-    def run_exploration(messages, *args, **kwargs):
-        del args, kwargs
-        exploration_messages.extend(messages)
-        return exploration_result
-
-    monkeypatch.setattr(
-        agent,
-        "_run_tool_conversation",
-        run_exploration,
-    )
 
     response = agent.run(_semantic_model_input())
 
@@ -239,65 +271,232 @@ def test_semantic_modeler_finalizes_function_snapshot_with_forced_tool(monkeypat
     assert response.data["referenced_macros"] == _semantic_model_input()[
         "referenced_macros"
     ]
+    assert response.data["referenced_types"] == _semantic_model_input()[
+        "referenced_types"
+    ]
     assert response.data["referenced_macros_truncation"] == {
         "truncated": True,
         "returned": 1,
         "total": 2,
     }
-    assert response.metadata["snapshot_finalization_attempted"] == 1
-    assert response.metadata["snapshot_finalization_accepted"] == 1
-    final_messages, final_kwargs = llm.calls[0]
-    assert any(message.get("content") == "collected-evidence-marker" for message in final_messages)
-    assert final_kwargs["tool_choice"] == {
-        "type": "function",
-        "function": {"name": "emit_function_snapshot"},
-    }
+    assert response.metadata["single_pass"] is True
+    assert response.metadata["finalization_mode"] == "single_pass_tool"
+    assert response.metadata["terminal_tool_call_count"] == 1
+    final_kwargs = llm.calls[0]
+    assert final_kwargs["terminal_tool_required"] is True
+    assert final_kwargs["terminal_tool_name"] == "emit_function_snapshot"
     assert (
-        final_kwargs["tools"][0]["function"]["parameters"]
+        final_kwargs["tools_schema"][-1]["function"]["parameters"]
         == llm_function_snapshot_schema(DEFAULT_FUNCTION_SNAPSHOT_SCHEMA)
     )
-    prompt_text = "\n".join(
-        str(message.get("content") or "") for message in exploration_messages
-    )
+    prompt_text = "\n".join(str(message.get("content") or "") for message in final_kwargs["messages"])
     assert "Target function metadata" in prompt_text
     assert "referenced_globals" in prompt_text
+    assert "referenced_types" in prompt_text
+    assert "Do not write a complete snapshot" in prompt_text
+
+
+def test_semantic_modeler_project_callees_are_program_owned() -> None:
+    payload = _snapshot_payload()
+    payload["project_callees"] = [
+        {
+            "callee_index_name": "unknown@unknown.c:3-4",
+            "callee_summary": "模型补充的未知摘要",
+        },
+        {
+            "callee_index_name": "known@known.c:1-2",
+            "callee_summary": "模型改写的已知摘要",
+        },
+    ]
+    input_data = _semantic_model_input(
+        project_callees=[
+            {
+                "callee_index_name": "known@known.c:1-2",
+                "callsite_lines": [10],
+                "call_type": ["direct"],
+                "is_static": True,
+                "callee_summary": "程序复用的 canonical summary",
+            },
+            {
+                "callee_index_name": "unknown@unknown.c:3-4",
+                "callsite_lines": [11],
+                "call_type": ["direct"],
+                "is_static": False,
+                "callee_summary": "unknown",
+            },
+        ],
+        external_callees=[
+            {
+                "callee_index_name": "printf",
+                "callsite_lines": [12],
+                "call_type": ["direct"],
+            }
+        ],
+    )
+    llm = SinglePassLLM(payload)
+
+    response = SemanticModeler(llm, []).run(input_data)
+
+    assert response.success is True
+    assert response.data["project_callees"] == input_data["project_callees"]
+    prompt_text = "\n".join(
+        str(message.get("content") or "")
+        for message in llm.calls[0]["messages"]
+    )
+    assert '"external_callees"' in prompt_text
+    assert '"printf"' in prompt_text
     assert "Location:" not in prompt_text
+    llm_schema = llm.calls[0]["tools_schema"][-1]["function"]["parameters"]
+    assert "project_callees" not in llm_schema["properties"]
+    assert "project_callees" not in llm_schema["required"]
 
 
-def test_semantic_modeler_uses_effective_schema_for_final_tool(monkeypatch) -> None:
+def test_semantic_modeler_ignores_all_llm_project_callee_items() -> None:
+    payload = _snapshot_payload()
+    payload["project_callees"] = [
+        {"callee_index_name": "", "callee_summary": "empty identity"},
+        {"callee_index_name": "rogue@rogue.c:1-1", "callee_summary": "rogue"},
+        {"callee_index_name": "target@target.c:1-2", "callee_summary": ""},
+        {"callee_index_name": "target@target.c:1-2", "callee_summary": "first valid"},
+        {"callee_index_name": "target@target.c:1-2", "callee_summary": "second valid"},
+    ]
+    input_record = {
+        "callee_index_name": "target@target.c:1-2",
+        "callsite_lines": [7],
+        "call_type": ["direct"],
+        "is_static": False,
+        "callee_summary": "unknown",
+    }
+
+    response = SemanticModeler(llm := SinglePassLLM(payload), []).run(
+        _semantic_model_input(project_callees=[input_record])
+    )
+
+    assert response.success is True
+    assert response.data["project_callees"] == [input_record]
+    assert len(response.data["project_callees"]) == 1
+    assert llm.calls
+
+
+def test_semantic_modeler_sparse_llm_callee_output_cannot_change_program_records() -> None:
+    payload = _snapshot_payload()
+    payload["project_callees"] = [
+        {
+            "callee_index_name": "second@second.c:3-4",
+            "callee_summary": "second summary",
+        }
+    ]
+    records = [
+        {
+            "callee_index_name": "first@first.c:1-2",
+            "callsite_lines": [5],
+            "call_type": ["direct"],
+            "is_static": False,
+            "callee_summary": "unknown",
+        },
+        {
+            "callee_index_name": "second@second.c:3-4",
+            "callsite_lines": [6],
+            "call_type": ["direct"],
+            "is_static": False,
+            "callee_summary": "unknown",
+        },
+    ]
+
+    response = SemanticModeler(SinglePassLLM(payload), []).run(
+        _semantic_model_input(project_callees=records)
+    )
+
+    assert response.data["project_callees"] == records
+
+
+def test_semantic_modeler_repairs_invalid_terminal_payload_in_same_conversation(monkeypatch) -> None:
+    from zscope.framework.llm_client import LLMClient
+
+    llm = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+    )
+    calls = []
+
+    def fake_chat_completion(messages, **kwargs):
+        calls.append((list(messages), kwargs))
+        payload = {"summary": "incomplete"} if len(calls) == 1 else _snapshot_payload()
+        return {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": f"call_emit_{len(calls)}",
+                                "type": "function",
+                                "function": {
+                                    "name": "emit_function_snapshot",
+                                    "arguments": json.dumps(payload),
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "model": "unit-model",
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+        }
+
+    monkeypatch.setattr(llm, "chat_completion", fake_chat_completion)
+    response = SemanticModeler(llm, []).run(_semantic_model_input())
+
+    assert response.success is True
+    assert len(calls) == 2
+    assert any(
+        message.get("role") == "tool"
+        and message.get("terminal_tool_result")
+        and "Invalid function_snapshot payload" in message.get("content", "")
+        for message in calls[1][0]
+    )
+    assert response.metadata["terminal_tool_call_count"] == 2
+    assert response.metadata["tool_call_count"] == 0
+    assert response.metadata["api_call_count"] == 2
+    assert response.data["index_name"] == "api_entry@demo.c:1-1"
+    assert response.data["referenced_globals"] == _semantic_model_input()["referenced_globals"]
+
+
+def test_semantic_modeler_uses_effective_schema_for_initial_terminal_tool() -> None:
     custom_schema = dict(DEFAULT_FUNCTION_SNAPSHOT_SCHEMA)
     custom_schema["description"] = "custom-schema-marker"
-    llm = RepairLLM("emit_function_snapshot", _snapshot_payload())
+    llm = SinglePassLLM(_snapshot_payload())
     agent = SemanticModeler(llm, [])
-    monkeypatch.setattr(agent, "_run_tool_conversation", lambda *args, **kwargs: _prose_result())
 
     response = agent.run(
         _semantic_model_input(schema=custom_schema)
     )
 
     assert response.success is True
-    _, final_kwargs = llm.calls[0]
-    assert final_kwargs["tools"][0]["function"]["parameters"] == llm_function_snapshot_schema(
+    final_kwargs = llm.calls[0]
+    assert final_kwargs["tools_schema"][-1]["function"]["parameters"] == llm_function_snapshot_schema(
         custom_schema
     )
 
 
-def test_semantic_modeler_uses_response_format_for_structured_output(monkeypatch) -> None:
-    llm = StructuredOutputLLM(_snapshot_payload())
+def test_semantic_modeler_uses_terminal_tool_even_for_structured_output_models() -> None:
+    llm = SinglePassLLM(_snapshot_payload(), supports_structured_output=True)
     agent = SemanticModeler(llm, [])
-    monkeypatch.setattr(agent, "_run_tool_conversation", lambda *args, **kwargs: _prose_result())
 
     response = agent.run(_semantic_model_input())
 
     assert response.success is True
-    _, final_kwargs = llm.calls[0]
-    assert (
-        final_kwargs["response_format"]["json_schema"]["schema"]
-        == llm_function_snapshot_schema(DEFAULT_FUNCTION_SNAPSHOT_SCHEMA)
+    final_kwargs = llm.calls[0]
+    assert final_kwargs["terminal_tool_name"] == "emit_function_snapshot"
+    assert final_kwargs["tools_schema"][-1]["function"]["parameters"] == llm_function_snapshot_schema(
+        DEFAULT_FUNCTION_SNAPSHOT_SCHEMA
     )
 
 
-def test_semantic_modeler_program_fields_override_llm_identity(monkeypatch) -> None:
+def test_semantic_modeler_program_fields_override_llm_identity() -> None:
     payload = _snapshot_payload()
     payload.update(
         {
@@ -312,6 +511,10 @@ def test_semantic_modeler_program_fields_override_llm_identity(monkeypatch) -> N
             "is_macro": True,
             "referenced_globals": [{"name": "wrong_global"}],
             "referenced_macros": [{"name": "WRONG_MACRO"}],
+            "referenced_types": [{"name": "WrongType"}],
+            "unresolved_referenced_types": [
+                {"name": "WrongMissing", "reason": "wrong"}
+            ],
             "referenced_globals_truncation": {
                 "truncated": True,
                 "returned": 1,
@@ -319,9 +522,8 @@ def test_semantic_modeler_program_fields_override_llm_identity(monkeypatch) -> N
             },
         }
     )
-    llm = RepairLLM("emit_function_snapshot", payload)
+    llm = SinglePassLLM(payload)
     agent = SemanticModeler(llm, [])
-    monkeypatch.setattr(agent, "_run_tool_conversation", lambda *args, **kwargs: _prose_result())
 
     response = agent.run(_semantic_model_input())
 
@@ -346,6 +548,10 @@ def test_semantic_modeler_program_fields_override_llm_identity(monkeypatch) -> N
     assert response.data["referenced_macros"] == _semantic_model_input()[
         "referenced_macros"
     ]
+    assert response.data["referenced_types"] == _semantic_model_input()[
+        "referenced_types"
+    ]
+    assert "unresolved_referenced_types" not in response.data
     assert "referenced_globals_truncation" not in response.data
 
 
@@ -378,8 +584,29 @@ def test_semantic_modeler_rejects_invalid_symbol_context_without_calling_llm() -
     assert llm.calls == []
 
 
-def test_semantic_modeler_blocks_redundant_target_function_info_call(monkeypatch) -> None:
+def test_semantic_modeler_rejects_invalid_or_empty_optional_type_context() -> None:
     llm = RepairLLM("emit_function_snapshot", _snapshot_payload())
+    agent = SemanticModeler(llm, [])
+
+    invalid = agent.run(_semantic_model_input(referenced_types={}))
+    legacy_resolved_item = _semantic_model_input()
+    legacy_resolved_item["referenced_types"][0]["start_line"] = 4
+    legacy = agent.run(legacy_resolved_item)
+    empty_optional = agent.run(
+        _semantic_model_input(unresolved_referenced_types=[])
+    )
+
+    assert invalid.success is False
+    assert legacy.success is False
+    assert empty_optional.success is False
+    assert invalid.metadata["reason"] == "semantic_model_input_invalid"
+    assert legacy.metadata["reason"] == "semantic_model_input_invalid"
+    assert empty_optional.metadata["reason"] == "semantic_model_input_invalid"
+    assert llm.calls == []
+
+
+def test_semantic_modeler_blocks_redundant_target_function_info_call(monkeypatch) -> None:
+    llm = SinglePassLLM(_snapshot_payload())
     agent = SemanticModeler(llm, [GetFunctionInfoTool()])
     tool_results = []
 
@@ -388,7 +615,7 @@ def test_semantic_modeler_blocks_redundant_target_function_info_call(monkeypatch
         tool_results.append(
             agent._tool_executor("get_function_info", {"func_name": "api_entry"})
         )
-        return _prose_result()
+        return llm.run_conversation_with_tools(messages=[])
 
     monkeypatch.setattr(agent, "_run_tool_conversation", run_exploration)
 
@@ -421,9 +648,16 @@ def test_semantic_modeler_schema_aligns_llm_snapshots_with_static_snapshots() ->
     assert properties["snapshot_kind"] == {"const": "LLM-modeled"}
     assert properties["is_static"] == {"type": "boolean"}
     assert properties["is_macro"] == {"type": "boolean"}
+    assert "definition_hash" not in properties["referenced_types"]["items"]["properties"]
+    assert "dependency_depth" not in properties["referenced_types"]["items"]["properties"]
+    for field in ("name", "file_path", "start_line", "end_line"):
+        assert field not in properties["referenced_types"]["items"]["properties"]
     for field in PROGRAM_PASSTHROUGH_SNAPSHOT_FIELDS:
-        assert field in required
         assert field in properties
+        if field == "project_callees":
+            assert field not in required
+        else:
+            assert field in required
     for field in PROGRAM_OPTIONAL_PASSTHROUGH_SNAPSHOT_FIELDS:
         assert field not in required
         assert field in properties
@@ -483,8 +717,6 @@ def test_semantic_modeler_schema_uses_parameters_and_return_values() -> None:
         "parameter_type",
         "meaning",
         "input_origin",
-        "nullable",
-        "constraints",
     }
     parameter_properties = properties["parameters"]["items"]["properties"]
     assert "trust" not in parameter_properties
@@ -513,13 +745,7 @@ def test_semantic_modeler_schema_uses_parameters_and_return_values() -> None:
     assert "Constraints, invariants" in properties["parameters"]["items"]["properties"]["constraints"]["description"]
 
     return_required = set(properties["return_values"]["required"])
-    assert return_required == {
-        "return_type",
-        "meaning",
-        "nullable",
-        "success_cases",
-        "failure_cases",
-    }
+    assert return_required == {"return_type"}
     assert "ownership" not in return_required
     assert "risk" not in properties["return_values"]["properties"]
     assert properties["return_values"]["properties"]["ownership"]["enum"] == [
@@ -529,9 +755,9 @@ def test_semantic_modeler_schema_uses_parameters_and_return_values() -> None:
         "static_storage",
         "unknown",
     ]
-    caller_obligation = properties["return_values"]["properties"]["caller_obligation"]
-    assert "Additional caller action" in caller_obligation["description"]
-    assert "Omit when no additional obligation exists" in caller_obligation["description"]
+    caller_obligations = properties["return_values"]["properties"]["caller_obligations"]
+    assert "Additional caller actions" in caller_obligations["description"]
+    assert "Omit when no additional obligation exists" in caller_obligations["description"]
 
 
 def test_semantic_modeler_schema_replaces_legacy_effect_sections() -> None:
@@ -598,7 +824,6 @@ def test_semantic_modeler_schema_uses_error_handling() -> None:
         "trigger",
         "exit_line",
         "exit_action",
-        "exit_states",
     }
     assert "return_value" in path_item["properties"]
     assert "risk" not in path_item["properties"]
@@ -606,7 +831,7 @@ def test_semantic_modeler_schema_uses_error_handling() -> None:
     exit_states = path_item["properties"]["exit_states"]
     assert exit_states["type"] == "array"
     assert "Final states of memory objects" in exit_states["description"]
-    assert "empty array" in exit_states["description"]
+    assert "Omit when no relevant object" in exit_states["description"]
     resource_item = exit_states["items"]
     assert set(resource_item["required"]) == {"kind", "object", "state"}
     assert "owner" in resource_item["properties"]
@@ -669,16 +894,46 @@ def test_semantic_modeler_schema_uses_lightweight_callers() -> None:
     }
 
 
-def test_semantic_modeler_schema_preserves_aggregated_callee_call_types() -> None:
-    callee = DEFAULT_FUNCTION_SNAPSHOT_SCHEMA["properties"]["callees"]["items"]
-    call_type = callee["properties"]["call_type"]
-
-    assert call_type == {
-        "type": "array",
-        "items": {"enum": ["direct", "indirect"]},
-        "minItems": 1,
-        "uniqueItems": True,
+def test_complete_schema_owns_full_project_callee_shape_but_llm_excludes_it() -> None:
+    callee = DEFAULT_FUNCTION_SNAPSHOT_SCHEMA["properties"]["project_callees"]["items"]
+    assert callee == {
+        "type": "object",
+        "required": [
+            "callee_index_name",
+            "callsite_lines",
+            "call_type",
+            "is_static",
+            "callee_summary",
+        ],
+        "properties": {
+            "callee_index_name": {"type": "string"},
+            "callsite_lines": {
+                "type": "array",
+                "items": {"type": "integer"},
+            },
+            "call_type": {
+                "type": "array",
+                "items": {"enum": ["direct", "indirect"]},
+                "minItems": 1,
+                "uniqueItems": True,
+            },
+            "is_static": {"type": "boolean"},
+            "callee_summary": {"type": "string"},
+        },
+        "additionalProperties": False,
     }
+    macro_item = DEFAULT_FUNCTION_SNAPSHOT_SCHEMA["properties"]["referenced_macros"]["items"]
+    assert macro_item["required"] == [
+        "macro_index_name",
+        "definition",
+        "is_function_like",
+        "reference_lines",
+    ]
+    assert set(macro_item["properties"]) == set(macro_item["required"])
+    assert "project_callees" not in DEFAULT_FUNCTION_SNAPSHOT_SCHEMA["required"]
+    llm_schema = llm_function_snapshot_schema(DEFAULT_FUNCTION_SNAPSHOT_SCHEMA)
+    assert "project_callees" not in llm_schema["required"]
+    assert "project_callees" not in llm_schema["properties"]
 
 
 def test_vulnerability_analyzer_repairs_final_report(monkeypatch) -> None:

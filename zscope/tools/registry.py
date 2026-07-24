@@ -42,6 +42,7 @@ def build_tool_registry(
             snapshot_store,
             code_index=code_index,
             resolver=snapshot_resolver,
+            user_config=user_config,
         ),
         ListFunctionsTool(code_index),
         GetFileSnippetTool(code_index),

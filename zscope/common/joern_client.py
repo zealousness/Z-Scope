@@ -614,6 +614,35 @@ class JoernClient:
         )
         return result if isinstance(result, list) else []
 
+    def get_function_type_references(
+        self,
+        name: str,
+        file_path: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Return direct signature/local type facts exposed by the Joern CPG."""
+        escaped_name = str(name or "").replace('"', '\\"')
+        escaped_file = str(file_path or "").replace("\\", "/").replace('"', '\\"')
+        method = f'cpg.method.nameExact("{escaped_name}")'
+        if escaped_file:
+            method += (
+                f'.filter(m => m.filename.replace("\\\\", "/").endsWith("{escaped_file}"))'
+            )
+        result = self.query(
+            method
+            + '.flatMap(m => '
+            + 'm.methodReturn.map(v => Map("typeFullName" -> v.typeFullName, '
+            + '"lineNumber" -> v.lineNumber.getOrElse(m.lineNumber.getOrElse(-1)), '
+            + '"referenceKind" -> "return")) ++ '
+            + 'm.parameter.map(v => Map("typeFullName" -> v.typeFullName, '
+            + '"lineNumber" -> v.lineNumber.getOrElse(m.lineNumber.getOrElse(-1)), '
+            + '"referenceKind" -> "parameter")) ++ '
+            + 'm.local.map(v => Map("typeFullName" -> v.typeFullName, '
+            + '"lineNumber" -> v.lineNumber.getOrElse(m.lineNumber.getOrElse(-1)), '
+            + '"referenceKind" -> "local"))'
+            + ').l.toJson'
+        )
+        return result if isinstance(result, list) else []
+
     def find_methods(self, pattern: str, limit: int = 50) -> List[str]:
         """Find method names matching a regex pattern."""
         result = self.query(

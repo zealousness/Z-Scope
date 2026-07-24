@@ -23,6 +23,7 @@ from ...snapshots.store import SnapshotStore
 from ...snapshots.modeling_input import (
     SemanticModelInputError,
     build_semantic_model_input,
+    hydrate_project_callee_summaries,
     resolve_function_info,
 )
 from ..candidates.evidence import (
@@ -310,6 +311,11 @@ class Analyzer:
                 entry_func,
                 file_path=entry_file_path,
                 include_context=True,
+            )
+            semantic_model_input = hydrate_project_callee_summaries(
+                semantic_model_input,
+                self.code_index,
+                self.snapshot_store,
             )
             impl_result = self.code_index.get_function_impl(
                 semantic_model_input["index_name"],
@@ -3911,6 +3917,11 @@ class Analyzer:
                 file_path=file_path or "",
                 include_context=True,
             )
+            context = hydrate_project_callee_summaries(
+                context,
+                self.code_index,
+                self.snapshot_store,
+            )
         except SemanticModelInputError as exc:
             return {"success": False, "error": str(exc), "reason": exc.reason}
 
@@ -4232,6 +4243,11 @@ class Analyzer:
                     index_name=str(impl.get("index_name") or ""),
                     start_line=int(impl.get("start_line") or 0) or None,
                     include_context=True,
+                )
+                context = hydrate_project_callee_summaries(
+                    context,
+                    self.code_index,
+                    self.snapshot_store,
                 )
             except SemanticModelInputError as exc:
                 logger.warning(
@@ -4583,6 +4599,11 @@ class Analyzer:
                 index_name=index_name,
                 include_context=False,
             )
+            context = hydrate_project_callee_summaries(
+                context,
+                self.code_index,
+                self.snapshot_store,
+            )
         except SemanticModelInputError as exc:
             logger.warning(
                 "Skipping LLM snapshot save index_name=%s reason=%s",
@@ -4592,10 +4613,17 @@ class Analyzer:
             return
 
         for field in (
+            "project_callees",
+            "external_callees",
             "referenced_globals",
             "referenced_macros",
+            "referenced_types",
+            "project_callees_truncation",
+            "external_callees_truncation",
             "referenced_globals_truncation",
             "referenced_macros_truncation",
+            "unresolved_referenced_types",
+            "referenced_types_truncation",
         ):
             if field in context:
                 snapshot_data[field] = deepcopy(context[field])

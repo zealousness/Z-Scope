@@ -1,8 +1,12 @@
-from copy import deepcopy
 from typing import Callable, Dict, Any, Optional
 from ..framework.base import BaseTool
-from ..snapshots.modeling_input import SemanticModelInputError, build_semantic_model_input
+from ..snapshots.modeling_input import (
+    SemanticModelInputError,
+    build_semantic_model_input,
+    hydrate_project_callee_summaries,
+)
 from ..snapshots.store import SnapshotStore
+from .function_info import GetFunctionInfoTool
 
 class GetFunctionSnapshotTool(BaseTool):
     """Tool to retrieve function semantic snapshot."""
@@ -13,6 +17,7 @@ class GetFunctionSnapshotTool(BaseTool):
         code_index: Any = None,
         resolver: Optional[Callable[[str, Optional[str]], Dict[str, Any]]] = None,
         on_missing: Optional[Callable[[str, Optional[str]], Dict[str, Any]]] = None,
+        user_config: Any = None,
     ):
         super().__init__(
             name="get_function_snapshot",
@@ -25,10 +30,16 @@ class GetFunctionSnapshotTool(BaseTool):
         self.snapshot_store = snapshot_store
         self.code_index = code_index
         self.resolver = resolver or on_missing
+        self.function_info_tool = (
+            GetFunctionInfoTool(code_index, user_config)
+            if code_index is not None
+            else None
+        )
 
     def execute(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         from ..common.utils import sanitize_func_name
-        func_name = sanitize_func_name(arguments.get("func_name", ""))
+        raw_func_name = arguments.get("func_name", "")
+        func_name = sanitize_func_name(raw_func_name)
         if not func_name:
             return {"success": False, "error": "Function name is empty"}
 
@@ -51,19 +62,23 @@ class GetFunctionSnapshotTool(BaseTool):
                 file_path=file_path or "",
                 include_context=False,
             )
+            context = hydrate_project_callee_summaries(
+                context,
+                self.code_index,
+                self.snapshot_store,
+            )
         except SemanticModelInputError as exc:
             return {"success": False, "error": str(exc), "reason": exc.reason}
         index_name = str(context["index_name"])
-        function_info = self._function_info_fallback(context)
         snapshot = self.snapshot_store.load_snapshot(index_name)
         if snapshot is None:
+            function_info = self._function_info_fallback(arguments)
             return {
                 "success": True,
                 "data": None,
                 "snapshot_status": "missing",
-                "reason": "no_snapshot",
                 "message": (
-                    "No snapshot exists; canonical function info is provided as fallback"
+                    "No snapshot exists; canonical function info is provided as fallback."
                 ),
                 "function_info": function_info,
             }
@@ -73,43 +88,31 @@ class GetFunctionSnapshotTool(BaseTool):
             context,
         )
         if needs_refresh:
+            function_info = self._function_info_fallback(arguments)
             return {
                 "success": True,
                 "data": None,
                 "snapshot_status": "stale",
-                "message": "Saved snapshot is stale and must be rebuilt",
-                "reason": reason,
+                "message": "Saved snapshot is stale and must be rebuilt.",
                 "function_info": function_info,
             }
         return {"success": True, "data": snapshot}
 
-    @staticmethod
-    def _function_info_fallback(context: Dict[str, Any]) -> Dict[str, Any]:
-        info = {
-            "function_name": str(context.get("func_name") or ""),
-            "index_name": str(context.get("index_name") or ""),
-            "file_path": str(context.get("file_path") or ""),
-            "start_line": int(context.get("start_line") or 0),
-            "end_line": int(context.get("end_line") or 0),
-            "signature": str(context.get("signature") or ""),
-            "is_static": bool(context.get("is_static")),
-            "is_macro": bool(context.get("is_macro")),
-            "callees": deepcopy(list(context.get("callees") or [])),
-            "referenced_globals": deepcopy(
-                list(context.get("referenced_globals") or [])
-            ),
-            "referenced_macros": deepcopy(
-                list(context.get("referenced_macros") or [])
-            ),
-        }
-        for field in (
-            "callees_truncation",
-            "referenced_globals_truncation",
-            "referenced_macros_truncation",
-        ):
-            if field in context:
-                info[field] = deepcopy(context[field])
-        return info
+    def _function_info_fallback(
+        self,
+        snapshot_arguments: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Return the complete public function-info response for this query."""
+        if self.function_info_tool is None:
+            return {
+                "success": False,
+                "error": "Function-info fallback requires a code index",
+            }
+
+        arguments = {"func_name": snapshot_arguments.get("func_name", "")}
+        if "file_path" in snapshot_arguments:
+            arguments["file_path"] = snapshot_arguments["file_path"]
+        return self.function_info_tool.execute(arguments)
 
     def get_schema(self) -> Dict[str, Any]:
         return {

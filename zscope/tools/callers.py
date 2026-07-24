@@ -9,15 +9,15 @@ GET_CALLERS_LIMIT = 20
 
 
 class GetCallersTool(BaseTool):
-    """Tool to find callers of a function via CPG."""
+    """Tool to find callers of a function or function-like macro via CPG."""
 
     def __init__(self, code_index: "CodeIndex"):
         super().__init__(
             name="get_callers",
             description=(
                 "Find canonical caller identities, callsite lines, and direct/indirect "
-                "call types for one uniquely matched function. Use file_path or index_name "
-                "to disambiguate same-name functions."
+                "call types for one uniquely matched function or function-like macro. "
+                "Use file_path or index_name to disambiguate same-name targets."
             ),
         )
         self.code_index = code_index
@@ -68,11 +68,14 @@ class GetCallersTool(BaseTool):
                     "properties": {
                         "func_name": {
                             "type": "string",
-                            "description": "Function name, qualified name, or index_name for exact match.",
+                            "description": (
+                                "Function or function-like macro name, qualified name, "
+                                "or index_name for exact match."
+                            ),
                         },
                         "file_path": {
                             "type": "string",
-                            "description": "Optional source file path used to disambiguate same-name functions.",
+                            "description": "Optional source file path used to disambiguate same-name targets.",
                         },
                     },
                     "required": ["func_name"],

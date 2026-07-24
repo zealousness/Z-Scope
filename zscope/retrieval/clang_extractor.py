@@ -25,6 +25,16 @@ HEADER_LIKE_SUFFIXES = {".h", ".hh", ".hpp", ".hxx", ".ph", ".inc", ".inl"}
 MACRO_DEFINE_RE = re.compile(
     r"^\s*#\s*define\s+(?P<name>[A-Za-z_]\w*)(?P<tail>.*)$"
 )
+TYPE_CONTEXT_BUILTINS = {
+    "void", "char", "signed", "unsigned", "short", "int", "long", "float",
+    "double", "bool", "_Bool", "size_t", "ssize_t", "ptrdiff_t", "wchar_t",
+    "const", "volatile", "restrict", "_Atomic", "atomic", "static", "extern",
+    "register", "auto", "inline", "struct", "union", "enum", "class", "typename",
+    "return", "if", "else", "for", "while", "do", "switch", "case", "default",
+    "break", "continue", "goto", "sizeof", "alignof", "_Alignof", "offsetof",
+    "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t", "uint16_t",
+    "uint32_t", "uint64_t", "intptr_t", "uintptr_t", "intmax_t", "uintmax_t",
+}
 
 
 class ClangExtractor:
@@ -703,6 +713,8 @@ class ClangExtractor:
                 if m:
                     is_system = 1 if m.group(1) == "<" else 0
                     included = m.group(2)
+                    if not is_system:
+                        included = self._canonical_included_file(file_path, included)
                     db._conn.execute(
                         "INSERT OR IGNORE INTO include_edges "
                         "(source_file, included_file, line, is_system) VALUES (?, ?, ?, ?)",
@@ -710,6 +722,25 @@ class ClangExtractor:
                     )
         except Exception:
             pass
+
+    def _canonical_included_file(self, source_file: Path, included: str) -> str:
+        clean = str(included or "").replace("\\", "/").strip()
+        local_candidate = (source_file.parent / clean).resolve()
+        root_candidate = (self.project_root / clean).resolve()
+        candidates = [path for path in (local_candidate, root_candidate) if path.exists()]
+        if not candidates and clean:
+            suffix_parts = Path(clean).parts
+            candidates = [
+                path.resolve()
+                for path in self.project_root.rglob(Path(clean).name)
+                if path.is_file() and tuple(path.parts[-len(suffix_parts):]) == suffix_parts
+            ]
+        unique = sorted({path for path in candidates})
+        selected = unique[0] if len(unique) == 1 else local_candidate
+        try:
+            return selected.relative_to(self.project_root).as_posix()
+        except ValueError:
+            return selected.as_posix()
 
     def _extract_macros(self, file_path: Path, rel_path: str) -> List[Tuple[Any, ...]]:
         rows: List[Tuple[Any, ...]] = []
@@ -736,6 +767,11 @@ class ClangExtractor:
                     match.group("name"),
                     rel_path,
                     start_idx + 1,
+                    idx + 1,
+                    (
+                        f"{match.group('name')}@{rel_path}:"
+                        f"{start_idx + 1}-{idx + 1}"
+                    ),
                     "".join(body_lines),
                     int(str(match.group("tail") or "").startswith("(")),
                 )
@@ -750,9 +786,17 @@ class ClangExtractor:
         get_macros = getattr(db, "get_all_macro_definitions", None)
         clear_refs = getattr(db, "clear_function_symbol_refs", None)
         insert_refs = getattr(db, "insert_function_symbol_refs_batch", None)
+        replace_macro_refs = getattr(db, "replace_function_macro_refs", None)
         if not all(
             callable(method)
-            for method in (get_functions, get_globals, get_macros, clear_refs, insert_refs)
+            for method in (
+                get_functions,
+                get_globals,
+                get_macros,
+                clear_refs,
+                insert_refs,
+                replace_macro_refs,
+            )
         ):
             return 0
 
@@ -760,6 +804,7 @@ class ClangExtractor:
         globals_by_name = self._records_by_name(get_globals())
         macros_by_name = self._records_by_name(get_macros())
         aggregated: Dict[Tuple[str, str, str, str, str, int], str] = {}
+        macro_refs: set[Tuple[int, int, int]] = set()
 
         functions_by_file: Dict[str, List[Dict[str, Any]]] = {}
         for function in functions:
@@ -786,6 +831,7 @@ class ClangExtractor:
                         globals_by_name,
                         macros_by_name,
                         aggregated,
+                        macro_refs,
                     )
             finally:
                 if document_opened:
@@ -797,8 +843,358 @@ class ClangExtractor:
         rows = [(*key, access) for key, access in sorted(aggregated.items())]
         clear_refs()
         insert_refs(rows)
+        replace_macro_refs(sorted(macro_refs))
         db.commit()
-        return len(rows)
+        return len(rows) + len(macro_refs)
+
+    def rebuild_function_type_refs(self, db: KnowledgeDB) -> int:
+        """Rebuild direct function type references after all TU facts are current."""
+        get_functions = getattr(db, "get_function_records", None)
+        get_types = getattr(db, "get_all_type_definitions", None)
+        replace_refs = getattr(db, "replace_function_type_refs", None)
+        if not all(callable(method) for method in (get_functions, get_types, replace_refs)):
+            return 0
+
+        functions = [row for row in get_functions() if not row.get("is_declaration")]
+        type_records = list(get_types())
+        types_by_name = self._records_by_name(type_records)
+        rows: List[Tuple[Any, ...]] = []
+        functions_by_file: Dict[str, List[Dict[str, Any]]] = {}
+        for function in functions:
+            functions_by_file.setdefault(str(function.get("file_path") or ""), []).append(function)
+
+        for function_file, file_functions in sorted(functions_by_file.items()):
+            source_path = self._resolve_indexed_source_path(function_file)
+            lines = self._read_source_lines(source_path)
+            if not lines:
+                continue
+            document_opened = False
+            try:
+                document_opened = bool(self.open_document(source_path))
+            except Exception:
+                document_opened = False
+            try:
+                include_closure_getter = getattr(db, "get_transitive_include_closure", None)
+                include_closure = (
+                    list(include_closure_getter(function_file))
+                    if callable(include_closure_getter)
+                    else [function_file]
+                )
+                for function in file_functions:
+                    rows.extend(
+                        self._collect_function_type_refs(
+                            function,
+                            function_file,
+                            source_path,
+                            lines,
+                            types_by_name,
+                            include_closure,
+                        )
+                    )
+            finally:
+                if document_opened:
+                    try:
+                        self.close_document(source_path)
+                    except Exception:
+                        pass
+
+        deduplicated = sorted(set(rows), key=lambda row: tuple(str(value) for value in row))
+        replace_refs(deduplicated)
+        db.commit()
+        return len(deduplicated)
+
+    def _collect_function_type_refs(
+        self,
+        function: Dict[str, Any],
+        function_file: str,
+        source_path: Path,
+        lines: List[str],
+        types_by_name: Dict[str, List[Dict[str, Any]]],
+        include_closure: List[str],
+    ) -> List[Tuple[Any, ...]]:
+        function_id = int(function.get("id") or 0)
+        if function_id <= 0:
+            return []
+        candidates = self._direct_function_type_candidates(function, lines, set(types_by_name))
+        resolved_cache: Dict[Tuple[str, int, int], Tuple[Optional[Dict[str, Any]], str]] = {}
+        rows: List[Tuple[Any, ...]] = []
+        for candidate in candidates:
+            name = str(candidate["name"])
+            lookup_line = int(candidate.get("lookup_line") or candidate["line"])
+            lookup_char = int(candidate.get("lookup_char") or candidate["character"])
+            cache_key = (name, lookup_line, lookup_char)
+            if cache_key not in resolved_cache:
+                definitions = self._definition_locations(source_path, lookup_line, lookup_char)
+                resolved_cache[cache_key] = self._resolve_type_definition_candidate(
+                    name,
+                    types_by_name.get(name, []),
+                    definitions,
+                    function_file,
+                    include_closure,
+                )
+            type_record, reason = resolved_cache[cache_key]
+            if type_record is None:
+                logger.warning(
+                    "[type-context] unresolved function=%s file=%s type=%s line=%d reason=%s",
+                    function.get("name"),
+                    function_file,
+                    name,
+                    int(candidate["line"]),
+                    reason,
+                )
+                rows.append(
+                    (
+                        function_id,
+                        None,
+                        "",
+                        name,
+                        function_file,
+                        int(candidate["line"]),
+                        str(candidate["kind"]),
+                        reason,
+                    )
+                )
+                continue
+            type_index_name = KnowledgeDB.type_index_name(type_record)
+            rows.append(
+                (
+                    function_id,
+                    int(type_record["id"]),
+                    type_index_name,
+                    name,
+                    function_file,
+                    int(candidate["line"]),
+                    str(candidate["kind"]),
+                    "",
+                )
+            )
+        return rows
+
+    def _direct_function_type_candidates(
+        self,
+        function: Dict[str, Any],
+        lines: List[str],
+        indexed_type_names: set[str],
+    ) -> List[Dict[str, Any]]:
+        start_line = max(1, int(function.get("start_line") or 1))
+        end_line = min(len(lines), max(start_line, int(function.get("end_line") or start_line)))
+        function_name = str(function.get("name") or "").split("::")[-1]
+        source_lines = lines[start_line - 1:end_line]
+        joined = "".join(source_lines)
+        brace_offset = joined.find("{")
+        signature_text = joined if brace_offset < 0 else joined[:brace_offset]
+        signature_end_line = start_line + signature_text.count("\n")
+        signature_function_match = re.search(rf"\b{re.escape(function_name)}\s*\(", signature_text)
+        signature_function_offset = (
+            signature_function_match.start() if signature_function_match else len(signature_text)
+        )
+        parameter_names = self._signature_parameter_names(signature_text, function_name)
+        candidates: List[Dict[str, Any]] = []
+        seen: set[Tuple[str, int, int, str]] = set()
+
+        def add(
+            name: str,
+            line: int,
+            character: int,
+            kind: str,
+            *,
+            lookup_line: Optional[int] = None,
+            lookup_char: Optional[int] = None,
+        ) -> None:
+            clean_name = str(name or "")
+            if (
+                not clean_name
+                or clean_name in TYPE_CONTEXT_BUILTINS
+                or clean_name == function_name
+                or not self._is_direct_type_candidate_name(
+                    clean_name,
+                    indexed_type_names,
+                )
+            ):
+                return
+            key = (clean_name, int(line), int(character), kind)
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append(
+                {
+                    "name": clean_name,
+                    "line": int(line),
+                    "character": int(character),
+                    "kind": kind,
+                    "lookup_line": int(lookup_line or line),
+                    "lookup_char": int(lookup_char if lookup_char is not None else character),
+                }
+            )
+
+        running_offset = 0
+        for line_offset, raw_line in enumerate(source_lines):
+            absolute_line = start_line + line_offset
+            signature_line = absolute_line <= signature_end_line
+            line_limit = len(raw_line)
+            if signature_line and absolute_line == signature_end_line and brace_offset >= 0:
+                line_prefix_offset = sum(len(value) for value in source_lines[:line_offset])
+                line_limit = max(0, brace_offset - line_prefix_offset)
+            masked_line = self._mask_c_comments_and_literals(raw_line[:line_limit])
+            if signature_line:
+                for token in re.finditer(r"\b[A-Za-z_]\w*\b", masked_line):
+                    name = token.group(0)
+                    absolute_offset = running_offset + token.start()
+                    if name in parameter_names or not self._is_direct_type_candidate_name(
+                        name,
+                        indexed_type_names,
+                    ):
+                        continue
+                    kind = "return" if absolute_offset < signature_function_offset else "parameter"
+                    parameter_fragment = masked_line[max(0, token.start() - 24):token.end() + 48]
+                    if "(*" in parameter_fragment.replace(" ", ""):
+                        kind = "function_pointer"
+                    add(name, absolute_line, token.start(), kind)
+            running_offset += len(raw_line)
+
+        variable_types: Dict[str, Tuple[str, int, int]] = {}
+        declaration_pattern = re.compile(
+            r"(?:^|[;{}])\s*(?:const\s+|volatile\s+|static\s+|register\s+|auto\s+|"
+            r"signed\s+|unsigned\s+|short\s+|long\s+|_Atomic\s+)*"
+            r"(?:(?:struct|union|enum|class)\s+)?(?P<type>[A-Za-z_]\w*)"
+            r"(?P<middle>(?:\s+|\*+|&+|const\b|volatile\b)+)"
+            r"(?P<var>[A-Za-z_]\w*)\s*(?=[=;,{\[])"
+        )
+        operator_patterns = (
+            ("sizeof", re.compile(r"\bsizeof\s*\(\s*(?:(?:struct|union|enum)\s+)?(?P<type>[A-Za-z_]\w*)")),
+            ("alignof", re.compile(r"\b(?:_Alignof|alignof)\s*\(\s*(?:(?:struct|union|enum)\s+)?(?P<type>[A-Za-z_]\w*)")),
+            ("offsetof", re.compile(r"\boffsetof\s*\(\s*(?:(?:struct|union|enum)\s+)?(?P<type>[A-Za-z_]\w*)")),
+            ("compound_literal", re.compile(r"\(\s*(?:(?:struct|union|enum)\s+)?(?P<type>[A-Za-z_]\w*)\s*(?:\*+\s*)?\)\s*\{")),
+            (
+                "cast",
+                re.compile(
+                    r"\(\s*(?:(?:struct|union|enum)\s+)?(?P<type>[A-Za-z_]\w*)"
+                    r"\s*(?:\*+|&)?\s*\)\s*(?=[A-Za-z_0-9&*!~(+-])"
+                ),
+            ),
+        )
+        for line_offset, raw_line in enumerate(source_lines):
+            absolute_line = start_line + line_offset
+            if absolute_line <= signature_end_line:
+                continue
+            masked_line = self._mask_c_comments_and_literals(raw_line)
+            for kind, pattern in operator_patterns:
+                for match in pattern.finditer(masked_line):
+                    name = match.group("type")
+                    add(name, absolute_line, match.start("type"), kind)
+            for match in declaration_pattern.finditer(masked_line):
+                name = match.group("type")
+                variable = match.group("var")
+                if name in TYPE_CONTEXT_BUILTINS:
+                    continue
+                kind = "function_pointer" if "(*" in match.group(0).replace(" ", "") else "local"
+                add(name, absolute_line, match.start("type"), kind)
+                variable_types[variable] = (name, absolute_line, match.start("type"))
+
+        signature_decl_pattern = re.compile(
+            r"(?:(?:struct|union|enum|class)\s+)?(?P<type>[A-Za-z_]\w*)"
+            r"(?:\s|\*|&|const|volatile)+(?P<var>[A-Za-z_]\w*)\s*(?=[,)])"
+        )
+        for match in signature_decl_pattern.finditer(signature_text):
+            name = match.group("type")
+            if name in TYPE_CONTEXT_BUILTINS:
+                continue
+            line = start_line + signature_text[:match.start("type")].count("\n")
+            line_start = signature_text.rfind("\n", 0, match.start("type")) + 1
+            character = match.start("type") - line_start
+            variable_types[match.group("var")] = (name, line, character)
+
+        for line_offset, raw_line in enumerate(source_lines):
+            absolute_line = start_line + line_offset
+            masked_line = self._mask_c_comments_and_literals(raw_line)
+            for variable, (name, lookup_line, lookup_char) in variable_types.items():
+                access = re.search(rf"\b{re.escape(variable)}\s*(?:->|\.)", masked_line)
+                if access:
+                    add(
+                        name,
+                        absolute_line,
+                        access.start(),
+                        "member_access",
+                        lookup_line=lookup_line,
+                        lookup_char=lookup_char,
+                    )
+
+        return sorted(
+            candidates,
+            key=lambda item: (item["line"], item["character"], item["name"], item["kind"]),
+        )
+
+    @staticmethod
+    def _is_direct_type_candidate_name(
+        name: str,
+        indexed_type_names: set[str],
+    ) -> bool:
+        clean = str(name or "")
+        if not clean or clean in TYPE_CONTEXT_BUILTINS:
+            return False
+        return (
+            clean in indexed_type_names
+            or clean[:1].isupper()
+            or clean.endswith("_t")
+        )
+
+    @staticmethod
+    def _signature_parameter_names(signature_text: str, function_name: str) -> set[str]:
+        match = re.search(rf"\b{re.escape(function_name)}\s*\((?P<params>.*)\)", signature_text, re.S)
+        if not match:
+            return set()
+        names: set[str] = set()
+        for parameter in match.group("params").split(","):
+            identifiers = [
+                item for item in re.findall(r"\b[A-Za-z_]\w*\b", parameter)
+                if item not in TYPE_CONTEXT_BUILTINS
+            ]
+            if len(identifiers) >= 2:
+                names.add(identifiers[-1])
+        return names
+
+    def _resolve_type_definition_candidate(
+        self,
+        name: str,
+        candidates: List[Dict[str, Any]],
+        definitions: List[Tuple[str, int]],
+        function_file: str,
+        include_closure: List[str],
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
+        if not candidates:
+            return None, "type_definition_not_found"
+        matched: List[Dict[str, Any]] = []
+        for target_file, target_line in definitions:
+            for candidate in candidates:
+                start_line = int(candidate.get("start_line") or 0)
+                end_line = int(candidate.get("end_line") or start_line)
+                if self._paths_match(target_file, str(candidate.get("file_path") or "")) and (
+                    target_line <= 0 or start_line <= target_line <= max(start_line, end_line)
+                ):
+                    matched.append(candidate)
+        unique_matched = {int(item.get("id") or 0): item for item in matched}
+        if len(unique_matched) == 1:
+            return next(iter(unique_matched.values())), ""
+        if len(unique_matched) > 1:
+            return None, "type_definition_ambiguous"
+        if definitions:
+            return None, "definition_not_indexed"
+
+        visible = [
+            candidate
+            for candidate in candidates
+            if self._paths_match(function_file, str(candidate.get("file_path") or ""))
+            or any(
+                self._paths_match(path, str(candidate.get("file_path") or ""))
+                for path in include_closure
+            )
+        ]
+        unique_visible = {int(item.get("id") or 0): item for item in visible}
+        if len(unique_visible) == 1:
+            return next(iter(unique_visible.values())), ""
+        if len(unique_visible) > 1:
+            return None, "type_definition_ambiguous"
+        return None, "type_not_visible"
 
     def _collect_function_symbol_refs(
         self,
@@ -809,6 +1205,7 @@ class ClangExtractor:
         globals_by_name: Dict[str, List[Dict[str, Any]]],
         macros_by_name: Dict[str, List[Dict[str, Any]]],
         aggregated: Dict[Tuple[str, str, str, str, str, int], str],
+        macro_refs: set[Tuple[int, int, int]],
     ) -> None:
         start_line = max(1, int(function.get("start_line") or 1))
         end_line = min(len(lines), max(start_line, int(function.get("end_line") or start_line)))
@@ -873,16 +1270,10 @@ class ClangExtractor:
                         r"\s*\(", masked_line[match.end():]
                     ):
                         continue
-                    symbol_file = str(macro_record.get("file_path") or "")
-                    key = (
-                        str(function.get("name") or ""),
-                        function_file,
-                        name,
-                        "macro",
-                        symbol_file,
-                        absolute_line,
-                    )
-                    aggregated[key] = "unknown"
+                    function_id = int(function.get("id") or 0)
+                    macro_id = int(macro_record.get("id") or 0)
+                    if function_id > 0 and macro_id > 0:
+                        macro_refs.add((function_id, macro_id, absolute_line))
 
     @staticmethod
     def _records_by_name(records: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
@@ -892,7 +1283,12 @@ class ClangExtractor:
             if name:
                 result.setdefault(name, []).append(dict(record))
         for rows in result.values():
-            rows.sort(key=lambda row: (str(row.get("file_path") or ""), int(row.get("line") or 0)))
+            rows.sort(
+                key=lambda row: (
+                    str(row.get("file_path") or ""),
+                    int(row.get("start_line") or row.get("line") or 0),
+                )
+            )
         return result
 
     def _resolve_indexed_source_path(self, file_path: str) -> Path:
@@ -1084,6 +1480,8 @@ class ClangExtractor:
 
         ref_count = self.rebuild_function_symbol_refs(db)
         logger.info("Rebuilt %d function symbol references", ref_count)
+        type_ref_count = self.rebuild_function_type_refs(db)
+        logger.info("[type-context] rebuilt %d direct function type references", type_ref_count)
         return stats
 
     def _extract_call_edges(

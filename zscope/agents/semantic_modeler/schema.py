@@ -18,19 +18,28 @@ PROGRAM_GENERATED_SNAPSHOT_FIELDS = (
 )
 
 PROGRAM_PASSTHROUGH_SNAPSHOT_FIELDS = (
+    "project_callees",
+    "external_callees",
     "referenced_globals",
     "referenced_macros",
+    "referenced_types",
 )
 
 PROGRAM_OPTIONAL_PASSTHROUGH_SNAPSHOT_FIELDS = (
+    "project_callees_truncation",
+    "external_callees_truncation",
     "referenced_globals_truncation",
     "referenced_macros_truncation",
+    "unresolved_referenced_types",
+    "referenced_types_truncation",
 )
 
 LLM_EXCLUDED_SNAPSHOT_FIELDS = (
     *PROGRAM_GENERATED_SNAPSHOT_FIELDS,
     *PROGRAM_PASSTHROUGH_SNAPSHOT_FIELDS,
     *PROGRAM_OPTIONAL_PASSTHROUGH_SNAPSHOT_FIELDS,
+    "callees",
+    "callees_truncation",
 )
 
 EFFECT_CATEGORY_ENUM = [
@@ -102,12 +111,13 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA: Dict[str, Any] = {
         "is_macro",
         "referenced_globals",
         "referenced_macros",
+        "referenced_types",
         "summary",
         "parameters",
         "return_values",
         "effects",
         "error_handling",
-        "callees",
+        "external_callees",
         "suspicious_points",
     ],
     "properties": {
@@ -157,6 +167,7 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA: Dict[str, Any] = {
                         "items": {"type": "integer"},
                     },
                 },
+                "additionalProperties": False,
             },
         },
         "referenced_macros": {
@@ -165,17 +176,13 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA: Dict[str, Any] = {
             "items": {
                 "type": "object",
                 "required": [
-                    "name",
-                    "file_path",
-                    "line",
+                    "macro_index_name",
                     "definition",
                     "is_function_like",
                     "reference_lines",
                 ],
                 "properties": {
-                    "name": {"type": "string"},
-                    "file_path": {"type": "string"},
-                    "line": {"type": "integer"},
+                    "macro_index_name": {"type": "string"},
                     "definition": {"type": "string"},
                     "is_function_like": {"type": "boolean"},
                     "reference_lines": {
@@ -183,7 +190,90 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA: Dict[str, Any] = {
                         "items": {"type": "integer"},
                     },
                 },
+                "additionalProperties": False,
             },
+        },
+        "referenced_types": {
+            "type": "array",
+            "description": "Program-resolved direct project type references with complete definitions.",
+            "items": {
+                "type": "object",
+                "required": [
+                    "type_index_name",
+                    "kind",
+                    "full_definition",
+                    "reference_kinds",
+                    "reference_lines",
+                ],
+                "properties": {
+                    "type_index_name": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "full_definition": {"type": "string"},
+                    "reference_kinds": {
+                        "type": "array",
+                        "items": {
+                            "enum": [
+                                "return",
+                                "parameter",
+                                "local",
+                                "cast",
+                                "sizeof",
+                                "alignof",
+                                "offsetof",
+                                "compound_literal",
+                                "member_access",
+                                "function_pointer",
+                            ]
+                        },
+                        "uniqueItems": True,
+                    },
+                    "reference_lines": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+        "unresolved_referenced_types": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Program-observed direct type references that could not be uniquely resolved.",
+            "items": {
+                "type": "object",
+                "required": ["name", "reference_kinds", "reference_lines", "reason"],
+                "properties": {
+                    "name": {"type": "string"},
+                    "reference_kinds": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "reference_lines": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                    },
+                    "reason": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+        },
+        "referenced_types_truncation": {
+            "type": "object",
+            "required": [
+                "truncated",
+                "returned",
+                "total",
+                "definition_bytes_returned",
+                "definition_bytes_limit",
+            ],
+            "properties": {
+                "truncated": {"const": True},
+                "returned": {"type": "integer"},
+                "total": {"type": "integer"},
+                "definition_bytes_returned": {"type": "integer"},
+                "definition_bytes_limit": {"type": "integer"},
+            },
+            "additionalProperties": False,
         },
         "referenced_globals_truncation": {
             "type": "object",
@@ -213,7 +303,6 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA: Dict[str, Any] = {
                     "parameter_type",
                     "meaning",
                     "input_origin",
-                    "nullable",
                 ],
                 "properties": {
                     "parameter_name": {"type": "string"},
@@ -410,20 +499,23 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA: Dict[str, Any] = {
                 },
             },
         },
-        "callees": {
+        "project_callees": {
             "type": "array",
+            "description": "Program-owned project call edges with canonical snapshot summaries.",
             "items": {
                 "type": "object",
                 "required": [
                     "callee_index_name",
                     "callsite_lines",
-                    "callee_behavior",
+                    "call_type",
+                    "is_static",
+                    "callee_summary",
                 ],
                 "properties": {
                     "callee_index_name": {"type": "string"},
                     "callsite_lines": {
                         "type": "array",
-                        "items": {"type": "integer"}
+                        "items": {"type": "integer"},
                     },
                     "call_type": {
                         "type": "array",
@@ -431,8 +523,33 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA: Dict[str, Any] = {
                         "minItems": 1,
                         "uniqueItems": True,
                     },
-                    "callee_behavior": {"type": "string"},
+                    "is_static": {"type": "boolean"},
+                    "callee_summary": {"type": "string"},
                 },
+                "additionalProperties": False,
+            },
+        },
+        "external_callees": {
+            "type": "array",
+            "description": "Program-extracted unresolved or external call edges; not emitted by the LLM.",
+            "items": {"type": "object"},
+        },
+        "project_callees_truncation": {
+            "type": "object",
+            "required": ["truncated", "returned", "total"],
+            "properties": {
+                "truncated": {"const": True},
+                "returned": {"type": "integer"},
+                "total": {"type": "integer"},
+            },
+        },
+        "external_callees_truncation": {
+            "type": "object",
+            "required": ["truncated", "returned", "total"],
+            "properties": {
+                "truncated": {"const": True},
+                "returned": {"type": "integer"},
+                "total": {"type": "integer"},
             },
         },
         "suspicious_points": {

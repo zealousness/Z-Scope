@@ -20,9 +20,10 @@ class ClangBackend(CodeBackend):
     使用 ClangExtractor 批量提取代码结构，存入 KnowledgeDB 供查询。
     """
 
-    MACRO_EXTRACTOR_VERSION = "1"
-    SYMBOL_CONTEXT_EXTRACTOR_VERSION = "1"
+    MACRO_EXTRACTOR_VERSION = "2"
+    SYMBOL_CONTEXT_EXTRACTOR_VERSION = "2"
     TYPE_EXTRACTOR_VERSION = "1"
+    FUNCTION_TYPE_REF_EXTRACTOR_VERSION = "2"
 
     def __init__(
         self,
@@ -110,6 +111,7 @@ class ClangBackend(CodeBackend):
             force_macro_refresh = self._macro_index_needs_refresh(db)
             force_symbol_context_refresh = self._symbol_context_index_needs_refresh(db)
             force_type_refresh = self._type_index_needs_refresh(db)
+            force_function_type_ref_refresh = self._function_type_ref_index_needs_refresh(db)
             if force_macro_refresh:
                 clear_macros = getattr(db, "clear_macro_definitions", None)
                 if callable(clear_macros):
@@ -148,6 +150,7 @@ class ClangBackend(CodeBackend):
                 self._mark_macro_index_current(db)
                 self._mark_symbol_context_index_current(db)
                 self._mark_type_index_current(db)
+                self._mark_function_type_ref_index_current(db)
                 self._status = "ready"
                 return True
 
@@ -160,6 +163,7 @@ class ClangBackend(CodeBackend):
                     or force_macro_refresh
                     or force_symbol_context_refresh
                     or force_type_refresh
+                    or force_function_type_ref_refresh
                 ):
                     changed = True
                     db.mark_tu_pending(tu_id)
@@ -175,6 +179,7 @@ class ClangBackend(CodeBackend):
                 self._mark_macro_index_current(db)
                 self._mark_symbol_context_index_current(db)
                 self._mark_type_index_current(db)
+                self._mark_function_type_ref_index_current(db)
                 self._status = "ready"
                 return True
 
@@ -208,9 +213,20 @@ class ClangBackend(CodeBackend):
                 "Extraction complete: %d extracted, %d skipped, %d failed",
                 stats["success"], stats["skipped"], stats["failed"],
             )
-            self._mark_macro_index_current(db)
-            self._mark_symbol_context_index_current(db)
             self._mark_type_index_current(db)
+            if int(stats.get("failed") or 0) == 0:
+                self._mark_macro_index_current(db)
+                self._mark_symbol_context_index_current(db)
+                self._mark_function_type_ref_index_current(db)
+            else:
+                logger.warning(
+                    "[macro-context] extractor versions not advanced failed_tus=%d",
+                    int(stats.get("failed") or 0),
+                )
+                logger.warning(
+                    "[type-context] extractor version not advanced failed_tus=%d",
+                    int(stats.get("failed") or 0),
+                )
             self._status = "ready"
             return True
         except Exception as e:
@@ -268,6 +284,26 @@ class ClangBackend(CodeBackend):
         set_metadata = getattr(db, "set_metadata", None)
         if callable(set_metadata):
             set_metadata("type_extractor_version", self.TYPE_EXTRACTOR_VERSION)
+
+    def _function_type_ref_index_needs_refresh(self, db: Any) -> bool:
+        get_metadata = getattr(db, "get_metadata", None)
+        if not callable(get_metadata):
+            return False
+        try:
+            return (
+                str(get_metadata("function_type_ref_extractor_version") or "")
+                != self.FUNCTION_TYPE_REF_EXTRACTOR_VERSION
+            )
+        except Exception:
+            return False
+
+    def _mark_function_type_ref_index_current(self, db: Any) -> None:
+        set_metadata = getattr(db, "set_metadata", None)
+        if callable(set_metadata):
+            set_metadata(
+                "function_type_ref_extractor_version",
+                self.FUNCTION_TYPE_REF_EXTRACTOR_VERSION,
+            )
 
     def _is_path_allowed(self, p: Path) -> bool:
         """Check if a path passes include/exclude filters."""
@@ -368,6 +404,11 @@ class ClangBackend(CodeBackend):
             return []
         return self._db.get_macro_definitions(name, limit=limit)
 
+    def get_macro_definitions_batch(self, names: List[str]) -> List[Dict[str, Any]]:
+        if not self._db:
+            return []
+        return self._db.get_macro_definitions_batch(names)
+
     def get_function_symbol_context(
         self,
         func_name: str,
@@ -376,6 +417,16 @@ class ClangBackend(CodeBackend):
         if not self._db:
             return {"referenced_globals": [], "referenced_macros": []}
         return self._db.get_function_symbol_context(func_name, file_path)
+
+    def get_function_type_context(
+        self,
+        func_name: str,
+        file_path: str = "",
+        start_line: int = 0,
+    ) -> Dict[str, Any]:
+        if not self._db:
+            return {"referenced_types": []}
+        return self._db.get_function_type_context(func_name, file_path, start_line)
 
     def get_method_callees(self, name: str, limit: int = 30) -> List[Dict[str, Any]]:
         if not self._db:

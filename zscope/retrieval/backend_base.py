@@ -144,6 +144,10 @@ class CodeBackend(ABC):
         """Return macro definitions by name when the backend has macro facts."""
         return []
 
+    def get_macro_definitions_batch(self, names: List[str]) -> List[Dict[str, Any]]:
+        """Return macro definitions for a set of symbol names."""
+        return []
+
     def get_function_symbol_context(
         self,
         func_name: str,
@@ -151,6 +155,15 @@ class CodeBackend(ABC):
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Return globals and macros referenced by one function."""
         return {"referenced_globals": [], "referenced_macros": []}
+
+    def get_function_type_context(
+        self,
+        func_name: str,
+        file_path: str = "",
+        start_line: int = 0,
+    ) -> Dict[str, Any]:
+        """Return direct project type references for one function identity."""
+        return {"referenced_types": []}
 
     def get_function_info_callees(
         self,

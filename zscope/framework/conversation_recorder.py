@@ -40,6 +40,8 @@ class _ConversationSessionState:
     latest_exchange: Optional[Dict[str, Any]] = None
     tool_result_count: int = 0
     last_tool_result_summary: Optional[Dict[str, Any]] = None
+    terminal_tool_call_count: int = 0
+    last_terminal_tool_summary: Optional[Dict[str, Any]] = None
     ended_at: Optional[str] = None
     iterations: Optional[int] = None
     context_tokens: Optional[int] = None
@@ -154,6 +156,32 @@ class ConversationRecorder:
                 result,
                 error,
             )
+            state.dirty = True
+        self._rewrite_session_files(state)
+
+    def record_terminal_tool(
+        self,
+        session: ConversationSession,
+        iteration: int,
+        tool_name: Optional[str],
+        tool_args: Dict[str, Any],
+        valid: bool,
+        error: Optional[str] = None,
+    ) -> None:
+        """Record a final-tool submission without counting it as a normal tool result."""
+        with self._locked("record_terminal_tool", session):
+            state = self._state_for(session)
+            state.terminal_tool_call_count += 1
+            state.last_terminal_tool_summary = {
+                "event": "terminal_tool_summary",
+                "session": self._session_dict(session),
+                "timestamp": self._now(),
+                "iteration": iteration,
+                "tool_name": tool_name,
+                "valid": bool(valid),
+                "tool_arg_keys": sorted(str(k) for k in tool_args.keys()),
+                "error": self._truncate(error, 500) if error else None,
+            }
             state.dirty = True
         self._rewrite_session_files(state)
 
@@ -309,6 +337,21 @@ class ConversationRecorder:
                     parts.append(f"- Last error: `{summary.get('error')}`\n")
             parts.append("\n")
 
+        if state.terminal_tool_call_count:
+            summary = state.last_terminal_tool_summary or {}
+            parts.extend(
+                [
+                    "#### Terminal Tool Summary\n\n",
+                    f"- Terminal submissions observed: `{state.terminal_tool_call_count}`\n",
+                    f"- Last terminal tool: `{summary.get('tool_name') or 'unknown'}`\n",
+                    f"- Last terminal payload valid: `{str(bool(summary.get('valid'))).lower()}`\n",
+                    f"- Last terminal argument keys: `{', '.join(summary.get('tool_arg_keys') or []) or '(none)'}`\n",
+                ]
+            )
+            if summary.get("error"):
+                parts.append(f"- Last terminal error: `{summary.get('error')}`\n")
+            parts.append("\n")
+
         if state.ended_at:
             parts.extend(
                 [
@@ -346,6 +389,18 @@ class ConversationRecorder:
                     ).get("timestamp", self._now()),
                     "tool_result_count": state.tool_result_count,
                     "last_tool_result": state.last_tool_result_summary,
+                }
+            )
+        if state.terminal_tool_call_count:
+            events.append(
+                {
+                    "event": "terminal_tool_summary",
+                    "session": self._session_dict(session),
+                    "timestamp": (
+                        state.last_terminal_tool_summary or {}
+                    ).get("timestamp", self._now()),
+                    "terminal_tool_call_count": state.terminal_tool_call_count,
+                    "last_terminal_tool": state.last_terminal_tool_summary,
                 }
             )
         if state.ended_at:

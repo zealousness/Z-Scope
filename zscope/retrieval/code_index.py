@@ -26,8 +26,24 @@ DECLARATION_LINE_RE = re.compile(
 )
 
 FUNCTION_INFO_CALLEES_LIMIT = 30
+FUNCTION_INFO_EXTERNAL_CALLEES_LIMIT = 20
 FUNCTION_INFO_GLOBALS_LIMIT = 50
-FUNCTION_INFO_MACROS_LIMIT = 30
+FUNCTION_INFO_MACROS_LIMIT = 50
+REFERENCED_TYPES_LIMIT = 30
+REFERENCED_TYPE_DEFINITION_BYTES_LIMIT = 8 * 1024
+REFERENCED_TYPES_DEFINITION_BYTES_LIMIT = 32 * 1024
+REFERENCED_TYPE_KIND_ORDER = (
+    "return",
+    "parameter",
+    "function_pointer",
+    "local",
+    "cast",
+    "sizeof",
+    "alignof",
+    "offsetof",
+    "compound_literal",
+    "member_access",
+)
 FUNCTION_INFO_STORAGE_CLASSES = {
     "static",
     "extern",
@@ -80,6 +96,7 @@ class CodeIndex:
         self._function_file_index: Dict[str, set[str]] = {}
         self._function_file_resolution_cache: Dict[Tuple[str, str], str] = {}
         self._declaration_comment_index: Optional[Dict[str, List[Dict[str, Any]]]] = None
+        self._regex_type_definition_cache: Optional[Dict[str, List[Dict[str, Any]]]] = None
         self._backend: Optional[CodeBackend] = backend
         self._svf_entry_functions = list(svf_entry_functions or [])
         self._defer_svf = defer_svf
@@ -1594,25 +1611,89 @@ class CodeIndex:
         file_path: str = "",
         limit: int = 20,
     ) -> Dict[str, Any]:
-        """Return canonical caller records when the target function is unique."""
+        """Return canonical caller records for one function or function-like macro."""
         raw_query = str(func_name or "").strip()
         matches = self._find_function_matches(raw_query, file_path=file_path)
-        if not matches:
+        macro_impls: List[Dict[str, Any]] = []
+        location_name, _, _, _ = self._function_location_query_parts(raw_query)
+        if not matches and location_name:
+            macro_impls = self._find_macro_impls(
+                raw_query,
+                file_path=file_path,
+                max_lines=None,
+                function_like_only=True,
+                include_callees=False,
+                exact_location_only=True,
+            )
+        if not matches and not macro_impls:
             matches = self._find_function_matches(
                 raw_query,
                 file_path=file_path,
                 allow_simple_fallback=True,
             )
-        if len(matches) != 1:
-            return {"match_count": len(matches), "callers": []}
+        if matches:
+            if len(matches) != 1:
+                return {"match_count": len(matches), "callers": []}
 
-        index_key, info = matches[0]
-        callers = self._function_info_callers(
-            index_key,
-            str(info.get("file") or info.get("filename") or ""),
+            index_key, info = matches[0]
+            callers = self._function_info_callers(
+                index_key,
+                str(info.get("file") or info.get("filename") or ""),
+                limit=max(0, int(limit)),
+            )
+            return {"match_count": 1, "callers": callers}
+
+        if not macro_impls:
+            macro_impls = self._find_macro_impls(
+                raw_query,
+                file_path=file_path,
+                max_lines=None,
+                function_like_only=True,
+                include_callees=False,
+            )
+
+        macro_targets: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for impl in macro_impls:
+            macro_name = str(impl.get("func_name") or "")
+            macro_file = self._normalize_index_file_value(str(impl.get("file") or ""))
+            macro_targets.setdefault((macro_name, macro_file), impl)
+        if len(macro_targets) != 1:
+            return {"match_count": len(macro_targets), "callers": []}
+
+        (macro_name, macro_file), _ = next(iter(macro_targets.items()))
+        callers = self._macro_function_info_callers(
+            macro_name,
+            macro_file,
             limit=max(0, int(limit)),
         )
         return {"match_count": 1, "callers": callers}
+
+    def _macro_function_info_callers(
+        self,
+        macro_name: str,
+        macro_file: str,
+        *,
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        if limit <= 0 or not self._backend:
+            return []
+        try:
+            getter = getattr(self._backend, "get_function_info_callers", None)
+            if callable(getter):
+                try:
+                    callers = getter(macro_name, macro_file)
+                except TypeError:
+                    callers = getter(macro_name)
+            else:
+                callers = self._backend.get_callers(
+                    macro_name,
+                    limit=self._function_info_raw_edge_limit(limit),
+                    callee_file=macro_file,
+                )
+        except Exception as exc:
+            logger.debug("Macro caller lookup failed for %s: %s", macro_name, exc)
+            return []
+        return self._aggregate_function_info_callers(callers)[:limit]
 
     def _macro_function_info_payload(self, impl: Dict[str, Any]) -> Dict[str, Any]:
         function_name = str(impl.get("func_name") or "")
@@ -1621,7 +1702,14 @@ class CodeIndex:
         end_line = self._safe_int(impl.get("end_line"))
         if end_line < start_line:
             end_line = start_line
-        symbol_context = self._macro_function_info_symbol_context(function_name, impl)
+        callee_payload, macro_edges = self._function_info_callee_context(
+            self._macro_function_info_callee_rows(function_name, impl)
+        )
+        symbol_context = self._macro_function_info_symbol_context(
+            function_name,
+            impl,
+            extra_macros=macro_edges,
+        )
         return {
             "function_name": function_name,
             "file_path": file_path,
@@ -1632,17 +1720,26 @@ class CodeIndex:
             "is_static": False,
             "is_macro": True,
             "code": str(impl.get("code") or ""),
-            "callees": self._macro_function_info_callees(function_name, impl),
-            "referenced_globals": symbol_context["referenced_globals"],
-            "referenced_macros": symbol_context["referenced_macros"],
+            **callee_payload,
+            **symbol_context,
+            "referenced_types": [],
         }
 
     def _macro_function_info_callees(
         self,
         macro_name: str,
         impl: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return self._function_info_callee_payload(
+            self._macro_function_info_callee_rows(macro_name, impl)
+        )
+
+    def _macro_function_info_callee_rows(
+        self,
+        macro_name: str,
+        impl: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
-        groups: Dict[str, Dict[str, Any]] = {}
+        rows: List[Dict[str, Any]] = []
         for raw_line in str(impl.get("code") or "").splitlines():
             match = re.match(r"^\s*(\d+)\s*\|\s?(.*)$", raw_line)
             line_no = self._safe_int(match.group(1)) if match else 0
@@ -1650,100 +1747,185 @@ class CodeIndex:
             for callee_name in self._filter_callee_names(extract_function_calls(source_line)):
                 if callee_name == macro_name:
                     continue
-                entry = groups.setdefault(
-                    callee_name,
+                rows.append(
                     {
-                        "callee_index_name": self._function_info_callee_index_name(
-                            callee_name,
-                            self._function_file_for_query(callee_name),
-                        ),
-                        "callsite_lines": [],
-                        "call_type": ["direct"],
-                    },
+                        "name": callee_name,
+                        "filename": self._function_file_for_query(callee_name),
+                        "lineNumber": line_no,
+                        "call_type": "direct",
+                    }
                 )
-                if line_no > 0 and line_no not in entry["callsite_lines"]:
-                    entry["callsite_lines"].append(line_no)
-        return sorted(
-            groups.values(),
-            key=lambda item: str(item.get("callee_index_name") or ""),
-        )[:FUNCTION_INFO_CALLEES_LIMIT]
+        return rows
 
     def _macro_function_info_symbol_context(
         self,
         macro_name: str,
         impl: Dict[str, Any],
-    ) -> Dict[str, List[Dict[str, Any]]]:
-        globals_index = {} if self._backend else self._get_global_definition_index()
-        macros_index = {} if self._backend else self._get_macro_definition_index()
+        *,
+        extra_macros: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         file_path = str(impl.get("file") or "")
+        candidates = self._macro_symbol_reference_candidates(macro_name, impl)
+        if self._backend:
+            macros_index = self._backend_macro_definition_index(candidates)
+        else:
+            macros_index = self._get_macro_definition_index()
+
+        referenced_macros: List[Dict[str, Any]] = []
+        strict_resolution = self._backend is not None
+        for name, candidate in candidates.items():
+            macro_record = self._resolve_macro_symbol_definition(
+                name,
+                macros_index.get(name, []),
+                file_path,
+                strict=strict_resolution,
+            )
+            if macro_record is None:
+                continue
+            reference_lines = candidate["reference_lines"]
+            if self._macro_record_is_function_like(macro_record):
+                reference_lines = candidate["call_reference_lines"]
+            if not reference_lines:
+                continue
+            referenced_macros.append(
+                {
+                    **macro_record,
+                    "reference_lines": reference_lines,
+                }
+            )
+
+        referenced_macros = self._merge_function_info_macros(
+            referenced_macros,
+            extra_macros or [],
+        )
+        payload: Dict[str, Any] = {
+            "referenced_globals": [],
+        }
+        payload["referenced_macros"] = referenced_macros[:FUNCTION_INFO_MACROS_LIMIT]
+        if len(referenced_macros) > FUNCTION_INFO_MACROS_LIMIT:
+            payload["referenced_macros_truncation"] = self._truncation_payload(
+                FUNCTION_INFO_MACROS_LIMIT,
+                len(referenced_macros),
+            )
+        return payload
+
+    def _macro_symbol_reference_candidates(
+        self,
+        macro_name: str,
+        impl: Dict[str, Any],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Discover identifier references in a macro body without classifying them."""
         signature = str(impl.get("signature") or "")
         parameters_match = re.search(r"\(([^)]*)\)", signature)
-        parameters = {
-            value.strip()
-            for value in str(parameters_match.group(1) if parameters_match else "").split(",")
-            if value.strip()
+        parameters = set(
+            re.findall(
+                r"\b[A-Za-z_]\w*\b",
+                str(parameters_match.group(1) if parameters_match else ""),
+            )
+        )
+        preprocessor_tokens = {
+            "define",
+            "defined",
+            "elif",
+            "else",
+            "endif",
+            "error",
+            "if",
+            "ifdef",
+            "ifndef",
+            "include",
+            "line",
+            "pragma",
+            "undef",
+            "warning",
         }
-        global_groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
-        macro_groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        start_line = self._safe_int(impl.get("start_line"))
+        candidates: Dict[str, Dict[str, Any]] = {}
 
-        for raw_line in str(impl.get("code") or "").splitlines():
+        for offset, raw_line in enumerate(str(impl.get("code") or "").splitlines()):
             match = re.match(r"^\s*(\d+)\s*\|\s?(.*)$", raw_line)
-            line_no = self._safe_int(match.group(1)) if match else 0
+            line_no = self._safe_int(match.group(1)) if match else start_line + offset
             source_line = match.group(2) if match else raw_line
             masked_line = self._mask_function_info_source_line(source_line)
             for token in re.finditer(r"\b[A-Za-z_]\w*\b", masked_line):
                 name = token.group(0)
-                if name == macro_name or name in parameters:
+                if (
+                    name == macro_name
+                    or name in parameters
+                    or name in preprocessor_tokens
+                ):
                     continue
-                if name in globals_index and not self._function_info_field_access(
+                if self._function_info_field_access(
                     masked_line,
                     token.start(),
                 ):
-                    record = self._preferred_function_info_record(globals_index[name], file_path)
-                    key = (name, str(record.get("file_path") or ""))
-                    entry = global_groups.setdefault(
-                        key,
-                        {
-                            **record,
-                            "type": str(record.get("type") or record.get("type_str") or ""),
-                            "access": "unknown",
-                            "reference_lines": [],
-                        },
-                    )
-                    entry["access"] = self._merge_function_info_access(
-                        str(entry.get("access") or "unknown"),
-                        self._function_info_regex_access(
-                            masked_line,
-                            token.start(),
-                            token.end(),
-                        ),
-                    )
-                    if line_no > 0 and line_no not in entry["reference_lines"]:
-                        entry["reference_lines"].append(line_no)
-                if name in macros_index:
-                    record = self._preferred_function_info_record(macros_index[name], file_path)
-                    key = (name, str(record.get("file_path") or ""))
-                    entry = macro_groups.setdefault(
-                        key,
-                        {**record, "reference_lines": []},
-                    )
-                    if line_no > 0 and line_no not in entry["reference_lines"]:
-                        entry["reference_lines"].append(line_no)
+                    continue
+                entry = candidates.setdefault(
+                    name,
+                    {
+                        "reference_lines": [],
+                        "call_reference_lines": [],
+                    },
+                )
+                if line_no > 0 and line_no not in entry["reference_lines"]:
+                    entry["reference_lines"].append(line_no)
+                if re.match(r"\s*\(", masked_line[token.end() :]):
+                    if line_no > 0 and line_no not in entry["call_reference_lines"]:
+                        entry["call_reference_lines"].append(line_no)
+        return candidates
 
-        referenced_globals = [
-            self._normalize_function_info_global(item)
-            for item in global_groups.values()
+    def _backend_macro_definition_index(
+        self,
+        candidates: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        macros_index: Dict[str, List[Dict[str, Any]]] = {}
+        getter = getattr(self._backend, "get_macro_definitions_batch", None)
+        if not callable(getter) or not candidates:
+            return macros_index
+        try:
+            definitions = getter(sorted(candidates))
+        except Exception as exc:
+            logger.debug("Macro definition lookup failed: %s", exc)
+            return macros_index
+        for record in definitions or []:
+            if not isinstance(record, dict):
+                continue
+            name = str(record.get("name") or "")
+            if name in candidates:
+                macros_index.setdefault(name, []).append(dict(record))
+        return macros_index
+
+    def _resolve_macro_symbol_definition(
+        self,
+        symbol_name: str,
+        records: List[Dict[str, Any]],
+        macro_file: str,
+        *,
+        strict: bool,
+    ) -> Optional[Dict[str, Any]]:
+        if not records:
+            return None
+        if not strict:
+            return self._preferred_function_info_record(records, macro_file)
+        same_file = [
+            record
+            for record in records
+            if self._paths_match_hint(
+                str(record.get("file_path") or record.get("file") or ""),
+                macro_file,
+            )
         ]
-        referenced_macros = [
-            self._normalize_function_info_macro(item)
-            for item in macro_groups.values()
-        ]
-        referenced_globals.sort(key=lambda item: (item["name"], item["file_path"], item["line"]))
-        referenced_macros.sort(key=lambda item: (item["name"], item["file_path"], item["line"]))
-        return {
-            "referenced_globals": referenced_globals[:FUNCTION_INFO_GLOBALS_LIMIT],
-            "referenced_macros": referenced_macros[:FUNCTION_INFO_MACROS_LIMIT],
-        }
+        if len(same_file) == 1:
+            return same_file[0]
+        if not same_file and len(records) == 1:
+            return records[0]
+        logger.debug(
+            "Macro definition is ambiguous symbol=%s macro_file=%s candidates=%d",
+            symbol_name,
+            macro_file,
+            len(same_file or records),
+        )
+        return None
 
     def _macro_impl_index_name(self, impl: Dict[str, Any]) -> str:
         function_name = str(impl.get("func_name") or "")
@@ -1789,15 +1971,457 @@ class CodeIndex:
             "is_static": self._function_record_is_static(info),
             "is_macro": False,
         }
-        callees, callee_total = self._function_info_callees(index_key)
-        payload["callees"] = callees
-        if callee_total > len(callees):
-            payload["callees_truncation"] = self._truncation_payload(
-                len(callees),
-                callee_total,
+        callee_payload, macro_edges = self._function_info_callee_context(
+            self._function_info_callees(index_key)
+        )
+        payload.update(callee_payload)
+        payload.update(
+            self._function_info_symbol_context(
+                index_key,
+                raw_file,
+                extra_macros=macro_edges,
             )
-        payload.update(self._function_info_symbol_context(index_key, raw_file))
+        )
+        payload.update(
+            self._function_info_type_context(
+                index_key,
+                raw_file,
+                self._safe_int(info.get("start_line") or info.get("lineNumber")),
+            )
+        )
         return payload
+
+    def get_function_type_context(
+        self,
+        func_name: str,
+        file_path: str = "",
+        start_line: int = 0,
+    ) -> Dict[str, Any]:
+        """Return the budgeted direct type context for one unique function."""
+        matches = self._find_function_matches(str(func_name or "").strip(), file_path=file_path)
+        if not matches:
+            matches = self._find_function_matches(
+                str(func_name or "").strip(),
+                file_path=file_path,
+                allow_simple_fallback=True,
+            )
+        if len(matches) != 1:
+            return {"referenced_types": []}
+        index_key, info = matches[0]
+        raw_file = str(info.get("file") or info.get("filename") or file_path)
+        resolved_start = self._safe_int(
+            start_line or info.get("start_line") or info.get("lineNumber")
+        )
+        return self._function_info_type_context(index_key, raw_file, resolved_start)
+
+    def _function_info_type_context(
+        self,
+        index_key: str,
+        raw_file: str,
+        start_line: int,
+    ) -> Dict[str, Any]:
+        if not self._backend:
+            return self._function_info_type_context_regex(index_key, raw_file, start_line)
+        with self._cache_lock:
+            info = self._function_index.get(index_key) or {}
+        backend_lookup = str(
+            info.get("qualified_name") or info.get("name") or index_key
+        )
+        getter = getattr(self._backend, "get_function_type_context", None)
+        if not callable(getter):
+            return {"referenced_types": []}
+        try:
+            try:
+                raw_context = getter(backend_lookup, raw_file, start_line)
+            except TypeError:
+                raw_context = getter(backend_lookup, raw_file)
+        except Exception as exc:
+            logger.warning(
+                "[type-context] query failed index_name=%s reason=backend_query_failed error=%s",
+                index_key,
+                exc,
+            )
+            return {
+                "referenced_types": [],
+                "unresolved_referenced_types": [
+                    {
+                        "name": "[type-context]",
+                        "reference_kinds": [],
+                        "reference_lines": [],
+                        "reason": "backend_query_failed",
+                    }
+                ],
+            }
+        result = self._normalize_and_budget_type_context(raw_context)
+        logger.debug(
+            "[type-context] query index_name=%s resolved=%d unresolved=%d bytes=%d truncated=%s",
+            index_key,
+            len(result["referenced_types"]),
+            len(result.get("unresolved_referenced_types", [])),
+            sum(
+                len(str(item.get("full_definition") or "").encode("utf-8"))
+                for item in result["referenced_types"]
+            ),
+            bool(result.get("referenced_types_truncation")),
+        )
+        return result
+
+    def _function_info_type_context_regex(
+        self,
+        index_key: str,
+        raw_file: str,
+        start_line: int,
+    ) -> Dict[str, Any]:
+        with self._cache_lock:
+            info = dict(self._function_index.get(index_key) or {})
+        try:
+            source_path = self._resolve_file_path(raw_file)
+            lines = self._read_file_lines(source_path)
+        except (OSError, ValueError):
+            return {"referenced_types": []}
+        if not lines:
+            return {"referenced_types": []}
+
+        type_index = self._get_regex_type_definition_index()
+        if not type_index:
+            return {"referenced_types": []}
+        from .clang_extractor import ClangExtractor
+
+        extractor = ClangExtractor(project_root=self.source_root)
+        function_record = {
+            "name": str(info.get("name") or info.get("qualified_name") or index_key),
+            "start_line": self._safe_int(start_line or info.get("start_line")),
+            "end_line": self._safe_int(info.get("end_line") or info.get("lineNumberEnd")),
+            "signature": str(info.get("signature") or ""),
+        }
+        candidates = extractor._direct_function_type_candidates(
+            function_record,
+            lines,
+            set(type_index),
+        )
+        visible_files = self._regex_transitive_include_closure(raw_file)
+        resolved: Dict[str, Dict[str, Any]] = {}
+        unresolved: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for candidate in candidates:
+            name = str(candidate.get("name") or "")
+            definitions = [
+                item
+                for item in type_index.get(name, [])
+                if self._paths_match_hint(str(item.get("file_path") or ""), raw_file)
+                or any(
+                    self._paths_match_hint(str(item.get("file_path") or ""), visible)
+                    for visible in visible_files
+                )
+            ]
+            if len(definitions) != 1:
+                reason = "type_definition_not_found" if not definitions else "type_definition_ambiguous"
+                entry = unresolved.setdefault(
+                    (name, reason),
+                    {
+                        "name": name,
+                        "reference_kinds": [],
+                        "reference_lines": [],
+                        "reason": reason,
+                    },
+                )
+            else:
+                definition = definitions[0]
+                identity = str(definition["type_index_name"])
+                entry = resolved.setdefault(
+                    identity,
+                    {
+                        **definition,
+                        "reference_kinds": [],
+                        "reference_lines": [],
+                    },
+                )
+            reference_kind = str(candidate.get("kind") or "")
+            reference_line = self._safe_int(candidate.get("line"))
+            if reference_kind and reference_kind not in entry["reference_kinds"]:
+                entry["reference_kinds"].append(reference_kind)
+            if reference_line > 0 and reference_line not in entry["reference_lines"]:
+                entry["reference_lines"].append(reference_line)
+
+        raw_context: Dict[str, Any] = {"referenced_types": list(resolved.values())}
+        if unresolved:
+            raw_context["unresolved_referenced_types"] = list(unresolved.values())
+        return self._normalize_and_budget_type_context(raw_context)
+
+    def _get_regex_type_definition_index(self) -> Dict[str, List[Dict[str, Any]]]:
+        with self._cache_lock:
+            if self._regex_type_definition_cache is not None:
+                return {
+                    name: [dict(item) for item in items]
+                    for name, items in self._regex_type_definition_cache.items()
+                }
+
+        index: Dict[str, List[Dict[str, Any]]] = {}
+        patterns = (
+            re.compile(
+                r"\btypedef\s+(?P<tag_kind>struct|union|enum)\s*(?P<tag>[A-Za-z_]\w*)?\s*"
+                r"\{.*?\}\s*(?P<name>[A-Za-z_]\w*)\s*;",
+                re.S,
+            ),
+            re.compile(
+                r"\b(?P<kind>struct|union|enum|class)\s+(?P<name>[A-Za-z_]\w*)\s*"
+                r"\{.*?\}\s*;",
+                re.S,
+            ),
+            re.compile(
+                r"\btypedef\s+(?!struct\b|union\b|enum\b)(?P<body>[^;{}]+?)\s+"
+                r"(?P<name>[A-Za-z_]\w*)\s*;"
+            ),
+        )
+        for file_name in self._find_all_files():
+            try:
+                file_path = self._resolve_file_path(file_name)
+                text = self._read_file_text(file_path)
+            except (OSError, ValueError):
+                continue
+            normalized_file = self._normalize_index_file_value(file_name)
+            seen_ranges: set[Tuple[str, int, int]] = set()
+            for pattern in patterns:
+                for match in pattern.finditer(text):
+                    name = str(match.groupdict().get("name") or "")
+                    if not name:
+                        continue
+                    start_line = text.count("\n", 0, match.start()) + 1
+                    end_line = text.count("\n", 0, match.end()) + 1
+                    dedupe_key = (name, start_line, end_line)
+                    if dedupe_key in seen_ranges:
+                        continue
+                    seen_ranges.add(dedupe_key)
+                    kind = str(
+                        match.groupdict().get("kind")
+                        or match.groupdict().get("tag_kind")
+                        or "typedef"
+                    )
+                    item = {
+                        "type_index_name": (
+                            f"{name}@{normalized_file}:{start_line}-{end_line}"
+                        ),
+                        "name": name,
+                        "kind": kind,
+                        "file_path": normalized_file,
+                        "start_line": start_line,
+                        "end_line": end_line,
+                        "full_definition": match.group(0),
+                    }
+                    index.setdefault(name, []).append(item)
+        for items in index.values():
+            items.sort(key=lambda item: item["type_index_name"])
+        with self._cache_lock:
+            self._regex_type_definition_cache = {
+                name: [dict(item) for item in items] for name, items in index.items()
+            }
+        return index
+
+    def _regex_transitive_include_closure(self, raw_file: str) -> List[str]:
+        graph: Dict[str, List[str]] = {}
+        for file_name in self._find_all_files():
+            try:
+                path = self._resolve_file_path(file_name)
+                lines = self._read_file_lines(path)
+            except (OSError, ValueError):
+                continue
+            source = self._normalize_index_file_value(file_name)
+            for line in lines:
+                match = re.match(r'\s*#\s*include\s+"(?P<path>[^"]+)"', line)
+                if not match:
+                    continue
+                include_text = match.group("path")
+                local = (path.parent / include_text).resolve()
+                root = (self.source_root / include_text).resolve()
+                candidates = [candidate for candidate in (local, root) if candidate.exists()]
+                if not candidates:
+                    suffix = Path(include_text).parts
+                    candidates = [
+                        candidate.resolve()
+                        for candidate in self.source_root.rglob(Path(include_text).name)
+                        if candidate.is_file()
+                        and tuple(candidate.parts[-len(suffix):]) == suffix
+                    ]
+                unique = sorted(set(candidates))
+                if len(unique) != 1:
+                    continue
+                graph.setdefault(source, []).append(self._normalize_path(unique[0]))
+
+        root_file = self._normalize_index_file_value(raw_file)
+        visited: set[str] = set()
+        pending = [root_file]
+        while pending:
+            current = pending.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            pending.extend(item for item in graph.get(current, []) if item not in visited)
+        return sorted(visited)
+
+    def _normalize_and_budget_type_context(self, raw_context: Any) -> Dict[str, Any]:
+        context = raw_context if isinstance(raw_context, dict) else {}
+        unresolved: List[Dict[str, Any]] = []
+        unresolved_seen: set[Tuple[str, str, Tuple[str, ...], Tuple[int, ...]]] = set()
+
+        def add_unresolved(
+            name: Any,
+            reason: Any,
+            reference_kinds: Any,
+            reference_lines: Any,
+        ) -> None:
+            kinds = self._normalized_type_reference_kinds(reference_kinds)
+            lines = self._normalized_line_list(reference_lines)
+            clean_name = str(name or "").strip()
+            clean_reason = str(reason or "type_not_resolved").strip() or "type_not_resolved"
+            key = (clean_name, clean_reason, tuple(kinds), tuple(lines))
+            if key in unresolved_seen:
+                return
+            unresolved_seen.add(key)
+            unresolved.append(
+                {
+                    "name": clean_name,
+                    "reference_kinds": kinds,
+                    "reference_lines": lines,
+                    "reason": clean_reason,
+                }
+            )
+
+        for item in list(context.get("unresolved_referenced_types") or []):
+            if isinstance(item, dict):
+                add_unresolved(
+                    item.get("name"),
+                    item.get("reason"),
+                    item.get("reference_kinds"),
+                    item.get("reference_lines"),
+                )
+
+        normalized: Dict[str, Dict[str, Any]] = {}
+        for raw_item in list(context.get("referenced_types") or []):
+            if not isinstance(raw_item, dict):
+                continue
+            name = str(raw_item.get("name") or "").strip()
+            kind = str(raw_item.get("kind") or "unknown").strip() or "unknown"
+            file_path = self._normalize_index_file_value(str(raw_item.get("file_path") or ""))
+            item_start = self._safe_int(raw_item.get("start_line"))
+            item_end = self._safe_int(raw_item.get("end_line") or item_start)
+            full_definition = self._numbered_type_definition(
+                file_path,
+                item_start,
+                item_end,
+                str(raw_item.get("full_definition") or ""),
+            )
+            reference_kinds = self._normalized_type_reference_kinds(
+                raw_item.get("reference_kinds")
+            )
+            reference_lines = self._normalized_line_list(raw_item.get("reference_lines"))
+            if not name or not file_path or item_start <= 0 or not full_definition:
+                add_unresolved(
+                    name,
+                    "definition_incomplete",
+                    reference_kinds,
+                    reference_lines,
+                )
+                continue
+            identity = str(raw_item.get("type_index_name") or "").strip()
+            if not identity:
+                identity = f"{name}@{file_path}:{item_start}-{item_end}"
+            current = normalized.get(identity)
+            if current is None:
+                current = {
+                    "_name": name,
+                    "type_index_name": identity,
+                    "kind": kind,
+                    "full_definition": full_definition,
+                    "reference_kinds": [],
+                    "reference_lines": [],
+                }
+                normalized[identity] = current
+            current["reference_kinds"] = self._normalized_type_reference_kinds(
+                list(current["reference_kinds"]) + reference_kinds
+            )
+            current["reference_lines"] = self._normalized_line_list(
+                list(current["reference_lines"]) + reference_lines
+            )
+
+        candidates = sorted(
+            normalized.values(),
+            key=lambda item: (
+                0
+                if {"return", "parameter", "function_pointer"}
+                & set(item["reference_kinds"])
+                else 1,
+                item["type_index_name"],
+            ),
+        )
+        returned: List[Dict[str, Any]] = []
+        definition_bytes = 0
+        truncated = False
+        for item in candidates:
+            item_bytes = len(str(item["full_definition"]).encode("utf-8"))
+            if item_bytes > REFERENCED_TYPE_DEFINITION_BYTES_LIMIT:
+                add_unresolved(
+                    item["_name"],
+                    "definition_too_large",
+                    item["reference_kinds"],
+                    item["reference_lines"],
+                )
+                truncated = True
+                continue
+            if len(returned) >= REFERENCED_TYPES_LIMIT:
+                truncated = True
+                continue
+            if definition_bytes + item_bytes > REFERENCED_TYPES_DEFINITION_BYTES_LIMIT:
+                truncated = True
+                continue
+            returned.append(
+                {key: value for key, value in item.items() if key != "_name"}
+            )
+            definition_bytes += item_bytes
+
+        returned.sort(key=lambda item: item["type_index_name"])
+        unresolved.sort(key=lambda item: (item["name"], item["reason"], item["reference_lines"]))
+        result: Dict[str, Any] = {"referenced_types": returned}
+        if unresolved:
+            result["unresolved_referenced_types"] = unresolved
+        if truncated:
+            result["referenced_types_truncation"] = {
+                "truncated": True,
+                "returned": len(returned),
+                "total": len(candidates),
+                "definition_bytes_returned": definition_bytes,
+                "definition_bytes_limit": REFERENCED_TYPES_DEFINITION_BYTES_LIMIT,
+            }
+        return result
+
+    def _numbered_type_definition(
+        self,
+        file_path: str,
+        start_line: int,
+        end_line: int,
+        fallback_definition: str,
+    ) -> str:
+        """Project a type definition through the canonical file-snippet formatter."""
+        line_count = max(1, int(end_line) - int(start_line) + 1)
+        snippet = self.get_file_snippet(
+            file_path,
+            start_line,
+            end_line,
+            max_lines=line_count,
+            default_max_lines=line_count,
+        )
+        if snippet and str(snippet.get("code") or ""):
+            return str(snippet["code"])
+        return self._numbered_code(
+            str(fallback_definition or "").splitlines(True),
+            max(0, int(start_line or 1) - 1),
+        )
+
+    @staticmethod
+    def _normalized_type_reference_kinds(value: Any) -> List[str]:
+        allowed = set(REFERENCED_TYPE_KIND_ORDER)
+        values = value if isinstance(value, list) else []
+        unique = {str(item) for item in values if str(item) in allowed}
+        order = {name: index for index, name in enumerate(REFERENCED_TYPE_KIND_ORDER)}
+        return sorted(unique, key=lambda item: order[item])
 
     def _function_info_callers(
         self,
@@ -1841,7 +2465,7 @@ class CodeIndex:
     def _function_info_callees(
         self,
         index_key: str,
-    ) -> Tuple[List[Dict[str, Any]], int]:
+    ) -> List[Dict[str, Any]]:
         if not self._backend:
             return self._function_info_callees_regex(index_key)
         try:
@@ -1860,65 +2484,86 @@ class CodeIndex:
                 callees = self._backend.get_callees(backend_lookup, limit=1_000_000)
         except Exception as exc:
             logger.debug("Callee lookup failed for %s: %s", index_key, exc)
-            return [], 0
+            return []
         aggregated = self._aggregate_function_info_callees(callees)
-        aggregated.sort(
-            key=lambda item: str(item.get("callee_index_name") or "")
-        )
-        return aggregated[:FUNCTION_INFO_CALLEES_LIMIT], len(aggregated)
+        return aggregated
+
+    def _function_info_callee_payload_for_index(self, index_key: str) -> Dict[str, Any]:
+        return self._function_info_callee_payload(self._function_info_callees(index_key))
+
+    def _function_info_callee_payload(
+        self,
+        rows: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Classify, aggregate, and independently truncate project/external callees."""
+
+        payload, _macro_edges = self._function_info_callee_context(rows)
+        return payload
+
+    def _function_info_callee_context(
+        self,
+        rows: List[Dict[str, Any]],
+    ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+        """Return public function call edges and canonical macro-reference edges."""
+
+        project_callees, external_callees, macro_edges = self._split_function_info_callees(rows)
+        payload: Dict[str, Any] = {
+            "project_callees": project_callees[:FUNCTION_INFO_CALLEES_LIMIT],
+            "external_callees": external_callees[:FUNCTION_INFO_EXTERNAL_CALLEES_LIMIT],
+        }
+        if len(project_callees) > len(payload["project_callees"]):
+            payload["project_callees_truncation"] = self._truncation_payload(
+                len(payload["project_callees"]), len(project_callees)
+            )
+        if len(external_callees) > len(payload["external_callees"]):
+            payload["external_callees_truncation"] = self._truncation_payload(
+                len(payload["external_callees"]), len(external_callees)
+            )
+        return payload, macro_edges
 
     def _function_info_callees_regex(
         self,
         index_key: str,
-    ) -> Tuple[List[Dict[str, Any]], int]:
+    ) -> List[Dict[str, Any]]:
         with self._cache_lock:
             info = dict(self._function_index.get(index_key) or {})
         file_value = str(info.get("file") or info.get("filename") or "")
         try:
             lines = self._read_file_lines(self._resolve_file_path(file_value))
         except Exception:
-            return [], 0
+            return []
         start_line = max(1, self._safe_int(info.get("start_line") or info.get("lineNumber")))
         end_line = min(
             len(lines),
             max(start_line, self._safe_int(info.get("end_line") or info.get("lineNumberEnd"))),
         )
-        groups: Dict[str, Dict[str, Any]] = {}
+        rows: List[Dict[str, Any]] = []
         function_name = str(info.get("name") or info.get("qualified_name") or index_key)
         for offset, raw_line in enumerate(lines[start_line - 1:end_line]):
             absolute_line = start_line + offset
             for name in self._filter_callee_names(extract_function_calls(raw_line)):
                 if name == function_name:
                     continue
-                entry = groups.setdefault(
-                    name,
+                rows.append(
                     {
-                        "callee_index_name": self._function_info_callee_index_name(
-                            name,
-                            self._function_file_for_query(name),
-                        ),
-                        "callsite_lines": [],
-                        "call_type": ["direct"],
-                    },
+                        "name": name,
+                        "filename": self._function_file_for_query(name),
+                        "lineNumber": absolute_line,
+                        "call_type": "direct",
+                    }
                 )
-                if absolute_line not in entry["callsite_lines"]:
-                    entry["callsite_lines"].append(absolute_line)
-        result = sorted(
-            groups.values(),
-            key=lambda item: item["callee_index_name"],
-        )
-        return result[:FUNCTION_INFO_CALLEES_LIMIT], len(result)
+        return self._aggregate_function_info_callees(rows)
 
     def _function_info_callee_index_name(
         self,
         callee_name: str,
         callee_file: str = "",
     ) -> str:
-        resolved = self._resolve_function_name(callee_name, file_path=callee_file)
-        with self._cache_lock:
-            if resolved in self._function_index:
-                return resolved
-        return str(callee_name or "")
+        return str(
+            self._function_info_callee_descriptor(callee_name, callee_file)[1]
+            .get("callee_index_name")
+            or ""
+        )
 
     def _function_info_caller_index_name(
         self,
@@ -1938,6 +2583,8 @@ class CodeIndex:
         self,
         index_key: str,
         raw_file: str,
+        *,
+        extra_macros: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         context: Dict[str, Any] = {
             "referenced_globals": [],
@@ -1965,15 +2612,17 @@ class CodeIndex:
             for item in list((raw_context or {}).get("referenced_globals") or [])
             if isinstance(item, dict) and str(item.get("name") or "")
         ]
-        macros_result = [
-            self._normalize_function_info_macro(item)
+        raw_macros = [
+            item
             for item in list((raw_context or {}).get("referenced_macros") or [])
-            if isinstance(item, dict) and str(item.get("name") or "")
+            if isinstance(item, dict)
+            and str(item.get("macro_index_name") or item.get("name") or "")
         ]
-        globals_result.sort(
-            key=lambda item: (item["name"], item["file_path"], item["line"])
+        macros_result = self._merge_function_info_macros(
+            raw_macros,
+            extra_macros or [],
         )
-        macros_result.sort(
+        globals_result.sort(
             key=lambda item: (item["name"], item["file_path"], item["line"])
         )
 
@@ -2028,14 +2677,87 @@ class CodeIndex:
         ]
 
     def _normalize_function_info_macro(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        macro_index_name = self._macro_index_name_from_record(item)
+        if not macro_index_name:
+            raise ValueError("macro_definition_unavailable: missing canonical macro identity")
+        definition = self._numbered_macro_definition(macro_index_name)
         return {
-            "name": str(item.get("name") or ""),
-            "file_path": self._normalize_index_file_value(str(item.get("file_path") or "")),
-            "line": self._safe_int(item.get("line")),
-            "definition": str(item.get("definition") or ""),
+            "macro_index_name": macro_index_name,
+            "definition": definition,
             "is_function_like": bool(item.get("is_function_like")),
             "reference_lines": self._normalized_line_list(item.get("reference_lines")),
         }
+
+    def _merge_function_info_macros(
+        self,
+        *groups: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        merged: Dict[str, Dict[str, Any]] = {}
+        for group in groups:
+            for raw_item in group:
+                item = self._normalize_function_info_macro(raw_item)
+                macro_index_name = item["macro_index_name"]
+                entry = merged.setdefault(
+                    macro_index_name,
+                    {
+                        "macro_index_name": macro_index_name,
+                        "definition": item["definition"],
+                        "is_function_like": bool(item["is_function_like"]),
+                        "reference_lines": [],
+                    },
+                )
+                entry["is_function_like"] = bool(
+                    entry["is_function_like"] or item["is_function_like"]
+                )
+                entry["reference_lines"] = sorted(
+                    set(entry["reference_lines"]) | set(item["reference_lines"])
+                )
+        return [merged[key] for key in sorted(merged)]
+
+    def _macro_index_name_from_record(self, item: Dict[str, Any]) -> str:
+        existing = str(item.get("macro_index_name") or item.get("index_name") or "").strip()
+        if existing:
+            match = re.match(r"^[A-Za-z_]\w*@.+:\d+-\d+$", existing)
+            return existing if match else ""
+        name = str(item.get("name") or item.get("func_name") or "").strip()
+        file_path = self._normalize_index_file_value(
+            str(item.get("file_path") or item.get("file") or "")
+        )
+        start_line = self._safe_int(item.get("start_line") or item.get("line"))
+        end_line = self._safe_int(item.get("end_line")) or self._macro_record_end_line(item)
+        if not name or not file_path or start_line <= 0 or end_line < start_line:
+            return ""
+        return f"{name}@{file_path}:{start_line}-{end_line}"
+
+    def _numbered_macro_definition(self, macro_index_name: str) -> str:
+        match = re.match(
+            r"^(?P<name>[A-Za-z_]\w*)@(?P<file>.+):(?P<start>\d+)-(?P<end>\d+)$",
+            str(macro_index_name or ""),
+        )
+        if not match:
+            raise ValueError(
+                f"macro_definition_unavailable: invalid macro_index_name={macro_index_name}"
+            )
+        file_path = match.group("file")
+        start_line = int(match.group("start"))
+        end_line = int(match.group("end"))
+        snippet = self.get_file_snippet(
+            file_path,
+            start_line,
+            end_line,
+            max_lines=max(1, end_line - start_line + 1),
+        )
+        if (
+            not isinstance(snippet, dict)
+            or int(snippet.get("start_line") or 0) != start_line
+            or int(snippet.get("end_line") or 0) != end_line
+            or not self._paths_match_hint(str(snippet.get("file") or ""), file_path)
+        ):
+            raise ValueError(
+                "macro_definition_unavailable: "
+                f"unable to read canonical range {macro_index_name}"
+            )
+        return str(snippet.get("code") or "")
 
     def _normalized_line_list(self, value: Any) -> List[int]:
         if not isinstance(value, (list, tuple, set)):
@@ -2254,21 +2976,46 @@ class CodeIndex:
         self,
         rows: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        """Preserve raw call edges until project/external classification and grouping."""
+        return [dict(row) for row in rows if isinstance(row, dict)]
+
+    def _split_function_info_callees(
+        self,
+        rows: List[Dict[str, Any]],
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+        project_groups: Dict[str, Dict[str, Any]] = {}
+        external_groups: Dict[str, Dict[str, Any]] = {}
+        macro_groups: Dict[str, Dict[str, Any]] = {}
         for row in rows:
             callee_name = str(row.get("name") or row.get("callee_name") or "")
+            if not callee_name or self._is_llvm_intrinsic_callee(callee_name):
+                continue
             callee_file = str(row.get("filename") or row.get("callee_file") or row.get("file") or "")
             if not callee_file and callee_name:
                 callee_file = self._function_file_for_query(callee_name)
-            callee_index_name = self._function_info_callee_index_name(
-                callee_name,
-                callee_file,
-            )
+            kind, descriptor = self._function_info_callee_descriptor(callee_name, callee_file)
+            if kind == "project_macro":
+                macro_index_name = str(descriptor.get("macro_index_name") or "")
+                if not macro_index_name:
+                    continue
+                entry = macro_groups.setdefault(
+                    macro_index_name,
+                    {
+                        "macro_index_name": macro_index_name,
+                        "definition": str(descriptor.get("definition") or ""),
+                        "is_function_like": True,
+                        "reference_lines": [],
+                    },
+                )
+                self._append_reference_line(entry["reference_lines"], row)
+                continue
+            callee_index_name = str(descriptor["callee_index_name"])
             call_type = self._function_info_call_type(row)
+            groups = project_groups if kind == "project_function" else external_groups
             entry = groups.get(callee_index_name)
             if entry is None:
                 entry = {
-                    "callee_index_name": callee_index_name,
+                    **descriptor,
                     "callsite_lines": [],
                     "call_type": [],
                 }
@@ -2276,14 +3023,89 @@ class CodeIndex:
             if call_type not in entry["call_type"]:
                 entry["call_type"].append(call_type)
             self._append_callsite_line(entry, row)
-        for entry in groups.values():
-            entry["callsite_lines"] = sorted(entry["callsite_lines"])
-            entry["call_type"] = [
-                call_type
-                for call_type in ("direct", "indirect")
-                if call_type in entry["call_type"]
+        for groups in (project_groups, external_groups):
+            for entry in groups.values():
+                entry["callsite_lines"] = sorted(entry["callsite_lines"])
+                entry["call_type"] = [
+                    call_type
+                    for call_type in ("direct", "indirect")
+                    if call_type in entry["call_type"]
+                ]
+        return (
+            [project_groups[key] for key in sorted(project_groups)],
+            [external_groups[key] for key in sorted(external_groups)],
+            [macro_groups[key] for key in sorted(macro_groups)],
+        )
+
+    def _append_reference_line(self, lines: List[int], row: Dict[str, Any]) -> None:
+        line = self._callsite_line_from_row(row)
+        if line > 0 and line not in lines:
+            lines.append(line)
+            lines.sort()
+
+    def _function_info_callee_descriptor(
+        self,
+        callee_name: str,
+        callee_file: str = "",
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Classify one raw edge as a project function, project macro, or external."""
+        clean_name = str(callee_name or "").strip()
+        matches = self._find_function_matches(clean_name, file_path=callee_file)
+        if len(matches) == 1:
+            index_name, info = matches[0]
+            return "project_function", {
+                "callee_index_name": index_name,
+                "is_static": self._function_record_is_static(info),
+            }
+
+        macro_matches = self._function_info_project_macro_matches(clean_name, callee_file)
+        if len(macro_matches) == 1:
+            macro_impl = macro_matches[0]
+            return "project_macro", {
+                "macro_index_name": self._macro_impl_index_name(macro_impl),
+                "definition": str(macro_impl.get("code") or ""),
+                "is_function_like": True,
+            }
+        return "external", {"callee_index_name": clean_name}
+
+    def _function_info_project_macro_matches(
+        self,
+        macro_name: str,
+        file_path: str,
+    ) -> List[Dict[str, Any]]:
+        """Resolve function-like macros without treating backend-missing facts as source facts."""
+        getter = getattr(self._backend, "get_macro_definitions", None) if self._backend else None
+        if callable(getter):
+            try:
+                records = [
+                    dict(record)
+                    for record in list(getter(macro_name, limit=1_000_000) or [])
+                    if isinstance(record, dict)
+                ]
+            except Exception as exc:
+                logger.debug("Backend macro callee lookup failed for %s: %s", macro_name, exc)
+                records = []
+            records = self._filter_macro_definition_records(
+                records,
+                file_path=file_path,
+                function_like_only=True,
+            )
+            return [
+                self._macro_definition_payload(
+                    macro_name,
+                    record,
+                    max_lines=None,
+                    include_callees=False,
+                )
+                for record in records
             ]
-        return list(groups.values())
+        return self._find_macro_impls(
+            macro_name,
+            file_path=file_path,
+            max_lines=None,
+            function_like_only=True,
+            include_callees=False,
+        )
 
     def _normalize_function_info_caller(self, row: Dict[str, Any]) -> Dict[str, Any]:
         return {
@@ -2437,13 +3259,27 @@ class CodeIndex:
         """Get functions called by the given function."""
         if not self._backend:
             return []
+        requested_limit = max(0, int(limit))
+        if requested_limit == 0:
+            return []
         lookup_name = self._resolve_function_name(func_name)
         with self._cache_lock:
             info = self._function_index.get(lookup_name) or {}
         backend_lookup = str(info.get("qualified_name") or lookup_name)
-        return self._filter_callee_records(
-            self._backend.get_callees(backend_lookup, limit=limit)
-        )
+        raw_limit = requested_limit
+        max_raw_limit = 1_000_000
+        while True:
+            records = list(
+                self._backend.get_callees(backend_lookup, limit=raw_limit) or []
+            )
+            filtered = self._filter_callee_records(records)
+            if (
+                len(filtered) >= requested_limit
+                or len(records) < raw_limit
+                or raw_limit >= max_raw_limit
+            ):
+                return filtered[:requested_limit]
+            raw_limit = min(max_raw_limit, raw_limit * 2)
 
     def get_type_info(self, type_name: str) -> Optional[Dict[str, Any]]:
         """Get struct/union/enum definition and members."""
@@ -2719,6 +3555,9 @@ class CodeIndex:
     @staticmethod
     def _macro_record_end_line(record: Dict[str, Any]) -> int:
         start_line = int(record.get("line") or record.get("start_line") or 1)
+        indexed_end_line = int(record.get("end_line") or 0)
+        if indexed_end_line >= start_line:
+            return indexed_end_line
         definition_lines = str(record.get("definition") or "").splitlines()
         return start_line + max(1, len(definition_lines)) - 1
 
@@ -2853,6 +3692,13 @@ class CodeIndex:
                             "name": parsed["name"],
                             "file_path": normalize_path(file_path, self.project_root),
                             "line": start_idx + 1,
+                            "start_line": start_idx + 1,
+                            "end_line": idx + 1,
+                            "macro_index_name": (
+                                f"{parsed['name']}@"
+                                f"{normalize_path(file_path, self.project_root)}:"
+                                f"{start_idx + 1}-{idx + 1}"
+                            ),
                             "definition": "".join(definition_lines),
                             "is_function_like": int(parsed["is_function_like"]),
                         }
@@ -3015,7 +3861,11 @@ class CodeIndex:
         filtered = []
         seen = set()
         for name in names:
-            if not is_likely_function_call_identifier(name) or name in seen:
+            if (
+                not is_likely_function_call_identifier(name)
+                or self._is_llvm_intrinsic_callee(name)
+                or name in seen
+            ):
                 continue
             seen.add(name)
             filtered.append(name)
@@ -3026,11 +3876,20 @@ class CodeIndex:
         seen = set()
         for record in records:
             name = record.get("name")
-            if not is_likely_function_call_identifier(name) or name in seen:
+            if (
+                not is_likely_function_call_identifier(name)
+                or self._is_llvm_intrinsic_callee(name)
+                or name in seen
+            ):
                 continue
             seen.add(name)
             filtered.append(record)
         return filtered
+
+    @staticmethod
+    def _is_llvm_intrinsic_callee(name: object) -> bool:
+        """Return whether a callee name belongs to LLVM's intrinsic namespace."""
+        return str(name or "").strip().startswith("llvm.")
 
     def close(self):
         """Close backend resources."""

@@ -1110,6 +1110,10 @@ class LLMClient:
         trace_agent: Optional[str] = None,
         trace_label: Optional[str] = None,
         max_identical_tool_calls: int = 2,
+        terminal_tool_name: Optional[str] = None,
+        terminal_tool_handler: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        terminal_tool_validator: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        terminal_tool_required: bool = False,
     ) -> Dict[str, Any]:
         """
         Run a conversation loop with tool calling support.
@@ -1125,6 +1129,11 @@ class LLMClient:
         last_finish_reason: Optional[str] = None
         last_provider_model: Optional[str] = None
         last_message: Dict[str, Any] = {}
+        terminal_payload: Optional[Dict[str, Any]] = None
+        terminal_tool_valid = False
+        terminal_tool_call_count = 0
+        if terminal_tool_handler is None and terminal_tool_validator is not None:
+            terminal_tool_handler = terminal_tool_validator
         recorder = get_conversation_recorder()
         trace_session = (
             recorder.begin_session(trace_agent or "unknown_agent", trace_label)
@@ -1139,15 +1148,22 @@ class LLMClient:
             force_no_tool_final = loop_guard_recovery is not None
             final_iteration = max_iteration_final or force_no_tool_final
             if max_iteration_final:
+                final_instruction = (
+                    f"This is the final allowed iteration ({iterations}/{max_iterations}). "
+                    "Tool use is now disabled. Produce the best final answer from the current "
+                    "conversation context. If the expected output is JSON, output valid JSON now. "
+                    "Do not ask for more tools or more turns."
+                )
+                if terminal_tool_name:
+                    final_instruction = (
+                        f"This is the final allowed iteration ({iterations}/{max_iterations}). "
+                        "Regular tool use is now disabled. Submit the required final result by "
+                        f"calling {terminal_tool_name}; do not ask for more tools or more turns."
+                    )
                 conversation.append(
                     {
                         "role": "user",
-                        "content": (
-                            f"This is the final allowed iteration ({iterations}/{max_iterations}). "
-                            "Tool use is now disabled. Produce the best final answer from the current "
-                            "conversation context. If the expected output is JSON, output valid JSON now. "
-                            "Do not ask for more tools or more turns."
-                        ),
+                        "content": final_instruction,
                     }
                 )
             elif force_no_tool_final:
@@ -1181,9 +1197,18 @@ class LLMClient:
             )
 
             # Call LLM
+            request_tools = None if final_iteration else tools_schema
+            if final_iteration and terminal_tool_name:
+                terminal_schemas = [
+                    schema for schema in tools_schema
+                    if isinstance(schema, dict)
+                    and isinstance(schema.get("function"), dict)
+                    and schema["function"].get("name") == terminal_tool_name
+                ]
+                request_tools = terminal_schemas or None
             response = self.chat_completion(
                 model_conversation,
-                tools=None if final_iteration else tools_schema,
+                tools=request_tools,
                 trace_agent=trace_agent,
                 trace_label=trace_label,
                 trace_iteration=iterations,
@@ -1217,6 +1242,15 @@ class LLMClient:
                 and not message.get("tool_calls")
                 and "<invoke name=" not in str(message.get("content", ""))
             ):
+                if terminal_tool_required and iterations < max_iterations:
+                    conversation.append({
+                        "role": "user",
+                        "content": (
+                            "Do not return prose. Complete the evidence review and submit the "
+                            f"final result by calling {terminal_tool_name}."
+                        ),
+                    })
+                    continue
                 content = self._get_combined_content(conversation)
                 final_tokens = self.estimate_tokens(
                     self._prepare_messages_for_model(conversation)
@@ -1229,6 +1263,7 @@ class LLMClient:
                     "conversation": conversation,
                     "iterations": iterations,
                     "context_tokens": final_tokens,
+                    "api_call_count": iterations,
                     "cumulative_prompt_tokens": cumulative_prompt_tokens,
                     "cumulative_completion_tokens": cumulative_completion_tokens,
                     "cumulative_total_tokens": cumulative_prompt_tokens + cumulative_completion_tokens,
@@ -1236,6 +1271,10 @@ class LLMClient:
                     "finish_reason": finish_reason,
                     "provider_model": provider_model,
                     "last_assistant_preview": self._assistant_preview(message),
+                    "terminal_tool_payload": terminal_payload,
+                    "terminal_tool_name": terminal_tool_name,
+                    "terminal_tool_valid": terminal_tool_valid,
+                    "terminal_tool_call_count": terminal_tool_call_count,
                 }
                 if loop_guard_recovery:
                     result_payload.update(
@@ -1254,7 +1293,17 @@ class LLMClient:
 
             # Handle tool calls
             tool_calls = message.get("tool_calls", [])
-            if final_iteration and tool_calls:
+            final_iteration_has_only_terminal = bool(
+                terminal_tool_name
+                and tool_calls
+                and all(
+                    isinstance(call, dict)
+                    and isinstance(call.get("function"), dict)
+                    and call["function"].get("name") == terminal_tool_name
+                    for call in tool_calls
+                )
+            )
+            if final_iteration and tool_calls and not final_iteration_has_only_terminal:
                 logger.warning(
                     "Model returned %d tool calls after tool use was disabled.",
                     len(tool_calls),
@@ -1275,6 +1324,7 @@ class LLMClient:
                     "iterations": iterations,
                     "truncated": max_iteration_final,
                     "context_tokens": final_tokens,
+                    "api_call_count": iterations,
                     "cumulative_prompt_tokens": cumulative_prompt_tokens,
                     "cumulative_completion_tokens": cumulative_completion_tokens,
                     "cumulative_total_tokens": cumulative_prompt_tokens + cumulative_completion_tokens,
@@ -1284,6 +1334,10 @@ class LLMClient:
                     "final_tool_call_after_tools_disabled": True,
                     "final_tool_call_without_json": True,
                     "final_tool_call_count": len(tool_calls),
+                    "terminal_tool_payload": terminal_payload,
+                    "terminal_tool_name": terminal_tool_name,
+                    "terminal_tool_valid": terminal_tool_valid,
+                    "terminal_tool_call_count": terminal_tool_call_count,
                     "last_assistant_preview": self._assistant_preview(message),
                 }
                 if loop_guard_recovery:
@@ -1327,6 +1381,15 @@ class LLMClient:
             # --------------------------------------------------------------------------
 
             if not tool_calls:
+                if terminal_tool_required and iterations < max_iterations:
+                    conversation.append({
+                        "role": "user",
+                        "content": (
+                            "A final tool call is required. Do not write a snapshot in prose or JSON; "
+                            f"call {terminal_tool_name} exactly once with the complete payload."
+                        ),
+                    })
+                    continue
                 content = self._get_combined_content(conversation)
                 final_tokens = self.estimate_tokens(
                     self._prepare_messages_for_model(conversation)
@@ -1339,6 +1402,7 @@ class LLMClient:
                     "conversation": conversation,
                     "iterations": iterations,
                     "context_tokens": final_tokens,
+                    "api_call_count": iterations,
                     "cumulative_prompt_tokens": cumulative_prompt_tokens,
                     "cumulative_completion_tokens": cumulative_completion_tokens,
                     "cumulative_total_tokens": cumulative_prompt_tokens + cumulative_completion_tokens,
@@ -1346,6 +1410,10 @@ class LLMClient:
                     "finish_reason": finish_reason,
                     "provider_model": provider_model,
                     "last_assistant_preview": self._assistant_preview(message),
+                    "terminal_tool_payload": terminal_payload,
+                    "terminal_tool_name": terminal_tool_name,
+                    "terminal_tool_valid": terminal_tool_valid,
+                    "terminal_tool_call_count": terminal_tool_call_count,
                 }
                 if loop_guard_recovery:
                     result_payload.update(
@@ -1359,6 +1427,115 @@ class LLMClient:
 
             # Execute each tool call
             force_final_after_loop_guard = False
+            terminal_calls = []
+            for candidate in tool_calls:
+                candidate_function = candidate.get("function", {}) if isinstance(candidate, dict) else {}
+                if terminal_tool_name and candidate_function.get("name") == terminal_tool_name:
+                    terminal_calls.append(candidate)
+
+            if terminal_calls:
+                terminal_tool_call_count += len(terminal_calls)
+                mixed_calls = len(terminal_calls) != len(tool_calls)
+                duplicate_calls = len(terminal_calls) > 1
+                for terminal_call in terminal_calls:
+                    terminal_id = terminal_call.get("id")
+                    terminal_function = terminal_call.get("function", {})
+                    try:
+                        terminal_args = self._parse_tool_args(terminal_function.get("arguments", "{}"))
+                        terminal_function["arguments"] = json.dumps(terminal_args, ensure_ascii=False)
+                    except Exception as exc:
+                        terminal_args = {}
+                        terminal_function["arguments"] = json.dumps(terminal_args)
+                        exc_text = str(exc)
+                    else:
+                        exc_text = ""
+
+                    validation: Dict[str, Any] = {"valid": True, "payload": terminal_args}
+                    if exc_text:
+                        validation = {"valid": False, "error": exc_text}
+                    elif mixed_calls:
+                        validation = {
+                            "valid": False,
+                            "error": "The terminal final tool cannot be combined with other tool calls; retry it alone.",
+                        }
+                    elif duplicate_calls:
+                        validation = {
+                            "valid": False,
+                            "error": "Only one terminal final tool call is allowed in a conversation.",
+                        }
+                    elif terminal_tool_handler:
+                        try:
+                            handled = terminal_tool_handler(terminal_args)
+                            if isinstance(handled, dict):
+                                validation = handled
+                            else:
+                                validation = {"valid": bool(handled), "payload": terminal_args}
+                        except Exception as exc:
+                            validation = {"valid": False, "error": str(exc)}
+
+                    if validation.get("valid"):
+                        terminal_payload = validation.get("payload", terminal_args)
+                        terminal_tool_valid = True
+                        if recorder and trace_session:
+                            recorder.record_terminal_tool(
+                                trace_session,
+                                iterations,
+                                terminal_tool_name,
+                                terminal_args,
+                                True,
+                            )
+                        final_tokens = self.estimate_tokens(
+                            self._prepare_messages_for_model(conversation)
+                        )
+                        if recorder and trace_session:
+                            recorder.record_session_end(trace_session, iterations, final_tokens)
+                        return {
+                            "content": str(message.get("content") or ""),
+                            "conversation": conversation,
+                            "message": message,
+                            "terminal_tool_payload": terminal_payload,
+                            "terminal_tool_name": terminal_tool_name,
+                            "terminal_tool_valid": True,
+                            "terminal_tool_call_count": terminal_tool_call_count,
+                            "iterations": iterations,
+                            "context_tokens": final_tokens,
+                            "api_call_count": iterations,
+                            "cumulative_prompt_tokens": cumulative_prompt_tokens,
+                            "cumulative_completion_tokens": cumulative_completion_tokens,
+                            "cumulative_total_tokens": cumulative_prompt_tokens + cumulative_completion_tokens,
+                            "tool_call_count": self._count_tool_result_messages(conversation),
+                            "final_tool_call_count": terminal_tool_call_count,
+                            "finish_reason": finish_reason,
+                            "provider_model": provider_model,
+                            "last_assistant_preview": self._assistant_preview(message),
+                        }
+
+                    error_result = {
+                        "success": False,
+                        "terminal_tool": terminal_tool_name,
+                        "terminal_tool_valid": False,
+                        "error": validation.get("error") or "Invalid terminal tool payload.",
+                    }
+                    conversation.append({
+                        "role": "tool",
+                        "tool_call_id": terminal_id,
+                        "terminal_tool_result": True,
+                        "content": json.dumps(error_result, ensure_ascii=False),
+                    })
+                    if recorder and trace_session:
+                        recorder.record_terminal_tool(
+                            trace_session,
+                            iterations,
+                            terminal_tool_name,
+                            terminal_args,
+                            False,
+                            error_result["error"],
+                        )
+                tool_calls = [
+                    call for call in tool_calls
+                    if call not in terminal_calls
+                ]
+
             for tool_call in tool_calls:
                 tool_id = tool_call.get("id")
                 function = tool_call.get("function", {})
@@ -1585,6 +1762,7 @@ class LLMClient:
             "iterations": iterations,
             "truncated": iterations >= max_iterations,
             "context_tokens": final_tokens,
+            "api_call_count": iterations,
             "cumulative_prompt_tokens": cumulative_prompt_tokens,
             "cumulative_completion_tokens": cumulative_completion_tokens,
             "cumulative_total_tokens": cumulative_prompt_tokens + cumulative_completion_tokens,
@@ -1593,6 +1771,10 @@ class LLMClient:
             "provider_model": last_provider_model,
             "final_tool_call_count": len(last_message.get("tool_calls") or []),
             "last_assistant_preview": self._assistant_preview(last_message),
+            "terminal_tool_payload": terminal_payload,
+            "terminal_tool_name": terminal_tool_name,
+            "terminal_tool_valid": terminal_tool_valid,
+            "terminal_tool_call_count": terminal_tool_call_count,
         }
         if loop_guard_recovery:
             result_payload.update(
@@ -1606,7 +1788,11 @@ class LLMClient:
 
     @staticmethod
     def _count_tool_result_messages(conversation: List[Dict[str, Any]]) -> int:
-        return sum(1 for message in conversation if message.get("role") == "tool")
+        return sum(
+            1
+            for message in conversation
+            if message.get("role") == "tool" and not message.get("terminal_tool_result")
+        )
 
     @staticmethod
     def _assistant_preview(message: Dict[str, Any], limit: int = 240) -> str:

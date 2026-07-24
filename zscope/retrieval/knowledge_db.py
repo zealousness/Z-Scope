@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class KnowledgeDB:
     """SQLite-backed code knowledge store."""
 
-    SCHEMA_VERSION = "8"
+    SCHEMA_VERSION = "10"
     CALLGRAPH_READ_CONCURRENCY = 8
 
     def __init__(self, db_path: str):
@@ -164,12 +164,16 @@ class KnowledgeDB:
 
             CREATE TABLE IF NOT EXISTS macro_definitions (
                 id          INTEGER PRIMARY KEY,
+                macro_index_name TEXT NOT NULL DEFAULT '',
                 name        TEXT NOT NULL,
                 file_path   TEXT NOT NULL,
                 line        INTEGER NOT NULL,
+                start_line  INTEGER NOT NULL DEFAULT 0,
+                end_line    INTEGER NOT NULL DEFAULT 0,
                 definition  TEXT,
                 is_function_like INTEGER DEFAULT 0,
-                UNIQUE(name, file_path, line)
+                UNIQUE(name, file_path, line),
+                UNIQUE(macro_index_name)
             );
             CREATE INDEX IF NOT EXISTS idx_macros_name ON macro_definitions(name);
 
@@ -209,6 +213,47 @@ class KnowledgeDB:
                 ON function_symbol_refs(function_name, function_file);
             CREATE INDEX IF NOT EXISTS idx_symbol_refs_symbol
                 ON function_symbol_refs(symbol_name, symbol_kind);
+
+            CREATE TABLE IF NOT EXISTS function_macro_refs (
+                id          INTEGER PRIMARY KEY,
+                function_id INTEGER NOT NULL,
+                macro_id    INTEGER NOT NULL,
+                reference_line INTEGER NOT NULL,
+                UNIQUE(function_id, macro_id, reference_line),
+                FOREIGN KEY(function_id) REFERENCES functions(id),
+                FOREIGN KEY(macro_id) REFERENCES macro_definitions(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_function_macro_refs_function
+                ON function_macro_refs(function_id);
+            CREATE INDEX IF NOT EXISTS idx_function_macro_refs_macro
+                ON function_macro_refs(macro_id);
+
+            CREATE TABLE IF NOT EXISTS function_type_refs (
+                id          INTEGER PRIMARY KEY,
+                function_id INTEGER NOT NULL,
+                type_id     INTEGER,
+                type_index_name TEXT NOT NULL DEFAULT '',
+                referenced_name TEXT NOT NULL,
+                reference_file TEXT NOT NULL,
+                reference_line INTEGER NOT NULL,
+                reference_kind TEXT NOT NULL,
+                resolution_reason TEXT DEFAULT '',
+                UNIQUE(
+                    function_id,
+                    referenced_name,
+                    type_index_name,
+                    reference_line,
+                    reference_kind
+                ),
+                FOREIGN KEY(function_id) REFERENCES functions(id),
+                FOREIGN KEY(type_id) REFERENCES type_definitions(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_function_type_refs_function
+                ON function_type_refs(function_id);
+            CREATE INDEX IF NOT EXISTS idx_function_type_refs_type
+                ON function_type_refs(type_id);
+            CREATE INDEX IF NOT EXISTS idx_function_type_refs_name
+                ON function_type_refs(referenced_name);
 
             CREATE TABLE IF NOT EXISTS include_edges (
                 id          INTEGER PRIMARY KEY,
@@ -363,11 +408,6 @@ class KnowledgeDB:
                 updated_at  REAL DEFAULT 0
             );
         """)
-        # 写入 schema 版本
-        c.execute(
-            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
-            ("schema_version", self.SCHEMA_VERSION),
-        )
         c.commit()
 
         # 兼容旧 DB：补加 file_hash 列
@@ -403,6 +443,64 @@ class KnowledgeDB:
                 c.commit()
             except sqlite3.OperationalError:
                 pass
+
+        for column_sql in (
+            "ALTER TABLE macro_definitions ADD COLUMN macro_index_name TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE macro_definitions ADD COLUMN start_line INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE macro_definitions ADD COLUMN end_line INTEGER NOT NULL DEFAULT 0",
+        ):
+            try:
+                c.execute(column_sql)
+                c.commit()
+            except sqlite3.OperationalError:
+                pass
+
+        macro_rows = c.execute(
+            "SELECT id, name, file_path, line, start_line, end_line, definition, "
+            "macro_index_name FROM macro_definitions"
+        ).fetchall()
+        migrated_macros = 0
+        for row in macro_rows:
+            start_line = int(row["start_line"] or row["line"] or 1)
+            definition_lines = str(row["definition"] or "").splitlines()
+            end_line = int(row["end_line"] or 0)
+            if end_line < start_line:
+                end_line = start_line + max(1, len(definition_lines)) - 1
+            macro_index_name = str(row["macro_index_name"] or "").strip()
+            if not macro_index_name:
+                macro_index_name = (
+                    f"{str(row['name'] or '')}@{str(row['file_path'] or '')}:"
+                    f"{start_line}-{end_line}"
+                )
+            c.execute(
+                "UPDATE macro_definitions SET line = ?, start_line = ?, end_line = ?, "
+                "macro_index_name = ? WHERE id = ?",
+                (start_line, start_line, end_line, macro_index_name, int(row["id"])),
+            )
+            migrated_macros += 1
+        try:
+            c.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_macros_index_name "
+                "ON macro_definitions(macro_index_name)"
+            )
+        except sqlite3.IntegrityError as exc:
+            logger.error(
+                "[macro-migration] failed total=%d migrated=%d collisions=1 error=%s",
+                len(macro_rows),
+                migrated_macros,
+                exc,
+            )
+            raise
+        logger.info(
+            "[macro-migration] completed total=%d migrated=%d collisions=0 failed=0",
+            len(macro_rows),
+            migrated_macros,
+        )
+        c.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
+            ("schema_version", self.SCHEMA_VERSION),
+        )
+        c.commit()
 
     # ── Translation Units ──
 
@@ -469,7 +567,22 @@ class KnowledgeDB:
         }
 
         related: set[str] = set()
+        type_ref_rows = self._conn.execute(
+            "SELECT DISTINCT f.file_path FROM function_type_refs r "
+            "JOIN functions f ON f.id = r.function_id "
+            "WHERE r.type_id IN (SELECT id FROM type_definitions WHERE tu_id = ?)",
+            (tu_id,),
+        ).fetchall()
+        related.update(str(r["file_path"] or "") for r in type_ref_rows)
         if path_variants:
+            macro_ref_rows = self._conn.execute(
+                "SELECT DISTINCT f.file_path FROM function_macro_refs r "
+                "JOIN functions f ON f.id = r.function_id "
+                "JOIN macro_definitions m ON m.id = r.macro_id "
+                f"WHERE m.file_path IN ({placeholders})",
+                path_variants,
+            ).fetchall()
+            related.update(str(r["file_path"] or "") for r in macro_ref_rows)
             incoming = self._conn.execute(
                 f"SELECT DISTINCT caller_file FROM call_edges "
                 f"WHERE callee_file IN ({placeholders})",
@@ -520,6 +633,16 @@ class KnowledgeDB:
     def purge_tu_data(self, tu_id: int, purge_incoming_refs: bool = False):
         """清除某 TU 关联的所有提取数据。"""
         self._invalidate_callgraph_query_cache()
+        self._conn.execute(
+            "DELETE FROM function_type_refs WHERE function_id IN "
+            "(SELECT id FROM functions WHERE tu_id = ?)",
+            (tu_id,),
+        )
+        self._conn.execute(
+            "DELETE FROM function_macro_refs WHERE function_id IN "
+            "(SELECT id FROM functions WHERE tu_id = ?)",
+            (tu_id,),
+        )
         self._conn.execute("DELETE FROM functions WHERE tu_id = ?", (tu_id,))
         # call_edges 没有 tu_id，通过 caller_file 联动清除
         row = self._conn.execute(
@@ -561,6 +684,11 @@ class KnowledgeDB:
             if purge_incoming_refs:
                 self._conn.execute(
                     f"DELETE FROM function_symbol_refs WHERE symbol_file IN ({placeholders})",
+                    path_variants,
+                )
+                self._conn.execute(
+                    "DELETE FROM function_macro_refs WHERE macro_id IN "
+                    f"(SELECT id FROM macro_definitions WHERE file_path IN ({placeholders}))",
                     path_variants,
                 )
             self._conn.execute(
@@ -615,6 +743,11 @@ class KnowledgeDB:
         self._conn.execute(
             "DELETE FROM type_members WHERE type_id IN "
             "(SELECT id FROM type_definitions WHERE tu_id = ?)", (tu_id,),
+        )
+        self._conn.execute(
+            "DELETE FROM function_type_refs WHERE type_id IN "
+            "(SELECT id FROM type_definitions WHERE tu_id = ?)",
+            (tu_id,),
         )
         self._conn.execute("DELETE FROM type_definitions WHERE tu_id = ?", (tu_id,))
         self._conn.commit()
@@ -883,8 +1016,8 @@ class KnowledgeDB:
 
     def get_function_records(self) -> List[Dict[str, Any]]:
         rows = self._conn.execute(
-            "SELECT name, file_path, start_line, end_line, signature, is_static, "
-            "is_declaration "
+            "SELECT id, name, file_path, start_line, end_line, signature, is_static, "
+            "is_declaration, tu_id "
             "FROM functions ORDER BY file_path, start_line, name"
         ).fetchall()
         return [dict(row) for row in rows]
@@ -931,10 +1064,34 @@ class KnowledgeDB:
 
     def get_all_macro_definitions(self) -> List[Dict[str, Any]]:
         rows = self._conn.execute(
-            "SELECT name, file_path, line, definition, is_function_like "
-            "FROM macro_definitions ORDER BY name, file_path, line"
+            "SELECT id, macro_index_name, name, file_path, line, start_line, end_line, "
+            "definition, is_function_like FROM macro_definitions "
+            "ORDER BY macro_index_name"
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_macro_definitions_batch(self, names: List[str]) -> List[Dict[str, Any]]:
+        """Return all macro definitions matching the supplied names."""
+        clean_names = sorted(
+            {
+                str(name or "").strip()
+                for name in names
+                if str(name or "").strip()
+            }
+        )
+        result: List[Dict[str, Any]] = []
+        for offset in range(0, len(clean_names), 500):
+            batch = clean_names[offset : offset + 500]
+            placeholders = ",".join("?" for _ in batch)
+            macro_rows = self._conn.execute(
+                "SELECT id, macro_index_name, name, file_path, line, start_line, end_line, "
+                "definition, is_function_like "
+                "FROM macro_definitions "
+                f"WHERE name IN ({placeholders}) ORDER BY macro_index_name",
+                batch,
+            ).fetchall()
+            result.extend(dict(row) for row in macro_rows)
+        return result
 
     def insert_function_symbol_refs_batch(self, rows: List[tuple]) -> None:
         if not rows:
@@ -948,6 +1105,21 @@ class KnowledgeDB:
 
     def clear_function_symbol_refs(self) -> None:
         self._conn.execute("DELETE FROM function_symbol_refs")
+
+    def replace_function_macro_refs(self, rows: List[tuple]) -> None:
+        self._conn.execute("DELETE FROM function_macro_refs")
+        self.insert_function_macro_refs_batch(rows)
+
+    def insert_function_macro_refs_batch(self, rows: List[tuple]) -> None:
+        if rows:
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO function_macro_refs "
+                "(function_id, macro_id, reference_line) VALUES (?, ?, ?)",
+                rows,
+            )
+
+    def clear_function_macro_refs(self) -> None:
+        self._conn.execute("DELETE FROM function_macro_refs")
 
     def get_function_symbol_context(
         self,
@@ -974,16 +1146,7 @@ class KnowledgeDB:
                 "qualifiers, initializer, definition_kind FROM global_variables"
             ).fetchall()
         }
-        macros_by_key = {
-            (str(row["name"]), str(row["file_path"])): dict(row)
-            for row in self._conn.execute(
-                "SELECT name, file_path, line, definition, is_function_like "
-                "FROM macro_definitions"
-            ).fetchall()
-        }
-
         global_groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
-        macro_groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
         for row in rows:
             name = str(row["symbol_name"] or "")
             symbol_file = str(row["symbol_file"] or "")
@@ -1013,29 +1176,45 @@ class KnowledgeDB:
                 )
                 if reference_line > 0 and reference_line not in entry["reference_lines"]:
                     entry["reference_lines"].append(reference_line)
-            elif row["symbol_kind"] == "macro":
-                key = (name, symbol_file)
-                entry = macro_groups.get(key)
-                if entry is None:
-                    metadata = macros_by_key.get(key, {})
-                    entry = {
-                        "name": name,
-                        "file_path": symbol_file,
-                        "line": int(metadata.get("line") or 0),
-                        "definition": str(metadata.get("definition") or ""),
-                        "is_function_like": bool(metadata.get("is_function_like")),
-                        "reference_lines": [],
-                    }
-                    macro_groups[key] = entry
-                if reference_line > 0 and reference_line not in entry["reference_lines"]:
-                    entry["reference_lines"].append(reference_line)
-
         globals_result = list(global_groups.values())
-        macros_result = list(macro_groups.values())
-        for entry in globals_result + macros_result:
+        for entry in globals_result:
             entry["reference_lines"] = sorted(entry["reference_lines"])
         globals_result.sort(key=lambda item: (item["name"], item["file_path"], item["line"]))
-        macros_result.sort(key=lambda item: (item["name"], item["file_path"], item["line"]))
+
+        macro_rows = self._conn.execute(
+            "SELECT f.file_path AS function_file, md.macro_index_name, "
+            "md.is_function_like, fmr.reference_line "
+            "FROM function_macro_refs fmr "
+            "JOIN functions f ON f.id = fmr.function_id "
+            "JOIN macro_definitions md ON md.id = fmr.macro_id "
+            "WHERE f.name = ? ORDER BY md.macro_index_name, fmr.reference_line",
+            (function_name,),
+        ).fetchall()
+        if function_file:
+            macro_rows = [
+                row
+                for row in macro_rows
+                if self._paths_match_hint(str(row["function_file"] or ""), function_file)
+            ]
+        macro_groups: Dict[str, Dict[str, Any]] = {}
+        for row in macro_rows:
+            macro_index_name = str(row["macro_index_name"] or "")
+            if not macro_index_name:
+                continue
+            entry = macro_groups.setdefault(
+                macro_index_name,
+                {
+                    "macro_index_name": macro_index_name,
+                    "is_function_like": bool(row["is_function_like"]),
+                    "reference_lines": [],
+                },
+            )
+            reference_line = int(row["reference_line"] or 0)
+            if reference_line > 0 and reference_line not in entry["reference_lines"]:
+                entry["reference_lines"].append(reference_line)
+        macros_result = [macro_groups[key] for key in sorted(macro_groups)]
+        for entry in macros_result:
+            entry["reference_lines"] = sorted(entry["reference_lines"])
         return {
             "referenced_globals": globals_result,
             "referenced_macros": macros_result,
@@ -1055,11 +1234,34 @@ class KnowledgeDB:
     # -- Macro definitions --
 
     def insert_macro_definitions_batch(self, rows: List[tuple]):
+        normalized_rows: List[tuple] = []
+        for row in rows:
+            if len(row) == 7:
+                name, file_path, start_line, end_line, macro_index_name, definition, is_function_like = row
+            elif len(row) == 5:
+                name, file_path, start_line, definition, is_function_like = row
+                definition_lines = str(definition or "").splitlines()
+                end_line = int(start_line) + max(1, len(definition_lines)) - 1
+                macro_index_name = f"{name}@{file_path}:{int(start_line)}-{int(end_line)}"
+            else:
+                raise ValueError("macro definition row must contain 5 or 7 fields")
+            normalized_rows.append(
+                (
+                    str(macro_index_name),
+                    str(name),
+                    str(file_path),
+                    int(start_line),
+                    int(start_line),
+                    int(end_line),
+                    str(definition or ""),
+                    int(bool(is_function_like)),
+                )
+            )
         self._conn.executemany(
             "INSERT OR REPLACE INTO macro_definitions "
-            "(name, file_path, line, definition, is_function_like) "
-            "VALUES (?, ?, ?, ?, ?)",
-            rows,
+            "(macro_index_name, name, file_path, line, start_line, end_line, definition, "
+            "is_function_like) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            normalized_rows,
         )
 
     def get_macro_definitions(self, name: str, limit: int = 20) -> List[Dict[str, Any]]:
@@ -1067,14 +1269,16 @@ class KnowledgeDB:
         if not clean_name:
             return []
         rows = self._conn.execute(
-            "SELECT name, file_path, line, definition, is_function_like "
+            "SELECT id, macro_index_name, name, file_path, line, start_line, end_line, "
+            "definition, is_function_like "
             "FROM macro_definitions WHERE name = ? "
-            "ORDER BY is_function_like DESC, file_path ASC, line ASC LIMIT ?",
+            "ORDER BY is_function_like DESC, macro_index_name ASC LIMIT ?",
             (clean_name, int(limit or 20)),
         ).fetchall()
         return [dict(row) for row in rows]
 
     def clear_macro_definitions(self) -> None:
+        self._conn.execute("DELETE FROM function_macro_refs")
         self._conn.execute("DELETE FROM macro_definitions")
         self._conn.commit()
 
@@ -1148,6 +1352,179 @@ class KnowledgeDB:
             item.pop("id", None)
             item.pop("tu_id", None)
             result.append(item)
+        return result
+
+    @staticmethod
+    def type_index_name(type_info: Dict[str, Any]) -> str:
+        """Build the public canonical identity for one indexed type definition."""
+        name = str(type_info.get("name") or "").strip()
+        kind = str(type_info.get("kind") or "unknown").strip() or "unknown"
+        file_path = str(type_info.get("file_path") or "").replace("\\", "/").lstrip("./")
+        start_line = int(type_info.get("start_line") or 0)
+        end_line = int(type_info.get("end_line") or start_line)
+        identity_name = name or f"anonymous-{kind}"
+        return f"{identity_name}@{file_path}:{start_line}-{end_line}"
+
+    def get_all_type_definitions(self) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT id, name, kind, file_path, start_line, end_line, full_definition, tu_id "
+            "FROM type_definitions ORDER BY name, file_path, start_line, end_line, kind"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_transitive_include_closure(self, source_file: str) -> List[str]:
+        """Return normalized non-system files transitively visible from source_file."""
+        rows = self._conn.execute(
+            "SELECT source_file, included_file FROM include_edges "
+            "WHERE is_system = 0 ORDER BY source_file, included_file"
+        ).fetchall()
+        graph: Dict[str, List[str]] = {}
+        for row in rows:
+            source = str(row["source_file"] or "").replace("\\", "/").lstrip("./")
+            included = str(row["included_file"] or "").replace("\\", "/").lstrip("./")
+            if source and included:
+                graph.setdefault(source, []).append(included)
+
+        clean_source = str(source_file or "").replace("\\", "/").lstrip("./")
+        roots = [key for key in graph if self._paths_match_hint(key, clean_source)]
+        if not roots and clean_source:
+            roots = [clean_source]
+        visited: set[str] = set()
+        pending = list(roots)
+        while pending:
+            current = pending.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            pending.extend(item for item in graph.get(current, []) if item not in visited)
+        return sorted(visited)
+
+    def replace_function_type_refs(self, rows: List[tuple]) -> None:
+        """Atomically replace all direct function-to-type reference facts."""
+        conn = self._conn
+        conn.execute("SAVEPOINT replace_function_type_refs")
+        try:
+            conn.execute("DELETE FROM function_type_refs")
+            if rows:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO function_type_refs "
+                    "(function_id, type_id, type_index_name, referenced_name, "
+                    "reference_file, reference_line, reference_kind, resolution_reason) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    rows,
+                )
+            conn.execute("RELEASE SAVEPOINT replace_function_type_refs")
+        except Exception:
+            conn.execute("ROLLBACK TO SAVEPOINT replace_function_type_refs")
+            conn.execute("RELEASE SAVEPOINT replace_function_type_refs")
+            raise
+
+    def clear_function_type_refs(self) -> None:
+        self._conn.execute("DELETE FROM function_type_refs")
+
+    def get_function_type_context(
+        self,
+        function_name: str,
+        function_file: str = "",
+        function_start_line: int = 0,
+    ) -> Dict[str, Any]:
+        """Return aggregated direct type references for one function identity."""
+        function_rows = self._conn.execute(
+            "SELECT id, file_path, start_line FROM functions "
+            "WHERE name = ? AND is_declaration = 0 ORDER BY file_path, start_line",
+            (function_name,),
+        ).fetchall()
+        if function_file:
+            function_rows = [
+                row
+                for row in function_rows
+                if self._paths_match_hint(str(row["file_path"] or ""), function_file)
+            ]
+        if function_start_line:
+            function_rows = [
+                row for row in function_rows
+                if int(row["start_line"] or 0) == int(function_start_line)
+            ]
+        if len(function_rows) != 1:
+            return {"referenced_types": []}
+
+        rows = self._conn.execute(
+            "SELECT r.type_id, r.type_index_name, r.referenced_name, "
+            "r.reference_file, r.reference_line, r.reference_kind, "
+            "r.resolution_reason, t.name, t.kind, t.file_path, t.start_line, "
+            "t.end_line, t.full_definition "
+            "FROM function_type_refs r "
+            "LEFT JOIN type_definitions t ON t.id = r.type_id "
+            "WHERE r.function_id = ? "
+            "ORDER BY r.type_index_name, r.referenced_name, r.reference_kind, "
+            "r.reference_line",
+            (int(function_rows[0]["id"]),),
+        ).fetchall()
+
+        resolved: Dict[str, Dict[str, Any]] = {}
+        unresolved: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for row in rows:
+            reference_line = int(row["reference_line"] or 0)
+            reference_kind = str(row["reference_kind"] or "")
+            if row["type_id"] is not None and row["name"] is not None:
+                identity = str(row["type_index_name"] or "")
+                entry = resolved.setdefault(
+                    identity,
+                    {
+                        "type_index_name": identity,
+                        "name": str(row["name"] or row["referenced_name"] or ""),
+                        "kind": str(row["kind"] or "unknown"),
+                        "file_path": str(row["file_path"] or ""),
+                        "start_line": int(row["start_line"] or 0),
+                        "end_line": int(row["end_line"] or 0),
+                        "full_definition": str(row["full_definition"] or ""),
+                        "reference_kinds": [],
+                        "reference_lines": [],
+                    },
+                )
+            else:
+                unresolved_key = (
+                    str(row["referenced_name"] or ""),
+                    str(row["resolution_reason"] or "type_not_resolved"),
+                )
+                entry = unresolved.setdefault(
+                    unresolved_key,
+                    {
+                        "name": unresolved_key[0],
+                        "reference_kinds": [],
+                        "reference_lines": [],
+                        "reason": unresolved_key[1],
+                    },
+                )
+            if reference_kind and reference_kind not in entry["reference_kinds"]:
+                entry["reference_kinds"].append(reference_kind)
+            if reference_line > 0 and reference_line not in entry["reference_lines"]:
+                entry["reference_lines"].append(reference_line)
+
+        referenced_types = list(resolved.values())
+        unresolved_types = list(unresolved.values())
+        kind_order = {
+            "return": 0,
+            "parameter": 1,
+            "function_pointer": 2,
+            "local": 3,
+            "cast": 4,
+            "sizeof": 5,
+            "alignof": 6,
+            "offsetof": 7,
+            "compound_literal": 8,
+            "member_access": 9,
+        }
+        for entry in referenced_types + unresolved_types:
+            entry["reference_kinds"] = sorted(
+                entry["reference_kinds"], key=lambda value: (kind_order.get(value, 99), value)
+            )
+            entry["reference_lines"] = sorted(entry["reference_lines"])
+        referenced_types.sort(key=lambda item: item["type_index_name"])
+        unresolved_types.sort(key=lambda item: (item["name"], item["reason"]))
+        result: Dict[str, Any] = {"referenced_types": referenced_types}
+        if unresolved_types:
+            result["unresolved_referenced_types"] = unresolved_types
         return result
 
     # ── Call Edges ──
@@ -1578,7 +1955,8 @@ class KnowledgeDB:
         result = {}
         for table in ("functions", "type_definitions", "call_edges",
                        "macro_definitions", "global_variables",
-                       "function_symbol_refs", "translation_units",
+                       "function_symbol_refs", "function_macro_refs", "function_type_refs",
+                       "translation_units",
                        "indirect_calls", "taint_signatures",
                        "ir_statements", "ir_resource_events", "ir_lock_events",
                        "ir_shared_accesses", "ir_path_slices",

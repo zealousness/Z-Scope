@@ -207,6 +207,7 @@ def snapshot_contract_text(snapshot: Dict[str, Any]) -> str:
         snapshot.get("return_values"),
         snapshot.get("effects"),
         snapshot.get("error_handling"),
+        snapshot.get("referenced_types"),
         snapshot.get("semantic_fingerprint"),
     ]
     if "return_values" not in snapshot:
