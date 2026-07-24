@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from typing import Any, Dict, Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -183,6 +184,56 @@ def build_semantic_model_input(
     resolved_end = int(info["end_line"])
     signature = str(info["signature"])
 
+    referenced_types = info.get("referenced_types")
+    if not isinstance(referenced_types, list):
+        logger.error(
+            "[snapshot-resolve] invalid type context index_name=%s field=referenced_types "
+            "llm_called=false reason=semantic_model_input_invalid",
+            resolved_index,
+        )
+        raise SemanticModelInputError(
+            "semantic_model_input_invalid",
+            "Function info is missing required referenced_types array",
+        )
+    required_type_fields = {
+        "type_index_name",
+        "kind",
+        "full_definition",
+        "reference_kinds",
+        "reference_lines",
+    }
+    for item in referenced_types:
+        if (
+            not isinstance(item, dict)
+            or set(item) != required_type_fields
+            or not isinstance(item.get("reference_kinds"), list)
+            or not isinstance(item.get("reference_lines"), list)
+        ):
+            logger.error(
+                "[snapshot-resolve] invalid type context index_name=%s field=referenced_types.item "
+                "llm_called=false reason=semantic_model_input_invalid",
+                resolved_index,
+            )
+            raise SemanticModelInputError(
+                "semantic_model_input_invalid",
+                "Function info contains an invalid referenced_types item",
+            )
+
+    unresolved_types = info.get("unresolved_referenced_types")
+    if unresolved_types is not None and (
+        not isinstance(unresolved_types, list) or not unresolved_types
+    ):
+        raise SemanticModelInputError(
+            "semantic_model_input_invalid",
+            "unresolved_referenced_types must be a non-empty array when present",
+        )
+    type_truncation = info.get("referenced_types_truncation")
+    if type_truncation is not None and not isinstance(type_truncation, dict):
+        raise SemanticModelInputError(
+            "semantic_model_input_invalid",
+            "referenced_types_truncation must be an object when present",
+        )
+
     try:
         impl = code_index.get_function_impl(
             resolved_index,
@@ -236,16 +287,139 @@ def build_semantic_model_input(
         "is_static": bool(info.get("is_static")),
         "is_macro": bool(info.get("is_macro")),
         "code": str(impl.get("code") or info.get("code") or ""),
-        "callees": list(info.get("callees") or []),
+        "project_callees": list(info.get("project_callees") or []),
+        "external_callees": list(info.get("external_callees") or []),
         "referenced_globals": list(info.get("referenced_globals") or []),
         "referenced_macros": list(info.get("referenced_macros") or []),
+        "referenced_types": deepcopy(referenced_types),
     }
     for key in (
-        "callees_truncation",
+        "project_callees_truncation",
+        "external_callees_truncation",
         "referenced_globals_truncation",
         "referenced_macros_truncation",
+        "unresolved_referenced_types",
+        "referenced_types_truncation",
     ):
         if key in info:
-            result[key] = info[key]
+            result[key] = deepcopy(info[key])
 
+    return result
+
+
+def hydrate_project_callee_summaries(
+    input_data: Dict[str, Any],
+    code_index: Any,
+    snapshot_store: Any,
+    *,
+    _visiting: Optional[set[str]] = None,
+    _summary_cache: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """Fill project callee summaries from current snapshots without invoking an LLM."""
+
+    result = deepcopy(input_data)
+    is_top_level = _visiting is None
+    visiting = set(_visiting or ())
+    current_index = str(result.get("index_name") or "")
+    if current_index:
+        visiting.add(current_index)
+    summary_cache = _summary_cache if _summary_cache is not None else {}
+    hydrated: List[Dict[str, Any]] = []
+
+    for raw_callee in list(result.get("project_callees") or []):
+        if not isinstance(raw_callee, dict):
+            continue
+        if "is_macro" in raw_callee:
+            raise SemanticModelInputError(
+                "snapshot_shape_changed",
+                "project_callees contains legacy is_macro field",
+            )
+        callee = deepcopy(raw_callee)
+        index_name = str(callee.get("callee_index_name") or "").strip()
+        summary = "unknown"
+        if index_name and index_name == current_index:
+            snapshot = snapshot_store.load_snapshot(index_name)
+            candidate = str(snapshot.get("summary") or "").strip() if snapshot else ""
+            if candidate:
+                summary = candidate
+        elif index_name and index_name not in visiting:
+            cached = summary_cache.get(index_name)
+            if cached is not None:
+                summary = cached
+            else:
+                snapshot = snapshot_store.load_snapshot(index_name)
+                if isinstance(snapshot, dict):
+                    try:
+                        callee_context = build_semantic_model_input(
+                            code_index,
+                            index_name,
+                            index_name=index_name,
+                            include_context=False,
+                        )
+                        callee_context = hydrate_project_callee_summaries(
+                            callee_context,
+                            code_index,
+                            snapshot_store,
+                            _visiting=visiting | {index_name},
+                            _summary_cache=summary_cache,
+                        )
+                        needs_refresh, _reason = snapshot_store.needs_refresh(
+                            index_name,
+                            str(callee_context.get("code") or ""),
+                            callee_context,
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "Callee summary hydration failed index_name=%s error=%s",
+                            index_name,
+                            exc,
+                        )
+                        needs_refresh = True
+                    if not needs_refresh:
+                        candidate = str(snapshot.get("summary") or "").strip()
+                        if candidate:
+                            summary = candidate
+                summary_cache[index_name] = summary
+        callee["callee_summary"] = summary
+        hydrated.append(callee)
+
+    result["project_callees"] = hydrated
+    reconciler = getattr(snapshot_store, "reconcile_project_callee_summaries", None)
+    if (
+        is_top_level
+        and current_index
+        and callable(reconciler)
+        and snapshot_store.load_snapshot(current_index)
+    ):
+        status = reconciler(current_index, result)
+        if status in {"failed", "timeout"}:
+            raise SemanticModelInputError(
+                "callee_summary_reconcile_failed",
+                f"Unable to reconcile project callee summaries for {current_index}",
+            )
+    return result
+
+
+def hydrate_project_callee_summaries_from_map(
+    input_data: Dict[str, Any],
+    summary_map: Dict[str, str],
+) -> Dict[str, Any]:
+    """Hydrate project callee summaries from one frozen canonical summary map."""
+
+    result = deepcopy(input_data)
+    hydrated: List[Dict[str, Any]] = []
+    for raw_callee in list(result.get("project_callees") or []):
+        if not isinstance(raw_callee, dict):
+            continue
+        if "is_macro" in raw_callee:
+            raise SemanticModelInputError(
+                "snapshot_shape_changed",
+                "project_callees contains legacy is_macro field",
+            )
+        callee = deepcopy(raw_callee)
+        index_name = str(callee.get("callee_index_name") or "").strip()
+        summary = str(summary_map.get(index_name) or "").strip()
+        callee["callee_summary"] = summary or "unknown"
+        hydrated.append(callee)
+    result["project_callees"] = hydrated
     return result

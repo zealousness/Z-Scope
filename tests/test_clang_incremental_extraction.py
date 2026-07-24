@@ -172,6 +172,132 @@ def test_clang_backend_preserves_is_static_in_index_and_method(tmp_path) -> None
         db.close()
 
 
+def test_clang_extractor_rebuilds_direct_function_type_references(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "src" / "plugin.c"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "int register_plugin(PluginRegistry *registry) {\n"
+        "    Plugin *plugin = (Plugin *)0;\n"
+        "    int bytes = sizeof(Plugin);\n"
+        "    return registry->plugins != plugin;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_function(
+            "register_plugin",
+            "src/plugin.c",
+            1,
+            5,
+            signature="int register_plugin(PluginRegistry *registry)",
+        )
+        db.insert_type(
+            "Plugin",
+            "struct",
+            "include/types.h",
+            90,
+            98,
+            full_definition="typedef struct Plugin Plugin;",
+        )
+        db.insert_type(
+            "PluginRegistry",
+            "struct",
+            "include/types.h",
+            110,
+            115,
+            full_definition="typedef struct { Plugin *plugins; } PluginRegistry;",
+        )
+        db.commit()
+        extractor = ClangExtractor(project_root=tmp_path)
+
+        def definition_for_token(file_path, line, character):
+            token = source.read_text(encoding="utf-8").splitlines()[line - 1][character:]
+            if token.startswith("PluginRegistry"):
+                return [("include/types.h", 110)]
+            if token.startswith("Plugin"):
+                return [("include/types.h", 90)]
+            return []
+
+        monkeypatch.setattr(extractor, "open_document", lambda path: True)
+        monkeypatch.setattr(extractor, "close_document", lambda path: None)
+        monkeypatch.setattr(extractor, "_definition_locations", definition_for_token)
+
+        count = extractor.rebuild_function_type_refs(db)
+        context = db.get_function_type_context("register_plugin", "src/plugin.c", 1)
+
+        assert count >= 5
+        assert [item["name"] for item in context["referenced_types"]] == [
+            "Plugin",
+            "PluginRegistry",
+        ]
+        by_name = {item["name"]: item for item in context["referenced_types"]}
+        assert by_name["Plugin"]["reference_kinds"] == ["local", "cast", "sizeof"]
+        assert by_name["PluginRegistry"]["reference_kinds"] == [
+            "parameter",
+            "member_access",
+        ]
+        assert "unresolved_referenced_types" not in context
+    finally:
+        db.close()
+
+
+def test_clang_extractor_include_edges_store_canonical_project_paths(tmp_path) -> None:
+    source = tmp_path / "src" / "plugin.c"
+    header = tmp_path / "include" / "types.h"
+    source.parent.mkdir(parents=True)
+    header.parent.mkdir(parents=True)
+    source.write_text('#include "../include/types.h"\n', encoding="utf-8")
+    header.write_text("typedef int Plugin;\n", encoding="utf-8")
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        extractor = ClangExtractor(project_root=tmp_path)
+        extractor._extract_includes(source, "src/plugin.c", db)
+        db.commit()
+
+        assert db.get_transitive_include_closure("src/plugin.c") == [
+            "include/types.h",
+            "src/plugin.c",
+        ]
+    finally:
+        db.close()
+
+
+def test_direct_type_candidates_exclude_parenthesized_values_and_builtin_typedefs(
+    tmp_path,
+) -> None:
+    source = tmp_path / "runtime.c"
+    source.write_text(
+        "int run(const char *path, uint32_t count) {\n"
+        "    RuntimeEvent *event = (RuntimeEvent *)0;\n"
+        "    if (_file_exists(path)) { count = sizeof(path); }\n"
+        "    count += helper(PLATFORM_WINDOWS);\n"
+        "    count = (uint32_t)_hash_string(path);\n"
+        "    SAFE_FREE(event);\n"
+        "    return (int)count;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    extractor = ClangExtractor(project_root=tmp_path)
+    lines = source.read_text(encoding="utf-8").splitlines(True)
+
+    candidates = extractor._direct_function_type_candidates(
+        {
+            "name": "run",
+            "start_line": 1,
+            "end_line": 8,
+            "signature": "int run(const char *path, uint32_t count)",
+        },
+        lines,
+        {"RuntimeEvent"},
+    )
+
+    assert {item["name"] for item in candidates} == {"RuntimeEvent"}
+    assert {item["kind"] for item in candidates} == {"local", "cast"}
+
+
 def test_clang_extractor_stores_source_signature_in_function_rows(
     tmp_path, monkeypatch
 ) -> None:
@@ -372,9 +498,33 @@ def test_clang_extractor_writes_macro_definitions_for_tu(tmp_path, monkeypatch) 
 
     assert db.indexed == [7]
     assert db.macro_rows == [
-        ("ZIP_ALLOC", "macros.h", 1, "#define ZIP_ALLOC(sz) alloc(sz)\n", 1),
-        ("ZIP_LIMIT", "macros.h", 2, "#define ZIP_LIMIT 64\n", 0),
-        ("ZIP_WRAP", "macros.h", 3, "#define ZIP_WRAP(x) \\\n    helper(x)\n", 1),
+        (
+            "ZIP_ALLOC",
+            "macros.h",
+            1,
+            1,
+            "ZIP_ALLOC@macros.h:1-1",
+            "#define ZIP_ALLOC(sz) alloc(sz)\n",
+            1,
+        ),
+        (
+            "ZIP_LIMIT",
+            "macros.h",
+            2,
+            2,
+            "ZIP_LIMIT@macros.h:2-2",
+            "#define ZIP_LIMIT 64\n",
+            0,
+        ),
+        (
+            "ZIP_WRAP",
+            "macros.h",
+            3,
+            4,
+            "ZIP_WRAP@macros.h:3-4",
+            "#define ZIP_WRAP(x) \\\n    helper(x)\n",
+            1,
+        ),
     ]
 
 
@@ -408,7 +558,15 @@ def test_clang_extractor_reuses_source_text_cache_across_helpers(
 
     assert extractor._read_source_text(source) is not None
     assert extractor._extract_macros(source, "demo.c") == [
-        ("ZIP_WRAP", "demo.c", 1, "#define ZIP_WRAP(x) helper(x)\n", 1)
+        (
+            "ZIP_WRAP",
+            "demo.c",
+            1,
+            1,
+            "ZIP_WRAP@demo.c:1-1",
+            "#define ZIP_WRAP(x) helper(x)\n",
+            1,
+        )
     ]
     assert extractor._symbol_range_has_function_body(source, 3, 5) is True
     call_rows = []
@@ -640,9 +798,10 @@ def test_clang_backend_refreshes_unchanged_files_when_macro_metadata_missing(
     assert backend._db.cleared_macros == 1
     assert backend._db.pending == [61]
     assert backend._extractor.received_prescanned_tus == {str(source.resolve()): (61, True)}
-    assert backend._db.metadata["macro_extractor_version"] == "1"
-    assert backend._db.metadata["symbol_context_extractor_version"] == "1"
+    assert backend._db.metadata["macro_extractor_version"] == "2"
+    assert backend._db.metadata["symbol_context_extractor_version"] == "2"
     assert backend._db.metadata["type_extractor_version"] == "1"
+    assert backend._db.metadata["function_type_ref_extractor_version"] == "2"
     assert backend._status == "ready"
 
 

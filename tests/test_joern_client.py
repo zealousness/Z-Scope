@@ -2,6 +2,7 @@ from pathlib import Path
 from subprocess import CompletedProcess
 
 from zscope.common.joern_client import JoernClient
+from zscope.retrieval.joern_backend import JoernBackend
 
 
 def test_joern_cli_query_uses_loaded_cpg_and_marker_json(monkeypatch, tmp_path) -> None:
@@ -60,3 +61,78 @@ def test_joern_parse_path_follows_joern_binary_location() -> None:
     assert JoernClient(joern_path="/opt/joern/joern-cli/joern")._joern_parse_path() == (
         "/opt/joern/joern-cli/joern-parse"
     )
+
+
+def test_joern_client_queries_direct_function_type_references(monkeypatch) -> None:
+    client = JoernClient()
+    captured = {}
+
+    def query(text):
+        captured["query"] = text
+        return [
+            {
+                "typeFullName": "PluginRegistry*",
+                "lineNumber": 32,
+                "referenceKind": "parameter",
+            }
+        ]
+
+    monkeypatch.setattr(client, "query", query)
+
+    rows = client.get_function_type_references("_plugin_register", "src/plugin.c")
+
+    assert rows[0]["typeFullName"] == "PluginRegistry*"
+    assert 'nameExact("_plugin_register")' in captured["query"]
+    assert 'endsWith("src/plugin.c")' in captured["query"]
+    assert '"referenceKind" -> "return"' in captured["query"]
+    assert '"referenceKind" -> "parameter"' in captured["query"]
+    assert '"referenceKind" -> "local"' in captured["query"]
+
+
+def test_joern_backend_builds_resolved_and_optional_unresolved_type_context() -> None:
+    class FakeJoern:
+        def get_function_type_references(self, name, file_path=""):
+            return [
+                {
+                    "typeFullName": "PluginRegistry*",
+                    "lineNumber": 32,
+                    "referenceKind": "parameter",
+                },
+                {
+                    "typeFullName": "MissingType*",
+                    "lineNumber": 40,
+                    "referenceKind": "local",
+                },
+            ]
+
+        def get_type_decls(self, name):
+            if name == "PluginRegistry":
+                return [
+                    {
+                        "name": name,
+                        "filename": "include/types.h",
+                        "lineNumber": 110,
+                        "lineNumberEnd": 115,
+                        "full_definition": "typedef struct { void *plugins; } PluginRegistry;",
+                    }
+                ]
+            return []
+
+    backend = JoernBackend(joern_client=FakeJoern())
+
+    context = backend.get_function_type_context(
+        "_plugin_register", "src/plugin.c", 32
+    )
+
+    assert context["referenced_types"][0]["type_index_name"] == (
+        "PluginRegistry@include/types.h:110-115"
+    )
+    assert context["referenced_types"][0]["reference_kinds"] == ["parameter"]
+    assert context["unresolved_referenced_types"] == [
+        {
+            "name": "MissingType",
+            "reference_kinds": ["local"],
+            "reference_lines": [40],
+            "reason": "type_definition_not_found",
+        }
+    ]

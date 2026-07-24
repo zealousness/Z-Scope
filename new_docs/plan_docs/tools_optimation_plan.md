@@ -463,8 +463,8 @@ semantic_modeler 推荐顺序：
   },
   "referenced_macros_truncation": {
     "truncated": true,
-    "returned": 30,
-    "total": 47
+    "returned": 50,
+    "total": 67
   }
 }
 ```
@@ -479,7 +479,7 @@ semantic_modeler 推荐顺序：
 - `referenced_macros` 只包含当前函数体实际出现或展开的宏。
 - 全局变量和宏的来源直接使用条目中的 `file_path` 和 `line` 表达，不增加独立头文件数组。
 - `callees` 在确定性排序后最多返回 30 项；发生截断时返回 `callees_truncation`。
-- `referenced_globals` 在确定性排序后最多返回 50 项，`referenced_macros` 最多返回 30 项。
+- `referenced_globals` 和 `referenced_macros` 在确定性排序后均最多返回 50 项。
 - globals 或 macros 发生截断时，分别返回 `referenced_globals_truncation` 或 `referenced_macros_truncation`，不使用共享的 symbol context 完整度字段。
 - truncation 对象固定包含 `truncated`、 `returned`和`total`。 `truncated`为布尔型true，`returned`和`total`为非负整数。
 - `total` 统计应用固定上限前、完成聚合去重后的最终数组条目数，不统计原始 call edge 或 reference 记录数。callees 先聚合同一 callee 的 callsites，globals/macros 先聚合同一符号的 reference lines，再计算 `total` 和执行截断。
@@ -572,7 +572,7 @@ def find_function_infos(
 
 - `callees`: 30；
 - `referenced_globals`: 50；
-- `referenced_macros`: 30。
+- `referenced_macros`: 50。
 
 查询实现必须在截断前获得未截断总数；如果只能使用 `limit + 1` 判断存在更多结果，则需要继续执行计数查询以填写准确的 `total`。不能仅根据返回数组长度推断是否截断。所有集合先按稳定规则排序，再应用固定上限，保证重复调用结果一致。
 
@@ -628,7 +628,7 @@ validator 是否暴露该扩展由后续 validator 优化阶段决定，本阶�
 | 宏来自项目头文件 | 宏条目的 `file_path/line` 指向对应定义位置 |
 | callees 超过 30 项 | 返回前 30 项，并只增加 `callees_truncation={truncated: true, returned: 30, total: N}` |
 | referenced globals 超过 50 项 | 返回前 50 项，并只增加 `referenced_globals_truncation={truncated: true, returned: 50, total: N}` |
-| referenced macros 超过 30 项 | 返回前 30 项，并只增加 `referenced_macros_truncation={truncated: true, returned: 30, total: N}` |
+| referenced macros 超过 50 项 | 返回前 50 项，并只增加 `referenced_macros_truncation={truncated: true, returned: 50, total: N}` |
 | 仅 macros 被截断 | 不输出 `callees_truncation` 或 `referenced_globals_truncation` |
 | 所有数组均未截断 | 不输出任何 complete、limitations 或 truncation 字段 |
 | regex fallback | 只返回函数源码 token 与已知 global/macro 名称的精确交集，不产生字符串子串误命中 |

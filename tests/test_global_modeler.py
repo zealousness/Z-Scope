@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from zscope.config.config import (
     AnalysisConfig,
@@ -13,6 +14,7 @@ from zscope.core.analysis import analyzer as analyzer_module
 from zscope.framework.base import AgentResponse
 from zscope.core.analysis.analyzer import Analyzer
 from zscope.orchestration.global_modeler import GlobalModeler
+from zscope.retrieval.code_index import CodeIndex
 from zscope.snapshots.store import SnapshotStore
 
 
@@ -63,16 +65,19 @@ class FakeCodeIndex:
                     "signature": impl["signature"],
                     "is_static": impl["is_static"],
                     "is_macro": impl["is_macro"],
-                    "callees": [
+                    "project_callees": [
                         {
-                            "callee_index_name": callee,
+                            "callee_index_name": self.impls[callee]["index_name"],
                             "callsite_lines": [2],
                             "call_type": ["direct"],
+                            "is_static": self.impls[callee]["is_static"],
                         }
-                        for callee in impl["callees"]
+                        for callee in impl.get("callees", [])
                     ],
+                    "external_callees": [],
                     "referenced_globals": [],
                     "referenced_macros": [],
+                    "referenced_types": [],
                 }
             )
         return matches
@@ -135,9 +140,11 @@ class SameNameCodeIndex:
                     "signature": impl["signature"],
                     "is_static": impl["is_static"],
                     "is_macro": impl["is_macro"],
-                    "callees": [],
+                    "project_callees": [],
+                    "external_callees": [],
                     "referenced_globals": [],
                     "referenced_macros": [],
+                    "referenced_types": [],
                 }
             )
         return matches
@@ -168,15 +175,15 @@ class RecordingAgent:
                 "is_macro": context["is_macro"],
                 "referenced_globals": context["referenced_globals"],
                 "referenced_macros": context["referenced_macros"],
+                "referenced_types": context["referenced_types"],
                 "summary": f"modeled {name}",
-                "inputs": [],
-                "outputs": [],
-                "resources": {},
-                "error_handling": {},
-                "concurrency": {},
-                "key_semantics": [name],
+                "parameters": [],
+                "return_values": {"return_type": "int"},
+                "effects": [],
+                "error_handling": {"error_paths": []},
                 "suspicious_points": [],
-                "callees": [],
+                "project_callees": context["project_callees"],
+                "external_callees": context["external_callees"],
             },
             metadata={"context_tokens": 7},
         )
@@ -221,6 +228,208 @@ def test_global_modeler_models_children_before_parents(tmp_path):
     assert stats.total_context_tokens == 28
     assert calls.index("leaf") < calls.index("mid") < calls.index("entry")
     assert store.load_snapshot("entry@src/entry.c:1-8")["summary"] == "modeled entry"
+    entry_callees = store.load_snapshot("entry@src/entry.c:1-8")["project_callees"]
+    assert {item["callee_summary"] for item in entry_callees} == {
+        "modeled mid",
+        "modeled sibling",
+    }
+    assert stats.reconciliation_failures == 0
+    assert stats.stage_complete is True
+
+
+def test_global_modeler_excludes_llvm_intrinsics_from_graph_and_model_input(tmp_path):
+    entry_source = tmp_path / "src" / "entry.c"
+    child_source = tmp_path / "src" / "child.c"
+    entry_source.parent.mkdir(parents=True)
+    entry_source.write_text(
+        "int entry(void) { unsigned char buffer[32] = {0}; return child(); }\n",
+        encoding="utf-8",
+    )
+    child_source.write_text("int child(void) { return 0; }\n", encoding="utf-8")
+
+    class IntrinsicBackend:
+        def build_function_index(self):
+            return {
+                "entry": {
+                    "name": "entry",
+                    "file": "src/entry.c",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "signature": "int entry(void)",
+                },
+                "child": {
+                    "name": "child",
+                    "file": "src/child.c",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "signature": "int child(void)",
+                },
+            }
+
+        @staticmethod
+        def _callees(func_name):
+            if func_name == "entry":
+                return [
+                    {
+                        "name": "llvm.memset.p0.i64",
+                        "call_file": "src/entry.c",
+                        "call_line": 0,
+                        "source": "svf-ander",
+                    },
+                    {
+                        "name": "child",
+                        "filename": "src/child.c",
+                        "lineNumber": 1,
+                        "call_type": "direct",
+                    },
+                ]
+            return []
+
+        def get_callees(self, func_name, limit=30):
+            return self._callees(func_name)[:limit]
+
+        def get_function_info_callees(self, func_name, file_path=""):
+            return self._callees(func_name)
+
+        def get_function_symbol_context(self, func_name, file_path=""):
+            return {"referenced_globals": [], "referenced_macros": []}
+
+        def get_method(self, name):
+            return None
+
+        def get_method_callees(self, name, limit=30):
+            return self.get_callees(name, limit=limit)
+
+        def close(self):
+            pass
+
+    code_index = CodeIndex(
+        tmp_path,
+        source_root=tmp_path,
+        backend=IntrinsicBackend(),
+        indexing_config=SimpleNamespace(backend="unified"),
+    )
+    calls = []
+    config = _config(tmp_path)
+    store = SnapshotStore(Path(config.analysis.snapshot_dir))
+    user_config = UserConfigStore(Path(config.analysis.user_config_db))
+
+    stats = GlobalModeler(
+        config,
+        code_index,
+        store,
+        user_config,
+        semantic_agent_factory=lambda: RecordingAgent(calls),
+    ).run([FunctionEntry("entry")])
+
+    assert stats.reachable_functions == 2
+    assert stats.unresolved_external_callees == 0
+    assert sorted(calls) == ["child", "entry"]
+    entry_snapshot = store.load_snapshot("entry@src/entry.c:1-1")
+    assert entry_snapshot is not None
+    assert [item["callee_index_name"] for item in entry_snapshot["project_callees"]] == [
+        "child@src/child.c:1-1"
+    ]
+    assert entry_snapshot["external_callees"] == []
+
+
+def test_global_modeler_reconciles_mutual_recursion_without_extra_llm_calls(tmp_path):
+    calls = []
+    config = _config(tmp_path)
+    index = FakeCodeIndex()
+    index.impls = {
+        "left": index._impl("left", ["right"]),
+        "right": index._impl("right", ["left"]),
+    }
+    store = SnapshotStore(Path(config.analysis.snapshot_dir))
+    user_config = UserConfigStore(Path(config.analysis.user_config_db))
+    modeler = GlobalModeler(
+        config,
+        index,
+        store,
+        user_config,
+        semantic_agent_factory=lambda: RecordingAgent(calls),
+        max_workers=2,
+    )
+
+    stats = modeler.run([FunctionEntry("left"), FunctionEntry("right")])
+
+    assert sorted(calls) == ["left", "right"]
+    assert len(calls) == 2
+    assert stats.stage_complete is True
+    assert stats.reconciliation_failures == 0
+    assert store.load_snapshot("left@src/left.c:1-8")["project_callees"][0][
+        "callee_summary"
+    ] == "modeled right"
+    assert store.load_snapshot("right@src/right.c:1-8")["project_callees"][0][
+        "callee_summary"
+    ] == "modeled left"
+
+
+def test_global_modeler_reconciles_self_recursion_without_second_llm_call(tmp_path):
+    calls = []
+    config = _config(tmp_path)
+    index = FakeCodeIndex()
+    index.impls = {"self_call": index._impl("self_call", ["self_call"])}
+    store = SnapshotStore(Path(config.analysis.snapshot_dir))
+    user_config = UserConfigStore(Path(config.analysis.user_config_db))
+    modeler = GlobalModeler(
+        config,
+        index,
+        store,
+        user_config,
+        semantic_agent_factory=lambda: RecordingAgent(calls),
+    )
+
+    stats = modeler.run([FunctionEntry("self_call")])
+
+    assert calls == ["self_call"]
+    assert stats.stage_complete is True
+    assert store.load_snapshot("self_call@src/self_call.c:1-8")["project_callees"][0][
+        "callee_summary"
+    ] == "modeled self_call"
+
+
+def test_global_modeler_failure_skips_reconciliation_and_fails_stage_gate(tmp_path):
+    config = _config(tmp_path)
+    index = FakeCodeIndex()
+    index.impls = {"entry": index._impl("entry", [])}
+    store = SnapshotStore(Path(config.analysis.snapshot_dir))
+    user_config = UserConfigStore(Path(config.analysis.user_config_db))
+
+    class FailingAgent:
+        def run(self, context):
+            return AgentResponse(success=False, data={}, error="api unavailable")
+
+    stats = GlobalModeler(
+        config,
+        index,
+        store,
+        user_config,
+        semantic_agent_factory=FailingAgent,
+    ).run([FunctionEntry("entry")])
+
+    assert stats.failed_functions == 1
+    assert stats.reconciled_functions == 0
+    assert stats.reconciliation_unchanged_functions == 0
+    assert stats.stage_complete is False
+
+
+def test_global_modeler_unresolved_entry_fails_stage_gate(tmp_path):
+    config = _config(tmp_path)
+    store = SnapshotStore(Path(config.analysis.snapshot_dir))
+    user_config = UserConfigStore(Path(config.analysis.user_config_db))
+    stats = GlobalModeler(
+        config,
+        FakeCodeIndex(),
+        store,
+        user_config,
+        semantic_agent_factory=lambda: RecordingAgent([]),
+    ).run([FunctionEntry("missing_entry")])
+
+    assert stats.unresolved_entry_functions == 1
+    assert stats.stage_complete is False
+    assert stats.reconciled_functions == 0
 
 
 def test_global_modeler_models_same_name_entries_in_different_files(tmp_path):
@@ -271,6 +480,7 @@ def test_global_modeler_reuses_existing_snapshots(tmp_path):
             "is_macro": False,
             "referenced_globals": [],
             "referenced_macros": [],
+            "referenced_types": [],
             "summary": "cached leaf",
             "inputs": [],
             "outputs": [],
@@ -279,7 +489,8 @@ def test_global_modeler_reuses_existing_snapshots(tmp_path):
             "concurrency": {},
             "key_semantics": ["cached"],
             "suspicious_points": [],
-            "callees": [],
+            "project_callees": [],
+            "external_callees": [],
         },
         impl["code"],
     )
@@ -347,7 +558,8 @@ def test_global_modeler_uses_deterministic_snapshot_for_trivial_function(tmp_pat
                 "is_static": False,
                 "is_macro": False,
             "code": "1 | int tiny(void) {\n2 |     return 0;\n3 | }\n",
-            "callees": [],
+            "project_callees": [],
+            "external_callees": [],
         }
     }
     store = SnapshotStore(Path(config.analysis.snapshot_dir))
@@ -390,6 +602,7 @@ def test_entry_model_reuses_global_snapshot_without_llm(tmp_path):
             "is_macro": False,
             "referenced_globals": [],
             "referenced_macros": [],
+            "referenced_types": [],
             "summary": "global entry",
             "inputs": [],
             "outputs": [],
@@ -398,7 +611,8 @@ def test_entry_model_reuses_global_snapshot_without_llm(tmp_path):
             "concurrency": {},
             "key_semantics": ["global"],
             "suspicious_points": [],
-            "callees": [],
+                "project_callees": [],
+                "external_callees": [],
         },
         code,
     )
@@ -410,9 +624,12 @@ def test_entry_model_reuses_global_snapshot_without_llm(tmp_path):
         "entry_func": "entry",
         "entry_index_name": "entry@src/entry.c:1-3",
         "impl_result": {"file": "src/entry.c", "code": code},
-        "semantic_model_input": {
+            "semantic_model_input": {
+                "project_callees": [],
+                "external_callees": [],
             "referenced_globals": [],
             "referenced_macros": [],
+            "referenced_types": [],
         },
         "notes": [],
     }
@@ -447,8 +664,9 @@ def test_on_demand_snapshot_build_uses_file_qualified_lock(monkeypatch, tmp_path
                     "snapshot_kind": "LLM-modeled",
                         "is_static": context["is_static"],
                         "is_macro": context["is_macro"],
-                        "referenced_globals": context["referenced_globals"],
-                        "referenced_macros": context["referenced_macros"],
+                            "referenced_globals": context["referenced_globals"],
+                            "referenced_macros": context["referenced_macros"],
+                            "referenced_types": context["referenced_types"],
                         "summary": context["index_name"],
                     "inputs": [],
                     "outputs": [],
@@ -457,7 +675,8 @@ def test_on_demand_snapshot_build_uses_file_qualified_lock(monkeypatch, tmp_path
                     "concurrency": {},
                     "key_semantics": [context["index_name"]],
                     "suspicious_points": [],
-                    "callees": [],
+                    "project_callees": [],
+                    "external_callees": [],
                 },
                 metadata={"context_tokens": 1},
             )

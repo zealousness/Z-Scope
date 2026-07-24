@@ -72,6 +72,7 @@ dependency/
 
 # ZScope specific
 /llm_dialogue/
+/personal_docs/
 .zscope.local.env
 zscope.local.yaml
 .zscope_snapshots*/

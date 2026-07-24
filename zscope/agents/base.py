@@ -137,14 +137,39 @@ class ToolCallingAgent(BaseAgent):
         *,
         max_iterations: int = 50,
         trace_label: str = "",
+        additional_tools_schema: Optional[List[Dict[str, Any]]] = None,
+        terminal_tool_name: Optional[str] = None,
+        terminal_tool_handler: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        terminal_tool_validator: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        terminal_tool_required: bool = False,
     ) -> Dict[str, Any]:
+        tools_schema = list(self.tools_schema)
+        if additional_tools_schema:
+            tools_schema.extend(additional_tools_schema)
+        call_kwargs: Dict[str, Any] = {
+            "messages": messages,
+            "tools_schema": tools_schema,
+            "tool_executor": self._tool_executor,
+            "max_iterations": max_iterations,
+            "trace_agent": self.name,
+            "trace_label": trace_label,
+        }
+        if (
+            terminal_tool_name
+            or terminal_tool_handler
+            or terminal_tool_validator
+            or terminal_tool_required
+        ):
+            call_kwargs.update(
+                {
+                    "terminal_tool_name": terminal_tool_name,
+                    "terminal_tool_handler": terminal_tool_handler,
+                    "terminal_tool_validator": terminal_tool_validator,
+                    "terminal_tool_required": terminal_tool_required,
+                }
+            )
         return self.llm_client.run_conversation_with_tools(
-            messages=messages,
-            tools_schema=self.tools_schema,
-            tool_executor=self._tool_executor,
-            max_iterations=max_iterations,
-            trace_agent=self.name,
-            trace_label=trace_label,
+            **call_kwargs,
         )
 
     @staticmethod
@@ -216,12 +241,37 @@ class JsonToolAgent(ToolCallingAgent):
         post_process: Optional[PostProcessor] = None,
         json_output_spec: Optional[JsonOutputSpec] = None,
         require_structured_finalization: bool = False,
+        single_pass_final_tool: bool = False,
     ) -> AgentResponse:
         try:
+            terminal_schema = (
+                self._final_json_tool_schema(json_output_spec)
+                if single_pass_final_tool and json_output_spec
+                else None
+            )
+
+            def terminal_handler(payload: Dict[str, Any]) -> Dict[str, Any]:
+                if not json_output_spec:
+                    return {"valid": True, "payload": payload}
+                parsed_payload = self._coerce_payload_for_spec(payload, json_output_spec)
+                if parsed_payload is None:
+                    return {
+                        "valid": False,
+                        "error": (
+                            f"Invalid {json_output_spec.type_name} payload; follow the supplied "
+                            "schema and call the terminal tool again."
+                        ),
+                    }
+                return {"valid": True, "payload": parsed_payload}
+
             result = self._run_tool_conversation(
                 messages,
                 max_iterations=max_iterations,
                 trace_label=trace_label,
+                additional_tools_schema=[terminal_schema] if terminal_schema else None,
+                terminal_tool_name=(json_output_spec.final_tool_name if terminal_schema else None),
+                terminal_tool_handler=terminal_handler if terminal_schema else None,
+                terminal_tool_required=bool(terminal_schema),
             )
             content = str(result.get("content") or "")
             conversation = result.get("conversation", [])
@@ -231,6 +281,7 @@ class JsonToolAgent(ToolCallingAgent):
                 require_structured_finalization
                 and json_output_spec
                 and not result.get("loop_guard_triggered")
+                and not single_pass_final_tool
             ):
                 return self._run_json_structured_finalization(
                     messages,
@@ -254,9 +305,37 @@ class JsonToolAgent(ToolCallingAgent):
                 if post_process:
                     parsed = post_process(parsed)
                 metadata = self._json_result_metadata(result, json_output_spec)
+                if single_pass_final_tool and json_output_spec:
+                    metadata["single_pass"] = True
+                    metadata["finalization_mode"] = "single_pass_tool"
+                    metadata["terminal_tool_name"] = json_output_spec.final_tool_name
+                    metadata["terminal_tool_valid"] = bool(result.get("terminal_tool_valid"))
+                    metadata["terminal_tool_call_count"] = int(
+                        result.get("terminal_tool_call_count", 0) or 0
+                    )
                 return AgentResponse(
                     success=True,
                     data=parsed,
+                    metadata=metadata,
+                )
+
+            if single_pass_final_tool and json_output_spec:
+                metadata = self._json_result_metadata(result, json_output_spec)
+                metadata["single_pass"] = True
+                metadata["finalization_mode"] = "single_pass_tool"
+                metadata["terminal_tool_name"] = json_output_spec.final_tool_name
+                metadata["terminal_tool_valid"] = bool(result.get("terminal_tool_valid"))
+                metadata["terminal_tool_call_count"] = int(
+                    result.get("terminal_tool_call_count", 0) or 0
+                )
+                metadata["snapshot_terminal_tool_failed"] = True
+                return AgentResponse(
+                    success=False,
+                    data={
+                        "raw_output": content,
+                        "partial_result": self._extract_last_assistant_text(content, conversation),
+                    },
+                    error=f"Failed to produce {parse_label} with terminal tool.",
                     metadata=metadata,
                 )
 
@@ -1053,6 +1132,7 @@ class JsonToolAgent(ToolCallingAgent):
             assistant_message,
         )
         metadata["context_tokens"] = int(metadata.get("context_tokens", 0) or 0) + LLMClient.estimate_tokens(messages)
+        metadata["api_call_count"] = int(metadata.get("api_call_count", 0) or 0) + 1
         metadata["cumulative_prompt_tokens"] = int(
             metadata.get("cumulative_prompt_tokens", 0) or 0
         ) + prompt_tokens
@@ -1070,7 +1150,7 @@ class JsonToolAgent(ToolCallingAgent):
         json_output_spec: Optional[JsonOutputSpec] = None,
     ) -> Dict[str, Any]:
         metadata = JsonToolAgent._conversation_token_metadata(result)
-        for key in ("iterations", "tool_call_count"):
+        for key in ("iterations", "tool_call_count", "api_call_count"):
             try:
                 metadata[key] = int(result.get(key, 0) or 0)
             except (TypeError, ValueError):

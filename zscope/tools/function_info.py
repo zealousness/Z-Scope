@@ -1,3 +1,4 @@
+from copy import deepcopy
 from typing import Any, Dict, TYPE_CHECKING
 
 from ..framework.base import BaseTool
@@ -8,7 +9,19 @@ if TYPE_CHECKING:
 
 
 class GetFunctionInfoTool(BaseTool):
-    """Tool to retrieve structured function metadata and symbol context."""
+    """Tool to retrieve structured function identity and call metadata."""
+
+    _OMITTED_MATCH_FIELDS = frozenset(
+        {
+            "referenced_globals",
+            "referenced_macros",
+            "referenced_types",
+            "referenced_globals_truncation",
+            "referenced_macros_truncation",
+            "referenced_types_truncation",
+            "unresolved_referenced_types",
+        }
+    )
 
     def __init__(
         self,
@@ -18,10 +31,12 @@ class GetFunctionInfoTool(BaseTool):
         super().__init__(
             name="get_function_info",
             description=(
-                "Retrieve function identity, callees, referenced globals, and referenced "
-                "macros by name, optionally scoped by file path. Function-like macro matches "
-                "additionally return complete definition code. Any truncation field means "
-                "the corresponding array was truncated and is not exhaustive."
+                "Retrieve function identity and project/external callee metadata by name, "
+                "optionally scoped by file path. Function-like macro matches additionally "
+                "return complete definition code. The result does not include referenced "
+                "globals, macros, types, or their truncation metadata. If a supplied file_path "
+                "has no matches, the tool retries once without file_path, returns all unscoped "
+                "matches, and reports file_path_fallback."
             ),
         )
         self.code_index = code_index
@@ -40,6 +55,18 @@ class GetFunctionInfoTool(BaseTool):
             func_name,
             file_path=file_path,
         )
+        file_path_fallback = None
+        if not matches and file_path:
+            matches = self.code_index.find_function_infos(func_name, file_path="")
+            if matches:
+                file_path_fallback = {
+                    "reason": "file_path_not_matched",
+                    "requested_file_path": file_path,
+                    "message": (
+                        "The supplied file_path did not match the requested function. "
+                        "The following matches are results from a query without file_path."
+                    ),
+                }
         if not matches:
             external_name = self.code_index.fallback_function_name(func_name) or func_name
             if self.user_config:
@@ -60,9 +87,11 @@ class GetFunctionInfoTool(BaseTool):
                                 f" * 返回语义: {ext.get('return_semantics', '')}\n"
                                 " */"
                             ),
-                            "callees": [],
+                            "project_callees": [],
+                            "external_callees": [],
                             "referenced_globals": [],
                             "referenced_macros": [],
+                            "referenced_types": [],
                             "is_external": True,
                         }
                     ]
@@ -78,13 +107,24 @@ class GetFunctionInfoTool(BaseTool):
                     "error": f"Function '{external_name}' not found",
                 }
 
-        return {
+        public_matches = [
+            {
+                key: deepcopy(value)
+                for key, value in match.items()
+                if key not in self._OMITTED_MATCH_FIELDS
+            }
+            for match in matches
+        ]
+        result = {
             "success": True,
             "data": {
-                "match_count": len(matches),
-                "matches": matches,
+                "match_count": len(public_matches),
+                "matches": public_matches,
             },
         }
+        if file_path_fallback is not None:
+            result["file_path_fallback"] = file_path_fallback
+        return result
 
     def get_schema(self) -> Dict[str, Any]:
         return {
@@ -101,7 +141,10 @@ class GetFunctionInfoTool(BaseTool):
                         },
                         "file_path": {
                             "type": "string",
-                            "description": "Optional source file path used to disambiguate same-name functions.",
+                            "description": (
+                                "Optional source file path used to disambiguate same-name functions. "
+                                "If it has no matches, the tool retries once without this filter."
+                            ),
                         },
                     },
                     "required": ["func_name"],

@@ -12,6 +12,7 @@ from zscope.core.candidates.backend_signals import (
     split_config_pair_names,
 )
 from zscope.common.issue_identity import normalize_issue_category, normalize_issue_fields
+from zscope.core.validation.evidence import compact_snapshot
 from zscope.semantics.inference import add_api_from_semantic_text, snapshot_contract_text
 from zscope.snapshots.policy import (
     DETERMINISTIC_SNAPSHOT_OPTIONAL_FIELDS,
@@ -607,11 +608,11 @@ def test_premodel_callee_collection_uses_per_level_cap_and_light_impls() -> None
                     "end_line": 4,
                     "signature": f"int {simple_name}(void)",
                     "is_static": False,
-                    "is_macro": False,
                     "callees": [],
-                    "referenced_globals": [],
-                    "referenced_macros": [],
-                }
+                        "referenced_globals": [],
+                        "referenced_macros": [],
+                        "referenced_types": [],
+                    }
             ]
 
     class SnapshotStore:
@@ -778,7 +779,15 @@ def test_trivial_snapshot_marks_facade_forwarding_as_auditable() -> None:
 101 |     return _runtime_accept_session_frame(fd, wire);
 102 | }
 """,
-            "callees": ["_runtime_accept_session_frame"],
+            "project_callees": [
+                {
+                "callee_index_name": "_runtime_accept_session_frame",
+                "callsite_lines": [],
+                "call_type": ["direct"],
+                    "is_static": False,
+                }
+            ],
+            "external_callees": [],
         },
     )
 
@@ -791,11 +800,13 @@ def test_trivial_snapshot_marks_facade_forwarding_as_auditable() -> None:
     assert all("confidence" not in point for point in snapshot["suspicious_points"])
     assert "semantic_fingerprint" not in snapshot
     assert "key_semantics" not in snapshot
-    assert snapshot["callees"] == [
+    assert snapshot["project_callees"] == [
         {
-            "callee_index_name": "_runtime_accept_session_frame",
-            "callsite_lines": [],
-            "callee_behavior": "Deterministic snapshot does not model callee behavior.",
+                "callee_index_name": "_runtime_accept_session_frame",
+                "callsite_lines": [],
+                "call_type": ["direct"],
+                "is_static": False,
+            "callee_summary": "unknown",
         }
     ]
 
@@ -890,10 +901,41 @@ def test_lightweight_snapshot_variants_use_unified_semantic_fields() -> None:
 
 def test_deterministic_snapshot_preserves_context_truncation_and_isolation() -> None:
     referenced_globals = [{"name": "g_state", "reference_lines": [2]}]
-    referenced_macros = [{"name": "LIMIT", "reference_lines": [2]}]
+    referenced_macros = [
+        {
+            "macro_index_name": "LIMIT@include/limits.h:1-1",
+            "definition": "1 | #define LIMIT 8\n",
+            "is_function_like": False,
+            "reference_lines": [2],
+        }
+    ]
+    referenced_types = [
+        {
+            "type_index_name": "TinyContext@include/tiny.h:1-2",
+            "kind": "struct",
+            "full_definition": "1 | typedef struct { int value; } TinyContext;\n",
+            "reference_kinds": ["local"],
+            "reference_lines": [2],
+        }
+    ]
+    unresolved_types = [
+        {
+            "name": "MissingTiny",
+            "reference_kinds": ["cast"],
+            "reference_lines": [2],
+            "reason": "type_definition_not_found",
+        }
+    ]
+    types_truncation = {
+        "truncated": True,
+        "returned": 1,
+        "total": 2,
+        "definition_bytes_returned": 47,
+        "definition_bytes_limit": 32768,
+    }
     globals_truncation = {"truncated": True, "returned": 50, "total": 51}
-    macros_truncation = {"truncated": True, "returned": 30, "total": 31}
-    callees_truncation = {"truncated": True, "returned": 30, "total": 32}
+    macros_truncation = {"truncated": True, "returned": 50, "total": 51}
+    project_callees_truncation = {"truncated": True, "returned": 30, "total": 32}
     snapshot = Analyzer._build_trivial_snapshot(
         "tiny",
         {
@@ -907,21 +949,27 @@ def test_deterministic_snapshot_preserves_context_truncation_and_isolation() -> 
             "code": "1 | int tiny(void) {\n2 | return helper();\n3 | }",
             "referenced_globals": referenced_globals,
             "referenced_macros": referenced_macros,
+            "referenced_types": referenced_types,
+            "unresolved_referenced_types": unresolved_types,
+            "referenced_types_truncation": types_truncation,
             "referenced_globals_truncation": globals_truncation,
             "referenced_macros_truncation": macros_truncation,
-            "callees": [
+            "project_callees": [
                 {
                     "callee_index_name": "helper@src/helper.c:10-12",
                     "callsite_lines": [2],
                     "call_type": ["direct"],
+                    "is_static": False,
                 },
                 {
                     "callee_index_name": "dispatch@src/dispatch.c:20-24",
                     "callsite_lines": [2],
                     "call_type": ["direct", "indirect"],
+                    "is_static": False,
                 }
             ],
-            "callees_truncation": callees_truncation,
+            "external_callees": [],
+            "project_callees_truncation": project_callees_truncation,
         },
     )
 
@@ -931,26 +979,37 @@ def test_deterministic_snapshot_preserves_context_truncation_and_isolation() -> 
         "referenced_globals_truncation",
         "referenced_macros_truncation",
     ]
-    callee_index = expected_fields.index("callees") + 1
-    expected_fields.insert(callee_index, "callees_truncation")
+    type_index = expected_fields.index("referenced_types") + 1
+    expected_fields[type_index:type_index] = [
+        "unresolved_referenced_types",
+        "referenced_types_truncation",
+    ]
+    callee_index = expected_fields.index("external_callees") + 1
+    expected_fields.insert(callee_index, "project_callees_truncation")
     assert list(snapshot) == expected_fields
     assert set(snapshot) <= set(DETERMINISTIC_SNAPSHOT_REQUIRED_FIELDS) | set(
         DETERMINISTIC_SNAPSHOT_OPTIONAL_FIELDS
     )
-    assert snapshot["callees"][0]["call_type"] == ["direct"]
-    assert snapshot["callees"][1]["call_type"] == ["direct", "indirect"]
+    assert snapshot["project_callees"][0]["call_type"] == ["direct"]
+    assert snapshot["project_callees"][1]["call_type"] == ["direct", "indirect"]
     assert snapshot["code"].endswith("3 | }")
 
     snapshot["referenced_globals"][0]["name"] = "changed"
-    snapshot["referenced_macros"][0]["name"] = "changed"
+    snapshot["referenced_macros"][0]["macro_index_name"] = "changed"
+    snapshot["referenced_types"][0]["kind"] = "changed"
+    snapshot["unresolved_referenced_types"][0]["name"] = "changed"
     snapshot["referenced_globals_truncation"]["total"] = 99
     snapshot["referenced_macros_truncation"]["total"] = 99
-    snapshot["callees_truncation"]["total"] = 99
+    snapshot["project_callees_truncation"]["total"] = 99
+    snapshot["referenced_types_truncation"]["total"] = 99
     assert referenced_globals[0]["name"] == "g_state"
-    assert referenced_macros[0]["name"] == "LIMIT"
+    assert referenced_macros[0]["macro_index_name"] == "LIMIT@include/limits.h:1-1"
+    assert referenced_types[0]["kind"] == "struct"
+    assert unresolved_types[0]["name"] == "MissingTiny"
     assert globals_truncation["total"] == 51
-    assert macros_truncation["total"] == 31
-    assert callees_truncation["total"] == 32
+    assert macros_truncation["total"] == 51
+    assert project_callees_truncation["total"] == 32
+    assert types_truncation["total"] == 2
 
 
 def test_validation_evidence_pack_preserves_entry_reachability_context() -> None:
@@ -1055,6 +1114,60 @@ def test_validation_evidence_pack_preserves_entry_reachability_context() -> None
     snapshot_summary = pack["function_context"]["snapshot_summary"]
     assert snapshot_summary["effects"][0]["description"] == "validation contract"
     assert "semantic_fingerprint" not in snapshot_summary
+
+
+def test_validation_snapshot_type_evidence_preserves_identity_under_byte_budget() -> None:
+    snapshot = {
+        "referenced_types": [
+            {
+                "type_index_name": "Large@include/types.h:1-10",
+                "kind": "struct",
+                "full_definition": "x" * (16 * 1024 + 1),
+                "reference_kinds": ["parameter"],
+                "reference_lines": [5],
+            },
+            {
+                "type_index_name": "Small@include/types.h:20-21",
+                "kind": "typedef",
+                "full_definition": "20 | typedef int Small;\n",
+                "reference_kinds": ["local"],
+                "reference_lines": [6],
+            },
+        ],
+        "unresolved_referenced_types": [
+            {
+                "name": "Missing",
+                "reference_kinds": ["cast"],
+                "reference_lines": [7],
+                "reason": "type_definition_not_found",
+            }
+        ],
+        "referenced_types_truncation": {
+            "truncated": True,
+            "returned": 2,
+            "total": 3,
+            "definition_bytes_returned": 16384,
+            "definition_bytes_limit": 32768,
+        },
+    }
+
+    compact = compact_snapshot(snapshot)
+
+    assert compact is not None
+    assert compact["referenced_types"][0]["type_index_name"] == (
+        "Large@include/types.h:1-10"
+    )
+    assert "full_definition" not in compact["referenced_types"][0]
+    assert compact["referenced_types"][0]["definition_omitted"] == (
+        "validation_evidence_byte_budget"
+    )
+    assert compact["referenced_types"][1]["full_definition"] == "20 | typedef int Small;\n"
+    assert compact["unresolved_referenced_types"] == snapshot[
+        "unresolved_referenced_types"
+    ]
+    assert compact["referenced_types_truncation"] == snapshot[
+        "referenced_types_truncation"
+    ]
 
 
 def test_entry_root_dead_code_rejection_is_detected() -> None:

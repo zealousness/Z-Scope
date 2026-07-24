@@ -75,3 +75,51 @@
 
 - `python -m pytest tests/test_snapshot_store.py tests/test_global_modeler.py tests/test_parallel_shared_semantics.py tests/test_reporting_config.py tests/test_analyzer_semantics.py -q` 通过：58 个测试。
 - `python -m py_compile zscope/snapshots/store.py zscope/orchestration/global_modeler.py zscope/core/analysis/analyzer.py` 通过。
+
+## 2026-07-22
+
+### 已完成：在 CodeIndex 输出边界过滤 LLVM intrinsic callee
+
+- 在 `zscope/retrieval/code_index.py` 中新增统一判断 `_is_llvm_intrinsic_callee()`，过滤所有名称以 `llvm.` 开头的 callee。
+- `_filter_callee_names()` 现在会过滤 LLVM intrinsic，覆盖函数实现上下文、regex/source fallback 和宏调用提取产生的名称列表。
+- `_filter_callee_records()` 现在会过滤 LLVM intrinsic，覆盖 `CodeIndex.get_callees()` 返回给调用图、GlobalModeler 和其他上层消费者的 callee records。
+- `_split_function_info_callees()` 在 project/external 分类、聚合和截断之前过滤 LLVM intrinsic，因此：
+  - intrinsic 不会进入 `project_callees` 或 `external_callees`；
+  - intrinsic 不占用 project/external callee 返回上限；
+  - truncation 的 `total` 不再统计 intrinsic。
+- `CodeIndex.get_callees(limit=N)` 改为在过滤后应用调用方 limit。如果当前底层查询结果因 intrinsic 或重复项导致不足 N 条，会逐步扩大底层查询上限，最高为 1,000,000，再返回前 N 条有效 callee，避免 intrinsic 占用 GlobalModeler breadth limit。
+- 未修改 KnowledgeDB、SVF 导入器或 UnifiedBackend 的原始事实；`indirect_calls` 中的 `llvm.memset.p0.i64` 等记录仍可用于 IR/SVF 排查。
+- 本阶段未将 `llvm.memset.*`、`llvm.memcpy.*` 等 intrinsic 转换为 snapshot `effects`，也未修改任何 fallback 文件。
+
+### 新增回归测试
+
+- `test_get_callees_filters_llvm_intrinsics_before_applying_limit`
+  - 验证 `llvm.memset.*`、`llvm.memcpy.*` 被过滤；
+  - 验证普通项目函数、external API 和原有去重顺序保持不变；
+  - 验证过滤后仍能填满调用方请求的 limit；
+  - 验证函数实现上下文中的名称型 `callees` 同样不包含 intrinsic。
+- `test_function_info_filters_llvm_intrinsics_before_classification_and_truncation`
+  - 验证 intrinsic 即使能匹配项目索引，也不会进入 `project_callees`；
+  - 验证 intrinsic 不会进入 `external_callees`，且不会错误触发 truncation。
+- `test_global_modeler_excludes_llvm_intrinsics_from_graph_and_model_input`
+  - 使用同时包含项目 callee 和 `llvm.memset.p0.i64` 的 fake SVF/backend edge；
+  - 验证 GlobalModeler 只建模 entry 与真实项目 callee；
+  - 验证 intrinsic 不增加 `unresolved_external_callees`；
+  - 验证最终 Semantic Modeler 输入/snapshot 的 project/external callee metadata 中不存在 intrinsic。
+- `test_knowledge_db_preserves_llvm_intrinsic_indirect_call_facts`
+  - 验证底层 `indirect_calls` 仍完整返回 `llvm.memset.p0.i64` 的 source、call file、call line 和 SVF group。
+
+### 测试与验证
+
+- 测试先行验证：实现前新增用例结果为 3 个失败、1 个通过；失败分别对应 CodeIndex records、function-info 分类/截断和 GlobalModeler unresolved graph，KnowledgeDB 原始数据保留用例通过。
+- `python -m pytest tests/test_function_info_tool.py::test_get_callees_filters_llvm_intrinsics_before_applying_limit tests/test_function_info_tool.py::test_function_info_filters_llvm_intrinsics_before_classification_and_truncation tests/test_global_modeler.py::test_global_modeler_excludes_llvm_intrinsics_from_graph_and_model_input tests/test_knowledge_db_ir_and_config.py::test_knowledge_db_preserves_llvm_intrinsic_indirect_call_facts -q` 通过：4 个测试。
+- `python -m pytest tests/test_function_info_tool.py tests/test_global_modeler.py tests/test_knowledge_db_ir_and_config.py tests/test_semantic_model_input.py tests/test_snapshot_tool.py -q` 通过：68 个测试。
+- `python -m pytest tests/test_analyzer_semantics.py tests/test_function_info_tool.py tests/test_global_modeler.py tests/test_knowledge_db_ir_and_config.py tests/test_parallel_shared_semantics.py tests/test_scan_session_resume_svf.py tests/test_semantic_model_input.py tests/test_semantics_defaults.py tests/test_svf_cache.py tests/test_svf_value_flow_candidates.py -q` 通过：133 个测试。
+- `python -m pytest -q` 全量回归通过：771 个测试，耗时 172.78 秒。
+- `python -m py_compile zscope/retrieval/code_index.py zscope/orchestration/global_modeler.py zscope/snapshots/modeling_input.py` 通过。
+- `git diff --check` 通过。
+
+### 计划偏差 / 后续验证
+
+- 相比原计划只在 helper 中过滤，本次额外调整了 `CodeIndex.get_callees()` 的底层查询扩容逻辑。原因是后端先执行 limit、CodeIndex 再过滤时，位于结果前部的 intrinsic 仍会占用 breadth limit，无法满足“intrinsic 不参与 callee 数量限制”的验收条件。
+- 未重新运行完整 benchmark 或调用外部 LLM API。本次已通过真实 CodeIndex + fake SVF edge 的 GlobalModeler 集成测试验证调用图和 Semantic Modeler 输入；如需统计工具失败数和 token 变化，应使用临时 benchmark 配置单独运行，以避免在实施验证阶段产生未确认的 API 成本。

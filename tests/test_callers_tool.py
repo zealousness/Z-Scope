@@ -72,11 +72,14 @@ def test_get_callers_schema_exposes_identity_and_file_only() -> None:
         "properties": {
             "func_name": {
                 "type": "string",
-                "description": "Function name, qualified name, or index_name for exact match.",
+                "description": (
+                    "Function or function-like macro name, qualified name, "
+                    "or index_name for exact match."
+                ),
             },
             "file_path": {
                 "type": "string",
-                "description": "Optional source file path used to disambiguate same-name functions.",
+                "description": "Optional source file path used to disambiguate same-name targets.",
             },
         },
         "required": ["func_name"],
@@ -226,6 +229,84 @@ def test_code_index_requires_unique_target_or_file_disambiguation(tmp_path) -> N
     assert ambiguous == {"match_count": 2, "callers": []}
     assert resolved == {"match_count": 1, "callers": []}
     assert backend.calls == [("Target", "src/b/target.c")]
+
+
+def test_code_index_supports_function_like_macro_callers(tmp_path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "macros.h").write_text(
+        "#define WRAP() 0\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "src" / "caller.c").write_text(
+        "int Caller(void) { return WRAP(); }\n",
+        encoding="utf-8",
+    )
+    backend = CallerBackend(
+        {"Caller": _function("Caller", "src/caller.c")},
+        [
+            {
+                "name": "Caller",
+                "filename": "src/caller.c",
+                "lineNumber": 1,
+                "call_type": "direct",
+            }
+        ],
+    )
+    code_index = _index(tmp_path, backend)
+    caller_index_name = code_index.find_function_infos("Caller")[0]["index_name"]
+    expected = {
+        "match_count": 1,
+        "callers": [
+            {
+                "caller_index_name": caller_index_name,
+                "callsite_lines": [1],
+                "call_type": ["direct"],
+            }
+        ],
+    }
+
+    assert code_index.find_function_callers("WRAP") == expected
+    assert code_index.find_function_callers("WRAP@src/macros.h:1-1") == expected
+    assert backend.calls == [("WRAP", "src/macros.h"), ("WRAP", "src/macros.h")]
+
+
+def test_code_index_groups_conditional_macro_definitions_by_symbol_file(tmp_path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "macros.h").write_text(
+        "#if ENABLED\n"
+        "#define WRAP() 1\n"
+        "#else\n"
+        "#define WRAP() 0\n"
+        "#endif\n",
+        encoding="utf-8",
+    )
+    backend = CallerBackend({}, [])
+    code_index = _index(tmp_path, backend)
+
+    assert code_index.find_function_callers(
+        "WRAP",
+        file_path="src/macros.h",
+    ) == {"match_count": 1, "callers": []}
+    assert backend.calls == [("WRAP", "src/macros.h")]
+
+
+def test_code_index_requires_file_disambiguation_for_same_name_macros(tmp_path) -> None:
+    (tmp_path / "include" / "a").mkdir(parents=True)
+    (tmp_path / "include" / "b").mkdir(parents=True)
+    for path in ("include/a/macros.h", "include/b/macros.h"):
+        (tmp_path / path).write_text("#define WRAP() 0\n", encoding="utf-8")
+    backend = CallerBackend({}, [])
+    code_index = _index(tmp_path, backend)
+
+    assert code_index.find_function_callers("WRAP") == {
+        "match_count": 2,
+        "callers": [],
+    }
+    assert code_index.find_function_callers(
+        "WRAP",
+        file_path="include/b/macros.h",
+    ) == {"match_count": 1, "callers": []}
+    assert backend.calls == [("WRAP", "include/b/macros.h")]
 
 
 def test_unified_backend_preserves_direct_and_indirect_caller_evidence(tmp_path) -> None:

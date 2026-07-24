@@ -552,3 +552,44 @@ schema 定义和工具参数语义由具体 `BaseTool` 提供，Runtime、Agent 
 - 扩展 snapshot store、analyzer semantics 和 global modeler 回归：`93 passed`。
 - `python -m compileall -q zscope/tools/snapshot_tool.py`：通过。
 - 全量回归：`734 passed`。
+
+## 2026-07-23 `get_callers` function-like macro fallback
+
+### 实现
+
+- `CodeIndex.find_function_callers()` 在普通函数未命中后复用 `_find_macro_impls()` 解析 function-like macro。
+- 支持宏简单名称、可选 `file_path` 和 canonical 宏 `index_name`；普通函数的既有匹配优先级保持不变。
+- 同名同文件的多个条件编译定义按宏符号聚合，再以宏名和文件查询底层 caller 边；不把调用边伪装成已绑定到某个条件定义行。
+- 同名宏位于多个文件时保持歧义语义，要求使用 `file_path` 或 canonical identity 消歧。
+- caller 结果继续复用既有 canonical caller、callsite 和 direct/indirect 聚合逻辑。
+
+### 测试
+
+- `python -m pytest tests/test_callers_tool.py -q`：`10 passed`。
+- `python -m pytest tests/test_callers_tool.py tests/test_function_info_tool.py -q`：`39 passed`。
+- 使用 `global_model_benchmark.db` 副本验证 `SERVICE_COUNTER_UNLOCK` 的简单名称和 canonical identity，均返回 `_runtime_update_metric_counter@src/lifecycle.c:1996-2002`、调用行 2000、`call_type=["direct"]`。
+
+## 2026-07-23 Tool 层 `file_path` 零命中 fallback
+
+### 实现
+
+- `get_function_info` 和 `get_type_info` 在收到非空 `file_path` 时仍优先执行严格路径限定查询。
+- 严格路径查询零命中时，Tool 自动执行一次同名、无 `file_path` 查询；fallback 只发生一次，不下沉到 CodeIndex，不改变底层路径过滤语义。
+- 无路径查询命中时返回 `success=true`，`data.matches` 直接包含全部无路径候选，`data.match_count` 始终等于候选数量，不截断且不自动选择首项。
+- fallback 成功时在顶层增加 `file_path_fallback`，只包含：
+  - `reason=file_path_not_matched`
+  - 原始 `requested_file_path`
+  - 明确说明这些候选来自无 `file_path` 查询的 `message`
+- `file_path_fallback` 不包含 `query_scope`；正常严格命中时不返回该字段。
+- `get_function_info` 的无路径查询仍零命中时，才进入既有 external function fallback / not-found 分支。
+- `get_type_info` 对 fallback 候选继续统一删除内部 `id`、`tu_id` 和派生 `members`；无路径查询仍零命中时保持既有失败语义。
+- `get_callers` 和 `get_function_snapshot` 需要唯一目标，不纳入本次直接返回多候选的 fallback。
+- Runtime 继续只缓存真正失败的 `get_type_info` 查询；fallback 成功结果不会进入 negative cache。
+
+### 测试
+
+- 增加 function/type 错误路径后二次查询测试，确认返回全部 matches、`match_count` 一致、提示包含原路径且没有 `query_scope`。
+- 更新 type not-found 和 Runtime scoped negative-cache 调用序列，纳入额外一次无路径查询。
+- 增加 Runtime fallback 成功不进入 negative cache 的回归测试。
+- `python -m pytest tests/test_function_info_tool.py tests/test_type_info_tool.py tests/test_tool_registry.py -q`：`55 passed`。
+- `python -m pytest -q`：`799 passed`。

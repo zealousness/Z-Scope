@@ -1,6 +1,8 @@
 import threading
 from pathlib import Path
 
+import pytest
+
 from zscope.config.config import (
     AgentConfig,
     AnalysisConfig,
@@ -156,6 +158,10 @@ def test_parallel_analyzer_runs_global_model_before_entries(monkeypatch, tmp_pat
         deterministic_snapshot_count = 0
         llm_snapshot_count = 1
         failed_functions = 0
+        unresolved_entry_functions = 0
+        reconciled_functions = 1
+        reconciliation_failures = 0
+        stage_complete = True
 
         def to_dict(self):
             return {"reachable_functions": 1, "modeled_functions": 1}
@@ -212,7 +218,7 @@ def test_parallel_analyzer_runs_global_model_before_entries(monkeypatch, tmp_pat
     }
 
 
-def test_parallel_analyzer_falls_back_when_global_model_fails(monkeypatch, tmp_path) -> None:
+def test_parallel_analyzer_stops_when_global_model_fails(monkeypatch, tmp_path) -> None:
     observed_flags = []
 
     class CountingLocalPatternSemanticBuilder:
@@ -229,8 +235,27 @@ def test_parallel_analyzer_falls_back_when_global_model_fails(monkeypatch, tmp_p
         def compile(self):
             return {}
 
-    def fail_global_model(*args, **kwargs):
-        raise RuntimeError("global model unavailable")
+    class IncompleteStats:
+        reachable_functions = 1
+        modeled_functions = 0
+        cache_hit_functions = 0
+        deterministic_snapshot_count = 0
+        llm_snapshot_count = 0
+        failed_functions = 1
+        unresolved_entry_functions = 0
+        reconciled_functions = 0
+        reconciliation_failures = 0
+        stage_complete = False
+
+        def to_dict(self):
+            return {"failed_functions": 1, "stage_complete": False}
+
+    class IncompleteGlobalModeler:
+        def run(self, entries):
+            return IncompleteStats()
+
+    def incomplete_global_model(*args, **kwargs):
+        return IncompleteGlobalModeler()
 
     def fake_run(self):
         observed_flags.append(self.config.analysis.enable_global_model)
@@ -260,14 +285,21 @@ def test_parallel_analyzer_falls_back_when_global_model_fails(monkeypatch, tmp_p
         "SemanticOverlayCompiler",
         CountingSemanticOverlayCompiler,
     )
-    monkeypatch.setattr(parallel_module.GlobalModeler, "from_analyzer_helpers", fail_global_model)
+    monkeypatch.setattr(
+        parallel_module.GlobalModeler,
+        "from_analyzer_helpers",
+        incomplete_global_model,
+    )
     monkeypatch.setattr(analyzer_module.Analyzer, "run", fake_run)
 
     config = _config(tmp_path)
     config.analysis.enable_global_model = True
     parallel = ParallelAnalyzer(config, code_index=FakeCodeIndex())
-    results = parallel.analyze_function_entries([FunctionEntry("alpha")])
+    with pytest.raises(RuntimeError, match="Global semantic modeling did not complete"):
+        parallel.analyze_function_entries([FunctionEntry("alpha")])
 
-    assert list(results) == ["alpha"]
-    assert observed_flags == [False]
-    assert parallel._last_global_model_stats == {"error": "global model unavailable"}
+    assert observed_flags == []
+    assert parallel._last_global_model_stats == {
+        "failed_functions": 1,
+        "stage_complete": False,
+    }

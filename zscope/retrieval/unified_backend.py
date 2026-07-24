@@ -179,12 +179,23 @@ class UnifiedBackend(CodeBackend):
     def get_macro_definitions(self, name: str, limit: int = 20) -> List[Dict[str, Any]]:
         return self._clang.get_macro_definitions(name, limit=limit)
 
+    def get_macro_definitions_batch(self, names: List[str]) -> List[Dict[str, Any]]:
+        return self._clang.get_macro_definitions_batch(names)
+
     def get_function_symbol_context(
         self,
         func_name: str,
         file_path: str = "",
     ) -> Dict[str, List[Dict[str, Any]]]:
         return self._clang.get_function_symbol_context(func_name, file_path)
+
+    def get_function_type_context(
+        self,
+        func_name: str,
+        file_path: str = "",
+        start_line: int = 0,
+    ) -> Dict[str, Any]:
+        return self._clang.get_function_type_context(func_name, file_path, start_line)
 
     def get_method_callees(self, name: str, limit: int = 30) -> List[Dict[str, Any]]:
         return self._clang.get_method_callees(name, limit)

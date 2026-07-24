@@ -31,9 +31,10 @@ def _config(tmp_path: Path) -> ZScopeConfig:
 
 
 class _ResumeCodeIndex:
-    def __init__(self, indexes, referenced_macros=None):
+    def __init__(self, indexes, referenced_macros=None, referenced_types=None):
         self.indexes = dict(indexes)
         self.referenced_macros = dict(referenced_macros or {})
+        self.referenced_types = dict(referenced_types or {})
 
     def find_function_infos(self, func_name: str, file_path: str = ""):
         index_name = self.indexes.get(file_path)
@@ -53,6 +54,7 @@ class _ResumeCodeIndex:
                 "callees": [],
                 "referenced_globals": [],
                 "referenced_macros": list(self.referenced_macros.get(file_path) or []),
+                "referenced_types": list(self.referenced_types.get(file_path) or []),
             }
         ]
 
@@ -264,6 +266,7 @@ def test_resume_does_not_skip_entry_when_only_other_path_has_final_report(
             "summary": "a",
             "referenced_globals": [],
             "referenced_macros": [],
+            "referenced_types": [],
         },
         "int handle_request(void) { return 1; }\n",
     )
@@ -278,6 +281,7 @@ def test_resume_does_not_skip_entry_when_only_other_path_has_final_report(
             "summary": "b",
             "referenced_globals": [],
             "referenced_macros": [],
+            "referenced_types": [],
         },
         "int handle_request(void) { return 2; }\n",
     )
@@ -326,6 +330,7 @@ def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path) 
                 "summary": file_path,
                 "referenced_globals": [],
                 "referenced_macros": [],
+                "referenced_types": [],
             },
             "int handle_request(void) { return 0; }\n",
         )
@@ -365,10 +370,8 @@ def test_resume_does_not_skip_when_symbol_context_changed(tmp_path: Path) -> Non
     file_path = "src/a.c"
     index_name = "handle_request@src/a.c:10-10"
     old_macro = {
-        "name": "LIMIT",
-        "file_path": "include/limits.h",
-        "line": 3,
-        "definition": "#define LIMIT 8",
+        "macro_index_name": "LIMIT@include/limits.h:3-3",
+        "definition": "3 | #define LIMIT 8\n",
         "is_function_like": False,
         "reference_lines": [10],
     }
@@ -383,6 +386,7 @@ def test_resume_does_not_skip_when_symbol_context_changed(tmp_path: Path) -> Non
             "summary": "old",
             "referenced_globals": [],
             "referenced_macros": [old_macro],
+            "referenced_types": [],
         },
         "int handle_request(void) { return 0; }\n",
     )
@@ -390,7 +394,7 @@ def test_resume_does_not_skip_when_symbol_context_changed(tmp_path: Path) -> Non
         index_name,
         {"overall_verdict": "no_issue_found", "issues": []},
     )
-    current_macro = {**old_macro, "definition": "#define LIMIT 16"}
+    current_macro = {**old_macro, "definition": "3 | #define LIMIT 16\n"}
     runner = ScanSessionRunner(cfg, resume=True)
     entry = FunctionEntry("handle_request", file_path=file_path)
     state = {
@@ -400,6 +404,59 @@ def test_resume_does_not_skip_when_symbol_context_changed(tmp_path: Path) -> Non
         "code_index": _ResumeCodeIndex(
             {file_path: index_name},
             referenced_macros={file_path: [current_macro]},
+        ),
+    }
+
+    runner._handle_plan_resume_entries(state, None)  # type: ignore[arg-type]
+
+    assert state["entries"] == [entry]
+    assert state["skipped_entries"] == []
+
+
+def test_resume_does_not_skip_when_type_context_changed(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    store = SnapshotStore(Path(cfg.analysis.snapshot_dir))
+    file_path = "src/a.c"
+    index_name = "handle_request@src/a.c:10-10"
+    old_type = {
+        "type_index_name": "Context@include/context.h:1-3",
+        "kind": "struct",
+        "full_definition": "1 | typedef struct { int value; } Context;\n",
+        "reference_kinds": ["parameter"],
+        "reference_lines": [10],
+    }
+    store.save_snapshot(
+        index_name,
+        {
+            "func_name": "handle_request",
+            "index_name": index_name,
+            "file_path": file_path,
+            "start_line": 10,
+            "end_line": 10,
+            "summary": "old",
+            "referenced_globals": [],
+            "referenced_macros": [],
+            "referenced_types": [old_type],
+        },
+        "int handle_request(void) { return 0; }\n",
+    )
+    store.save_final_report(
+        index_name,
+        {"overall_verdict": "no_issue_found", "issues": []},
+    )
+    current_type = {
+        **old_type,
+        "full_definition": "typedef struct { long value; } Context;",
+    }
+    runner = ScanSessionRunner(cfg, resume=True)
+    entry = FunctionEntry("handle_request", file_path=file_path)
+    state = {
+        "entries_loaded": True,
+        "batch_mode": True,
+        "entries": [entry],
+        "code_index": _ResumeCodeIndex(
+            {file_path: index_name},
+            referenced_types={file_path: [current_type]},
         ),
     }
 

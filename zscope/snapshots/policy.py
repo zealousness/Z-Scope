@@ -29,19 +29,24 @@ DETERMINISTIC_SNAPSHOT_REQUIRED_FIELDS = (
     "is_macro",
     "referenced_globals",
     "referenced_macros",
+    "referenced_types",
     "summary",
     "parameters",
     "return_values",
     "effects",
     "error_handling",
-    "callees",
+    "project_callees",
+    "external_callees",
     "suspicious_points",
     "code",
 )
 DETERMINISTIC_SNAPSHOT_OPTIONAL_FIELDS = (
     "referenced_globals_truncation",
     "referenced_macros_truncation",
-    "callees_truncation",
+    "unresolved_referenced_types",
+    "referenced_types_truncation",
+    "project_callees_truncation",
+    "external_callees_truncation",
 )
 DETERMINISTIC_SNAPSHOT_KINDS = frozenset({"syntactic", "lightweight"})
 
@@ -117,10 +122,12 @@ def _unknown_return_values() -> Dict[str, Any]:
     }
 
 
-def _normalize_callees(value: Any) -> List[Dict[str, Any]]:
+def _normalize_project_callees(value: Any) -> List[Dict[str, Any]]:
     result: List[Dict[str, Any]] = []
     for raw_callee in value if isinstance(value, list) else []:
         if isinstance(raw_callee, dict):
+            if "is_macro" in raw_callee:
+                raise ValueError("project callee uses legacy is_macro field")
             index_name = str(
                 raw_callee.get("callee_index_name")
                 or raw_callee.get("index_name")
@@ -139,12 +146,12 @@ def _normalize_callees(value: Any) -> List[Dict[str, Any]]:
                 }
             )
             raw_call_type = raw_callee.get("call_type")
-            behavior = str(raw_callee.get("callee_behavior") or "").strip()
+            summary = str(raw_callee.get("callee_summary") or "").strip()
         else:
             index_name = str(raw_callee or "").strip()
             callsite_lines = []
             raw_call_type = None
-            behavior = ""
+            summary = ""
         if not index_name:
             continue
 
@@ -158,8 +165,44 @@ def _normalize_callees(value: Any) -> List[Dict[str, Any]]:
         callee = {
             "callee_index_name": index_name,
             "callsite_lines": callsite_lines,
-            "callee_behavior": behavior
-            or "Deterministic snapshot does not model callee behavior.",
+            "is_static": bool(raw_callee.get("is_static")) if isinstance(raw_callee, dict) else False,
+            "callee_summary": summary or "unknown",
+        }
+        if call_types:
+            callee["call_type"] = call_types
+        result.append(callee)
+    return result
+
+
+def _normalize_external_callees(value: Any) -> List[Dict[str, Any]]:
+    result: List[Dict[str, Any]] = []
+    for raw_callee in value if isinstance(value, list) else []:
+        if not isinstance(raw_callee, dict):
+            continue
+        index_name = str(raw_callee.get("callee_index_name") or "").strip()
+        if not index_name:
+            continue
+        raw_lines = raw_callee.get("callsite_lines")
+        if not isinstance(raw_lines, list):
+            raw_lines = [raw_callee.get("callsite_line")]
+        callsite_lines = sorted(
+            {
+                int(line)
+                for line in raw_lines
+                if isinstance(line, int) and not isinstance(line, bool) and line > 0
+            }
+        )
+        raw_call_types = raw_callee.get("call_type")
+        if not isinstance(raw_call_types, list):
+            raw_call_types = [raw_call_types]
+        call_types = [
+            call_type
+            for call_type in ("direct", "indirect")
+            if call_type in {str(item) for item in raw_call_types}
+        ]
+        callee = {
+            "callee_index_name": index_name,
+            "callsite_lines": callsite_lines,
         }
         if call_types:
             callee["call_type"] = call_types
@@ -201,8 +244,20 @@ def _expected_deterministic_fields(snapshot: Dict[str, Any]) -> tuple[str, ...]:
             ):
                 if optional in snapshot:
                     fields.append(optional)
-        elif field == "callees" and "callees_truncation" in snapshot:
-            fields.append("callees_truncation")
+        elif field == "referenced_types":
+            for optional in (
+                "unresolved_referenced_types",
+                "referenced_types_truncation",
+            ):
+                if optional in snapshot:
+                    fields.append(optional)
+        elif field == "external_callees":
+            for optional in (
+                "project_callees_truncation",
+                "external_callees_truncation",
+            ):
+                if optional in snapshot:
+                    fields.append(optional)
     return tuple(fields)
 
 
@@ -212,6 +267,29 @@ def is_current_deterministic_snapshot_shape(snapshot: Dict[str, Any]) -> bool:
     if str(snapshot.get("snapshot_kind") or "") not in DETERMINISTIC_SNAPSHOT_KINDS:
         return False
     if any(field not in snapshot for field in DETERMINISTIC_SNAPSHOT_REQUIRED_FIELDS):
+        return False
+    if not isinstance(snapshot.get("referenced_types"), list):
+        return False
+    if not isinstance(snapshot.get("referenced_macros"), list) or any(
+        not isinstance(item, dict)
+        or set(item)
+        != {"macro_index_name", "definition", "is_function_like", "reference_lines"}
+        for item in snapshot.get("referenced_macros", [])
+    ):
+        return False
+    if not isinstance(snapshot.get("project_callees"), list) or any(
+        not isinstance(item, dict) or "is_macro" in item
+        for item in snapshot.get("project_callees", [])
+    ):
+        return False
+    if "unresolved_referenced_types" in snapshot and (
+        not isinstance(snapshot.get("unresolved_referenced_types"), list)
+        or not snapshot.get("unresolved_referenced_types")
+    ):
+        return False
+    if "referenced_types_truncation" in snapshot and not isinstance(
+        snapshot.get("referenced_types_truncation"), dict
+    ):
         return False
     allowed = set(DETERMINISTIC_SNAPSHOT_REQUIRED_FIELDS) | set(
         DETERMINISTIC_SNAPSHOT_OPTIONAL_FIELDS
@@ -251,6 +329,13 @@ def _build_deterministic_snapshot(
     ):
         if field in impl:
             snapshot[field] = deepcopy(impl[field])
+    snapshot["referenced_types"] = deepcopy(list(impl.get("referenced_types") or []))
+    for field in (
+        "unresolved_referenced_types",
+        "referenced_types_truncation",
+    ):
+        if field in impl:
+            snapshot[field] = deepcopy(impl[field])
     snapshot.update(
         {
             "summary": summary,
@@ -258,11 +343,13 @@ def _build_deterministic_snapshot(
             "return_values": deepcopy(return_values),
             "effects": deepcopy(effects),
             "error_handling": deepcopy(error_handling),
-            "callees": _normalize_callees(impl.get("callees")),
+            "project_callees": _normalize_project_callees(impl.get("project_callees")),
+            "external_callees": _normalize_external_callees(impl.get("external_callees")),
         }
     )
-    if "callees_truncation" in impl:
-        snapshot["callees_truncation"] = deepcopy(impl["callees_truncation"])
+    for field in ("project_callees_truncation", "external_callees_truncation"):
+        if field in impl:
+            snapshot[field] = deepcopy(impl[field])
     snapshot["suspicious_points"] = _normalize_suspicious_points(suspicious_points)
     snapshot["code"] = str(impl.get("code") or "")
     if not is_current_deterministic_snapshot_shape(snapshot):
@@ -461,7 +548,10 @@ def trivial_suspicious_points(
 
     callees = [
         str(callee["callee_index_name"])
-        for callee in _normalize_callees(impl.get("callees"))
+        for callee in (
+            _normalize_project_callees(impl.get("project_callees"))
+            + _normalize_external_callees(impl.get("external_callees"))
+        )
     ]
     if callees and re.search(r"\breturn\s+[A-Za-z_]\w*\s*\(", text):
         points.append(

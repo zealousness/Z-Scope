@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import threading
 
 import pytest
 
@@ -7,7 +8,9 @@ from zscope.common.utils import compute_code_hash, compute_semantic_fingerprint
 from zscope.snapshots.store import (
     SnapshotLockManager,
     SnapshotStore,
+    compute_callee_summary_hash,
     compute_symbol_context_hash,
+    compute_type_context_hash,
 )
 from zscope.snapshots.policy import build_trivial_snapshot
 
@@ -33,6 +36,7 @@ def _snapshot(
         "is_macro": False,
         "referenced_globals": [],
         "referenced_macros": [],
+        "referenced_types": [],
         "summary": summary,
     }
 
@@ -99,11 +103,43 @@ def test_snapshot_save_refreshes_cache_and_fingerprints(tmp_path) -> None:
         "code_hash": compute_code_hash(second_code),
         "semantic_hash": compute_semantic_fingerprint(second_code),
         "symbol_context_hash": compute_symbol_context_hash(_snapshot(summary="second")),
+        "callee_summary_hash": compute_callee_summary_hash(_snapshot(summary="second")),
+        "type_context_hash": compute_type_context_hash(_snapshot(summary="second")),
     }
     assert store.needs_refresh(index_name, second_code, _snapshot()) == (False, None)
 
 
 def test_symbol_context_change_requires_snapshot_refresh(tmp_path) -> None:
+    store = SnapshotStore(tmp_path / "snapshots")
+    index_name = "handle_request@src/server.c:10-20"
+    code = "int handle_request(void) { return LIMIT; }"
+    snapshot = _snapshot()
+    snapshot["referenced_macros"] = [
+        {
+            "macro_index_name": "LIMIT@include/limits.h:4-4",
+            "definition": "4 | #define LIMIT 8\n",
+            "is_function_like": False,
+            "reference_lines": [10],
+        }
+    ]
+    store.save_snapshot(index_name, snapshot, code)
+
+    changed_context = _snapshot()
+    changed_context["referenced_macros"] = [
+        {
+            **snapshot["referenced_macros"][0],
+            "definition": "4 | #define LIMIT 16\n",
+        }
+    ]
+
+    assert store.needs_refresh(index_name, code, snapshot) == (False, None)
+    assert store.needs_refresh(index_name, code, changed_context) == (
+        True,
+        "symbol_context_changed",
+    )
+
+
+def test_legacy_macro_item_requires_snapshot_shape_refresh(tmp_path) -> None:
     store = SnapshotStore(tmp_path / "snapshots")
     index_name = "handle_request@src/server.c:10-20"
     code = "int handle_request(void) { return LIMIT; }"
@@ -120,18 +156,110 @@ def test_symbol_context_change_requires_snapshot_refresh(tmp_path) -> None:
     ]
     store.save_snapshot(index_name, snapshot, code)
 
-    changed_context = _snapshot()
-    changed_context["referenced_macros"] = [
+    current = _snapshot()
+    current["referenced_macros"] = [
         {
-            **snapshot["referenced_macros"][0],
-            "definition": "#define LIMIT 16",
+            "macro_index_name": "LIMIT@include/limits.h:4-4",
+            "definition": "4 | #define LIMIT 8\n",
+            "is_function_like": False,
+            "reference_lines": [10],
         }
     ]
 
-    assert store.needs_refresh(index_name, code, snapshot) == (False, None)
-    assert store.needs_refresh(index_name, code, changed_context) == (
+    assert store.needs_refresh(index_name, code, current) == (
         True,
-        "symbol_context_changed",
+        "snapshot_shape_changed",
+    )
+
+
+def test_type_context_hash_normalizes_order_and_definition_line_endings() -> None:
+    first = _snapshot()
+    first["referenced_types"] = [
+        {
+            "type_index_name": "Plugin@include/types.h:90-98",
+            "kind": "struct",
+            "full_definition": "90 | typedef struct {\r\n91 |     int id;   \r\n92 | } Plugin;\r\n",
+            "reference_kinds": ["sizeof", "local"],
+            "reference_lines": [14, 12],
+        }
+    ]
+    reordered = _snapshot()
+    reordered["referenced_types"] = [
+        {
+            **first["referenced_types"][0],
+            "full_definition": "90 | typedef struct {\n91 |     int id;\n92 | } Plugin;",
+            "reference_kinds": ["local", "sizeof"],
+            "reference_lines": [12, 14],
+        }
+    ]
+
+    assert compute_type_context_hash(first) == compute_type_context_hash(reordered)
+
+    reordered["referenced_types"][0]["full_definition"] = (
+        "90 | typedef struct {\n91 |     long id;\n92 | } Plugin;"
+    )
+    assert compute_type_context_hash(first) != compute_type_context_hash(reordered)
+
+
+def test_type_definition_or_direct_reference_change_requires_semantic_refresh(
+    tmp_path,
+) -> None:
+    store = SnapshotStore(tmp_path / "snapshots")
+    index_name = "handle_request@src/server.c:10-20"
+    code = "int handle_request(void) { return 0; }"
+    snapshot = _snapshot()
+    snapshot["referenced_types"] = [
+        {
+            "type_index_name": "Context@include/context.h:1-3",
+            "kind": "struct",
+            "full_definition": "1 | typedef struct { int value; } Context;\n",
+            "reference_kinds": ["parameter"],
+            "reference_lines": [10],
+        }
+    ]
+    store.save_snapshot(index_name, snapshot, code)
+
+    definition_changed = json.loads(json.dumps(snapshot))
+    definition_changed["referenced_types"][0]["full_definition"] = (
+        "1 | typedef struct { long value; } Context;\n"
+    )
+    assert store.needs_refresh(index_name, code, definition_changed) == (
+        True,
+        "type_context_changed",
+    )
+
+    reference_changed = json.loads(json.dumps(snapshot))
+    reference_changed["referenced_types"][0]["reference_kinds"] = [
+        "parameter",
+        "member_access",
+    ]
+    assert store.needs_refresh(index_name, code, reference_changed) == (
+        True,
+        "type_context_changed",
+    )
+
+    cosmetic = json.loads(json.dumps(snapshot))
+    cosmetic["referenced_types"][0]["full_definition"] = (
+        "1 | typedef struct { int value; } Context;   \r\n"
+    )
+    assert store.needs_refresh(index_name, code, cosmetic) == (False, None)
+
+
+def test_old_snapshot_without_referenced_types_requires_shape_rebuild(tmp_path) -> None:
+    store = SnapshotStore(tmp_path / "snapshots")
+    index_name = "handle_request@src/server.c:10-20"
+    code = "int handle_request(void) { return 0; }"
+    current = _snapshot()
+    store.save_snapshot(index_name, current, code)
+    snapshot_path = store.snapshot_dir / store._snapshot_filename(index_name)
+    persisted = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    persisted.pop("referenced_types")
+    snapshot_path.write_text(json.dumps(persisted), encoding="utf-8")
+    store._invalidate_snapshot_cache(index_name)
+
+    assert store.needs_refresh(index_name, code, current) == (
+        True,
+        "snapshot_shape_changed",
     )
 
 
@@ -139,7 +267,7 @@ def test_callee_context_hash_uses_only_canonical_backend_fields() -> None:
     snapshot_context = {
         "referenced_globals": [],
         "referenced_macros": [],
-        "callees": [
+        "project_callees": [
             {
                 "callee_index_name": "decode@src/decode.c:10-20",
                 "callsite_lines": [14, 12],
@@ -151,11 +279,12 @@ def test_callee_context_hash_uses_only_canonical_backend_fields() -> None:
     backend_context = {
         "referenced_globals": [],
         "referenced_macros": [],
-        "callees": [
+        "project_callees": [
             {
                 "callee_index_name": "decode@src/decode.c:10-20",
                 "callsite_lines": [12],
                 "call_type": ["direct"],
+                "callee_summary": "unknown",
             },
             {
                 "callee_index_name": "decode@src/decode.c:10-20",
@@ -177,25 +306,28 @@ def test_backend_callee_change_requires_snapshot_refresh(tmp_path) -> None:
     backend_context = {
         "referenced_globals": [],
         "referenced_macros": [],
-        "callees": [
+        "project_callees": [
             {
                 "callee_index_name": "decode@src/decode.c:10-20",
                 "callsite_lines": [10],
                 "call_type": ["direct"],
+                "is_static": False,
             }
         ],
     }
     snapshot = _snapshot()
-    snapshot["callees"] = [
+    snapshot["index_name"] = index_name
+    snapshot["project_callees"] = [
         {
-            **backend_context["callees"][0],
-            "callee_behavior": "Decodes the request.",
+            **backend_context["project_callees"][0],
+            "is_static": False,
+            "callee_summary": "unknown",
         },
         {
             "callee_index_name": "llm_only@src/other.c:1-2",
             "callsite_lines": [],
             "call_type": ["direct"],
-            "callee_behavior": "Model-only observation.",
+            "callee_summary": "unknown",
         },
     ]
     store.save_snapshot(
@@ -209,9 +341,9 @@ def test_backend_callee_change_requires_snapshot_refresh(tmp_path) -> None:
 
     changed_call_type = {
         **backend_context,
-        "callees": [
+        "project_callees": [
             {
-                **backend_context["callees"][0],
+                **backend_context["project_callees"][0],
                 "call_type": ["direct", "indirect"],
             }
         ],
@@ -221,13 +353,113 @@ def test_backend_callee_change_requires_snapshot_refresh(tmp_path) -> None:
         "symbol_context_changed",
     )
 
+    changed_summary = {
+        **backend_context,
+        "project_callees": [
+            {
+                **backend_context["project_callees"][0],
+                "callee_summary": "updated canonical summary",
+            }
+        ],
+    }
+    assert store.needs_refresh(index_name, code, changed_summary) == (
+        False,
+        "callee_summary_changed",
+    )
+    assert store.reconcile_project_callee_summaries(index_name, changed_summary) == "refreshed"
+    refreshed = store.load_snapshot(index_name)
+    assert refreshed["summary"] == snapshot["summary"]
+    assert refreshed["project_callees"] == changed_summary["project_callees"]
+    assert store.needs_refresh(index_name, code, changed_summary) == (False, None)
+
     changed_truncation = {
         **backend_context,
-        "callees_truncation": {"truncated": True, "returned": 30, "total": 31},
+        "project_callees_truncation": {"truncated": True, "returned": 30, "total": 31},
     }
     assert store.needs_refresh(index_name, code, changed_truncation) == (
         True,
         "symbol_context_changed",
+    )
+
+
+def test_concurrent_program_only_reconciliation_is_serialized(tmp_path) -> None:
+    store = SnapshotStore(tmp_path / "snapshots")
+    index_name = "caller@src/caller.c:1-3"
+    code = "int caller(void) { return child(); }"
+    context = {
+        "referenced_globals": [],
+        "referenced_macros": [],
+        "project_callees": [
+            {
+                "callee_index_name": "child@src/child.c:1-3",
+                "callsite_lines": [2],
+                "call_type": ["direct"],
+                "is_static": False,
+                "callee_summary": "unknown",
+            }
+        ],
+        "external_callees": [],
+    }
+    snapshot = _snapshot(index_name=index_name)
+    snapshot["project_callees"] = context["project_callees"]
+    snapshot["external_callees"] = []
+    store.save_snapshot(index_name, snapshot, code, dependency_context=context)
+    desired = {
+        **context,
+        "project_callees": [
+            {**context["project_callees"][0], "callee_summary": "child summary"}
+        ],
+    }
+    barrier = threading.Barrier(2)
+    statuses = []
+
+    def reconcile():
+        barrier.wait()
+        statuses.append(store.reconcile_project_callee_summaries(index_name, desired))
+
+    threads = [threading.Thread(target=reconcile) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert sorted(statuses) == ["refreshed", "unchanged"]
+    assert store.load_snapshot(index_name)["project_callees"] == desired["project_callees"]
+
+
+def test_legacy_callee_behavior_requires_snapshot_shape_refresh(tmp_path) -> None:
+    store = SnapshotStore(tmp_path / "snapshots")
+    index_name = "caller@src/caller.c:1-3"
+    code = "int caller(void) { return child(); }"
+    context = {
+        "referenced_globals": [],
+        "referenced_macros": [],
+        "project_callees": [
+            {
+                "callee_index_name": "child@src/child.c:1-2",
+                "callsite_lines": [1],
+                "call_type": ["direct"],
+                "is_static": False,
+                "is_macro": False,
+                "callee_summary": "unknown",
+            }
+        ],
+        "external_callees": [],
+    }
+    snapshot = _snapshot()
+    snapshot["index_name"] = index_name
+    snapshot["project_callees"] = [
+        {
+            **context["project_callees"][0],
+            "callee_behavior": "legacy",
+        }
+    ]
+    snapshot["project_callees"][0].pop("callee_summary")
+    store.save_snapshot(index_name, snapshot, code, dependency_context=context)
+
+    assert store.needs_refresh(index_name, code, context) == (
+        True,
+        "snapshot_shape_changed",
     )
 
 
@@ -358,6 +590,7 @@ def test_snapshot_filename_and_sqlite_primary_key_derive_from_index_name(tmp_pat
     assert columns["index_name"][5] == 1
     assert "location" not in columns
     assert "symbol_context_hash" in columns
+    assert "type_context_hash" in columns
     assert row == (index_name, expected_file)
 
 
@@ -426,6 +659,9 @@ def test_legacy_database_migrates_to_index_name_without_deleting_old_table(tmp_p
     assert "snapshots" in tables
     assert any(name.startswith("snapshots_legacy") for name in tables)
     assert "index_name" in columns
+    assert "symbol_context_hash" in columns
+    assert "callee_summary_hash" in columns
+    assert "type_context_hash" in columns
     assert "location" not in columns
 
 
@@ -444,7 +680,7 @@ def test_failed_legacy_migration_preserves_old_table_and_json(tmp_path) -> None:
     assert "index_name" not in columns
 
 
-def test_index_name_database_backfills_symbol_context_column(tmp_path) -> None:
+def test_index_name_database_backfills_split_context_hash_columns(tmp_path) -> None:
     snapshot_dir = tmp_path / "snapshots"
     snapshot_dir.mkdir(parents=True)
     snapshot = _snapshot(summary="pre-symbol-context")
@@ -504,9 +740,14 @@ def test_index_name_database_backfills_symbol_context_column(tmp_path) -> None:
     assert loaded["referenced_macros"] == []
     with sqlite3.connect(snapshot_dir / "snapshots.db") as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(snapshots)")}
-        symbol_hash = conn.execute(
-            "SELECT symbol_context_hash FROM snapshots WHERE index_name = ?",
+        symbol_hash, callee_hash, type_hash = conn.execute(
+            "SELECT symbol_context_hash, callee_summary_hash, type_context_hash "
+            "FROM snapshots WHERE index_name = ?",
             (snapshot["index_name"],),
-        ).fetchone()[0]
+        ).fetchone()
     assert "symbol_context_hash" in columns
+    assert "callee_summary_hash" in columns
+    assert "type_context_hash" in columns
     assert symbol_hash == compute_symbol_context_hash(loaded)
+    assert callee_hash == compute_callee_summary_hash(loaded)
+    assert type_hash == compute_type_context_hash({"referenced_types": []})

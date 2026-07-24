@@ -15,7 +15,11 @@ from ..config.function_entry import FunctionEntry, FunctionListLoader
 from ..core.analysis.analyzer import Analyzer
 from .parallel_analyzer import ParallelAnalysisResult, ParallelAnalyzer
 from ..snapshots.store import SnapshotStore
-from ..snapshots.modeling_input import SemanticModelInputError, build_semantic_model_input
+from ..snapshots.modeling_input import (
+    SemanticModelInputError,
+    build_semantic_model_input,
+    hydrate_project_callee_summaries,
+)
 from ..retrieval.code_index import CodeIndex
 from .entry_discovery import EntryDiscovery
 from .diff_impact import DiffImpactPlanner
@@ -307,6 +311,11 @@ class ScanSessionRunner:
                 entry.function_name,
                 file_path=self._entry_report_file_path(entry) or "",
                 include_context=False,
+            )
+            context = hydrate_project_callee_summaries(
+                context,
+                code_index,
+                snapshot_store,
             )
         except SemanticModelInputError:
             return None
