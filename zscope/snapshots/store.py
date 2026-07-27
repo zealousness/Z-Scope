@@ -30,6 +30,7 @@ _SYMBOL_CONTEXT_OPTIONAL_FIELDS = (
     "referenced_macros_truncation",
     "project_callees_truncation",
     "external_callees_truncation",
+    "unresolved_callees_truncation",
 )
 _GLOBAL_STORAGE_CLASSES = {
     "static",
@@ -107,6 +108,7 @@ def _canonical_symbol_records(value: Any) -> list[Any]:
 def _canonical_callee_records(
     value: Any,
     *,
+    identity_field: str,
     include_project_flags: bool = False,
     include_summary: bool = False,
 ) -> list[Dict[str, Any]]:
@@ -114,34 +116,37 @@ def _canonical_callee_records(
     for item in value if isinstance(value, list) else []:
         if not isinstance(item, dict):
             continue
-        index_name = str(item.get("callee_index_name") or "").strip()
-        if not index_name:
+        identity = str(item.get(identity_field) or "").strip()
+        if not identity:
             continue
         entry = groups.setdefault(
-            index_name,
+            identity,
             {
-                "callee_index_name": index_name,
-                "callsite_lines": set(),
-                "call_type": set(),
+                identity_field: identity,
+                "callee_signature": "",
+                "direct_callsite_lines": set(),
+                "indirect_callsites": [],
                 "is_static": False,
                 "callee_summary": "unknown",
             },
         )
-        raw_lines = item.get("callsite_lines")
+        raw_lines = item.get("direct_callsite_lines")
+        if raw_lines is None:
+            raw_lines = item.get("callsite_lines")
         if isinstance(raw_lines, (list, tuple, set)):
-            entry["callsite_lines"].update(
+            entry["direct_callsite_lines"].update(
                 int(line)
                 for line in raw_lines
                 if isinstance(line, int) and not isinstance(line, bool) and line > 0
             )
-        raw_call_types = item.get("call_type")
-        if not isinstance(raw_call_types, (list, tuple, set)):
-            raw_call_types = [raw_call_types]
-        entry["call_type"].update(
-            str(call_type)
-            for call_type in raw_call_types
-            if str(call_type) in {"direct", "indirect"}
+        entry["indirect_callsites"].extend(
+            _clone_json_value(callsite)
+            for callsite in list(item.get("indirect_callsites") or [])
+            if isinstance(callsite, dict)
         )
+        signature = str(item.get("callee_signature") or "").strip()
+        if signature:
+            entry["callee_signature"] = signature
         if include_project_flags:
             entry["is_static"] = bool(item.get("is_static"))
         if include_summary:
@@ -149,17 +154,15 @@ def _canonical_callee_records(
             if candidate_summary and candidate_summary != "unknown":
                 entry["callee_summary"] = candidate_summary
 
-    call_type_order = {"direct": 0, "indirect": 1}
     result = []
-    for index_name, entry in sorted(groups.items()):
+    for identity, entry in sorted(groups.items()):
         record = {
-            "callee_index_name": index_name,
-            "callsite_lines": sorted(entry["callsite_lines"]),
-            "call_type": sorted(
-                entry["call_type"],
-                key=lambda call_type: call_type_order[call_type],
-            ),
+            identity_field: identity,
+            "direct_callsite_lines": sorted(entry["direct_callsite_lines"]),
+            "indirect_callsites": _canonical_symbol_records(entry["indirect_callsites"]),
         }
+        if entry["callee_signature"]:
+            record["callee_signature"] = entry["callee_signature"]
         if include_project_flags:
             record["is_static"] = entry["is_static"]
         if include_summary:
@@ -177,11 +180,18 @@ def compute_symbol_context_hash(payload: Dict[str, Any]) -> str:
     }
     context["project_callees"] = _canonical_callee_records(
         payload.get("project_callees"),
+        identity_field="callee_index_name",
         include_project_flags=True,
     )
     context["external_callees"] = _canonical_callee_records(
-        payload.get("external_callees")
+        payload.get("external_callees"),
+        identity_field="callee_name",
     )
+    if payload.get("unresolved_callees"):
+        context["unresolved_callees"] = _canonical_callee_records(
+            payload.get("unresolved_callees"),
+            identity_field="callee_name",
+        )
     for field in _SYMBOL_CONTEXT_OPTIONAL_FIELDS:
         if field in payload:
             context[field] = payload[field]

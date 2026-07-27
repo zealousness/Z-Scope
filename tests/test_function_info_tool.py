@@ -371,9 +371,14 @@ def test_function_info_preserves_svf_call_type_without_querying_callers(tmp_path
 
         assert "callers" not in info
         assert backend.caller_calls == 0
-        assert [callee["call_type"] for callee in info["external_callees"]] == [
-            ["direct"],
-            ["indirect"],
+        assert info["external_callees"] == []
+        # The SVF row lacks a source-mapped pointer callsite, so it is not exposed.
+        assert info["unresolved_callees"] == [
+            {
+                "callee_name": "DirectTarget",
+                "direct_callsite_lines": [30],
+                "indirect_callsites": [],
+            }
         ]
 
 
@@ -463,7 +468,8 @@ def test_function_info_filters_llvm_intrinsics_before_classification_and_truncat
     info = index.find_function_infos("Caller")[0]
 
     assert info["project_callees"] == []
-    assert [item["callee_index_name"] for item in info["external_callees"]] == [
+    assert info["external_callees"] == []
+    assert [item["callee_name"] for item in info["unresolved_callees"]] == [
         f"external_{idx:02d}" for idx in range(20)
     ]
     assert "project_callees_truncation" not in info
@@ -516,16 +522,17 @@ def test_function_info_aggregates_callee_callsites(tmp_path) -> None:
 
     assert "callers" not in info
     assert info["project_callees"] == []
-    assert info["external_callees"] == [
+    assert info["external_callees"] == []
+    assert info["unresolved_callees"] == [
         {
-            "callee_index_name": "OtherTarget",
-            "callsite_lines": [60],
-            "call_type": ["direct"],
+            "callee_name": "OtherTarget",
+            "direct_callsite_lines": [60],
+            "indirect_callsites": [],
         },
         {
-            "callee_index_name": "SharedTarget",
-            "callsite_lines": [40, 50],
-            "call_type": ["direct"],
+            "callee_name": "SharedTarget",
+            "direct_callsite_lines": [40, 50],
+            "indirect_callsites": [],
         }
     ]
 
@@ -576,12 +583,151 @@ def test_function_info_aggregates_direct_and_indirect_types_by_callee(tmp_path) 
     assert info["project_callees"] == [
         {
             "callee_index_name": "Target@src/target.c:1-1",
-                "callsite_lines": [10, 20],
-                "call_type": ["direct", "indirect"],
-                "is_static": False,
-            }
+            "callee_signature": "int Target(void)",
+            "is_static": False,
+            "callee_summary": "unknown",
+            "direct_callsite_lines": [10],
+            "indirect_callsites": [],
+        }
     ]
     assert info["external_callees"] == []
+
+
+def test_function_info_does_not_project_function_pointer_placeholder_as_external(tmp_path) -> None:
+    source = tmp_path / "src" / "caller.c"
+    target = tmp_path / "src" / "target.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int Caller(void) { return 0; }\n", encoding="utf-8")
+    target.write_text("int Target(void) { return 0; }\n", encoding="utf-8")
+    backend = FunctionInfoBackend(
+        {
+            "Caller": {
+                "name": "Caller",
+                "file": "src/caller.c",
+                "start_line": 1,
+                "end_line": 1,
+                "signature": "int Caller(void)",
+            },
+            "Target": {
+                "name": "Target",
+                "file": "src/target.c",
+                "start_line": 1,
+                "end_line": 1,
+                "signature": "int Target(void)",
+            },
+        },
+        callees=[
+            {
+                "name": "callback",
+                "filename": "src/ops.h",
+                "lineNumber": 10,
+                "call_type": "indirect",
+                "callee_kind": "function_pointer_field",
+            },
+            {
+                "name": "Target",
+                "call_file": "src/caller.c",
+                "call_line": 0,
+                "source": "svf-ander",
+            },
+        ],
+    )
+    index = _index(tmp_path, backend, "unified")
+
+    info = index.find_function_infos("Caller")[0]
+
+    assert info["project_callees"] == []
+    assert info["external_callees"] == []
+
+
+def test_function_info_uses_three_callee_schema_with_verified_indirect_callsite(tmp_path) -> None:
+    source = tmp_path / "src" / "caller.c"
+    target = tmp_path / "src" / "target.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int Caller(void) { return 0; }\n", encoding="utf-8")
+    target.write_text("int Target(void) { return 0; }\n", encoding="utf-8")
+    backend = FunctionInfoBackend(
+        {
+            "Caller": {
+                "name": "Caller",
+                "file": "src/caller.c",
+                "start_line": 1,
+                "end_line": 1,
+                "signature": "int Caller(void)",
+            },
+            "Target": {
+                "name": "Target",
+                "file": "src/target.c",
+                "start_line": 1,
+                "end_line": 1,
+                "signature": "void Target(void*)",
+            },
+        },
+        callees=[
+            {
+                "name": "Target",
+                "call_file": "src/caller.c",
+                "call_line": 18,
+                "call_type": "indirect",
+                "pointer_symbol": "Ops.callback",
+                "pointer_kind": "field",
+                "pointer_type": "Callback",
+                "pointer_signature": "void (*)(void*)",
+                "callsite_expression": "ops->callback",
+                "guard": "enabled != 0",
+            },
+            {
+                "name": "free",
+                "lineNumber": 20,
+                "call_type": "direct",
+                "callee_signature": "void free(void*)",
+            },
+            {
+                "name": "vendor_submit",
+                "lineNumber": 21,
+                "call_type": "direct",
+            },
+        ],
+    )
+    index = _index(tmp_path, backend, "unified")
+
+    info = index.find_function_infos("Caller")[0]
+
+    assert info["project_callees"] == [
+        {
+            "callee_index_name": "Target@src/target.c:1-1",
+            "callee_signature": "void Target(void*)",
+            "is_static": False,
+            "callee_summary": "unknown",
+            "direct_callsite_lines": [],
+            "indirect_callsites": [
+                {
+                    "callsite_line": 18,
+                    "function_pointer": "Ops.callback",
+                    "function_pointer_kind": "field",
+                    "function_pointer_type": "Callback",
+                    "function_pointer_signature": "void (*)(void*)",
+                    "callsite_expression": "ops->callback",
+                    "guard": "enabled != 0",
+                }
+            ],
+        }
+    ]
+    assert info["external_callees"] == [
+        {
+            "callee_name": "free",
+            "callee_signature": "void free(void*)",
+            "direct_callsite_lines": [20],
+            "indirect_callsites": [],
+        }
+    ]
+    assert info["unresolved_callees"] == [
+        {
+            "callee_name": "vendor_submit",
+            "direct_callsite_lines": [21],
+            "indirect_callsites": [],
+        }
+    ]
 
 
 def test_function_info_downgrades_call_type_to_direct_for_clang_backends(tmp_path) -> None:
@@ -613,7 +759,14 @@ def test_function_info_downgrades_call_type_to_direct_for_clang_backends(tmp_pat
 
         info = index.find_function_infos("Caller")[0]
 
-        assert info["external_callees"][0]["call_type"] == ["direct"]
+        assert info["external_callees"] == []
+        assert info["unresolved_callees"] == [
+            {
+                "callee_name": "MaybeIndirect",
+                "direct_callsite_lines": [31],
+                "indirect_callsites": [],
+            }
+        ]
 
 
 def test_function_info_applies_fixed_limits_and_independent_truncation(tmp_path) -> None:
@@ -677,8 +830,9 @@ def test_function_info_applies_fixed_limits_and_independent_truncation(tmp_path)
     info = index.find_function_infos("Caller")[0]
 
     assert info["project_callees"] == []
-    assert len(info["external_callees"]) == 20
-    assert info["external_callees_truncation"] == {
+    assert info["external_callees"] == []
+    assert len(info["unresolved_callees"]) == 20
+    assert info["unresolved_callees_truncation"] == {
         "truncated": True,
         "returned": 20,
         "total": 35,
@@ -776,9 +930,11 @@ def test_function_info_regex_backend_returns_exact_symbol_context(tmp_path) -> N
     assert info["project_callees"] == [
         {
             "callee_index_name": "helper@demo.c:3-3",
-                "callsite_lines": [6],
-                "call_type": ["direct"],
-                "is_static": False,
+            "callee_signature": "int helper(void)",
+            "is_static": False,
+            "callee_summary": "unknown",
+            "direct_callsite_lines": [6],
+            "indirect_callsites": [],
             }
     ]
     assert info["external_callees"] == []
@@ -868,9 +1024,11 @@ def test_function_info_classifies_static_functions_and_function_like_macros(tmp_
     assert info["project_callees"] == [
         {
             "callee_index_name": "helper@demo.c:2-2",
-            "callsite_lines": [3],
-            "call_type": ["direct"],
+            "callee_signature": "static int helper(int value)",
             "is_static": True,
+            "callee_summary": "unknown",
+            "direct_callsite_lines": [3],
+            "indirect_callsites": [],
         },
     ]
     assert info["referenced_macros"] == [
@@ -1058,11 +1216,12 @@ def test_get_function_info_returns_function_like_macro_context(tmp_path) -> None
             "3 |     + GLOBAL_LIMIT\n"
         ),
         "project_callees": [],
-        "external_callees": [
+        "external_callees": [],
+        "unresolved_callees": [
             {
-                "callee_index_name": "alloc",
-                "callsite_lines": [2],
-                "call_type": ["direct"],
+                "callee_name": "alloc",
+                "direct_callsite_lines": [2],
+                "indirect_callsites": [],
             }
         ],
     }
@@ -1418,7 +1577,8 @@ def test_get_function_info_prefers_backend_macro_facts(tmp_path, monkeypatch) ->
         "is_macro",
         "code",
         "project_callees",
-        "external_callees",
+            "external_callees",
+            "unresolved_callees",
         "referenced_globals",
         "referenced_macros",
         "referenced_types",

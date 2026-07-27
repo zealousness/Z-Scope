@@ -341,6 +341,7 @@ def test_unified_backend_preserves_direct_and_indirect_caller_evidence(tmp_path)
                 "filename": "src/caller.c",
                 "lineNumber": 11,
                 "call_type": "direct",
+                "callee_kind": "unknown",
             },
             {
                 "name": "Caller",

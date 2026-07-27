@@ -293,9 +293,12 @@ def build_semantic_model_input(
         "referenced_macros": list(info.get("referenced_macros") or []),
         "referenced_types": deepcopy(referenced_types),
     }
+    if info.get("unresolved_callees"):
+        result["unresolved_callees"] = list(info["unresolved_callees"])
     for key in (
         "project_callees_truncation",
         "external_callees_truncation",
+        "unresolved_callees_truncation",
         "referenced_globals_truncation",
         "referenced_macros_truncation",
         "unresolved_referenced_types",

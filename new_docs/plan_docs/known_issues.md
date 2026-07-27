@@ -66,7 +66,7 @@ Joern 后端的两条查询路径并不完全一致：批量索引排除 externa
 3. 空数组仍没有独立 completeness/source 元数据；数据库查询失败时采用保守空结果并写 debug 日志。
 4. 宏 `referenced_globals` 保持空数组，直到 `search_global` 或展开点 AST 证据路径实施。
 
-## KI-003 `llvm.*` intrinsic 未消费
+## KI-003 `llvm.* intrinsic` 未消费
 
 ### 问题描述
 
@@ -168,3 +168,92 @@ SVF 可能将 `llvm.memset.*`、`llvm.memcpy.*`、`llvm.memmove.*`、`llvm.trap`
 5. 增加受控的 `get_evidence(tool_call_id)` 或等价机制，使模型可取回已压缩结果的原文；该恢复操作不应被视为违反“不得重复工具调用”。
 6. 在最终 `emit_function_snapshot` 前构建独立 evidence pack，要求每个高风险 effect、error path、ownership/lock/callback 断言能对应到证据 ID 和源码行；证据不足时应输出 `unknown`，而非推断为事实。
 7. 建立压缩/未压缩对照回归：覆盖超长头文件、目标类型定义位于文件尾部、跨轮 callback/lock contract、重复查询禁止、原始证据恢复，以及 snapshot 字段的证据覆盖率、无依据断言率和 token 成本。
+
+## KI-006 `external function config` 未启用
+
+### 问题描述
+
+当前 Semantic Modeler 的预加载 callee context 能区分项目函数与非项目名称，但没有为非项目函数提供程序拥有的语义契约或 `callee_summary`。本轮 `test/range` global-model benchmark 的配置显式设置：
+
+```yaml
+analysis:
+  user_config_db: ""
+```
+
+因此运行时没有可用的 user-config external function contract。
+
+仓库已有 external function 配置模型，可由用户维护 `description`、`library`、`memory_behavior`、`concurrency_behavior` 和 `return_semantics`。`get_function_info` 在项目函数未命中后也会查询该配置，并在命中时返回外部函数的伪代码说明；但这条 fallback 仅发生在模型已发起工具调用时，当前未接入 Semantic Modeler 的预加载 callee context，也不会生成或注入 external `callee_summary`。
+
+当前也没有一份程序拥有的、经人工维护的 libc/POSIX/线程库 external contract registry。因此不能仅凭名称（如 `free`、`malloc`、`pthread_create`）或函数声明安全地推导所有权、NULL 语义、资源生命周期、线程效果和返回约束。
+
+在 planned callee-centric schema 中，非项目函数将改名为 `unresolved_callees`。如果没有可信契约来源，`known_external` 及其 `callee_summary` 没有可靠生成路径；把名称启发式、模型猜测或未确认的 inference 结果直接写入 summary 会污染程序证据。
+
+### 影响
+
+- `free` 等看似熟知的库函数在当前 benchmark 中只能作为非项目名称保留，不能安全携带 ownership/释放契约。
+- 模型可能为补证尝试对外部函数调用 `get_function_info`；未配置时得到 `Function not found`，增加无效工具调用。
+- 外部调用的内存、资源、锁和线程语义不能稳定进入 caller snapshot，可能造成 unknown、遗漏或模型猜测。
+- 即使用户配置了 external function，当前预加载路径也不会将该契约确定性渲染为 callee context；模型是否再次查询工具会影响可见证据，导致结果不稳定。
+- external contract 改动目前不会作为 caller snapshot 的显式依赖参与刷新，容易出现契约变化但旧 snapshot 未更新的情况。
+
+### 暂缓原因
+
+外部 API 语义的可信来源、覆盖优先级、版本化、标准库范围和 snapshot 刷新策略需要统一设计。不能通过“名称像 allocator/deallocator”或 LLM 生成摘要的方式快速补齐，否则会将推测当作程序事实。
+
+当前 benchmark 未提供用户配置，且本阶段的目标是修复函数指针调用分类、SVF 物化和 callee projection，不应同时扩大到未设计完成的外部 contract 系统。
+
+### 后续建议
+
+1. 将 `known_external` 定义为“命中程序拥有的可信 external contract”，而不是“名称看起来像标准库函数”。没有契约时统一为 `unresolved`。
+2. 建立两级 contract source，并规定覆盖顺序：
+   - 用户配置的 external function contract；
+   - 经人工维护、版本化的内置标准 API registry；
+   - 其余名称保持 unresolved。
+3. 用户配置覆盖内置 registry；发生冲突时不得静默合并相反的 ownership、NULL 或返回语义。
+4. 由程序确定性地将 `description`、`memory_behavior`、`concurrency_behavior` 和 `return_semantics` 渲染为 `callee_summary`，不得调用 LLM 生成或补全 external summary。
+5. `unresolved_callees` 的 LLM 可见字段建议为：
+   - 必填：`callee_name`、`resolution_kind`、`direct_callsite_lines`、`indirect_callsites`；
+   - 可选：`callee_signature`、`callee_summary`；
+   - 不向 LLM 暴露 contract source、置信度、配置版本或内部 callsite ID。
+6. 只有命中可信 contract 时使用 `resolution_kind=known_external` 并提供 `callee_summary`；只有声明或名称时使用 `resolution_kind=unresolved`，可提供可靠 `callee_signature`，但不生成行为摘要。
+7. 在 CodeIndex/modeling input 构造阶段预加载并渲染 external contract，而不是依赖模型调用 `get_function_info` 触发 fallback。
+8. 为 external contract 建立规范化 hash；当用户配置或内置 registry 条目变化时，使依赖该 contract 的 caller snapshot 失效并刷新 program-owned context。
+9. 增加回归测试：用户配置命中、内置 registry 命中、无契约名称、用户覆盖内置条目、冲突拒绝、summary 稳定渲染、snapshot refresh 及 benchmark 中 `user_config_db=""` 的保守行为。
+
+## KI-007 `unresolved_referenced_types` 对标准与外部类型的分类不一致
+
+### 问题描述
+
+`unresolved_referenced_types` 当前不是“函数源码中出现但无法解析定义的全部类型”，而是“先通过直接项目类型候选过滤、随后定义解析失败的类型”。候选过滤发生在 `_direct_function_type_candidates()`，只有进入候选集合的名称才会由 `_collect_function_type_refs()` 尝试解析，并在解析失败时写入 `function_type_refs`，最终投影为 `unresolved_referenced_types`。
+
+该过滤同时使用显式 builtin 集合和名称启发式：
+
+- `uint32_t`、`size_t` 等标准类型位于 `TYPE_CONTEXT_BUILTINS`，在候选阶段被直接排除，因此不会进入 unresolved。
+- `struct stat st` 经声明正则提取后只保留 tag 名 `stat`。系统头类型没有进入项目 `type_definitions`，而 `stat` 既不是大写开头，也不以 `_t` 结尾，因此未通过“已索引名称 / 大写开头 / `_t` 后缀”候选条件，也不会进入 unresolved。
+- `pthread_t` 不在当前 builtin 集合中，并且以 `_t` 结尾，因此会进入候选集合；当项目索引找不到其系统头定义时，会产生 `type_definition_not_found` 并进入 unresolved。
+
+因此，同为标准库或 POSIX 外部类型，`uint32_t`、`struct stat` 和 `pthread_t` 会分别表现为“显式忽略”“启发式静默遗漏”和“报告 unresolved”。2026-07-24 global-model benchmark 已观察到该差异：`_check_file_permission` 的 `struct stat` 与 `_runtime_protocol_frame_length` 的 `uint32_t` 均未出现在初始 `unresolved_referenced_types`，模型随后错误调用 `get_type_info` 并得到 `Type not found`；同一轮其他函数中的 `pthread_t` 则正常出现在 unresolved 列表。
+
+### 影响
+
+- `unresolved_referenced_types` 的语义边界不明确：调用方不能判断空列表表示“没有未解析的项目类型”，还是“外部/标准类型已被候选过滤静默省略”。
+- 外部类型是否对 Semantic Modeler 可见取决于名称拼写，而不是统一的类型来源分类；`pthread_t` 可见而 `struct stat` 不可见。
+- 小写且未成功索引的项目 struct/union/enum tag 也可能与 `stat` 一样在候选阶段被丢弃，无法以 unresolved 暴露索引缺口。
+- 模型看到源码中的类型名却没有 resolved/unresolved 元数据时，可能误认为上下文遗漏并调用 `get_type_info`，产生无效工具调用和 `Type not found` 指标。
+- benchmark 难以区分“有意忽略的 builtin”“已识别的外部类型”和“项目类型解析失败”，不利于判断类型上下文覆盖率。
+
+### 当前结论
+
+`uint32_t` 不进入 unresolved 是当前明确设计，并有 builtin typedef 排除测试覆盖；`struct stat` 不进入 unresolved 则是候选名称启发式和系统头不入项目索引共同造成的静默遗漏。问题不在 KnowledgeDB 的 unresolved 投影阶段，而在其上游候选集合已经丢失了这两个名称。
+
+不建议简单删除所有 builtin 和名称过滤。否则基础标量、关键字、宏值及误识别标识符会大量进入 unresolved，重新引入类型上下文噪声。应先定义类型来源和 completeness 契约，再调整候选与投影结构。
+
+### 后续建议
+
+1. 明确 `unresolved_referenced_types` 只表示“项目类型解析失败”，并为被识别但不由项目索引拥有的类型增加独立分类，例如 `external_referenced_types` 或 `ignored_referenced_types`，携带 `name`、`reference_kind`、`reference_lines` 和 `reason`。
+2. 将标准固定宽度整数和基础 typedef 统一标记为 `builtin_or_standard`，由程序提供稳定分类，不要求模型调用 `get_type_info`。
+3. 对带显式 `struct`、`union`、`enum`、`class` 关键字的声明保留 tag kind 和原始 qualified spelling；不要仅因 tag 为小写且未索引就静默丢弃。系统定义可标记为 `external_system_type`，疑似项目定义缺失则保留为 unresolved。
+4. 统一 `pthread_t`、`struct stat`、`FILE`、`DIR`、`time_t`、`sockaddr` 和固定宽度整数类型的分类规则，避免依赖大写或 `_t` 后缀决定可见性。
+5. 为类型上下文增加 completeness/source 元数据，至少区分 project resolved、project unresolved、builtin/standard ignored、external/system opaque 和候选提取失败。
+6. 在 Semantic Modeler policy 或 tool runtime 中使用上述分类阻止对 builtin/standard/system opaque 类型调用 `get_type_info`，并给出结构化原因，而不是统一落入 `Type not found`。
+7. 增加端到端测试：`uint32_t`、`size_t`、`pthread_t`、`struct stat`、大写外部 opaque 类型、小写项目 struct tag、缺失项目 typedef，以及同一类型在项目头和系统头中的可见性冲突。

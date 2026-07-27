@@ -308,16 +308,27 @@ class UnifiedBackend(CodeBackend):
             List[Dict[str, Any]],
             db.get_all_callees(func_name, caller_file=file_path),
         )
-        indirect = cast(
-            List[Dict[str, Any]],
-            db.get_indirect_callees(func_name, limit=2_147_483_647),
-        )
-        if file_path:
-            indirect = [
-                row
-                for row in indirect
-                if db._paths_match_hint(str(row.get("call_file") or ""), file_path)
-            ]
+        raw_indirect = getattr(db, "get_indirect_call_records", None)
+        if callable(raw_indirect):
+            indirect = cast(
+                List[Dict[str, Any]],
+                raw_indirect(
+                    func_name,
+                    caller_file=file_path,
+                    limit=2_147_483_647,
+                ),
+            )
+        else:
+            indirect = cast(
+                List[Dict[str, Any]],
+                db.get_indirect_callees(func_name, limit=2_147_483_647),
+            )
+            if file_path:
+                indirect = [
+                    row
+                    for row in indirect
+                    if db._paths_match_hint(str(row.get("call_file") or ""), file_path)
+                ]
         for row in indirect:
             direct.append(
                 {
@@ -327,6 +338,14 @@ class UnifiedBackend(CodeBackend):
                     "call_file": row.get("call_file", ""),
                     "call_line": row.get("call_line", 0),
                     "svf_group": row.get("svf_group", ""),
+                    "callsite_id": row.get("callsite_id", ""),
+                    "pointer_symbol": row.get("pointer_symbol", ""),
+                    "pointer_kind": row.get("pointer_kind", "unknown"),
+                    "pointer_type": row.get("pointer_type", ""),
+                    "pointer_signature": row.get("pointer_signature", ""),
+                    "callsite_expression": row.get("callsite_expression", ""),
+                    "guard": row.get("guard", ""),
+                    "call_type": "indirect",
                 }
             )
         return direct

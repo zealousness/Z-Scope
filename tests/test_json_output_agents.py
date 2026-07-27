@@ -605,6 +605,27 @@ def test_semantic_modeler_rejects_invalid_or_empty_optional_type_context() -> No
     assert llm.calls == []
 
 
+def test_semantic_modeler_accepts_nonempty_unresolved_callees() -> None:
+    llm = SinglePassLLM(_snapshot_payload())
+    agent = SemanticModeler(llm, [])
+    unresolved = [
+        {
+            "callee_name": "memcpy",
+            "direct_callsite_lines": [12],
+            "indirect_callsites": [],
+        }
+    ]
+
+    response = agent.run(_semantic_model_input(unresolved_callees=unresolved))
+
+    assert response.success is True
+    assert response.data["unresolved_callees"] == unresolved
+    prompt_text = "\n".join(
+        str(message.get("content") or "") for message in llm.calls[0]["messages"]
+    )
+    assert "unresolved_callees" in prompt_text
+
+
 def test_semantic_modeler_blocks_redundant_target_function_info_call(monkeypatch) -> None:
     llm = SinglePassLLM(_snapshot_payload())
     agent = SemanticModeler(llm, [GetFunctionInfoTool()])
@@ -900,22 +921,22 @@ def test_complete_schema_owns_full_project_callee_shape_but_llm_excludes_it() ->
         "type": "object",
         "required": [
             "callee_index_name",
-            "callsite_lines",
-            "call_type",
+            "callee_signature",
             "is_static",
+            "direct_callsite_lines",
+            "indirect_callsites",
             "callee_summary",
         ],
         "properties": {
             "callee_index_name": {"type": "string"},
-            "callsite_lines": {
+            "callee_signature": {"type": "string"},
+            "direct_callsite_lines": {
                 "type": "array",
                 "items": {"type": "integer"},
             },
-            "call_type": {
+            "indirect_callsites": {
                 "type": "array",
-                "items": {"enum": ["direct", "indirect"]},
-                "minItems": 1,
-                "uniqueItems": True,
+                "items": {"type": "object"},
             },
             "is_static": {"type": "boolean"},
             "callee_summary": {"type": "string"},

@@ -56,14 +56,14 @@ def _program_snapshot_fields(input_data: Dict[str, Any]) -> Dict[str, Any]:
         if field in input_data
         and (
             (
-                field == "unresolved_referenced_types"
+                field in {"unresolved_referenced_types", "unresolved_callees"}
                 and (
                     not isinstance(input_data.get(field), list)
                     or not input_data.get(field)
                 )
             )
             or (
-                field != "unresolved_referenced_types"
+                field not in {"unresolved_referenced_types", "unresolved_callees"}
                 and not isinstance(input_data.get(field), dict)
             )
         )
@@ -126,6 +126,8 @@ def _program_snapshot_fields(input_data: Dict[str, Any]) -> Dict[str, Any]:
         "referenced_macros": deepcopy(input_data["referenced_macros"]),
         "referenced_types": deepcopy(input_data["referenced_types"]),
     }
+    if "unresolved_callees" in input_data:
+        fields["unresolved_callees"] = deepcopy(input_data["unresolved_callees"])
     for field in PROGRAM_OPTIONAL_PASSTHROUGH_SNAPSHOT_FIELDS:
         if field in input_data:
             fields[field] = deepcopy(input_data[field])
@@ -144,11 +146,13 @@ def _prompt_metadata(input_data: Dict[str, Any]) -> Dict[str, Any]:
         "is_macro",
         "project_callees",
         "external_callees",
+        "unresolved_callees",
         "referenced_globals",
         "referenced_macros",
         "referenced_types",
         "project_callees_truncation",
         "external_callees_truncation",
+        "unresolved_callees_truncation",
         "referenced_globals_truncation",
         "referenced_macros_truncation",
         "unresolved_referenced_types",
