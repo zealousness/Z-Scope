@@ -802,11 +802,12 @@ def test_trivial_snapshot_marks_facade_forwarding_as_auditable() -> None:
     assert "key_semantics" not in snapshot
     assert snapshot["project_callees"] == [
         {
-                "callee_index_name": "_runtime_accept_session_frame",
-                "callsite_lines": [],
-                "call_type": ["direct"],
-                "is_static": False,
-            "callee_summary": "unknown",
+            "callee_index_name": "_runtime_accept_session_frame",
+            "callee_signature": "",
+            "is_static": False,
+                "callee_summary": "unknown",
+            "direct_callsite_lines": [],
+            "indirect_callsites": [],
         }
     ]
 
@@ -990,8 +991,10 @@ def test_deterministic_snapshot_preserves_context_truncation_and_isolation() -> 
     assert set(snapshot) <= set(DETERMINISTIC_SNAPSHOT_REQUIRED_FIELDS) | set(
         DETERMINISTIC_SNAPSHOT_OPTIONAL_FIELDS
     )
-    assert snapshot["project_callees"][0]["call_type"] == ["direct"]
-    assert snapshot["project_callees"][1]["call_type"] == ["direct", "indirect"]
+    assert snapshot["project_callees"][0]["direct_callsite_lines"] == [2]
+    assert snapshot["project_callees"][0]["indirect_callsites"] == []
+    assert snapshot["project_callees"][1]["direct_callsite_lines"] == [2]
+    assert snapshot["project_callees"][1]["indirect_callsites"] == []
     assert snapshot["code"].endswith("3 | }")
 
     snapshot["referenced_globals"][0]["name"] = "changed"

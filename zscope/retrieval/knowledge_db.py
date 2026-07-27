@@ -7,8 +7,9 @@ import logging
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Dict, Iterator, List, Optional, Tuple, cast
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 class KnowledgeDB:
     """SQLite-backed code knowledge store."""
 
-    SCHEMA_VERSION = "10"
+    SCHEMA_VERSION = "13"
     CALLGRAPH_READ_CONCURRENCY = 8
 
     def __init__(self, db_path: str):
@@ -24,6 +25,7 @@ class KnowledgeDB:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._connections_lock = threading.RLock()
         self._query_cache_lock = threading.RLock()
+        self._svf_materialization_lock = threading.RLock()
         self._callgraph_read_semaphore = threading.BoundedSemaphore(self.CALLGRAPH_READ_CONCURRENCY)
         self._thread_local = threading.local()
         self._connections: List[sqlite3.Connection] = []
@@ -157,6 +159,8 @@ class KnowledgeDB:
                 callee_file TEXT DEFAULT '',
                 call_line   INTEGER,
                 call_type   TEXT DEFAULT 'direct',
+                callee_kind TEXT DEFAULT 'unknown',
+                callee_signature TEXT DEFAULT '',
                 UNIQUE(caller_name, caller_file, callee_name, callee_file, call_line)
             );
             CREATE INDEX IF NOT EXISTS idx_call_caller ON call_edges(caller_name);
@@ -275,10 +279,18 @@ class KnowledgeDB:
                 callee_name TEXT NOT NULL,
                 call_file   TEXT DEFAULT '',
                 call_line   INTEGER DEFAULT 0,
+                callsite_id TEXT DEFAULT '',
+                pointer_symbol TEXT DEFAULT '',
+                pointer_kind TEXT DEFAULT 'unknown',
+                pointer_type TEXT DEFAULT '',
+                pointer_signature TEXT DEFAULT '',
+                callsite_expression TEXT DEFAULT '',
+                call_guard  TEXT DEFAULT '',
                 source      TEXT DEFAULT 'svf-ander',
                 confidence  REAL DEFAULT 1.0,
                 svf_group   TEXT DEFAULT 'default',
-                UNIQUE(caller_name, callee_name, source, svf_group)
+                UNIQUE(caller_name, callee_name, call_file, call_line, callsite_id,
+                       pointer_symbol, source, svf_group)
             );
             CREATE INDEX IF NOT EXISTS idx_ic_caller ON indirect_calls(caller_name);
             CREATE INDEX IF NOT EXISTS idx_ic_callee ON indirect_calls(callee_name);
@@ -410,6 +422,11 @@ class KnowledgeDB:
         """)
         c.commit()
 
+        c.execute(
+            "INSERT OR IGNORE INTO metadata (key, value) VALUES ('svf_db_generation', '0')"
+        )
+        c.commit()
+
         # 兼容旧 DB：补加 file_hash 列
         try:
             c.execute("ALTER TABLE translation_units ADD COLUMN file_hash TEXT DEFAULT ''")
@@ -425,9 +442,83 @@ class KnowledgeDB:
         except sqlite3.OperationalError:
             pass
 
+        # 兼容旧 DB：历史 indirect_calls 的唯一键按函数聚合，会丢失同一 caller
+        # 中多个函数指针调用点的候选事实。重建表以加入 callsite identity；旧行
+        # 使用空 identity 保留，绝不根据名称猜测 pointer/callsite 信息。
+        indirect_columns = {
+            str(row["name"])
+            for row in c.execute("PRAGMA table_info(indirect_calls)").fetchall()
+        }
+        required_indirect_columns = {
+            "callsite_id",
+            "pointer_symbol",
+            "pointer_kind",
+            "pointer_type",
+            "pointer_signature",
+            "callsite_expression",
+            "call_guard",
+        }
+        if not required_indirect_columns.issubset(indirect_columns):
+            c.executescript(
+                """
+                CREATE TABLE indirect_calls_v12 (
+                    id INTEGER PRIMARY KEY,
+                    caller_name TEXT NOT NULL,
+                    callee_name TEXT NOT NULL,
+                    call_file TEXT DEFAULT '',
+                    call_line INTEGER DEFAULT 0,
+                    callsite_id TEXT DEFAULT '',
+                    pointer_symbol TEXT DEFAULT '',
+                    pointer_kind TEXT DEFAULT 'unknown',
+                    pointer_type TEXT DEFAULT '',
+                    pointer_signature TEXT DEFAULT '',
+                    callsite_expression TEXT DEFAULT '',
+                    call_guard TEXT DEFAULT '',
+                    source TEXT DEFAULT 'svf-ander',
+                    confidence REAL DEFAULT 1.0,
+                    svf_group TEXT DEFAULT 'default',
+                    UNIQUE(caller_name, callee_name, call_file, call_line, callsite_id,
+                           pointer_symbol, source, svf_group)
+                );
+                INSERT INTO indirect_calls_v12 (
+                    id, caller_name, callee_name, call_file, call_line, source,
+                    confidence, svf_group
+                )
+                SELECT id, caller_name, callee_name, call_file, call_line, source,
+                       confidence, svf_group
+                FROM indirect_calls;
+                DROP TABLE indirect_calls;
+                ALTER TABLE indirect_calls_v12 RENAME TO indirect_calls;
+                CREATE INDEX IF NOT EXISTS idx_ic_caller ON indirect_calls(caller_name);
+                CREATE INDEX IF NOT EXISTS idx_ic_callee ON indirect_calls(callee_name);
+                CREATE INDEX IF NOT EXISTS idx_ic_file_line ON indirect_calls(call_file, call_line);
+                CREATE INDEX IF NOT EXISTS idx_ic_callsite
+                    ON indirect_calls(caller_name, callsite_id);
+                """
+            )
+            c.commit()
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ic_callsite "
+            "ON indirect_calls(caller_name, callsite_id)"
+        )
+        c.commit()
+
         # 兼容旧 DB：补加 callee_file 列
         try:
             c.execute("ALTER TABLE call_edges ADD COLUMN callee_file TEXT DEFAULT ''")
+            c.commit()
+        except sqlite3.OperationalError:
+            pass
+
+        # 兼容旧 DB：历史边不能安全假定为普通函数调用。
+        try:
+            c.execute("ALTER TABLE call_edges ADD COLUMN callee_kind TEXT DEFAULT 'unknown'")
+            c.commit()
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            c.execute("ALTER TABLE call_edges ADD COLUMN callee_signature TEXT DEFAULT ''")
             c.commit()
         except sqlite3.OperationalError:
             pass
@@ -633,6 +724,7 @@ class KnowledgeDB:
     def purge_tu_data(self, tu_id: int, purge_incoming_refs: bool = False):
         """清除某 TU 关联的所有提取数据。"""
         self._invalidate_callgraph_query_cache()
+        deleted_svf_rows = 0
         self._conn.execute(
             "DELETE FROM function_type_refs WHERE function_id IN "
             "(SELECT id FROM functions WHERE tu_id = ?)",
@@ -695,14 +787,16 @@ class KnowledgeDB:
                 f"DELETE FROM macro_definitions WHERE file_path IN ({placeholders})",
                 path_variants,
             )
-            self._conn.execute(
+            cursor = self._conn.execute(
                 f"DELETE FROM indirect_calls WHERE call_file IN ({placeholders})",
                 path_variants,
             )
-            self._conn.execute(
+            deleted_svf_rows += max(0, int(cursor.rowcount or 0))
+            cursor = self._conn.execute(
                 f"DELETE FROM taint_signatures WHERE file_path IN ({placeholders})",
                 path_variants,
             )
+            deleted_svf_rows += max(0, int(cursor.rowcount or 0))
             if stmt_ids:
                 stmt_placeholders = ",".join("?" for _ in stmt_ids)
                 self._conn.execute(
@@ -750,6 +844,16 @@ class KnowledgeDB:
             (tu_id,),
         )
         self._conn.execute("DELETE FROM type_definitions WHERE tu_id = ?", (tu_id,))
+        if deleted_svf_rows:
+            generation = self.get_svf_db_generation() + 1
+            self._set_metadata_uncommitted("svf_db_generation", str(generation))
+            logger.info(
+                "SVF materialization invalidated: event=tu_purge tu_id=%s "
+                "deleted_rows=%d db_generation=%d",
+                tu_id,
+                deleted_svf_rows,
+                generation,
+            )
         self._conn.commit()
 
     @staticmethod
@@ -905,13 +1009,48 @@ class KnowledgeDB:
         ).fetchone()
         return row["value"] if row else ""
 
-    def set_metadata(self, key: str, value: str) -> None:
-        """Persist a metadata key/value pair."""
+    def _set_metadata_uncommitted(self, key: str, value: str) -> None:
         self._conn.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
             (key, value),
         )
-        self._conn.commit()
+
+    def set_metadata(self, key: str, value: str, *, commit: bool = True) -> None:
+        """Persist a metadata key/value pair."""
+        self._set_metadata_uncommitted(key, value)
+        if commit:
+            self._conn.commit()
+
+    def delete_metadata(self, key: str, *, commit: bool = True) -> None:
+        """Delete a metadata key when it exists."""
+        self._conn.execute("DELETE FROM metadata WHERE key = ?", (key,))
+        if commit:
+            self._conn.commit()
+
+    def get_svf_db_generation(self) -> int:
+        """Return the generation of SVF-derived rows in this database."""
+        raw = self.get_metadata("svf_db_generation")
+        try:
+            return max(0, int(raw or 0))
+        except (TypeError, ValueError):
+            logger.warning("Invalid svf_db_generation metadata %r; treating it as 0", raw)
+            return 0
+
+    @contextmanager
+    def svf_materialization_transaction(self) -> Iterator[None]:
+        """Serialize and atomically commit one SVF group replacement."""
+        with self._svf_materialization_lock:
+            conn = self._conn
+            savepoint = f"svf_materialization_{threading.get_ident()}"
+            conn.execute(f"SAVEPOINT {savepoint}")
+            try:
+                yield
+            except Exception:
+                conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                raise
+            else:
+                conn.execute(f"RELEASE SAVEPOINT {savepoint}")
 
     def get_svf_hash(self) -> str:
         """获取上次 SVF 分析时的源码聚合哈希。"""
@@ -921,12 +1060,25 @@ class KnowledgeDB:
         """记录 SVF 源码聚合哈希。"""
         self.set_metadata("svf_source_hash", hash_value)
 
-    def purge_svf_data(self, group: str = "default"):
+    def purge_svf_data(
+        self,
+        group: str = "default",
+        *,
+        commit: bool = True,
+        delete_marker: bool = True,
+    ):
         """清除 SVF 产生的间接调用和污点数据（按分组）。"""
         self._invalidate_callgraph_query_cache()
         self._conn.execute("DELETE FROM indirect_calls WHERE svf_group = ?", (group,))
         self._conn.execute("DELETE FROM taint_signatures WHERE svf_group = ?", (group,))
-        self._conn.commit()
+        if delete_marker:
+            for tool in ("ander", "saber"):
+                self._conn.execute(
+                    "DELETE FROM metadata WHERE key = ?",
+                    (f"svf_db_import:{tool}:{group}",),
+                )
+        if commit:
+            self._conn.commit()
 
     def purge_svf_data_except(self, groups: set[str]):
         """Remove stale SVF rows whose group is not part of the current refresh."""
@@ -935,6 +1087,9 @@ class KnowledgeDB:
         if not clean_groups:
             self._conn.execute("DELETE FROM indirect_calls")
             self._conn.execute("DELETE FROM taint_signatures")
+            self._conn.execute(
+                "DELETE FROM metadata WHERE key LIKE 'svf_db_import:%'"
+            )
             self._conn.commit()
             return
         placeholders = ",".join("?" for _ in clean_groups)
@@ -946,6 +1101,15 @@ class KnowledgeDB:
             f"DELETE FROM taint_signatures WHERE svf_group NOT IN ({placeholders})",
             clean_groups,
         )
+        marker_rows = self._conn.execute(
+            "SELECT key FROM metadata WHERE key LIKE 'svf_db_import:%'"
+        ).fetchall()
+        for row in marker_rows:
+            key = str(row["key"] or "")
+            remainder = key[len("svf_db_import:"):]
+            _separator, _tool, marker_group = remainder.partition(":")
+            if marker_group and marker_group not in clean_groups:
+                self._conn.execute("DELETE FROM metadata WHERE key = ?", (key,))
         self._conn.commit()
 
     # ── Functions ──
@@ -1531,22 +1695,40 @@ class KnowledgeDB:
 
     def insert_call_edge(self, caller_name: str, caller_file: str,
                          callee_name: str, callee_file: str = "", call_line: int = 0,
-                         call_type: str = "direct"):
+                         call_type: str = "direct", callee_kind: str = "unknown",
+                         callee_signature: str = ""):
         self._invalidate_callgraph_query_cache()
         self._conn.execute(
             "INSERT OR IGNORE INTO call_edges "
-            "(caller_name, caller_file, callee_name, callee_file, call_line, call_type) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (caller_name, caller_file, callee_name, callee_file, call_line, call_type),
+            "(caller_name, caller_file, callee_name, callee_file, call_line, call_type, "
+            "callee_kind, callee_signature) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                caller_name,
+                caller_file,
+                callee_name,
+                callee_file,
+                call_line,
+                call_type,
+                callee_kind,
+                callee_signature,
+            ),
         )
 
     def insert_call_edges_batch(self, rows: List[tuple]):
         self._invalidate_callgraph_query_cache()
+        normalized_rows = []
+        for row in rows:
+            if len(row) == 6:
+                normalized_rows.append((*row, "unknown", ""))
+            elif len(row) == 7:
+                normalized_rows.append((*row, ""))
+            else:
+                normalized_rows.append(row)
         self._conn.executemany(
             "INSERT OR IGNORE INTO call_edges "
-            "(caller_name, caller_file, callee_name, callee_file, call_line, call_type) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            rows,
+            "(caller_name, caller_file, callee_name, callee_file, call_line, call_type, "
+            "callee_kind, callee_signature) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            normalized_rows,
         )
 
     def get_callers(
@@ -1584,7 +1766,8 @@ class KnowledgeDB:
         self._callgraph_read_semaphore.acquire()
         try:
             rows = self._conn.execute(
-                "SELECT DISTINCT caller_name, caller_file, callee_file, call_line, call_type "
+                "SELECT DISTINCT caller_name, caller_file, callee_file, call_line, call_type, "
+                "callee_kind "
                 "FROM call_edges WHERE callee_name = ? "
                 "ORDER BY caller_name, caller_file, call_type, call_line",
                 (func_name,),
@@ -1603,6 +1786,7 @@ class KnowledgeDB:
                 "filename": row["caller_file"],
                 "lineNumber": row["call_line"],
                 "call_type": row["call_type"],
+                "callee_kind": row["callee_kind"],
             }
             for row in rows
         ]
@@ -1626,7 +1810,9 @@ class KnowledgeDB:
             self._callgraph_read_semaphore.acquire()
             try:
                 all_rows = self._conn.execute(
-                    "SELECT DISTINCT callee_name, callee_file, call_line, call_type, caller_file "
+                    "SELECT DISTINCT callee_name, callee_file, call_line, call_type, callee_kind, "
+                    "callee_signature, "
+                    "caller_file "
                     "FROM call_edges WHERE caller_name = ?",
                     (func_name,),
                 ).fetchall()
@@ -1640,14 +1826,18 @@ class KnowledgeDB:
             self._callgraph_read_semaphore.acquire()
             try:
                 rows = self._conn.execute(
-                    "SELECT DISTINCT callee_name, callee_file, call_line, call_type FROM call_edges "
+                    "SELECT DISTINCT callee_name, callee_file, call_line, call_type, callee_kind, "
+                    "callee_signature "
+                    "FROM call_edges "
                     "WHERE caller_name = ? LIMIT ?",
                     (func_name, limit),
                 ).fetchall()
             finally:
                 self._callgraph_read_semaphore.release()
         result = [{"name": r["callee_name"], "filename": r["callee_file"],
-                   "lineNumber": r["call_line"], "call_type": r["call_type"]} for r in rows]
+                   "lineNumber": r["call_line"], "call_type": r["call_type"],
+                   "callee_kind": r["callee_kind"],
+                   "callee_signature": r["callee_signature"]} for r in rows]
         with self._query_cache_lock:
             if cache_version == self._callgraph_cache_version:
                 self._callee_cache[cache_key] = self._clone_query_rows(result)
@@ -1661,7 +1851,9 @@ class KnowledgeDB:
         self._callgraph_read_semaphore.acquire()
         try:
             rows = self._conn.execute(
-                "SELECT DISTINCT callee_name, callee_file, call_line, call_type, caller_file "
+                "SELECT DISTINCT callee_name, callee_file, call_line, call_type, callee_kind, "
+                "callee_signature, "
+                "caller_file "
                 "FROM call_edges WHERE caller_name = ? "
                 "ORDER BY callee_name, callee_file, call_type, call_line",
                 (func_name,),
@@ -1680,6 +1872,38 @@ class KnowledgeDB:
                 "filename": row["callee_file"],
                 "lineNumber": row["call_line"],
                 "call_type": row["call_type"],
+                "callee_kind": row["callee_kind"],
+                "callee_signature": row["callee_signature"],
+            }
+            for row in rows
+        ]
+
+    def get_call_edge_records(
+        self,
+        func_name: str,
+        *,
+        caller_file: str = "",
+    ) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT callee_name, callee_file, call_line, call_type, callee_kind, "
+            "callee_signature, caller_file FROM call_edges WHERE caller_name = ? "
+            "ORDER BY call_line, callee_name, callee_file",
+            (func_name,),
+        ).fetchall()
+        if caller_file:
+            rows = [
+                row for row in rows
+                if self._paths_match_hint(str(row["caller_file"] or ""), caller_file)
+            ]
+        return [
+            {
+                "name": row["callee_name"],
+                "filename": row["callee_file"],
+                "call_line": row["call_line"],
+                "call_type": row["call_type"],
+                "callee_kind": row["callee_kind"],
+                "callee_signature": row["callee_signature"],
+                "caller_file": row["caller_file"],
             }
             for row in rows
         ]
@@ -1786,14 +2010,79 @@ class KnowledgeDB:
     def insert_indirect_call(self, caller: str, callee: str,
                              source: str = "svf-ander", confidence: float = 1.0,
                              call_file: str = "", call_line: int = 0,
-                             svf_group: str = "default"):
+                             svf_group: str = "default", callsite_id: str = "",
+                             pointer_symbol: str = "", pointer_kind: str = "unknown",
+                             pointer_type: str = "", pointer_signature: str = "",
+                             callsite_expression: str = "", guard: str = ""):
         self._invalidate_callgraph_query_cache()
-        self._conn.execute(
+        cursor = self._conn.execute(
             "INSERT OR IGNORE INTO indirect_calls "
-            "(caller_name, callee_name, call_file, call_line, source, confidence, svf_group) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (caller, callee, call_file, call_line, source, confidence, svf_group),
+            "(caller_name, callee_name, call_file, call_line, callsite_id, pointer_symbol, "
+            "pointer_kind, pointer_type, pointer_signature, callsite_expression, call_guard, "
+            "source, confidence, svf_group) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                caller,
+                callee,
+                call_file,
+                call_line,
+                callsite_id,
+                pointer_symbol,
+                pointer_kind,
+                pointer_type,
+                pointer_signature,
+                callsite_expression,
+                guard,
+                source,
+                confidence,
+                svf_group,
+            ),
         )
+        return max(0, int(cursor.rowcount or 0))
+
+    def get_indirect_call_records(
+        self,
+        func_name: str,
+        *,
+        caller_file: str = "",
+        limit: int = 2_147_483_647,
+    ) -> List[Dict[str, Any]]:
+        self._callgraph_read_semaphore.acquire()
+        try:
+            rows = self._conn.execute(
+                "SELECT callee_name, call_file, call_line, callsite_id, pointer_symbol, "
+                "pointer_kind, pointer_type, pointer_signature, callsite_expression, "
+                "call_guard, source, confidence, svf_group FROM indirect_calls "
+                "WHERE caller_name = ? ORDER BY callee_name, call_file, call_line, "
+                "callsite_id, pointer_symbol, source, svf_group LIMIT ?",
+                (func_name, int(limit)),
+            ).fetchall()
+        finally:
+            self._callgraph_read_semaphore.release()
+        if caller_file:
+            rows = [
+                row
+                for row in rows
+                if self._paths_match_hint(str(row["call_file"] or ""), caller_file)
+            ]
+        return [
+            {
+                "name": row["callee_name"],
+                "call_file": row["call_file"],
+                "call_line": row["call_line"],
+                "callsite_id": row["callsite_id"],
+                "pointer_symbol": row["pointer_symbol"],
+                "pointer_kind": row["pointer_kind"],
+                "pointer_type": row["pointer_type"],
+                "pointer_signature": row["pointer_signature"],
+                "callsite_expression": row["callsite_expression"],
+                "guard": row["call_guard"],
+                "source": row["source"],
+                "confidence": row["confidence"],
+                "svf_group": row["svf_group"],
+                "call_type": "indirect",
+            }
+            for row in rows
+        ]
 
     def get_indirect_callees(self, func_name: str, limit: int = 30) -> List[Dict[str, Any]]:
         cache_key = (str(func_name), int(limit))
@@ -1857,12 +2146,13 @@ class KnowledgeDB:
     def insert_taint_signature(self, source_func: str, sink_func: str, bug_type: str,
                                file_path: str = "", line: int = 0, tool: str = "saber",
                                svf_group: str = "default"):
-        self._conn.execute(
+        cursor = self._conn.execute(
             "INSERT OR IGNORE INTO taint_signatures "
             "(source_func, sink_func, bug_type, file_path, line, tool, svf_group) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (source_func, sink_func, bug_type, file_path, line, tool, svf_group),
         )
+        return max(0, int(cursor.rowcount or 0))
 
     def get_taint_bugs(self, bug_type: str = "", limit: int = 100) -> List[Dict[str, Any]]:
         if bug_type:

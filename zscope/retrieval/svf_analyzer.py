@@ -6,6 +6,8 @@ import hashlib
 import inspect
 import json
 import logging
+import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -23,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 class SvfAnalyzer:
     """Build bitcode, run SVF, and write indirect-call/Saber data."""
+
+    MATERIALIZATION_SCHEMA_VERSION = 1
+    MATERIALIZATION_STATE_KEY = "svf_db_materialization"
 
     def __init__(
         self,
@@ -61,6 +66,7 @@ class SvfAnalyzer:
             shared_pools=list(shared_pools or []),
         )
         self._parallel_workers = max(1, int(parallel_workers or 1))
+        self._project_root: Optional[Path] = None
 
     def run(
         self,
@@ -73,6 +79,8 @@ class SvfAnalyzer:
         if not compile_commands_path:
             logger.warning("No compile_commands_path, skipping SVF")
             return True
+
+        self._project_root = Path(project_root)
 
         try:
             groups = self._load_groups_config(project_root, svf_groups_config)
@@ -92,14 +100,23 @@ class SvfAnalyzer:
                 sort_entry_functions=False,
             )
             old_hash = self._db.get_svf_hash()
+            materialization_current = self._materialization_current(project_root)
             if cache_fingerprint and old_hash in {
                 cache_fingerprint,
                 legacy_cache_fingerprint,
-            }:
+            } and materialization_current:
                 if old_hash == legacy_cache_fingerprint and old_hash != cache_fingerprint:
                     self._db.set_svf_hash(cache_fingerprint)
                 logger.info("SVF incremental: cache fingerprint unchanged; reusing cached data")
                 return True
+            if cache_fingerprint and old_hash in {
+                cache_fingerprint,
+                legacy_cache_fingerprint,
+            }:
+                logger.info(
+                    "SVF incremental: source cache hit but DB materialization is stale; "
+                    "event=materialization_recovery"
+                )
             if old_hash:
                 logger.info(
                     "SVF incremental: cache miss (old=%s, new=%s, entries=%d)",
@@ -147,7 +164,11 @@ class SvfAnalyzer:
                 normalized_entries,
             )
             old_artifact_hash = self._db.get_metadata("svf_artifact_hash")
-            if artifact_fingerprint and artifact_fingerprint == old_artifact_hash:
+            if (
+                artifact_fingerprint
+                and artifact_fingerprint == old_artifact_hash
+                and materialization_current
+            ):
                 logger.info(
                     "SVF incremental: merged bitcode fingerprint unchanged; "
                     "reusing cached SVF data"
@@ -161,7 +182,12 @@ class SvfAnalyzer:
                     )
                 return True
             reused_linked_groups = set(getattr(builder, "reused_linked_groups", set()))
-            if old_hash and bc_paths and set(bc_paths.keys()) == reused_linked_groups:
+            if (
+                old_hash
+                and bc_paths
+                and set(bc_paths.keys()) == reused_linked_groups
+                and materialization_current
+            ):
                 logger.info(
                     "SVF incremental: merged bitcode reused for all groups; "
                     "refreshing cache fingerprint without rerunning SVF"
@@ -186,8 +212,12 @@ class SvfAnalyzer:
             had_timeout = self._run_split_svf(runner, bc_paths, project_root)
 
             if had_timeout:
-                logger.warning("SVF analysis timed out; cache fingerprint will not be updated")
+                logger.warning(
+                    "SVF analysis or materialization failed; cache fingerprint will not be updated"
+                )
                 return False
+
+            self._mark_materialization_complete(bc_paths)
 
             if cache_fingerprint and bitcode_complete:
                 self._db.set_svf_hash(cache_fingerprint)
@@ -270,12 +300,37 @@ class SvfAnalyzer:
         pending_paths: Dict[str, Path] = {}
         for group_name, bc_path in wpa_paths.items():
             fingerprint = self._tool_artifact_fingerprint("ander", group_name, bc_path)
-            if self._tool_status_success("ander", group_name, fingerprint):
+            status = self._load_tool_status("ander", group_name)
+            artifact = self._validated_replay_artifact(
+                "ander", group_name, fingerprint, status, project_root
+            )
+            if artifact and self._materialization_marker_valid(
+                "ander", group_name, fingerprint, artifact[1]
+            ):
                 logger.info(
-                    "SVF resume: skipping successful ander group '%s' (artifact unchanged)",
+                    "SVF resume: event=cache_skip tool=ander group=%s",
                     group_name,
                 )
                 continue
+            if artifact:
+                artifact_path, artifact_hash, artifact_relpath = artifact
+                if self._materialize_group(
+                    "ander",
+                    group_name,
+                    fingerprint,
+                    artifact_path,
+                    artifact_hash,
+                    artifact_relpath,
+                ):
+                    logger.info(
+                        "SVF resume: event=artifact_reimport tool=ander group=%s",
+                        group_name,
+                    )
+                    continue
+                logger.warning(
+                    "SVF resume: event=recovery_failed tool=ander group=%s; rerunning tool",
+                    group_name,
+                )
             pending_paths[group_name] = bc_path
         if not pending_paths:
             return False
@@ -314,7 +369,8 @@ class SvfAnalyzer:
                     )
                     had_timeout = True
                     continue
-                if not result.success and not result.output_file:
+                output_file = Path(result.output_file) if result.output_file else None
+                if not result.success or not output_file or not output_file.is_file():
                     self._write_tool_status(
                         "ander",
                         group_name,
@@ -325,10 +381,8 @@ class SvfAnalyzer:
                     )
                     had_timeout = True
                     continue
-                self._db.purge_svf_data(group=group_name)
-                mapper = SvfOutputMapper(self._db, svf_group=group_name)
-                if result.output_file:
-                    mapper.import_callgraph(result.output_file)
+                artifact_hash = self._file_hash(output_file)
+                artifact_relpath = self._relative_artifact_path(output_file, project_root)
                 self._write_tool_status(
                     "ander",
                     group_name,
@@ -336,7 +390,24 @@ class SvfAnalyzer:
                     status="success",
                     timed_out=False,
                     result=result,
+                    artifact_path=artifact_relpath,
+                    artifact_hash=artifact_hash,
                 )
+                if not self._materialize_group(
+                    "ander",
+                    group_name,
+                    fingerprint,
+                    output_file,
+                    artifact_hash,
+                    artifact_relpath,
+                ):
+                    logger.warning(
+                        "SVF group failed: event=recovery_failed tool=ander group=%s",
+                        group_name,
+                    )
+                    had_timeout = True
+                    continue
+                logger.info("SVF resume: event=tool_rerun tool=ander group=%s", group_name)
         return had_timeout
 
     def _run_saber_groups(
@@ -348,12 +419,37 @@ class SvfAnalyzer:
         had_failure = False
         for group_name, bc_path in sorted(saber_paths.items()):
             fingerprint = self._tool_artifact_fingerprint("saber", group_name, bc_path)
-            if self._tool_status_success("saber", group_name, fingerprint):
+            status = self._load_tool_status("saber", group_name)
+            artifact = self._validated_replay_artifact(
+                "saber", group_name, fingerprint, status, project_root
+            )
+            if artifact and self._materialization_marker_valid(
+                "saber", group_name, fingerprint, artifact[1]
+            ):
                 logger.info(
-                    "SVF resume: skipping successful saber group '%s' (artifact unchanged)",
+                    "SVF resume: event=cache_skip tool=saber group=%s",
                     group_name,
                 )
                 continue
+            if artifact:
+                artifact_path, artifact_hash, artifact_relpath = artifact
+                if self._materialize_group(
+                    "saber",
+                    group_name,
+                    fingerprint,
+                    artifact_path,
+                    artifact_hash,
+                    artifact_relpath,
+                ):
+                    logger.info(
+                        "SVF resume: event=artifact_reimport tool=saber group=%s",
+                        group_name,
+                    )
+                    continue
+                logger.warning(
+                    "SVF resume: event=recovery_failed tool=saber group=%s; rerunning tool",
+                    group_name,
+                )
             output_dir = project_root / f".zscope_svf_{self._safe_output_suffix(group_name)}"
             logger.info("Running Saber analysis for group '%s' using %s", group_name, bc_path)
             try:
@@ -391,10 +487,24 @@ class SvfAnalyzer:
                 )
                 had_failure = True
                 continue
-            self._db.purge_svf_data(group=group_name)
-            mapper = SvfOutputMapper(self._db, svf_group=group_name)
-            if result.bugs:
-                mapper.import_saber_bugs(result.bugs)
+            try:
+                artifact_path = self._write_saber_artifact(output_dir, result.bugs)
+                artifact_hash = self._file_hash(artifact_path)
+                artifact_relpath = self._relative_artifact_path(artifact_path, project_root)
+            except (OSError, TypeError, ValueError) as exc:
+                logger.warning(
+                    "Saber artifact persistence failed for group '%s': %s", group_name, exc
+                )
+                self._write_tool_status(
+                    "saber",
+                    group_name,
+                    fingerprint,
+                    status="failed",
+                    timed_out=False,
+                    result=result,
+                )
+                had_failure = True
+                continue
             self._write_tool_status(
                 "saber",
                 group_name,
@@ -402,7 +512,24 @@ class SvfAnalyzer:
                 status="success",
                 timed_out=False,
                 result=result,
+                artifact_path=artifact_relpath,
+                artifact_hash=artifact_hash,
             )
+            if not self._materialize_group(
+                "saber",
+                group_name,
+                fingerprint,
+                artifact_path,
+                artifact_hash,
+                artifact_relpath,
+            ):
+                logger.warning(
+                    "SVF group failed: event=recovery_failed tool=saber group=%s",
+                    group_name,
+                )
+                had_failure = True
+                continue
+            logger.info("SVF resume: event=tool_rerun tool=saber group=%s", group_name)
         return had_failure
 
     @staticmethod
@@ -417,14 +544,22 @@ class SvfAnalyzer:
     def _tool_status_key(tool: str, group_name: str) -> str:
         return f"svf_tool_status:{tool}:{group_name}"
 
-    def _tool_status_success(self, tool: str, group_name: str, artifact_fingerprint: str) -> bool:
+    @staticmethod
+    def _materialization_marker_key(tool: str, group_name: str) -> str:
+        return f"svf_db_import:{tool}:{group_name}"
+
+    def _load_tool_status(self, tool: str, group_name: str) -> Dict[str, Any]:
         raw = self._db.get_metadata(self._tool_status_key(tool, group_name))
         if not raw:
-            return False
+            return {}
         try:
             data = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
-            return False
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _tool_status_success(self, tool: str, group_name: str, artifact_fingerprint: str) -> bool:
+        data = self._load_tool_status(tool, group_name)
         return (
             data.get("status") == "success"
             and data.get("artifact_fingerprint") == artifact_fingerprint
@@ -439,26 +574,280 @@ class SvfAnalyzer:
         status: str,
         timed_out: bool,
         result: Optional[SvfResult] = None,
+        artifact_path: str = "",
+        artifact_hash: str = "",
     ) -> None:
-        output_hash = ""
-        output_file = getattr(result, "output_file", None) if result else None
-        if output_file:
-            output_hash = self._file_hash(Path(output_file))
-        elif result and result.bugs:
-            output_hash = hashlib.sha256(
-                json.dumps(result.bugs, sort_keys=True).encode("utf-8")
-            ).hexdigest()
         payload = {
             "artifact_fingerprint": artifact_fingerprint,
             "status": status,
             "timed_out": timed_out,
             "updated_at": time.time(),
-            "output_hash": output_hash,
+            "artifact_path": artifact_path,
+            "artifact_hash": artifact_hash,
+            "output_hash": artifact_hash,
         }
         self._db.set_metadata(
             self._tool_status_key(tool, group_name),
             json.dumps(payload, sort_keys=True),
         )
+
+    def _validated_replay_artifact(
+        self,
+        tool: str,
+        group_name: str,
+        artifact_fingerprint: str,
+        status: Dict[str, Any],
+        project_root: Path,
+    ) -> Optional[tuple[Path, str, str]]:
+        if (
+            status.get("status") != "success"
+            or status.get("artifact_fingerprint") != artifact_fingerprint
+        ):
+            return None
+        raw_path = str(status.get("artifact_path") or "")
+        if raw_path:
+            candidate = Path(raw_path)
+            artifact_path = candidate if candidate.is_absolute() else project_root / candidate
+        elif tool == "ander":
+            artifact_path = self._ander_artifact_path(project_root, group_name)
+        else:
+            return None
+        expected_hash = str(status.get("artifact_hash") or status.get("output_hash") or "")
+        if not expected_hash or not artifact_path.is_file():
+            return None
+        actual_hash = self._file_hash(artifact_path)
+        if actual_hash != expected_hash:
+            logger.warning(
+                "SVF resume: event=artifact_invalid tool=%s group=%s expected=%s actual=%s",
+                tool,
+                group_name,
+                expected_hash[:12],
+                actual_hash[:12],
+            )
+            return None
+        return (
+            artifact_path,
+            actual_hash,
+            self._relative_artifact_path(artifact_path, project_root),
+        )
+
+    def _materialization_marker_valid(
+        self,
+        tool: str,
+        group_name: str,
+        artifact_fingerprint: str,
+        artifact_hash: str,
+    ) -> bool:
+        raw = self._db.get_metadata(self._materialization_marker_key(tool, group_name))
+        if not raw:
+            return False
+        try:
+            marker = json.loads(raw)
+            row_count = int(marker.get("imported_row_count"))
+            marker_generation = int(marker.get("db_generation", -1))
+        except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+            return False
+        return (
+            marker.get("schema_version") == self.MATERIALIZATION_SCHEMA_VERSION
+            and marker.get("artifact_fingerprint") == artifact_fingerprint
+            and marker.get("artifact_hash") == artifact_hash
+            and marker_generation == self._db.get_svf_db_generation()
+            and row_count >= 0
+        )
+
+    def _materialize_group(
+        self,
+        tool: str,
+        group_name: str,
+        artifact_fingerprint: str,
+        artifact_path: Path,
+        artifact_hash: str,
+        artifact_relpath: str,
+    ) -> bool:
+        try:
+            bugs: List[Dict[str, Any]] = []
+            if tool == "saber":
+                data = json.loads(artifact_path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict) or not isinstance(data.get("bugs"), list):
+                    raise ValueError("invalid Saber replay artifact")
+                if not all(isinstance(item, dict) for item in data["bugs"]):
+                    raise ValueError("invalid Saber bug entry")
+                bugs = list(data["bugs"])
+
+            generation = self._db.get_svf_db_generation()
+            with self._db.svf_materialization_transaction():
+                self._db.purge_svf_data(group=group_name, commit=False)
+                mapper = SvfOutputMapper(
+                    self._db,
+                    svf_group=group_name,
+                    project_root=self._project_root,
+                )
+                if tool == "ander":
+                    row_count = mapper.import_callgraph(artifact_path, commit=False)
+                else:
+                    row_count = mapper.import_saber_bugs(bugs, commit=False)
+                marker = {
+                    "schema_version": self.MATERIALIZATION_SCHEMA_VERSION,
+                    "artifact_fingerprint": artifact_fingerprint,
+                    "artifact_path": artifact_relpath,
+                    "artifact_hash": artifact_hash,
+                    "imported_row_count": int(row_count),
+                    "db_generation": generation,
+                    "imported_at": time.time(),
+                }
+                self._db.set_metadata(
+                    self._materialization_marker_key(tool, group_name),
+                    json.dumps(marker, sort_keys=True),
+                    commit=False,
+                )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "SVF materialization failed: event=recovery_failed tool=%s group=%s error=%s",
+                tool,
+                group_name,
+                exc,
+            )
+            return False
+
+    def _materialization_current(self, project_root: Path) -> bool:
+        raw = self._db.get_metadata(self.MATERIALIZATION_STATE_KEY)
+        if not raw:
+            return False
+        try:
+            state = json.loads(raw)
+            groups = state.get("groups")
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            return False
+        generation = self._db.get_svf_db_generation()
+        try:
+            state_generation = int(state.get("db_generation", -1))
+        except (TypeError, ValueError):
+            return False
+        if (
+            state.get("schema_version") != self.MATERIALIZATION_SCHEMA_VERSION
+            or state_generation != generation
+            or not isinstance(groups, list)
+        ):
+            return False
+        for item in groups:
+            if not isinstance(item, dict):
+                return False
+            tool = str(item.get("tool") or "")
+            group_name = str(item.get("group") or "")
+            raw_marker = self._db.get_metadata(
+                self._materialization_marker_key(tool, group_name)
+            )
+            try:
+                marker = json.loads(raw_marker)
+            except (json.JSONDecodeError, TypeError):
+                return False
+            try:
+                marker_generation = int(marker.get("db_generation", -1))
+            except (TypeError, ValueError, AttributeError):
+                return False
+            if (
+                marker.get("schema_version") != self.MATERIALIZATION_SCHEMA_VERSION
+                or marker_generation != generation
+            ):
+                return False
+            try:
+                row_count = int(marker.get("imported_row_count"))
+            except (TypeError, ValueError, AttributeError):
+                return False
+            artifact_fingerprint = str(marker.get("artifact_fingerprint") or "")
+            artifact_hash = str(marker.get("artifact_hash") or "")
+            artifact_relpath = str(marker.get("artifact_path") or "")
+            status = self._load_tool_status(tool, group_name)
+            if (
+                row_count < 0
+                or not artifact_fingerprint
+                or not artifact_hash
+                or not artifact_relpath
+                or status.get("status") != "success"
+                or status.get("artifact_fingerprint") != artifact_fingerprint
+                or str(status.get("artifact_hash") or status.get("output_hash") or "")
+                != artifact_hash
+            ):
+                return False
+            artifact_path = Path(artifact_relpath)
+            if not artifact_path.is_absolute():
+                artifact_path = project_root / artifact_path
+            if not artifact_path.is_file() or self._file_hash(artifact_path) != artifact_hash:
+                return False
+        return True
+
+    def _mark_materialization_complete(self, bc_paths: Dict[str, Path]) -> None:
+        generation = self._db.get_svf_db_generation()
+        groups = [
+            {
+                "tool": "saber" if self._is_saber_group(group_name) else "ander",
+                "group": group_name,
+            }
+            for group_name in sorted(bc_paths)
+        ]
+        for item in groups:
+            raw = self._db.get_metadata(
+                self._materialization_marker_key(item["tool"], item["group"])
+            )
+            if not raw:
+                raise RuntimeError(
+                    f"missing SVF materialization marker for {item['tool']}:{item['group']}"
+                )
+            marker = json.loads(raw)
+            if int(marker.get("db_generation", -1)) != generation:
+                raise RuntimeError(
+                    f"stale SVF materialization marker for {item['tool']}:{item['group']}"
+                )
+        payload = {
+            "schema_version": self.MATERIALIZATION_SCHEMA_VERSION,
+            "db_generation": generation,
+            "groups": groups,
+            "updated_at": time.time(),
+        }
+        self._db.set_metadata(
+            self.MATERIALIZATION_STATE_KEY,
+            json.dumps(payload, sort_keys=True),
+        )
+
+    @staticmethod
+    def _relative_artifact_path(artifact_path: Path, project_root: Path) -> str:
+        return Path(
+            os.path.relpath(Path(artifact_path).resolve(), Path(project_root).resolve())
+        ).as_posix()
+
+    def _ander_artifact_path(self, project_root: Path, group_name: str) -> Path:
+        group_suffix = f"_{group_name}" if group_name != "default" else ""
+        return project_root / f".zscope_svf{group_suffix}" / "callgraph_final.dot"
+
+    def _write_saber_artifact(
+        self,
+        output_dir: Path,
+        bugs: Sequence[Dict[str, Any]],
+    ) -> Path:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        normalized = sorted(
+            (dict(item) for item in bugs),
+            key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+        )
+        payload = {
+            "schema_version": self.MATERIALIZATION_SCHEMA_VERSION,
+            "bugs": normalized,
+        }
+        artifact_path = output_dir / "saber_results.json"
+        temporary_path = output_dir / (
+            f".{artifact_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        try:
+            temporary_path.write_text(
+                json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            temporary_path.replace(artifact_path)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
+        return artifact_path
 
     def _tool_artifact_fingerprint(self, tool: str, group_name: str, bc_path: Path) -> str:
         payload = {

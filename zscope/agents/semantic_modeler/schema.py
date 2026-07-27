@@ -28,6 +28,8 @@ PROGRAM_PASSTHROUGH_SNAPSHOT_FIELDS = (
 PROGRAM_OPTIONAL_PASSTHROUGH_SNAPSHOT_FIELDS = (
     "project_callees_truncation",
     "external_callees_truncation",
+    "unresolved_callees",
+    "unresolved_callees_truncation",
     "referenced_globals_truncation",
     "referenced_macros_truncation",
     "unresolved_referenced_types",
@@ -506,22 +508,22 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA: Dict[str, Any] = {
                 "type": "object",
                 "required": [
                     "callee_index_name",
-                    "callsite_lines",
-                    "call_type",
+                    "callee_signature",
                     "is_static",
+                    "direct_callsite_lines",
+                    "indirect_callsites",
                     "callee_summary",
                 ],
                 "properties": {
                     "callee_index_name": {"type": "string"},
-                    "callsite_lines": {
+                    "callee_signature": {"type": "string"},
+                    "direct_callsite_lines": {
                         "type": "array",
                         "items": {"type": "integer"},
                     },
-                    "call_type": {
+                    "indirect_callsites": {
                         "type": "array",
-                        "items": {"enum": ["direct", "indirect"]},
-                        "minItems": 1,
-                        "uniqueItems": True,
+                        "items": {"type": "object"},
                     },
                     "is_static": {"type": "boolean"},
                     "callee_summary": {"type": "string"},
@@ -531,8 +533,37 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA: Dict[str, Any] = {
         },
         "external_callees": {
             "type": "array",
-            "description": "Program-extracted unresolved or external call edges; not emitted by the LLM.",
-            "items": {"type": "object"},
+            "description": "Program-extracted external call edges with compiler-verified signatures.",
+            "items": {
+                "type": "object",
+                "required": [
+                    "callee_name",
+                    "callee_signature",
+                    "direct_callsite_lines",
+                    "indirect_callsites",
+                ],
+                "properties": {
+                    "callee_name": {"type": "string"},
+                    "callee_signature": {"type": "string"},
+                    "direct_callsite_lines": {"type": "array", "items": {"type": "integer"}},
+                    "indirect_callsites": {"type": "array", "items": {"type": "object"}},
+                },
+                "additionalProperties": False,
+            },
+        },
+        "unresolved_callees": {
+            "type": "array",
+            "description": "Named call targets without a resolved project identity or verified external signature.",
+            "items": {
+                "type": "object",
+                "required": ["callee_name", "direct_callsite_lines", "indirect_callsites"],
+                "properties": {
+                    "callee_name": {"type": "string"},
+                    "direct_callsite_lines": {"type": "array", "items": {"type": "integer"}},
+                    "indirect_callsites": {"type": "array", "items": {"type": "object"}},
+                },
+                "additionalProperties": False,
+            },
         },
         "project_callees_truncation": {
             "type": "object",
@@ -544,6 +575,15 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA: Dict[str, Any] = {
             },
         },
         "external_callees_truncation": {
+            "type": "object",
+            "required": ["truncated", "returned", "total"],
+            "properties": {
+                "truncated": {"const": True},
+                "returned": {"type": "integer"},
+                "total": {"type": "integer"},
+            },
+        },
+        "unresolved_callees_truncation": {
             "type": "object",
             "required": ["truncated", "returned", "total"],
             "properties": {
