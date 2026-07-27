@@ -589,6 +589,77 @@ def test_clang_extractor_reuses_source_text_cache_across_helpers(
     assert read_count == 2
 
 
+def test_call_hierarchy_classifies_function_pointer_targets(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "demo.c"
+    source.write_text("void entry(void) {}\n", encoding="utf-8")
+    extractor = ClangExtractor(project_root=tmp_path)
+    extractor._call_hierarchy_supported = True
+    monkeypatch.setattr(extractor, "prepare_call_hierarchy", lambda *args: [{"name": "entry"}])
+    monkeypatch.setattr(
+        extractor,
+        "get_outgoing_calls",
+        lambda _item: [
+            {
+                "to": {
+                    "name": "direct_target",
+                    "kind": extractor.SK_FUNCTION,
+                    "detail": "void direct_target(void)",
+                },
+                "fromRanges": [],
+            },
+            {"to": {"name": "field_callback", "kind": extractor.SK_FIELD}, "fromRanges": []},
+            {"to": {"name": "local_callback", "kind": extractor.SK_VARIABLE}, "fromRanges": []},
+            {"to": {"name": "unknown_target", "kind": extractor.SK_ENUM}, "fromRanges": []},
+        ],
+    )
+
+    rows = []
+    assert extractor._extract_call_edges_from_call_hierarchy(
+        source, "entry", "demo.c", 1, rows
+    ) == 4
+
+    assert [(row[2], row[5], row[6]) for row in rows] == [
+        ("direct_target", "direct", "function"),
+        ("field_callback", "indirect", "function_pointer_field"),
+        ("local_callback", "indirect", "function_pointer_variable"),
+        ("unknown_target", "direct", "unknown_callable"),
+    ]
+    assert rows[0][7] == "void direct_target(void)"
+
+
+def test_regex_call_extraction_classifies_member_and_local_function_pointers(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "demo.c"
+    source.write_text(
+        "typedef void (*Callback)(void*);\n"
+        "typedef struct { Callback cb; } Ops;\n"
+        "void direct_target(void* value) {}\n"
+        "void entry(Ops* ops, Callback local_callback, void* value) {\n"
+        "    direct_target(value);\n"
+        "    ops->cb(value);\n"
+        "    local_callback(value);\n"
+        "    (*local_callback)(value);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    extractor = ClangExtractor(project_root=tmp_path)
+    monkeypatch.setattr(
+        extractor,
+        "get_definition",
+        lambda *args: [{"targetUri": source.as_uri()}],
+    )
+
+    rows = []
+    extractor._extract_call_edges_by_regex(source, "entry", "demo.c", 4, 9, rows)
+
+    by_name = {(row[2], row[4]): (row[5], row[6]) for row in rows}
+    assert by_name[("direct_target", 5)] == ("direct", "function")
+    assert by_name[("cb", 6)] == ("indirect", "function_pointer_field")
+    assert by_name[("local_callback", 7)] == ("indirect", "function_pointer_variable")
+    assert by_name[("local_callback", 8)] == ("indirect", "function_pointer_variable")
+
+
 def test_run_batch_extraction_uses_prescanned_tus_without_rehashing(
     tmp_path, monkeypatch
 ) -> None:

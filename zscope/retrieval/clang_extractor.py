@@ -402,6 +402,14 @@ class ClangExtractor:
     SK_FIELD = 8
     SK_ENUM_MEMBER = 22
 
+    _DIRECT_CALL_TARGET_KINDS = frozenset(
+        {SK_FUNCTION, SK_METHOD, SK_CONSTRUCTOR}
+    )
+    _FUNCTION_POINTER_TARGET_KINDS = {
+        SK_FIELD: "function_pointer_field",
+        SK_VARIABLE: "function_pointer_variable",
+    }
+
     def extract_tu(
         self,
         file_path: Path,
@@ -1543,8 +1551,19 @@ class ClangExtractor:
                     if key in seen:
                         continue
                     seen.add(key)
+                    call_type, callee_kind = self._call_hierarchy_target_classification(target)
+                    callee_signature = str(target.get("detail") or "").strip()
                     local_rows.append(
-                        (caller_name, caller_file, callee, callee_file, call_line, "direct")
+                        (
+                            caller_name,
+                            caller_file,
+                            callee,
+                            callee_file,
+                            call_line,
+                            call_type,
+                            callee_kind,
+                            callee_signature,
+                        )
                     )
             call_rows.extend(local_rows)
             return len(local_rows)
@@ -1568,8 +1587,11 @@ class ClangExtractor:
                 return
             body = "".join(lines[start_line - 1 : end_line])
             masked_body = self._mask_c_comments_and_literals(body)
+            source_text = "".join(lines)
+            masked_source = self._mask_c_comments_and_literals(source_text)
 
             call_pattern = re.compile(r"\b([a-zA-Z_]\w*)\s*\(")
+            seen: set[tuple[str, int]] = set()
             for m in call_pattern.finditer(masked_body):
                 callee = m.group(1)
                 if (
@@ -1595,11 +1617,114 @@ class ClangExtractor:
                     uri = defs[0].get("targetUri") or defs[0].get("uri", "")
                     callee_file = self._uri_to_project_path(uri)
 
+                call_type, callee_kind = self._regex_call_classification(
+                    masked_body,
+                    masked_source,
+                    callee,
+                    match_start_idx,
+                    has_definition=bool(defs),
+                )
+
                 call_rows.append(
-                    (caller_name, caller_file, callee, callee_file, call_line, "direct")
+                    (
+                        caller_name,
+                        caller_file,
+                        callee,
+                        callee_file,
+                        call_line,
+                        call_type,
+                        callee_kind,
+                        "",
+                    )
+                )
+                seen.add((callee, call_line))
+
+            explicit_pointer_pattern = re.compile(
+                r"\(\s*\*\s*([a-zA-Z_]\w*)\s*\)\s*\("
+            )
+            for m in explicit_pointer_pattern.finditer(masked_body):
+                callee = m.group(1)
+                if not is_likely_function_call_identifier(callee) or callee == caller_name:
+                    continue
+                prefix = masked_body[:m.start(1)]
+                call_line = start_line + prefix.count("\n")
+                if (callee, call_line) in seen:
+                    continue
+                last_newline = prefix.rfind("\n")
+                char_offset = len(prefix) if last_newline == -1 else len(prefix) - last_newline - 1
+                callee_file = ""
+                defs = self.get_definition(file_path, call_line - 1, char_offset)
+                if defs and isinstance(defs, list):
+                    uri = defs[0].get("targetUri") or defs[0].get("uri", "") if defs else ""
+                    callee_file = self._uri_to_project_path(uri)
+                call_rows.append(
+                    (
+                        caller_name,
+                        caller_file,
+                        callee,
+                        callee_file,
+                        call_line,
+                        "indirect",
+                        "function_pointer_variable",
+                        "",
+                    )
                 )
         except Exception as e:
             logger.debug("Failed to extract calls in %s: %s", caller_name, e)
+
+    def _call_hierarchy_target_classification(
+        self,
+        target: Dict[str, Any],
+    ) -> Tuple[str, str]:
+        try:
+            symbol_kind = int(target.get("kind", 0) or 0)
+        except (TypeError, ValueError):
+            symbol_kind = 0
+        pointer_kind = self._FUNCTION_POINTER_TARGET_KINDS.get(symbol_kind)
+        if pointer_kind:
+            return "indirect", pointer_kind
+        if symbol_kind in self._DIRECT_CALL_TARGET_KINDS:
+            return "direct", "function"
+        return "direct", "unknown_callable"
+
+    def _regex_call_classification(
+        self,
+        masked_body: str,
+        masked_source: str,
+        callee: str,
+        match_start_idx: int,
+        *,
+        has_definition: bool,
+    ) -> Tuple[str, str]:
+        prefix = masked_body[:match_start_idx]
+        if re.search(r"(?:\.|->)\s*$", prefix):
+            return "indirect", "function_pointer_field"
+        if self._source_declares_function_pointer(masked_source, callee):
+            return "indirect", "function_pointer_variable"
+        if has_definition:
+            return "direct", "function"
+        return "direct", "unknown_callable"
+
+    @staticmethod
+    def _source_declares_function_pointer(masked_source: str, name: str) -> bool:
+        escaped_name = re.escape(name)
+        if re.search(
+            rf"\(\s*\*\s*{escaped_name}\s*\)\s*\(",
+            masked_source,
+        ):
+            return True
+        typedef_names = {
+            match.group(1)
+            for match in re.finditer(
+                r"\btypedef\b[^;]*?\(\s*\*\s*([a-zA-Z_]\w*)\s*\)\s*\([^;]*\)\s*;",
+                masked_source,
+                flags=re.DOTALL,
+            )
+        }
+        return any(
+            re.search(rf"\b{re.escape(type_name)}\b[^;{{}}]*\b{escaped_name}\b", masked_source)
+            for type_name in typedef_names
+        )
 
     def _symbol_position(self, sym: Optional[Dict[str, Any]], start_line: int) -> Dict[str, int]:
         if sym:

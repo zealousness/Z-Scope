@@ -47,6 +47,8 @@ DETERMINISTIC_SNAPSHOT_OPTIONAL_FIELDS = (
     "referenced_types_truncation",
     "project_callees_truncation",
     "external_callees_truncation",
+    "unresolved_callees",
+    "unresolved_callees_truncation",
 )
 DETERMINISTIC_SNAPSHOT_KINDS = frozenset({"syntactic", "lightweight"})
 
@@ -135,7 +137,9 @@ def _normalize_project_callees(value: Any) -> List[Dict[str, Any]]:
                 or raw_callee.get("name")
                 or ""
             ).strip()
-            raw_lines = raw_callee.get("callsite_lines")
+            raw_lines = raw_callee.get("direct_callsite_lines")
+            if raw_lines is None:
+                raw_lines = raw_callee.get("callsite_lines")
             if not isinstance(raw_lines, list):
                 raw_lines = [raw_callee.get("callsite_line")]
             callsite_lines = sorted(
@@ -145,31 +149,30 @@ def _normalize_project_callees(value: Any) -> List[Dict[str, Any]]:
                     if isinstance(line, int) and not isinstance(line, bool) and line > 0
                 }
             )
-            raw_call_type = raw_callee.get("call_type")
             summary = str(raw_callee.get("callee_summary") or "").strip()
+            signature = str(raw_callee.get("callee_signature") or "").strip()
+            indirect_callsites = [
+                deepcopy(item)
+                for item in list(raw_callee.get("indirect_callsites") or [])
+                if isinstance(item, dict)
+            ]
         else:
             index_name = str(raw_callee or "").strip()
             callsite_lines = []
-            raw_call_type = None
             summary = ""
+            signature = ""
+            indirect_callsites = []
         if not index_name:
             continue
 
-        raw_call_types = raw_call_type if isinstance(raw_call_type, list) else [raw_call_type]
-        call_types: List[str] = []
-        for item in raw_call_types:
-            normalized = str(item)
-            if normalized in {"direct", "indirect"} and normalized not in call_types:
-                call_types.append(normalized)
-
         callee = {
             "callee_index_name": index_name,
-            "callsite_lines": callsite_lines,
+            "callee_signature": signature,
             "is_static": bool(raw_callee.get("is_static")) if isinstance(raw_callee, dict) else False,
             "callee_summary": summary or "unknown",
+            "direct_callsite_lines": callsite_lines,
+            "indirect_callsites": indirect_callsites,
         }
-        if call_types:
-            callee["call_type"] = call_types
         result.append(callee)
     return result
 
@@ -179,10 +182,13 @@ def _normalize_external_callees(value: Any) -> List[Dict[str, Any]]:
     for raw_callee in value if isinstance(value, list) else []:
         if not isinstance(raw_callee, dict):
             continue
-        index_name = str(raw_callee.get("callee_index_name") or "").strip()
-        if not index_name:
+        callee_name = str(raw_callee.get("callee_name") or "").strip()
+        signature = str(raw_callee.get("callee_signature") or "").strip()
+        if not callee_name or not signature:
             continue
-        raw_lines = raw_callee.get("callsite_lines")
+        raw_lines = raw_callee.get("direct_callsite_lines")
+        if raw_lines is None:
+            raw_lines = raw_callee.get("callsite_lines")
         if not isinstance(raw_lines, list):
             raw_lines = [raw_callee.get("callsite_line")]
         callsite_lines = sorted(
@@ -192,21 +198,49 @@ def _normalize_external_callees(value: Any) -> List[Dict[str, Any]]:
                 if isinstance(line, int) and not isinstance(line, bool) and line > 0
             }
         )
-        raw_call_types = raw_callee.get("call_type")
-        if not isinstance(raw_call_types, list):
-            raw_call_types = [raw_call_types]
-        call_types = [
-            call_type
-            for call_type in ("direct", "indirect")
-            if call_type in {str(item) for item in raw_call_types}
-        ]
-        callee = {
-            "callee_index_name": index_name,
-            "callsite_lines": callsite_lines,
-        }
-        if call_types:
-            callee["call_type"] = call_types
-        result.append(callee)
+        result.append(
+            {
+                "callee_name": callee_name,
+                "callee_signature": signature,
+                "direct_callsite_lines": callsite_lines,
+                "indirect_callsites": [
+                    deepcopy(item)
+                    for item in list(raw_callee.get("indirect_callsites") or [])
+                    if isinstance(item, dict)
+                ],
+            }
+        )
+    return result
+
+
+def _normalize_unresolved_callees(value: Any) -> List[Dict[str, Any]]:
+    result: List[Dict[str, Any]] = []
+    for raw_callee in value if isinstance(value, list) else []:
+        if not isinstance(raw_callee, dict):
+            continue
+        callee_name = str(raw_callee.get("callee_name") or "").strip()
+        if not callee_name:
+            continue
+        raw_lines = raw_callee.get("direct_callsite_lines")
+        if not isinstance(raw_lines, list):
+            raw_lines = [raw_callee.get("callsite_line")]
+        result.append(
+            {
+                "callee_name": callee_name,
+                "direct_callsite_lines": sorted(
+                    {
+                        int(line)
+                        for line in raw_lines
+                        if isinstance(line, int) and not isinstance(line, bool) and line > 0
+                    }
+                ),
+                "indirect_callsites": [
+                    deepcopy(item)
+                    for item in list(raw_callee.get("indirect_callsites") or [])
+                    if isinstance(item, dict)
+                ],
+            }
+        )
     return result
 
 
@@ -258,6 +292,10 @@ def _expected_deterministic_fields(snapshot: Dict[str, Any]) -> tuple[str, ...]:
             ):
                 if optional in snapshot:
                     fields.append(optional)
+            if "unresolved_callees" in snapshot:
+                fields.append("unresolved_callees")
+                if "unresolved_callees_truncation" in snapshot:
+                    fields.append("unresolved_callees_truncation")
     return tuple(fields)
 
 
@@ -287,8 +325,23 @@ def is_current_deterministic_snapshot_shape(snapshot: Dict[str, Any]) -> bool:
         or not snapshot.get("unresolved_referenced_types")
     ):
         return False
+    if "unresolved_callees" in snapshot and (
+        not isinstance(snapshot.get("unresolved_callees"), list)
+        or not snapshot.get("unresolved_callees")
+        or any(
+            not isinstance(item, dict)
+            or set(item)
+            != {"callee_name", "direct_callsite_lines", "indirect_callsites"}
+            for item in snapshot.get("unresolved_callees", [])
+        )
+    ):
+        return False
     if "referenced_types_truncation" in snapshot and not isinstance(
         snapshot.get("referenced_types_truncation"), dict
+    ):
+        return False
+    if "unresolved_callees_truncation" in snapshot and not isinstance(
+        snapshot.get("unresolved_callees_truncation"), dict
     ):
         return False
     allowed = set(DETERMINISTIC_SNAPSHOT_REQUIRED_FIELDS) | set(
@@ -347,7 +400,14 @@ def _build_deterministic_snapshot(
             "external_callees": _normalize_external_callees(impl.get("external_callees")),
         }
     )
-    for field in ("project_callees_truncation", "external_callees_truncation"):
+    unresolved_callees = _normalize_unresolved_callees(impl.get("unresolved_callees"))
+    if unresolved_callees:
+        snapshot["unresolved_callees"] = unresolved_callees
+    for field in (
+        "project_callees_truncation",
+        "external_callees_truncation",
+        "unresolved_callees_truncation",
+    ):
         if field in impl:
             snapshot[field] = deepcopy(impl[field])
     snapshot["suspicious_points"] = _normalize_suspicious_points(suspicious_points)
@@ -548,9 +608,12 @@ def trivial_suspicious_points(
 
     callees = [
         str(callee["callee_index_name"])
+        for callee in _normalize_project_callees(impl.get("project_callees"))
+    ] + [
+        str(callee["callee_name"])
         for callee in (
-            _normalize_project_callees(impl.get("project_callees"))
-            + _normalize_external_callees(impl.get("external_callees"))
+            _normalize_external_callees(impl.get("external_callees"))
+            + _normalize_unresolved_callees(impl.get("unresolved_callees"))
         )
     ]
     if callees and re.search(r"\breturn\s+[A-Za-z_]\w*\s*\(", text):

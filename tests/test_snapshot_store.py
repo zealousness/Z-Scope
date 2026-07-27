@@ -339,16 +339,25 @@ def test_backend_callee_change_requires_snapshot_refresh(tmp_path) -> None:
 
     assert store.needs_refresh(index_name, code, backend_context) == (False, None)
 
-    changed_call_type = {
+    changed_indirect_callsite = {
         **backend_context,
         "project_callees": [
             {
                 **backend_context["project_callees"][0],
-                "call_type": ["direct", "indirect"],
+                "indirect_callsites": [
+                    {
+                        "callsite_line": 11,
+                        "function_pointer": "Ops.decode",
+                        "function_pointer_kind": "field",
+                        "function_pointer_type": "DecodeFn",
+                        "function_pointer_signature": "int (*)(void)",
+                        "callsite_expression": "ops->decode",
+                    }
+                ],
             }
         ],
     }
-    assert store.needs_refresh(index_name, code, changed_call_type) == (
+    assert store.needs_refresh(index_name, code, changed_indirect_callsite) == (
         True,
         "symbol_context_changed",
     )
@@ -514,6 +523,39 @@ def test_legacy_deterministic_shape_requires_snapshot_refresh(tmp_path) -> None:
 
     assert store.needs_refresh(index_name, code, current) == (False, None)
     assert store.load_final_report(index_name) is None
+
+
+def test_deterministic_snapshot_accepts_unresolved_callees() -> None:
+    snapshot = build_trivial_snapshot(
+        "tiny",
+        {
+            "index_name": "tiny@src/tiny.c:1-3",
+            "file_path": "src/tiny.c",
+            "start_line": 1,
+            "end_line": 3,
+            "signature": "int tiny(void)",
+            "is_static": False,
+            "is_macro": False,
+            "referenced_globals": [],
+            "referenced_macros": [],
+            "unresolved_callees": [
+                {
+                    "callee_name": "memcpy",
+                    "direct_callsite_lines": [2],
+                    "indirect_callsites": [],
+                }
+            ],
+            "code": "1 | int tiny(void) {\n2 | return memcpy(0, 0, 0);\n3 | }",
+        },
+    )
+
+    assert snapshot["unresolved_callees"] == [
+        {
+            "callee_name": "memcpy",
+            "direct_callsite_lines": [2],
+            "indirect_callsites": [],
+        }
+    ]
 
 
 def test_same_name_snapshots_are_independent_by_index_name(tmp_path) -> None:

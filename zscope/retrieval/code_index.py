@@ -27,6 +27,7 @@ DECLARATION_LINE_RE = re.compile(
 
 FUNCTION_INFO_CALLEES_LIMIT = 30
 FUNCTION_INFO_EXTERNAL_CALLEES_LIMIT = 20
+FUNCTION_INFO_UNRESOLVED_CALLEES_LIMIT = 20
 FUNCTION_INFO_GLOBALS_LIMIT = 50
 FUNCTION_INFO_MACROS_LIMIT = 50
 REFERENCED_TYPES_LIMIT = 30
@@ -2506,11 +2507,20 @@ class CodeIndex:
     ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
         """Return public function call edges and canonical macro-reference edges."""
 
-        project_callees, external_callees, macro_edges = self._split_function_info_callees(rows)
+        (
+            project_callees,
+            external_callees,
+            unresolved_callees,
+            macro_edges,
+        ) = self._split_function_info_callees(rows)
         payload: Dict[str, Any] = {
             "project_callees": project_callees[:FUNCTION_INFO_CALLEES_LIMIT],
             "external_callees": external_callees[:FUNCTION_INFO_EXTERNAL_CALLEES_LIMIT],
         }
+        if unresolved_callees:
+            payload["unresolved_callees"] = unresolved_callees[
+                :FUNCTION_INFO_UNRESOLVED_CALLEES_LIMIT
+            ]
         if len(project_callees) > len(payload["project_callees"]):
             payload["project_callees_truncation"] = self._truncation_payload(
                 len(payload["project_callees"]), len(project_callees)
@@ -2518,6 +2528,10 @@ class CodeIndex:
         if len(external_callees) > len(payload["external_callees"]):
             payload["external_callees_truncation"] = self._truncation_payload(
                 len(payload["external_callees"]), len(external_callees)
+            )
+        if len(unresolved_callees) > FUNCTION_INFO_UNRESOLVED_CALLEES_LIMIT:
+            payload["unresolved_callees_truncation"] = self._truncation_payload(
+                len(payload["unresolved_callees"]), len(unresolved_callees)
             )
         return payload, macro_edges
 
@@ -2982,18 +2996,43 @@ class CodeIndex:
     def _split_function_info_callees(
         self,
         rows: List[Dict[str, Any]],
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    ) -> Tuple[
+        List[Dict[str, Any]],
+        List[Dict[str, Any]],
+        List[Dict[str, Any]],
+        List[Dict[str, Any]],
+    ]:
         project_groups: Dict[str, Dict[str, Any]] = {}
         external_groups: Dict[str, Dict[str, Any]] = {}
+        unresolved_groups: Dict[str, Dict[str, Any]] = {}
         macro_groups: Dict[str, Dict[str, Any]] = {}
         for row in rows:
             callee_name = str(row.get("name") or row.get("callee_name") or "")
             if not callee_name or self._is_llvm_intrinsic_callee(callee_name):
                 continue
+            # A field/local pointer is callsite evidence, not a callable identity. It must
+            # never be projected as a guessed external or unresolved function.
+            if str(row.get("callee_kind") or "").strip().lower() in {
+                "function_pointer_field",
+                "function_pointer_variable",
+            }:
+                continue
+            call_type = self._function_info_call_type(row)
+            indirect_callsite = None
+            if call_type == "indirect":
+                indirect_callsite = self._function_info_indirect_callsite(row)
+                if indirect_callsite is None:
+                    # An SVF function-level target without a source-mapped pointer callsite
+                    # remains a diagnostic fact only; exposing it would fabricate LLM evidence.
+                    continue
             callee_file = str(row.get("filename") or row.get("callee_file") or row.get("file") or "")
             if not callee_file and callee_name:
                 callee_file = self._function_file_for_query(callee_name)
-            kind, descriptor = self._function_info_callee_descriptor(callee_name, callee_file)
+            kind, descriptor = self._function_info_callee_descriptor(
+                callee_name,
+                callee_file,
+                callee_signature=str(row.get("callee_signature") or ""),
+            )
             if kind == "project_macro":
                 macro_index_name = str(descriptor.get("macro_index_name") or "")
                 if not macro_index_name:
@@ -3009,33 +3048,76 @@ class CodeIndex:
                 )
                 self._append_reference_line(entry["reference_lines"], row)
                 continue
-            callee_index_name = str(descriptor["callee_index_name"])
-            call_type = self._function_info_call_type(row)
-            groups = project_groups if kind == "project_function" else external_groups
-            entry = groups.get(callee_index_name)
+            if kind == "project_function":
+                group_key = str(descriptor["callee_index_name"])
+                groups = project_groups
+            else:
+                group_key = str(descriptor["callee_name"])
+                groups = external_groups if kind == "external" else unresolved_groups
+            entry = groups.get(group_key)
             if entry is None:
                 entry = {
                     **descriptor,
-                    "callsite_lines": [],
-                    "call_type": [],
+                    "direct_callsite_lines": [],
+                    "indirect_callsites": [],
                 }
-                groups[callee_index_name] = entry
-            if call_type not in entry["call_type"]:
-                entry["call_type"].append(call_type)
-            self._append_callsite_line(entry, row)
-        for groups in (project_groups, external_groups):
+                groups[group_key] = entry
+            if call_type == "direct":
+                self._append_direct_callsite_line(entry, row)
+            elif indirect_callsite is not None and indirect_callsite not in entry["indirect_callsites"]:
+                entry["indirect_callsites"].append(indirect_callsite)
+        for groups in (project_groups, external_groups, unresolved_groups):
             for entry in groups.values():
-                entry["callsite_lines"] = sorted(entry["callsite_lines"])
-                entry["call_type"] = [
-                    call_type
-                    for call_type in ("direct", "indirect")
-                    if call_type in entry["call_type"]
-                ]
+                entry["direct_callsite_lines"] = sorted(entry["direct_callsite_lines"])
+                entry["indirect_callsites"].sort(
+                    key=lambda item: (
+                        int(item["callsite_line"]),
+                        str(item["function_pointer"]),
+                    )
+                )
         return (
             [project_groups[key] for key in sorted(project_groups)],
             [external_groups[key] for key in sorted(external_groups)],
+            [unresolved_groups[key] for key in sorted(unresolved_groups)],
             [macro_groups[key] for key in sorted(macro_groups)],
         )
+
+    def _append_direct_callsite_line(self, entry: Dict[str, Any], row: Dict[str, Any]) -> None:
+        line = self._callsite_line_from_row(row)
+        if line > 0 and line not in entry["direct_callsite_lines"]:
+            entry["direct_callsite_lines"].append(line)
+
+    def _function_info_indirect_callsite(
+        self,
+        row: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        line = self._callsite_line_from_row(row)
+        function_pointer = str(row.get("pointer_symbol") or "").strip()
+        pointer_kind = str(row.get("pointer_kind") or "").strip().lower()
+        pointer_type = str(row.get("pointer_type") or "").strip()
+        pointer_signature = str(row.get("pointer_signature") or "").strip()
+        expression = str(row.get("callsite_expression") or "").strip()
+        if (
+            line <= 0
+            or not function_pointer
+            or pointer_kind not in {"field", "local", "parameter", "global", "unknown"}
+            or not pointer_type
+            or not pointer_signature
+            or not expression
+        ):
+            return None
+        result: Dict[str, Any] = {
+            "callsite_line": line,
+            "function_pointer": function_pointer,
+            "function_pointer_kind": pointer_kind,
+            "function_pointer_type": pointer_type,
+            "function_pointer_signature": pointer_signature,
+            "callsite_expression": expression,
+        }
+        guard = str(row.get("guard") or "").strip()
+        if guard:
+            result["guard"] = guard
+        return result
 
     def _append_reference_line(self, lines: List[int], row: Dict[str, Any]) -> None:
         line = self._callsite_line_from_row(row)
@@ -3047,15 +3129,19 @@ class CodeIndex:
         self,
         callee_name: str,
         callee_file: str = "",
+        *,
+        callee_signature: str = "",
     ) -> Tuple[str, Dict[str, Any]]:
-        """Classify one raw edge as a project function, project macro, or external."""
+        """Classify one raw edge as a project function, macro, external, or unresolved."""
         clean_name = str(callee_name or "").strip()
         matches = self._find_function_matches(clean_name, file_path=callee_file)
         if len(matches) == 1:
             index_name, info = matches[0]
             return "project_function", {
                 "callee_index_name": index_name,
+                "callee_signature": str(info.get("signature") or ""),
                 "is_static": self._function_record_is_static(info),
+                "callee_summary": "unknown",
             }
 
         macro_matches = self._function_info_project_macro_matches(clean_name, callee_file)
@@ -3066,7 +3152,15 @@ class CodeIndex:
                 "definition": str(macro_impl.get("code") or ""),
                 "is_function_like": True,
             }
-        return "external", {"callee_index_name": clean_name}
+        # Signature is accepted only when a backend explicitly marks it as the callee's
+        # declaration. The projection must not infer it from a bare function name.
+        external_signature = str(callee_signature or "").strip()
+        if external_signature:
+            return "external", {
+                "callee_name": clean_name,
+                "callee_signature": external_signature,
+            }
+        return "unresolved", {"callee_name": clean_name}
 
     def _function_info_project_macro_matches(
         self,

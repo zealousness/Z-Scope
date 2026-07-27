@@ -36,7 +36,7 @@ def test_knowledge_db_migrates_legacy_macro_identity_and_range(tmp_path: Path) -
         assert macro["macro_index_name"] == "WRAP@include/wrap.h:10-11"
         assert macro["start_line"] == 10
         assert macro["end_line"] == 11
-        assert db.get_metadata("schema_version") == "10"
+        assert db.get_metadata("schema_version") == "13"
     finally:
         db.close()
 
@@ -561,6 +561,154 @@ def test_knowledge_db_function_symbol_context_round_trip(tmp_path: Path) -> None
         ]
         assert db.stats()["function_symbol_refs"] == 2
         assert db.stats()["function_macro_refs"] == 1
+    finally:
+        db.close()
+
+
+def test_call_edges_persist_and_query_callee_kind(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_call_edge(
+            "entry",
+            "src/demo.c",
+            "callback",
+            "src/types.h",
+            12,
+            "indirect",
+            "function_pointer_field",
+            "void (*)(void*)",
+        )
+        # Existing callers that still provide six-tuples retain a safe unknown kind.
+        db.insert_call_edges_batch(
+            [("entry", "src/demo.c", "legacy", "", 13, "direct")]
+        )
+        db.commit()
+
+        rows = db.get_all_callees("entry", caller_file="src/demo.c")
+
+        assert rows == [
+            {
+                "name": "callback",
+                "filename": "src/types.h",
+                "lineNumber": 12,
+                "call_type": "indirect",
+                "callee_kind": "function_pointer_field",
+                "callee_signature": "void (*)(void*)",
+            },
+            {
+                "name": "legacy",
+                "filename": "",
+                "lineNumber": 13,
+                "call_type": "direct",
+                "callee_kind": "unknown",
+                "callee_signature": "",
+            },
+        ]
+    finally:
+        db.close()
+
+
+def test_indirect_call_records_preserve_distinct_callsites(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        for callsite_id, line, symbol in (
+            ("svf:s0", 30, "Ops.callback_a"),
+            ("svf:s1", 40, "Ops.callback_b"),
+        ):
+            db.insert_indirect_call(
+                "entry",
+                "target",
+                call_file="src/entry.c",
+                call_line=line,
+                callsite_id=callsite_id,
+                pointer_symbol=symbol,
+                pointer_kind="field",
+                pointer_type="Callback",
+                pointer_signature="void (*)(void*)",
+                callsite_expression=symbol.rsplit(".", 1)[-1],
+                guard="enabled != 0",
+            )
+        db.commit()
+
+        assert db.get_indirect_call_records("entry", caller_file="src/entry.c") == [
+            {
+                "name": "target",
+                "call_file": "src/entry.c",
+                "call_line": 30,
+                "callsite_id": "svf:s0",
+                "pointer_symbol": "Ops.callback_a",
+                "pointer_kind": "field",
+                "pointer_type": "Callback",
+                "pointer_signature": "void (*)(void*)",
+                "callsite_expression": "callback_a",
+                "guard": "enabled != 0",
+                "source": "svf-ander",
+                "confidence": 1.0,
+                "svf_group": "default",
+                "call_type": "indirect",
+            },
+            {
+                "name": "target",
+                "call_file": "src/entry.c",
+                "call_line": 40,
+                "callsite_id": "svf:s1",
+                "pointer_symbol": "Ops.callback_b",
+                "pointer_kind": "field",
+                "pointer_type": "Callback",
+                "pointer_signature": "void (*)(void*)",
+                "callsite_expression": "callback_b",
+                "guard": "enabled != 0",
+                "source": "svf-ander",
+                "confidence": 1.0,
+                "svf_group": "default",
+                "call_type": "indirect",
+            },
+        ]
+    finally:
+        db.close()
+
+
+def test_indirect_call_schema_migration_preserves_legacy_rows(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy-indirect.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE indirect_calls ("
+            "id INTEGER PRIMARY KEY, caller_name TEXT NOT NULL, callee_name TEXT NOT NULL, "
+            "call_file TEXT DEFAULT '', call_line INTEGER DEFAULT 0, "
+            "source TEXT DEFAULT 'svf-ander', confidence REAL DEFAULT 1.0, "
+            "svf_group TEXT DEFAULT 'default', "
+            "UNIQUE(caller_name, callee_name, source, svf_group))"
+        )
+        conn.execute(
+            "INSERT INTO indirect_calls "
+            "(caller_name, callee_name, call_file, call_line, source, confidence, svf_group) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("legacy_caller", "legacy_target", "src/legacy.c", 9, "svf-ander", 0.8, "default"),
+        )
+        conn.commit()
+
+    db = KnowledgeDB(str(db_path))
+    try:
+        columns = {row["name"] for row in db._conn.execute("PRAGMA table_info(indirect_calls)")}
+        assert {"callsite_id", "pointer_symbol", "call_guard"}.issubset(columns)
+        assert db.get_indirect_call_records("legacy_caller") == [
+            {
+                "name": "legacy_target",
+                "call_file": "src/legacy.c",
+                "call_line": 9,
+                "callsite_id": "",
+                "pointer_symbol": "",
+                "pointer_kind": "unknown",
+                "pointer_type": "",
+                "pointer_signature": "",
+                "callsite_expression": "",
+                "guard": "",
+                "source": "svf-ander",
+                "confidence": 0.8,
+                "svf_group": "default",
+                "call_type": "indirect",
+            }
+        ]
     finally:
         db.close()
 
