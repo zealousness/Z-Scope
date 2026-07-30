@@ -221,6 +221,22 @@ def test_validator_agent_uncertain_fast_path_requires_reasoning() -> None:
     )
 
 
+def test_validator_agent_fast_path_defers_confidence_policy_to_pipeline() -> None:
+    for verdict in ("verified", "rejected"):
+        assert (
+            ValidatorAgent._accept_fast_path_result(
+                {
+                    "type": "validation_result",
+                    "verdict": verdict,
+                    "confidence_score": 0.42,
+                    "reasoning": "The structured evidence supports a terminal triage decision.",
+                    "missing_context": ["additional contract evidence"],
+                }
+            )
+            is True
+        )
+
+
 def test_validator_agent_repairs_prose_without_json() -> None:
     class FakeLLM:
         models = ["repair-model"]
