@@ -7,6 +7,12 @@ import re
 import uuid
 from typing import Any, Dict, List, Optional, Set
 
+from ...common.issue_identity import (
+    issue_call_path_signature,
+    issue_resource_signature,
+    issue_sink_signature,
+)
+
 
 def clang_tooling_matcher_candidates_from_evidence(
     func_name: str,
@@ -303,17 +309,43 @@ def unified_candidates_may_refer_same_issue(
         return False
     if not defect_classes_compatible(left, right):
         return False
+    left_uid = str(left.get("candidate_uid") or "")
+    right_uid = str(right.get("candidate_uid") or "")
+    if left_uid and right_uid:
+        return left_uid == right_uid
+
     left_file, left_line = candidate_file_line(left)
     right_file, right_line = candidate_file_line(right)
     if left_file and right_file and left_file != right_file:
         return False
-    left_funcs = candidate_function_names(left)
-    right_funcs = candidate_function_names(right)
-    if left_funcs and right_funcs and left_funcs.isdisjoint(right_funcs):
+
+    left_resource = issue_resource_signature(left)
+    right_resource = issue_resource_signature(right)
+    left_sink = issue_sink_signature(left)
+    right_sink = issue_sink_signature(right)
+    if not (
+        left_resource
+        and right_resource
+        and left_resource == right_resource
+        and left_sink
+        and right_sink
+        and left_sink == right_sink
+    ):
         return False
-    if left_line and right_line and abs(left_line - right_line) <= 8:
+
+    # Matching concrete object + sink + detector function is a structured
+    # cross-engine root even when one engine reports the first event and the
+    # other reports the terminal event on a different line.  A shared entry,
+    # nearby lines, or text-token overlap alone remain insufficient.
+    left_function = str(left.get("function") or "")
+    right_function = str(right.get("function") or "")
+    if left_function and left_function == right_function:
         return True
-    return bool(candidate_symbols(left) & candidate_symbols(right))
+    if left_line and right_line:
+        return left_line == right_line
+    left_path = issue_call_path_signature(left)
+    right_path = issue_call_path_signature(right)
+    return bool(left_path and right_path and left_path == right_path)
 
 
 def candidate_source_name(issue: Dict[str, Any]) -> str:
@@ -352,8 +384,9 @@ def parse_location_file_line(location: str) -> tuple[str, int]:
 def candidate_function_names(issue: Dict[str, Any]) -> Set[str]:
     names = {
         str(issue.get("function") or ""),
-        str(issue.get("entry_function") or ""),
-        str(issue.get("analyzed_from") or ""),
+        str(issue.get("source_function") or ""),
+        str(issue.get("sink_function") or ""),
+        str(issue.get("target_function") or ""),
     }
     pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
     for key in ("path", "source_path", "value_flow"):
@@ -363,14 +396,12 @@ def candidate_function_names(issue: Dict[str, Any]) -> Set[str]:
             for field in (
                 "function",
                 "target_function",
-                "entry_function",
                 "source_function",
                 "source_func",
                 "sink_function",
                 "sink_func",
             )
         )
-        names.update(str(item) for item in data.get("call_path") or [] if str(item))
     return {name for name in names if name}
 
 

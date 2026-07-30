@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -15,6 +16,7 @@ ISSUE_KEY_HASH_LENGTH = 12
 def deduplicate_issues(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Merge findings that point at the same root cause."""
     records: Dict[str, Dict[str, Any]] = {}
+    merge_cache: Dict[int, Dict[str, Any]] = {}
     for issue in issues:
         normalize_issue_fields(issue)
         source_sink_key = source_sink_location_issue_key(issue)
@@ -31,12 +33,29 @@ def deduplicate_issues(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             records[key] = issue
             continue
 
+        if not issues_have_destructive_equivalence(existing, issue):
+            occurrence_key = _independent_occurrence_key(issue, key)
+            suffix = 1
+            unique_key = occurrence_key
+            while unique_key in records:
+                suffix += 1
+                unique_key = f"{occurrence_key}:{suffix}"
+            issue["dedup_key"] = unique_key
+            issue.setdefault("category_family", semantic_category_family(issue.get("category")))
+            signature = issue_resource_signature(issue)
+            if signature:
+                issue.setdefault("resource_signature", signature)
+            issue.setdefault("duplicate_sources", [])
+            records[unique_key] = issue
+            continue
+
         if issue_rank(issue) > issue_rank(existing):
             merge_duplicate_issue(
                 issue,
                 existing,
                 dedup_key=key,
                 decision={"method": decision_method, "root_cause_key": key},
+                merge_cache=merge_cache,
             )
             issue["dedup_key"] = key
             records[key] = issue
@@ -47,8 +66,232 @@ def deduplicate_issues(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             issue,
             dedup_key=key,
             decision={"method": decision_method, "root_cause_key": key},
+            merge_cache=merge_cache,
         )
     return list(records.values())
+
+
+def issues_have_destructive_equivalence(
+    left: Dict[str, Any],
+    right: Dict[str, Any],
+) -> bool:
+    """Return True only when deleting one occurrence is structurally safe."""
+
+    left_internal = _internal_occurrence_identity(left)
+    right_internal = _internal_occurrence_identity(right)
+    if left_internal and right_internal:
+        return left_internal == right_internal
+
+    left_flow = source_sink_location_issue_key(left)
+    right_flow = source_sink_location_issue_key(right)
+    if left_flow and right_flow:
+        return left_flow == right_flow
+
+    left_category = canonical_category(left, flatten_issue_text(left))
+    right_category = canonical_category(right, flatten_issue_text(right))
+    if not category_families_compatible(left_category, right_category):
+        return False
+
+    left_file = issue_file_identity(left)
+    right_file = issue_file_identity(right)
+    left_function = issue_function_identity(left)
+    right_function = issue_function_identity(right)
+    if left_file and right_file and left_file != right_file:
+        return False
+    if left_function and right_function and left_function != right_function:
+        return False
+
+    left_resource = issue_resource_signature(left)
+    right_resource = issue_resource_signature(right)
+    left_sink = issue_sink_signature(left)
+    right_sink = issue_sink_signature(right)
+
+    # Two exact detector facts at the same coordinate are the same occurrence
+    # even when their human-readable sink summaries differ.  Display IDs are
+    # deliberately excluded from this identity.
+    left_detector = _detector_occurrence_signature(left)
+    right_detector = _detector_occurrence_signature(right)
+    left_location_file, left_line = parse_issue_location(
+        str(left.get("location") or left.get("file") or "")
+    )
+    right_location_file, right_line = parse_issue_location(
+        str(right.get("location") or right.get("file") or "")
+    )
+    if (
+        left_detector
+        and left_detector == right_detector
+        and left_location_file
+        and right_location_file
+        and left_location_file == right_location_file
+        and left_line is not None
+        and right_line is not None
+        and left_line == right_line
+    ):
+        return True
+
+    left_explicit_resource = _explicit_resource_signature(left)
+    right_explicit_resource = _explicit_resource_signature(right)
+    if (
+        left_explicit_resource
+        and right_explicit_resource
+        and left_explicit_resource != right_explicit_resource
+    ):
+        return False
+
+    left_root = _structured_root_cause_token(left)
+    right_root = _structured_root_cause_token(right)
+    if left_root and right_root and left_root == right_root:
+        # A structured root is sufficient unless the evidence names two
+        # different concrete sinks.  This prevents broad roots such as
+        # "numeric size calculation" from collapsing distinct flows.
+        if left_sink and right_sink and left_sink != right_sink:
+            return False
+        return bool(
+            (left_file and right_file and left_file == right_file)
+            or (
+                left_function
+                and right_function
+                and left_function == right_function
+            )
+        )
+
+    # A concrete object/resource can identify the same lifecycle or race root
+    # across nearby cleanup stages.  Canonical-key agreement supplies the
+    # structural root; file/function agreement prevents cross-context deletion.
+    if left_resource and left_resource == right_resource:
+        if left_root and right_root and left_root != right_root:
+            return False
+        if canonical_issue_key(left) != canonical_issue_key(right):
+            return False
+        return bool(
+            (left_file and right_file and left_file == right_file)
+            or (
+                left_function
+                and right_function
+                and left_function == right_function
+            )
+        )
+
+    # Legacy candidates without endpoint fields may still carry an exact
+    # coordinate and a concrete sink operation.  Exactness is required here;
+    # line adjacency and prose similarity are intentionally ignored.
+    if (
+        left_location_file
+        and right_location_file
+        and left_location_file == right_location_file
+        and left_line is not None
+        and right_line is not None
+        and left_line == right_line
+        and left_sink
+        and left_sink == right_sink
+    ):
+        return True
+    if (
+        left_location_file
+        and right_location_file
+        and left_location_file == right_location_file
+        and left_line is not None
+        and right_line is not None
+        and left_line == right_line
+        and canonical_issue_key(left) == canonical_issue_key(right)
+    ):
+        return True
+    if left_resource and right_resource and left_resource != right_resource:
+        return False
+
+    left_path = issue_call_path_signature(left)
+    right_path = issue_call_path_signature(right)
+    return bool(
+        left_path
+        and right_path
+        and left_path == right_path
+        and (
+            (left_sink and left_sink == right_sink)
+            or (left_resource and left_resource == right_resource)
+        )
+    )
+
+
+def _detector_occurrence_signature(issue: Dict[str, Any]) -> str:
+    """Return a detector fact identity that never depends on a display ID."""
+
+    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    source = normalize_issue_key_part(
+        issue.get("candidate_source")
+        or issue.get("detector")
+        or pack.get("candidate_source")
+        or pack.get("detector")
+    )
+    rule = normalize_issue_key_part(
+        issue.get("rule")
+        or issue.get("rule_id")
+        or issue.get("evidence_checker")
+        or pack.get("rule")
+        or pack.get("rule_id")
+        or pack.get("evidence_checker")
+    )
+    if not rule:
+        return ""
+    return "|".join(part for part in (source, rule) if part)
+
+
+def _explicit_resource_signature(issue: Dict[str, Any]) -> str:
+    """Return only caller/detector supplied object identity, never prose inference."""
+
+    for mapping in _identity_mappings(issue):
+        explicit = first_issue_value(mapping, *_RESOURCE_IDENTITY_KEYS)
+        if explicit:
+            return (
+                _resource_signature_from_text(explicit)
+                or _concrete_resource_token(explicit)
+            )
+    return ""
+
+
+def _internal_occurrence_identity(issue: Dict[str, Any]) -> str:
+    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    validation_cluster_uid = str(
+        issue.get("validation_cluster_uid")
+        or pack.get("validation_cluster_uid")
+        or ""
+    )
+    if validation_cluster_uid:
+        return "|".join(("validation_cluster", validation_cluster_uid))
+    occurrence_uid = str(issue.get("occurrence_uid") or pack.get("occurrence_uid") or "")
+    candidate_uid = str(issue.get("candidate_uid") or pack.get("candidate_uid") or "")
+    evidence_hash = str(issue.get("evidence_hash") or pack.get("evidence_hash") or "")
+    context_signature = str(
+        issue.get("context_signature")
+        or pack.get("context_signature")
+        or ""
+    )
+    if occurrence_uid and evidence_hash and context_signature:
+        return "|".join(("occurrence", occurrence_uid, evidence_hash, context_signature))
+    if candidate_uid and evidence_hash and context_signature:
+        return "|".join(("candidate", candidate_uid, evidence_hash, context_signature))
+    return ""
+
+
+def _independent_occurrence_key(issue: Dict[str, Any], base_key: str) -> str:
+    file_path, line = parse_issue_location(
+        str(issue.get("location") or issue.get("file") or "")
+    )
+    payload = {
+        "base": base_key,
+        "internal": _internal_occurrence_identity(issue),
+        "file": file_path,
+        "line": line,
+        "function": issue.get("function") or issue.get("func_name"),
+        "resource": issue_resource_signature(issue),
+        "sink": issue_sink_signature(issue),
+        "source_location": _issue_endpoint_location(issue, "source"),
+        "sink_location": _issue_endpoint_location(issue, "sink"),
+        "evidence_hash": issue.get("evidence_hash"),
+    }
+    digest = hashlib.sha256(
+        repr(sorted(payload.items())).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"{base_key}|occurrence:{digest}"
 
 
 def merge_duplicate_issue(
@@ -57,6 +300,7 @@ def merge_duplicate_issue(
     *,
     dedup_key: str = "",
     decision: Optional[Dict[str, Any]] = None,
+    merge_cache: Optional[Dict[int, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Attach duplicate evidence to ``primary`` without silently discarding it."""
     if dedup_key:
@@ -73,17 +317,27 @@ def merge_duplicate_issue(
     if not isinstance(sources, list):
         sources = []
         primary["duplicate_sources"] = sources
+    source_cache = _dedup_record_cache(
+        merge_cache,
+        primary,
+        "duplicate_sources",
+        sources,
+    )
     for source in _duplicate_source_records(duplicate):
-        if source not in sources:
-            sources.append(source)
+        _append_unique_record(sources, source, source_cache)
 
     alternate = primary.get("alternate_evidence")
     if not isinstance(alternate, list):
         alternate = []
         primary["alternate_evidence"] = alternate
+    evidence_cache = _dedup_record_cache(
+        merge_cache,
+        primary,
+        "alternate_evidence",
+        alternate,
+    )
     for evidence in _alternate_evidence_records(duplicate):
-        if evidence not in alternate:
-            alternate.append(evidence)
+        _append_unique_record(alternate, evidence, evidence_cache)
 
     if decision:
         decisions = primary.get("dedup_decisions")
@@ -98,7 +352,90 @@ def merge_duplicate_issue(
         if compact_decision and compact_decision not in decisions:
             decisions.append(compact_decision)
         primary["dedup_decision"] = compact_decision or primary.get("dedup_decision")
+    for field in (
+        "occurrence_uids",
+        "occurrences",
+        "entries",
+        "entry_paths",
+        "validation_contexts",
+        "evidence_hashes",
+        "provenance_hashes",
+        "alias_occurrence_uids",
+    ):
+        values = primary.get(field)
+        if not isinstance(values, list):
+            values = []
+            primary[field] = values
+        duplicate_values = duplicate.get(field)
+        if not isinstance(duplicate_values, list):
+            singular = duplicate.get(field[:-1]) if field.endswith("s") else None
+            duplicate_values = [singular] if singular not in (None, "") else []
+        for value in duplicate_values:
+            if value not in values:
+                values.append(value)
+    if primary.get("occurrence_uids"):
+        primary["occurrence_count"] = len(primary["occurrence_uids"])
+    if primary.get("entries"):
+        primary["entry_count"] = len(primary["entries"])
     return primary
+
+
+def _dedup_record_cache(
+    merge_cache: Optional[Dict[int, Dict[str, Any]]],
+    primary: Dict[str, Any],
+    field: str,
+    records: List[Dict[str, Any]],
+) -> Optional[Dict[str, List[Dict[str, Any]]]]:
+    """Build a collision-safe membership index for one merge accumulator.
+
+    Final-report aggregation can merge the same candidate from dozens of
+    entries.  Repeated ``record not in list`` checks compare increasingly
+    large nested evidence dictionaries and make that path quadratic.  The
+    caller-owned cache keeps the public issue schema unchanged while reducing
+    membership checks to a hash bucket plus an exact collision check.
+    """
+
+    if merge_cache is None:
+        return None
+    primary_cache = merge_cache.setdefault(id(primary), {})
+    cached = primary_cache.get(field)
+    if isinstance(cached, dict):
+        return cached
+    index: Dict[str, List[Dict[str, Any]]] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        index.setdefault(_dedup_record_fingerprint(record), []).append(record)
+    primary_cache[field] = index
+    return index
+
+
+def _append_unique_record(
+    records: List[Dict[str, Any]],
+    record: Dict[str, Any],
+    cache: Optional[Dict[str, List[Dict[str, Any]]]],
+) -> None:
+    if cache is None:
+        if record not in records:
+            records.append(record)
+        return
+    fingerprint = _dedup_record_fingerprint(record)
+    bucket = cache.setdefault(fingerprint, [])
+    if any(existing == record for existing in bucket):
+        return
+    records.append(record)
+    bucket.append(record)
+
+
+def _dedup_record_fingerprint(record: Dict[str, Any]) -> str:
+    payload = json.dumps(
+        record,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _duplicate_source_records(issue: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -561,15 +898,22 @@ def report_cluster_category(category: str, root: str) -> str:
     """
     normalized = str(category or "").replace("-", "_").lower()
     root_key = str(root or "").replace("-", "_").lower()
-    numeric_roots = {"label_cache_size_miscalc"}
-    if root_key in numeric_roots and normalized in {
+    if (
+        root_key.startswith("numeric_")
+        or any(
+            marker in root_key
+            for marker in ("allocation_size", "byte_limit", "size_calculation")
+        )
+    ) and normalized in {
         "integer_overflow",
         "bounds",
         "size_limit_mismatch",
     }:
         return "numeric_size_mismatch"
-    path_roots = {"path_check_before_open"}
-    if root_key in path_roots and normalized in {
+    if (
+        root_key == "path_check_before_open"
+        or ("path" in root_key and "open" in root_key and "check" in root_key)
+    ) and normalized in {
         "sigpipe_unhandled",
         "race",
         "path_traversal",
@@ -645,12 +989,7 @@ def issue_resource_signature(issue: Dict[str, Any]) -> str:
         return text_signature
     category = canonical_category(issue, text)
     root = _concrete_root_token(root_cause_token(issue, category, text))
-    if root and (
-        root in _GLOBAL_OBJECT_ROOTS
-        or "->" in root
-        or root.startswith("g_")
-        or root in {"thread_ids", "g_dispatcher.queue.tasks"}
-    ):
+    if root and _looks_like_resource_root(root):
         return root
     return ""
 
@@ -674,17 +1013,8 @@ def _resource_signature_from_text(value: Any) -> str:
         if token:
             return token
 
-    allocator_ref = re.search(allocator, text, flags=re.IGNORECASE)
-    if allocator_ref:
-        prefix = text[max(0, allocator_ref.start() - 96) : allocator_ref.start()]
-        identifiers = re.findall(rf"(?<![A-Za-z0-9_])({identifier})(?![A-Za-z0-9_])", prefix)
-        for name in reversed(identifiers):
-            token = _concrete_resource_token(name)
-            if token:
-                return token
-
     for member_match in re.finditer(
-        rf"(?<![a-z0-9_])({member_identifier}(?:->|\.){member_identifier})(?![a-z0-9_])",
+        rf"(?<![a-z0-9_])({member_identifier}(?:(?:->|\.){member_identifier})+)(?![a-z0-9_])",
         raw_lower,
     ):
         token = member_match.group(1)
@@ -703,7 +1033,81 @@ def _resource_signature_from_text(value: Any) -> str:
         token = _concrete_resource_token(backtick_match.group(1).strip())
         if token:
             return token
+
+    described_resources = re.finditer(
+        rf"(?<![A-Za-z0-9_])"
+        rf"({identifier}(?:(?:->|\.){member_identifier})*)"
+        rf"(?![A-Za-z0-9_])"
+        r"(?:\s+(?:is|was|remains|gets|becomes)|\s*=)"
+        r"[^.;\n]{0,48}\b(?:heap[- ]allocated|allocated|reallocated|freed|released|"
+        r"destroyed|resized|leaked)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    for described_resource in described_resources:
+        token = _concrete_resource_token(described_resource.group(1))
+        if token and re.search(r"\.(?:c|h|cc|cpp|hpp)$", token):
+            continue
+        if token:
+            return token
+
+    allocation_failure = re.search(
+        rf"(?<![A-Za-z0-9_])"
+        rf"({identifier}(?:(?:->|\.){member_identifier})*)"
+        rf"(?![A-Za-z0-9_])\s+"
+        r"(?:allocation|reallocation|initialization|cleanup)\s+"
+        r"(?:failure|error|path)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if allocation_failure:
+        token = _concrete_resource_token(allocation_failure.group(1))
+        if token:
+            return token
+
+    allocator_ref = re.search(allocator, text, flags=re.IGNORECASE)
+    if allocator_ref:
+        prefix = text[max(0, allocator_ref.start() - 96) : allocator_ref.start()]
+        identifiers = re.findall(rf"(?<![A-Za-z0-9_])({identifier})(?![A-Za-z0-9_])", prefix)
+        for name in reversed(identifiers):
+            token = _concrete_resource_token(name)
+            if token:
+                return token
+
     return ""
+
+
+def _looks_like_resource_root(value: Any) -> bool:
+    token = _concrete_resource_token(value)
+    if not token:
+        return False
+    return bool(
+        token.startswith("g_")
+        or "->" in token
+        or "." in token
+        or re.match(r"^[a-z_][a-z0-9_]*$", token)
+    )
+
+
+def _resource_root_for_issue(issue: Dict[str, Any], text: str) -> str:
+    explicit = first_issue_value(issue, *_RESOURCE_IDENTITY_KEYS)
+    if explicit:
+        return _resource_signature_from_text(explicit) or _concrete_resource_token(explicit)
+
+    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    clang_fact = pack.get("clang_matcher_fact") if isinstance(pack.get("clang_matcher_fact"), dict) else {}
+    for key in (
+        "resource_symbol",
+        "object_symbol",
+        "member",
+        "field",
+        "source_symbol",
+        "sink_symbol",
+    ):
+        token = _concrete_resource_token(clang_fact.get(key))
+        if token:
+            return token
+    return _resource_signature_from_text(text)
 
 
 def _concrete_resource_token(value: Any) -> str:
@@ -966,6 +1370,35 @@ def issues_may_share_root_cause(
     if require_concrete_root and left_root and right_root and left_root != right_root:
         return False
     if left_root and right_root and left_root == right_root:
+        if require_concrete_root:
+            if left_resource and right_resource and left_resource == right_resource:
+                return True
+            left_sink = issue_sink_signature(left)
+            right_sink = issue_sink_signature(right)
+            left_flow = source_sink_location_issue_key(left)
+            right_flow = source_sink_location_issue_key(right)
+            if (
+                left_sink
+                and right_sink
+                and left_sink == right_sink
+                and left_flow
+                and right_flow
+                and left_flow == right_flow
+            ):
+                return True
+            left_path = issue_call_path_signature(left)
+            right_path = issue_call_path_signature(right)
+            return bool(
+                left_sink
+                and right_sink
+                and left_sink == right_sink
+                and left_path
+                and right_path
+                and left_path == right_path
+                and left_resource
+                and right_resource
+                and left_resource == right_resource
+            )
         return True
     if left_resource and right_resource and left_resource == right_resource:
         return True
@@ -994,14 +1427,36 @@ def deduplicate_semantic_issues_programmatic(
     merged_ids: Set[int] = set()
     result: List[Dict[str, Any]] = []
     merge_count = 0
+    merge_cache: Dict[int, Dict[str, Any]] = {}
     for group_key, group in groups.items():
         group = [issue for issue in group if id(issue) not in merged_ids]
         if len(group) < 2:
             continue
         primaries: List[Dict[str, Any]] = []
+        active_primary_ids: Set[int] = set()
+        primary_index: Dict[Tuple[str, ...], List[Dict[str, Any]]] = {}
+
+        def add_primary(issue: Dict[str, Any]) -> None:
+            primaries.append(issue)
+            active_primary_ids.add(id(issue))
+            for lookup_key in _programmatic_merge_lookup_keys(issue):
+                primary_index.setdefault(lookup_key, []).append(issue)
+
         for issue in group:
             matched = None
-            for primary in primaries:
+            candidates: List[Dict[str, Any]] = []
+            seen_candidate_ids: Set[int] = set()
+            for lookup_key in _programmatic_merge_lookup_keys(issue):
+                for primary in primary_index.get(lookup_key, []):
+                    primary_id = id(primary)
+                    if (
+                        primary_id not in active_primary_ids
+                        or primary_id in seen_candidate_ids
+                    ):
+                        continue
+                    seen_candidate_ids.add(primary_id)
+                    candidates.append(primary)
+            for primary in candidates:
                 if issues_may_share_root_cause(
                     primary,
                     issue,
@@ -1011,18 +1466,20 @@ def deduplicate_semantic_issues_programmatic(
                     matched = primary
                     break
             if matched is None:
-                primaries.append(issue)
+                add_primary(issue)
                 continue
             root_key = semantic_root_cause_key(matched) or semantic_root_cause_key(issue) or group_key
             if issue_rank(issue) > issue_rank(matched):
                 primaries.remove(matched)
+                active_primary_ids.discard(id(matched))
                 merge_duplicate_issue(
                     issue,
                     matched,
                     dedup_key=root_key,
                     decision={"method": "programmatic_semantic", "root_cause_key": root_key},
+                    merge_cache=merge_cache,
                 )
-                primaries.append(issue)
+                add_primary(issue)
                 merged_ids.add(id(matched))
             else:
                 merge_duplicate_issue(
@@ -1030,6 +1487,7 @@ def deduplicate_semantic_issues_programmatic(
                     issue,
                     dedup_key=root_key,
                     decision={"method": "programmatic_semantic", "root_cause_key": root_key},
+                    merge_cache=merge_cache,
                 )
                 merged_ids.add(id(issue))
             merge_count += 1
@@ -1041,6 +1499,36 @@ def deduplicate_semantic_issues_programmatic(
         "programmatic_merge_count": merge_count,
         "candidate_cluster_count": sum(1 for group in groups.values() if len(group) > 1),
     }
+
+
+def _programmatic_merge_lookup_keys(
+    issue: Dict[str, Any],
+) -> List[Tuple[str, ...]]:
+    """Index the positive branches of programmatic semantic dedup.
+
+    ``deduplicate_semantic_issues_programmatic`` always calls
+    ``issues_may_share_root_cause`` with ``require_concrete_root=True``.
+    Under that contract a pair can only pass via a shared concrete resource,
+    or via a shared root plus identical sink and source/sink flow.  Indexing
+    exactly those sufficient conditions avoids scanning every primary in a
+    large generic cluster.  The full predicate still confirms each indexed
+    pair, so category, context, and resource-conflict guardrails remain
+    authoritative.
+    """
+
+    keys: List[Tuple[str, ...]] = []
+    resource = issue_resource_signature(issue)
+    if resource:
+        keys.append(("resource", resource))
+
+    text = flatten_issue_text(issue)
+    category = canonical_category(issue, text)
+    root = _concrete_root_token(root_cause_token(issue, category, text))
+    sink = issue_sink_signature(issue)
+    flow = source_sink_location_issue_key(issue)
+    if root and sink and flow:
+        keys.append(("root_sink_flow", root, sink, flow))
+    return keys
 
 
 def _function_anchor_set(issue: Dict[str, Any]) -> Set[str]:
@@ -1258,17 +1746,13 @@ def ensure_source_context_fingerprint(issue: Dict[str, Any]) -> str:
 
 
 def root_scope_token(issue: Dict[str, Any], category: str, root: str) -> str:
-    """Return extra identity for broad root tokens that can occur in many functions.
-
-    Some detectors intentionally collapse noisy syntax into semantic roots such as
-    `net_recv_data_negative_length`.  Those roots are useful for merging duplicate
-    evidence inside one sink, but they are too broad across wrappers and model
-    functions.  Keep global object roots broad, and scope operation/helper roots
-    by the concrete sink function.
-    """
-    if not root or root in _GLOBAL_OBJECT_ROOTS:
+    """Scope semantic roots unless evidence explicitly identifies global state."""
+    if not root:
         return ""
-    if category not in _FUNCTION_SCOPED_ROOT_CATEGORIES and root not in _FUNCTION_SCOPED_ROOTS:
+    resource_scope = first_issue_value(issue, "resource_scope", "object_scope", "storage_duration")
+    if str(resource_scope).lower() in {"global", "static", "process"}:
+        return ""
+    if root.startswith("g_"):
         return ""
     return issue_function_identity(issue)
 
@@ -1460,257 +1944,285 @@ def canonical_category(issue: Dict[str, Any], text: str = "") -> str:
     return semantic_category_override(structured, inferred) or structured or inferred
 
 
-def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
+_ROOT_CAUSE_KEYS = (
+    "root_cause_key",
+    "root_cause_signature",
+    "cause_signature",
+    "semantic_root",
+    "protocol_identity",
+)
+
+
+_RULE_ROOT_ALIASES = (
+    ("shared_resource_freed_without_refcount_protocol", "shared_resource_refcount_protocol"),
+    ("partial_resource_not_released_on_retry_failure", "retry_cleanup_missing"),
+    ("parsed_protocol_version_is_ignored", "parsed_protocol_version_ignored"),
+    ("raw_fd_revalidated_as_encoded", "raw_fd_reaches_encoded_fd_validator"),
+    ("protocol_units_length_reaches_copy_without_packet_bound", "protocol_length_without_packet_bound"),
+    ("global_dynamic_array_resize_without_lock", "unsynchronized_dynamic_array_resize"),
+    ("probe_error_branch_can_return_success_status", "error_branch_returns_success"),
+    ("stack_address_passed_to_thread", "stack_address_async_escape"),
+    ("negative_length_cast_to_size_t", "negative_length_to_unsigned_size"),
+    ("unaligned_integer_pointer_cast", "unaligned_integer_access"),
+    ("write_without_sigpipe_handling", "write_without_sigpipe_handling"),
+    ("unchecked_strchr_result", "unchecked_delimiter_lookup"),
+    ("path_check_before_open", "path_check_before_open"),
+    ("fixed_byte_limit_mismatch", "numeric_allocation_size_calculation"),
+    ("paired_nested_mutex_cleanup_omitted", "embedded_mutex_cleanup_omitted"),
+    ("paired_self_referential_traversal_log_amplification", "self_referential_list_link"),
+    ("self_referential_list_link", "self_referential_list_link"),
+    ("paired_full_key_lookup_truncated_insert", "full_key_lookup_truncated_insert"),
+    ("full_key_lookup_truncated_insert", "full_key_lookup_truncated_insert"),
+)
+
+
+def _identity_mappings(issue: Dict[str, Any]) -> List[Dict[str, Any]]:
+    mappings: List[Dict[str, Any]] = [issue]
+    pack = issue.get("evidence_pack")
+    if isinstance(pack, dict):
+        mappings.append(pack)
+        for key in ("candidate_evidence", "path", "ast_cfg", "clang_matcher_fact"):
+            nested = pack.get(key)
+            if isinstance(nested, dict):
+                mappings.append(nested)
+    return mappings
+
+
+def _structured_root_cause_token(issue: Dict[str, Any]) -> str:
+    for mapping in _identity_mappings(issue):
+        for key in _ROOT_CAUSE_KEYS:
+            value = mapping.get(key)
+            if value in (None, "", [], {}):
+                continue
+            text = str(value).strip().lower()
+            token = safe_category_token(text)
+            if token and not _is_generic_identity_token(token):
+                return token
+            if "|" in text:
+                digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+                return f"structured_root_{digest}"
+    return ""
+
+
+def _detector_rule_root(issue: Dict[str, Any]) -> str:
+    raw_rule = first_issue_value(issue, "rule", "rule_id", "evidence_checker", "matcher")
+    rule = safe_category_token(raw_rule)
+    if not rule:
+        return ""
+    for prefix in (
+        "clang_cfg_",
+        "clang_ast_",
+        "clang_matcher_",
+        "graph_",
+        "regex_",
+        "svf_",
+        "rule_",
+    ):
+        if rule.startswith(prefix):
+            rule = rule[len(prefix) :]
+            break
+    rule = re.sub(r"_[0-9a-f]{8,}$", "", rule)
+    for marker, root in _RULE_ROOT_ALIASES:
+        if marker in rule:
+            return root
+    if len(rule.split("_")) >= 3 and rule not in _GENERIC_IDENTITY_TOKENS:
+        return rule
+    return ""
+
+
+def _structured_lock_order_root(issue: Dict[str, Any], text: str) -> str:
+    lock_tokens: Set[str] = set()
+    for mapping in _identity_mappings(issue):
+        for key in ("lock_order", "locks", "held_locks", "lockset"):
+            value = mapping.get(key)
+            items = value if isinstance(value, (list, tuple, set)) else [value]
+            for item in items:
+                if isinstance(item, dict):
+                    item = item.get("lock") or item.get("name") or item.get("object")
+                token = safe_category_token(item)
+                if token and token not in {"lock", "mutex", "spinlock", "rwlock"}:
+                    lock_tokens.add(token)
+    if len(lock_tokens) < 2:
+        for match in re.finditer(
+            r"\b([A-Za-z_][A-Za-z0-9_]*(?:(?:->|\.)[A-Za-z_][A-Za-z0-9_]*)*"
+            r"(?:_lock|_mutex))\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            token = safe_category_token(match.group(1))
+            if token and token not in {"lock", "mutex", "spinlock", "rwlock"}:
+                lock_tokens.add(token)
+    if len(lock_tokens) < 2:
+        return ""
+    joined = "_".join(sorted(lock_tokens))
+    if len(joined) > 112:
+        joined = hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
+    return f"lock_order_{joined}"
+
+
+def _structured_type_root(issue: Dict[str, Any], text: str) -> str:
+    source_type = first_issue_value(issue, "source_type", "actual_type", "from_type")
+    target_type = first_issue_value(issue, "target_type", "expected_type", "to_type")
+    if not (source_type and target_type):
+        match = re.search(
+            r"\bexpects?\s+(?:an?\s+)?([A-Za-z_]\w*)"
+            r"[^.;\n]{0,80}\b(?:receives?|gets?|passed)\s+(?:an?\s+)?([A-Za-z_]\w*)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            target_type, source_type = match.group(1), match.group(2)
+    source_token = safe_category_token(source_type)
+    target_token = safe_category_token(target_type)
+    if source_token and target_token and source_token != target_token:
+        return f"type_confusion_{source_token}_to_{target_token}"
+    return ""
+
+
+def _async_stack_resource(text: str) -> str:
+    if "pthread_create" not in text.lower():
+        return ""
+    match = re.search(r"\bpthread_create\s*\([^;]*,\s*&([A-Za-z_]\w*)\s*\)", text, re.IGNORECASE)
+    if not match:
+        match = re.search(r"\b(?:local|stack)\s+([A-Za-z_]\w*)\b", text, re.IGNORECASE)
+    return safe_category_token(match.group(1)) if match else ""
+
+
+def _project_agnostic_root_cause_token(
+    issue: Dict[str, Any],
+    category: str,
+    text: str,
+) -> str:
     raw_lower = text.lower()
     lower = raw_lower.replace("_", " ").replace("-", " ")
     compact = re.sub(r"[^a-z0-9]+", "", raw_lower)
-    function = str(issue.get("function") or issue.get("func_name") or "").lower()
-    rule = str(issue.get("rule") or issue.get("rule_id") or issue.get("candidate_id") or issue.get("id") or "").lower()
 
-    def has_name(name: str) -> bool:
-        normalized = name.lower().strip("_")
-        return name.lower() in raw_lower or normalized.replace("_", "") in compact
+    explicit_root = _structured_root_cause_token(issue)
+    if explicit_root:
+        return explicit_root
 
-    # High-signal semantic roots that commonly appear through several public
-    # entries or both rule and LLM candidates.  These roots are deliberately
-    # tied to concrete sink functions/resources, not broad vulnerability types.
-    if "dynamic_array" in function and "expand" in function and "race" in function:
-        return "global_dynamic_array_resize"
-    if "label" in function and "cache" in function and ("miscalc" in function or "size" in function):
-        return "label_cache_size_miscalc"
-    if "ssl" in function and "error" in function and ("returns_ok" in function or "success" in function):
-        return "ssl_probe_status"
-    if "error_branch" in function and "double_cleanup" in function and (
-        "payload" in lower or "node->payload" in raw_lower or "nodepayload" in compact
+    lock_root = _structured_lock_order_root(issue, text)
+    if lock_root and category in {"deadlock", "race", "missing_unlock", "held_lock_callback"}:
+        return lock_root
+
+    if category == "type_confusion":
+        type_root = _structured_type_root(issue, text)
+        if type_root:
+            return type_root
+
+    resource_categories = {
+        "memory_leak",
+        "resource_leak",
+        "partial_resource_leak",
+        "missing_refcount",
+        "use_after_free",
+        "double_free",
+        "invalid_free",
+        "race",
+        "dynamic_array_race",
+        "shared_state_race",
+    }
+    if category in resource_categories:
+        resource = _resource_root_for_issue(issue, text)
+        if resource:
+            return resource
+
+    rule_root = _detector_rule_root(issue)
+    if rule_root:
+        return rule_root
+
+    stack_resource = _async_stack_resource(text)
+    if stack_resource and category == "stack_escape":
+        return f"stack_address_async_escape_{stack_resource}"
+
+    if category == "signed_unsigned" and (
+        "size_t" in raw_lower or "unsigned" in lower or "size max" in lower
+    ) and (
+        "recv" in lower
+        or "read" in lower
+        or "signed length" in lower
+        or "signed return" in lower
     ):
-        return "payload_double_cleanup"
-    if function == "_validate_task" and "fopen" in lower and "path" in lower:
+        return "negative_length_to_unsigned_size"
+    if (
+        ("dynamic array" in lower or "array resize" in lower or "old storage" in lower)
+        and ("without a lock" in lower or "without synchronization" in lower or "race" in lower)
+    ):
+        return "unsynchronized_dynamic_array_resize"
+    if (
+        ("error branch" in lower or "probe failure" in lower)
+        and ("return success" in lower or "returns ret" in lower or "returns the transport status" in lower)
+    ):
+        return "error_branch_returns_success"
+    if (
+        "path" in lower
+        and ("fopen" in lower or "open(" in raw_lower)
+        and ("checked separately" in lower or "check before" in lower or "time of check" in lower)
+    ):
         return "path_check_before_open"
-    if function == "_lifecycle_ref_get" and ("ref_count" in raw_lower or "ref count" in lower):
-        return "lifecycle_ref_get_after_unlock"
-    if function == "_lifecycle_ref_put" and ("ref_count" in raw_lower or "ref count" in lower):
-        return "lifecycle_ref_put_after_unlock"
-    if ("callback_under_lock" in function or "callback_while_lock" in rule) and (
-        "borrowed" in lower or "dangling" in lower or "callback node" in lower
-    ):
-        return "callback_borrowed_object"
-    if function == "_lifecycle_send_status" and (
-        "pending_jobs" in raw_lower or "pending jobs" in lower
-    ):
-        return "g_lifecycle_pending_jobs"
-    if function == "_control_session_add_to_global" and "pthread_mutex_init" in lower:
-        return "control_session_mutex_init"
-    if function == "_net_recv_data" and "size_t" in raw_lower and (
-        "int" in lower or "截断" in text or "trunc" in lower
-    ):
-        return "net_recv_data_return_truncation"
-
     if (
-        has_name("_lifecycle_customize_control_message")
-        or has_name("_lifecycle_customize_transport_cleanup")
-    ) and ("open" in lower or "customize" in lower):
-        return "control_session_open_leak"
-
-    if (
-        "shared_resource_freed_without_refcount_protocol" in rule
-        or "missing_reference_count" in function
-        or function == "_peer_publish_shared_session"
-        or "g_peer_session_broker.resources" in raw_lower
-        or re.search(r"\bg_[a-z0-9_.]*(?:broker|resource|session)[a-z0-9_.]*\.resources\b", raw_lower)
-        or ("safe_free(res)" in raw_lower and "ref_count" in raw_lower)
+        ("ref_count" in raw_lower or "refcount" in lower or "reference count" in lower)
+        and ("free" in lower or "released" in lower)
+        and ("shared" in lower or "linked" in lower or "resource" in lower)
     ):
         return "shared_resource_refcount_protocol"
-    if (
-        "partial_resource_not_released_on_retry_failure" in rule
-        or ("partial_resource" in function and "retry" in function)
-        or ("partition" in lower and "tag" in lower and ("fail_step" in raw_lower or "retry" in lower))
+    if "retry" in lower and (
+        "leak" in lower or "not released" in lower or "missing cleanup" in lower
     ):
-        return "partition_retry_cleanup"
-    if (
-        "parsed_protocol_version_is_ignored" in rule
-        or ("(void)version" in raw_lower and ("version" in lower or "protocol" in lower))
-    ):
-        return "parsed_protocol_version_ignored"
-    if (
-        "raw_fd_revalidated_as_encoded" in rule
-        or ("encoded fd" in lower and "raw fd" in lower and ("check value" in lower or "validate" in lower))
+        return "retry_cleanup_missing"
+    if "encoded fd" in lower and "raw fd" in lower and (
+        "check value" in lower or "validate" in lower
     ):
         return "raw_fd_reaches_encoded_fd_validator"
     if (
-        "unchecked_strchr_result" in rule
-        or function == "_lifecycle_parse_control_message"
-        or ("strchr" in lower and ("sep" in lower or "colon" in lower or ":" in raw_lower) and category == "null_pointer_dereference")
+        "strchr" in lower
+        and category == "null_pointer_dereference"
+        and ("unchecked" in lower or "null" in lower or "delimiter" in lower)
     ):
-        return "lifecycle_control_message_strchr"
+        return "unchecked_delimiter_lookup"
+    if "pthread_mutex_init" in lower and (
+        "without destroy" in lower or "cleanup omitted" in lower or "not destroyed" in lower
+    ):
+        return "embedded_mutex_cleanup_omitted"
+    if "self referential" in lower and ("list" in lower or "link" in lower):
+        return "self_referential_list_link"
     if (
-        "stack_address_passed_to_thread" in rule
-        or "detached_stack_job" in function
-        or ("pthread_create" in lower and ("async_worker" in raw_lower or "asyncjob" in compact or "&job" in raw_lower))
-    ):
-        return "async_stack_job"
-    if (
-        "protocol_units_length_reaches_copy_without_packet_bound" in rule
-        or ("protocol" in function and "length" in function and "miscalc" in function)
-    ):
-        return "protocol_units_length"
-    if "unaligned_integer_pointer_cast" in rule or ("message" in function and "alignment" in function):
-        return "message_alignment"
-    if "negative_length_cast_to_size_t" in rule or ("signed" in function and "recv" in function and "size" in function):
-        return "signed_recv_to_size"
-    if "recv_busy_loop" in function:
-        return "recv_busy_loop"
-    if (
-        function == "_peer_send_control_reply"
-        or "write_without_sigpipe_handling" in rule
-        or ("sigpipe" in lower and "closed peer" in lower)
-    ):
-        return "peer_control_reply_sigpipe"
-    if function == "_runtime_release_packet_pool" or (
-        "pbuf" in lower and ("active_tasks" in raw_lower or "active tasks" in lower)
-    ):
-        return "runtime_pbuf_pool_premature_destroy"
-    if function == "_runtime_read_timer_ticks" or (
-        "timer" in lower and "lcore" in lower and ("array index" in lower or "out-of-bounds" in lower)
-    ):
-        return "runtime_timer_lcore_id_bounds"
-    if function == "_runtime_rebuild_available_list" or (
-        "available" in lower and "lcore" in lower and ("freelist" in lower or "temporary array" in lower)
-    ):
-        return "runtime_available_list_lcore_bounds"
-    if function == "_runtime_register_pool_ops" or (
-        "fixpool" in lower and "registration" in lower and ("ops" in lower or "slot" in lower)
-    ):
-        return "runtime_fixpool_ops_registration"
-    if function == "_runtime_schedule_rcu_release" or (
-        ("qrcu" in lower or "crcu" in lower) and ("global mode" in lower or "callback registration" in lower)
-    ):
-        return "runtime_rcu_global_mode"
-    if function == "_runtime_release_hash_node" or (
-        ("lfhash" in lower or "hash node" in lower) and ("allocator" in lower or "alloc-free" in lower)
-    ):
-        return "runtime_lfhash_alloc_free_pairing"
-    if function == "_runtime_make_shared_key" or (
-        ("ftok" in lower or "key generation" in lower) and ("path" in lower or "collision" in lower)
-    ):
-        return "runtime_ftok_key_generation"
-
-    named_objects = (
-        "thread_ids",
-        "g_dispatcher.queue.tasks",
-        "g_shared_counter",
-        "g_receiver_running",
-        "g_ready",
-        "g_running",
-        "g_config_lock",
-        "g_active_config",
-        "g_watched_fd",
-        "g_rules_map",
-        "g_rules_len",
-        "g_macro_guarded_counter",
-        "g_log_buffer",
-        "temp_buffer",
-        "recovery_buffer",
-        "error_msg",
-        "payload_len",
-        "payload_length",
-        "statusreply",
-        "flushjob",
-        "pfnDropSession",
-        "guardedsubscription",
-        "node->payload",
-        "g_lifecycle.pending_jobs",
-        "g_callback_entry",
-    )
-    for name in named_objects:
-        raw_name = name.lower()
-        spaced_name = raw_name.replace("_", " ")
-        compact_name = re.sub(r"[^a-z0-9]+", "", raw_name)
-        if raw_name in raw_lower or spaced_name in lower or compact_name in compact:
-            token = raw_name
-            if token == "payload_length":
-                token = "payload_len"
-            if token == "statusreply":
-                token = "status_reply"
-            if token == "flushjob":
-                token = "flush_job"
-            if token == "pfndropsession":
-                token = "mesh_session_cleanup_hook"
-            if token == "guardedsubscription":
-                token = "guarded_subscription"
-            return token
-
-    if "lifecyclerecvpacket" in compact or (
-        "netrecvdata" in compact and ("size_max" in raw_lower or "sizemax" in compact or "返回-1" in text)
-    ):
-        return "net_recv_data_negative_length"
-    if has_name("_executor_cleanup_resources") and (
-        "sharedresources" in lower or "taskconfig" in lower or "类型混淆" in text
-    ):
-        return "executor_sharedresources_type_confusion"
-    if has_name("_executor_init") and (
-        "sharedresources" in lower or "taskconfig" in lower or "类型混淆" in text
-    ):
-        return "executor_sharedresources_type_confusion"
-    if has_name("_plugin_lookup") and ("mutex" in lower or "lock" in lower or "重入" in text):
-        return "plugin_lookup_registry_mutex"
-    if (
-        "paired_self_referential_traversal_log_amplification" in rule
-        or "self_referential_list_link" in rule
-        or "pipe->next = pipe" in raw_lower
-        or "pipe->next=pipe" in compact
-    ) and ("pipe" in lower or "pipe" in compact) and ("self" in lower or "next" in lower or "log" in lower):
-        return "pipe_self_link"
-    if (
-        "paired_full_key_lookup_truncated_insert" in rule
-        or "full_key_lookup_truncated_insert" in rule
-        or "key truncation" in lower
+        "key truncation" in lower
         or "truncated key" in lower
         or ("full key" in lower and ("strncpy" in lower or "bounded" in lower))
     ):
         return "full_key_lookup_truncated_insert"
-    if (
-        has_name("_lifecycle_dispatch_pipe_tick")
-        or has_name("_lifecycle_close_pipe")
-        or has_name("_lifecycle_tick_timer_callback")
-    ) and (
-        "ctrl_lock" in lower or "sched_lock" in lower or "deadlock" in lower
+    if "active tasks" in lower and ("destroy" in lower or "free" in lower):
+        return "pool_destroyed_with_active_tasks"
+    if "registration" in lower and ("ops" in lower or "slot" in lower) and (
+        "race" in lower or "check then act" in lower
     ):
-        return "pipe_scheduler_control_lock_order"
-    if has_name("_lifecycle_close_pipe") and ("pipe->next = pipe" in lower or "self" in lower):
-        return "pipe_self_link"
-    if has_name("_lifecycle_delete_os_node") or "procnode" in lower:
-        return "os_node_proc_list"
-    if has_name("_lifecycle_avl_register_route") or has_name("_route_avl_insert_node"):
-        return "route_avl_node_after_insert"
-    if has_name("_lifecycle_unregister_guarded_subscription"):
-        return "guarded_subscription_mutex"
-    if has_name("_lifecycle_mesh_authorize_init"):
-        return "mesh_session_cleanup_hook"
-    if has_name("_control_session_detach_without_release"):
-        return "control_session_detach_leak"
-    if has_name("_lifecycle_customize_control_message") and "open" in lower:
-        return "control_session_open_leak"
-    if has_name("_lifecycle_release_value_slice") or "value+1" in compact:
-        return "value_slice_invalid_free"
-    if has_name("_lifecycle_format_topic") or "topic[sizeof" in compact:
-        return "topic_off_by_one"
-    if has_name("_lifecycle_parse_frame") or "vla" in lower:
-        return "frame_vla_stack"
-    if has_name("_lifecycle_wait_for_work") and "pthread_cond_wait" in lower:
-        return "lifecycle_cond_wait"
-    if has_name("_lifecycle_resize_metrics") or "g_metrics" in lower:
-        return "g_metrics_realloc"
-    if category == "command_injection" and ("system" in lower or "命令注入" in text):
-        if function == "platform_execute_task" or "system(task)" in lower:
-            return "platform_task_execution"
-        return "task_command_execution"
-    if category == "format_string" and ("printf" in lower or "格式化字符串" in text):
+        return "operation_registration_check_then_act"
+    if "hash node" in lower and (
+        "allocator" in lower or "alloc free" in lower
+    ):
+        return "hash_node_allocator_pairing"
+    if ("ftok" in lower or "key generation" in lower) and (
+        "path" in lower or "collision" in lower
+    ):
+        return "shared_key_generation_collision"
+    if "value+1" in compact and category == "invalid_free":
+        return "interior_pointer_free"
+    if "topic[sizeof" in compact and category in {"off_by_one", "bounds"}:
+        return "sizeof_used_as_array_index"
+    if "vla" in lower and category in {"stack_overflow", "bounds"}:
+        return "unbounded_variable_length_array"
+    if "pthread_cond_wait" in lower and category in {"lost_wakeup", "race"}:
+        return "condition_wait_protocol"
+    if category == "format_string" and "printf" in lower:
         return "printf_format_string"
-    if category == "memory_leak" and function:
-        resource = _resource_signature_from_text(text)
-        if resource:
-            return resource
+
     return ""
+
+
+def root_cause_token(issue: Dict[str, Any], category: str, text: str) -> str:
+    """Return a stable root derived from structural, project-agnostic evidence."""
+    return _project_agnostic_root_cause_token(issue, category, text)
 
 
 def normalize_issue_category(value: str) -> str:
@@ -1790,7 +2302,7 @@ def normalize_issue_category(value: str) -> str:
         "file_type_validation": ("file type", "character device", "regular file", "mapping size", "cwe-20"),
         "log_level_misuse": ("log level", "logged at error", "alert noise", "cwe-778"),
         "logic_error": ("logic error", "wrong group", "wrong index", "semantic mismatch", "cwe-682"),
-        "global_mode_race": ("global mode", "mutable global mode", "qrcu", "crcu", "cwe-362"),
+        "global_mode_race": ("global mode", "mutable global mode", "cwe-362"),
         "slot_race": ("slot race", "cas result", "process slot", "stolen slot", "cwe-362"),
         "shared_memory_race": ("shared memory race", "lookup before lock", "concurrent create", "memzone", "cwe-362"),
         "state_machine": ("state machine", "missing transition", "lifecycle state", "cwe-672"),
@@ -2119,27 +2631,34 @@ _CROSS_CONTEXT_RESIDUAL_DEDUP_CATEGORIES = {
 }
 
 
-_CROSS_FILE_ROOT_DEDUP_ROOTS = {
-    "task_command_execution",
-}
+_CROSS_FILE_ROOT_DEDUP_ROOTS: Set[str] = set()
 
 
 _GENERIC_IDENTITY_TOKENS = {
     "allocation",
     "alloc",
+    "array",
+    "buffer",
     "calloc",
+    "container",
     "free",
+    "item",
     "leak",
     "malloc",
     "memory",
     "memory_",
     "memory_leak",
+    "node",
+    "object",
+    "pointer",
     "resource",
     "resource_leak",
     "resources",
     "safe_calloc",
     "safe_free",
+    "storage",
     "strdup",
+    "value",
     "xmalloc",
 }
 
@@ -2163,87 +2682,34 @@ _RESOURCE_IDENTITY_KEYS = (
 )
 
 
-_GLOBAL_OBJECT_ROOTS = {
-    "thread_ids",
-    "g_shared_counter",
-    "g_receiver_running",
-    "g_ready",
-    "g_running",
-    "g_active_config",
-    "g_watched_fd",
-    "g_macro_guarded_counter",
-    "g_log_buffer",
-    "temp_buffer",
-    "recovery_buffer",
-    "error_msg",
-    "payload_len",
-    "status_reply",
-    "flush_job",
-    "mesh_session_cleanup_hook",
-    "guarded_subscription",
-    "executor_sharedresources_type_confusion",
-    "plugin_lookup_registry_mutex",
-}
-
-
-_FUNCTION_SCOPED_ROOT_CATEGORIES = {
-    "alignment",
-    "bounds",
-    "busy_loop",
-    "double_free",
-    "fd_encoding_mismatch",
-    "fd_leak",
-    "fd_type_mismatch",
-    "integer_overflow",
-    "log_amplification",
-    "memory_leak",
-    "object_publication",
-    "partial_resource_leak",
-    "protocol_mixup",
-    "race",
-    "refcount_race",
-    "signed_unsigned",
-        "stale_fd",
-        "use_after_close",
-        "state_inconsistency",
-    "unchecked_return",
-    "version_filtering",
-    "use_after_free",
-}
-
-
-_FUNCTION_SCOPED_ROOTS = {
-    "net_recv_data_negative_length",
-    "route_avl_node_after_insert",
-    "control_session_detach_leak",
-    "control_session_open_leak",
-    "value_slice_invalid_free",
-    "topic_off_by_one",
-    "frame_vla_stack",
-    "lifecycle_cond_wait",
-    "g_metrics_realloc",
-    "task_command_execution",
-    "printf_format_string",
-    "os_node_proc_list",
-    "pipe_self_link",
-    "pipe_scheduler_control_lock_order",
-    "global_dynamic_array_resize",
-    "label_cache_size_miscalc",
-    "ssl_probe_status",
-    "payload_double_cleanup",
-    "path_check_before_open",
-    "lifecycle_ref_get_after_unlock",
-    "lifecycle_ref_put_after_unlock",
-    "callback_borrowed_object",
-    "g_lifecycle_pending_jobs",
-    "control_session_mutex_init",
-    "net_recv_data_return_truncation",
+_NON_SEMANTIC_IDENTITY_FIELDS = {
+    "alternate_evidence",
+    "attached_needs_review_count",
+    "candidate_schema_version",
+    "candidate_uid",
+    "occurrence_uid",
+    "history_key",
+    "evidence_hash",
+    "run_issue_uid",
+    "candidate_disposition",
+    "dedup_decision",
+    "dedup_decisions",
+    "duplicate_count",
+    "duplicate_sources",
+    "evidence_completeness",
+    "evidence_sources",
+    "entry_paths",
+    "related_needs_review_observations",
 }
 
 
 def flatten_issue_text(value: Any) -> str:
     if isinstance(value, dict):
-        return " ".join(flatten_issue_text(v) for v in value.values())
+        return " ".join(
+            flatten_issue_text(item)
+            for key, item in value.items()
+            if str(key) not in _NON_SEMANTIC_IDENTITY_FIELDS
+        )
     if isinstance(value, list):
         return " ".join(flatten_issue_text(v) for v in value)
     return "" if value is None else str(value)

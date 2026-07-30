@@ -432,23 +432,23 @@ def test_inference_filters_constant_like_names_and_does_not_promote_api_callers(
     assert "UseAnyxmlLock" not in locks
 
 
-def test_inference_keeps_project_default_wrappers_with_specific_roles(tmp_path: Path) -> None:
+def test_inference_keeps_project_wrappers_with_specific_roles(tmp_path: Path) -> None:
     code_index = FakeCodeIndex(tmp_path)
     code_index.functions.update(
         {
-            "_safe_malloc": "void *_safe_malloc(size_t size) { return malloc(size); }",
-            "_safe_calloc": "void *_safe_calloc(size_t nmemb, size_t size) { return calloc(nmemb, size); }",
-            "_safe_realloc": "void *_safe_realloc(void *ptr, size_t size) { return realloc(ptr, size); }",
+            "project_malloc_wrapper": "void *project_malloc_wrapper(size_t size) { return malloc(size); }",
+            "project_calloc_wrapper": "void *project_calloc_wrapper(size_t n, size_t size) { return calloc(n, size); }",
+            "project_realloc_wrapper": "void *project_realloc_wrapper(void *ptr, size_t size) { return realloc(ptr, size); }",
         }
     )
 
     rows = infer_user_config_rows(code_index)
     resource = {item["symbol_name"]: item for item in rows["resource"]}
 
-    assert resource["_safe_malloc"]["kind"] == "allocator"
-    assert resource["_safe_calloc"]["kind"] == "calloc"
-    assert resource["_safe_realloc"]["kind"] == "reallocator"
-    assert "old_resource=arg1" in resource["_safe_realloc"]["description"]
+    assert resource["project_malloc_wrapper"]["kind"] == "allocator"
+    assert resource["project_calloc_wrapper"]["kind"] == "allocator"
+    assert resource["project_realloc_wrapper"]["kind"] == "reallocator"
+    assert "old_resource=arg1" in resource["project_realloc_wrapper"]["description"]
 
 
 def test_llm_filter_drops_noisy_candidates_and_records_generalized_pattern(tmp_path: Path) -> None:

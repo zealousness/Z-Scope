@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from zscope.config.config import (
     AnalysisConfig,
     IndexingConfig,
@@ -430,6 +432,26 @@ def test_global_modeler_unresolved_entry_fails_stage_gate(tmp_path):
     assert stats.unresolved_entry_functions == 1
     assert stats.stage_complete is False
     assert stats.reconciled_functions == 0
+
+
+def test_global_modeler_does_not_convert_callgraph_failure_to_leaf(tmp_path):
+    class FailedCallgraphIndex(FakeCodeIndex):
+        def get_callees(self, func_name, limit=30):
+            raise RuntimeError("callgraph backend unavailable")
+
+    config = _config(tmp_path)
+    store = SnapshotStore(Path(config.analysis.snapshot_dir))
+    user_config = UserConfigStore(Path(config.analysis.user_config_db))
+    modeler = GlobalModeler(
+        config,
+        FailedCallgraphIndex(),
+        store,
+        user_config,
+        semantic_agent_factory=lambda: RecordingAgent([]),
+    )
+
+    with pytest.raises(RuntimeError, match="callgraph backend unavailable"):
+        modeler.run([FunctionEntry("entry")])
 
 
 def test_global_modeler_models_same_name_entries_in_different_files(tmp_path):

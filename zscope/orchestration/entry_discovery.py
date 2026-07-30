@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,9 +45,12 @@ class EntryCandidate:
     exposure: str
     reasons: List[str] = field(default_factory=list)
     file_path: str = ""
+    signature: str = ""
     line: int = 0
     custom_prompt: str = ""
     confidence: float = 0.5
+    selection_status: str = "selected"
+    deferred_reason: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -54,9 +58,17 @@ class EntryCandidate:
             "exposure": self.exposure,
             "reasons": self.reasons,
             "file_path": self.file_path,
+            "signature": self.signature,
             "line": self.line,
             "custom_prompt": self.custom_prompt,
             "confidence": self.confidence,
+            "selection_status": self.selection_status,
+            "candidate_disposition": (
+                "deferred_budget"
+                if self.selection_status == "deferred_budget"
+                else "selected"
+            ),
+            "deferred_reason": self.deferred_reason,
         }
 
     def to_function_entry(self) -> FunctionEntry:
@@ -64,6 +76,9 @@ class EntryCandidate:
             function_name=self.function_name,
             custom_prompt=self.custom_prompt,
             file_path=self.file_path or None,
+            signature=self.signature or None,
+            exposure=self.exposure,
+            reasons=list(self.reasons),
         )
 
 
@@ -73,6 +88,7 @@ class EntryDiscoveryResult:
     candidates: List[EntryCandidate]
     summary: Dict[str, int]
     notes: List[str] = field(default_factory=list)
+    deferred_candidates: List[EntryCandidate] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -80,6 +96,9 @@ class EntryDiscoveryResult:
             "summary": self.summary,
             "notes": self.notes,
             "candidates": [c.to_dict() for c in self.candidates],
+            "deferred_candidates": [
+                candidate.to_dict() for candidate in self.deferred_candidates
+            ],
         }
 
     def to_function_entries(self) -> List[FunctionEntry]:
@@ -92,11 +111,16 @@ class EntryDiscoveryResult:
                 "exposure_kind": self.exposure_kind,
                 "summary": self.summary,
                 "notes": self.notes,
+                "deferred_budget_count": len(self.deferred_candidates),
+                "deferred_candidates": [
+                    candidate.to_dict() for candidate in self.deferred_candidates
+                ],
             },
             "functions": [
                 {
                     "function_name": candidate.function_name,
                     "file_path": candidate.file_path,
+                    "signature": candidate.signature,
                     "custom_prompt": candidate.custom_prompt,
                     "exposure": candidate.exposure,
                     "reasons": candidate.reasons,
@@ -237,15 +261,34 @@ class EntryDiscovery:
         self.shared_memory_calls = tuple(shared_memory_calls or self.DEFAULT_SHARED_MEMORY_CALLS)
         self.thread_calls = tuple(thread_calls or self.DEFAULT_THREAD_CALLS)
         self.input_calls = tuple(input_calls or self.DEFAULT_INPUT_CALLS)
-        self._function_impl_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+        self._function_impl_cache: Dict[Tuple[str, str], Optional[Dict[str, Any]]] = {}
+        self._inactive_implementation_identities: set[Tuple[str, str]] = set()
+        self._active_translation_units = self._load_active_translation_units()
 
     def discover(self, max_candidates: int = 200) -> EntryDiscoveryResult:
         header_candidates = self._discover_header_api()
         body_candidates = self._discover_body_entries()
 
         merged = self._merge_candidates(header_candidates + body_candidates)
-        merged.sort(key=lambda c: (-c.confidence, c.function_name))
-        selected = merged[:max_candidates]
+        merged.sort(
+            key=lambda c: (
+                -c.confidence,
+                c.function_name,
+                c.file_path,
+                c.signature,
+            )
+        )
+        selected = self._select_stratified(merged, max_candidates)
+        selected_ids = {id(candidate) for candidate in selected}
+        deferred = [
+            candidate for candidate in merged if id(candidate) not in selected_ids
+        ]
+        for candidate in selected:
+            candidate.selection_status = "selected"
+            candidate.deferred_reason = ""
+        for candidate in deferred:
+            candidate.selection_status = "deferred_budget"
+            candidate.deferred_reason = "entry_discovery_budget"
 
         summary: Dict[str, int] = {}
         for candidate in selected:
@@ -268,10 +311,83 @@ class EntryDiscovery:
         notes = []
         if not selected:
             notes.append("No header API, communication, thread, or other user-input entry candidates were found.")
+        if self._inactive_implementation_identities:
+            notes.append(
+                "Excluded "
+                f"{len(self._inactive_implementation_identities)} implementation(s) "
+                "outside the active compile_commands translation-unit set."
+            )
         if len(merged) > len(selected):
-            notes.append(f"Truncated {len(merged)} candidates to {len(selected)} by confidence.")
+            notes.append(
+                f"Deferred {len(deferred)} of {len(merged)} entry candidates by "
+                "stratified entry budget."
+            )
 
-        return EntryDiscoveryResult(exposure_kind=exposure_kind, candidates=selected, summary=summary, notes=notes)
+        return EntryDiscoveryResult(
+            exposure_kind=exposure_kind,
+            candidates=selected,
+            summary=summary,
+            notes=notes,
+            deferred_candidates=deferred,
+        )
+
+    @classmethod
+    def _select_stratified(
+        cls,
+        candidates: List[EntryCandidate],
+        max_candidates: int,
+    ) -> List[EntryCandidate]:
+        if max_candidates <= 0:
+            return []
+        if len(candidates) <= max_candidates:
+            return list(candidates)
+
+        bucket_order = ("input", "thread", "lifecycle_resource", "api", "other")
+        buckets: Dict[str, List[EntryCandidate]] = {
+            name: [] for name in bucket_order
+        }
+        for candidate in candidates:
+            buckets[cls._entry_budget_layer(candidate)].append(candidate)
+
+        selected: List[EntryCandidate] = []
+        # Weighted round-robin protects minority roots while giving input
+        # boundaries and asynchronous roots additional capacity.
+        rounds = ("input", "thread", "lifecycle_resource", "api", "input", "other")
+        while len(selected) < max_candidates and any(buckets.values()):
+            made_progress = False
+            for name in rounds:
+                if len(selected) >= max_candidates:
+                    break
+                if buckets[name]:
+                    selected.append(buckets[name].pop(0))
+                    made_progress = True
+            if not made_progress:
+                break
+        return selected
+
+    @staticmethod
+    def _entry_budget_layer(candidate: EntryCandidate) -> str:
+        exposure = str(candidate.exposure or "").lower()
+        if "communication" in exposure or "other_user_input" in exposure:
+            return "input"
+        if "thread" in exposure:
+            return "thread"
+        text = " ".join(
+            [
+                candidate.function_name,
+                candidate.signature,
+                *candidate.reasons,
+            ]
+        ).lower()
+        if re.search(
+            r"(?:^|_)(?:init|fini|start|stop|open|close|create|destroy|alloc|free|"
+            r"register|unregister|acquire|release)(?:_|$)",
+            text,
+        ):
+            return "lifecycle_resource"
+        if "api" in exposure:
+            return "api"
+        return "other"
 
     def _discover_header_api(self) -> List[EntryCandidate]:
         candidates: List[EntryCandidate] = []
@@ -284,34 +400,35 @@ class EntryDiscovery:
                 continue
             if decl_file and not self._is_in_search_root(decl_file):
                 continue
-            impl = self._get_function_impl(name)
-            if not impl:
-                continue
-            impl_file = impl.get("file", "")
-            if not self._is_in_search_root(impl_file):
-                continue
-            candidates.append(
-                EntryCandidate(
-                    function_name=name,
-                    exposure="api",
-                    reasons=["declared_in_header"],
-                    file_path=item.get("filename") or impl_file,
-                    line=int(item.get("lineNumber") or impl.get("start_line") or 0),
-                    custom_prompt=API_PROMPT,
-                    confidence=0.9,
+            for impl in self._get_function_impls(name):
+                if not impl or bool(impl.get("is_static")):
+                    continue
+                impl_file = str(impl.get("file") or "")
+                if not self._is_in_search_root(impl_file):
+                    continue
+                candidates.append(
+                    EntryCandidate(
+                        function_name=self._implementation_function_name(name, impl),
+                        exposure="api",
+                        reasons=["declared_in_header"],
+                        file_path=self._normalize_entry_path(impl_file),
+                        signature=str(impl.get("signature") or ""),
+                        line=int(impl.get("start_line") or item.get("lineNumber") or 0),
+                        custom_prompt=API_PROMPT,
+                        confidence=0.9,
+                    )
                 )
-            )
         return candidates
 
     def _discover_body_entries(self) -> List[EntryCandidate]:
         candidates: List[EntryCandidate] = []
-        for name in self._list_functions_for_discovery():
-            impl = self._get_function_impl(name)
+        for name, impl in self._body_function_implementations():
             if not impl:
                 continue
-            file_path = impl.get("file", "")
+            file_path = str(impl.get("file") or "")
             if not self._is_in_search_root(file_path):
                 continue
+            function_name = self._implementation_function_name(name, impl)
             code = impl.get("code") or ""
             call_search_code = self._strip_code_for_call_search(code)
             reasons: List[str] = []
@@ -333,18 +450,21 @@ class EntryDiscovery:
                     thread_hits,
                     code_is_stripped=True,
                 ):
-                    target_impl = self._get_function_impl(target)
+                    target_impl = self._get_function_impl(target, file_path=file_path)
                     if not target_impl:
                         continue
-                    target_file = target_impl.get("file", "")
+                    target_file = str(target_impl.get("file") or "")
                     if not self._is_in_search_root(target_file):
+                        continue
+                    if not self._is_active_implementation(target_impl):
                         continue
                     candidates.append(
                         EntryCandidate(
-                            function_name=target,
+                            function_name=self._implementation_function_name(target, target_impl),
                             exposure="thread",
                             reasons=[f"thread_entry:{call}"],
-                            file_path=target_file,
+                            file_path=self._normalize_entry_path(target_file),
+                            signature=str(target_impl.get("signature") or ""),
                             line=int(target_impl.get("start_line") or 0),
                             custom_prompt=THREAD_PROMPT,
                             confidence=0.88,
@@ -368,10 +488,11 @@ class EntryDiscovery:
 
             candidates.append(
                 EntryCandidate(
-                    function_name=name,
+                    function_name=function_name,
                     exposure=exposure,
                     reasons=sorted(set(reasons)),
-                    file_path=file_path,
+                    file_path=self._normalize_entry_path(file_path),
+                    signature=str(impl.get("signature") or ""),
                     line=int(impl.get("start_line") or 0),
                     custom_prompt=" ".join(prompt_parts),
                     confidence=0.85 if exposure != "other_user_input" else 0.7,
@@ -383,29 +504,179 @@ class EntryDiscovery:
         if self.search_root:
             try:
                 return self.code_index.list_functions(
-                    limit=self.max_functions,
+                    limit=None,
                     file_root=self.search_root,
                 )
-            except TypeError:
+            except (TypeError, ValueError):
                 pass
-        return self.code_index.list_functions(limit=self.max_functions)
-
-    def _get_function_impl(self, name: str) -> Optional[Dict[str, Any]]:
-        if name in self._function_impl_cache:
-            return self._function_impl_cache[name]
         try:
-            impl = self.code_index.get_function_impl(name, include_context=False)
+            return self.code_index.list_functions(limit=None)
+        except (TypeError, ValueError):
+            # One-release compatibility for custom indexes that still require
+            # an integer.  The large fallback is a fact-collection safety
+            # bound, not an entry-analysis budget.
+            return self.code_index.list_functions(limit=1_000_000)
+
+    def _body_function_implementations(
+        self,
+    ) -> Iterable[Tuple[str, Dict[str, Any]]]:
+        """Enumerate every file+signature implementation for body discovery."""
+
+        for name in self._list_functions_for_discovery():
+            implementations = self._get_function_impls(name)
+            for impl in implementations:
+                if isinstance(impl, dict):
+                    yield name, impl
+
+    def _get_function_impl(
+        self,
+        name: str,
+        *,
+        file_path: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        cache_key = (
+            str(name or "").strip(),
+            self._normalize_entry_path(file_path),
+        )
+        if cache_key in self._function_impl_cache:
+            return self._function_impl_cache[cache_key]
+        if file_path:
+            generic_key = (str(name or "").strip(), "")
+            generic = self._function_impl_cache.get(generic_key)
+            if isinstance(generic, dict) and self._normalize_entry_path(
+                generic.get("file") or ""
+            ) == self._normalize_entry_path(file_path):
+                self._function_impl_cache[cache_key] = generic
+                return generic
+        try:
+            impl = self.code_index.get_function_impl(
+                name,
+                include_context=False,
+                file_path=file_path,
+            )
         except TypeError:
             impl = self.code_index.get_function_impl(name)
-        self._function_impl_cache[name] = impl
+        self._function_impl_cache[cache_key] = impl
         return impl
 
+    def _get_function_impls(self, name: str) -> List[Dict[str, Any]]:
+        """Resolve every implementation represented by a header declaration."""
+        finder = getattr(self.code_index, "find_function_identities", None)
+        if not callable(finder):
+            impl = self._get_function_impl(name)
+            return [impl] if impl and self._is_active_implementation(impl) else []
+        try:
+            infos = finder(name)
+        except (TypeError, AttributeError):
+            infos = []
+        if not isinstance(infos, list) or not infos:
+            impl = self._get_function_impl(name)
+            return [impl] if impl and self._is_active_implementation(impl) else []
+
+        implementations: List[Dict[str, Any]] = []
+        seen: set[Tuple[str, str]] = set()
+        for info in infos:
+            if not isinstance(info, dict):
+                continue
+            index_name = str(
+                info.get("index_name")
+                or info.get("function_name")
+                or name
+            )
+            file_path = str(info.get("file_path") or info.get("file") or "")
+            impl = self._get_function_impl(index_name, file_path=file_path)
+            if not impl:
+                continue
+            if not self._is_active_implementation(impl):
+                continue
+            key = (
+                self._normalize_entry_path(impl.get("file") or file_path),
+                FunctionEntry.normalize_signature(impl.get("signature") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            implementations.append(impl)
+        return implementations
+
+    def _load_active_translation_units(self) -> set[str]:
+        """Return source identities selected by the active compilation database.
+
+        The source index may intentionally contain implementations for several
+        platforms.  Entry discovery must only schedule implementations that are
+        part of the current build when a usable compilation database exists.
+        """
+
+        configured = getattr(self.code_index, "compile_commands_path", None)
+        if not configured:
+            return set()
+        compile_commands = Path(configured)
+        if not compile_commands.is_absolute() and self.project_root is not None:
+            compile_commands = self.project_root / compile_commands
+        try:
+            payload = json.loads(compile_commands.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return set()
+        if not isinstance(payload, list):
+            return set()
+
+        active: set[str] = set()
+        for row in payload:
+            if not isinstance(row, dict):
+                continue
+            raw_file = str(row.get("file") or "").strip()
+            if not raw_file:
+                continue
+            source = Path(raw_file)
+            if not source.is_absolute():
+                directory = Path(str(row.get("directory") or compile_commands.parent))
+                if not directory.is_absolute() and self.project_root is not None:
+                    directory = self.project_root / directory
+                source = directory / source
+            try:
+                resolved = source.resolve()
+            except OSError:
+                resolved = source
+            active.add(FunctionEntry._portable_path_text(resolved).casefold())
+            active.add(self._normalize_entry_path(resolved).casefold())
+        return {item for item in active if item}
+
+    def _is_active_implementation(self, impl: Dict[str, Any]) -> bool:
+        if not self._active_translation_units:
+            return True
+        raw_file = str(impl.get("file") or "")
+        normalized = self._normalize_entry_path(raw_file).casefold()
+        candidates = {normalized}
+        if raw_file:
+            source = Path(FunctionEntry._portable_path_text(raw_file))
+            if not source.is_absolute() and self.project_root is not None:
+                source = self.project_root / source
+            try:
+                source = source.resolve()
+            except OSError:
+                pass
+            candidates.add(FunctionEntry._portable_path_text(source).casefold())
+        if any(candidate in self._active_translation_units for candidate in candidates):
+            return True
+        identity = (
+            normalized,
+            FunctionEntry.normalize_signature(impl.get("signature") or ""),
+        )
+        self._inactive_implementation_identities.add(identity)
+        return False
+
     def _merge_candidates(self, candidates: Iterable[EntryCandidate]) -> List[EntryCandidate]:
-        by_name: Dict[str, EntryCandidate] = {}
+        by_identity: Dict[Tuple[str, str], EntryCandidate] = {}
         for candidate in candidates:
-            existing = by_name.get(candidate.function_name)
+            candidate.file_path = self._normalize_entry_path(candidate.file_path)
+            candidate.signature = FunctionEntry.normalize_signature(candidate.signature)
+            identity = (
+                candidate.file_path,
+                candidate.signature or candidate.function_name,
+            )
+            existing = by_identity.get(identity)
             if not existing:
-                by_name[candidate.function_name] = candidate
+                by_identity[identity] = candidate
                 continue
             exposures = list(dict.fromkeys(existing.exposure.split("+") + candidate.exposure.split("+")))
             reasons = sorted(set(existing.reasons + candidate.reasons))
@@ -414,7 +685,25 @@ class EntryDiscovery:
             existing.reasons = reasons
             existing.custom_prompt = " ".join(p for p in prompts if p)
             existing.confidence = max(existing.confidence, candidate.confidence)
-        return list(by_name.values())
+        return list(by_identity.values())
+
+    @staticmethod
+    def _implementation_function_name(query: str, impl: Dict[str, Any]) -> str:
+        name = str(impl.get("func_name") or "").strip()
+        if name:
+            return name
+        raw = str(query or "").strip()
+        location_match = re.match(r"^(.*?)@.+:\d+(?:-\d+)?$", raw)
+        return location_match.group(1) if location_match else raw
+
+    def _normalize_entry_path(self, file_path: Any) -> str:
+        text = FunctionEntry._portable_path_text(file_path)
+        if not text:
+            return ""
+        return FunctionEntry(
+            function_name="__path__",
+            file_path=text,
+        ).normalized_file_path(self.project_root)
 
     def _is_in_search_root(self, file_path: str) -> bool:
         if not self.search_root:

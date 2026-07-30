@@ -77,12 +77,18 @@ class ValidationPipeline:
         self,
         user_config: Any,
         issue_key_fn: Callable[[Dict[str, Any]], str] = canonical_issue_key,
+        deterministic_proof_verifier: Optional[
+            Callable[[Dict[str, Any], Dict[str, Any]], bool]
+        ] = None,
     ):
         self.user_config = user_config
         self.review_memory = (
             user_config if isinstance(user_config, ReviewMemory) else ReviewMemory(user_config)
         )
         self.issue_key_fn = issue_key_fn
+        # Proof authority must be supplied by a deterministic engine boundary.
+        # Validator JSON is untrusted and cannot self-attest a contradiction.
+        self.deterministic_proof_verifier = deterministic_proof_verifier
 
     def suppression_category(self, issue: Dict[str, Any]) -> str:
         return str(
@@ -232,14 +238,15 @@ class ValidationPipeline:
     ) -> ValidationOutcome:
         """Mark a candidate when the Validator agent is disabled."""
         preserve_issue_location(issue)
-        issue["validation_status"] = "unvalidated"
-        issue.setdefault("finding_kind", "unvalidated_candidate")
+        issue["validation_status"] = "needs_review"
+        issue["candidate_disposition"] = "needs_review"
+        issue.setdefault("finding_kind", "needs_review")
         issue["score_components"] = score_data
         final_score = self._final_score(score_data)
         issue["final_score"] = final_score
         return ValidationOutcome(
-            report_bucket="issues",
-            verdict="unvalidated",
+            report_bucket="observations",
+            verdict="needs_review",
             final_score=final_score,
         )
 
@@ -259,12 +266,14 @@ class ValidationPipeline:
         issue["validator_verdict"] = verdict
 
         if verdict == "verified" and final_score >= 0.6:
-            if final_score >= 0.8:
+            if self._has_confirmed_evidence(score_data, val_data):
                 issue["validation_status"] = "validated"
+                issue["candidate_disposition"] = "confirmed"
                 issue["finding_kind"] = val_data.get("finding_kind") or "verified_vulnerability"
                 report_bucket = "issues"
             else:
                 issue["validation_status"] = "needs_review"
+                issue["candidate_disposition"] = "needs_review"
                 issue["finding_kind"] = "needs_review"
                 report_bucket = "observations"
 
@@ -283,27 +292,23 @@ class ValidationPipeline:
             )
 
         if verdict == "verified":
-            issue["validation_status"] = "uncertain"
-            issue["finding_kind"] = "audit_observation"
+            issue["validation_status"] = "needs_review"
+            issue["candidate_disposition"] = "needs_review"
+            issue["finding_kind"] = "needs_review"
             issue["validation_reasoning"] = val_data.get("reasoning")
             preserve_issue_location(issue, val_data)
             return ValidationOutcome(
                 report_bucket="observations",
-                memory_status="uncertain",
+                memory_status="needs_review",
                 verdict=verdict,
                 final_score=final_score,
             )
 
         if verdict == "uncertain":
-            requested_kind = str(val_data.get("finding_kind") or "").strip().lower()
-            if requested_kind == "needs_review" or self._should_keep_structural_uncertain_for_review(issue, val_data):
-                issue["validation_status"] = "needs_review"
-                issue["finding_kind"] = "needs_review"
-                memory_status = "needs_review"
-            else:
-                issue["validation_status"] = "uncertain"
-                issue["finding_kind"] = val_data.get("finding_kind") or "audit_observation"
-                memory_status = "uncertain"
+            issue["validation_status"] = "needs_review"
+            issue["candidate_disposition"] = "needs_review"
+            issue["finding_kind"] = "needs_review"
+            memory_status = "needs_review"
             issue["validation_reasoning"] = val_data.get("reasoning")
             self._copy_validator_detail_fields(issue, val_data)
             preserve_issue_location(issue, val_data)
@@ -351,6 +356,9 @@ class ValidationPipeline:
                 else "needs_review"
             )
             issue["validation_status"] = corrected_status
+            issue["candidate_disposition"] = (
+                "confirmed" if corrected_status == "validated" else "needs_review"
+            )
             issue["finding_kind"] = (
                 "verified_vulnerability" if corrected_status == "validated" else "needs_review"
             )
@@ -364,6 +372,7 @@ class ValidationPipeline:
         if self._should_downgrade_structural_rejection(issue, val_data):
             original_reason = str(val_data.get("reasoning") or "").strip()
             issue["validation_status"] = "needs_review"
+            issue["candidate_disposition"] = "needs_review"
             issue["finding_kind"] = "needs_review"
             issue["rejection_source"] = "validator_structural_review"
             issue["validation_reasoning"] = (
@@ -380,15 +389,35 @@ class ValidationPipeline:
                 final_score=final_score,
             )
 
-        issue["validation_status"] = "rejected"
-        issue["finding_kind"] = "rejected"
-        issue["rejection_source"] = "validator"
-        issue["validation_reasoning"] = val_data.get("reasoning")
+        if self._has_deterministic_rejection_proof(issue, val_data):
+            issue["validation_status"] = "rejected"
+            issue["candidate_disposition"] = "rejected_with_proof"
+            issue["finding_kind"] = "rejected"
+            issue["rejection_source"] = "deterministic_validator_proof"
+            issue["deterministic_rejection"] = True
+            issue["validation_reasoning"] = val_data.get("reasoning")
+            preserve_issue_location(issue, val_data)
+            return ValidationOutcome(
+                report_bucket=None,
+                memory_status="rejected",
+                verdict=verdict,
+                final_score=final_score,
+            )
+
+        issue["validation_status"] = "needs_review"
+        issue["candidate_disposition"] = "needs_review"
+        issue["finding_kind"] = "needs_review"
+        issue["rejection_source"] = "validator_without_deterministic_proof"
+        issue["validation_reasoning"] = (
+            "Validator proposed rejection without a deterministic contradiction; "
+            "the candidate remains reviewable. "
+            + str(val_data.get("reasoning") or "")
+        ).strip()
         preserve_issue_location(issue, val_data)
         return ValidationOutcome(
-            report_bucket=None,
-            memory_status="rejected",
-            verdict=verdict,
+            report_bucket="observations",
+            memory_status="needs_review",
+            verdict="needs_review",
             final_score=final_score,
         )
 
@@ -400,9 +429,48 @@ class ValidationPipeline:
         """Keep failed Validator calls visible as pending observations."""
         preserve_issue_location(issue)
         issue["validation_status"] = "pending"
+        issue["candidate_disposition"] = "engine_failed"
         issue.setdefault("finding_kind", "validation_pending")
         issue["validation_error"] = error
         return ValidationOutcome(report_bucket="observations", verdict="pending")
+
+    @staticmethod
+    def _has_confirmed_evidence(
+        score_data: Dict[str, float],
+        val_data: Dict[str, Any],
+    ) -> bool:
+        """Evidence-tier promotion; avoids a single opaque 0.8 hard gate."""
+        try:
+            final_score = float(score_data.get("final_score", 0.0) or 0.0)
+            path = float(score_data.get("path_completeness", 0.0) or 0.0)
+            contract = float(score_data.get("contract_consistency", 0.0) or 0.0)
+            validator = float(score_data.get("validation_confidence", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return False
+        negative = val_data.get("negative_evidence")
+        has_negative = bool(negative) if isinstance(negative, list) else bool(str(negative or "").strip())
+        return bool(
+            final_score >= 0.70
+            and path >= 0.75
+            and contract >= 0.70
+            and validator >= 0.80
+            and not has_negative
+        )
+
+    def _has_deterministic_rejection_proof(
+        self,
+        issue: Dict[str, Any],
+        val_data: Dict[str, Any],
+    ) -> bool:
+        verifier = self.deterministic_proof_verifier
+        if verifier is None:
+            return False
+        try:
+            return bool(verifier(issue, val_data))
+        except Exception as exc:
+            # A broken proof verifier must fail closed to needs_review.
+            issue.setdefault("proof_verification_error", str(exc))
+            return False
 
     @staticmethod
     def _final_score(score_data: Dict[str, float]) -> float:

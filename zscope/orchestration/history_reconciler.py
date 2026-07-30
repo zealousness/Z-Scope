@@ -89,6 +89,7 @@ class HistoryReconciler:
         if not response.success:
             updated = dict(hist_issue)
             updated["validation_status"] = "needs_review"
+            updated["candidate_disposition"] = "needs_review"
             updated["validation_reasoning"] = (
                 "历史问题复核失败，不能自动判定为已修复；请人工复核。"
             )
@@ -97,4 +98,23 @@ class HistoryReconciler:
                 issue=updated,
                 reason="reconciliation_failed",
             )
-        return ReconciledHistoricalIssue(keep=False, reason="fixed")
+        # An LLM's absence-of-defect judgment is not deterministic proof.
+        # Preserve the historical finding as a review obligation and expose
+        # the model conclusion only as an advisory suggestion.
+        updated = dict(hist_issue)
+        updated["validation_status"] = "needs_review"
+        updated["candidate_disposition"] = "needs_review"
+        updated["historical_fix_suggestion"] = {
+            "suggested_fixed": True,
+            "reasoning": str(response.data.get("reasoning") or ""),
+            "advisory_only": True,
+        }
+        updated["validation_reasoning"] = (
+            "Historical reconciliation suggested that the issue may be fixed, "
+            "but no deterministic refutation was produced."
+        )
+        return ReconciledHistoricalIssue(
+            keep=True,
+            issue=updated,
+            reason="fix_suggested_needs_review",
+        )

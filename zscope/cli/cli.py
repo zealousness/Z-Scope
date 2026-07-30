@@ -14,6 +14,7 @@ from ..common.utils import setup_logging
 from ..config.config import ConfigLoader
 from ..framework.conversation_recorder import enable_conversation_recording
 from ..orchestration.scan_session import ScanSessionResult, ScanSessionRunner
+from ..reporting.schema import apply_report_schema_v2, exit_code_for_report
 
 @click.command()
 @click.version_option(version=__version__, prog_name="Z-SCOPE")
@@ -55,6 +56,13 @@ from ..orchestration.scan_session import ScanSessionResult, ScanSessionRunner
 @click.option("--mcp-auth-token-env", default="", help="Environment variable containing the bearer token for --mcp-http.")
 @click.option("--mcp-client-allowlist", multiple=True, help="Client IP allowed to call --mcp-http. Repeat for multiple IPs.")
 @click.option("--export-sarif", type=click.Path(dir_okay=False, path_type=Path), default=None, help="Export the completed Z-SCOPE report to SARIF v2.1.0.")
+@click.option(
+    "--exit-policy",
+    type=click.Choice(["review", "confirmed", "legacy"]),
+    default="review",
+    show_default=True,
+    help="Exit 1 for reviewable findings, confirmed findings only, or legacy issue-count behavior.",
+)
 def main(
     config: Path,
     verbose: bool,
@@ -80,6 +88,7 @@ def main(
     mcp_auth_token_env: str,
     mcp_client_allowlist: tuple[str, ...],
     export_sarif: Optional[Path],
+    exit_policy: str,
 ):
     """
     Z-SCOPE: AI-powered defect detection for C projects.
@@ -213,7 +222,14 @@ def main(
                 code_index,
                 snapshot_dir=Path(zscope_config.analysis.snapshot_dir),
             )
-            llm_workers = max(1, int(getattr(zscope_config.analysis, "parallel_workers", 1) or 1))
+            llm_workers = max(
+                1,
+                int(
+                    getattr(zscope_config.analysis, "entry_workers", 0)
+                    or getattr(zscope_config.analysis, "parallel_workers", 1)
+                    or 1
+                ),
+            )
             click.echo(f"Screening user configuration candidates with LLM ({llm_workers} worker(s))...")
             llm_cfg = zscope_config.llms.get("default") or next(iter(zscope_config.llms.values()))
             llm_client = LLMClient(
@@ -222,12 +238,18 @@ def main(
                 models=llm_cfg.models,
                 timeout=llm_cfg.timeout,
                 max_retries=llm_cfg.max_retries,
+                retry_until_available=getattr(
+                    llm_cfg, "retry_until_available", False
+                ),
                 max_tokens=llm_cfg.max_tokens,
                 base_url_rate_limit_per_minute=getattr(
                     llm_cfg, "base_url_rate_limit_per_minute", 0
                 ),
                 base_url_max_concurrent_requests=getattr(
                     llm_cfg, "base_url_max_concurrent_requests", 0
+                ),
+                global_max_concurrent_requests=getattr(
+                    zscope_config.analysis, "llm_max_inflight", 8
                 ),
                 supports_structured_output=getattr(
                     llm_cfg, "supports_structured_output", False
@@ -297,7 +319,13 @@ def main(
                 rda.close()
             issues_count = len(result.get("issues", []))
             click.echo(f"\nRule-driven analysis complete. Issues: {issues_count}")
-            sys.exit(1 if issues_count > 0 else 0)
+            sys.exit(
+                exit_code_for_report(
+                    result,
+                    policy=exit_policy,
+                    legacy_issue_count=issues_count,
+                )
+            )
 
         if mode == "alert-verify":
             if not sarif:
@@ -308,6 +336,7 @@ def main(
             from ..alerts.verifier import AlertVerifier
             from ..framework.llm_client import LLMClient
             from ..config.user_config_store import UserConfigStore
+            from ..orchestration.scheduler import ScanScheduler
 
             code_index = CodeIndex(
                 zscope_config.project.project_root,
@@ -342,12 +371,18 @@ def main(
                 models=llm_cfg.models,
                 timeout=llm_cfg.timeout,
                 max_retries=llm_cfg.max_retries,
+                retry_until_available=getattr(
+                    llm_cfg, "retry_until_available", False
+                ),
                 max_tokens=llm_cfg.max_tokens,
                 base_url_rate_limit_per_minute=getattr(
                     llm_cfg, "base_url_rate_limit_per_minute", 0
                 ),
                 base_url_max_concurrent_requests=getattr(
                     llm_cfg, "base_url_max_concurrent_requests", 0
+                ),
+                global_max_concurrent_requests=getattr(
+                    zscope_config.analysis, "llm_max_inflight", 8
                 ),
                 supports_structured_output=getattr(
                     llm_cfg, "supports_structured_output", False
@@ -367,10 +402,14 @@ def main(
                 user_config=ucs,
             )
             configured_alert_workers = getattr(
-                zscope_config.analysis,
-                "validation_parallel_workers",
-                0,
+                zscope_config.analysis, "validator_workers", 0
             )
+            if not configured_alert_workers:
+                configured_alert_workers = getattr(
+                    zscope_config.analysis,
+                    "validation_parallel_workers",
+                    0,
+                )
             try:
                 alert_workers = int(configured_alert_workers or 0)
             except (TypeError, ValueError):
@@ -378,11 +417,23 @@ def main(
             if alert_workers <= 0:
                 try:
                     alert_workers = int(
-                        getattr(zscope_config.analysis, "parallel_workers", 1) or 1
+                        getattr(zscope_config.analysis, "entry_workers", 0)
+                        or getattr(zscope_config.analysis, "parallel_workers", 1)
+                        or 1
                     )
                 except (TypeError, ValueError):
                     alert_workers = 1
             alert_workers = max(1, min(len(alerts), alert_workers))
+            alert_scheduler = (
+                ScanScheduler(
+                    entry_workers=1,
+                    validator_workers=alert_workers,
+                    investigator_workers=1,
+                )
+                if alert_workers > 1
+                else None
+            )
+            verifier.scheduler = alert_scheduler
             click.echo(f"Verifying alerts with {alert_workers} worker(s)")
             try:
                 verification_results = verifier.verify_alerts(
@@ -390,19 +441,72 @@ def main(
                     max_workers=alert_workers,
                 )
             finally:
+                if alert_scheduler is not None:
+                    alert_scheduler.shutdown(wait=True, cancel_futures=True)
                 verifier.close()
 
             # 输出报告
             import json
+            confirmed_results = [
+                result
+                for result in verification_results
+                if result.get("candidate_disposition") == "confirmed"
+            ]
+            review_results = [
+                result
+                for result in verification_results
+                if result.get("candidate_disposition") != "confirmed"
+            ]
+            failed_results = [
+                result
+                for result in verification_results
+                if result.get("candidate_disposition") == "engine_failed"
+            ]
+            engine_status = "failed" if failed_results else "complete"
+            verification_report = apply_report_schema_v2(
+                {
+                    "results": verification_results,
+                    "issues": confirmed_results,
+                    "observations": review_results,
+                    "metadata": {"workflow": "alert-verify"},
+                },
+                state={
+                    "any_failure": bool(failed_results),
+                    "engine_capabilities": {
+                        "alert_verifier": {
+                            "status": engine_status,
+                            "reason": (
+                                "one_or_more_alert_validations_failed"
+                                if failed_results
+                                else ""
+                            ),
+                        }
+                    },
+                },
+                issues=confirmed_results,
+                observations=review_results,
+                metadata={"workflow": "alert-verify"},
+                entry_function="alert-verification",
+            )
             report_path = zscope_config.project.project_root / "zscope_alert_verify_report.json"
             with open(report_path, "w", encoding="utf-8") as f:
-                json.dump({"results": verification_results}, f, ensure_ascii=False, indent=2)
+                json.dump(verification_report, f, ensure_ascii=False, indent=2)
 
-            confirmed = sum(1 for r in verification_results if r.get("verdict") == "confirmed")
+            confirmed = len(confirmed_results)
             rejected = sum(1 for r in verification_results if r.get("verdict") == "rejected")
-            click.echo(f"\nVerification complete: {confirmed} confirmed, {rejected} rejected")
+            needs_review = len(review_results)
+            click.echo(
+                f"\nVerification complete: {confirmed} confirmed, "
+                f"{rejected} validator-rejected, {needs_review} needs review"
+            )
             click.echo(f"Report: {report_path}")
-            sys.exit(1 if confirmed > 0 else 0)
+            sys.exit(
+                exit_code_for_report(
+                    verification_report,
+                    policy=exit_policy,
+                    legacy_issue_count=confirmed,
+                )
+            )
 
         session_runner = ScanSessionRunner(
             zscope_config,
@@ -414,6 +518,7 @@ def main(
             diff_repo_root=diff_repo_root,
             diff_paths=diff_path,
             emit=click.echo,
+            exit_policy=exit_policy,
         )
         session_result = session_runner.run()
         if export_sarif:
@@ -437,7 +542,8 @@ def main(
             click.echo("\nBatch Analysis Complete.")
             click.echo(f"Functions analyzed: {session_result.functions_analyzed}")
             click.echo(f"Total issues found: {session_result.issues_count}")
-            click.echo(f"needs_review issues: {session_result.needs_review_count}")
+            for line in _review_count_lines(session_result):
+                click.echo(line)
             click.echo(f"Reports saved: {reports}")
             for line in _batch_interruption_lines(session_result):
                 click.echo(line)
@@ -445,13 +551,14 @@ def main(
                 click.echo(f"SARIF saved: {export_sarif}")
             if session_result.interrupted:
                 click.echo("[!] Exiting immediately due to prior interrupt.")
-                os._exit(1)
+                os._exit(130)
         else:
             click.echo(
                 f"\nAnalysis Complete. Verdict: {session_result.verdict}. "
                 f"Issues found: {session_result.issues_count}"
             )
-            click.echo(f"needs_review issues: {session_result.needs_review_count}")
+            for line in _review_count_lines(session_result):
+                click.echo(line)
             click.echo(f"Reports saved in: {session_result.project_root}")
             if export_sarif:
                 click.echo(f"SARIF saved: {export_sarif}")
@@ -460,7 +567,7 @@ def main(
 
     except Exception as e:
         logger.error(f"Analysis failed: {e}", exc_info=True)
-        sys.exit(1)
+        sys.exit(2)
     finally:
         if code_index:
             code_index.close()
@@ -497,6 +604,17 @@ def _batch_interruption_lines(session_result: ScanSessionResult) -> list[str]:
             "Use --resume to continue from the last checkpoint.",
         ]
     return ["Interrupted entries: none."]
+
+
+def _review_count_lines(session_result: ScanSessionResult) -> list[str]:
+    """Render visible findings and lifecycle obligations as separate metrics."""
+    return [
+        f"needs_review findings: {session_result.needs_review_count}",
+        (
+            "Unresolved candidate obligations: "
+            f"{session_result.unresolved_obligations_count}"
+        ),
+    ]
 
 
 if __name__ == "__main__":

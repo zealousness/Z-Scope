@@ -45,12 +45,18 @@ class RuleDrivenAnalyzer:
                 models=llm_cfg.models,
                 timeout=llm_cfg.timeout,
                 max_retries=llm_cfg.max_retries,
+                retry_until_available=getattr(
+                    llm_cfg, "retry_until_available", False
+                ),
                 max_tokens=llm_cfg.max_tokens,
                 base_url_rate_limit_per_minute=getattr(
                     llm_cfg, "base_url_rate_limit_per_minute", 0
                 ),
                 base_url_max_concurrent_requests=getattr(
                     llm_cfg, "base_url_max_concurrent_requests", 0
+                ),
+                global_max_concurrent_requests=getattr(
+                    config.analysis, "llm_max_inflight", 8
                 ),
                 supports_structured_output=getattr(
                     llm_cfg, "supports_structured_output", False

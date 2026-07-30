@@ -74,3 +74,25 @@ def test_sarif_stable_fingerprint_survives_line_shift(tmp_path: Path) -> None:
     ]["zscopeStableIssueFingerprint"]
 
     assert first_fp == second_fp
+
+
+def test_sarif_does_not_export_operational_obligations(tmp_path: Path) -> None:
+    report = {
+        "issues": [
+            {
+                "id": "ENGINE_FAILURE",
+                "record_role": "operational_obligation",
+                "candidate_disposition": "engine_failed",
+                "location": "src/demo.c:1",
+                "category": "engine_failure",
+                "description": "SVF timed out",
+            }
+        ]
+    }
+
+    path = save_sarif_report(report, tmp_path / "operational.sarif")
+    results = json.loads(path.read_text(encoding="utf-8"))["runs"][0][
+        "results"
+    ]
+
+    assert results == []

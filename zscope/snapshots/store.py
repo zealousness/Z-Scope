@@ -8,6 +8,7 @@ import logging
 import re
 import sqlite3
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
@@ -20,7 +21,9 @@ from .policy import (
 logger = logging.getLogger(__name__)
 
 _SQLITE_PRAGMA_LOCK = threading.Lock()
-_INDEX_FILENAME_PREFIX_LIMIT = 140
+# Keep the readable component short enough for legacy Windows MAX_PATH once
+# snapshot directories and the atomic-write ".tmp" suffix are included.
+_INDEX_FILENAME_PREFIX_LIMIT = 96
 _SYMBOL_CONTEXT_ARRAY_FIELDS = (
     "referenced_globals",
     "referenced_macros",
@@ -383,15 +386,22 @@ class SnapshotLockManager:
 class SnapshotStore:
     """Persist snapshots and final reports using index_name as the only key."""
 
-    def __init__(self, snapshot_dir: Path):
+    DEFAULT_CACHE_MAX_BYTES = 512 * 1024 * 1024
+
+    def __init__(
+        self,
+        snapshot_dir: Path,
+        *,
+        cache_max_bytes: int = DEFAULT_CACHE_MAX_BYTES,
+    ):
         self.snapshot_dir = Path(snapshot_dir)
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.snapshot_dir / "snapshots.db"
         self.lock_manager = SnapshotLockManager()
-        self._snapshot_cache: Dict[str, Dict[str, Any]] = {}
-        self._snapshot_cache_lock = threading.Lock()
-        self._final_report_cache: Dict[str, Dict[str, Any]] = {}
-        self._final_report_cache_lock = threading.Lock()
+        self._cache_max_bytes = max(0, int(cache_max_bytes))
+        self._cache_bytes = 0
+        self._cache: "OrderedDict[tuple[str, str], bytes]" = OrderedDict()
+        self._cache_lock = threading.RLock()
         self._init_db()
 
     @staticmethod
@@ -402,7 +412,7 @@ class SnapshotStore:
         readable = re.sub(r"[^A-Za-z0-9._-]+", "_", raw)
         readable = readable[:_INDEX_FILENAME_PREFIX_LIMIT] or "snapshot"
         digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-        return f"{readable}"
+        return f"{readable}-{digest}"
 
     @classmethod
     def _snapshot_filename(cls, index_name: str) -> str:
@@ -413,30 +423,86 @@ class SnapshotStore:
         return f"{cls._encoded_index_name(index_name)}_final.json"
 
     def _cached_snapshot(self, index_name: str) -> Optional[Dict[str, Any]]:
-        with self._snapshot_cache_lock:
-            snapshot = self._snapshot_cache.get(index_name)
-            return _clone_snapshot(snapshot) if snapshot is not None else None
+        return self._cached_json_value(("snapshot", index_name))
 
     def _cache_snapshot(self, index_name: str, snapshot: Dict[str, Any]) -> None:
-        with self._snapshot_cache_lock:
-            self._snapshot_cache[index_name] = _clone_snapshot(snapshot)
+        self._cache_json_value(("snapshot", index_name), snapshot)
 
     def _invalidate_snapshot_cache(self, index_name: str) -> None:
-        with self._snapshot_cache_lock:
-            self._snapshot_cache.pop(index_name, None)
+        self._invalidate_cache_key(("snapshot", index_name))
 
     def _cached_final_report(self, index_name: str) -> Optional[Dict[str, Any]]:
-        with self._final_report_cache_lock:
-            report = self._final_report_cache.get(index_name)
-            return _clone_snapshot(report) if report is not None else None
+        return self._cached_json_value(("report", index_name))
 
     def _cache_final_report(self, index_name: str, report: Dict[str, Any]) -> None:
-        with self._final_report_cache_lock:
-            self._final_report_cache[index_name] = _clone_snapshot(report)
+        self._cache_json_value(("report", index_name), report)
 
     def _invalidate_final_report_cache(self, index_name: str) -> None:
-        with self._final_report_cache_lock:
-            self._final_report_cache.pop(index_name, None)
+        self._invalidate_cache_key(("report", index_name))
+
+    def _cached_json_value(
+        self,
+        key: tuple[str, str],
+    ) -> Optional[Dict[str, Any]]:
+        with self._cache_lock:
+            encoded = self._cache.get(key)
+            if encoded is None:
+                return None
+            self._cache.move_to_end(key)
+        # Cached values are immutable JSON bytes.  Parsing gives each caller an
+        # isolated object without retaining duplicate deep-copied object graphs.
+        try:
+            value = json.loads(encoded)
+        except Exception:
+            self._invalidate_cache_key(key)
+            logger.exception(
+                "[snapshot-store] in-memory cache decode failed kind=%s index_name=%s",
+                key[0],
+                key[1],
+            )
+            return None
+        return value if isinstance(value, dict) else None
+
+    def _cache_json_value(
+        self,
+        key: tuple[str, str],
+        value: Dict[str, Any],
+    ) -> None:
+        if self._cache_max_bytes <= 0:
+            return
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if len(encoded) > self._cache_max_bytes:
+            self._invalidate_cache_key(key)
+            return
+        with self._cache_lock:
+            previous = self._cache.pop(key, None)
+            if previous is not None:
+                self._cache_bytes -= len(previous)
+            self._cache[key] = encoded
+            self._cache_bytes += len(encoded)
+            while self._cache and self._cache_bytes > self._cache_max_bytes:
+                _evicted_key, evicted = self._cache.popitem(last=False)
+                self._cache_bytes -= len(evicted)
+
+    def _invalidate_cache_key(self, key: tuple[str, str]) -> None:
+        with self._cache_lock:
+            encoded = self._cache.pop(key, None)
+            if encoded is not None:
+                self._cache_bytes -= len(encoded)
+
+    def cache_stats(self) -> Dict[str, int]:
+        """Return bounded-cache telemetry for diagnostics and regression tests."""
+
+        with self._cache_lock:
+            return {
+                "entries": len(self._cache),
+                "bytes": self._cache_bytes,
+                "max_bytes": self._cache_max_bytes,
+            }
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=30.0)
@@ -466,11 +532,28 @@ class SnapshotStore:
             """
         )
 
+    @staticmethod
+    def _create_validation_cache_schema(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS validation_cache (
+                cache_key TEXT PRIMARY KEY,
+                protocol TEXT NOT NULL,
+                candidate_schema_version TEXT NOT NULL,
+                environment_fingerprint TEXT NOT NULL,
+                result_json TEXT NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
     def _init_db(self) -> None:
         conn = self._connect()
         try:
             with _SQLITE_PRAGMA_LOCK:
                 conn.execute("PRAGMA journal_mode=WAL")
+            self._create_validation_cache_schema(conn)
+            conn.commit()
             table_exists = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='snapshots'"
             ).fetchone()
@@ -484,10 +567,80 @@ class SnapshotStore:
                 self._ensure_symbol_context_column(conn, columns)
                 self._ensure_callee_summary_column(conn, columns)
                 self._ensure_type_context_column(conn, columns)
+                self._audit_storage_filename_collisions(conn)
                 return
             self._migrate_to_index_schema(conn)
+            self._audit_storage_filename_collisions(conn)
         finally:
             conn.close()
+
+    def _audit_storage_filename_collisions(self, conn: sqlite3.Connection) -> None:
+        """Invalidate ambiguous legacy report links without deleting their files.
+
+        Snapshot payloads carry ``index_name`` and are therefore validated when
+        loaded. Final reports do not carry a storage identity, so a filename
+        referenced by multiple rows cannot be attributed safely. Clearing only
+        those database links forces regeneration while preserving every legacy
+        JSON file for manual recovery.
+        """
+
+        snapshot_collisions = [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT snapshot_file FROM snapshots "
+                "WHERE snapshot_file <> '' "
+                "GROUP BY snapshot_file HAVING COUNT(*) > 1"
+            )
+        ]
+        for snapshot_file in snapshot_collisions:
+            index_names = [
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT index_name FROM snapshots "
+                    "WHERE snapshot_file = ? ORDER BY index_name",
+                    (snapshot_file,),
+                )
+            ]
+            logger.error(
+                "[snapshot-store] shared legacy snapshot file detected "
+                "snapshot_file=%s index_names=%s "
+                "reason=snapshot_filename_collision",
+                snapshot_file,
+                index_names,
+            )
+
+        final_collisions = [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT final_report_file FROM snapshots "
+                "WHERE final_report_file IS NOT NULL AND final_report_file <> '' "
+                "GROUP BY final_report_file HAVING COUNT(*) > 1"
+            )
+        ]
+        if not final_collisions:
+            return
+        for final_report_file in final_collisions:
+            index_names = [
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT index_name FROM snapshots "
+                    "WHERE final_report_file = ? ORDER BY index_name",
+                    (final_report_file,),
+                )
+            ]
+            logger.error(
+                "[snapshot-store] invalidating ambiguous legacy final report links "
+                "final_report_file=%s index_names=%s "
+                "reason=final_report_filename_collision",
+                final_report_file,
+                index_names,
+            )
+            conn.execute(
+                "UPDATE snapshots SET final_report_file = NULL "
+                "WHERE final_report_file = ?",
+                (final_report_file,),
+            )
+        conn.commit()
 
     def _ensure_symbol_context_column(
         self,
@@ -973,6 +1126,109 @@ class SnapshotStore:
             final_file,
         )
 
+    def save_validation_result(
+        self,
+        cache_key: str,
+        result: Dict[str, Any],
+        *,
+        protocol: str,
+        candidate_schema_version: str,
+        environment_fingerprint: str,
+        max_entries: int = 8192,
+    ) -> None:
+        """Persist one successful contextual Validator response."""
+
+        if not cache_key or not isinstance(result, dict):
+            return
+        encoded = json.dumps(
+            result,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO validation_cache (
+                    cache_key, protocol, candidate_schema_version,
+                    environment_fingerprint, result_json
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(cache_key) DO UPDATE SET
+                    protocol=excluded.protocol,
+                    candidate_schema_version=excluded.candidate_schema_version,
+                    environment_fingerprint=excluded.environment_fingerprint,
+                    result_json=excluded.result_json,
+                    timestamp=CURRENT_TIMESTAMP
+                """,
+                (
+                    cache_key,
+                    protocol,
+                    candidate_schema_version,
+                    environment_fingerprint,
+                    encoded,
+                ),
+            )
+            if max_entries > 0:
+                conn.execute(
+                    """
+                    DELETE FROM validation_cache
+                    WHERE cache_key IN (
+                        SELECT cache_key FROM validation_cache
+                        ORDER BY timestamp DESC, cache_key DESC
+                        LIMIT -1 OFFSET ?
+                    )
+                    """,
+                    (int(max_entries),),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def load_validation_result(
+        self,
+        cache_key: str,
+        *,
+        protocol: str,
+        candidate_schema_version: str,
+        environment_fingerprint: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Load only an exactly compatible v3 validation result."""
+
+        if not cache_key:
+            return None
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT result_json FROM validation_cache
+                WHERE cache_key = ?
+                  AND protocol = ?
+                  AND candidate_schema_version = ?
+                  AND environment_fingerprint = ?
+                """,
+                (
+                    cache_key,
+                    protocol,
+                    candidate_schema_version,
+                    environment_fingerprint,
+                ),
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return None
+        try:
+            value = json.loads(str(row[0]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            logger.exception(
+                "[snapshot-store] validation cache decode failed cache_key=%s",
+                cache_key,
+            )
+            return None
+        return value if isinstance(value, dict) else None
+
     def load_snapshot(self, index_name: str) -> Optional[Dict[str, Any]]:
         index_name = str(index_name or "").strip()
         cached = self._cached_snapshot(index_name)
@@ -1021,7 +1277,7 @@ class SnapshotStore:
             return None
         _ensure_snapshot_symbol_context(snapshot)
         self._cache_snapshot(index_name, snapshot)
-        return _clone_snapshot(snapshot)
+        return snapshot
 
     def load_final_report(self, index_name: str) -> Optional[Dict[str, Any]]:
         index_name = str(index_name or "").strip()
@@ -1031,21 +1287,47 @@ class SnapshotStore:
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT final_report_file FROM snapshots WHERE index_name = ?",
+                "SELECT snapshot_file, final_report_file "
+                "FROM snapshots WHERE index_name = ?",
                 (index_name,),
             ).fetchone()
+            reference_count = (
+                conn.execute(
+                    "SELECT COUNT(*) FROM snapshots WHERE final_report_file = ?",
+                    (str(row[1]),),
+                ).fetchone()[0]
+                if row and row[1]
+                else 0
+            )
         finally:
             conn.close()
-        if not row or not row[0]:
+        if not row or not row[1]:
             logger.debug("[snapshot-store] final report miss index_name=%s", index_name)
             return None
-        final_path = self.snapshot_dir / str(row[0])
+        if int(reference_count) != 1:
+            logger.error(
+                "[snapshot-store] ambiguous final report reference index_name=%s "
+                "final_report_file=%s references=%s "
+                "reason=final_report_filename_collision",
+                index_name,
+                row[1],
+                reference_count,
+            )
+            return None
+        if self.load_snapshot(index_name) is None:
+            logger.error(
+                "[snapshot-store] final report owner snapshot is invalid index_name=%s "
+                "reason=final_report_snapshot_identity_invalid",
+                index_name,
+            )
+            return None
+        final_path = self.snapshot_dir / str(row[1])
         if not final_path.exists():
             logger.warning(
                 "[snapshot-store] final report file missing index_name=%s final_report_file=%s "
                 "reason=final_report_file_missing",
                 index_name,
-                row[0],
+                row[1],
             )
             return None
         try:
@@ -1058,11 +1340,11 @@ class SnapshotStore:
                 "[snapshot-store] final report read failed index_name=%s final_report_file=%s "
                 "reason=final_report_read_failed",
                 index_name,
-                row[0],
+                row[1],
             )
             return None
         self._cache_final_report(index_name, report)
-        return _clone_snapshot(report)
+        return report
 
     def get_fingerprints(self, index_name: str) -> Optional[Dict[str, str]]:
         conn = self._connect()
@@ -1188,6 +1470,8 @@ class SnapshotStore:
         current_symbol_context: Dict[str, Any],
     ) -> tuple[bool, Optional[str]]:
         snapshot = self.load_snapshot(index_name)
+        if snapshot is None:
+            return True, "no_snapshot"
         if snapshot is not None and (
             "callees" in snapshot
             or "callees_truncation" in snapshot
@@ -1281,6 +1565,7 @@ class SnapshotStore:
         return [str(row[0]) for row in rows]
 
     def delete_snapshot(self, index_name: str) -> None:
+        files_to_delete: list[str] = []
         conn = self._connect()
         try:
             row = conn.execute(
@@ -1288,13 +1573,49 @@ class SnapshotStore:
                 (index_name,),
             ).fetchone()
             if row:
-                (self.snapshot_dir / str(row[0])).unlink(missing_ok=True)
-                if row[1]:
-                    (self.snapshot_dir / str(row[1])).unlink(missing_ok=True)
+                for column, raw_file in (
+                    ("snapshot_file", row[0]),
+                    ("final_report_file", row[1]),
+                ):
+                    filename = str(raw_file or "")
+                    if not filename:
+                        continue
+                    references = int(
+                        conn.execute(
+                            f"SELECT COUNT(*) FROM snapshots "
+                            f"WHERE {column} = ? AND index_name <> ?",
+                            (filename, index_name),
+                        ).fetchone()[0]
+                    )
+                    if references == 0:
+                        files_to_delete.append(filename)
+                    else:
+                        logger.warning(
+                            "[snapshot-store] preserving shared legacy file "
+                            "index_name=%s file=%s references=%d "
+                            "reason=shared_storage_file",
+                            index_name,
+                            filename,
+                            references,
+                        )
             conn.execute("DELETE FROM snapshots WHERE index_name = ?", (index_name,))
             conn.commit()
         finally:
             conn.close()
+        snapshot_root = self.snapshot_dir.resolve()
+        for filename in dict.fromkeys(files_to_delete):
+            candidate = (self.snapshot_dir / filename).resolve()
+            try:
+                candidate.relative_to(snapshot_root)
+            except ValueError:
+                logger.error(
+                    "[snapshot-store] refusing to delete file outside snapshot directory "
+                    "index_name=%s file=%s reason=unsafe_storage_path",
+                    index_name,
+                    filename,
+                )
+                continue
+            candidate.unlink(missing_ok=True)
         self._invalidate_snapshot_cache(index_name)
         self._invalidate_final_report_cache(index_name)
         self.lock_manager.invalidate(index_name)

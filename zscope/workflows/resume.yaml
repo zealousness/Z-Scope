@@ -1,7 +1,6 @@
 name: resume
 mode: resume
 description: Continue interrupted batch scans by skipping completed functions.
-entry_strategy: configured_or_discovered
 steps:
   - id: discover_entries
     scope: session

@@ -35,7 +35,7 @@ class SvfRunner:
         self,
         svf_bin_dir: str = "",
         heap_limit_mb: int = 32768,
-        timeout: int = 1800,
+        timeout: Optional[float] = 1800.0,
     ):
         self.svf_bin_dir = Path(svf_bin_dir) if svf_bin_dir else None
         self.heap_limit_mb = heap_limit_mb
@@ -122,7 +122,7 @@ class SvfRunner:
                 proc.returncode,
             )
         except subprocess.TimeoutExpired:
-            logger.error("wpa-ander timed out after %ds", self.timeout)
+            logger.error("wpa-ander timed out after %ss", self.timeout)
             result.timed_out = True
             result.stderr = f"Timeout after {self.timeout}s"
         except FileNotFoundError:
@@ -158,7 +158,7 @@ class SvfRunner:
                 len(result.bugs),
             )
         except subprocess.TimeoutExpired:
-            logger.error("saber timed out after %ds", self.timeout)
+            logger.error("saber timed out after %ss", self.timeout)
             result.timed_out = True
             result.stderr = f"Timeout after {self.timeout}s"
         except FileNotFoundError:

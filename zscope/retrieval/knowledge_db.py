@@ -3,6 +3,7 @@ SQLite knowledge database for storing extracted code structure.
 Persists function signatures, type definitions, call graph, macros, etc.
 """
 
+import json
 import logging
 import sqlite3
 import threading
@@ -17,8 +18,19 @@ logger = logging.getLogger(__name__)
 class KnowledgeDB:
     """SQLite-backed code knowledge store."""
 
-    SCHEMA_VERSION = "13"
+    SCHEMA_VERSION = "14"
     CALLGRAPH_READ_CONCURRENCY = 8
+    TAINT_SIGNATURE_IDENTITY = (
+        "source_func",
+        "sink_func",
+        "bug_type",
+        "file_path",
+        "line",
+        "tool",
+        "svf_group",
+    )
+    TAINT_REINDEX_REQUIRED_KEY = "taint_signatures_reindex_required"
+    TAINT_REINDEX_REASON_KEY = "taint_signatures_reindex_reason"
 
     def __init__(self, db_path: str):
         self._db_path = Path(db_path)
@@ -101,6 +113,146 @@ class KnowledgeDB:
                 self._thread_local.conn = conn
                 self._connections.append(conn)
             return conn
+
+    @classmethod
+    def _taint_signature_identity_is_current(
+        cls,
+        conn: sqlite3.Connection,
+    ) -> bool:
+        """Return whether the table enforces the complete structural flow identity."""
+        table_columns = {
+            str(row["name"]): bool(row["notnull"])
+            for row in conn.execute("PRAGMA table_info(taint_signatures)").fetchall()
+        }
+        if not all(table_columns.get(name, False) for name in cls.TAINT_SIGNATURE_IDENTITY):
+            return False
+
+        for index_row in conn.execute("PRAGMA index_list(taint_signatures)").fetchall():
+            if not bool(index_row["unique"]):
+                continue
+            index_name = str(index_row["name"])
+            quoted_index_name = '"' + index_name.replace('"', '""') + '"'
+            columns = tuple(
+                str(row["name"])
+                for row in conn.execute(
+                    f"PRAGMA index_info({quoted_index_name})"
+                ).fetchall()
+            )
+            if columns == cls.TAINT_SIGNATURE_IDENTITY:
+                return True
+        return False
+
+    @classmethod
+    def _migrate_taint_signature_identity(
+        cls,
+        conn: sqlite3.Connection,
+    ) -> None:
+        """Atomically widen taint identity and force one complete SVF refresh.
+
+        The old location-only UNIQUE constraint may already have discarded distinct
+        source/sink flows. Surviving rows are retained, but every cache layer that
+        can skip SVF is invalidated so the missing flows are regenerated.
+        """
+        if cls._taint_signature_identity_is_current(conn):
+            return
+
+        replacement_table = "_taint_signatures_schema_v14"
+        existing_replacement = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (replacement_table,),
+        ).fetchone()
+        if existing_replacement:
+            raise RuntimeError(
+                "Refusing taint-signature migration: temporary table "
+                f"{replacement_table!r} already exists"
+            )
+
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            old_count = int(
+                conn.execute("SELECT COUNT(*) AS count FROM taint_signatures").fetchone()[
+                    "count"
+                ]
+            )
+            conn.execute(
+                f"""
+                CREATE TABLE "{replacement_table}" (
+                    id          INTEGER PRIMARY KEY,
+                    source_func TEXT NOT NULL DEFAULT '',
+                    sink_func   TEXT NOT NULL DEFAULT '',
+                    bug_type    TEXT NOT NULL,
+                    file_path   TEXT NOT NULL DEFAULT '',
+                    line        INTEGER NOT NULL DEFAULT 0,
+                    tool        TEXT NOT NULL DEFAULT 'saber',
+                    svf_group   TEXT NOT NULL DEFAULT 'default',
+                    UNIQUE(
+                        source_func,
+                        sink_func,
+                        bug_type,
+                        file_path,
+                        line,
+                        tool,
+                        svf_group
+                    )
+                )
+                """
+            )
+            conn.execute(
+                f"""
+                INSERT OR IGNORE INTO "{replacement_table}"
+                    (id, source_func, sink_func, bug_type, file_path, line, tool, svf_group)
+                SELECT
+                    id,
+                    COALESCE(source_func, ''),
+                    COALESCE(sink_func, ''),
+                    bug_type,
+                    COALESCE(file_path, ''),
+                    COALESCE(line, 0),
+                    COALESCE(tool, 'saber'),
+                    COALESCE(svf_group, 'default')
+                FROM taint_signatures
+                ORDER BY id
+                """
+            )
+            migrated_count = int(
+                conn.execute(
+                    f'SELECT COUNT(*) AS count FROM "{replacement_table}"'
+                ).fetchone()["count"]
+            )
+            conn.execute("DROP TABLE taint_signatures")
+            conn.execute(
+                f'ALTER TABLE "{replacement_table}" RENAME TO taint_signatures'
+            )
+            conn.execute("CREATE INDEX idx_taint_type ON taint_signatures(bug_type)")
+
+            conn.execute(
+                "DELETE FROM metadata "
+                "WHERE key IN ('svf_source_hash', 'svf_artifact_hash') "
+                "OR key LIKE 'svf_tool_status:%' "
+                "OR key LIKE 'svf_db_import:%'"
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
+                (cls.TAINT_REINDEX_REQUIRED_KEY, "1"),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
+                (
+                    cls.TAINT_REINDEX_REASON_KEY,
+                    "schema_v14_complete_taint_flow_identity",
+                ),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+        logger.warning(
+            "[taint-migration] widened flow identity; preserved=%d collapsed_duplicates=%d; "
+            "invalidated SVF caches and marked reindex required",
+            migrated_count,
+            old_count - migrated_count,
+        )
 
     def _create_tables(self):
         c = self._conn
@@ -298,14 +450,22 @@ class KnowledgeDB:
 
             CREATE TABLE IF NOT EXISTS taint_signatures (
                 id          INTEGER PRIMARY KEY,
-                source_func TEXT,
-                sink_func   TEXT,
+                source_func TEXT NOT NULL DEFAULT '',
+                sink_func   TEXT NOT NULL DEFAULT '',
                 bug_type    TEXT NOT NULL,
-                file_path   TEXT,
-                line        INTEGER DEFAULT 0,
-                tool        TEXT DEFAULT 'saber',
-                svf_group   TEXT DEFAULT 'default',
-                UNIQUE(bug_type, file_path, line, svf_group)
+                file_path   TEXT NOT NULL DEFAULT '',
+                line        INTEGER NOT NULL DEFAULT 0,
+                tool        TEXT NOT NULL DEFAULT 'saber',
+                svf_group   TEXT NOT NULL DEFAULT 'default',
+                UNIQUE(
+                    source_func,
+                    sink_func,
+                    bug_type,
+                    file_path,
+                    line,
+                    tool,
+                    svf_group
+                )
             );
             CREATE INDEX IF NOT EXISTS idx_taint_type ON taint_signatures(bug_type);
 
@@ -435,12 +595,15 @@ class KnowledgeDB:
             pass  # 列已存在
 
         # 兼容旧 DB：补加 svf_group 列
-        try:
-            c.execute("ALTER TABLE indirect_calls ADD COLUMN svf_group TEXT DEFAULT 'default'")
-            c.execute("ALTER TABLE taint_signatures ADD COLUMN svf_group TEXT DEFAULT 'default'")
-            c.commit()
-        except sqlite3.OperationalError:
-            pass
+        for column_sql in (
+            "ALTER TABLE indirect_calls ADD COLUMN svf_group TEXT DEFAULT 'default'",
+            "ALTER TABLE taint_signatures ADD COLUMN svf_group TEXT DEFAULT 'default'",
+        ):
+            try:
+                c.execute(column_sql)
+                c.commit()
+            except sqlite3.OperationalError:
+                pass
 
         # 兼容旧 DB：历史 indirect_calls 的唯一键按函数聚合，会丢失同一 caller
         # 中多个函数指针调用点的候选事实。重建表以加入 callsite identity；旧行
@@ -522,6 +685,11 @@ class KnowledgeDB:
             c.commit()
         except sqlite3.OperationalError:
             pass
+
+        # Schema v14 widens the taint identity after the v12/v13 call-graph
+        # migrations. Older identities may have collapsed distinct flows, so
+        # this migration also invalidates every reusable SVF materialization.
+        self._migrate_taint_signature_identity(c)
 
         for column_sql in (
             "ALTER TABLE global_variables ADD COLUMN storage_class TEXT DEFAULT 'unknown'",
@@ -1058,7 +1226,14 @@ class KnowledgeDB:
 
     def set_svf_hash(self, hash_value: str):
         """记录 SVF 源码聚合哈希。"""
-        self.set_metadata("svf_source_hash", hash_value)
+        conn = self._conn
+        self._set_metadata_uncommitted("svf_source_hash", hash_value)
+        if hash_value:
+            conn.execute(
+                "DELETE FROM metadata WHERE key IN (?, ?)",
+                (self.TAINT_REINDEX_REQUIRED_KEY, self.TAINT_REINDEX_REASON_KEY),
+            )
+        conn.commit()
 
     def purge_svf_data(
         self,
@@ -1928,6 +2103,7 @@ class KnowledgeDB:
         release_func: str,
         *,
         limit: int = 100,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         rows = self._conn.execute(
             """
@@ -1941,9 +2117,10 @@ class KnowledgeDB:
                     AND rel.callee_name = ?
               )
             GROUP BY caller_name, caller_file
-            LIMIT ?
+            ORDER BY caller_name, caller_file
+            LIMIT ? OFFSET ?
             """,
-            (acquire_func, release_func, limit),
+            (acquire_func, release_func, limit, max(0, int(offset))),
         ).fetchall()
         return [
             {
@@ -2150,7 +2327,15 @@ class KnowledgeDB:
             "INSERT OR IGNORE INTO taint_signatures "
             "(source_func, sink_func, bug_type, file_path, line, tool, svf_group) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (source_func, sink_func, bug_type, file_path, line, tool, svf_group),
+            (
+                str(source_func or ""),
+                str(sink_func or ""),
+                str(bug_type or ""),
+                str(file_path or ""),
+                int(line or 0),
+                str(tool or "saber"),
+                str(svf_group or "default"),
+            ),
         )
         return max(0, int(cursor.rowcount or 0))
 
@@ -2160,14 +2345,17 @@ class KnowledgeDB:
                 "SELECT source_func, sink_func, bug_type, file_path, line, tool, "
                 "MIN(svf_group) AS svf_group, GROUP_CONCAT(DISTINCT svf_group) AS svf_groups "
                 "FROM taint_signatures WHERE bug_type LIKE ? "
-                "GROUP BY bug_type, file_path, line, tool LIMIT ?",
+                "GROUP BY source_func, sink_func, bug_type, file_path, line, tool "
+                "ORDER BY file_path, line, bug_type, tool, source_func, sink_func LIMIT ?",
                 (f"%{bug_type}%", limit),
             ).fetchall()
         else:
             rows = self._conn.execute(
                 "SELECT source_func, sink_func, bug_type, file_path, line, tool, "
                 "MIN(svf_group) AS svf_group, GROUP_CONCAT(DISTINCT svf_group) AS svf_groups "
-                "FROM taint_signatures GROUP BY bug_type, file_path, line, tool LIMIT ?",
+                "FROM taint_signatures "
+                "GROUP BY source_func, sink_func, bug_type, file_path, line, tool "
+                "ORDER BY file_path, line, bug_type, tool, source_func, sink_func LIMIT ?",
                 (limit,),
             ).fetchall()
         return [self._row_with_svf_groups(r) for r in rows]
@@ -2182,9 +2370,14 @@ class KnowledgeDB:
         ).fetchone()
         return dict(row) if row else None
 
-    def get_enriched_taint_bugs(self, bug_type: str = "", func_name: str = "",
-                                limit: int = 50,
-                                func_names: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    def get_enriched_taint_bugs(
+        self,
+        bug_type: str = "",
+        func_name: str = "",
+        limit: int = 50,
+        func_names: Optional[List[str]] = None,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
         """污点缺陷 JOIN 函数表，返回带 AST 上下文的富结果。"""
         where = ["1=1"]
         params: list = []
@@ -2192,34 +2385,44 @@ class KnowledgeDB:
             where.append("t.bug_type LIKE ?")
             params.append(f"%{bug_type}%")
         if func_name:
-            where.append("(t.source_func = ? OR f.name = ?)")
-            params.extend([func_name, func_name])
+            where.append("(t.source_func = ? OR t.sink_func = ? OR f.name = ?)")
+            params.extend([func_name, func_name, func_name])
         normalized_func_names = sorted(
             {str(name).strip() for name in (func_names or []) if str(name).strip()}
         )
         if normalized_func_names:
-            placeholders = ",".join("?" for _ in normalized_func_names)
             where.append(
-                f"(t.source_func IN ({placeholders}) "
-                f"OR t.sink_func IN ({placeholders}) "
-                f"OR f.name IN ({placeholders}))"
+                "EXISTS ("
+                "SELECT 1 FROM json_each(?) reachable "
+                "WHERE reachable.value = t.source_func "
+                "OR reachable.value = t.sink_func "
+                "OR reachable.value = f.name"
+                ")"
             )
-            params.extend(normalized_func_names)
-            params.extend(normalized_func_names)
-            params.extend(normalized_func_names)
-        params.append(limit)
+            params.append(
+                json.dumps(
+                    normalized_func_names,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+        params.extend([limit, max(0, int(offset))])
         rows = self._conn.execute(
             f"SELECT t.*, f.name AS func_name, f.signature, "
             f"f.start_line AS func_start, f.end_line AS func_end "
             f"FROM ("
             f"SELECT source_func, sink_func, bug_type, file_path, line, tool, "
             f"MIN(svf_group) AS svf_group, GROUP_CONCAT(DISTINCT svf_group) AS svf_groups "
-            f"FROM taint_signatures GROUP BY bug_type, file_path, line, tool"
+            f"FROM taint_signatures "
+            f"GROUP BY source_func, sink_func, bug_type, file_path, line, tool"
             f") t "
             f"LEFT JOIN functions f ON f.file_path = t.file_path "
             f"AND f.start_line <= t.line AND f.end_line >= t.line "
             f"AND f.is_declaration = 0 "
-            f"WHERE {' AND '.join(where)} LIMIT ?",
+            f"WHERE {' AND '.join(where)} "
+            f"ORDER BY t.file_path, t.line, t.bug_type, t.tool, "
+            f"t.source_func, t.sink_func, f.file_path, f.start_line, "
+            f"f.name, f.signature LIMIT ? OFFSET ?",
             params,
         ).fetchall()
         return [self._row_with_svf_groups(r) for r in rows]
