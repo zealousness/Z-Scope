@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, Iterator, List
 
 from ..semantics.defaults import default_local_pattern_semantics
 from ..semantics.models import LocalPatternSemantics, classify_api_name
@@ -21,8 +23,11 @@ IGNORED_SOURCE_SCAN_PARTS = {
     ".mypy_cache",
     ".pytest_cache",
     ".zscope_snapshots",
+    ".zscope_conversations",
     "zscope.egg-info",
+    "benchmark_runs",
     "build",
+    "codeql_runs",
     "tmp",
 }
 
@@ -72,14 +77,13 @@ class LocalPatternSemanticBuilder:
             rf"^\s*#\s*define\s+(?P<alias>[A-Za-z_]\w*)\s+(?P<base>{base_pattern})\s*$",
             re.MULTILINE,
         )
+        started = time.monotonic()
+        scanned_files = 0
         for root in roots:
             if not root.exists():
                 continue
-            for path in root.rglob("*"):
-                if skip_semantic_source_scan_path(path, self.exclude_paths):
-                    continue
-                if not path.is_file() or path.suffix.lower() not in SOURCE_SUFFIXES:
-                    continue
+            for path in iter_semantic_source_files(root, self.exclude_paths):
+                scanned_files += 1
                 try:
                     if path.stat().st_size > 1_000_000:
                         continue
@@ -90,6 +94,12 @@ class LocalPatternSemanticBuilder:
                     alias = match.group("alias")
                     if alias not in {"size_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t"}:
                         semantics.type_aliases[alias] = re.sub(r"\s+", " ", match.group("base")).strip()
+        logger.info(
+            "Local typedef semantics scan: roots=%d source_files=%d duration=%.2fs",
+            len(roots),
+            scanned_files,
+            time.monotonic() - started,
+        )
         return semantics
 
     def semantics_from_user_config(self) -> LocalPatternSemantics:
@@ -153,9 +163,25 @@ class LocalPatternSemanticBuilder:
         return semantics
 
 
-def skip_semantic_source_scan_path(path: Path, exclude_paths: Iterable[Path]) -> bool:
-    if any(part in IGNORED_SOURCE_SCAN_PARTS for part in path.parts):
-        return True
+def _is_generated_semantic_directory_name(name: str) -> bool:
+    normalized = str(name or "").strip()
+    return (
+        normalized in IGNORED_SOURCE_SCAN_PARTS
+        or normalized.startswith(".zscope_")
+    )
+
+
+def _resolved_paths(paths: Iterable[Path]) -> tuple[Path, ...]:
+    resolved: list[Path] = []
+    for path in paths:
+        try:
+            resolved.append(Path(path).resolve())
+        except OSError:
+            continue
+    return tuple(resolved)
+
+
+def _path_is_excluded(path: Path, exclude_paths: Iterable[Path]) -> bool:
     try:
         resolved = path.resolve()
     except OSError:
@@ -164,6 +190,48 @@ def skip_semantic_source_scan_path(path: Path, exclude_paths: Iterable[Path]) ->
         resolved == excluded or excluded in resolved.parents
         for excluded in exclude_paths
     )
+
+
+def iter_semantic_source_files(
+    root: Path,
+    exclude_paths: Iterable[Path],
+) -> Iterator[Path]:
+    """Yield source files without descending into generated/excluded trees."""
+
+    resolved_excludes = _resolved_paths(exclude_paths)
+    try:
+        resolved_root = Path(root).resolve()
+    except OSError:
+        return
+
+    for current, directory_names, file_names in os.walk(
+        resolved_root,
+        topdown=True,
+        followlinks=False,
+    ):
+        current_path = Path(current)
+        directory_names[:] = [
+            name
+            for name in directory_names
+            if not _is_generated_semantic_directory_name(name)
+            and not _path_is_excluded(current_path / name, resolved_excludes)
+        ]
+        for name in file_names:
+            path = current_path / name
+            if path.suffix.lower() not in SOURCE_SUFFIXES:
+                continue
+            if _path_is_excluded(path, resolved_excludes):
+                continue
+            yield path
+
+
+def skip_semantic_source_scan_path(path: Path, exclude_paths: Iterable[Path]) -> bool:
+    if any(
+        _is_generated_semantic_directory_name(part)
+        for part in path.parts
+    ):
+        return True
+    return _path_is_excluded(path, _resolved_paths(exclude_paths))
 
 
 def add_api_for_config_kind(
