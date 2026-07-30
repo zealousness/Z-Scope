@@ -152,6 +152,75 @@ def test_validator_agent_run_accepts_high_confidence_fast_path() -> None:
     assert response.metadata["validator_fast_path_accepted"] == 1
 
 
+def test_validator_agent_run_accepts_uncertain_fast_path_as_terminal_review() -> None:
+    class FakeLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.max_iterations = []
+
+        def run_conversation_with_tools(self, **kwargs):
+            self.calls += 1
+            self.max_iterations.append(kwargs.get("max_iterations"))
+            return {
+                "content": json.dumps(
+                    {
+                        "type": "validation_result",
+                        "issue_id": "ISSUE_REVIEW",
+                        "verdict": "uncertain",
+                        "confidence_score": 0.62,
+                        "reasoning": "The compact evidence does not prove the guard contract.",
+                        "positive_evidence": ["source and sink are structurally connected"],
+                        "negative_evidence": [],
+                        "missing_context": ["callee guard contract"],
+                    }
+                ),
+                "conversation": [],
+                "context_tokens": 10,
+                "cumulative_prompt_tokens": 20,
+                "cumulative_completion_tokens": 5,
+                "cumulative_total_tokens": 25,
+                "iterations": 1,
+                "tool_call_count": 0,
+            }
+
+    llm = FakeLLM()
+    agent = ValidatorAgent(llm, [])
+
+    response = agent.run(
+        {
+            "finding": {"id": "ISSUE_REVIEW"},
+            "context_code": "",
+            "evidence_pack": {
+                "positive_evidence": ["source and sink are structurally connected"],
+                "missing_context": ["callee guard contract"],
+            },
+        },
+        max_retries=2,
+    )
+
+    assert response.success is True
+    assert response.data["verdict"] == "uncertain"
+    assert response.data["validator_fast_path"] is True
+    assert llm.calls == 1
+    assert llm.max_iterations == [1]
+    assert response.metadata["validator_fast_path_attempted"] == 1
+    assert response.metadata["validator_fast_path_accepted"] == 1
+
+
+def test_validator_agent_uncertain_fast_path_requires_reasoning() -> None:
+    assert (
+        ValidatorAgent._accept_fast_path_result(
+            {
+                "type": "validation_result",
+                "verdict": "uncertain",
+                "reasoning": "  ",
+                "missing_context": ["callee guard contract"],
+            }
+        )
+        is False
+    )
+
+
 def test_validator_agent_repairs_prose_without_json() -> None:
     class FakeLLM:
         models = ["repair-model"]
