@@ -283,31 +283,16 @@ class ValidatorAgent(JsonToolAgent):
     @classmethod
     def _accept_fast_path_result(cls, data: Dict[str, Any]) -> bool:
         verdict = cls._normalize_verdict_value(data.get("verdict"), data.get("is_valid"))
-        # ``uncertain`` is a complete validation-group decision: the compact
-        # deterministic evidence did not prove either a vulnerability or a
-        # contradiction.  Falling through to a long tool conversation here
-        # used to spend up to 50 iterations rediscovering the same absence of
-        # proof.  Preserve the candidate as one actionable needs-review group
-        # and reserve deep investigation for separately selected conflicting,
-        # high-risk candidates.
-        if verdict == "uncertain":
-            return bool(str(data.get("reasoning") or "").strip())
-        if verdict not in {"verified", "rejected"}:
-            return False
-        try:
-            confidence = float(data.get("confidence_score", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            confidence = 0.0
-        if confidence < 0.85:
-            return False
-        missing = data.get("missing_context") or []
-        if isinstance(missing, str):
-            missing = [missing] if missing.strip() else []
-        if missing:
-            return False
-        if verdict == "verified":
-            return bool(data.get("source")) and bool(data.get("sink")) and bool(data.get("positive_evidence"))
-        return bool(data.get("negative_evidence") or data.get("guard_analysis") or data.get("reasoning"))
+        # Any reasoned structured verdict closes the Validator's decision
+        # obligation.  Confidence/evidence promotion belongs to the validation
+        # policy layer: low-confidence ``verified`` is routed to needs-review,
+        # and ``rejected`` cannot suppress a candidate without deterministic
+        # proof.  Retrying either result with up to 50 retrieval turns merely
+        # duplicates analysis and bypasses those centralized gates.
+        return bool(
+            verdict in {"verified", "rejected", "uncertain"}
+            and str(data.get("reasoning") or "").strip()
+        )
 
     @staticmethod
     def _merge_result_metadata(target: Dict[str, Any], result: Dict[str, Any]) -> None:
