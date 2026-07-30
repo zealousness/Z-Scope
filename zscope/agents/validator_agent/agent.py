@@ -283,6 +283,15 @@ class ValidatorAgent(JsonToolAgent):
     @classmethod
     def _accept_fast_path_result(cls, data: Dict[str, Any]) -> bool:
         verdict = cls._normalize_verdict_value(data.get("verdict"), data.get("is_valid"))
+        # ``uncertain`` is a complete validation-group decision: the compact
+        # deterministic evidence did not prove either a vulnerability or a
+        # contradiction.  Falling through to a long tool conversation here
+        # used to spend up to 50 iterations rediscovering the same absence of
+        # proof.  Preserve the candidate as one actionable needs-review group
+        # and reserve deep investigation for separately selected conflicting,
+        # high-risk candidates.
+        if verdict == "uncertain":
+            return bool(str(data.get("reasoning") or "").strip())
         if verdict not in {"verified", "rejected"}:
             return False
         try:
