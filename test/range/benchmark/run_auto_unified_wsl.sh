@@ -28,6 +28,7 @@ export LLVM_COMPILER=clang
 export LLVM_CC_NAME=clang-18
 
 config_path="test/range/zscope.auto_unified.yaml"
+knowledge_db_path="test/range/.zscope_knowledge_auto_unified_wsl/code_knowledge.db"
 run_id="${1:-auto_unified_wsl_$(date +%Y%m%d_%H%M%S)}"
 run_dir="test/range/benchmark_runs/${run_id}"
 mkdir -p "${run_dir}"
@@ -77,9 +78,9 @@ if clangd_path != "clangd":
     raise SystemExit(f"[range] ERROR: WSL config must use clangd_path=clangd, got {clangd_path!r}")
 if semantic_dedup.get("enabled", True) is not True:
     raise SystemExit("[range] ERROR: expected reporting.semantic_dedup.enabled to default to true")
-if semantic_dedup.get("llm_enabled", True) is not True:
-    raise SystemExit("[range] ERROR: expected reporting.semantic_dedup.llm_enabled to default to true")
-print("[range] config preflight passed: unified backend + automatic entry discovery + *.h headers + LLM semantic dedup")
+if semantic_dedup.get("llm_enabled", False) is not False:
+    raise SystemExit("[range] ERROR: final LLM semantic dedup must remain disabled for the benchmark")
+print("[range] config preflight passed: unified backend + automatic entry discovery + *.h headers + programmatic final dedup")
 PY
 
 echo "[range] clean generated WSL benchmark state"
@@ -116,11 +117,17 @@ if [[ -f test/range/zscope_batch_report.md ]]; then
 fi
 cp "${config_path}" "${run_dir}/zscope.auto_unified.yaml"
 
+entry_coverage_rc=2
 if [[ -f "${run_dir}/entry_functions_list.json" ]]; then
+  set +e
   python3 test/range/benchmark/check_entry_coverage.py \
+    --root test/range \
     --entries "${run_dir}/entry_functions_list.json" \
     --truth test/range/benchmark/ground_truth.json \
-    > "${run_dir}/entry_coverage.json" || true
+    --knowledge-db "${knowledge_db_path}" \
+    > "${run_dir}/entry_coverage.json"
+  entry_coverage_rc="$?"
+  set -e
 fi
 
 if [[ -f "${run_dir}/zscope_batch_report.json" ]]; then
@@ -135,7 +142,7 @@ if [[ -f "${run_dir}/zscope_batch_report.json" ]]; then
     --view with_needs_review
 fi
 
-python3 - "${run_dir}" "${scan_rc}" "${wall_seconds}" <<'PY'
+python3 - "${run_dir}" "${scan_rc}" "${wall_seconds}" "${entry_coverage_rc}" <<'PY'
 import json
 import re
 import sys
@@ -144,6 +151,7 @@ from pathlib import Path
 run_dir = Path(sys.argv[1])
 scan_rc = int(sys.argv[2])
 wall_seconds = int(sys.argv[3])
+entry_coverage_rc = int(sys.argv[4])
 
 def load_json(path):
     if path.exists():
@@ -151,13 +159,28 @@ def load_json(path):
     return {}
 
 entries = load_json(run_dir / "entry_functions_list.json")
+entry_coverage = load_json(run_dir / "entry_coverage.json")
 report = load_json(run_dir / "zscope_batch_report.json")
 default_eval = load_json(run_dir / "evaluation.json")
 review_eval = load_json(run_dir / "evaluation.with_needs_review.json")
 build_log = (run_dir / "build_cpg.log").read_text(encoding="utf-8", errors="replace") if (run_dir / "build_cpg.log").exists() else ""
 scan_log = (run_dir / "zscope_run.log").read_text(encoding="utf-8", errors="replace") if (run_dir / "zscope_run.log").exists() else ""
 combined_log = build_log + "\n" + scan_log
-scan_completed = bool(report) and "Batch Analysis Complete." in scan_log
+report_emitted = bool(report)
+completion_marker_observed = "Batch Analysis Complete." in scan_log
+manifest = report.get("run_manifest") if isinstance(report.get("run_manifest"), dict) else {}
+report_completeness = str(
+    report.get("completeness") or manifest.get("completeness") or ""
+).lower()
+manifest_valid = manifest.get("valid") is True
+valid_scan_exit = scan_rc in {0, 1}
+scan_completed = (
+    report_emitted
+    and report_completeness == "complete"
+    and manifest_valid
+    and valid_scan_exit
+)
+benchmark_valid = scan_completed and entry_coverage_rc == 0
 
 metric_keys = [
     "report_issue_count",
@@ -176,11 +199,19 @@ metric_keys = [
 summary = {
     "run_id": run_dir.name,
     "scan_return_code": scan_rc,
+    "process_ended": True,
+    "report_emitted": report_emitted,
+    "completion_marker_observed": completion_marker_observed,
     "scan_completed": scan_completed,
+    "benchmark_valid": benchmark_valid,
+    "report_completeness": report_completeness or None,
+    "run_manifest_valid": manifest_valid,
     "scan_exit_semantics": (
-        "zscope_cli_returns_1_when_findings_present"
+        "valid_complete_scan_with_actionable_findings"
         if scan_completed and scan_rc == 1
-        else "process_exit_code"
+        else "valid_complete_scan"
+        if scan_completed
+        else "process_ended_with_incomplete_or_invalid_scan"
     ),
     "scan_wall_seconds": wall_seconds,
     "mode": "wsl_auto_discover_entries_unified_backend_with_svf_required",
@@ -191,11 +222,16 @@ summary = {
         "evaluation_default": str((run_dir / "evaluation.json").resolve()),
         "evaluation_with_needs_review": str((run_dir / "evaluation.with_needs_review.json").resolve()),
         "entries": str((run_dir / "entry_functions_list.json").resolve()),
+        "entry_coverage": str((run_dir / "entry_coverage.json").resolve()),
         "build_cpg_log": str((run_dir / "build_cpg.log").resolve()),
         "zscope_run_log": str((run_dir / "zscope_run.log").resolve()),
     },
     "entry_discovery": {
         "entries_discovered": len(entries.get("functions", [])),
+        "coverage_return_code": entry_coverage_rc,
+        "coverage_mode": entry_coverage.get("mode"),
+        "reachable_function_nodes": entry_coverage.get("reachable_function_nodes"),
+        "missing_truth_reachability": entry_coverage.get("missing_truth_reachability", []),
     },
     "report_summary": report.get("summary", {}),
     "benchmark_metrics": {
@@ -219,9 +255,27 @@ summary = {
 print(json.dumps(summary, ensure_ascii=False, indent=2))
 PY
 
-if [[ "${scan_rc}" -ne 0 && ! -f "${run_dir}/zscope_batch_report.json" ]]; then
-  echo "[range] ERROR: scan failed with rc=${scan_rc} before writing a batch report; see ${run_dir}/zscope_run.log" >&2
+run_validity="$(python3 - "${run_dir}/run_summary.json" <<'PY'
+import json
+import sys
+
+summary = json.loads(open(sys.argv[1], encoding="utf-8").read())
+if summary.get("benchmark_valid") is True:
+    print("valid")
+elif int(summary.get("scan_return_code") or 0) in {130, 143}:
+    print("interrupted")
+else:
+    print("invalid")
+PY
+)"
+
+if [[ "${run_validity}" == "interrupted" ]]; then
+  echo "[range] ERROR: scan was interrupted with rc=${scan_rc}; see ${run_dir}/zscope_run.log" >&2
   exit "${scan_rc}"
+fi
+if [[ "${run_validity}" != "valid" ]]; then
+  echo "[range] ERROR: benchmark is incomplete or invalid; see ${run_dir}/run_summary.json" >&2
+  exit 2
 fi
 
 echo "[range] completed: ${run_dir}"

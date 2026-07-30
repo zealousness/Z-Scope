@@ -3,12 +3,37 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from .candidate_envelope import (
+    CANDIDATE_SCHEMA_VERSION,
+    context_signature_for,
+    occurrence_uid_for,
+    validation_cluster_uid_for,
+)
 from .subagents import SubAgentTicket
+
+
+@dataclass(frozen=True)
+class CandidateOccurrence:
+    """Immutable attribution for one entry/path occurrence."""
+
+    occurrence_uid: str
+    entry_identity: str
+    call_paths: Tuple[Tuple[str, ...], ...] = ()
+    context_signature: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "occurrence_uid": self.occurrence_uid,
+            "entry_identity": self.entry_identity,
+            "call_paths": [list(path) for path in self.call_paths],
+            "context_signature": self.context_signature,
+        }
 
 
 @dataclass
@@ -27,6 +52,20 @@ class CandidateRecord:
     canonical_source: str = ""
     canonical_sink: str = ""
     root_cause_key: str = ""
+    candidate_uid: str = ""
+    history_key: str = ""
+    evidence_hash: str = ""
+    decision_evidence_hash: str = ""
+    provenance_hashes: List[str] = field(default_factory=list)
+    evidence_hashes: List[str] = field(default_factory=list)
+    validation_cluster_uid: str = ""
+    context_signature: str = ""
+    context_signatures: List[str] = field(default_factory=list)
+    occurrence_uids: List[str] = field(default_factory=list)
+    occurrences: List[CandidateOccurrence] = field(default_factory=list)
+    record_role: str = "triage_lead"
+    disposition: str = ""
+    schema_version: str = CANDIDATE_SCHEMA_VERSION
 
     def to_ticket(self) -> SubAgentTicket:
         ticket = self.ticket
@@ -58,8 +97,43 @@ class CandidateRecord:
             "canonical_source": self.canonical_source,
             "canonical_sink": self.canonical_sink,
             "root_cause_key": self.root_cause_key,
+            "candidate_schema_version": self.schema_version,
+            "candidate_uid": self.candidate_uid or self.candidate_id,
+            "history_key": self.history_key,
+            "evidence_hash": self.evidence_hash,
+            "decision_evidence_hash": self.decision_evidence_hash,
+            "provenance_hash": (
+                self.provenance_hashes[0] if self.provenance_hashes else ""
+            ),
+            "provenance_hashes": list(self.provenance_hashes),
+            "evidence_hashes": list(self.evidence_hashes),
+            "validation_cluster_uid": self.validation_cluster_uid,
+            "context_signature": self.context_signature,
+            "validation_contexts": list(self.context_signatures),
+            "occurrence_uids": list(self.occurrence_uids),
+            "alias_occurrence_uids": list(self.occurrence_uids[1:]),
+            "occurrences": [item.to_dict() for item in self.occurrences],
+            "occurrence_count": len(self.occurrence_uids),
+            "grouped_alias_count": max(0, len(self.occurrence_uids) - 1),
+            "entry_count": len(
+                {
+                    item.entry_identity
+                    for item in self.occurrences
+                    if item.entry_identity
+                }
+            ),
+            "entries": sorted(
+                {
+                    item.entry_identity
+                    for item in self.occurrences
+                    if item.entry_identity
+                }
+            ),
+            "record_role": self.record_role,
+            "candidate_disposition": self.disposition,
             "sources": list(self.sources),
             "call_paths": [list(path) for path in self.call_paths],
+            "entry_paths": [list(path) for path in self.call_paths],
             "worker_report_id": self.worker_report_id,
             "ticket": ticket_dict,
         }
@@ -68,43 +142,156 @@ class CandidateRecord:
 class CandidateLedger:
     """Central de-duplication ledger for semantic, heuristic, and VA candidates."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        project_id: str = "project",
+        project_root: str = "",
+        revision: str = "",
+    ) -> None:
         self._records: Dict[str, CandidateRecord] = {}
         self._lock = threading.RLock()
+        self.project_id = self._normalize_project_id(project_id)
+        self.project_root = str(project_root or "")
+        self.revision = str(revision or "")
+        self._frozen = False
 
     def add(
         self,
         ticket: SubAgentTicket,
         source: str,
         call_path: Optional[Iterable[str]] = None,
+        *,
+        record_role: str = "triage_lead",
+        entry_identity: str = "",
     ) -> Tuple[CandidateRecord, bool]:
         with self._lock:
+            if self._frozen:
+                raise RuntimeError("candidate ledger is frozen")
             dedup_key = self.canonical_key(ticket)
-            record = self._records.get(dedup_key)
+            normalized_path = [str(item) for item in (call_path or []) if str(item)]
+            evidence = ticket.evidence if isinstance(ticket.evidence, dict) else {}
+            context_signature = (
+                str(evidence.get("context_signature") or "")
+                or self._context_signature(ticket, normalized_path)
+            )
+            candidate_uid = str(evidence.get("candidate_uid") or "") or self._candidate_uid(
+                dedup_key
+            )
+            history_key = str(evidence.get("history_key") or "") or self._history_key(
+                dedup_key
+            )
+            evidence_hash = (
+                str(evidence.get("evidence_hash") or "")
+                or self._evidence_hash(ticket)
+            )
+            decision_evidence_hash = (
+                str(evidence.get("decision_evidence_hash") or "")
+                or self._decision_evidence_hash(ticket, candidate_uid)
+            )
+            validation_cluster_uid = (
+                str(evidence.get("validation_cluster_uid") or "")
+                or validation_cluster_uid_for(
+                    candidate_uid,
+                    decision_evidence_hash=decision_evidence_hash,
+                    validator_contract=evidence.get("validator_contract")
+                    or evidence.get("validation_requirements"),
+                )
+            )
+            provenance_hash = (
+                str(evidence.get("provenance_hash") or "")
+                or self._provenance_hash(ticket, source)
+            )
+            validation_key = validation_cluster_uid
+            record = self._records.get(validation_key)
             is_new = record is None
             if record is None:
                 record = CandidateRecord(
-                    candidate_id=self._candidate_id(dedup_key),
+                    candidate_id=self._candidate_id(validation_key),
                     dedup_key=dedup_key,
                     ticket=ticket,
                     defect_class=self._ticket_defect_class(ticket),
                     canonical_source=self._ticket_source(ticket),
                     canonical_sink=self._ticket_sink(ticket),
                     root_cause_key=self._ticket_root_cause_key(ticket, dedup_key),
+                    candidate_uid=candidate_uid,
+                    history_key=history_key,
+                    evidence_hash=evidence_hash,
+                    decision_evidence_hash=decision_evidence_hash,
+                    provenance_hashes=[provenance_hash] if provenance_hash else [],
+                    evidence_hashes=[evidence_hash] if evidence_hash else [],
+                    validation_cluster_uid=validation_cluster_uid,
+                    context_signature=context_signature,
+                    context_signatures=[context_signature] if context_signature else [],
+                    record_role=(
+                        "validation_obligation"
+                        if record_role == "validation_obligation"
+                        else "triage_lead"
+                    ),
+                    status=(
+                        "queued"
+                        if record_role == "validation_obligation"
+                        else "pending"
+                    ),
+                    disposition=(
+                        "needs_review"
+                        if record_role == "validation_obligation"
+                        else ""
+                    ),
                 )
-                self._records[dedup_key] = record
+                self._records[validation_key] = record
             else:
                 record.duplicate_count += 1
+                self._merge_ticket_evidence(record.ticket, ticket)
+                if (
+                    record_role == "validation_obligation"
+                    and record.record_role != "validation_obligation"
+                ):
+                    record.record_role = "validation_obligation"
+                    record.status = "queued"
+                    record.disposition = "needs_review"
                 if ticket.priority_score > record.ticket.priority_score:
                     ticket.id = record.ticket.id
+                    self._merge_ticket_evidence(ticket, record.ticket)
                     record.ticket = ticket
+                if evidence_hash and evidence_hash not in record.evidence_hashes:
+                    record.evidence_hashes.append(evidence_hash)
+                if provenance_hash and provenance_hash not in record.provenance_hashes:
+                    record.provenance_hashes.append(provenance_hash)
+                if (
+                    context_signature
+                    and context_signature not in record.context_signatures
+                ):
+                    record.context_signatures.append(context_signature)
 
             if source and source not in record.sources:
                 record.sources.append(source)
 
-            normalized_path = [str(item) for item in (call_path or []) if str(item)]
             if normalized_path and normalized_path not in record.call_paths:
                 record.call_paths.append(normalized_path)
+            occurrence_uid = (
+                str(evidence.get("occurrence_uid") or "")
+                or self._occurrence_uid(
+                    record.candidate_uid,
+                    normalized_path,
+                    entry_identity=str(evidence.get("entry_identity") or ""),
+                )
+            )
+            if occurrence_uid not in record.occurrence_uids:
+                record.occurrence_uids.append(occurrence_uid)
+            resolved_entry = str(
+                entry_identity
+                or evidence.get("entry_identity")
+                or (normalized_path[0] if normalized_path else "")
+            )
+            occurrence = CandidateOccurrence(
+                occurrence_uid=occurrence_uid,
+                entry_identity=resolved_entry,
+                call_paths=(tuple(normalized_path),) if normalized_path else (),
+                context_signature=context_signature,
+            )
+            if occurrence not in record.occurrences:
+                record.occurrences.append(occurrence)
 
             return record, is_new
 
@@ -132,14 +319,31 @@ class CandidateLedger:
                 if record.candidate_id in ids:
                     record.status = "planned"
 
+    def claim_pending(self, tickets: Iterable[SubAgentTicket]) -> List[SubAgentTicket]:
+        """Atomically claim pending candidates for exactly one worker/entry."""
+        requested = [ticket for ticket in tickets]
+        requested_ids = {ticket.id for ticket in requested}
+        claimed_ids: set[str] = set()
+        with self._lock:
+            for record in self._records.values():
+                if record.candidate_id in requested_ids and record.status == "pending":
+                    record.status = "planned"
+                    claimed_ids.add(record.candidate_id)
+        return [ticket for ticket in requested if ticket.id in claimed_ids]
+
     def mark_unassigned(self, tickets: Iterable[SubAgentTicket]) -> None:
         ids = {ticket.id for ticket in tickets}
         with self._lock:
             for record in self._records.values():
                 if record.candidate_id in ids and record.status == "pending":
-                    record.status = "unassigned"
+                    # Investigator ticket budgets are soft triage policy.  A
+                    # lead that was not assigned is not a failed validation
+                    # obligation and must not become a security finding.
+                    record.status = "triage_unassigned"
+                    record.disposition = ""
 
     def mark_reported(self, reports: Iterable[Dict[str, Any]]) -> None:
+        """Record investigator completion without treating it as validation."""
         with self._lock:
             for report in reports:
                 ticket = report.get("ticket") or {}
@@ -148,13 +352,172 @@ class CandidateLedger:
                     continue
                 for record in self._records.values():
                     if record.candidate_id == candidate_id:
-                        record.status = str(report.get("status") or "analyzed")
+                        report_status = str(report.get("status") or "analyzed").lower()
+                        record.status = (
+                            "triage_failed"
+                            if report_status in {"failed", "engine_failed"}
+                            else "investigated"
+                        )
+                        validation_status = str(
+                            report.get("validation_status")
+                            or report.get("status")
+                            or ""
+                        ).lower()
+                        # A deep worker is an investigator, not a proof
+                        # authority.  Main validation owns terminal truth.
+                        if record.record_role == "validation_obligation":
+                            record.disposition = (
+                                "engine_failed"
+                                if validation_status in {"failed", "engine_failed"}
+                                else "needs_review"
+                            )
+                        else:
+                            record.disposition = ""
                         record.worker_report_id = candidate_id
                         break
+
+    def mark_issue_terminal(
+        self,
+        issue: Dict[str, Any],
+        *,
+        disposition: str,
+        status: str = "",
+    ) -> int:
+        """Backfill the main validator disposition into matching records."""
+
+        pack = (
+            issue.get("evidence_pack")
+            if isinstance(issue.get("evidence_pack"), dict)
+            else {}
+        )
+        occurrence_uid = str(
+            issue.get("occurrence_uid") or pack.get("occurrence_uid") or ""
+        )
+        candidate_uid = str(
+            issue.get("candidate_uid") or pack.get("candidate_uid") or ""
+        )
+        evidence_hash = str(
+            issue.get("evidence_hash") or pack.get("evidence_hash") or ""
+        )
+        context_signature = str(
+            issue.get("context_signature") or pack.get("context_signature") or ""
+        )
+        validation_cluster_uid = str(
+            issue.get("validation_cluster_uid")
+            or pack.get("validation_cluster_uid")
+            or ""
+        )
+        has_exact_validation_identity = bool(
+            candidate_uid and evidence_hash and context_signature
+        )
+        if (
+            not occurrence_uid
+            and not has_exact_validation_identity
+            and not validation_cluster_uid
+        ):
+            return 0
+
+        updated = 0
+        with self._lock:
+            for record in self._records.values():
+                if validation_cluster_uid:
+                    matches = record.validation_cluster_uid == validation_cluster_uid
+                elif has_exact_validation_identity:
+                    matches = bool(
+                        record.candidate_uid == candidate_uid
+                        and record.evidence_hash == evidence_hash
+                        and record.context_signature == context_signature
+                    )
+                else:
+                    matches = occurrence_uid in record.occurrence_uids
+                if not matches:
+                    continue
+                record.disposition = (
+                    disposition
+                    if disposition
+                    in {
+                        "confirmed",
+                        "rejected_with_proof",
+                        "needs_review",
+                        "deferred_budget",
+                        "engine_failed",
+                        "interrupted",
+                        "deduplicated_alias",
+                    }
+                    else "needs_review"
+                )
+                record.status = status or record.disposition
+                updated += 1
+        return updated
 
     def records(self) -> List[CandidateRecord]:
         with self._lock:
             return list(self._records.values())
+
+    def lifecycle_snapshot(
+        self,
+        *,
+        entry_identity: str = "",
+        include_triage: bool = False,
+    ) -> Dict[str, Any]:
+        """Atomically project immutable lifecycle data for reporting.
+
+        Report assemblers consume this snapshot and never traverse the shared
+        mutable ledger directly.
+        """
+
+        with self._lock:
+            projected: List[Dict[str, Any]] = []
+            for record in self._records.values():
+                if not include_triage and record.record_role != "validation_obligation":
+                    continue
+                value = record.to_dict(include_context=False)
+                occurrences = [
+                    item.to_dict()
+                    for item in record.occurrences
+                    if not entry_identity or item.entry_identity == entry_identity
+                ]
+                if entry_identity and not occurrences:
+                    continue
+                if occurrences:
+                    value["occurrences"] = occurrences
+                    value["occurrence_uids"] = [
+                        item["occurrence_uid"] for item in occurrences
+                    ]
+                    value["call_paths"] = [
+                        path
+                        for item in occurrences
+                        for path in item.get("call_paths", [])
+                    ]
+                    value["entries"] = sorted(
+                        {
+                            str(item.get("entry_identity") or "")
+                            for item in occurrences
+                            if item.get("entry_identity")
+                        }
+                    )
+                    value["entry_count"] = len(value["entries"])
+                    value["occurrence_count"] = len(value["occurrence_uids"])
+                projected.append(value)
+            projected.sort(
+                key=lambda item: (
+                    str(item.get("validation_cluster_uid") or ""),
+                    str(item.get("candidate_uid") or ""),
+                )
+            )
+            return {
+                "candidate_schema_version": CANDIDATE_SCHEMA_VERSION,
+                "entry_identity": entry_identity,
+                "records": projected,
+                "summary": self._summary_unlocked(),
+            }
+
+    def freeze(self) -> Dict[str, Any]:
+        """Seal candidate discovery and return the final atomic snapshot."""
+
+        with self._lock:
+            self._frozen = True
+            return self.lifecycle_snapshot()
 
     def to_context(self, limit: int = 50) -> List[Dict[str, Any]]:
         with self._lock:
@@ -166,34 +529,232 @@ class CandidateLedger:
 
     def summary(self) -> Dict[str, Any]:
         with self._lock:
-            counts: Dict[str, int] = {}
-            for record in self._records.values():
-                counts[record.status] = counts.get(record.status, 0) + 1
-            return {
-                "total": len(self._records),
-                "by_status": counts,
-                "duplicates_merged": sum(
-                    record.duplicate_count for record in self._records.values()
-                ),
-            }
+            return self._summary_unlocked()
+
+    def _summary_unlocked(self) -> Dict[str, Any]:
+        counts: Dict[str, int] = {}
+        obligations = [
+            record
+            for record in self._records.values()
+            if record.record_role == "validation_obligation"
+        ]
+        triage = [
+            record
+            for record in self._records.values()
+            if record.record_role != "validation_obligation"
+        ]
+        for record in obligations:
+            counts[record.status] = counts.get(record.status, 0) + 1
+        return {
+            "total": len(self._records),
+            "validation_group_count": len(obligations),
+            "triage_lead_count": len(triage),
+            "raw_occurrence_count": sum(
+                len(record.occurrence_uids) for record in self._records.values()
+            ),
+            "by_status": counts,
+            "triage_by_status": {
+                status: sum(1 for record in triage if record.status == status)
+                for status in sorted({record.status for record in triage})
+            },
+            "by_disposition": {
+                disposition: sum(
+                    1
+                    for record in obligations
+                    if record.disposition == disposition
+                )
+                for disposition in sorted(
+                    {record.disposition for record in obligations if record.disposition}
+                )
+            },
+            "incomplete": any(
+                record.disposition
+                in {"deferred_budget", "engine_failed", "interrupted"}
+                for record in obligations
+            ),
+            "duplicates_merged": sum(
+                record.duplicate_count for record in self._records.values()
+            ),
+        }
 
     @classmethod
     def canonical_key(cls, ticket: SubAgentTicket) -> str:
-        root_key = cls._ticket_root_cause_key(ticket, "")
-        if root_key:
-            return root_key
-        parts = [
-            ticket.skill,
-            ticket.resource_kind or cls._infer_resource_kind(ticket),
-            cls._site_key(ticket.origin or f"{ticket.task}:{ticket.line}"),
-            cls._site_key(ticket.sink or f"{ticket.trigger}:{ticket.line}"),
-        ]
-        return "|".join(cls._normalize(part) for part in parts)
+        return cls._ticket_root_cause_key(ticket, "")
 
     @staticmethod
-    def _candidate_id(dedup_key: str) -> str:
-        digest = hashlib.sha256(dedup_key.encode("utf-8")).hexdigest()[:12]
+    def _candidate_id(validation_key: str) -> str:
+        digest = hashlib.sha256(validation_key.encode("utf-8")).hexdigest()[:12]
         return f"CAND_{digest}"
+
+    def _candidate_uid(self, dedup_key: str) -> str:
+        payload = {
+            "project": self.project_id,
+            "revision": self.revision,
+            "root": dedup_key,
+        }
+        digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:24]
+        return f"CAND_{digest}"
+
+    def _history_key(self, dedup_key: str) -> str:
+        payload = {
+            "project": self.project_id,
+            "root": dedup_key,
+        }
+        digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:24]
+        return f"HIST_{digest}"
+
+    @staticmethod
+    def _evidence_hash(ticket: SubAgentTicket) -> str:
+        import json
+
+        payload = {
+            "skill": ticket.skill,
+            "origin": ticket.origin,
+            "sink": ticket.sink,
+            "trigger": ticket.trigger,
+            "resource_kind": ticket.resource_kind,
+            "evidence": ticket.evidence or {},
+        }
+        stable = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(stable.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _decision_evidence_hash(
+        ticket: SubAgentTicket,
+        candidate_uid: str,
+    ) -> str:
+        evidence = ticket.evidence if isinstance(ticket.evidence, dict) else {}
+        path = evidence.get("path") if isinstance(evidence.get("path"), dict) else {}
+        payload = {
+            "candidate_uid": candidate_uid,
+            "negative_evidence": evidence.get("negative_evidence") or [],
+            "path_constraints": evidence.get("path_constraints")
+            or path.get("path_constraints")
+            or [],
+            "guards": evidence.get("guards") or evidence.get("guard"),
+            "sanitizers": evidence.get("sanitizers") or evidence.get("sanitizer"),
+            "ownership_facts": evidence.get("ownership_facts"),
+            "reachability_facts": evidence.get("reachability_facts"),
+            "concurrency_facts": evidence.get("concurrency_facts"),
+            "value_domain_facts": evidence.get("value_domain_facts"),
+            "dependency_code_hash": evidence.get("dependency_code_hash")
+            or evidence.get("code_hash")
+            or evidence.get("source_fingerprint"),
+            "evidence_models": evidence.get("evidence_models") or {},
+        }
+        stable = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        return hashlib.sha256(stable.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _provenance_hash(ticket: SubAgentTicket, source: str) -> str:
+        payload = {
+            "display_id": ticket.id,
+            "source": source,
+            "skill": ticket.skill,
+            "origin": ticket.origin,
+            "sink": ticket.sink,
+            "trigger": ticket.trigger,
+            "task": ticket.task,
+        }
+        stable = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        return hashlib.sha256(stable.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _occurrence_uid(
+        candidate_uid: str,
+        call_path: List[str],
+        *,
+        entry_identity: str = "",
+    ) -> str:
+        return occurrence_uid_for(
+            candidate_uid,
+            entry=entry_identity or (call_path[0] if call_path else ""),
+            entry_paths=[call_path] if call_path else [],
+        )
+
+    @classmethod
+    def _context_signature(
+        cls,
+        ticket: SubAgentTicket,
+        call_path: List[str],
+    ) -> str:
+        evidence = ticket.evidence if isinstance(ticket.evidence, dict) else {}
+        path = evidence.get("path") if isinstance(evidence.get("path"), dict) else {}
+        return context_signature_for(
+            entry=str(evidence.get("entry_identity") or "")
+            or (call_path[0] if call_path else ""),
+            entry_paths=[call_path] if call_path else [],
+            constraints=(
+                path.get("path_constraints")
+                or evidence.get("path_constraints")
+                or evidence.get("path")
+            ),
+        )
+
+    @staticmethod
+    def _validation_key(
+        candidate_uid: str,
+        evidence_hash: str,
+        context_signature: str,
+    ) -> str:
+        return (
+            f"{candidate_uid}|evidence={evidence_hash}"
+            f"|context={context_signature}"
+        )
+
+    @staticmethod
+    def _merge_ticket_evidence(
+        primary: SubAgentTicket,
+        secondary: SubAgentTicket,
+    ) -> None:
+        primary_evidence = (
+            primary.evidence if isinstance(primary.evidence, dict) else {}
+        )
+        secondary_evidence = (
+            secondary.evidence if isinstance(secondary.evidence, dict) else {}
+        )
+        for key, value in secondary_evidence.items():
+            if key not in primary_evidence or primary_evidence.get(key) in (
+                None,
+                "",
+                [],
+                {},
+            ):
+                primary_evidence[key] = value
+                continue
+            existing = primary_evidence.get(key)
+            if isinstance(existing, list) and isinstance(value, list):
+                for item in value:
+                    if item not in existing:
+                        existing.append(item)
+            elif isinstance(existing, dict) and isinstance(value, dict):
+                for nested_key, nested_value in value.items():
+                    existing.setdefault(nested_key, nested_value)
+        primary.evidence = primary_evidence
+        for value in secondary.priority_reasons:
+            if value not in primary.priority_reasons:
+                primary.priority_reasons.append(value)
+
+    @staticmethod
+    def _normalize_project_id(value: Any) -> str:
+        text = str(value or "project").strip().replace("\\", "/").rstrip("/")
+        if re.match(r"^[A-Za-z]:/", text) or text.startswith("/"):
+            text = text.rsplit("/", 1)[-1]
+        return re.sub(r"\s+", " ", text.lower()) or "project"
 
     @staticmethod
     def _infer_resource_kind(ticket: SubAgentTicket) -> str:
@@ -251,12 +812,17 @@ class CandidateLedger:
     def _ticket_root_cause_key(cls, ticket: SubAgentTicket, fallback: str) -> str:
         evidence = ticket.evidence or {}
         explicit = evidence.get("root_cause_key") or evidence.get("dedup_key")
-        if explicit:
-            return cls._normalize(explicit)
         defect = cls._ticket_defect_class(ticket)
         source = cls._ticket_source(ticket)
         sink = cls._ticket_sink(ticket)
         location = cls._site_key(ticket.origin or ticket.sink or f"{ticket.task}:{ticket.line}")
-        parts = [defect, ticket.resource_kind or cls._infer_resource_kind(ticket), location, source, sink]
+        parts = [
+            explicit,
+            defect,
+            ticket.resource_kind or cls._infer_resource_kind(ticket),
+            location,
+            source,
+            sink,
+        ]
         key = "|".join(cls._normalize(part) for part in parts if cls._normalize(part))
         return key or fallback

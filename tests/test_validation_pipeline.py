@@ -138,9 +138,10 @@ def test_validation_pipeline_keeps_low_score_verified_issue_as_observation() -> 
     )
 
     assert outcome.report_bucket == "observations"
-    assert outcome.memory_status == "uncertain"
-    assert issue["validation_status"] == "uncertain"
-    assert issue["finding_kind"] == "audit_observation"
+    assert outcome.memory_status == "needs_review"
+    assert issue["validation_status"] == "needs_review"
+    assert issue["finding_kind"] == "needs_review"
+    assert issue["candidate_disposition"] == "needs_review"
 
 
 def test_validation_pipeline_keeps_uncertain_validator_result_as_observation() -> None:
@@ -155,9 +156,9 @@ def test_validation_pipeline_keeps_uncertain_validator_result_as_observation() -
     )
 
     assert outcome.report_bucket == "observations"
-    assert outcome.memory_status == "uncertain"
-    assert issue["validation_status"] == "uncertain"
-    assert issue["finding_kind"] == "needs_manual_review"
+    assert outcome.memory_status == "needs_review"
+    assert issue["validation_status"] == "needs_review"
+    assert issue["finding_kind"] == "needs_review"
 
 
 def test_validation_pipeline_keeps_structural_uncertain_as_needs_review() -> None:
@@ -242,8 +243,10 @@ def test_validation_pipeline_keeps_strongly_disproved_permission_rejected() -> N
         score_data=_score(0.8),
     )
 
-    assert outcome.report_bucket is None
-    assert issue["validation_status"] == "rejected"
+    assert outcome.report_bucket == "observations"
+    assert outcome.memory_status == "needs_review"
+    assert issue["validation_status"] == "needs_review"
+    assert issue["rejection_source"] == "validator_without_deterministic_proof"
 
 
 def test_validation_pipeline_discards_rejected_validator_result() -> None:
@@ -257,11 +260,70 @@ def test_validation_pipeline_discards_rejected_validator_result() -> None:
         score_data=_score(0.9),
     )
 
+    assert outcome.report_bucket == "observations"
+    assert outcome.memory_status == "needs_review"
+    assert issue["validation_status"] == "needs_review"
+    assert issue["finding_kind"] == "needs_review"
+    assert issue["rejection_source"] == "validator_without_deterministic_proof"
+
+
+def test_validation_pipeline_does_not_trust_validator_self_attested_proof() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_SAFE",
+        "negative_evidence": ["the dominating guard bounds len before every sink path"],
+        "evidence_refs": ["src/demo.c:8", "src/demo.c:12"],
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {
+            "reasoning": "The guard dominates the sink.",
+            "proof_kind": "guard_dominates_sink",
+            "negative_evidence": ["len <= capacity on all CFG predecessors"],
+            "evidence_refs": ["src/demo.c:8", "src/demo.c:12"],
+        },
+        verdict="rejected",
+        score_data=_score(0.9),
+    )
+
+    assert outcome.report_bucket == "observations"
+    assert outcome.memory_status == "needs_review"
+    assert issue["validation_status"] == "needs_review"
+    assert issue["candidate_disposition"] == "needs_review"
+
+
+def test_validation_pipeline_accepts_engine_verified_rejection_proof() -> None:
+    def verify_engine_proof(issue, val_data):
+        return (
+            issue.get("engine_proof_id") == "CFG_PROOF_1"
+            and val_data.get("proof_kind") == "guard_dominates_sink"
+        )
+
+    pipeline = ValidationPipeline(
+        FakeUserConfig(),
+        deterministic_proof_verifier=verify_engine_proof,
+    )
+    issue = {
+        "id": "ISSUE_SAFE",
+        "engine_proof_id": "CFG_PROOF_1",
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {
+            "reasoning": "The guard dominates the sink.",
+            "proof_kind": "guard_dominates_sink",
+        },
+        verdict="rejected",
+        score_data=_score(0.9),
+    )
+
     assert outcome.report_bucket is None
     assert outcome.memory_status == "rejected"
     assert issue["validation_status"] == "rejected"
-    assert issue["finding_kind"] == "rejected"
-    assert issue["rejection_source"] == "validator"
+    assert issue["candidate_disposition"] == "rejected_with_proof"
+    assert issue["deterministic_rejection"] is True
 
 
 def test_validation_pipeline_corrects_rejected_allocator_mismatch_to_memory_leak() -> None:
@@ -451,9 +513,9 @@ def test_validation_pipeline_keeps_hardcoded_empty_callback_rejected() -> None:
         score_data=_score(0.82),
     )
 
-    assert outcome.report_bucket is None
-    assert outcome.memory_status == "rejected"
-    assert issue["validation_status"] == "rejected"
+    assert outcome.report_bucket == "observations"
+    assert outcome.memory_status == "needs_review"
+    assert issue["validation_status"] == "needs_review"
 
 
 def test_validation_pipeline_keeps_transferred_resource_rejected() -> None:
@@ -479,9 +541,9 @@ def test_validation_pipeline_keeps_transferred_resource_rejected() -> None:
         score_data=_score(0.82),
     )
 
-    assert outcome.report_bucket is None
-    assert outcome.memory_status == "rejected"
-    assert issue["validation_status"] == "rejected"
+    assert outcome.report_bucket == "observations"
+    assert outcome.memory_status == "needs_review"
+    assert issue["validation_status"] == "needs_review"
 
 
 def test_validation_pipeline_keeps_validation_failure_pending() -> None:
@@ -492,6 +554,7 @@ def test_validation_pipeline_keeps_validation_failure_pending() -> None:
 
     assert outcome.report_bucket == "observations"
     assert issue["validation_status"] == "pending"
+    assert issue["candidate_disposition"] == "engine_failed"
     assert issue["finding_kind"] == "validation_pending"
     assert issue["validation_error"] == "timeout"
 
@@ -502,10 +565,11 @@ def test_validation_pipeline_marks_unvalidated_issue_for_report() -> None:
 
     outcome = pipeline.apply_unvalidated(issue, _score(0.45))
 
-    assert outcome.report_bucket == "issues"
+    assert outcome.report_bucket == "observations"
     assert outcome.memory_status is None
-    assert issue["validation_status"] == "unvalidated"
-    assert issue["finding_kind"] == "unvalidated_candidate"
+    assert issue["validation_status"] == "needs_review"
+    assert issue["finding_kind"] == "needs_review"
+    assert issue["candidate_disposition"] == "needs_review"
     assert issue["final_score"] == 0.45
 
 

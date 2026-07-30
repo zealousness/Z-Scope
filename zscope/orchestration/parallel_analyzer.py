@@ -10,23 +10,27 @@ import logging
 import re
 import threading
 import time
+import uuid
 from copy import copy
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
-from ..config.config import ZScopeConfig
+from ..config.config import ZScopeConfig, minimum_optional_positive_seconds
 from ..config.function_entry import FunctionEntry
 from ..config.user_config_store import UserConfigStore
 from ..core.candidates.evidence import SemanticOverlayCompiler
 from ..core.analysis.analyzer import Analyzer
+from ..core.validation.runner import ValidationResultCache
 from ..framework.llm_client import LLMClient
 from ..semantics.inference import LocalPatternSemanticBuilder
 from ..semantics.models import LocalPatternSemantics
 from ..snapshots.store import SnapshotStore
 from ..retrieval.code_index import CodeIndex
 from ..orchestration.candidates import CandidateLedger
+from ..orchestration.candidate_envelope import annotate_issue_identity
 from ..orchestration.global_modeler import GlobalModeler
+from ..orchestration.scheduler import ENTRY_ROLE, ScanScheduler
 from ..common.issue_identity import (
     canonical_issue_key,
     deduplicate_semantic_issues_programmatic,
@@ -45,7 +49,18 @@ from ..common.issue_identity import (
     semantic_related_cluster_keys,
     semantic_root_cause_key,
 )
-from ..reporting.views import build_report_views, report_view_summary
+from ..common.cancellation import (
+    CancellationError,
+    CancellationToken,
+    bind_cancellation_token,
+)
+from ..reporting.views import (
+    build_report_views,
+    coalesce_review_observations,
+    report_view_summary,
+)
+from ..reporting.schema import apply_report_schema_v2, coalesce_terminal_candidates
+from ..reporting.assembler import ReportAssembler
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +85,18 @@ class ParallelAnalysisResult:
     """Result of parallel analysis across multiple functions."""
     function_name: str
     verdict: str
+    entry_identity: str = ""
+    entry_file_path: str = ""
+    entry_signature: str = ""
     issues: List[Dict[str, Any]] = field(default_factory=list)
     audit_observations: List[Dict[str, Any]] = field(default_factory=list)
+    candidate_terminal_states: List[Dict[str, Any]] = field(default_factory=list)
     error: Optional[str] = None
     duration_seconds: float = 0.0
+    entry_budget_seconds: Optional[float] = None
+    entry_budget_exceeded: bool = False
+    entry_budget_overrun_seconds: float = 0.0
+    budget_exhaustion_policy: str = "observe"
     context_tokens: int = 0
     cumulative_prompt_tokens: int = 0
     cumulative_completion_tokens: int = 0
@@ -93,12 +116,32 @@ class ParallelAnalyzer:
     def __init__(self, config: ZScopeConfig, code_index: Optional[CodeIndex] = None,
                  user_config: Optional[UserConfigStore] = None,
                  force_ignore_history: bool = False,
-                 maintain_mode: bool = False):
+                 maintain_mode: bool = False,
+                 cancellation_token: Optional[CancellationToken] = None):
         self.base_config = config
-        self.max_workers = config.analysis.parallel_workers
+        self.max_workers = max(
+            1,
+            int(
+                getattr(config.analysis, "entry_workers", 0)
+                or config.analysis.parallel_workers
+                or 1
+            ),
+        )
         self.force_ignore_history = force_ignore_history
         self.maintain_mode = maintain_mode
         self._shared_llm_clients = self._build_shared_llm_clients(config)
+        self._validation_result_cache = ValidationResultCache(
+            max_entries=getattr(config.analysis, "validation_cache_entries", 4096)
+        )
+        self._candidate_ledger = CandidateLedger(
+            project_id=str(
+                getattr(config.project, "project_id", "")
+                or config.project.project_root.name
+            ),
+            project_root=str(config.project.project_root),
+            revision=Analyzer._git_commit_sha(config.project.project_root),
+        )
+        self._scheduler: Optional[ScanScheduler] = None
 
         if code_index:
             self.code_index = code_index
@@ -116,13 +159,19 @@ class ParallelAnalyzer:
         db_dir = Path(config.analysis.user_config_db) if config.analysis.user_config_db else Path(config.analysis.snapshot_dir)
         self.user_config = user_config or UserConfigStore(db_dir)
         self._interrupted = False
+        self._deadline_exceeded = False
+        self._parent_cancellation_token = cancellation_token
+        self._cancellation_token = CancellationToken(parent=cancellation_token)
         self._shared_local_pattern_semantics: Optional[LocalPatternSemantics] = None
         self._shared_semantic_overlay: Optional[Dict[str, Any]] = None
         self._shared_semantics_lock = threading.Lock()
         self._last_batch_wall_seconds = 0.0
+        self._last_scan_budget_metadata: Dict[str, Any] = {}
         self._last_global_model_stats: Optional[Dict[str, Any]] = None
         self._global_modeling_succeeded = False
         self._semantic_dedup_llm_cache: Dict[str, Dict[str, Any]] = {}
+        self.deferred_entry_candidates: List[Dict[str, Any]] = []
+        self.run_id = uuid.uuid4().hex
 
     @staticmethod
     def _normalize_md_text(value: Any) -> str:
@@ -146,41 +195,86 @@ class ParallelAnalyzer:
         Returns:
             Dict mapping function name to analysis result
         """
+        entries = self._materialize_entry_identities(entries)
         results = {}
         total = len(entries)
         completed = 0
-        batch_started = time.time()
-        
+        batch_started = time.monotonic()
+        scan_budget_seconds = getattr(
+            self.base_config.analysis,
+            "scan_deadline_seconds",
+            None,
+        )
+        budget_exhaustion_policy = "observe"
+        self._interrupted = False
+        self._deadline_exceeded = False
+        self._cancellation_token = CancellationToken(
+            parent=self._parent_cancellation_token,
+            timeout_seconds=None,
+        )
+        self._candidate_ledger = CandidateLedger(
+            project_id=str(
+                getattr(self.base_config.project, "project_id", "")
+                or self.base_config.project.project_root.name
+            ),
+            project_root=str(self.base_config.project.project_root),
+            revision=Analyzer._git_commit_sha(
+                self.base_config.project.project_root
+            ),
+        )
+        self._cancellation_token.raise_if_cancelled()
+        scheduler = ScanScheduler(
+            entry_workers=self.max_workers,
+            validator_workers=(
+                getattr(self.base_config.analysis, "validator_workers", 0) or 4
+            ),
+            investigator_workers=(
+                getattr(self.base_config.analysis, "investigator_workers", 0) or 2
+            ),
+        )
+        self._scheduler = scheduler
+
         logger.info(f"Starting parallel analysis of {total} function entries with {self.max_workers} workers")
-        if total and not self.maintain_mode:
-            semantics_started = time.time()
-            logger.info("[entry-worker] shared-semantics start entries=%d", total)
-            self._prepare_shared_semantics()
-            logger.info(
-                "[entry-worker] shared-semantics end entries=%d duration=%.2fs",
-                total,
-                time.time() - semantics_started,
-            )
-            if self.base_config.analysis.enable_global_model:
-                self._global_modeling_succeeded = self._run_global_modeling(entries)
-                if not self._global_modeling_succeeded:
-                    raise RuntimeError(
-                        "Global semantic modeling did not complete; entry analysis was not started."
-                    )
+        try:
+            if total and not self.maintain_mode:
+                semantics_started = time.time()
+                logger.info("[entry-worker] shared-semantics start entries=%d", total)
+                self._prepare_shared_semantics()
+                logger.info(
+                    "[entry-worker] shared-semantics end entries=%d duration=%.2fs",
+                    total,
+                    time.time() - semantics_started,
+                )
+                if self.base_config.analysis.enable_global_model:
+                    self._global_modeling_succeeded = self._run_global_modeling(entries)
+                    if not self._global_modeling_succeeded:
+                        raise RuntimeError(
+                            "Global semantic modeling did not complete; entry analysis was not started."
+                        )
+        except Exception:
+            scheduler.shutdown(wait=True, cancel_futures=True)
+            self._scheduler = None
+            raise
 
         scheduled_entries = self._prioritize_entries_for_execution(entries)
-        
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
         try:
             # Submit all analysis tasks
             future_to_entry = {
-                executor.submit(self._analyze_single_entry, entry): entry
+                scheduler.submit(
+                    ENTRY_ROLE,
+                    self._analyze_single_entry,
+                    entry,
+                    priority=self._entry_scheduling_score(entry),
+                ): entry
                 for entry in scheduled_entries
             }
             
             # Collect results as they complete
             try:
-                for future in concurrent.futures.as_completed(future_to_entry):
+                for future in concurrent.futures.as_completed(
+                    future_to_entry,
+                    timeout=self._cancellation_token.remaining_seconds(),
+                ):
                     entry = future_to_entry[future]
                     completed += 1
                     
@@ -204,6 +298,7 @@ class ParallelAnalyzer:
             
             except KeyboardInterrupt:
                 self._interrupted = True
+                self._cancellation_token.cancel("scan_interrupted")
                 logger.warning(
                     "\n[!] Scan interrupted by user (Ctrl+C). Cancelling queued work "
                     "and returning completed results. Running Python worker threads "
@@ -212,21 +307,94 @@ class ParallelAnalyzer:
                 
                 # cancel_futures only affects queued work; already-running threads may
                 # continue until the CLI takes the interrupted fast-exit path.
-                executor.shutdown(wait=False, cancel_futures=True)
+                scheduler.shutdown(wait=False, cancel_futures=True)
                 
                 logger.info(f"Returning {len(results)} completed results out of {total} total.")
                 return results
+            except concurrent.futures.TimeoutError:
+                self._deadline_exceeded = True
+                self._cancellation_token.cancel("scan_deadline_exceeded")
+                logger.error(
+                    "Scan deadline exceeded after %.2fs; cancelling queued entry work.",
+                    time.monotonic() - batch_started,
+                )
+                for future, entry in future_to_entry.items():
+                    entry_key = self._entry_result_key(entry)
+                    if entry_key in results or future.done():
+                        continue
+                    future.cancel()
+                    results[entry_key] = ParallelAnalysisResult(
+                        function_name=entry.function_name,
+                        verdict="error",
+                        error="scan_deadline_exceeded",
+                        diff_focus=entry.diff_focus,
+                        metadata={"cancellation_reason": "scan_deadline_exceeded"},
+                    )
+                scheduler.shutdown(wait=False, cancel_futures=True)
+                return results
 
         finally:
-            self._last_batch_wall_seconds = time.time() - batch_started
+            self._last_batch_wall_seconds = time.monotonic() - batch_started
+            self._last_scan_budget_metadata = self._scan_budget_metadata(
+                duration_seconds=self._last_batch_wall_seconds,
+                budget_seconds=scan_budget_seconds,
+                policy=budget_exhaustion_policy,
+            )
+            if self._last_scan_budget_metadata["scan_budget_exceeded"]:
+                logger.warning(
+                    "Scan budget exceeded: budget=%.2fs overrun=%.2fs "
+                    "policy=%s outcome=%s",
+                    float(scan_budget_seconds),
+                    self._last_scan_budget_metadata[
+                        "scan_budget_overrun_seconds"
+                    ],
+                    budget_exhaustion_policy,
+                    (
+                        "completed"
+                    ),
+                )
             # Under normal successful execution, properly wait and clean up resources
-            if executor and not getattr(self, '_interrupted', False):
+            if scheduler and not (
+                getattr(self, "_interrupted", False)
+                or getattr(self, "_deadline_exceeded", False)
+            ):
                 try:
-                    executor.shutdown(wait=True)
+                    scheduler.shutdown(wait=True)
                 except Exception:
                     pass
                     
         return results
+
+    @staticmethod
+    def _scan_budget_metadata(
+        *,
+        duration_seconds: float,
+        budget_seconds: Optional[float],
+        policy: str,
+    ) -> Dict[str, Any]:
+        try:
+            normalized_budget = (
+                float(budget_seconds) if budget_seconds is not None else None
+            )
+        except (TypeError, ValueError):
+            normalized_budget = None
+        if normalized_budget is not None and normalized_budget <= 0:
+            normalized_budget = None
+        duration = max(0.0, float(duration_seconds or 0.0))
+        exceeded = (
+            normalized_budget is not None and duration > normalized_budget
+        )
+        overrun = (
+            max(0.0, duration - normalized_budget)
+            if normalized_budget is not None
+            else 0.0
+        )
+        return {
+            "scan_budget_seconds": normalized_budget,
+            "scan_budget_exceeded": exceeded,
+            "scan_budget_overrun_seconds": round(overrun, 3),
+            "budget_exhaustion_policy": str(policy or "observe"),
+        }
 
     def _run_global_modeling(self, entries: List[FunctionEntry]) -> bool:
         started = time.time()
@@ -239,10 +407,13 @@ class ParallelAnalyzer:
                 user_config=self.user_config,
                 force_ignore_history=self.force_ignore_history,
                 maintain_mode=self.maintain_mode,
-                candidate_ledger=CandidateLedger(),
+                candidate_ledger=self._candidate_ledger,
                 shared_local_pattern_semantics=self._get_shared_local_pattern_semantics(),
                 shared_semantic_overlay=self._get_shared_semantic_overlay(),
                 llm_clients=self._shared_llm_clients,
+                validation_result_cache=self._validation_result_cache,
+                cancellation_token=self._cancellation_token,
+                scheduler=self._scheduler,
                 write_root_reports=False,
             )
             modeler = GlobalModeler.from_analyzer_helpers(
@@ -254,8 +425,11 @@ class ParallelAnalyzer:
                 tools_factory=helper._get_tools,
                 tool_policy_factory=helper._tool_policy_for_agent,
                 attach_contract=helper._attach_agent_contract,
+                scheduler=self._scheduler,
             )
-            stats = modeler.run(entries)
+            with bind_cancellation_token(self._cancellation_token):
+                self._cancellation_token.raise_if_cancelled()
+                stats = modeler.run(entries)
             self._last_global_model_stats = stats.to_dict()
             logger.info(
                 "[global-model] end entries=%d reachable=%d modeled=%d cache_hits=%d "
@@ -292,18 +466,32 @@ class ParallelAnalyzer:
     def _build_shared_llm_clients(config: ZScopeConfig) -> Dict[str, LLMClient]:
         clients: Dict[str, LLMClient] = {}
         for name, llm_cfg in config.llms.items():
+            effective_timeout = minimum_optional_positive_seconds(
+                llm_cfg.timeout,
+                getattr(
+                    config.analysis,
+                    "request_deadline_seconds",
+                    None,
+                ),
+            )
             clients[name] = LLMClient(
                 api_key=llm_cfg.api_key,
                 base_url=getattr(llm_cfg, "base_urls", None) or llm_cfg.base_url,
                 models=llm_cfg.models,
-                timeout=llm_cfg.timeout,
+                timeout=effective_timeout,
                 max_retries=llm_cfg.max_retries,
+                retry_until_available=getattr(
+                    llm_cfg, "retry_until_available", False
+                ),
                 max_tokens=llm_cfg.max_tokens,
                 base_url_rate_limit_per_minute=getattr(
                     llm_cfg, "base_url_rate_limit_per_minute", 0
                 ),
                 base_url_max_concurrent_requests=getattr(
                     llm_cfg, "base_url_max_concurrent_requests", 0
+                ),
+                global_max_concurrent_requests=getattr(
+                    config.analysis, "llm_max_inflight", 8
                 ),
                 supports_structured_output=getattr(
                     llm_cfg, "supports_structured_output", False
@@ -388,10 +576,122 @@ class ParallelAnalyzer:
     def _entry_result_key(entry: FunctionEntry) -> str:
         focus = entry.diff_focus if isinstance(entry.diff_focus, dict) else {}
         component = str(focus.get("component") or "").strip()
-        file_path = str(entry.file_path or focus.get("entry_file_path") or "").strip()
-        if component or file_path:
-            return f"{component or 'default'}:{entry.function_name}@{file_path or '<unknown>'}"
+        file_path = FunctionEntry._portable_path_text(
+            entry.file_path or focus.get("entry_file_path") or ""
+        )
+        signature = FunctionEntry.normalize_signature(entry.signature)
+        if component or file_path or signature:
+            key = f"{component or 'default'}:{entry.function_name}@{file_path or '<unknown>'}"
+            if signature:
+                key = f"{key}::{signature}"
+            return key
         return entry.function_name
+
+    def _materialize_entry_identities(
+        self,
+        entries: List[FunctionEntry],
+    ) -> List[FunctionEntry]:
+        """Resolve legacy name-only entries into file+signature identities."""
+        project_root = self.base_config.project.project_root
+        getter = getattr(self.code_index, "get_function_impl", None)
+        identity_finder = getattr(self.code_index, "find_function_identities", None)
+        resolved_entries: List[FunctionEntry] = []
+        seen_identities: Set[str] = set()
+        for entry in entries:
+            file_path = entry.normalized_file_path(project_root)
+            resolved = replace(entry, file_path=file_path or None)
+            impl: Optional[Dict[str, Any]] = None
+            if callable(identity_finder):
+                try:
+                    matches = identity_finder(
+                        resolved.lookup_query(),
+                        file_path=file_path,
+                    )
+                except TypeError:
+                    matches = identity_finder(resolved.lookup_query())
+                except Exception as exc:
+                    logger.debug(
+                        "Unable to query entry identity for %s: %s",
+                        resolved.function_name,
+                        exc,
+                    )
+                    matches = []
+                identity_matches = [
+                    match for match in matches
+                    if isinstance(match, dict)
+                ] if isinstance(matches, list) else []
+                if identity_matches:
+                    for match in identity_matches:
+                        matched_entry = self._entry_from_identity_record(
+                            resolved,
+                            match,
+                            project_root,
+                        )
+                        identity = matched_entry.identity_key(project_root)
+                        if identity in seen_identities:
+                            continue
+                        seen_identities.add(identity)
+                        resolved_entries.append(matched_entry)
+                    continue
+            if impl is None and callable(getter):
+                try:
+                    impl = getter(
+                        resolved.lookup_query(),
+                        max_lines=None,
+                        include_context=False,
+                        warn_missing=False,
+                        file_path=file_path,
+                    )
+                except TypeError:
+                    try:
+                        impl = getter(resolved.lookup_query(), include_context=False)
+                    except TypeError:
+                        impl = getter(resolved.lookup_query())
+                except Exception as exc:
+                    logger.debug(
+                        "Unable to resolve entry identity for %s: %s",
+                        resolved.function_name,
+                        exc,
+                    )
+                    impl = None
+            if isinstance(impl, dict):
+                resolved = self._entry_from_identity_record(
+                    resolved,
+                    {
+                        "function_name": impl.get("func_name"),
+                        "file_path": impl.get("file"),
+                        "signature": impl.get("signature"),
+                    },
+                    project_root,
+                )
+            identity = resolved.identity_key(project_root)
+            if identity in seen_identities:
+                continue
+            seen_identities.add(identity)
+            resolved_entries.append(resolved)
+        return resolved_entries
+
+    @staticmethod
+    def _entry_from_identity_record(
+        entry: FunctionEntry,
+        record: Dict[str, Any],
+        project_root: Path,
+    ) -> FunctionEntry:
+        file_path = FunctionEntry(
+            function_name=entry.function_name,
+            file_path=str(record.get("file_path") or entry.file_path or ""),
+        ).normalized_file_path(project_root)
+        return replace(
+            entry,
+            function_name=str(
+                record.get("function_name") or entry.function_name
+            ),
+            file_path=file_path or None,
+            signature=str(
+                record.get("signature") or entry.signature or ""
+            )
+            or None,
+        )
     
     def analyze_functions(
         self, 
@@ -415,13 +715,22 @@ class ParallelAnalyzer:
     
     def _analyze_single_entry(self, entry: FunctionEntry) -> ParallelAnalysisResult:
         """Analyze a single function entry with optional custom prompt."""
-        start_time = time.time()
+        start_time = time.monotonic()
         entry_key = self._entry_result_key(entry)
+        entry_budget_seconds = getattr(
+            self.base_config.analysis,
+            "entry_deadline_seconds",
+            1800.0,
+        )
+        budget_exhaustion_policy = "observe"
         logger.info(
             "[entry-worker] start entry=%s key=%s file=%s",
             entry.function_name,
             entry_key,
             entry.file_path or "",
+        )
+        entry_token = self._cancellation_token.child(
+            timeout_seconds=None
         )
         
         try:
@@ -444,7 +753,7 @@ class ParallelAnalyzer:
                  user_config=self.user_config,
                  force_ignore_history=self.force_ignore_history,
                  maintain_mode=self.maintain_mode,
-                 candidate_ledger=CandidateLedger(),
+                 candidate_ledger=self._candidate_ledger,
                  shared_local_pattern_semantics=(
                      None if self.maintain_mode else self._get_shared_local_pattern_semantics()
                  ),
@@ -452,6 +761,9 @@ class ParallelAnalyzer:
                      None if self.maintain_mode else self._get_shared_semantic_overlay()
                  ),
                  llm_clients=self._shared_llm_clients,
+                 validation_result_cache=self._validation_result_cache,
+                 cancellation_token=entry_token,
+                 scheduler=self._scheduler,
                  write_root_reports=False,
             )
             logger.info(
@@ -467,7 +779,11 @@ class ParallelAnalyzer:
                 entry_key,
             )
             report_dict = analyzer.run()
-            report_metadata = report_dict.get("metadata", {}) if isinstance(report_dict.get("metadata"), dict) else {}
+            report_metadata = (
+                dict(report_dict.get("metadata", {}))
+                if isinstance(report_dict.get("metadata"), dict)
+                else {}
+            )
             logger.info(
                 "[entry-worker] run-end entry=%s key=%s duration=%.2fs",
                 entry.function_name,
@@ -475,7 +791,23 @@ class ParallelAnalyzer:
                 time.time() - run_started,
             )
             
-            duration = time.time() - start_time
+            duration = time.monotonic() - start_time
+            budget_metadata = self._entry_budget_metadata(
+                duration_seconds=duration,
+                budget_seconds=entry_budget_seconds,
+                policy=budget_exhaustion_policy,
+            )
+            report_metadata.update(budget_metadata)
+            if budget_metadata["entry_budget_exceeded"]:
+                logger.warning(
+                    "[entry-worker] budget-exceeded entry=%s key=%s "
+                    "budget=%.2fs overrun=%.2fs policy=%s outcome=completed",
+                    entry.function_name,
+                    entry_key,
+                    float(entry_budget_seconds),
+                    budget_metadata["entry_budget_overrun_seconds"],
+                    budget_exhaustion_policy,
+                )
             logger.info(
                 "[entry-worker] end entry=%s key=%s verdict=%s issues=%d duration=%.2fs",
                 entry.function_name,
@@ -488,9 +820,30 @@ class ParallelAnalyzer:
             return ParallelAnalysisResult(
                 function_name=entry.function_name,
                 verdict=report_dict.get("overall_verdict", "unknown"),
+                entry_identity=entry.identity_key(
+                    self.base_config.project.project_root
+                ),
+                entry_file_path=entry.normalized_file_path(
+                    self.base_config.project.project_root
+                ),
+                entry_signature=FunctionEntry.normalize_signature(entry.signature),
                 issues=report_dict.get("issues", []),
                 audit_observations=report_metadata.get("audit_observations", []),
+                candidate_terminal_states=report_dict.get(
+                    "candidate_terminal_states", []
+                ),
+                error=(
+                    str(report_dict.get("error"))
+                    if report_dict.get("error")
+                    else None
+                ),
                 duration_seconds=duration,
+                entry_budget_seconds=budget_metadata["entry_budget_seconds"],
+                entry_budget_exceeded=budget_metadata["entry_budget_exceeded"],
+                entry_budget_overrun_seconds=budget_metadata[
+                    "entry_budget_overrun_seconds"
+                ],
+                budget_exhaustion_policy=budget_exhaustion_policy,
                 context_tokens=report_metadata.get("context_tokens", 0),
                 cumulative_prompt_tokens=report_metadata.get("cumulative_prompt_tokens", 0),
                 cumulative_completion_tokens=report_metadata.get("cumulative_completion_tokens", 0),
@@ -499,8 +852,51 @@ class ParallelAnalyzer:
                 metadata=report_metadata,
             )
             
+        except CancellationError as e:
+            duration = time.monotonic() - start_time
+            reason = entry_token.reason or str(e) or "entry_cancelled"
+            budget_metadata = self._entry_budget_metadata(
+                duration_seconds=duration,
+                budget_seconds=entry_budget_seconds,
+                policy=budget_exhaustion_policy,
+                force_exceeded=False,
+            )
+            budget_metadata["cancellation_reason"] = reason
+            logger.warning(
+                "[entry-worker] cancelled entry=%s key=%s reason=%s duration=%.2fs",
+                entry.function_name,
+                entry_key,
+                reason,
+                duration,
+            )
+            return ParallelAnalysisResult(
+                function_name=entry.function_name,
+                verdict="error",
+                entry_identity=entry.identity_key(
+                    self.base_config.project.project_root
+                ),
+                entry_file_path=entry.normalized_file_path(
+                    self.base_config.project.project_root
+                ),
+                entry_signature=FunctionEntry.normalize_signature(entry.signature),
+                error=reason,
+                duration_seconds=duration,
+                entry_budget_seconds=budget_metadata["entry_budget_seconds"],
+                entry_budget_exceeded=budget_metadata["entry_budget_exceeded"],
+                entry_budget_overrun_seconds=budget_metadata[
+                    "entry_budget_overrun_seconds"
+                ],
+                budget_exhaustion_policy=budget_exhaustion_policy,
+                diff_focus=entry.diff_focus,
+                metadata=budget_metadata,
+            )
         except Exception as e:
-            duration = time.time() - start_time
+            duration = time.monotonic() - start_time
+            budget_metadata = self._entry_budget_metadata(
+                duration_seconds=duration,
+                budget_seconds=entry_budget_seconds,
+                policy=budget_exhaustion_policy,
+            )
             logger.exception(
                 "[entry-worker] error entry=%s key=%s duration=%.2fs",
                 entry.function_name,
@@ -510,12 +906,61 @@ class ParallelAnalyzer:
             return ParallelAnalysisResult(
                 function_name=entry.function_name,
                 verdict="error",
+                entry_identity=entry.identity_key(
+                    self.base_config.project.project_root
+                ),
+                entry_file_path=entry.normalized_file_path(
+                    self.base_config.project.project_root
+                ),
+                entry_signature=FunctionEntry.normalize_signature(entry.signature),
                 error=str(e),
                 duration_seconds=duration,
+                entry_budget_seconds=budget_metadata["entry_budget_seconds"],
+                entry_budget_exceeded=budget_metadata["entry_budget_exceeded"],
+                entry_budget_overrun_seconds=budget_metadata[
+                    "entry_budget_overrun_seconds"
+                ],
+                budget_exhaustion_policy=budget_exhaustion_policy,
                 diff_focus=entry.diff_focus,
+                metadata=budget_metadata,
             )
         finally:
             self._close_thread_llm_sessions()
+
+    @staticmethod
+    def _entry_budget_metadata(
+        *,
+        duration_seconds: float,
+        budget_seconds: Optional[float],
+        policy: str,
+        force_exceeded: bool = False,
+    ) -> Dict[str, Any]:
+        normalized_budget = (
+            float(budget_seconds)
+            if budget_seconds is not None and float(budget_seconds) > 0
+            else None
+        )
+        overrun_seconds = (
+            max(0.0, float(duration_seconds) - normalized_budget)
+            if normalized_budget is not None
+            else 0.0
+        )
+        exceeded = bool(
+            normalized_budget is not None
+            and (force_exceeded or overrun_seconds > 0.0)
+        )
+        return {
+            "entry_budget_seconds": normalized_budget,
+            "entry_budget_exceeded": exceeded,
+            "entry_budget_overrun_seconds": overrun_seconds,
+            "budget_exhaustion_policy": str(policy or "observe"),
+            "entry_budget": {
+                "seconds": normalized_budget,
+                "exceeded": exceeded,
+                "overrun_seconds": overrun_seconds,
+                "policy": str(policy or "observe"),
+            },
+        }
     
     def _close_thread_llm_sessions(self) -> None:
         seen: Set[int] = set()
@@ -529,6 +974,9 @@ class ParallelAnalyzer:
                 close_thread_session()
 
     def close(self) -> None:
+        scheduler = getattr(self, "_scheduler", None)
+        if scheduler is not None:
+            scheduler.shutdown(wait=True, cancel_futures=True)
         seen: Set[int] = set()
         for client in getattr(self, "_shared_llm_clients", {}).values():
             client_id = id(client)
@@ -578,6 +1026,7 @@ class ParallelAnalyzer:
         project = copy(self.base_config.project)
         project.entry_function = entry.function_name
         project.entry_file_path = entry.file_path
+        project.entry_signature = entry.signature
         project.entry_diff_focus = entry.diff_focus
         project.agents = agents
 
@@ -605,11 +1054,30 @@ class ParallelAnalyzer:
         """
         all_issues = []
         all_observations = []
+        all_terminal_states: List[Dict[str, Any]] = []
         function_summaries = []
         total_duration = 0.0
+        base_config = getattr(self, "base_config", None)
+        project_config = getattr(base_config, "project", None)
+        project_root = str(getattr(project_config, "project_root", "") or "")
+        project_id = str(
+            getattr(project_config, "project_id", "")
+            or Path(project_root).name
+            or "project"
+        )
+        source_root = str(getattr(project_config, "source_root", "") or "")
+        batch_run_id = str(getattr(self, "run_id", "") or "")
+        all_terminal_states.extend(
+            self._deferred_entry_terminal_states(project_id, project_root)
+        )
         
         for entry_key, result in results.items():
             total_duration += result.duration_seconds
+            all_terminal_states.extend(
+                item
+                for item in result.candidate_terminal_states
+                if isinstance(item, dict)
+            )
             validation_performance = (
                 result.metadata.get("validation_performance", {})
                 if isinstance(result.metadata, dict)
@@ -619,10 +1087,19 @@ class ParallelAnalyzer:
             function_summaries.append({
                 "function": result.function_name,
                 "entry_key": entry_key,
+                "entry_identity": result.entry_identity or entry_key,
+                "entry_file_path": result.entry_file_path,
+                "entry_signature": result.entry_signature,
                 "verdict": result.verdict,
                 "issue_count": len(result.issues),
                 "audit_observation_count": len(result.audit_observations),
                 "duration_seconds": round(result.duration_seconds, 2),
+                "entry_budget_seconds": result.entry_budget_seconds,
+                "entry_budget_exceeded": result.entry_budget_exceeded,
+                "entry_budget_overrun_seconds": round(
+                    result.entry_budget_overrun_seconds, 3
+                ),
+                "budget_exhaustion_policy": result.budget_exhaustion_policy,
                 "context_tokens": result.context_tokens,
                 "cumulative_prompt_tokens": result.cumulative_prompt_tokens,
                 "cumulative_completion_tokens": result.cumulative_completion_tokens,
@@ -634,19 +1111,107 @@ class ParallelAnalyzer:
             # Add function context to each issue
             for issue in result.issues:
                 issue_copy = issue.copy()
-                issue_copy["analyzed_from"] = result.function_name
+                issue_copy.setdefault("analyzed_from", result.function_name)
+                issue_copy.setdefault("reported_from_entry", result.entry_identity or entry_key)
+                issue_copy.setdefault("entry_identity", result.entry_identity or entry_key)
+                if result.entry_file_path:
+                    issue_copy["entry_file_path"] = result.entry_file_path
+                if result.entry_signature:
+                    issue_copy["entry_signature"] = result.entry_signature
                 if entry_key != result.function_name:
                     issue_copy["entry_key"] = entry_key
                 self._annotate_diff_relevance(issue_copy, result.diff_focus)
+                annotate_issue_identity(
+                    issue_copy,
+                    project_id=project_id,
+                    project_root=project_root,
+                    revision=str(result.metadata.get("commit_sha") or ""),
+                    entry_function=result.entry_identity or entry_key,
+                    run_id=batch_run_id,
+                    ordinal=len(all_issues),
+                    default_disposition="confirmed",
+                )
                 all_issues.append(issue_copy)
             for observation in result.audit_observations:
                 observation_copy = observation.copy()
-                observation_copy["analyzed_from"] = result.function_name
+                observation_copy.setdefault("analyzed_from", result.function_name)
+                observation_copy.setdefault(
+                    "reported_from_entry",
+                    result.entry_identity or entry_key,
+                )
+                observation_copy.setdefault(
+                    "entry_identity",
+                    result.entry_identity or entry_key,
+                )
+                if result.entry_file_path:
+                    observation_copy["entry_file_path"] = result.entry_file_path
+                if result.entry_signature:
+                    observation_copy["entry_signature"] = result.entry_signature
                 if entry_key != result.function_name:
                     observation_copy["entry_key"] = entry_key
                 self._annotate_diff_relevance(observation_copy, result.diff_focus)
+                annotate_issue_identity(
+                    observation_copy,
+                    project_id=project_id,
+                    project_root=project_root,
+                    revision=str(result.metadata.get("commit_sha") or ""),
+                    entry_function=result.entry_identity or entry_key,
+                    run_id=batch_run_id,
+                    ordinal=len(all_observations),
+                    default_disposition="needs_review",
+                )
                 all_observations.append(observation_copy)
         
+        # The scan-level ledger is the final lifecycle authority. Entry reports
+        # can be assembled while a shared validation is still in flight, so
+        # replace their v3 terminal projection with one final atomic snapshot.
+        ledger_snapshot: Dict[str, Any] = {}
+        snapshot = getattr(
+            getattr(self, "_candidate_ledger", None),
+            "freeze",
+            None,
+        )
+        if callable(snapshot):
+            ledger_snapshot = snapshot()
+        final_records = [
+            item
+            for item in ledger_snapshot.get("records", [])
+            if isinstance(item, dict)
+        ]
+        final_by_cluster = {
+            str(item.get("validation_cluster_uid") or ""): item
+            for item in final_records
+            if item.get("validation_cluster_uid")
+        }
+        if final_by_cluster:
+            all_observations = [
+                item
+                for item in all_observations
+                if (
+                    not item.get("validation_cluster_uid")
+                    or str(
+                        final_by_cluster.get(
+                            str(item.get("validation_cluster_uid") or ""),
+                            {},
+                        ).get("candidate_disposition")
+                        or ""
+                    ).lower()
+                    == "needs_review"
+                )
+            ]
+            all_terminal_states = [
+                item
+                for item in all_terminal_states
+                if not item.get("validation_cluster_uid")
+            ]
+            all_terminal_states.extend(final_records)
+            all_observations.extend(
+                ReportAssembler._unresolved_candidate_observations(
+                    {"candidate_lifecycle_snapshot": ledger_snapshot},
+                    list(all_issues) + list(all_observations),
+                )
+            )
+
         # Deduplicate confirmed issues with the same final-report semantics used
         # by single-entry reports. Observations stay programmatic to avoid an
         # extra batch LLM pass over needs_review-only material.
@@ -655,7 +1220,28 @@ class ParallelAnalyzer:
             all_issues,
             allow_llm=not interrupted,
         )
-        unique_observations = self._deduplicate_issues(all_observations)
+        review_observations = coalesce_review_observations(all_observations)
+        review_fingerprints = {
+            str(item.get("validation_cluster_uid") or "")
+            or str(item.get("candidate_uid") or "")
+            for item in review_observations
+        }
+        non_review_observations = [
+            item
+            for item in all_observations
+            if not (
+                str(item.get("validation_cluster_uid") or "")
+                or str(item.get("candidate_uid") or "")
+            )
+            in review_fingerprints
+        ]
+        unique_observations = self._deduplicate_issues(non_review_observations)
+        unique_observations.extend(review_observations)
+        unique_terminal_states = [
+            dict(item)
+            for item in coalesce_terminal_candidates(all_terminal_states)
+            if isinstance(item, dict)
+        ]
         report_views = build_report_views(unique_issues, unique_observations)
         view_summary = report_view_summary({"report_views": report_views})
         with_review_view = report_views.get("with_needs_review", {})
@@ -671,14 +1257,55 @@ class ParallelAnalyzer:
         )
         validation_performance_summary = self._validation_performance_summary(results)
         va_candidate_coverage_summary = self._va_candidate_coverage_summary(results)
+        entry_budget_summary = self._entry_budget_summary(results)
+        llm_iteration_budget_summary = self._llm_iteration_budget_summary(results)
+        scan_budget_summary = dict(
+            getattr(self, "_last_scan_budget_metadata", {}) or {}
+        )
+        llm_usage_summary = self._llm_usage_summary()
+        retained_prompt_tokens = sum(
+            r.cumulative_prompt_tokens for r in results.values()
+        )
+        retained_completion_tokens = sum(
+            r.cumulative_completion_tokens for r in results.values()
+        )
+        retained_total_tokens = sum(
+            r.cumulative_total_tokens for r in results.values()
+        )
+        response_prompt_tokens = int(
+            llm_usage_summary.get("prompt_tokens") or 0
+        )
+        response_completion_tokens = int(
+            llm_usage_summary.get("completion_tokens") or 0
+        )
+        response_total_tokens = int(llm_usage_summary.get("total_tokens") or 0)
+        engine_capabilities = {
+            entry_key: (
+                result.metadata.get("engine_capabilities")
+                if isinstance(result.metadata, dict)
+                else {}
+            )
+            for entry_key, result in results.items()
+        }
+        error_result_count = sum(
+            1
+            for result in results.values()
+            if bool(result.error) or str(result.verdict).lower() == "error"
+        )
 
         combined_report = {
             "type": "parallel_analysis_report",
             "summary": {
                 "functions_analyzed": len(results),
+                "functions_scheduled": len(results),
+                "functions_completed": len(results) - error_result_count,
+                "functions_failed": error_result_count,
                 "total_issues": len(unique_issues),
                 "unique_issues": len(unique_issues),
                 "audit_observations": len(unique_observations),
+                "deferred_entry_count": len(
+                    getattr(self, "deferred_entry_candidates", []) or []
+                ),
                 "needs_review_issues": int(
                     with_review_view.get("included_needs_review_count") or 0
                 ),
@@ -688,15 +1315,28 @@ class ParallelAnalyzer:
                 "total_duration_seconds": round(total_duration, 2),
                 "batch_wall_seconds": batch_wall_seconds,
                 "total_context_tokens": sum(r.context_tokens for r in results.values()),
-                "total_cumulative_prompt_tokens": sum(r.cumulative_prompt_tokens for r in results.values()),
-                "total_cumulative_completion_tokens": sum(r.cumulative_completion_tokens for r in results.values()),
-                "total_cumulative_total_tokens": sum(r.cumulative_total_tokens for r in results.values()),
+                "total_cumulative_prompt_tokens": (
+                    response_prompt_tokens or retained_prompt_tokens
+                ),
+                "total_cumulative_completion_tokens": (
+                    response_completion_tokens or retained_completion_tokens
+                ),
+                "total_cumulative_total_tokens": (
+                    response_total_tokens or retained_total_tokens
+                ),
+                "retained_entry_prompt_tokens": retained_prompt_tokens,
+                "retained_entry_completion_tokens": retained_completion_tokens,
+                "retained_entry_total_tokens": retained_total_tokens,
+                "llm_usage": llm_usage_summary,
                 "parallel_speedup": f"{effective_speedup:.2f}x observed (using {self.max_workers} workers)",
                 "parallel_worker_utilization": round(worker_utilization, 4),
                 "diff_relevance": diff_relevance_summary["issues"],
                 "diff_coverage": diff_coverage.get("coverage_summary", {}),
                 "validation_performance": validation_performance_summary,
                 "va_candidate_coverage": va_candidate_coverage_summary,
+                "entry_budget": entry_budget_summary,
+                "llm_iteration_budget": llm_iteration_budget_summary,
+                "scan_budget": scan_budget_summary,
                 "semantic_dedup": semantic_dedup_summary,
                 "interrupted": interrupted,
             },
@@ -706,22 +1346,63 @@ class ParallelAnalyzer:
             "report_views": report_views,
             "issues_with_needs_review": with_review_view.get("issues", []),
             "issues_by_severity_with_needs_review": with_review_view.get("issues_by_severity", {}),
+            "candidate_terminal_states": unique_terminal_states,
             "metadata": {
+                "run_id": batch_run_id,
+                "repo": project_root,
+                "project_id": project_id,
+                "source_root": source_root,
+                "commit_sha": next(
+                    (
+                        str(result.metadata.get("commit_sha") or "")
+                        for result in results.values()
+                        if isinstance(result.metadata, dict)
+                        and result.metadata.get("commit_sha")
+                    ),
+                    "",
+                ),
                 "audit_observation_count": len(unique_observations),
                 "audit_observations": unique_observations,
                 "report_view_summary": view_summary,
                 "diff_relevance_summary": diff_relevance_summary,
                 "diff_impact_coverage": diff_coverage,
                 "context_tokens": sum(r.context_tokens for r in results.values()),
-                "cumulative_prompt_tokens": sum(r.cumulative_prompt_tokens for r in results.values()),
-                "cumulative_completion_tokens": sum(r.cumulative_completion_tokens for r in results.values()),
-                "cumulative_total_tokens": sum(r.cumulative_total_tokens for r in results.values()),
+                "cumulative_prompt_tokens": (
+                    response_prompt_tokens or retained_prompt_tokens
+                ),
+                "cumulative_completion_tokens": (
+                    response_completion_tokens or retained_completion_tokens
+                ),
+                "cumulative_total_tokens": (
+                    response_total_tokens or retained_total_tokens
+                ),
+                "retained_entry_prompt_tokens": retained_prompt_tokens,
+                "retained_entry_completion_tokens": retained_completion_tokens,
+                "retained_entry_total_tokens": retained_total_tokens,
+                "llm_usage": llm_usage_summary,
                 "validation_performance": validation_performance_summary,
                 "va_candidate_coverage_summary": va_candidate_coverage_summary,
+                "entry_budget": entry_budget_summary,
+                "llm_iteration_budget": llm_iteration_budget_summary,
+                "scan_budget": scan_budget_summary,
+                "engine_capabilities": engine_capabilities,
                 "semantic_dedup_summary": semantic_dedup_summary,
                 "interrupted": interrupted,
             },
         }
+        apply_report_schema_v2(
+            combined_report,
+            state={
+                "interrupted": interrupted,
+                "any_failure": error_result_count > 0,
+                "candidate_terminal_states": unique_terminal_states,
+                "engine_capabilities": engine_capabilities,
+            },
+            issues=unique_issues,
+            observations=unique_observations,
+            metadata=combined_report["metadata"],
+            entry_function="__batch__",
+        )
         
         if output_path:
             with open(output_path, "w", encoding="utf-8") as f:
@@ -730,15 +1411,61 @@ class ParallelAnalyzer:
         
         return combined_report
 
+    def _deferred_entry_terminal_states(
+        self,
+        project_id: str,
+        project_root: str,
+    ) -> List[Dict[str, Any]]:
+        terminal: List[Dict[str, Any]] = []
+        for candidate in getattr(self, "deferred_entry_candidates", []) or []:
+            if not isinstance(candidate, dict):
+                continue
+            identity_payload = {
+                "project": project_id,
+                "function": candidate.get("function_name"),
+                "file": FunctionEntry(
+                    function_name=str(candidate.get("function_name") or ""),
+                    file_path=str(candidate.get("file_path") or "") or None,
+                ).normalized_file_path(Path(project_root)),
+                "signature": candidate.get("signature"),
+            }
+            digest = hashlib.sha256(
+                json.dumps(
+                    identity_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest()[:24]
+            terminal.append(
+                {
+                    "candidate_schema_version": "zscope.entry-candidate.v1",
+                    "candidate_uid": f"ENTRY_{digest}",
+                    "candidate_disposition": "deferred_budget",
+                    "status": "deferred_budget",
+                    "deferred_reason": candidate.get("deferred_reason")
+                    or "entry_discovery_budget",
+                    "function": candidate.get("function_name"),
+                    "file": candidate.get("file_path"),
+                    "signature": candidate.get("signature"),
+                    "exposure": candidate.get("exposure"),
+                }
+            )
+        return terminal
+
     @staticmethod
     def _validation_performance_summary(
         results: Dict[str, ParallelAnalysisResult],
-    ) -> Dict[str, int]:
+    ) -> Dict[str, Any]:
         keys = (
             "iterations",
             "tool_call_count",
             "validator_fast_path_attempted",
             "validator_fast_path_accepted",
+            "validator_cache_hit",
+            "validator_inflight_coalesced",
+            "validation_group_count",
+            "validation_group_merged_count",
             "prevalidation_decision_count",
             "clang_prevalidation_decision_count",
             "static_audit_observation_count",
@@ -753,7 +1480,137 @@ class ParallelAnalyzer:
                     summary[key] += int(perf.get(key, 0) or 0)
                 except (TypeError, ValueError):
                     continue
+        eligible = int(summary.get("validation_group_merged_count") or 0)
+        reused = int(summary.get("validator_cache_hit") or 0)
+        summary["validation_reuse_rate"] = (
+            round(min(1.0, reused / eligible), 4) if eligible else 1.0
+        )
         return summary
+
+    @staticmethod
+    def _entry_budget_summary(
+        results: Dict[str, ParallelAnalysisResult],
+    ) -> Dict[str, Any]:
+        budgeted = [
+            result
+            for result in results.values()
+            if result.entry_budget_seconds is not None
+        ]
+        exceeded = [
+            result
+            for result in budgeted
+            if result.entry_budget_exceeded
+        ]
+        policies = sorted(
+            {
+                str(result.budget_exhaustion_policy or "observe")
+                for result in results.values()
+            }
+        )
+        return {
+            "policy": policies[0] if len(policies) == 1 else "mixed",
+            "measured_entry_count": len(results),
+            "budgeted_entry_count": len(budgeted),
+            "exceeded_entry_count": len(exceeded),
+            "total_overrun_seconds": round(
+                sum(result.entry_budget_overrun_seconds for result in exceeded),
+                3,
+            ),
+            "max_overrun_seconds": round(
+                max(
+                    (
+                        result.entry_budget_overrun_seconds
+                        for result in exceeded
+                    ),
+                    default=0.0,
+                ),
+                3,
+            ),
+        }
+
+    @staticmethod
+    def _llm_iteration_budget_summary(
+        results: Dict[str, ParallelAnalysisResult],
+    ) -> Dict[str, Any]:
+        observations: List[Dict[str, Any]] = []
+        exceeded_entries: set[str] = set()
+        for entry_key, result in results.items():
+            metadata = result.metadata if isinstance(result.metadata, dict) else {}
+            for raw in metadata.get("budget_observations", []) or []:
+                if (
+                    not isinstance(raw, dict)
+                    or raw.get("kind") != "llm_iteration_budget"
+                    or not raw.get("budget_reached")
+                ):
+                    continue
+                item = dict(raw)
+                item["entry_identity"] = result.entry_identity or entry_key
+                observations.append(item)
+                exceeded_entries.add(result.entry_identity or entry_key)
+        return {
+            "budget_reached_count": len(observations),
+            "affected_entry_count": len(exceeded_entries),
+            "hard_failure_count": sum(
+                1 for item in observations if item.get("hard_failure")
+            ),
+            "observations": observations,
+        }
+
+    def _llm_usage_summary(self) -> Dict[str, Any]:
+        """Aggregate response-boundary usage without losing cancelled entry work."""
+
+        clients = getattr(self, "_shared_llm_clients", {}) or {}
+        unique: Dict[int, Dict[str, Any]] = {}
+        for ref, client in clients.items():
+            client_id = id(client)
+            row = unique.setdefault(
+                client_id,
+                {
+                    "refs": [],
+                    "client": client,
+                },
+            )
+            row["refs"].append(str(ref))
+
+        totals = {
+            "successful_calls": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "estimated_calls": 0,
+            "provider_reported_calls": 0,
+        }
+        per_client: List[Dict[str, Any]] = []
+        for row in unique.values():
+            snapshotter = getattr(row["client"], "usage_snapshot", None)
+            if not callable(snapshotter):
+                continue
+            raw = snapshotter()
+            snapshot = dict(raw) if isinstance(raw, dict) else {}
+            for key in totals:
+                totals[key] += int(snapshot.get(key) or 0)
+            per_client.append(
+                {
+                    "llm_refs": sorted(set(row["refs"])),
+                    **snapshot,
+                }
+            )
+
+        successful_calls = totals["successful_calls"]
+        totals["provider_usage_coverage"] = round(
+            (
+                totals["provider_reported_calls"] / successful_calls
+                if successful_calls
+                else 0.0
+            ),
+            4,
+        )
+        return {
+            **totals,
+            "accounting_scope": "successful_response_boundary",
+            "failed_or_disconnected_request_usage": "unknown",
+            "per_client": per_client,
+        }
 
     @staticmethod
     def _va_candidate_coverage_summary(
@@ -965,18 +1822,30 @@ class ParallelAnalyzer:
             "error": sum(1 for r in results.values() if r.verdict == "error"),
             "total_issues": sum(len(r.issues) for r in results.values()),
             "audit_observations": sum(len(r.audit_observations) for r in results.values()),
+            "deferred_entries": len(
+                getattr(self, "deferred_entry_candidates", []) or []
+            ),
         }
+        incomplete = bool(summary["error"] or summary["deferred_entries"]) or any(
+            str(item.get("candidate_disposition") or "").lower()
+            in {"deferred_budget", "engine_failed"}
+            for result in results.values()
+            for item in result.candidate_terminal_states
+            if isinstance(item, dict)
+        )
         
         md = [
             "# Z-SCOPE Batch Analysis Report",
             "",
             "## Summary",
+            f"- **Completeness**: {'incomplete' if incomplete else 'complete'}",
             f"- **Functions Analyzed**: {summary['total']}",
             f"- **Issues Found**: {summary['issues_found']}",
             f"- **No Issues Found**: {summary['no_issue']}",
             f"- **Errors**: {summary['error']}",
             f"- **Total Issues Detected**: {summary['total_issues']}",
             f"- **Audit Observations**: {summary['audit_observations']}",
+            f"- **Deferred Entry Candidates**: {summary['deferred_entries']}",
         ]
 
         diff_coverage = self._diff_coverage_metadata()
@@ -1236,6 +2105,7 @@ class ParallelAnalyzer:
             "llm_clusters_called": 0,
             "llm_cache_hits": 0,
             "llm_merge_count": 0,
+            "llm_suggestion_count": 0,
             "llm_rejected_merge_count": 0,
             "llm_failed_cluster_count": 0,
             "llm_prefilter_skipped_count": prefilter_skipped,
@@ -1248,6 +2118,7 @@ class ParallelAnalyzer:
             summary["llm_disabled_reason"] = "no_issue_reconciler_llm_client"
             return issues, summary
 
+        self._assign_semantic_dedup_ids(issues)
         by_issue_id: Dict[str, Dict[str, Any]] = {}
         issue_order: List[str] = []
         issue_indices = {id(issue): index for index, issue in enumerate(issues)}
@@ -1284,16 +2155,19 @@ class ParallelAnalyzer:
                 decision = response.data
                 cache[cluster_fingerprint] = decision
 
-            applied, rejected = self._apply_llm_dedup_decision(
+            suggested, rejected = self._apply_llm_dedup_decision(
                 decision,
                 by_issue_id,
                 removed,
                 threshold=threshold,
             )
-            summary["llm_merge_count"] += applied
+            summary["llm_suggestion_count"] += suggested
             summary["llm_rejected_merge_count"] += rejected
 
-        return [issue for issue_id, issue in zip(issue_order, issues) if issue_id not in removed], summary
+        result = [issue for issue_id, issue in zip(issue_order, issues) if issue_id not in removed]
+        for issue in issues:
+            issue.pop("_semantic_dedup_uid", None)
+        return result, summary
 
     @staticmethod
     def _semantic_dedup_cluster_needs_llm(group: List[Dict[str, Any]]) -> bool:
@@ -1380,11 +2254,46 @@ class ParallelAnalyzer:
     @staticmethod
     def _semantic_dedup_issue_id(issue: Dict[str, Any], index: int) -> str:
         return str(
-            issue.get("id")
+            issue.get("_semantic_dedup_uid")
+            or issue.get("run_issue_uid")
+            or issue.get("occurrence_uid")
+            or issue.get("candidate_uid")
             or issue.get("candidate_id")
             or issue.get("dedup_key")
             or f"semantic_issue_{index}"
         )
+
+    @staticmethod
+    def _assign_semantic_dedup_ids(issues: List[Dict[str, Any]]) -> None:
+        bases = []
+        for index, issue in enumerate(issues):
+            internal = (
+                issue.get("run_issue_uid")
+                or issue.get("occurrence_uid")
+                or issue.get("candidate_uid")
+                or issue.get("candidate_id")
+                or issue.get("dedup_key")
+            )
+            if not internal:
+                payload = {
+                    "canonical": canonical_issue_key(issue),
+                    "evidence_hash": issue.get("evidence_hash"),
+                    "index": index,
+                }
+                internal = "SEM_" + hashlib.sha256(
+                    json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+                ).hexdigest()[:24]
+            bases.append(str(internal))
+        counts = {base: bases.count(base) for base in set(bases)}
+        for index, (issue, base) in enumerate(zip(issues, bases)):
+            if counts[base] == 1:
+                issue["_semantic_dedup_uid"] = base
+                continue
+            issue["_semantic_dedup_uid"] = str(
+                issue.get("run_issue_uid")
+                or issue.get("occurrence_uid")
+                or f"{base}::{index}"
+            )
 
     def _semantic_dedup_cluster_payload(
         self,
@@ -1506,18 +2415,18 @@ class ParallelAnalyzer:
                     rejected += 1
                     continue
                 root_key = str(group.get("root_cause_key") or "") or semantic_root_cause_key(primary)
-                merge_duplicate_issue(
-                    primary,
-                    duplicate,
-                    dedup_key=root_key,
-                    decision={
-                        "method": "issue_reconciler_agent",
-                        "root_cause_key": root_key,
-                        "confidence": confidence,
-                        "reasoning": group.get("reasoning"),
-                    },
+                suggestion = {
+                    "method": "issue_reconciler_agent_suggestion",
+                    "root_cause_key": root_key,
+                    "confidence": confidence,
+                    "reasoning": group.get("reasoning"),
+                }
+                primary.setdefault("dedup_cluster_suggestions", []).append(
+                    {**suggestion, "role": "primary", "peer_issue_uid": duplicate_id}
                 )
-                removed.add(duplicate_id)
+                duplicate.setdefault("dedup_cluster_suggestions", []).append(
+                    {**suggestion, "role": "possible_alias", "peer_issue_uid": primary_id}
+                )
                 applied += 1
         return applied, rejected
 

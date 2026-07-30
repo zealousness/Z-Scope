@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from zscope.common.issue_identity import (
     canonical_category,
     canonical_issue_key,
@@ -12,6 +14,99 @@ from zscope.common.issue_identity import (
     semantic_related_cluster_keys,
 )
 from zscope.core.analysis.analyzer import Analyzer
+
+
+def test_candidate_policy_and_identity_have_no_benchmark_fixture_symbol_mappings() -> None:
+    root = Path(__file__).resolve().parents[1]
+    sources = {
+        path: (root / path).read_text(encoding="utf-8").lower()
+        for path in (
+            "zscope/common/issue_identity.py",
+            "zscope/core/candidates/regex.py",
+            "zscope/snapshots/policy.py",
+        )
+    }
+    forbidden_markers = (
+        "_lifecycle_",
+        "_runtime_",
+        "_issue41_",
+        "_real_model_",
+        "g_issue41",
+        "range-",
+        "juliet",
+        "sv-comp",
+        "sv_comp",
+        "reliable_fd",
+        "detected_protocol",
+        "auth_level",
+        "_validate_encoded_fd",
+        "fail_step",
+        "label_len",
+        "element_count",
+        "pipe->next=pipe",
+        "qrcu",
+        "crcu",
+        "lcore",
+        "lfhash",
+    )
+
+    matches = {
+        path: [marker for marker in forbidden_markers if marker in source]
+        for path, source in sources.items()
+    }
+    assert not {path: markers for path, markers in matches.items() if markers}
+
+
+def test_fixture_identifiers_alone_do_not_synthesize_root_cause_identity() -> None:
+    cases = (
+        (
+            "partial_resource_leak",
+            "fail_step changed before the function returned.",
+            "retry_cleanup_missing",
+        ),
+        (
+            "version_filtering",
+            "The protocol parser contains `(void)version;`.",
+            "parsed_protocol_version_ignored",
+        ),
+        (
+            "integer_overflow",
+            "label_len = element_count * sizeof(label).",
+            "numeric_allocation_size_calculation",
+        ),
+        (
+            "resource_leak",
+            "pipe->next=pipe;",
+            "self_referential_list_link",
+        ),
+        (
+            "bounds",
+            "timer uses lcore as an array index.",
+            "timer_index_without_cpu_bound",
+        ),
+        (
+            "race",
+            "qrcu and crcu select a global mode during callback registration.",
+            "rcu_global_mode_protocol",
+        ),
+        (
+            "memory_leak",
+            "lfhash uses a custom allocator.",
+            "hash_node_allocator_pairing",
+        ),
+    )
+
+    for category, description, fixture_root in cases:
+        issue = {
+            "function": "renamed_function",
+            "location": "src/generic.c:10",
+            "category": category,
+            "description": description,
+        }
+        assert (
+            root_cause_token(issue, category, flatten_issue_text(issue))
+            != fixture_root
+        )
 
 
 def _precise_endpoint_issue(
@@ -188,6 +283,34 @@ def test_missing_source_sink_locations_fall_back_to_canonical_dedup() -> None:
     assert deduped[0]["dedup_key"] == "bounds|src/demo.c|80|memcpy"
 
 
+def test_same_detector_rule_does_not_delete_distinct_sink_occurrences() -> None:
+    first = {
+        "id": "ISSUE_1",
+        "function": "copy_entry",
+        "location": "src/demo.c:80",
+        "category": "bounds",
+        "rule": "clang_cfg_unchecked_copy",
+        "root_cause_key": "unchecked_copy",
+        "resource_signature": "left_buffer",
+        "sink": "memcpy",
+    }
+    second = {
+        "id": "ISSUE_2",
+        "function": "copy_entry",
+        "location": "src/demo.c:84",
+        "category": "bounds",
+        "rule": "clang_cfg_unchecked_copy",
+        "root_cause_key": "unchecked_copy",
+        "resource_signature": "right_buffer",
+        "sink": "memcpy",
+    }
+
+    deduped = deduplicate_issues([first, second])
+
+    assert len(deduped) == 2
+    assert deduped[0]["dedup_key"] != deduped[1]["dedup_key"]
+
+
 def test_issue_rank_prefers_precise_sink_over_generic_clang_candidate() -> None:
     generic = {
         "id": "GENERIC",
@@ -216,17 +339,17 @@ def test_dedup_merges_chinese_needs_review_with_rule_finding() -> None:
     issues = [
         {
             "id": "RULE_SIGNED_UNSIGNED_318",
-            "function": "_lifecycle_recv_packet",
-            "location": "src/lifecycle.c:318",
+            "function": "decode_frame",
+            "location": "src/decoder.c:318",
             "category": "signed_unsigned",
             "description": "Signed length `received` is cast to size_t and later used by memcpy.",
         },
         {
             "id": "ISSUE_1",
-            "function": "_lifecycle_recv_packet",
-            "location": "src/lifecycle.c:318",
+            "function": "decode_frame",
+            "location": "src/decoder.c:318",
             "category": "memory_safety",
-            "description": "当_net_recv_data返回-1时，(size_t)received转换为SIZE_MAX，导致memcpy越界读写",
+            "description": "当 recv 返回-1时，(size_t)received 转换为 SIZE_MAX，导致 memcpy 越界读写",
         },
     ]
 
@@ -234,51 +357,53 @@ def test_dedup_merges_chinese_needs_review_with_rule_finding() -> None:
 
     assert len(deduped) == 1
     assert deduped[0]["dedup_key"] == (
-        "signed_unsigned|src/lifecycle.c|_lifecycle_recv_packet|net_recv_data_negative_length"
+        "signed_unsigned|src/decoder.c|decode_frame|negative_length_to_unsigned_size"
     )
     assert deduped[0]["category"] == "signed_unsigned"
     assert deduped[0]["duplicate_count"] == 1
 
 
 def test_dedup_keeps_same_helper_pattern_distinct_across_sink_functions() -> None:
-    range_recv = {
-        "id": "RANGE-029",
-        "function": "_lifecycle_recv_packet",
-        "location": "src/lifecycle.c:318",
+    first_recv = {
+        "id": "RULE-A",
+        "function": "decode_primary_frame",
+        "location": "src/io.c:318",
         "category": "signed_unsigned",
-        "description": "Signed length `received` from _net_recv_data is cast to size_t and later used by memcpy.",
+        "description": "Signed length `received` from recv is cast to size_t and later used by memcpy.",
     }
-    real_recv = {
-        "id": "REAL-017",
-        "function": "_real_model_signed_recv_to_size",
-        "location": "src/lifecycle.c:1531",
+    second_recv = {
+        "id": "RULE-B",
+        "function": "decode_replica_frame",
+        "location": "src/io.c:1531",
         "category": "signed_unsigned",
-        "description": "Signed return `rc` from _net_recv_data is cast to size_t/SIZE_MAX and later used by memcpy.",
+        "description": "Signed return `rc` from recv is cast to size_t/SIZE_MAX and later used by memcpy.",
     }
 
-    deduped = deduplicate_issues([range_recv, real_recv])
+    deduped = deduplicate_issues([first_recv, second_recv])
 
     assert len(deduped) == 2
     assert {
         item["dedup_key"] for item in deduped
     } == {
-        "signed_unsigned|src/lifecycle.c|_lifecycle_recv_packet|net_recv_data_negative_length",
-        "signed_unsigned|src/lifecycle.c|_real_model_signed_recv_to_size|signed_recv_to_size",
+        "signed_unsigned|src/io.c|decode_primary_frame|negative_length_to_unsigned_size",
+        "signed_unsigned|src/io.c|decode_replica_frame|negative_length_to_unsigned_size",
     }
 
 
 def test_pipe_lock_order_findings_keep_distinct_path_functions() -> None:
     dispatch = {
-        "function": "_lifecycle_dispatch_pipe_tick",
-        "location": "src/lifecycle.c:689",
+        "function": "dispatch_tick",
+        "location": "src/worker.c:689",
         "category": "deadlock",
-        "description": "_lifecycle_dispatch_pipe_tick takes sched_lock then pipe->ctrl_lock.",
+        "description": "dispatch_tick takes scheduler_lock then control_lock.",
+        "lock_order": ["scheduler_lock", "control_lock"],
     }
     timer = {
-        "function": "_lifecycle_tick_timer_callback",
-        "location": "src/lifecycle.c:742",
+        "function": "timer_callback",
+        "location": "src/worker.c:742",
         "category": "deadlock",
-        "description": "_lifecycle_tick_timer_callback waits on pipe->ctrl_lock while close waits on scheduler lock.",
+        "description": "timer_callback waits on control_lock while close waits on scheduler_lock.",
+        "lock_order": ["control_lock", "scheduler_lock"],
     }
 
     deduped = deduplicate_issues([dispatch, timer])
@@ -287,24 +412,26 @@ def test_pipe_lock_order_findings_keep_distinct_path_functions() -> None:
     assert {
         item["dedup_key"] for item in deduped
     } == {
-        "deadlock|src/lifecycle.c|_lifecycle_dispatch_pipe_tick|pipe_scheduler_control_lock_order",
-        "deadlock|src/lifecycle.c|_lifecycle_tick_timer_callback|pipe_scheduler_control_lock_order",
+        "deadlock|src/worker.c|dispatch_tick|lock_order_control_lock_scheduler_lock",
+        "deadlock|src/worker.c|timer_callback|lock_order_control_lock_scheduler_lock",
     }
 
 
 def test_dedup_merges_thread_id_leak_variants_by_resource_root_cause() -> None:
     issues = [
         {
-            "function": "td_init",
-            "location": "src/main.c:187",
+            "function": "initialize_workers",
+            "location": "src/bootstrap.c:187",
             "category": "memory_leak",
-            "description": "`thread_ids` is heap allocated and never released.",
+            "resource_signature": "worker_handles",
+            "description": "`worker_handles` is heap allocated and never released.",
         },
         {
-            "function": "td_init",
-            "location": "src/main.c:190",
+            "function": "initialize_workers",
+            "location": "src/bootstrap.c:190",
             "category": "resource_leak",
-            "description": "thread_ids分配失败时，之前分配的threads数组及所有更早资源未释放",
+            "resource_signature": "worker_handles",
+            "description": "分配失败时，之前分配的 worker_handles 数组未释放",
         },
     ]
 
@@ -331,8 +458,8 @@ def test_distinct_close_wrapper_stale_fd_findings_do_not_merge_by_file_only() ->
 def test_use_after_scope_stack_thread_issue_normalizes_to_stack_escape() -> None:
     issue = {
         "id": "ISSUE_1",
-        "function": "_lifecycle_schedule_flush",
-        "location": "src/lifecycle.c:247-260",
+        "function": "schedule_flush",
+        "location": "src/jobs.c:247-260",
         "category": "memory safety use after scope 栈内存逃逸到分离线程",
         "subcategory": "use_after_scope",
         "description": "FlushJob job is passed to pthread create as &job and later read by _flush_worker.",
@@ -346,7 +473,9 @@ def test_use_after_scope_stack_thread_issue_normalizes_to_stack_escape() -> None
     assert deduped[0]["category"] == "stack_escape"
     assert deduped[0]["subcategory"] == "stack_escape"
     assert deduped[0]["cwe"] == "CWE-562"
-    assert deduped[0]["dedup_key"] == "stack_escape|src/lifecycle.c|flush_job"
+    assert deduped[0]["dedup_key"] == (
+        "stack_escape|src/jobs.c|schedule_flush|stack_address_async_escape_job"
+    )
 
 
 def test_pthread_create_heap_owner_leak_stays_memory_leak() -> None:
@@ -374,16 +503,19 @@ def test_canonical_key_respects_structured_category_over_noisy_context() -> None
     assert canonical_issue_key(issue).startswith("path_traversal|src/executor.c|")
 
 
-def test_root_name_matching_handles_underscore_function_names() -> None:
+def test_type_confusion_root_uses_structured_type_pair_not_function_name() -> None:
     issue = {
-        "function": "td_cleanup",
-        "location": "src/main.c:455",
+        "function": "cleanup_context",
+        "location": "src/bootstrap.c:455",
         "category": "type_confusion",
-        "description": "_executor_cleanup_resources expects SharedResources * but receives a TaskConfig field.",
+        "expected_type": "SharedResources",
+        "actual_type": "TaskConfig",
+        "description": "Cleanup expects SharedResources * but receives a TaskConfig field.",
     }
 
     assert canonical_issue_key(issue) == (
-        "type_confusion|src/main.c|executor_sharedresources_type_confusion"
+        "type_confusion|src/bootstrap.c|cleanup_context|"
+        "type_confusion_taskconfig_to_sharedresources"
     )
 
 
@@ -458,19 +590,21 @@ def test_free_form_unknown_category_falls_back_to_unknown() -> None:
 def test_structured_candidate_wins_over_long_free_form_duplicate() -> None:
     free_form = {
         "id": "ISSUE_1",
-        "function": "_lifecycle_unregister_guarded_subscription",
-        "location": "src/lifecycle.c:641",
+        "function": "unregister_subscription",
+        "location": "src/subscription.c:641",
         "category": "memory_leak",
         "confidence": 0.82,
+        "root_cause_key": "embedded_mutex_cleanup_omitted",
         "description": "A very long generic explanation about a subscription cleanup leak. " * 20,
     }
     structured = {
         "id": "GRAPH_MEMORY_LEAK_1",
-        "function": "_lifecycle_unregister_guarded_subscription",
-        "location": "src/lifecycle.c:641",
+        "function": "unregister_subscription",
+        "location": "src/subscription.c:641",
         "category": "memory_leak",
         "confidence": 0.82,
         "rule": "paired_nested_mutex_cleanup_omitted",
+        "root_cause_key": "embedded_mutex_cleanup_omitted",
         "candidate_source": "graph",
         "description": "Paired creator initializes an embedded mutex but unregister frees the object without destroy.",
         "positive_evidence": ["pthread_mutex_init in creator", "SAFE_FREE in unregister"],
@@ -482,14 +616,15 @@ def test_structured_candidate_wins_over_long_free_form_duplicate() -> None:
     assert deduped[0]["id"] == "GRAPH_MEMORY_LEAK_1"
 
 
-def test_issue41_missing_refcount_variants_merge_across_entries_and_sources() -> None:
+def test_missing_refcount_variants_merge_by_shared_resource_identity() -> None:
     free_form = {
         "id": "ISSUE_1",
-        "function": "_issue41_missing_reference_count",
-        "location": "src/lifecycle.c:1820-1824",
+        "function": "release_shared_session",
+        "location": "src/session.c:1820-1824",
         "category": "missing_refcount",
-        "analyzed_from": "td_run_issue41_cases",
-        "description": "释放资源时未从全局链表 g_issue41_broker.resources 中移除节点，导致链表中存在悬空指针。",
+        "analyzed_from": "handle_session_message",
+        "resource_signature": "g_session_registry.resources",
+        "description": "释放资源时未从全局链表 g_session_registry.resources 中移除节点，导致悬空指针。",
         "sink": "第1828行 return res->ref_count 访问已释放内存。",
     }
     structured = {
@@ -497,12 +632,13 @@ def test_issue41_missing_refcount_variants_merge_across_entries_and_sources() ->
         "candidate_id": "CLANG_CFG_MISSING_REFCOUNT_16af2c1ef0",
         "candidate_source": "clang_ast_cfg",
         "rule": "clang_cfg_shared_resource_freed_without_refcount_protocol",
-        "function": "_issue41_missing_reference_count",
-        "location": "src/lifecycle.c:1822",
+        "function": "release_shared_session",
+        "location": "src/session.c:1822",
         "category": "missing_refcount",
-        "analyzed_from": "_td_issue41_worker",
+        "analyzed_from": "session_worker",
+        "resource_signature": "g_session_registry.resources",
         "description": "Shared resource `res` is freed without checking or updating its reference-count protocol.",
-        "sink": "SAFE_FREE(res) releases a resource still listed in g_issue41_broker.resources.",
+        "sink": "SAFE_FREE(res) releases a resource still listed in g_session_registry.resources.",
     }
 
     deduped = deduplicate_issues([free_form, structured])
@@ -510,23 +646,25 @@ def test_issue41_missing_refcount_variants_merge_across_entries_and_sources() ->
     assert len(deduped) == 1
     assert deduped[0]["id"] == "CLANG_CFG_MISSING_REFCOUNT_16af2c1ef0"
     assert deduped[0]["dedup_key"] == (
-        "missing_refcount|src/lifecycle.c|shared_resource_refcount_protocol"
+        "missing_refcount|src/session.c|g_session_registry.resources"
     )
     assert deduped[0]["duplicate_count"] == 1
 
 
-def test_issue41_partial_retry_symptoms_merge_to_compound_root() -> None:
+def test_partial_retry_symptoms_merge_by_structured_cleanup_root() -> None:
     uninitialized_tag = {
-        "function": "_issue41_partial_resource_leak_on_retry",
-        "location": "src/lifecycle.c:1749",
+        "function": "load_partition_with_retry",
+        "location": "src/partition.c:1749",
         "category": "partial_resource_leak",
+        "root_cause_key": "retry_cleanup_missing",
         "description": "未初始化变量 tag 被解引用，return tag[0]。",
         "root_cause": "资源限制检查的错误处理路径使用了未初始化变量。",
     }
     fail_step_leak = {
-        "function": "_issue41_partial_resource_leak_on_retry",
-        "location": "src/lifecycle.c:1756",
+        "function": "load_partition_with_retry",
+        "location": "src/partition.c:1756",
         "category": "partial_resource_leak",
+        "root_cause_key": "retry_cleanup_missing",
         "description": "fail_step retry path returns -1 and leaks partition and partition->tag.",
         "root_cause": "错误路径缺少清理代码。",
     }
@@ -535,21 +673,21 @@ def test_issue41_partial_retry_symptoms_merge_to_compound_root() -> None:
 
     assert len(deduped) == 1
     assert deduped[0]["dedup_key"] == (
-        "partial_resource_leak|src/lifecycle.c|_issue41_partial_resource_leak_on_retry|"
-        "partition_retry_cleanup"
+        "partial_resource_leak|src/partition.c|load_partition_with_retry|"
+        "retry_cleanup_missing"
     )
 
 
-def test_structured_issue41_candidates_merge_across_entry_roots() -> None:
+def test_structured_version_candidates_merge_across_entry_roots() -> None:
     direct_entry = {
         "id": "CLANG_CFG_VERSION_FILTERING_dc964ee8e6",
         "candidate_id": "CLANG_CFG_VERSION_FILTERING_dc964ee8e6",
         "candidate_source": "clang_ast_cfg",
         "rule": "clang_cfg_parsed_protocol_version_is_ignored",
-        "function": "_issue41_missing_version_filter",
-        "location": "src/lifecycle.c:1795",
+        "function": "parse_protocol_version",
+        "location": "src/protocol.c:1795",
         "category": "version_filtering",
-        "entry_function": "td_handle_distributed_cs_message",
+        "entry_function": "handle_protocol_message",
         "description": "Protocol version `version` is parsed and then explicitly ignored.",
         "sink": "(void)version;",
     }
@@ -558,10 +696,10 @@ def test_structured_issue41_candidates_merge_across_entry_roots() -> None:
         "candidate_id": "CLANG_CFG_VERSION_FILTERING_dc964ee8e6",
         "candidate_source": "clang_ast_cfg",
         "rule": "clang_cfg_parsed_protocol_version_is_ignored",
-        "function": "_issue41_missing_version_filter",
-        "location": "src/lifecycle.c:1795",
+        "function": "parse_protocol_version",
+        "location": "src/protocol.c:1795",
         "category": "version_filtering",
-        "entry_function": "_td_issue41_worker",
+        "entry_function": "protocol_worker",
         "description": "状态字段 state is processed after `(void)version;` drops the protocol version.",
         "sink": "Function returns success while accepting any version.",
     }
@@ -570,61 +708,60 @@ def test_structured_issue41_candidates_merge_across_entry_roots() -> None:
 
     assert len(deduped) == 1
     assert deduped[0]["dedup_key"] == (
-        "version_filtering|src/lifecycle.c|_issue41_missing_version_filter|"
+        "version_filtering|src/protocol.c|parse_protocol_version|"
         "parsed_protocol_version_ignored"
     )
     assert deduped[0]["duplicate_count"] == 1
 
 
-def test_issue41_dynamic_array_variants_merge_across_entries_and_sources() -> None:
+def test_dynamic_array_variants_merge_by_global_resource_identity() -> None:
     free_form = {
         "id": "ISSUE_2",
-        "function": "_issue41_dynamic_array_expand_race",
-        "location": "src/lifecycle.c:1767-1780",
+        "function": "expand_task_table",
+        "location": "src/tasks.c:1767-1780",
         "category": "dynamic_array_race",
         "validation_status": "validated",
-        "description": "Global task array resize updates g_issue41_task_array without a lock.",
-        "sink": "g_issue41_task_array = new_array; safe_free(old_array);",
+        "resource_signature": "g_task_table",
+        "description": "Global task array resize updates g_task_table without a lock.",
+        "sink": "g_task_table = new_array; safe_free(old_array);",
     }
     structured = {
         "id": "CLANG_CFG_DYNAMIC_ARRAY_RACE_eec7b80104",
         "candidate_id": "CLANG_CFG_DYNAMIC_ARRAY_RACE_eec7b80104",
         "candidate_source": "clang_ast_cfg",
         "rule": "clang_cfg_global_dynamic_array_resize_without_lock",
-        "function": "_issue41_dynamic_array_expand_race",
-        "location": "src/lifecycle.c:1767",
+        "function": "expand_task_table",
+        "location": "src/tasks.c:1767",
         "category": "dynamic_array_race",
-        "entry_function": "_td_issue41_worker",
-        "description": "Global dynamic array `g_issue41_task_array` is resized and old storage is freed.",
-        "sink": "g_issue41_task_array = new_array",
+        "entry_function": "task_worker",
+        "resource_signature": "g_task_table",
+        "description": "Global dynamic array `g_task_table` is resized and old storage is freed.",
+        "sink": "g_task_table = new_array",
     }
 
     deduped = deduplicate_issues([free_form, structured])
 
     assert len(deduped) == 1
-    assert deduped[0]["dedup_key"] == (
-        "dynamic_array_race|src/lifecycle.c|_issue41_dynamic_array_expand_race|"
-        "global_dynamic_array_resize"
-    )
+    assert deduped[0]["dedup_key"] == "dynamic_array_race|src/tasks.c|g_task_table"
     assert deduped[0]["duplicate_count"] == 1
 
 
-def test_real_model_unchecked_return_variants_merge_across_entry_roots() -> None:
+def test_error_return_variants_merge_by_detector_root() -> None:
     direct = {
         "id": "CLANG_CFG_UNCHECKED_RETURN_5b8e279112",
         "candidate_id": "CLANG_CFG_UNCHECKED_RETURN_5b8e279112",
         "candidate_source": "clang_ast_cfg",
         "rule": "clang_cfg_probe_error_branch_can_return_success_status",
-        "function": "_real_model_ssl_error_returns_ok",
-        "location": "src/lifecycle.c:1442",
+        "function": "probe_transport_status",
+        "location": "src/transport.c:1442",
         "category": "unchecked_return",
-        "entry_function": "td_handle_real_protocol_message",
+        "entry_function": "handle_transport_message",
         "description": "Probe failure branch logs an error but returns ret.",
         "sink": "return ret;",
     }
     worker = {
         **direct,
-        "entry_function": "_td_real_protocol_worker",
+        "entry_function": "transport_worker",
         "description": "Probe failure returns the transport status instead of an explicit error.",
         "sink": "function returns ret to caller",
     }
@@ -633,8 +770,8 @@ def test_real_model_unchecked_return_variants_merge_across_entry_roots() -> None
 
     assert len(deduped) == 1
     assert deduped[0]["dedup_key"] == (
-        "unchecked_return|src/lifecycle.c|_real_model_ssl_error_returns_ok|"
-        "ssl_probe_status"
+        "unchecked_return|src/transport.c|probe_transport_status|"
+        "error_branch_returns_success"
     )
 
 
@@ -665,48 +802,53 @@ def test_path_check_before_open_variants_merge_across_public_entries() -> None:
     )
 
 
-def test_issue41_size_limit_and_integer_overflow_variants_merge_by_numeric_root() -> None:
+def test_numeric_root_does_not_merge_distinct_flows_without_flow_identity() -> None:
     size_limit = {
         "id": "CLANG_CFG_SIZE_LIMIT_MISMATCH_1967cce365",
         "candidate_id": "CLANG_CFG_SIZE_LIMIT_MISMATCH_1967cce365",
         "candidate_source": "clang_ast_cfg",
         "rule": "clang_cfg_fixed_byte_limit_mismatch",
-        "function": "_issue41_label_cache_size_miscalc",
-        "location": "src/lifecycle.c:1677",
+        "function": "allocate_label_cache",
+        "location": "src/cache.c:1677",
         "category": "size_limit_mismatch",
-        "description": "label_len is constrained before element_count is checked.",
-        "sink": "label_len = element_count * sizeof(label)",
+        "root_cause_key": "numeric_allocation_size_calculation",
+        "description": "A derived byte total is constrained after a separate item quota.",
+        "sink": "violet_bytes = orchid_items * sizeof(record)",
     }
     overflow = {
         "id": "ISSUE_5",
-        "function": "_issue41_label_cache_size_miscalc",
-        "location": "src/lifecycle.c:1677",
+        "function": "allocate_label_cache",
+        "location": "src/cache.c:1677",
         "category": "integer_overflow",
-        "description": "element_count multiplication can overflow before allocation.",
-        "sink": "_safe_calloc(label_len + 1, 1)",
+        "root_cause_key": "numeric_allocation_size_calculation",
+        "description": "The item-count multiplication can overflow before allocation.",
+        "sink": "_safe_calloc(violet_bytes + 1, 1)",
     }
 
     deduped = deduplicate_issues([size_limit, overflow])
 
-    assert len(deduped) == 1
-    assert deduped[0]["dedup_key"] == (
-        "numeric_size_mismatch|src/lifecycle.c|_issue41_label_cache_size_miscalc|"
-        "label_cache_size_miscalc"
+    expected_root_key = (
+        "numeric_size_mismatch|src/cache.c|allocate_label_cache|"
+        "numeric_allocation_size_calculation"
+    )
+    assert len(deduped) == 2
+    assert all(
+        str(issue["dedup_key"]).startswith(expected_root_key) for issue in deduped
     )
 
 
 def test_same_function_same_file_distinct_resources_still_do_not_merge() -> None:
     thread_ids = {
-        "function": "td_init",
-        "location": "src/main.c:187",
+        "function": "initialize_workers",
+        "location": "src/bootstrap.c:187",
         "category": "memory_leak",
-        "description": "thread_ids is heap allocated and never released.",
+        "description": "worker_handles is heap allocated and never released.",
     }
     queue_tasks = {
-        "function": "td_init",
-        "location": "src/main.c:187",
+        "function": "initialize_workers",
+        "location": "src/bootstrap.c:187",
         "category": "memory_leak",
-        "description": "g_dispatcher.queue.tasks is allocated and not freed on error.",
+        "description": "g_scheduler.queue.tasks is allocated and not freed on error.",
     }
 
     deduped = deduplicate_issues([thread_ids, queue_tasks])
@@ -714,18 +856,18 @@ def test_same_function_same_file_distinct_resources_still_do_not_merge() -> None
     assert len(deduped) == 2
 
 
-def test_td_init_distinct_memory_leaks_remain_separate() -> None:
+def test_distinct_memory_leaks_remain_separate() -> None:
     thread_ids = {
-        "function": "td_init",
-        "location": "src/main.c:187",
+        "function": "initialize_workers",
+        "location": "src/bootstrap.c:187",
         "category": "memory_leak",
-        "description": "thread_ids is heap allocated for pthread_create arguments and never released.",
+        "description": "worker_handles is heap allocated for pthread_create arguments and never released.",
     }
     queue_tasks = {
-        "function": "td_init",
-        "location": "src/main.c:160",
+        "function": "initialize_workers",
+        "location": "src/bootstrap.c:160",
         "category": "memory_leak",
-        "description": "g_dispatcher.queue.tasks is allocated before _plugin_registry_init; on failure it returns without freeing queue.tasks.",
+        "description": "g_scheduler.queue.tasks is allocated before registry initialization; on failure it is not freed.",
     }
 
     deduped = deduplicate_issues([thread_ids, queue_tasks])
@@ -734,8 +876,8 @@ def test_td_init_distinct_memory_leaks_remain_separate() -> None:
     assert {
         item["dedup_key"] for item in deduped
     } == {
-        "memory_leak|src/main.c|thread_ids",
-        "memory_leak|src/main.c|td_init|g_dispatcher.queue.tasks",
+        "memory_leak|src/bootstrap.c|initialize_workers|worker_handles",
+        "memory_leak|src/bootstrap.c|g_scheduler.queue.tasks",
     }
 
 
@@ -812,16 +954,18 @@ def test_real018_style_memory_leak_stays_independent_from_patch_member_leak() ->
 def test_semantic_dedup_merges_loop_aliases_by_concrete_root() -> None:
     busy = {
         "id": "BUSY",
-        "function": "_real_model_recv_busy_loop",
-        "location": "src/lifecycle.c:1500",
+        "function": "receive_with_retry",
+        "location": "src/io.c:1500",
         "category": "busy_loop",
+        "root_cause_key": "retry_without_progress",
         "description": "recv retry path spins without timeout.",
     }
     infinite = {
         "id": "INF",
-        "function": "_real_model_recv_busy_loop",
-        "location": "src/lifecycle.c:1501",
+        "function": "receive_with_retry",
+        "location": "src/io.c:1501",
         "category": "infinite_loop",
+        "root_cause_key": "retry_without_progress",
         "description": "The same recv retry path can spin in an infinite loop.",
     }
 
@@ -835,23 +979,26 @@ def test_semantic_dedup_merges_loop_aliases_by_concrete_root() -> None:
 def test_semantic_dedup_merges_race_aliases_only_for_same_resource() -> None:
     dynamic = {
         "id": "DYNAMIC",
-        "function": "_peer_expand_task_table",
-        "location": "src/lifecycle.c:1767",
+        "function": "expand_task_table",
+        "location": "src/tasks.c:1767",
         "category": "dynamic_array_race",
-        "description": "g_issue41_task_array is resized and swapped without a lock.",
+        "resource_signature": "g_task_table",
+        "description": "g_task_table is resized and swapped without a lock.",
     }
     shared = {
         "id": "SHARED",
-        "function": "_peer_expand_task_table",
-        "location": "src/lifecycle.c:1772",
+        "function": "expand_task_table",
+        "location": "src/tasks.c:1772",
         "category": "shared_state_race",
-        "description": "Concurrent readers can observe g_issue41_task_array while it is replaced.",
+        "resource_signature": "g_task_table",
+        "description": "Concurrent readers can observe g_task_table while it is replaced.",
     }
     other = {
         "id": "OTHER",
-        "function": "_peer_expand_task_table",
-        "location": "src/lifecycle.c:1778",
+        "function": "expand_task_table",
+        "location": "src/tasks.c:1778",
         "category": "race_condition",
+        "resource_signature": "g_other_table",
         "description": "g_other_table is also updated without synchronization.",
     }
 
@@ -927,7 +1074,9 @@ def test_llm_dedup_guard_allows_cross_function_command_injection_same_sink() -> 
 
     assert applied == 1
     assert rejected == 0
-    assert direct["duplicate_count"] == 1
+    assert "duplicate_count" not in direct
+    assert direct["dedup_cluster_suggestions"][0]["role"] == "primary"
+    assert wrapper["dedup_cluster_suggestions"][0]["role"] == "possible_alias"
 
 
 def test_llm_dedup_guard_rejects_cross_function_same_sink_distinct_resources() -> None:
@@ -1082,26 +1231,28 @@ def test_llm_dedup_guard_rejects_td_init_distinct_allocation_members() -> None:
 def test_llm_dedup_guard_allows_same_file_root_across_functions() -> None:
     callee = {
         "id": "A",
-        "function": "_peer_expand_task_table",
-        "location": "src/lifecycle.c:1789",
+        "function": "expand_task_table",
+        "location": "src/tasks.c:1789",
         "category": "dynamic_array_race",
-        "description": "g_issue41_task_array is resized and the old array is freed without synchronization.",
-        "sink": "g_issue41_task_array = new_array",
+        "resource_signature": "g_task_table",
+        "description": "g_task_table is resized and the old array is freed without synchronization.",
+        "sink": "g_task_table = new_array",
     }
     wrapper = {
         "id": "B",
-        "function": "_peer_create_task_from_frame",
-        "location": "src/lifecycle.c:1922",
+        "function": "create_task_from_frame",
+        "location": "src/tasks.c:1922",
         "category": "shared_state_race",
-        "description": "The task creation path reaches the same unsynchronized g_issue41_task_array resize.",
-        "sink": "g_issue41_task_array old storage can race with readers",
+        "resource_signature": "g_task_table",
+        "description": "The task creation path reaches the same unsynchronized g_task_table resize.",
+        "sink": "g_task_table old storage can race with readers",
     }
     decision = {
         "duplicate_groups": [
             {
                 "primary_issue_id": "A",
                 "duplicate_issue_ids": ["B"],
-                "root_cause_key": "global_dynamic_array_resize",
+                "root_cause_key": "g_task_table",
                 "confidence": 0.93,
                 "reasoning": "Both reports describe the same global task array resize root cause.",
             }
@@ -1118,7 +1269,8 @@ def test_llm_dedup_guard_allows_same_file_root_across_functions() -> None:
 
     assert applied == 1
     assert rejected == 0
-    assert callee["duplicate_count"] == 1
+    assert "duplicate_count" not in callee
+    assert callee["dedup_cluster_suggestions"][0]["role"] == "primary"
 
 
 def test_programmatic_semantic_dedup_keeps_distinct_concrete_roots() -> None:
@@ -1144,7 +1296,7 @@ def test_programmatic_semantic_dedup_keeps_distinct_concrete_roots() -> None:
     assert summary["programmatic_merge_count"] == 0
 
 
-def test_semantic_dedup_merges_command_validation_aliases_across_files() -> None:
+def test_semantic_dedup_keeps_same_shell_sink_distinct_without_dataflow_proof() -> None:
     parser_filter = {
         "id": "PARSER",
         "function": "_validate_task",
@@ -1164,9 +1316,8 @@ def test_semantic_dedup_merges_command_validation_aliases_across_files() -> None
 
     deduped, summary = deduplicate_semantic_issues_programmatic([parser_filter, executor_filter])
 
-    assert len(deduped) == 1
-    assert deduped[0]["duplicate_count"] == 1
-    assert summary["programmatic_merge_count"] == 1
+    assert len(deduped) == 2
+    assert summary["programmatic_merge_count"] == 0
 
 
 def test_semantic_dedup_keeps_distinct_platform_command_root() -> None:
@@ -1193,21 +1344,23 @@ def test_semantic_dedup_keeps_distinct_platform_command_root() -> None:
     assert summary["programmatic_merge_count"] == 0
 
 
-def test_semantic_dedup_merges_peer_publish_uaf_with_refcount_root() -> None:
+def test_semantic_dedup_merges_uaf_with_refcount_by_resource_identity() -> None:
     refcount = {
         "id": "REF",
-        "function": "_peer_publish_shared_session",
-        "location": "src/lifecycle.c:1819",
+        "function": "publish_shared_session",
+        "location": "src/session.c:1819",
         "category": "missing_refcount",
-        "description": "g_peer_session_broker.resources shared listener is freed without checking ref_count.",
+        "resource_signature": "g_session_registry.resources",
+        "description": "g_session_registry.resources listener is freed without checking ref_count.",
         "sink": "SAFE_FREE(res)",
     }
     uaf = {
         "id": "UAF",
-        "function": "_peer_publish_shared_session",
-        "location": "src/lifecycle.c:1835",
+        "function": "publish_shared_session",
+        "location": "src/session.c:1835",
         "category": "use_after_free",
-        "description": "safe_free(res) leaves g_peer_session_broker.resources linked and later readers dereference res->next.",
+        "resource_signature": "g_session_registry.resources",
+        "description": "safe_free(res) leaves g_session_registry.resources linked and readers dereference res->next.",
         "sink": "res->next",
     }
 

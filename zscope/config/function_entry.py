@@ -4,6 +4,7 @@ Function entry configuration for batch analysis.
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -20,18 +21,77 @@ class FunctionEntry:
         function_name: Name of the function to analyze
         custom_prompt: Optional custom prompt to append to agent's base task
         file_path: Optional file path for disambiguation when multiple TUs have same function name
+        signature: Complete source signature used to distinguish overloads and
+            same-name declarations within one translation unit
         diff_focus: Optional diff-impact metadata used by diff mode
     """
     function_name: str
     custom_prompt: Optional[str] = None
     file_path: Optional[str] = None
+    signature: Optional[str] = None
     diff_focus: Optional[Dict[str, Any]] = None
     exposure: Optional[str] = None
     reasons: List[str] = field(default_factory=list)
     
     def __post_init__(self):
+        self.function_name = str(self.function_name).strip()
         if not self.function_name:
             raise ValueError("function_name cannot be empty")
+        if self.file_path:
+            self.file_path = self._portable_path_text(self.file_path)
+        if self.signature:
+            self.signature = self.normalize_signature(self.signature)
+
+    @staticmethod
+    def _portable_path_text(value: Any) -> str:
+        text = str(value or "").strip().replace("\\", "/")
+        text = re.sub(r"/+", "/", text)
+        while text.startswith("./"):
+            text = text[2:]
+        return text
+
+    @staticmethod
+    def normalize_signature(value: Any) -> str:
+        """Return a stable, lossless-enough representation of a declaration."""
+        return re.sub(r"\s+", " ", str(value or "").strip())
+
+    def normalized_file_path(self, project_root: Optional[Path] = None) -> str:
+        """Return a project-relative POSIX path when a project root is known."""
+        text = self._portable_path_text(self.file_path)
+        if not text:
+            return ""
+        if project_root is None:
+            return text
+
+        root = Path(project_root).resolve()
+        path = Path(text)
+        if not path.is_absolute():
+            path = root.joinpath(*text.split("/"))
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path.absolute()
+        try:
+            return resolved.relative_to(root).as_posix()
+        except ValueError:
+            return resolved.as_posix()
+
+    def identity_key(self, project_root: Optional[Path] = None) -> str:
+        """Return the canonical entry identity.
+
+        New entries use implementation file plus complete signature.  The
+        name-only form is retained for one compatibility cycle when legacy
+        entry lists do not yet carry either field.
+        """
+        file_path = self.normalized_file_path(project_root)
+        signature = self.normalize_signature(self.signature)
+        if not file_path and not signature:
+            return self.function_name
+        return f"{file_path or '<unknown>'}::{signature or self.function_name}"
+
+    def lookup_query(self) -> str:
+        """Prefer the complete signature for overload-safe index lookup."""
+        return self.normalize_signature(self.signature) or self.function_name
 
 
 class FunctionListLoader:
@@ -208,6 +268,7 @@ class FunctionListLoader:
                     function_name=function_name,
                     custom_prompt=func_data.get('custom_prompt'),
                     file_path=file_path,
+                    signature=func_data.get('signature'),
                     diff_focus=diff_focus,
                     exposure=exposure,
                     reasons=[

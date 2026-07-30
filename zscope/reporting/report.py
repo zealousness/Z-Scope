@@ -84,6 +84,16 @@ class Issue:
     human_disposition: Optional[str] = None
     time_to_review: Optional[float] = None
     time_to_fix: Optional[float] = None
+    candidate_schema_version: Optional[str] = None
+    candidate_uid: Optional[str] = None
+    occurrence_uid: Optional[str] = None
+    history_key: Optional[str] = None
+    evidence_hash: Optional[str] = None
+    run_issue_uid: Optional[str] = None
+    candidate_disposition: Optional[str] = None
+    evidence_completeness: Optional[str] = None
+    evidence_sources: Optional[List[str]] = None
+    entry_paths: Optional[List[List[str]]] = None
 
 
     @classmethod
@@ -153,6 +163,13 @@ class FinalReport:
     notes: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
     report_views: Dict[str, Any] = field(default_factory=dict)
+    schema_version: int = 2
+    finding_status: str = "clean"
+    completeness: str = "complete"
+    scan_outcome: str = "clean"
+    run_manifest: Dict[str, Any] = field(default_factory=dict)
+    candidate_terminal_states: List[Dict[str, Any]] = field(default_factory=list)
+    needs_review_governance: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -162,6 +179,13 @@ class FinalReport:
             "notes": self.notes,
             "metadata": self.metadata,
             "report_views": self.report_views,
+            "schema_version": self.schema_version,
+            "finding_status": self.finding_status,
+            "completeness": self.completeness,
+            "scan_outcome": self.scan_outcome,
+            "run_manifest": self.run_manifest,
+            "candidate_terminal_states": self.candidate_terminal_states,
+            "needs_review_governance": self.needs_review_governance,
         }
 
 
@@ -196,6 +220,11 @@ class ReportGenerator:
 ## 缺陷摘要统计
 
 """
+        md_content += (
+            f"**Finding Status**: `{report.finding_status}`\n"
+            f"**Completeness**: `{report.completeness}`"
+            f"{' (incomplete)' if report.completeness != 'complete' else ''}\n\n"
+        )
         if not report.issues:
             md_content += "未发现显著缺陷。\n"
         else:

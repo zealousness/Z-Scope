@@ -18,21 +18,21 @@ def _base_config(tmp_path):
     }
 
 
-def test_semantic_dedup_config_defaults_to_llm_enabled() -> None:
+def test_semantic_dedup_config_defaults_to_llm_disabled() -> None:
     cfg = SemanticDedupConfig()
 
     assert cfg.enabled is True
-    assert cfg.llm_enabled is True
+    assert cfg.llm_enabled is False
 
 
-def test_config_loader_defaults_llm_semantic_dedup_to_enabled(tmp_path) -> None:
+def test_config_loader_defaults_llm_semantic_dedup_to_disabled(tmp_path) -> None:
     path = tmp_path / "zscope.yaml"
     path.write_text(json.dumps(_base_config(tmp_path)), encoding="utf-8")
 
     cfg = ConfigLoader.load(str(path))
 
     assert cfg.reporting.semantic_dedup.enabled is True
-    assert cfg.reporting.semantic_dedup.llm_enabled is True
+    assert cfg.reporting.semantic_dedup.llm_enabled is False
 
 
 def test_config_loader_allows_disabling_llm_semantic_dedup(tmp_path) -> None:
@@ -45,6 +45,18 @@ def test_config_loader_allows_disabling_llm_semantic_dedup(tmp_path) -> None:
 
     assert cfg.reporting.semantic_dedup.enabled is True
     assert cfg.reporting.semantic_dedup.llm_enabled is False
+
+
+def test_config_loader_allows_enabling_llm_semantic_dedup(tmp_path) -> None:
+    data = _base_config(tmp_path)
+    data["reporting"] = {"semantic_dedup": {"llm_enabled": True}}
+    path = tmp_path / "zscope.yaml"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    cfg = ConfigLoader.load(str(path))
+
+    assert cfg.reporting.semantic_dedup.enabled is True
+    assert cfg.reporting.semantic_dedup.llm_enabled is True
 
 
 def test_config_loader_reads_global_model_flag(tmp_path) -> None:

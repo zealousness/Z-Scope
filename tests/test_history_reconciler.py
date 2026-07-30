@@ -44,11 +44,20 @@ def test_history_reconciler_updates_location_when_issue_still_exists() -> None:
     assert result.issue["location"] == "src/demo.c:57"
 
 
-def test_history_reconciler_drops_fixed_issue() -> None:
+def test_history_reconciler_keeps_llm_fix_suggestion_for_review() -> None:
     result = HistoryReconciler.reconcile_issue(
         {"id": "old-1", "location": "src/demo.c:42", "validation_status": "validated"},
-        FakeResponse(True, {"still_exists": False}),
+        FakeResponse(
+            True,
+            {
+                "still_exists": False,
+                "reasoning": "A new guard appears before the sink.",
+            },
+        ),
     )
 
-    assert result.keep is False
-    assert result.reason == "fixed"
+    assert result.keep is True
+    assert result.reason == "fix_suggested_needs_review"
+    assert result.issue["validation_status"] == "needs_review"
+    assert result.issue["candidate_disposition"] == "needs_review"
+    assert result.issue["historical_fix_suggestion"]["advisory_only"] is True

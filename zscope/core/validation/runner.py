@@ -5,14 +5,26 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from collections import OrderedDict
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
-from threading import Lock
+from pathlib import Path
+from threading import Event, Lock
 from typing import Any, Callable, Dict, List, Optional
 
 from ...agents.validator_agent.agent import ValidatorAgent
+from ...common.cancellation import (
+    CancellationError,
+    CancellationToken,
+    bind_cancellation_token,
+    current_cancellation_token,
+)
 from ...common.issue_identity import canonical_issue_key, deduplicate_issues
+from ...config.function_entry import FunctionEntry
 from ...framework.llm_client import LLMClient
+from ...orchestration.scheduler import VALIDATOR_ROLE, ScanScheduler
+from ...orchestration.candidate_envelope import CANDIDATE_SCHEMA_VERSION
 from .evidence import (
     build_validation_evidence_pack,
     compact_validation_evidence_pack,
@@ -46,9 +58,91 @@ class _ValidationWorkerResult:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+class ValidationResultCache:
+    """Bounded scan-level cache with in-flight coalescing.
+
+    A cache instance belongs to one immutable scan.  Concurrent entry analyzers
+    that produce the same semantic validation-group key share one Validator
+    call. Occurrence-only entry wrappers are excluded; decision constraints,
+    code, model, prompt, tool policy, and revision remain isolated.
+    """
+
+    def __init__(self, max_entries: int = 4096) -> None:
+        self.max_entries = max(0, int(max_entries or 0))
+        self.enabled = self.max_entries > 0
+        self._values: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+        self._inflight: Dict[str, Event] = {}
+        self._lock = Lock()
+
+    def get(self, key: str) -> Optional[Dict[str, Any]]:
+        if not self.enabled or not key:
+            return None
+        with self._lock:
+            value = self._values.get(key)
+            if value is not None:
+                self._values.move_to_end(key)
+            return dict(value) if isinstance(value, dict) else None
+
+    def reserve(self, key: str) -> bool:
+        """Return True to the single owner responsible for computing ``key``."""
+        if not self.enabled or not key:
+            return True
+        with self._lock:
+            if key in self._values or key in self._inflight:
+                return False
+            self._inflight[key] = Event()
+            return True
+
+    def wait(self, key: str, timeout: Optional[float] = None) -> Optional[Dict[str, Any]]:
+        if not self.enabled or not key:
+            return None
+        with self._lock:
+            event = self._inflight.get(key)
+        if event is not None:
+            deadline = (
+                time.monotonic() + max(0.0, float(timeout))
+                if timeout is not None
+                else None
+            )
+            while not event.is_set():
+                token = current_cancellation_token()
+                if token is not None:
+                    token.raise_if_cancelled()
+                wait_seconds = 0.05
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    wait_seconds = min(wait_seconds, remaining)
+                event.wait(timeout=wait_seconds)
+        return self.get(key)
+
+    def put(self, key: str, value: Dict[str, Any]) -> None:
+        if not self.enabled or not key or not isinstance(value, dict):
+            return
+        with self._lock:
+            self._values[key] = dict(value)
+            self._values.move_to_end(key)
+            while len(self._values) > self.max_entries:
+                self._values.popitem(last=False)
+            event = self._inflight.pop(key, None)
+        if event is not None:
+            event.set()
+
+    def abandon(self, key: str) -> None:
+        if not self.enabled or not key:
+            return
+        with self._lock:
+            event = self._inflight.pop(key, None)
+        if event is not None:
+            event.set()
+
+
 class ValidationRunner:
     """Owns validation-stage orchestration around ``ValidationPipeline``."""
 
+    _VALIDATION_CACHE_PROTOCOL = "zscope.validator-cache.v3"
+    _DEFAULT_VALIDATION_CACHE_SIZE = 4096
     _EXTERNAL_API_NAMES = {
         "calloc",
         "close",
@@ -70,9 +164,6 @@ class ValidationRunner:
         "thrd_create",
         "write",
     }
-    _VALIDATOR_RESULT_CACHE: Dict[str, Dict[str, Any]] = {}
-    _VALIDATOR_RESULT_CACHE_LOCK = Lock()
-
     def __init__(
         self,
         *,
@@ -88,6 +179,8 @@ class ValidationRunner:
         issue_key_fn: Callable[[Dict[str, Any]], str] = canonical_issue_key,
         deduplicate_issues_fn: Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]] = deduplicate_issues,
         validator_agent_factory: Callable[..., Any] = ValidatorAgent,
+        result_cache: Optional[ValidationResultCache] = None,
+        scheduler: Optional[ScanScheduler] = None,
     ):
         self.config = config
         self.llm_clients = llm_clients
@@ -101,15 +194,30 @@ class ValidationRunner:
         self.issue_key_fn = issue_key_fn
         self.deduplicate_issues = deduplicate_issues_fn
         self.validator_agent_factory = validator_agent_factory
+        self.scheduler = scheduler
+        # Validator verdicts are contextual.  Keeping this cache on the runner
+        # scopes it to one immutable scan instead of leaking decisions between
+        # projects, revisions, entries, or long-lived service requests.
+        self._validator_result_cache_size = self._validation_cache_size()
+        self._validator_result_cache = result_cache or ValidationResultCache(
+            self._validator_result_cache_size
+        )
+        self._validation_environment_fingerprint = self._build_validation_environment_fingerprint()
 
     def run(self, state: Dict[str, Any]) -> None:
         new_issues = state.get("pending_new_issues", [])
         if not new_issues:
             return
 
-        deduped_issues = self.deduplicate_issues(new_issues)
+        deduped_issues = self._coalesce_validation_groups(new_issues)
+        state["validation_group_count"] = int(
+            state.get("validation_group_count", 0) or 0
+        ) + len(deduped_issues)
         if len(deduped_issues) != len(new_issues):
             merged_count = len(new_issues) - len(deduped_issues)
+            state["validation_group_merged_count"] = int(
+                state.get("validation_group_merged_count", 0) or 0
+            ) + merged_count
             logger.info("Merged %d duplicate candidate issue(s) before validation.", merged_count)
             state["notes"].append(f"Merged {merged_count} duplicate candidate issue(s) before validation.")
         new_issues = deduped_issues
@@ -126,10 +234,19 @@ class ValidationRunner:
                 prepared.append(item)
 
         validation_workers = self._validation_worker_count(len(prepared))
-        if validation_workers <= 1:
+        parent_token = current_cancellation_token()
+        if parent_token is not None:
+            parent_token.raise_if_cancelled()
+        if validation_workers <= 1 and self.scheduler is None:
             validator_agent = self._build_validator_agent() if prepared else None
             for item in prepared:
-                result = self._validate_prepared_issue(item, validator_agent=validator_agent)
+                if parent_token is not None:
+                    parent_token.raise_if_cancelled()
+                result = self._validate_with_deadline(
+                    item,
+                    parent_token=parent_token,
+                    validator_agent=validator_agent,
+                )
                 self._apply_validation_worker_result(state, result)
         elif prepared:
             logger.info(
@@ -138,35 +255,241 @@ class ValidationRunner:
                 validation_workers,
             )
             results: Dict[int, _ValidationWorkerResult] = {}
-            with ThreadPoolExecutor(
-                max_workers=validation_workers,
-                thread_name_prefix="zscope-validator",
-            ) as executor:
-                future_to_item = {
-                    executor.submit(self._validate_prepared_issue, item): item
-                    for item in prepared
-                }
-                for future in as_completed(future_to_item):
-                    item = future_to_item[future]
-                    try:
-                        results[item.index] = future.result()
-                    except Exception as exc:
-                        logger.exception(
-                            "Validation worker crashed for issue %s in function %s.",
-                            item.raw_issue.get("id"),
-                            item.issue_func,
+            executor: Optional[ThreadPoolExecutor] = None
+            hard_cancelled = False
+            future_to_item: Dict[Future[Any], _PreparedValidation] = {}
+            if self.scheduler is None:
+                executor = ThreadPoolExecutor(
+                    max_workers=validation_workers,
+                    thread_name_prefix="zscope-validator",
+                )
+            try:
+                for item in prepared:
+                    if parent_token is not None:
+                        parent_token.raise_if_cancelled()
+                    if self.scheduler is not None:
+                        future = self.scheduler.submit(
+                            VALIDATOR_ROLE,
+                            self._validate_with_deadline,
+                            item,
+                            parent_token=parent_token,
+                            priority=int(item.raw_issue.get("priority_score") or 0),
                         )
-                        results[item.index] = _ValidationWorkerResult(
-                            index=item.index,
-                            raw_issue=item.raw_issue,
-                            issue_func=item.issue_func,
-                            success=False,
-                            error=str(exc),
+                    else:
+                        assert executor is not None
+                        future = executor.submit(
+                            self._validate_with_deadline,
+                            item,
+                            parent_token=parent_token,
                         )
+                    future_to_item[future] = item
+
+                pending = set(future_to_item)
+                while pending:
+                    if parent_token is not None and parent_token.is_cancelled():
+                        hard_cancelled = True
+                        self._cancel_validation_futures(pending)
+                        parent_token.raise_if_cancelled()
+
+                    wait_timeout = self._cancellation_poll_seconds(parent_token)
+                    completed, pending = wait(
+                        pending,
+                        timeout=wait_timeout,
+                        return_when=FIRST_COMPLETED,
+                    )
+                    if parent_token is not None and parent_token.is_cancelled():
+                        hard_cancelled = True
+                        self._cancel_validation_futures(pending)
+                        parent_token.raise_if_cancelled()
+
+                    for future in completed:
+                        item = future_to_item[future]
+                        try:
+                            results[item.index] = future.result()
+                        except CancellationError:
+                            hard_cancelled = True
+                            self._cancel_validation_futures(pending)
+                            raise
+                        except Exception as exc:
+                            logger.exception(
+                                "Validation worker crashed for issue %s in function %s.",
+                                item.raw_issue.get("id"),
+                                item.issue_func,
+                            )
+                            results[item.index] = _ValidationWorkerResult(
+                                index=item.index,
+                                raw_issue=item.raw_issue,
+                                issue_func=item.issue_func,
+                                success=False,
+                                error=str(exc),
+                            )
+                if parent_token is not None:
+                    parent_token.raise_if_cancelled()
+            except CancellationError:
+                hard_cancelled = True
+                self._cancel_validation_futures(future_to_item)
+                raise
+            finally:
+                if executor is not None:
+                    executor.shutdown(
+                        wait=not hard_cancelled,
+                        cancel_futures=hard_cancelled,
+                    )
             for item in prepared:
                 self._apply_validation_worker_result(state, results[item.index])
 
         state["pending_new_issues"] = []
+
+    def _coalesce_validation_groups(
+        self,
+        issues: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Select one representative for each semantic validation group."""
+
+        clustered: Dict[str, List[Dict[str, Any]]] = {}
+        legacy: List[Dict[str, Any]] = []
+        for issue in issues:
+            cluster_uid = str(issue.get("validation_cluster_uid") or "")
+            if cluster_uid:
+                clustered.setdefault(cluster_uid, []).append(issue)
+            else:
+                legacy.append(issue)
+
+        result: List[Dict[str, Any]] = []
+        completeness_rank = {"complete": 3, "partial": 2, "unknown": 1}
+        for cluster_uid in sorted(clustered):
+            group = clustered[cluster_uid]
+            representative = max(
+                group,
+                key=lambda item: (
+                    completeness_rank.get(
+                        str(item.get("evidence_completeness") or "unknown"),
+                        0,
+                    ),
+                    len(item.get("positive_evidence") or []),
+                    len(item.get("negative_evidence") or []),
+                    str(item.get("evidence_hash") or ""),
+                ),
+            )
+            occurrence_uids: List[str] = []
+            provenance_hashes: List[str] = []
+            evidence_hashes: List[str] = []
+            for item in group:
+                for field, target in (
+                    ("occurrence_uid", occurrence_uids),
+                    ("provenance_hash", provenance_hashes),
+                    ("evidence_hash", evidence_hashes),
+                ):
+                    value = str(item.get(field) or "")
+                    if value and value not in target:
+                        target.append(value)
+                for value in item.get("occurrence_uids") or []:
+                    text = str(value)
+                    if text and text not in occurrence_uids:
+                        occurrence_uids.append(text)
+            representative["occurrence_uids"] = sorted(occurrence_uids)
+            representative["occurrence_count"] = len(occurrence_uids) or 1
+            representative["provenance_hashes"] = sorted(provenance_hashes)
+            representative["evidence_hashes"] = sorted(evidence_hashes)
+            representative["grouped_candidate_count"] = len(group)
+            result.append(representative)
+
+        result.extend(self.deduplicate_issues(legacy))
+        return result
+
+    def _validate_with_deadline(
+        self,
+        item: _PreparedValidation,
+        *,
+        parent_token: Optional[CancellationToken],
+        validator_agent: Optional[Any] = None,
+    ) -> _ValidationWorkerResult:
+        soft_budget = self._validation_soft_budget_seconds()
+        token = (
+            parent_token.child()
+            if parent_token is not None
+            else CancellationToken()
+        )
+        started = time.monotonic()
+        try:
+            with bind_cancellation_token(token):
+                token.raise_if_cancelled()
+                result = self._validate_prepared_issue(
+                    item,
+                    validator_agent=validator_agent,
+                )
+                token.raise_if_cancelled()
+        except CancellationError:
+            # validation_deadline_seconds is a soft observability budget.  Only
+            # the inherited scan/entry token (including an explicit parent
+            # deadline) is authoritative cancellation.
+            raise
+        elapsed = max(0.0, time.monotonic() - started)
+        self._record_validation_budget(item, result, soft_budget, elapsed)
+        return result
+
+    @staticmethod
+    def _cancel_validation_futures(futures: Any) -> None:
+        for future in list(futures):
+            if isinstance(future, Future) and not future.done():
+                future.cancel()
+
+    @staticmethod
+    def _cancellation_poll_seconds(
+        parent_token: Optional[CancellationToken],
+    ) -> Optional[float]:
+        if parent_token is None:
+            return None
+        remaining = parent_token.remaining_seconds()
+        if remaining is None:
+            return 0.05
+        remaining_seconds = float(remaining)
+        return max(0.0, min(0.05, remaining_seconds))
+
+    def _validation_soft_budget_seconds(self) -> Optional[float]:
+        analysis_cfg = getattr(self.config, "analysis", None)
+        raw = getattr(analysis_cfg, "validation_deadline_seconds", 240.0)
+        if raw is None:
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return 240.0
+        return value if value > 0 else None
+
+    @staticmethod
+    def _record_validation_budget(
+        item: _PreparedValidation,
+        result: _ValidationWorkerResult,
+        soft_budget: Optional[float],
+        elapsed: float,
+    ) -> None:
+        duration = round(max(0.0, elapsed), 4)
+        result.metadata["validation_duration_seconds"] = duration
+        item.raw_issue["validation_duration_seconds"] = duration
+        if soft_budget is None:
+            return
+
+        budget = round(max(0.0, soft_budget), 4)
+        result.metadata["validation_soft_budget_seconds"] = budget
+        item.raw_issue["validation_soft_budget_seconds"] = budget
+        if elapsed <= soft_budget:
+            return
+
+        overrun = round(elapsed - soft_budget, 4)
+        result.metadata["validation_soft_budget_overrun"] = 1
+        result.metadata["validation_soft_budget_overrun_seconds"] = overrun
+        item.raw_issue["validation_soft_budget_overrun"] = True
+        item.raw_issue["validation_soft_budget_overrun_seconds"] = overrun
+        logger.warning(
+            "Validation soft budget exceeded for issue %s in function %s: "
+            "elapsed=%.3fs budget=%.3fs overrun=%.3fs; result retained.",
+            item.raw_issue.get("id"),
+            item.issue_func,
+            elapsed,
+            soft_budget,
+            elapsed - soft_budget,
+        )
 
     def _validation_worker_count(self, issue_count: int) -> int:
         if issue_count <= 1:
@@ -174,7 +497,9 @@ class ValidationRunner:
         analysis_cfg = getattr(self.config, "analysis", None)
         if analysis_cfg is None:
             return 1
-        configured = getattr(analysis_cfg, "validation_parallel_workers", 0)
+        configured = getattr(analysis_cfg, "validator_workers", 0)
+        if not configured:
+            configured = getattr(analysis_cfg, "validation_parallel_workers", 0)
         try:
             configured_workers = int(configured or 0)
         except (TypeError, ValueError):
@@ -183,7 +508,11 @@ class ValidationRunner:
             return max(1, min(issue_count, configured_workers))
 
         try:
-            entry_workers = int(getattr(analysis_cfg, "parallel_workers", 1) or 1)
+            entry_workers = int(
+                getattr(analysis_cfg, "entry_workers", 0)
+                or getattr(analysis_cfg, "parallel_workers", 1)
+                or 1
+            )
         except (TypeError, ValueError):
             entry_workers = 1
         auto_cap = 2 if entry_workers > 1 else 1
@@ -197,11 +526,13 @@ class ValidationRunner:
             if decision:
                 if decision.report_bucket:
                     state[decision.report_bucket].append(raw_issue)
+                self._update_candidate_ledger(state, raw_issue)
                 continue
             score_data = self.validation_pipeline.score_components(raw_issue, {})
             outcome = self.validation_pipeline.apply_unvalidated(raw_issue, score_data)
             if outcome.report_bucket:
                 state[outcome.report_bucket].append(raw_issue)
+            self._update_candidate_ledger(state, raw_issue)
 
     def _prepare_issue_for_validation(
         self,
@@ -223,6 +554,7 @@ class ValidationRunner:
             self._record_prevalidation_decision(state, raw_issue, decision)
             if decision.report_bucket:
                 state[decision.report_bucket].append(raw_issue)
+            self._update_candidate_ledger(state, raw_issue)
             return None
 
         issue_code = self._issue_code(issue_func, state)
@@ -241,6 +573,8 @@ class ValidationRunner:
         *,
         validator_agent: Optional[Any] = None,
     ) -> _ValidationWorkerResult:
+        cache_key = ""
+        cache_owner = False
         try:
             cache_key = self._validator_cache_key(item)
             cached = self._validator_cache_get(cache_key)
@@ -255,6 +589,26 @@ class ValidationRunner:
                     val_data=dict(cached),
                     metadata=metadata,
                 )
+            if cache_key:
+                cache_owner = self._validator_result_cache.reserve(cache_key)
+                if not cache_owner:
+                    cached = self._validator_result_cache.wait(
+                        cache_key,
+                        timeout=self._validation_cache_wait_seconds(),
+                    )
+                    if cached is not None:
+                        metadata = self._empty_token_metadata()
+                        metadata["validator_cache_hit"] = 1
+                        metadata["validator_inflight_coalesced"] = 1
+                        return _ValidationWorkerResult(
+                            index=item.index,
+                            raw_issue=item.raw_issue,
+                            issue_func=item.issue_func,
+                            success=True,
+                            val_data=dict(cached),
+                            metadata=metadata,
+                        )
+                    cache_owner = self._validator_result_cache.reserve(cache_key)
             validator_agent = validator_agent or self._build_validator_agent()
             token_metadata = self._empty_token_metadata()
             val_resp = validator_agent.run(
@@ -279,6 +633,7 @@ class ValidationRunner:
                 token_metadata,
             )
             self._validator_cache_put(cache_key, val_data)
+            cache_owner = False
             return _ValidationWorkerResult(
                 index=item.index,
                 raw_issue=item.raw_issue,
@@ -288,29 +643,85 @@ class ValidationRunner:
                 metadata=token_metadata,
             )
         finally:
+            if cache_owner and cache_key:
+                self._validator_result_cache.abandon(cache_key)
             self._close_thread_llm_sessions()
 
-    @classmethod
-    def _validator_cache_get(cls, cache_key: str) -> Optional[Dict[str, Any]]:
-        if not cache_key:
+    def _validator_cache_get(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        cached = self._validator_result_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        loader = getattr(self.snapshot_store, "load_validation_result", None)
+        if not callable(loader) or not cache_key:
             return None
-        with cls._VALIDATOR_RESULT_CACHE_LOCK:
-            cached = cls._VALIDATOR_RESULT_CACHE.get(cache_key)
-            return dict(cached) if isinstance(cached, dict) else None
+        try:
+            cached = loader(
+                cache_key,
+                protocol=self._VALIDATION_CACHE_PROTOCOL,
+                candidate_schema_version=CANDIDATE_SCHEMA_VERSION,
+                environment_fingerprint=self._validation_environment_fingerprint,
+            )
+        except Exception:
+            logger.exception(
+                "Persistent validation cache read failed for %s.",
+                cache_key,
+            )
+            return None
+        if isinstance(cached, dict):
+            self._validator_result_cache.put(cache_key, cached)
+            return dict(cached)
+        return None
 
-    @classmethod
-    def _validator_cache_put(cls, cache_key: str, val_data: Dict[str, Any]) -> None:
+    def _validator_cache_put(self, cache_key: str, val_data: Dict[str, Any]) -> None:
         if not cache_key or not isinstance(val_data, dict):
             return
-        with cls._VALIDATOR_RESULT_CACHE_LOCK:
-            if len(cls._VALIDATOR_RESULT_CACHE) > 4096:
-                cls._VALIDATOR_RESULT_CACHE.clear()
-            cls._VALIDATOR_RESULT_CACHE[cache_key] = dict(val_data)
+        self._validator_result_cache.put(cache_key, val_data)
+        saver = getattr(self.snapshot_store, "save_validation_result", None)
+        if not callable(saver):
+            return
+        try:
+            saver(
+                cache_key,
+                val_data,
+                protocol=self._VALIDATION_CACHE_PROTOCOL,
+                candidate_schema_version=CANDIDATE_SCHEMA_VERSION,
+                environment_fingerprint=self._validation_environment_fingerprint,
+                max_entries=max(1, self._validator_result_cache_size * 2),
+            )
+        except Exception:
+            logger.exception(
+                "Persistent validation cache write failed for %s.",
+                cache_key,
+            )
+
+    def _validation_cache_wait_seconds(self) -> Optional[float]:
+        analysis_cfg = getattr(self.config, "analysis", None)
+        raw = getattr(analysis_cfg, "validation_deadline_seconds", 240)
+        if raw is None:
+            return None
+        try:
+            return max(1.0, float(raw))
+        except (TypeError, ValueError):
+            return 240.0
 
     def _validator_cache_key(self, item: _PreparedValidation) -> str:
         issue = item.raw_issue
-        pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
-        stable_id = issue.get("candidate_id") or pack.get("candidate_id")
+        prepared_pack = getattr(item, "evidence_pack", None)
+        pack = (
+            prepared_pack
+            if isinstance(prepared_pack, dict)
+            else issue.get("evidence_pack")
+            if isinstance(issue.get("evidence_pack"), dict)
+            else {}
+        )
+        # Display IDs (for example ISSUE_1) are presentation-only and may
+        # collide across entries.  Only the content-derived v3 identity can be
+        # used directly; otherwise build the key from structured evidence.
+        stable_id = issue.get("candidate_uid") or pack.get("candidate_uid")
+        validation_cluster_uid = (
+            issue.get("validation_cluster_uid")
+            or pack.get("validation_cluster_uid")
+        )
         source_value = issue.get("source") or pack.get("source")
         sink_value = issue.get("sink") or pack.get("sink")
         resource_value = (
@@ -318,9 +729,11 @@ class ValidationRunner:
             or issue.get("resource")
             or pack.get("resource_signature")
             or pack.get("resource")
+            or issue.get("defect_class")
+            or issue.get("category")
             or pack.get("defect_class")
         )
-        if not stable_id:
+        if not stable_id and not validation_cluster_uid:
             source_text = self._cache_component_text(source_value)
             sink_text = self._cache_component_text(sink_value)
             resource_text = self._cache_component_text(resource_value)
@@ -332,16 +745,147 @@ class ValidationRunner:
             ):
                 return ""
         payload = {
-            "candidate_id": stable_id,
+            "protocol": self._VALIDATION_CACHE_PROTOCOL,
+            "environment": self._validation_environment_fingerprint,
+            "validation_cluster_uid": validation_cluster_uid,
+            "candidate_uid": stable_id,
             "category": issue.get("defect_class") or issue.get("category") or pack.get("defect_class"),
             "function": issue.get("function") or item.issue_func,
             "location": issue.get("location"),
-            "rule": issue.get("rule") or pack.get("rule"),
             "source": source_value,
             "sink": sink_value,
             "resource": resource_value,
+            "code_hash": self._stable_hash(getattr(item, "issue_code", "")),
+            "decision_evidence_hash": (
+                issue.get("decision_evidence_hash")
+                or pack.get("decision_evidence_hash")
+                or issue.get("evidence_hash")
+                or pack.get("evidence_hash")
+                or self._stable_hash(pack)
+            ),
+            "prompt_hash": issue.get("prompt_hash") or pack.get("prompt_hash"),
         }
         stable = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(stable.encode("utf-8")).hexdigest()
+
+    def _configured_entry_identity(self) -> str:
+        project_cfg = getattr(self.config, "project", None)
+        if project_cfg is None:
+            return ""
+        function_name = str(getattr(project_cfg, "entry_function", "") or "")
+        if not function_name:
+            return ""
+        return FunctionEntry(
+            function_name=function_name,
+            file_path=str(getattr(project_cfg, "entry_file_path", "") or "") or None,
+            signature=str(getattr(project_cfg, "entry_signature", "") or "") or None,
+        ).identity_key(getattr(project_cfg, "project_root", None))
+
+    def _validation_cache_size(self) -> int:
+        analysis_cfg = getattr(self.config, "analysis", None)
+        raw = getattr(analysis_cfg, "validation_cache_entries", self._DEFAULT_VALIDATION_CACHE_SIZE)
+        if raw is None:
+            return 0
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return self._DEFAULT_VALIDATION_CACHE_SIZE
+
+    def _build_validation_environment_fingerprint(self) -> str:
+        project_cfg = getattr(self.config, "project", None)
+        project_root = Path(getattr(project_cfg, "project_root", ".") or ".")
+        validator_cfg = next(
+            (
+                agent
+                for agent in (getattr(project_cfg, "agents", None) or [])
+                if getattr(agent, "name", "") == "validator_agent"
+            ),
+            None,
+        )
+        llm_ref = str(getattr(validator_cfg, "llm_ref", "") or "default")
+        client = self.llm_clients.get(llm_ref) or self.llm_clients.get("default")
+        payload = {
+            "protocol": self._VALIDATION_CACHE_PROTOCOL,
+            "project_root": project_root.resolve().as_posix(),
+            "project_revision": self._project_revision(project_root),
+            "index_epoch": self._index_epoch(),
+            "validator_llm_ref": llm_ref,
+            "llm_client": self._llm_identity(client),
+            "validator_contract": getattr(validator_cfg, "contract", None),
+            "validator_prompt_version": getattr(validator_cfg, "prompt_version", None),
+            "tool_policy": self._tool_policy_identity(),
+        }
+        return self._stable_hash(payload)
+
+    def _index_epoch(self) -> Any:
+        for name in (
+            "knowledge_epoch",
+            "index_epoch",
+            "source_fingerprint",
+            "revision",
+        ):
+            value = getattr(self.code_index, name, None)
+            if callable(value):
+                try:
+                    value = value()
+                except Exception:
+                    value = None
+            if value not in (None, ""):
+                return value
+        backend = getattr(self.code_index, "backend", None)
+        return {
+            "backend": type(backend).__name__ if backend is not None else "regex",
+            "configured_backend": getattr(self.code_index, "backend_name", None),
+        }
+
+    def _tool_policy_identity(self) -> Dict[str, Any]:
+        try:
+            policy = self.tool_policy_for_agent("validator_agent")
+        except Exception:
+            policy = None
+        if policy is None:
+            return {}
+        if hasattr(policy, "__dict__"):
+            values = {
+                key: value
+                for key, value in vars(policy).items()
+                if not key.lower().endswith(("token", "secret", "key", "password"))
+            }
+            return {"type": type(policy).__name__, "values": values}
+        return {"type": type(policy).__name__, "value": str(policy)}
+
+    @staticmethod
+    def _llm_identity(client: Any) -> Dict[str, Any]:
+        if client is None:
+            return {}
+        identity: Dict[str, Any] = {"type": type(client).__name__}
+        for name in ("models", "model", "supports_structured_output", "max_tokens"):
+            value = getattr(client, name, None)
+            if value not in (None, ""):
+                identity[name] = value
+        return identity
+
+    @staticmethod
+    def _project_revision(project_root: Path) -> str:
+        """Read the worktree revision without invoking git for every candidate."""
+        git_dir = project_root / ".git"
+        try:
+            if git_dir.is_file():
+                marker = git_dir.read_text(encoding="utf-8", errors="replace").strip()
+                if marker.lower().startswith("gitdir:"):
+                    candidate = Path(marker.split(":", 1)[1].strip())
+                    git_dir = candidate if candidate.is_absolute() else (project_root / candidate)
+            head = (git_dir / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+            if head.startswith("ref:"):
+                ref_path = git_dir / head.split(":", 1)[1].strip()
+                return ref_path.read_text(encoding="utf-8", errors="replace").strip()
+            return head
+        except OSError:
+            return ""
+
+    @staticmethod
+    def _stable_hash(value: Any) -> str:
+        stable = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
         return hashlib.sha256(stable.encode("utf-8")).hexdigest()
 
     @staticmethod
@@ -374,6 +918,7 @@ class ValidationRunner:
         raw_issue = result.raw_issue
         if not result.success:
             self._handle_validation_failure(state, raw_issue, result.issue_func, result.error)
+            self._update_candidate_ledger(state, raw_issue)
             return
 
         val_data = result.val_data
@@ -389,7 +934,27 @@ class ValidationRunner:
             state[outcome.report_bucket].append(raw_issue)
         if outcome.memory_status:
             self.remember_validation_result(raw_issue, outcome.memory_status)
+        self._update_candidate_ledger(state, raw_issue)
         self._log_validation_outcome(raw_issue, val_data, verdict, outcome.final_score)
+
+    @staticmethod
+    def _update_candidate_ledger(
+        state: Dict[str, Any],
+        issue: Dict[str, Any],
+    ) -> None:
+        ledger = state.get("candidate_ledger")
+        marker = getattr(ledger, "mark_issue_terminal", None)
+        if not callable(marker):
+            return
+        disposition = str(
+            issue.get("candidate_disposition") or "needs_review"
+        ).lower()
+        status = str(
+            issue.get("validation_status")
+            or issue.get("status")
+            or disposition
+        ).lower()
+        marker(issue, disposition=disposition, status=status)
 
     def _normalize_worker_response(
         self,
@@ -521,6 +1086,12 @@ class ValidationRunner:
             ("validator_repair_attempted", "validator_repair_attempted"),
             ("validator_repair_accepted", "validator_repair_accepted"),
             ("validator_final_tool_call_count", "validator_final_tool_call_count"),
+            ("validator_cache_hit", "validator_cache_hit"),
+            ("validator_inflight_coalesced", "validator_inflight_coalesced"),
+            (
+                "validation_soft_budget_overrun",
+                "validation_soft_budget_overrun_count",
+            ),
         ):
             try:
                 value = int(metadata.get(source_key, 0) or 0)
@@ -528,6 +1099,19 @@ class ValidationRunner:
                 value = 0
             if value:
                 state[state_key] = int(state.get(state_key, 0) or 0) + value
+
+        try:
+            overrun_seconds = float(
+                metadata.get("validation_soft_budget_overrun_seconds", 0.0) or 0.0
+            )
+        except (TypeError, ValueError):
+            overrun_seconds = 0.0
+        if overrun_seconds > 0:
+            state["validation_soft_budget_overrun_seconds"] = round(
+                float(state.get("validation_soft_budget_overrun_seconds", 0.0) or 0.0)
+                + overrun_seconds,
+                4,
+            )
 
     @staticmethod
     def _record_prevalidation_decision(

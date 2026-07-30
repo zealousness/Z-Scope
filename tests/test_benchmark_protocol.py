@@ -1,26 +1,34 @@
 import argparse
 import importlib.util
 import json
+import subprocess
 import time
 from pathlib import Path
+
+import pytest
 
 from scripts import external_benchmark
 from zscope.benchmarking.protocol import (
     CONDITION_CANDIDATES,
+    CONDITION_FULL_ZSCOPE,
+    DEFAULT_BOOTSTRAP_SAMPLES,
     FP_AUDIT_DUPLICATE_OF_GT,
     FP_AUDIT_FALSE_POSITIVE_SUPPRESS,
     FP_AUDIT_NEEDS_REVIEW_ONLY,
     FP_AUDIT_TRUE_EXTRA_ADD_GT,
     SCHEMA_VERSION,
     aggregate_trial_summaries,
+    build_benchmark_artifact_manifest,
     build_trial_summary,
     collect_environment_metadata,
+    evaluate_improvement_claim,
     issue_identity,
     issue_identity_record,
     issue_matches,
     classify_false_positive_record,
     score_report,
     score_report_views,
+    _select_max_weight_pairs,
 )
 from zscope.reporting.report import Issue
 
@@ -128,6 +136,19 @@ def test_score_report_views_includes_with_needs_review_metrics() -> None:
     assert views["with_needs_review"]["recall"] == 1.0
     assert views["default"]["schema_version"] == SCHEMA_VERSION
     assert views["default"]["matched_pairs"][0]["truth_id"] == "BUG-1"
+
+
+def test_max_weight_pair_selection_keeps_cardinality_for_large_reports() -> None:
+    pair = {
+        "truth_index": 99,
+        "truth_id": "BUG-100",
+        "issue_index": 19_999,
+        "score": 1,
+    }
+
+    selected = _select_max_weight_pairs([pair], truth_count=100, issue_count=20_000)
+
+    assert selected == [pair]
 
 
 def test_issue_matches_secondary_sink_and_call_path_anchor() -> None:
@@ -239,7 +260,15 @@ def test_score_report_classifies_duplicate_of_matched_separately() -> None:
     assert scored["false_positives_raw"] == 1
     assert scored["false_positives"] == 0
     assert scored["duplicate_of_matched_count"] == 1
+    assert scored["actionable_precision"] == 0.5
+    assert scored["actionable_f1"] == 0.6667
+    assert scored["actionable_false_discovery_rate"] == 0.5
+    assert scored["root_cause_precision"] == 1.0
+    assert scored["root_cause_f1"] == 1.0
+    assert scored["false_discovery_rate"] == 0.0
+    assert scored["false_positive_rate"] == scored["false_discovery_rate"]
     assert raw_scored["false_positives"] == 1
+    assert raw_scored["precision"] == raw_scored["actionable_precision"] == 0.5
     assert scored["false_positive_audit"]["counts"][FP_AUDIT_DUPLICATE_OF_GT] == 1
 
 
@@ -252,6 +281,142 @@ def test_default_false_positive_audit_keeps_unmatched_findings_for_review() -> N
     )
 
     assert audited["fp_audit_classification"] == FP_AUDIT_NEEDS_REVIEW_ONLY
+
+
+def test_actionable_precision_penalizes_wrong_class_at_the_same_location() -> None:
+    truth = {
+        "benchmark": "adversarial",
+        "vulnerabilities": [
+            {
+                "id": "BUG-1",
+                "category": "memory_leak",
+                "function": "handle",
+                "file": "src/demo.c",
+                "line": 20,
+                "keywords": ["allocation", "missing free"],
+            }
+        ],
+    }
+    report = {
+        "issues": [
+            {
+                "category": "memory_leak",
+                "function": "handle",
+                "location": "src/demo.c:20",
+                "description": "allocation is returned without a matching free",
+            },
+            {
+                "category": "command_injection",
+                "function": "handle",
+                "location": "src/demo.c:20",
+                "description": "shell command construction is unsafe",
+            },
+        ]
+    }
+
+    result = score_report(report, truth, line_tolerance=0)
+
+    assert result["true_positives"] == 1
+    assert result["false_positives_raw"] == 1
+    assert result["duplicate_of_matched_count"] == 0
+    assert result["actionable_precision"] == 0.5
+    assert result["actionable_f1"] == 0.6667
+
+
+def test_standard_false_positive_rate_uses_known_safe_entries() -> None:
+    truth = {
+        "benchmark": "negative-cases",
+        "vulnerabilities": [],
+        "safe_entries": [
+            {"function": "safe_one", "file": "src/safe.c"},
+            {"function": "safe_two", "file": "src/safe.c"},
+        ],
+    }
+    report = {
+        "issues": [
+            {
+                "category": "memory_leak",
+                "entry_function": "safe_one",
+                "function": "helper",
+                "location": "src/safe.c:10",
+                "description": "spurious warning attributed to safe_one",
+            }
+        ]
+    }
+
+    result = score_report(report, truth)
+
+    assert result["false_discovery_rate"] == 1.0
+    assert result["standard_false_positive_rate"] == 0.5
+    assert result["safe_entry_alert_rate"] == 0.5
+    assert result["alerted_safe_entry_count"] == 1
+    assert result["alerted_safe_entries"] == ["src/safe.c|safe_one"]
+    assert result["scoring_contract"]["standard_false_positive_rate_metric"] == (
+        "safe_entry_alert_rate"
+    )
+
+
+def test_score_report_emits_high_critical_and_per_cwe_recall() -> None:
+    truth = {
+        "benchmark": "strata",
+        "vulnerabilities": [
+            {
+                "id": "HIGH-1",
+                "function": "high_bug",
+                "file": "src/demo.c",
+                "line": 10,
+                "category": "memory_leak",
+                "severity": "high",
+                "cwe": "401",
+            },
+            {
+                "id": "CRIT-1",
+                "function": "critical_bug",
+                "file": "src/demo.c",
+                "line": 20,
+                "category": "use_after_free",
+                "severity": "critical",
+                "cwe": "CWE401",
+            },
+            {
+                "id": "LOW-1",
+                "function": "low_bug",
+                "file": "src/demo.c",
+                "line": 30,
+                "category": "unchecked_return",
+                "severity": "low",
+                "cwe": "CWE-252",
+            },
+        ],
+        "safe_entries": [],
+    }
+    report = {
+        "issues": [
+            {
+                "function": "high_bug",
+                "location": "src/demo.c:10",
+                "category": "memory_leak",
+                "description": "allocation leaks",
+            },
+            {
+                "function": "low_bug",
+                "location": "src/demo.c:30",
+                "category": "unchecked_return",
+                "description": "return value is unchecked",
+            },
+        ]
+    }
+
+    result = score_report(report, truth, line_tolerance=0)
+
+    assert result["high_critical_sample_count"] == 2
+    assert result["high_critical_recall"] == 0.5
+    assert result["per_cwe_recall"]["CWE-401"] == {
+        "sample_count": 2,
+        "true_positives": 1,
+        "recall": 0.5,
+    }
+    assert result["per_cwe_recall"]["CWE-252"]["recall"] == 1.0
 
 
 def test_range_false_positive_audit_classifies_suppress_duplicate_and_true_extra() -> None:
@@ -899,13 +1064,15 @@ def test_build_trial_summary_contains_cost_trajectory_grader_and_outcome(tmp_pat
         config={"backend": "regex", "model": "unit-model", "prompt_autofill": {"enabled": False}},
     )
 
+    report = _report()
+    report["metadata"]["report_assembly_seconds"] = 12.5
     summary = build_trial_summary(
         suite_root=tmp_path,
         run_dir=tmp_path / "run",
         condition=CONDITION_CANDIDATES,
         run_kind="sample",
         trial_index=1,
-        report=_report(),
+        report=report,
         truth=_truth(),
         environment=env,
         line_tolerance=5,
@@ -917,6 +1084,7 @@ def test_build_trial_summary_contains_cost_trajectory_grader_and_outcome(tmp_pat
     assert summary["environment"]["backend"] == "regex"
     assert summary["cost"]["tokens_per_verified_issue"] == 120.0
     assert summary["cost"]["tool_calls_per_verified_issue"] == 8.0
+    assert summary["cost"]["report_tail_seconds"] == 12.5
     assert summary["trajectory"]["worker_report_count"] == 1
     assert summary["grader"]["final_outcome"]["score"] == summary["evaluation"]["f1"]
     assert summary["final_outcome"]["true_positive_truth_ids"] == ["BUG-1"]
@@ -946,6 +1114,271 @@ def test_aggregate_trial_summaries_reports_stability() -> None:
     assert condition["issue_jaccard"] == 0.3333
     assert condition["true_positive_overlap"] == 1.0
     assert condition["f1"]["mean"] == 0.6667
+
+
+def _release_summary(
+    trial_index: int,
+    *,
+    actionable_precision: float = 0.75,
+    recall: float = 0.82,
+    high_critical_recall: float = 0.92,
+    safe_entry_alert_rate: float = 0.05,
+    actionable_f1: float = 0.78,
+    cwe_recall: float = 0.70,
+    wall_time_seconds: float = 3500.0,
+    billable_tokens: float = 29_000_000.0,
+    report_tail_seconds: float = 100.0,
+    tokens_per_verified_issue: float = 100.0,
+    issue_identities: list[str] | None = None,
+    true_positive_truth_ids: list[str] | None = None,
+    cache_mode: str = "isolated_cold",
+    integrity_status: str = "passed",
+) -> dict:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "condition": CONDITION_FULL_ZSCOPE,
+        "run_kind": "formal",
+        "trial_index": trial_index,
+        "environment": {
+            "return_code": 1,
+            "cache_mode": cache_mode,
+        },
+        "integrity": {
+            "status": integrity_status,
+            "cache_mode": cache_mode,
+            "chain_sha256": "a" * 64,
+        },
+        "artifact_manifest": {
+            "truth_sha256": "1" * 64,
+            "scorer_sha256": "2" * 64,
+            "config_sha256": "3" * 64,
+            "entries_sha256": "4" * 64,
+            "source_manifest_sha256": "5" * 64,
+        },
+        "evaluation": {
+            "actionable_precision": actionable_precision,
+            "precision": actionable_precision,
+            "distinct_root_recall": recall,
+            "recall": recall,
+            "high_critical_recall": high_critical_recall,
+            "safe_entry_alert_rate": safe_entry_alert_rate,
+            "actionable_f1": actionable_f1,
+            "f1": actionable_f1,
+            "per_cwe_recall": {
+                "CWE-401": {
+                    "sample_count": 20,
+                    "true_positives": round(20 * cwe_recall),
+                    "recall": cwe_recall,
+                }
+            },
+            "issue_identities": issue_identities or ["issue-a", "issue-b"],
+            "true_positive_truth_ids": true_positive_truth_ids or ["BUG-1", "BUG-2"],
+            "false_positive_issue_identities": [],
+        },
+        "cost": {
+            "wall_time_seconds": wall_time_seconds,
+            "billable_tokens": billable_tokens,
+            "report_tail_seconds": report_tail_seconds,
+            "tokens_per_verified_issue": tokens_per_verified_issue,
+        },
+    }
+
+
+def test_release_readiness_passes_every_explicit_hard_gate() -> None:
+    summaries = [_release_summary(index) for index in range(1, 6)]
+
+    aggregate = aggregate_trial_summaries(
+        summaries,
+        baseline_tokens_per_tp=150.0,
+        bootstrap_samples=100,
+    )
+
+    readiness = aggregate["release_readiness"]
+    assert readiness["status"] == "passed"
+    assert readiness["trial_protocol"]["paired_trial_count"] == 5
+    required_gates = {
+        "trial_protocol",
+        "actionable_precision",
+        "distinct_root_recall",
+        "high_critical_recall",
+        "safe_entry_alert_rate",
+        "per_cwe_recall",
+        "actionable_f1_stdev",
+        "true_positive_jaccard",
+        "alert_jaccard",
+        "median_wall_time_seconds",
+        "median_billable_tokens",
+        "median_report_tail_seconds",
+        "tokens_per_true_positive_reduction",
+    }
+    assert required_gates == set(readiness["hard_gates"])
+    assert all(gate["passed"] for gate in readiness["hard_gates"].values())
+    precision_stats = aggregate["conditions"][CONDITION_FULL_ZSCOPE][
+        "actionable_precision"
+    ]
+    assert precision_stats["bootstrap_ci"]["confidence_level"] == 0.95
+    assert precision_stats["bootstrap_ci"]["lower"] == 0.75
+    assert precision_stats["bootstrap_ci"]["upper"] == 0.75
+
+
+@pytest.mark.parametrize(
+    ("gate_name", "overrides"),
+    [
+        ("actionable_precision", {"actionable_precision": 0.69}),
+        ("distinct_root_recall", {"recall": 0.79}),
+        ("high_critical_recall", {"high_critical_recall": 0.89}),
+        ("safe_entry_alert_rate", {"safe_entry_alert_rate": 0.11}),
+        ("per_cwe_recall", {"cwe_recall": 0.64}),
+        ("median_wall_time_seconds", {"wall_time_seconds": 3601.0}),
+        ("median_billable_tokens", {"billable_tokens": 30_000_001.0}),
+        ("median_report_tail_seconds", {"report_tail_seconds": 121.0}),
+    ],
+)
+def test_release_readiness_fails_each_metric_boundary(
+    gate_name: str,
+    overrides: dict,
+) -> None:
+    summaries = [_release_summary(index, **overrides) for index in range(1, 6)]
+
+    readiness = aggregate_trial_summaries(
+        summaries,
+        bootstrap_samples=50,
+    )["release_readiness"]
+
+    assert readiness["status"] == "failed"
+    assert readiness["hard_gates"][gate_name]["passed"] is False
+
+
+def test_release_readiness_enforces_stability_jaccard_and_five_cold_trials() -> None:
+    only_four = [_release_summary(index) for index in range(1, 5)]
+    four_readiness = aggregate_trial_summaries(
+        only_four,
+        bootstrap_samples=20,
+    )["release_readiness"]
+    assert four_readiness["hard_gates"]["trial_protocol"]["passed"] is False
+
+    unstable_f1 = [
+        _release_summary(index, actionable_f1=value)
+        for index, value in enumerate((0.70, 0.74, 0.78, 0.82, 0.86), start=1)
+    ]
+    f1_readiness = aggregate_trial_summaries(
+        unstable_f1,
+        bootstrap_samples=20,
+    )["release_readiness"]
+    assert f1_readiness["hard_gates"]["actionable_f1_stdev"]["passed"] is False
+
+    unstable_alerts = [
+        _release_summary(
+            index,
+            issue_identities=[f"issue-{index}"],
+            true_positive_truth_ids=[f"BUG-{index}"],
+        )
+        for index in range(1, 6)
+    ]
+    jaccard_readiness = aggregate_trial_summaries(
+        unstable_alerts,
+        bootstrap_samples=20,
+    )["release_readiness"]
+    assert jaccard_readiness["hard_gates"]["alert_jaccard"]["passed"] is False
+    assert jaccard_readiness["hard_gates"]["true_positive_jaccard"]["passed"] is False
+
+    warm = [_release_summary(index) for index in range(1, 6)]
+    warm[0] = _release_summary(1, cache_mode="warm")
+    warm_readiness = aggregate_trial_summaries(
+        warm,
+        bootstrap_samples=20,
+    )["release_readiness"]
+    assert warm_readiness["hard_gates"]["trial_protocol"]["passed"] is False
+
+
+def test_paired_improvement_claim_and_frozen_token_baseline() -> None:
+    current = [
+        _release_summary(
+            index,
+            actionable_f1=0.80,
+            wall_time_seconds=100.0,
+            tokens_per_verified_issue=100.0,
+        )
+        for index in range(1, 6)
+    ]
+    baseline = [
+        _release_summary(
+            index,
+            actionable_f1=0.74,
+            wall_time_seconds=130.0,
+            tokens_per_verified_issue=150.0,
+        )
+        for index in range(1, 6)
+    ]
+    for summary in baseline:
+        summary["artifact_manifest"]["config_sha256"] = "9" * 64
+
+    readiness = aggregate_trial_summaries(
+        current,
+        baseline_summaries=baseline,
+        require_improvement_claim=True,
+        bootstrap_samples=100,
+    )["release_readiness"]
+
+    assert readiness["passed"]
+    assert readiness["improvement_claim"]["quality_gain_path"]["passed"]
+    assert readiness["improvement_claim"]["quality_delta_percentage_points"] == 6.0
+    assert readiness["improvement_claim"]["quality_delta_bootstrap_ci"]["lower"] > 0
+    token_gate = readiness["hard_gates"]["tokens_per_true_positive_reduction"]
+    assert token_gate["passed"]
+    assert token_gate["actual"] == pytest.approx(1 / 3, abs=0.0001)
+
+
+def test_improvement_claim_accepts_speed_path_with_at_most_two_point_quality_loss() -> None:
+    current = [
+        _release_summary(index, actionable_f1=0.79, wall_time_seconds=75.0)
+        for index in range(1, 6)
+    ]
+    baseline = [
+        _release_summary(index, actionable_f1=0.80, wall_time_seconds=100.0)
+        for index in range(1, 6)
+    ]
+
+    claim = evaluate_improvement_claim(
+        current,
+        baseline,
+        bootstrap_samples=50,
+    )
+
+    assert claim["passed"]
+    assert claim["quality_gain_path"]["passed"] is False
+    assert claim["performance_path"]["passed"]
+    assert claim["quality_delta_percentage_points"] == pytest.approx(-1.0)
+    assert claim["median_wall_time_reduction"] == 0.25
+
+
+def test_formal_matrix_rejects_too_few_or_warm_trials_before_execution(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="at least 5 paired trials"):
+        external_benchmark.run_matrix(
+            argparse.Namespace(
+                suite_root=tmp_path,
+                trials=4,
+                run_kind="formal",
+                warm_cache=False,
+            )
+        )
+    with pytest.raises(ValueError, match="isolated cold caches"):
+        external_benchmark.run_matrix(
+            argparse.Namespace(
+                suite_root=tmp_path,
+                trials=5,
+                run_kind="formal",
+                warm_cache=True,
+            )
+        )
+
+    parser = external_benchmark.build_parser()
+    args = parser.parse_args(
+        ["run-matrix", "--suite-root", str(tmp_path), "--trials", "5"]
+    )
+    assert args.bootstrap_samples == DEFAULT_BOOTSTRAP_SAMPLES
 
 
 def test_external_benchmark_evaluate_writes_unified_schema(tmp_path: Path) -> None:
@@ -984,6 +1417,253 @@ def test_suite_project_dir_accepts_nested_and_project_root_suites(tmp_path: Path
 
     assert external_benchmark._suite_project_dir(direct) == direct
     assert external_benchmark._suite_project_dir(nested_suite) == nested_suite / "project"
+
+
+def _write_integrity_suite(tmp_path: Path) -> tuple[Path, Path, str]:
+    suite_root = tmp_path / "integrity_suite"
+    project = suite_root / "project"
+    benchmark = suite_root / "benchmark"
+    source = project / "src" / "demo.c"
+    source.parent.mkdir(parents=True)
+    benchmark.mkdir(parents=True)
+    source.write_text(
+        "int leaky(void) {\n"
+        "  void *p = malloc(8);\n"
+        "  return p != 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (benchmark / "entries.json").write_text(
+        json.dumps({"functions": [{"function_name": "leaky", "file_path": "src/demo.c"}]}),
+        encoding="utf-8",
+    )
+    truth = {
+        "benchmark": "integrity_suite",
+        "suite": "unit",
+        "vulnerabilities": [
+            {
+                "id": "BUG-1",
+                "category": "memory_leak",
+                "function": "leaky",
+                "file": "src/demo.c",
+                "line": 2,
+            }
+        ],
+        "safe_entries": [],
+    }
+    (benchmark / "ground_truth.json").write_text(json.dumps(truth), encoding="utf-8")
+    (benchmark / "manifest.json").write_text(
+        json.dumps({"suite": "unit", "entries": 1, "ground_truth": 1}),
+        encoding="utf-8",
+    )
+    original_config = (
+        "project:\n"
+        f'  root: "{project.as_posix()}"\n'
+        "  source_root: .\n"
+        '  entry_functions_list: "../benchmark/entries.json"\n'
+        "indexing:\n"
+        "  backend: regex\n"
+        "analysis:\n"
+        f'  snapshot_dir: "{(suite_root / "user_snapshots").as_posix()}"\n'
+        "  enable_snapshot_cache: true\n"
+    )
+    (suite_root / "zscope.benchmark.yaml").write_text(original_config, encoding="utf-8")
+    return suite_root, source, original_config
+
+
+def test_artifact_manifest_detects_source_changes(tmp_path: Path) -> None:
+    suite_root, source, _original_config = _write_integrity_suite(tmp_path)
+    truth = json.loads(
+        (suite_root / "benchmark" / "ground_truth.json").read_text(encoding="utf-8")
+    )
+    before = build_benchmark_artifact_manifest(suite_root, truth=truth)
+
+    source.write_text(source.read_text(encoding="utf-8") + "/* changed */\n", encoding="utf-8")
+    after = build_benchmark_artifact_manifest(suite_root, truth=truth)
+
+    for key in (
+        "truth_sha256",
+        "scorer_sha256",
+        "config_sha256",
+        "entries_sha256",
+        "source_manifest_sha256",
+    ):
+        assert len(str(before[key])) == 64
+    assert before["source_manifest_sha256"] != after["source_manifest_sha256"]
+    assert before["truth_sha256"] == after["truth_sha256"]
+
+
+def test_cold_trial_refuses_a_nonempty_snapshot_cache(tmp_path: Path) -> None:
+    suite_root, _source, _original_config = _write_integrity_suite(tmp_path)
+    run_dir = tmp_path / "reused_run"
+    cache_dir = run_dir / ".cold_snapshot_cache"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "stale.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="Cold benchmark cache is not empty"):
+        external_benchmark._prepare_trial_config(
+            suite_root,
+            run_dir,
+            warm_cache=False,
+        )
+
+
+def test_integrity_rejects_noncomplete_schema_v2_report(tmp_path: Path) -> None:
+    report_path = tmp_path / "report.json"
+    report_path.write_text("{}", encoding="utf-8")
+    report_state = external_benchmark._file_integrity_state(report_path)
+    manifest = {
+        "truth_sha256": "a" * 64,
+        "scorer_sha256": "b" * 64,
+        "config_sha256": "c" * 64,
+        "execution_config_sha256": "d" * 64,
+        "benchmark_manifest_sha256": "e" * 64,
+        "entries_sha256": "f" * 64,
+        "source_manifest_sha256": "1" * 64,
+        "source_file_count": 1,
+    }
+
+    integrity = external_benchmark._validate_trial_integrity(
+        condition=external_benchmark.CONDITION_FULL_ZSCOPE,
+        return_code=1,
+        started_at=time.time() - 1,
+        report_before={"exists": False, "sha256": "", "mtime_ns": 0},
+        report_after=report_state,
+        report_payload={
+            "schema_version": 2,
+            "completeness": "degraded",
+            "scan_outcome": "incomplete",
+            "summary": {"functions_analyzed": 1, "interrupted": False},
+            "metadata": {"interrupted": False},
+        },
+        artifact_manifest_before=manifest,
+        artifact_manifest_after=manifest,
+        expected_entry_count=1,
+        cold_snapshot_cache=True,
+    )
+
+    assert integrity["status"] == "failed"
+    assert len(integrity["chain_sha256"]) == 64
+    assert any("completeness is degraded" in error for error in integrity["errors"])
+    assert any("scan outcome is incomplete" in error for error in integrity["errors"])
+
+
+def test_invalid_report_is_converted_to_fail_closed_payload(tmp_path: Path) -> None:
+    report = tmp_path / "report.json"
+    report.write_text("{not-json", encoding="utf-8")
+
+    payload = external_benchmark._load_report(report)
+
+    assert payload["overall_verdict"] == "error"
+    assert payload["metadata"]["invalid_report"] == report.as_posix()
+    assert "JSONDecodeError" in payload["metadata"]["parse_error"]
+
+
+def test_full_trial_uses_isolated_snapshot_cache_and_records_integrity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    suite_root, _source, original_config = _write_integrity_suite(tmp_path)
+    project = suite_root / "project"
+    run_dir = tmp_path / "full_run"
+    observed_config: dict[str, str] = {}
+
+    def fake_run(command, **_kwargs):
+        execution_config = Path(command[command.index("-c") + 1])
+        observed_config["path"] = execution_config.as_posix()
+        observed_config["text"] = execution_config.read_text(encoding="utf-8")
+        report = {
+            "type": "parallel_analysis_report",
+            "summary": {
+                "functions_analyzed": 1,
+                "total_issues": 1,
+                "interrupted": False,
+            },
+            "issues": [
+                {
+                    "category": "memory_leak",
+                    "function": "leaky",
+                    "location": "src/demo.c:2",
+                    "description": "allocation has no matching free",
+                }
+            ],
+            "metadata": {"interrupted": False},
+        }
+        (project / "zscope_batch_report.json").write_text(
+            json.dumps(report),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(external_benchmark.subprocess, "run", fake_run)
+    summary = external_benchmark.run_prepared(
+        argparse.Namespace(
+            suite_root=suite_root,
+            run_dir=run_dir,
+            mode="zscope",
+            condition=external_benchmark.CONDITION_FULL_ZSCOPE,
+            run_kind="formal",
+            trial_index=1,
+            line_tolerance=2,
+            view="default",
+            env_file="",
+            warm_cache=False,
+        )
+    )
+
+    assert (suite_root / "zscope.benchmark.yaml").read_text(encoding="utf-8") == original_config
+    assert Path(observed_config["path"]).parent == run_dir
+    assert ".cold_snapshot_cache" in observed_config["text"]
+    assert "user_snapshots" not in observed_config["text"]
+    assert summary["integrity"]["status"] == "passed"
+    assert summary["integrity"]["cache_mode"] == "isolated_cold"
+    assert summary["artifact_manifest"]["truth_sha256"]
+    assert summary["artifact_manifest"]["source_manifest_sha256"]
+    assert summary["environment"]["execution_config"] == observed_config["path"]
+    assert (run_dir / "integrity.json").exists()
+
+
+def test_full_trial_rejects_a_stale_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    suite_root, _source, _original_config = _write_integrity_suite(tmp_path)
+    project = suite_root / "project"
+    run_dir = tmp_path / "stale_run"
+    stale_report = {
+        "type": "parallel_analysis_report",
+        "summary": {"functions_analyzed": 1, "total_issues": 0, "interrupted": False},
+        "issues": [],
+        "metadata": {"interrupted": False},
+    }
+    (project / "zscope_batch_report.json").write_text(
+        json.dumps(stale_report),
+        encoding="utf-8",
+    )
+
+    def fake_run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(external_benchmark.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="stale"):
+        external_benchmark.run_prepared(
+            argparse.Namespace(
+                suite_root=suite_root,
+                run_dir=run_dir,
+                mode="zscope",
+                condition=external_benchmark.CONDITION_FULL_ZSCOPE,
+                run_kind="formal",
+                trial_index=1,
+                line_tolerance=2,
+                view="default",
+                env_file="",
+                warm_cache=False,
+            )
+        )
+
+    integrity = json.loads((run_dir / "integrity.json").read_text(encoding="utf-8"))
+    assert integrity["status"] == "failed"
+    assert any("stale" in message for message in integrity["errors"])
 
 
 def test_run_prepared_candidate_layer_writes_protocol_summary(tmp_path: Path) -> None:

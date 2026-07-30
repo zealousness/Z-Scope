@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional, Dict, Any, Iterable, List, Sequence, Union, Tuple
 
@@ -91,6 +92,15 @@ class CodeIndex:
         self.include_paths = [Path(p).absolute() for p in (include_paths or [])]
         self.exclude_paths = [Path(p).absolute() for p in (exclude_paths or [])]
         self.backend_name = indexing_config.backend if indexing_config else "joern"
+        self._capability_lock = threading.RLock()
+        self._engine_capabilities: Dict[str, Dict[str, Any]] = {
+            "index": {
+                "configured": str(self.backend_name or "regex").lower(),
+                "active": "initializing",
+                "status": "pending",
+                "reason": "",
+            }
+        }
         self._function_index: Dict[str, Dict[str, Any]] = {}
         self._function_alias_index: Dict[str, str] = {}
         self._ambiguous_function_aliases: set[str] = set()
@@ -99,10 +109,12 @@ class CodeIndex:
         self._declaration_comment_index: Optional[Dict[str, List[Dict[str, Any]]]] = None
         self._regex_type_definition_cache: Optional[Dict[str, List[Dict[str, Any]]]] = None
         self._backend: Optional[CodeBackend] = backend
+        self._backend_index_fallback = False
         self._svf_entry_functions = list(svf_entry_functions or [])
         self._defer_svf = defer_svf
         self._svf_parallel_workers = max(1, int(svf_parallel_workers or 1))
         self._index_ready = False
+        self._index_epoch = 0
         self._cache_lock = threading.RLock()
         self._declaration_comment_index_lock = threading.Lock()
         self._macro_definition_index_lock = threading.Lock()
@@ -114,6 +126,16 @@ class CodeIndex:
         self._macro_definition_index: Optional[Dict[str, List[Dict[str, Any]]]] = None
         self._global_definition_index: Optional[Dict[str, List[Dict[str, Any]]]] = None
         self._macro_definition_miss_cache: set[str] = set()
+        self._shared_cache_budget_bytes = max(
+            1,
+            int(
+                getattr(indexing_config, "shared_cache_max_bytes", 512 * 1024 * 1024)
+                if indexing_config is not None
+                else 512 * 1024 * 1024
+            ),
+        )
+        self._shared_cache_bytes = 0
+        self._shared_cache_lru: "OrderedDict[Tuple[str, Any], int]" = OrderedDict()
 
         # 向后兼容：如果传入了 joern_client，包装为 JoernBackend
         if self._backend is None and joern_client is not None:
@@ -124,10 +146,12 @@ class CodeIndex:
         # 根据配置自动创建后端
         if self._backend is None:
             self._backend = self._create_backend(indexing_config, wait_for_cpg)
+        self._refresh_capability_status(initial=True)
 
         if wait_for_cpg:
             self._build_index()
             self._index_ready = True
+            self._refresh_capability_status()
 
     def _create_backend(self, indexing_config, wait_for_cpg: bool) -> Optional[CodeBackend]:
         """根据 indexing_config 创建对应的后端实例。"""
@@ -230,22 +254,112 @@ class CodeIndex:
         if self._backend and hasattr(self._backend, "wait_for_ready"):
             if not self._backend.wait_for_ready(timeout=timeout):
                 logger.warning("Backend build failed or timed out, falling back to regex")
+                self._set_engine_capability(
+                    "index",
+                    status="degraded",
+                    active="regex",
+                    reason="configured_backend_failed_or_timed_out",
+                )
                 self._backend.close()
                 self._backend = None
         self._build_index()
         self._index_ready = True
+        self._refresh_capability_status()
         return True
 
     def run_svf(self, entry_functions: Optional[Sequence[Any]] = None) -> bool:
         """Run deferred SVF enrichment when the active backend supports it."""
         if not self._backend or not hasattr(self._backend, "run_svf"):
+            if str(self.backend_name or "").lower() in {"unified", "svf"}:
+                self._set_engine_capability(
+                    "svf",
+                    configured=True,
+                    active=False,
+                    status="failed",
+                    reason="svf_backend_unavailable",
+                )
             return False
         entries = list(entry_functions or self._svf_entry_functions)
         self._svf_entry_functions = entries
         ok = bool(getattr(self._backend, "run_svf")(entry_functions=entries))
         if ok:
             self._clear_function_impl_cache()
+        self._set_engine_capability(
+            "svf",
+            configured=True,
+            active=ok,
+            status="complete" if ok else "failed",
+            reason="" if ok else "svf_execution_failed",
+        )
         return ok
+
+    def capability_status(self) -> Dict[str, Dict[str, Any]]:
+        """Return truthful configured/active engine health for report schema v2."""
+        self._refresh_capability_status()
+        with self._capability_lock:
+            return {
+                name: dict(details)
+                for name, details in self._engine_capabilities.items()
+            }
+
+    def _refresh_capability_status(self, *, initial: bool = False) -> None:
+        configured = str(self.backend_name or "regex").lower()
+        backend = self._backend
+        active = type(backend).__name__ if backend is not None else "regex"
+        if self._backend_index_fallback:
+            status = "degraded"
+            reason = "configured_backend_index_empty_regex_fallback"
+            active = f"{active}+regex"
+        elif backend is None and configured != "regex":
+            status = "degraded"
+            reason = "configured_backend_unavailable_regex_fallback"
+        else:
+            backend_status = str(getattr(backend, "_status", "") or "").lower()
+            if backend_status in {"failed", "error", "timeout"}:
+                status = "degraded"
+                reason = f"backend_{backend_status}"
+            elif initial and not self._index_ready:
+                status = "pending"
+                reason = ""
+            else:
+                status = "complete"
+                reason = ""
+        self._set_engine_capability(
+            "index",
+            configured=configured,
+            active=active,
+            status=status,
+            reason=reason,
+            ready=bool(self._index_ready),
+        )
+        if configured in {"unified", "svf"}:
+            svf_available = bool(getattr(backend, "_svf_available", False))
+            existing = self._engine_capabilities.get("svf", {})
+            if svf_available:
+                svf_status = "complete"
+                svf_reason = ""
+            elif existing.get("status") == "failed":
+                svf_status = "failed"
+                svf_reason = str(existing.get("reason") or "svf_execution_failed")
+            elif not self._defer_svf:
+                svf_status = "failed"
+                svf_reason = "svf_not_available"
+            else:
+                svf_status = "pending"
+                svf_reason = "svf_deferred" if self._defer_svf else "svf_not_available"
+            self._set_engine_capability(
+                "svf",
+                configured=True,
+                active=svf_available,
+                status=svf_status,
+                reason=svf_reason,
+            )
+
+    def _set_engine_capability(self, name: str, **values: Any) -> None:
+        with self._capability_lock:
+            current = dict(self._engine_capabilities.get(name, {}))
+            current.update(values)
+            self._engine_capabilities[name] = current
 
     @property
     def backend(self) -> Optional[CodeBackend]:
@@ -263,6 +377,7 @@ class CodeIndex:
     def _build_index(self) -> None:
         """Build function index from project."""
         with self._cache_lock:
+            self._index_epoch += 1
             self._function_index.clear()
             self._function_alias_index.clear()
             self._ambiguous_function_aliases.clear()
@@ -272,10 +387,18 @@ class CodeIndex:
         if self._backend:
             backend_index = self._backend.build_function_index()
             if backend_index:
+                self._backend_index_fallback = False
                 for raw_name, raw_info in backend_index.items():
                     self._add_function_index_entry(str(raw_name), dict(raw_info or {}))
             else:
                 logger.warning("Backend index returned empty, falling back to regex")
+                self._backend_index_fallback = True
+                self._set_engine_capability(
+                    "index",
+                    status="degraded",
+                    active=f"{type(self._backend).__name__}+regex",
+                    reason="configured_backend_index_empty_regex_fallback",
+                )
                 self._build_index_regex()
         else:
             self._build_index_regex()
@@ -297,6 +420,12 @@ class CodeIndex:
         record = dict(info)
         record["name"] = raw_name
         record["qualified_name"] = canonical_name
+        raw_file = str(record.get("file") or record.get("filename") or "")
+        if raw_file:
+            canonical_file = self._normalize_index_file_value(raw_file)
+            record["file"] = canonical_file
+            if "filename" in record:
+                record["filename"] = canonical_file
         if "is_static" in record:
             record["is_static"] = self._coerce_bool(record.get("is_static"))
 
@@ -340,7 +469,7 @@ class CodeIndex:
 
     def _unique_function_index_key(self, canonical_name: str, record: Dict[str, Any]) -> str:
         file_value = str(record.get("file") or record.get("filename") or "")
-        file_part = self._normalize_index_file_value(file_value).replace("\\", "/")
+        file_part = self._normalize_index_file_value(file_value)
         start_line = self._safe_int(record.get("start_line") or record.get("lineNumber"))
         end_line = self._safe_int(record.get("end_line") or record.get("lineNumberEnd"))
         if end_line < start_line:
@@ -1073,7 +1202,15 @@ class CodeIndex:
         """Return a stable per-run key for cached source file contents."""
         path = Path(file_path)
         key = str(path.absolute())
-        return key.lower() if os.name == "nt" else key
+        key = key.lower() if os.name == "nt" else key
+        try:
+            stat = path.stat()
+            return f"{key}|{stat.st_mtime_ns}|{stat.st_size}"
+        except OSError:
+            return f"{key}|missing"
+
+    def _source_fingerprint(self, file_path: Union[str, Path]) -> str:
+        return f"epoch={self._index_epoch}|source={self._file_cache_key(file_path)}"
 
     def _read_file_lines(self, file_path: Union[str, Path]) -> List[str]:
         """Read source file lines through the per-run cache."""
@@ -1081,13 +1218,20 @@ class CodeIndex:
         with self._cache_lock:
             cached = self._file_lines_cache.get(cache_key)
             if cached is not None:
+                self._touch_shared_cache("file", cache_key)
                 return list(cached)
 
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             lines = tuple(f.readlines())
 
         with self._cache_lock:
-            cached = self._file_lines_cache.setdefault(cache_key, lines)
+            cached = self._file_lines_cache.get(cache_key)
+            if cached is None:
+                cached = lines
+                self._file_lines_cache[cache_key] = cached
+                self._record_shared_cache_value("file", cache_key, cached)
+            else:
+                self._touch_shared_cache("file", cache_key)
             return list(cached)
 
     def _read_file_text(self, file_path: Union[str, Path]) -> str:
@@ -1130,6 +1274,7 @@ class CodeIndex:
             cached = self._function_impl_cache.get(cache_key)
             if cached is None:
                 return None
+            self._touch_shared_cache("function", cache_key)
             return self._clone_function_impl(cached)
 
     def _store_function_impl_cache(
@@ -1138,12 +1283,71 @@ class CodeIndex:
         result: Dict[str, Any],
     ) -> Dict[str, Any]:
         with self._cache_lock:
-            self._function_impl_cache[cache_key] = self._clone_function_impl(result)
-            return self._clone_function_impl(self._function_impl_cache[cache_key])
+            stored = self._clone_function_impl(result)
+            self._function_impl_cache[cache_key] = stored
+            self._record_shared_cache_value(
+                "function",
+                cache_key,
+                stored,
+            )
+            return self._clone_function_impl(stored)
+
+    @staticmethod
+    def _shared_cache_value_size(value: Any) -> int:
+        if isinstance(value, tuple) and all(isinstance(item, str) for item in value):
+            return sum(len(item.encode("utf-8", errors="ignore")) for item in value)
+        try:
+            import json
+
+            return len(
+                json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                ).encode("utf-8")
+            )
+        except Exception:
+            return len(repr(value).encode("utf-8", errors="ignore"))
+
+    def _touch_shared_cache(self, namespace: str, key: Any) -> None:
+        lru_key = (namespace, key)
+        if lru_key in self._shared_cache_lru:
+            self._shared_cache_lru.move_to_end(lru_key)
+
+    def _record_shared_cache_value(
+        self,
+        namespace: str,
+        key: Any,
+        value: Any,
+    ) -> None:
+        lru_key = (namespace, key)
+        previous = self._shared_cache_lru.pop(lru_key, 0)
+        size = self._shared_cache_value_size(value)
+        self._shared_cache_lru[lru_key] = size
+        self._shared_cache_bytes += size - previous
+        while (
+            self._shared_cache_bytes > self._shared_cache_budget_bytes
+            and self._shared_cache_lru
+        ):
+            (evict_namespace, evict_key), evict_size = self._shared_cache_lru.popitem(
+                last=False
+            )
+            self._shared_cache_bytes = max(0, self._shared_cache_bytes - evict_size)
+            if evict_namespace == "file":
+                self._file_lines_cache.pop(evict_key, None)
+            elif evict_namespace == "function":
+                self._function_impl_cache.pop(evict_key, None)
 
     def _clear_function_impl_cache(self) -> None:
         with self._cache_lock:
             self._function_impl_cache.clear()
+            self._shared_cache_lru = OrderedDict(
+                (key, size)
+                for key, size in self._shared_cache_lru.items()
+                if key[0] != "function"
+            )
+            self._shared_cache_bytes = sum(self._shared_cache_lru.values())
             self._function_file_resolution_cache.clear()
             self._macro_definition_index = None
             self._global_definition_index = None
@@ -1192,7 +1396,7 @@ class CodeIndex:
         raw_lines = list(lines[start_line - 1 : end_line])
         return {
             "kind": kind,
-            "file": normalize_path(file_path, self.source_root),
+            "file": self._normalize_path(file_path),
             "start_line": start_line,
             "end_line": end_line,
             "text": "".join(raw_lines),
@@ -1356,11 +1560,14 @@ class CodeIndex:
             macro_result = dict(macro_results[0])
             if len(macro_results) > 1:
                 macro_result["macro_alternates_count"] = len(macro_results) - 1
+            macro_file = str(macro_result.get("file") or "")
             macro_cache_key = (
                 self._macro_impl_index_name(macro_result),
                 max_lines,
                 bool(include_context),
-                "",
+                self._source_fingerprint(self._resolve_file_path(macro_file))
+                if macro_file
+                else f"epoch={self._index_epoch}",
             )
             cached_result = self._get_cached_function_impl(macro_cache_key)
             if cached_result is not None:
@@ -1373,11 +1580,6 @@ class CodeIndex:
             return None
 
         lookup_name, selected_info = selected_match
-        cache_key = (lookup_name, max_lines, bool(include_context), "")
-        cached_result = self._get_cached_function_impl(cache_key)
-        if cached_result is not None:
-            return cached_result
-
         func_info = dict(selected_info)
         indexed_file = str(func_info.get("file") or func_info.get("filename") or "")
         if not indexed_file or indexed_file.startswith("<"):
@@ -1386,6 +1588,15 @@ class CodeIndex:
             return None
 
         file_path = self._resolve_file_path(func_info["file"])
+        cache_key = (
+            lookup_name,
+            max_lines,
+            bool(include_context),
+            self._source_fingerprint(file_path),
+        )
+        cached_result = self._get_cached_function_impl(cache_key)
+        if cached_result is not None:
+            return cached_result
         try:
             lines = self._read_file_lines(file_path)
             start = func_info["start_line"] - 1
@@ -1444,7 +1655,7 @@ class CodeIndex:
                 "func_name": str(
                     func_info.get("qualified_name") or func_info.get("name") or raw_query
                 ),
-                "file": normalize_path(file_path, self.source_root),
+                "file": self._normalize_path(file_path),
                 "index_name": lookup_name,
                 "start_line": func_info["start_line"],
                 "end_line": (
@@ -1513,8 +1724,9 @@ class CodeIndex:
     def list_functions(
         self,
         pattern: Optional[str] = None,
-        limit: int = 50,
+        limit: Optional[int] = 50,
         file_root: Optional[Union[str, Path]] = None,
+        offset: int = 0,
     ) -> List[str]:
         """List known functions, optionally filtered by regex pattern and source directory."""
         funcs = list(self._function_index.keys())
@@ -1544,7 +1756,56 @@ class CodeIndex:
                 funcs = [f for f in funcs if pat.search(f)]
             except re.error:
                 funcs = [f for f in funcs if f.startswith(pattern)]
-        return sorted(funcs)[:limit]
+        ordered = sorted(funcs)
+        start = max(0, int(offset or 0))
+        if limit is None:
+            return ordered[start:]
+        parsed_limit = int(limit)
+        if parsed_limit <= 0:
+            return ordered[start:]
+        return ordered[start : start + parsed_limit]
+
+    def find_function_identities(
+        self,
+        func_name: str,
+        file_path: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Return lightweight, overload-safe function identities.
+
+        Unlike ``find_function_infos``, this method deliberately avoids
+        collecting callees, types, macros, and globals.  Entry discovery needs
+        only enough information to enumerate same-name implementations without
+        paying the full semantic-context cost.
+        """
+        matches = self._find_function_matches(
+            str(func_name or "").strip(),
+            file_path=file_path,
+        )
+        return [
+            {
+                "function_name": str(
+                    info.get("qualified_name")
+                    or info.get("name")
+                    or index_key
+                ),
+                "file_path": self._normalize_index_file_value(
+                    str(info.get("file") or info.get("filename") or "")
+                ),
+                "index_name": str(info.get("index_name") or index_key),
+                "start_line": self._safe_int(
+                    info.get("start_line") or info.get("lineNumber")
+                ),
+                "end_line": self._safe_int(
+                    info.get("end_line") or info.get("lineNumberEnd")
+                ),
+                "signature": str(
+                    info.get("signature")
+                    or f"{info.get('name') or index_key}(...)"
+                ),
+                "is_static": self._function_record_is_static(info),
+            }
+            for index_key, info in matches
+        ]
 
     def find_function_infos(
         self,
@@ -3495,7 +3756,7 @@ class CodeIndex:
                     if self._resolve_function_name(name) in self._function_index:
                         results.append({
                             "name": name,
-                            "filename": normalize_path(fp, self.source_root),
+                            "filename": self._normalize_path(fp),
                             "lineNumber": line_no,
                         })
                 for m in func_decl_re.finditer(content):
@@ -3506,7 +3767,7 @@ class CodeIndex:
                     if self._resolve_function_name(name) in self._function_index:
                         results.append({
                             "name": name,
-                            "filename": normalize_path(fp, self.source_root),
+                            "filename": self._normalize_path(fp),
                             "lineNumber": line_no,
                         })
         return results
@@ -3915,13 +4176,14 @@ class CodeIndex:
 
     def _resolve_file_path(self, file_path: str) -> Path:
         """Resolve file path against source_root first, then project_root."""
-        path = Path(file_path)
+        normalized = str(file_path or "").replace("\\", "/")
+        path = Path(normalized)
         if path.is_absolute() and path.exists():
             return path
-        source_candidate = self.source_root / file_path
+        source_candidate = self.source_root / normalized
         if source_candidate.exists():
             return source_candidate
-        project_candidate = self.project_root / file_path
+        project_candidate = self.project_root / normalized
         if project_candidate.exists():
             return project_candidate
         return project_candidate
@@ -3934,11 +4196,8 @@ class CodeIndex:
         return None
 
     def _normalize_path(self, file_path: Path) -> str:
-        """Normalize a path relative to source_root when possible."""
-        try:
-            return str(file_path.resolve().relative_to(self.source_root))
-        except ValueError:
-            return normalize_path(file_path, self.project_root)
+        """Return the canonical project-relative POSIX representation."""
+        return normalize_path(file_path, self.project_root)
 
     def get_function_location(self, func_name: str) -> Optional[str]:
         """Get function location string (file:line-line)."""
@@ -3947,7 +4206,7 @@ class CodeIndex:
             return None
         info = self._function_index[func_name]
         resolved = self._resolve_file_path(info["file"])
-        file_path = normalize_path(resolved, self.project_root)
+        file_path = self._normalize_path(resolved)
         return f"{file_path}:{info['start_line']}-{info['end_line']}"
 
     def _filter_callee_names(self, names: Iterable[str]) -> List[str]:
@@ -3990,6 +4249,8 @@ class CodeIndex:
         with self._cache_lock:
             self._file_lines_cache.clear()
             self._function_impl_cache.clear()
+            self._shared_cache_lru.clear()
+            self._shared_cache_bytes = 0
             self._function_file_resolution_cache.clear()
             self._declaration_comment_index = None
             self._function_alias_index.clear()

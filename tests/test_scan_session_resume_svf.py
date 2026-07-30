@@ -30,6 +30,44 @@ def _config(tmp_path: Path) -> ZScopeConfig:
     )
 
 
+def test_review_counts_separate_visible_findings_from_manifest_obligations() -> None:
+    report = {
+        "summary": {"needs_review_issues": 30},
+        "report_views": {
+            "with_needs_review": {"included_needs_review_count": 29}
+        },
+        "run_manifest": {"needs_review_count": 951},
+    }
+
+    assert ScanSessionRunner._needs_review_count_from_report(report) == 30
+    assert ScanSessionRunner._unresolved_obligations_count_from_report(report) == 951
+
+
+def test_unresolved_obligations_fall_back_to_terminal_candidate_ledger() -> None:
+    report = {
+        "report_views": {
+            "with_needs_review": {"included_needs_review_count": 1}
+        },
+        "candidate_terminal_states": [
+            {
+                "candidate_uid": "candidate-visible",
+                "candidate_disposition": "needs_review",
+            },
+            {
+                "candidate_uid": "candidate-deferred",
+                "candidate_disposition": "deferred_budget",
+            },
+            {
+                "candidate_uid": "candidate-confirmed",
+                "candidate_disposition": "confirmed",
+            },
+        ],
+    }
+
+    assert ScanSessionRunner._needs_review_count_from_report(report) == 1
+    assert ScanSessionRunner._unresolved_obligations_count_from_report(report) == 2
+
+
 class _ResumeCodeIndex:
     def __init__(self, indexes, referenced_macros=None, referenced_types=None):
         self.indexes = dict(indexes)
@@ -314,8 +352,28 @@ def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path) 
     cfg = _config(tmp_path)
     store = SnapshotStore(Path(cfg.analysis.snapshot_dir))
     reports = {
-        "src/a.c": {"overall_verdict": "issues_found", "issues": [{"source": "a"}]},
-        "src/b.c": {"overall_verdict": "no_issue_found", "issues": [{"source": "b"}]},
+        "src/a.c": {
+            "schema_version": 2,
+            "overall_verdict": "issues_found",
+            "finding_status": "confirmed",
+            "completeness": "complete",
+                "run_manifest": {
+                    "valid": True,
+                    "candidate_schema_version": "zscope.candidate.v3",
+                },
+            "issues": [{"source": "a"}],
+        },
+        "src/b.c": {
+            "schema_version": 2,
+            "overall_verdict": "no_issue_found",
+            "finding_status": "clean",
+            "completeness": "complete",
+                "run_manifest": {
+                    "valid": True,
+                    "candidate_schema_version": "zscope.candidate.v3",
+                },
+            "issues": [{"source": "b"}],
+        },
     }
     for file_path, report in reports.items():
         index_name = f"handle_request@{file_path}:10-10"

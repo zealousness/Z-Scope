@@ -35,8 +35,7 @@ def _default_api_names() -> set[str]:
 
 
 DEFAULT_API_NAMES = _default_api_names()
-PROJECT_DEFAULT_WRAPPERS = {"_safe_malloc", "_safe_calloc", "_safe_realloc", "_net_recv_data", "_net_send_data"}
-SKIPPED_DEFAULT_API_NAMES = DEFAULT_API_NAMES - PROJECT_DEFAULT_WRAPPERS
+SKIPPED_DEFAULT_API_NAMES = DEFAULT_API_NAMES
 WRAPPER_NAME_HINT_RE = re.compile(
     r"alloc|free|dealloc|lock|unlock|copy|cpy|move|create|destroy|"
     r"open|close|acquire|release|get|put|ref|unref",

@@ -106,6 +106,8 @@ class GraphCandidateGenerator:
         self._impl_cache: Dict[str, Optional[Dict[str, Any]]] = {}
         self._view_cache: Dict[str, Optional[FunctionView]] = {}
         self._callee_evidence: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self.last_deferred_functions: List[Dict[str, Any]] = []
+        self.last_query_errors: List[Dict[str, str]] = []
         self._compile_semantic_patterns()
 
     def generate_for_entry(
@@ -241,6 +243,8 @@ class GraphCandidateGenerator:
         max_depth: int,
         max_functions: int,
     ) -> List[FunctionView]:
+        self.last_deferred_functions = []
+        self.last_query_errors = []
         views: List[FunctionView] = []
         queue: List[Tuple[str, Optional[Dict[str, Any]], int]] = [(func_name, impl, 0)]
         seen = set()
@@ -262,6 +266,15 @@ class GraphCandidateGenerator:
                 )
             )
             if depth >= max_depth and not expand_dispatcher_siblings:
+                for callee in view.callees:
+                    if callee not in seen:
+                        self.last_deferred_functions.append(
+                            {
+                                "function_name": callee,
+                                "reason": "graph_max_depth",
+                                "parent": current,
+                            }
+                        )
                 continue
             for callee in view.callees:
                 if callee in seen:
@@ -269,6 +282,21 @@ class GraphCandidateGenerator:
                 callee_impl = self._impl_for(callee)
                 if callee_impl:
                     queue.append((callee, callee_impl, depth + 1))
+        if queue:
+            for current, _impl, _depth in queue:
+                if current not in seen:
+                    self.last_deferred_functions.append(
+                        {
+                            "function_name": current,
+                            "reason": "graph_max_functions",
+                        }
+                    )
+        deduped: Dict[str, Dict[str, Any]] = {}
+        for item in self.last_deferred_functions:
+            name = str(item.get("function_name") or "")
+            if name:
+                deduped.setdefault(name, item)
+        self.last_deferred_functions = list(deduped.values())
         return views
 
     def _view_for(
@@ -301,10 +329,19 @@ class GraphCandidateGenerator:
             if not callable(getter):
                 self._impl_cache[func_name] = None
             else:
-                self._impl_cache[func_name] = getter(
-                    func_name,
-                    warn_missing=False,
-                )
+                try:
+                    self._impl_cache[func_name] = getter(
+                        func_name,
+                        warn_missing=False,
+                    )
+                except Exception as exc:
+                    self.last_query_errors.append(
+                        {
+                            "function_name": func_name,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+                    self._impl_cache[func_name] = None
         return self._impl_cache[func_name]
 
     def _merged_callee_names(
@@ -324,7 +361,13 @@ class GraphCandidateGenerator:
         if callable(get_callees):
             try:
                 records = get_callees(func_name, limit=80)
-            except Exception:
+            except Exception as exc:
+                self.last_query_errors.append(
+                    {
+                        "function_name": func_name,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
                 records = []
             for record in records or []:
                 if not isinstance(record, dict):
@@ -2590,15 +2633,16 @@ class GraphCandidateGenerator:
         ]
         for view in views:
             text = texts[view.name]
-            has_global_add = re.search(
-                r"\b(?:OPEN|ADD)\b|_control_session_add_to_global|(?:add|insert|register).*global|global.*(?:add|insert|register)",
-                text,
+            global_registration = re.compile(
+                r"\b(?:OPEN|ADD)\b|"
+                r"(?:add|insert|register)[A-Za-z_0-9]*(?:\s|_|\W){0,4}global|"
+                r"global(?:\s|_|\W){0,4}(?:add|insert|register)",
                 re.I,
             )
-            if not has_global_add or not re.search(r"_control_session_add_to_global|global", text, re.I):
+            if not global_registration.search(text) or not re.search(r"\bglobal\b|_global\b|global_", text, re.I):
                 continue
             line = (
-                self._first_line_matching(view, re.compile(r"_control_session_add_to_global", re.I))
+                self._first_line_matching(view, global_registration)
                 or self._first_line_matching(view, re.compile(r"\b(?:OPEN|ADD)\b", re.I))
                 or view.lines[0]
             )
@@ -2608,7 +2652,11 @@ class GraphCandidateGenerator:
                     for cleanup in cleanup_views
                     if cleanup.name != view.name
                     and self._views_share_protocol_terms(view, cleanup)
-                    and not re.search(r"(?:_control_session_(?:remove|release|free|drop)|remove|drop|release|free|destroy)", texts[cleanup.name], re.I)
+                    and not re.search(
+                        r"(?:remove|drop|release|free|destroy)[A-Za-z_0-9]*",
+                        texts[cleanup.name],
+                        re.I,
+                    )
                 ),
                 None,
             )

@@ -56,11 +56,15 @@ def test_workflow_runner_finalizes_existing_returned_report() -> None:
     assert runner.run() == {"metadata": {"new": True}}
 
 
-def test_workflow_runner_returns_state_error_without_executing() -> None:
+def test_workflow_runner_returns_failed_schema_without_executing() -> None:
     executor = FakeExecutor()
     runner = WorkflowRunner(
         workflow_name="default",
-        state_factory=lambda: {"error": "missing entry"},
+        state_factory=lambda: {
+            "error": "missing entry",
+            "reason": "entry_not_found",
+            "entry_func": "missing",
+        },
         step_selector=lambda: ["never"],
         executor=executor,
         build_final_report=lambda workflow_state: None,
@@ -68,5 +72,11 @@ def test_workflow_runner_returns_state_error_without_executing() -> None:
         finalize_returned_report=lambda workflow_state: {},
     )
 
-    assert runner.run() == {"error": "missing entry"}
+    report = runner.run()
+    assert report["error"] == "missing entry"
+    assert report["finding_status"] == "needs_review"
+    assert report["completeness"] == "failed"
+    assert report["scan_outcome"] == "incomplete"
+    assert report["run_manifest"]["valid"] is False
+    assert report["candidate_terminal_states"][0]["candidate_disposition"] == "engine_failed"
     assert executor.steps_seen is None

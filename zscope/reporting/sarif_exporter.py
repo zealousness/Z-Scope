@@ -70,17 +70,25 @@ def _load_report(report_or_path: Any) -> Dict[str, Any]:
 
 
 def _report_issues(report: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def security_finding(item: Any) -> bool:
+        return bool(
+            isinstance(item, dict)
+            and str(item.get("record_role") or "") != "operational_obligation"
+            and str(item.get("candidate_disposition") or "").lower()
+            not in {"deferred_budget", "engine_failed", "interrupted"}
+        )
+
     if isinstance(report.get("issues"), list):
-        return [item for item in report["issues"] if isinstance(item, dict)]
+        return [item for item in report["issues"] if security_finding(item)]
     issues: List[Dict[str, Any]] = []
     for result in report.get("function_results") or []:
         if isinstance(result, dict) and isinstance(result.get("issues"), list):
-            issues.extend(item for item in result["issues"] if isinstance(item, dict))
+            issues.extend(item for item in result["issues"] if security_finding(item))
     results = report.get("results")
     if isinstance(results, dict):
         for result in results.values():
             if isinstance(result, dict) and isinstance(result.get("issues"), list):
-                issues.extend(item for item in result["issues"] if isinstance(item, dict))
+                issues.extend(item for item in result["issues"] if security_finding(item))
     return issues
 
 
@@ -143,6 +151,13 @@ def _issue_to_result(
         "properties": {
             "zscope": {
                 "candidate_id": issue.get("candidate_id") or issue.get("id"),
+                "candidate_uid": issue.get("candidate_uid"),
+                "occurrence_uid": issue.get("occurrence_uid"),
+                "history_key": issue.get("history_key"),
+                "evidence_hash": issue.get("evidence_hash"),
+                "run_issue_uid": issue.get("run_issue_uid"),
+                "candidate_disposition": issue.get("candidate_disposition"),
+                "evidence_completeness": issue.get("evidence_completeness"),
                 "dedup_key": issue.get("dedup_key"),
                 "stable_fingerprint": stable_identity,
                 "baseline_match_strategy": issue.get("baseline_match_strategy"),

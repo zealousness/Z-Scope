@@ -12,8 +12,10 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from ..config.config import ZScopeConfig
 from ..config.function_entry import FunctionEntry, FunctionListLoader
+from ..common.cancellation import CancellationToken
 from ..core.analysis.analyzer import Analyzer
 from .parallel_analyzer import ParallelAnalysisResult, ParallelAnalyzer
+from .scheduler import ScanScheduler
 from ..snapshots.store import SnapshotStore
 from ..snapshots.modeling_input import (
     SemanticModelInputError,
@@ -21,6 +23,12 @@ from ..snapshots.modeling_input import (
     hydrate_project_callee_summaries,
 )
 from ..retrieval.code_index import CodeIndex
+from ..reporting.schema import (
+    EXIT_POLICIES,
+    exit_code_for_report,
+    report_reuse_blockers,
+    unresolved_obligation_count as count_unresolved_obligations,
+)
 from .entry_discovery import EntryDiscovery
 from .diff_impact import DiffImpactPlanner
 from .specs import SpecRegistry, WorkflowStep
@@ -44,6 +52,10 @@ class ScanSessionResult:
     interrupted: bool = False
     interrupted_entries: List[str] = field(default_factory=list)
     project_root: Optional[Path] = None
+    finding_status: str = "clean"
+    completeness: str = "complete"
+    scan_outcome: str = "clean"
+    unresolved_obligations_count: int = 0
 
 
 class ScanSessionRunner:
@@ -61,6 +73,7 @@ class ScanSessionRunner:
         diff_repo_root: Optional[Path] = None,
         diff_paths: Optional[Sequence[str]] = None,
         emit: Optional[Callable[[str], None]] = None,
+        exit_policy: str = "review",
     ) -> None:
         self.config = config
         self.resume = resume
@@ -72,6 +85,12 @@ class ScanSessionRunner:
         self.diff_paths = [str(path).strip() for path in (diff_paths or []) if str(path).strip()]
         self.diff_scope_name = config.project.source_root.name or config.project.project_root.name or "default"
         self.emit = emit or (lambda message: None)
+        normalized_exit_policy = str(exit_policy or "review").lower()
+        if normalized_exit_policy not in EXIT_POLICIES:
+            raise ValueError(f"Unsupported exit policy: {exit_policy}")
+        self.exit_policy = normalized_exit_policy
+        self._budget_exhaustion_policy = "observe"
+        self._cancellation_token = CancellationToken()
         self.spec_registry = SpecRegistry(project_root=config.project.project_root)
         self.workflow_spec = self.spec_registry.get_workflow(config.analysis.workflow_name)
         self.session_progress: List[Dict[str, Any]] = []
@@ -83,12 +102,14 @@ class ScanSessionRunner:
             scope="session",
             handlers=self.session_step_handlers,
             progress=self.session_progress,
+            cancellation_token=self._cancellation_token,
         )
         self.batch_executor = WorkflowExecutor(
             workflow_name=self._workflow_name(),
             scope="batch",
             handlers=self.batch_step_handlers,
             progress=self.batch_progress,
+            cancellation_token=self._cancellation_token,
         )
         self.session_executor.validate(self._selected_workflow_steps())
         self.batch_executor.validate(self._selected_workflow_steps())
@@ -268,18 +289,18 @@ class ScanSessionRunner:
                 code_index,
                 entry,
             )
-            if saved_report and saved_report.get("overall_verdict") != "error":
-                issues = saved_report.get("issues", [])
-                has_pending = any(issue.get("validation_status") == "pending" for issue in issues)
-                if has_pending:
+            if saved_report:
+                blockers = report_reuse_blockers(saved_report)
+                if blockers:
                     logger.info(
-                        "Not auto-skipping '%s': has pending validations.",
+                        "Not auto-skipping '%s': historical report is not reusable (%s).",
                         entry.function_name,
+                        ", ".join(blockers),
                     )
                     remaining.append(entry)
                 else:
                     logger.info(
-                        "Auto-skipping '%s': already successfully analyzed.",
+                        "Auto-skipping '%s': complete compatible report has no unresolved terminals.",
                         entry.function_name,
                     )
                     skipped.append(entry)
@@ -308,7 +329,7 @@ class ScanSessionRunner:
         try:
             context = build_semantic_model_input(
                 code_index,
-                entry.function_name,
+                entry.lookup_query(),
                 file_path=self._entry_report_file_path(entry) or "",
                 include_context=False,
             )
@@ -354,10 +375,22 @@ class ScanSessionRunner:
                 results[entry_key] = ParallelAnalysisResult(
                     function_name=fname,
                     verdict=saved_report.get("overall_verdict", "unknown"),
+                    entry_identity=entry.identity_key(
+                        self.config.project.project_root
+                    ),
+                    entry_file_path=entry.normalized_file_path(
+                        self.config.project.project_root
+                    ),
+                    entry_signature=FunctionEntry.normalize_signature(
+                        entry.signature
+                    ),
                     issues=saved_report.get("issues", []),
                     audit_observations=metadata.get("audit_observations", [])
                     if isinstance(metadata, dict)
                     else [],
+                    candidate_terminal_states=saved_report.get(
+                        "candidate_terminal_states", []
+                    ),
                     duration_seconds=0.0,
                     diff_focus=entry.diff_focus,
                     metadata=metadata if isinstance(metadata, dict) else {},
@@ -490,8 +523,14 @@ class ScanSessionRunner:
             code_index=state["code_index"],
             force_ignore_history=not (self.resume or self.maintain),
             maintain_mode=self.maintain,
+            cancellation_token=self._cancellation_token,
         )
         state["parallel_analyzer"] = parallel_analyzer
+        discovery_result = state.get("discovery_result")
+        if isinstance(discovery_result, dict):
+            parallel_analyzer.deferred_entry_candidates = list(
+                discovery_result.get("deferred_candidates") or []
+            )
         try:
             state["results"] = parallel_analyzer.analyze_function_entries(entries)
             self.batch_executor.execute(state, steps)
@@ -500,6 +539,7 @@ class ScanSessionRunner:
             md_report_path = self.config.project.project_root / "zscope_batch_report.md"
             self._backup_existing_batch_report(json_report_path)
 
+            report_started = time.monotonic()
             combined_report = parallel_analyzer.generate_combined_report(
                 state["results"],
                 json_report_path,
@@ -507,6 +547,17 @@ class ScanSessionRunner:
             parallel_analyzer.generate_combined_markdown_report(
                 state["results"],
                 md_report_path,
+            )
+            report_tail_seconds = round(time.monotonic() - report_started, 4)
+            combined_report.setdefault("summary", {})[
+                "report_tail_seconds"
+            ] = report_tail_seconds
+            combined_report.setdefault("metadata", {})[
+                "report_tail_seconds"
+            ] = report_tail_seconds
+            json_report_path.write_text(
+                json.dumps(combined_report, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
             )
 
             total_issues = combined_report["summary"]["total_issues"]
@@ -517,14 +568,24 @@ class ScanSessionRunner:
             )
             return ScanSessionResult(
                 is_batch=True,
-                exit_code=1 if total_issues > 0 else 0,
+                exit_code=exit_code_for_report(
+                    combined_report,
+                    policy=self.exit_policy,
+                    legacy_issue_count=total_issues,
+                ),
                 reports=[json_report_path, md_report_path],
                 issues_count=total_issues,
                 needs_review_count=self._needs_review_count_from_report(combined_report),
+                unresolved_obligations_count=(
+                    self._unresolved_obligations_count_from_report(combined_report)
+                ),
                 functions_analyzed=functions_analyzed,
                 interrupted=interrupted,
                 interrupted_entries=interrupted_entries,
                 project_root=self.config.project.project_root,
+                finding_status=str(combined_report.get("finding_status") or "clean"),
+                completeness=str(combined_report.get("completeness") or "complete"),
+                scan_outcome=str(combined_report.get("scan_outcome") or "clean"),
             )
         finally:
             if not getattr(parallel_analyzer, "_interrupted", False):
@@ -539,32 +600,97 @@ class ScanSessionRunner:
 
         logger.info("Single mode: entry function = %s", entry_function)
         self._ensure_svf_for_entries(state, [FunctionEntry(entry_function)])
-        analyzer = Analyzer(
-            self.config,
-            code_index=state.get("code_index"),
-            force_ignore_history=not (self.resume or self.maintain),
-            maintain_mode=self.maintain,
+        scheduler = ScanScheduler(
+            entry_workers=1,
+            validator_workers=(
+                getattr(self.config.analysis, "validator_workers", 0) or 4
+            ),
+            investigator_workers=(
+                getattr(self.config.analysis, "investigator_workers", 0) or 2
+            ),
+        )
+        analyzer: Optional[Analyzer] = None
+        entry_started = time.monotonic()
+        entry_budget_seconds = getattr(
+            self.config.analysis,
+            "entry_deadline_seconds",
+            None,
         )
         try:
+            analyzer = Analyzer(
+                self.config,
+                code_index=state.get("code_index"),
+                force_ignore_history=not (self.resume or self.maintain),
+                maintain_mode=self.maintain,
+                cancellation_token=self._cancellation_token.child(
+                    None
+                ),
+                scheduler=scheduler,
+            )
             result = analyzer.run()
         finally:
             close_analyzer = getattr(analyzer, "close", None)
             if callable(close_analyzer):
                 close_analyzer()
+            scheduler.shutdown(wait=True, cancel_futures=True)
+        duration = max(0.0, time.monotonic() - entry_started)
+        entry_budget = ParallelAnalyzer._entry_budget_metadata(
+            duration_seconds=duration,
+            budget_seconds=entry_budget_seconds,
+            policy=self._budget_exhaustion_policy,
+        )
+        metadata = (
+            dict(result.get("metadata") or {})
+            if isinstance(result.get("metadata"), dict)
+            else {}
+        )
+        metadata.update(entry_budget)
+        result["metadata"] = metadata
+        if entry_budget["entry_budget_exceeded"]:
+            logger.warning(
+                "Single-entry budget exceeded: entry=%s budget=%.2fs "
+                "overrun=%.2fs policy=%s outcome=completed",
+                entry_function,
+                float(entry_budget_seconds),
+                entry_budget["entry_budget_overrun_seconds"],
+                self._budget_exhaustion_policy,
+            )
+        # Analyzer persists the single-entry report before the session-level
+        # elapsed budget is known.  Rewrite the JSON projection so the
+        # observable overrun is not lost on disk.
+        persisted_report_path = self.config.project.project_root / "report.json"
+        persisted_report_path.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        report_paths: List[Path] = [self.config.project.project_root]
+        if result.get("error"):
+            report_paths = [persisted_report_path]
         verdict = result.get("overall_verdict", "unknown")
         issues_count = len(result.get("issues", []))
         return ScanSessionResult(
             is_batch=False,
-            exit_code=1 if issues_count > 0 else 0,
+            exit_code=exit_code_for_report(
+                result,
+                policy=self.exit_policy,
+                legacy_issue_count=issues_count,
+            ),
             issues_count=issues_count,
             needs_review_count=self._needs_review_count_from_report(result),
+            unresolved_obligations_count=(
+                self._unresolved_obligations_count_from_report(result)
+            ),
             verdict=verdict,
-            reports=[self.config.project.project_root],
+            reports=report_paths,
             project_root=self.config.project.project_root,
+            finding_status=str(result.get("finding_status") or "clean"),
+            completeness=str(result.get("completeness") or "complete"),
+            scan_outcome=str(result.get("scan_outcome") or "clean"),
         )
 
     @staticmethod
     def _needs_review_count_from_report(report: Dict[str, Any]) -> int:
+        """Count review findings that are actually visible in the report view."""
         summary = report.get("summary")
         if isinstance(summary, dict) and "needs_review_issues" in summary:
             return int(summary.get("needs_review_issues") or 0)
@@ -574,6 +700,65 @@ class ScanSessionRunner:
             with_review = views.get("with_needs_review")
             if isinstance(with_review, dict):
                 return int(with_review.get("included_needs_review_count") or 0)
+
+        # Older reports did not expose report views. Preserve their best
+        # available count without letting the manifest override newer,
+        # user-visible view accounting.
+        run_manifest = report.get("run_manifest")
+        if isinstance(run_manifest, dict) and "needs_review_count" in run_manifest:
+            return int(run_manifest.get("needs_review_count") or 0)
+        return 0
+
+    @staticmethod
+    def _unresolved_obligations_count_from_report(report: Dict[str, Any]) -> int:
+        """Count all unresolved candidate obligations, including ledger-only work."""
+        run_manifest = report.get("run_manifest")
+        if isinstance(run_manifest, dict):
+            if "unresolved_obligation_count" in run_manifest:
+                return int(
+                    run_manifest.get("unresolved_obligation_count") or 0
+                )
+            if "needs_review_count" in run_manifest:
+                return int(run_manifest.get("needs_review_count") or 0)
+
+        terminal_candidates = report.get("candidate_terminal_states")
+        if isinstance(terminal_candidates, list):
+            terminal_count = count_unresolved_obligations(
+                (),
+                terminal_candidates,
+            )
+            if terminal_count:
+                return terminal_count
+
+        metadata = report.get("metadata")
+        ledger_summary = (
+            metadata.get("candidate_ledger_summary")
+            if isinstance(metadata, dict)
+            else None
+        )
+        if isinstance(ledger_summary, dict):
+            by_disposition = ledger_summary.get("by_disposition")
+            if isinstance(by_disposition, dict):
+                return sum(
+                    int(by_disposition.get(disposition) or 0)
+                    for disposition in (
+                        "needs_review",
+                        "deferred_budget",
+                        "engine_failed",
+                    )
+                )
+            by_status = ledger_summary.get("by_status")
+            if isinstance(by_status, dict):
+                terminal = {
+                    "confirmed",
+                    "rejected_with_proof",
+                    "deduplicated_alias",
+                }
+                return sum(
+                    int(count or 0)
+                    for status, count in by_status.items()
+                    if str(status).lower() not in terminal
+                )
         return 0
 
     @staticmethod

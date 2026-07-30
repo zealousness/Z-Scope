@@ -1,7 +1,9 @@
 from pathlib import Path
 from subprocess import CompletedProcess
 
-from zscope.common.joern_client import JoernClient
+import pytest
+
+from zscope.common.joern_client import JoernClient, JoernQueryError
 from zscope.retrieval.joern_backend import JoernBackend
 
 
@@ -87,6 +89,25 @@ def test_joern_client_queries_direct_function_type_references(monkeypatch) -> No
     assert '"referenceKind" -> "return"' in captured["query"]
     assert '"referenceKind" -> "parameter"' in captured["query"]
     assert '"referenceKind" -> "local"' in captured["query"]
+
+
+def test_failed_joern_fact_query_is_not_reported_as_empty(monkeypatch) -> None:
+    client = JoernClient()
+    monkeypatch.setattr(client, "query", lambda _text: None)
+
+    with pytest.raises(JoernQueryError, match="get_method_callees"):
+        client.get_method_callees("entry")
+
+
+def test_failed_joern_index_query_is_not_reported_as_empty() -> None:
+    class FailedJoern:
+        def query(self, _text):
+            return None
+
+    backend = JoernBackend(joern_client=FailedJoern())
+
+    with pytest.raises(JoernQueryError, match="build_function_index"):
+        backend.build_function_index()
 
 
 def test_joern_backend_builds_resolved_and_optional_unresolved_type_context() -> None:

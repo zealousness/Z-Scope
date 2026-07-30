@@ -12,6 +12,7 @@ import re
 import json
 import logging
 import os
+import ssl
 import threading
 import time
 import shutil
@@ -21,6 +22,7 @@ from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Sequenc
 
 import requests
 
+from ..common.cancellation import current_cancellation_token
 from ..common.utils import extract_json_blocks
 from .conversation_recorder import ConversationSession, get_conversation_recorder
 
@@ -37,12 +39,34 @@ class _BaseUrlState:
 @dataclass
 class _EndpointCapacityState:
     url: str
+    hard_max_concurrent_requests: int = 0
     max_concurrent_requests: int = 0
     in_flight: int = 0
+    rate_limit_per_minute: int = 0
+    requests_started: Deque[float] = field(default_factory=deque)
+    success_streak: int = 0
+    overload_events: int = 0
+
+
+@dataclass
+class _GlobalCapacityState:
+    hard_max_concurrent_requests: int = 0
+    in_flight: int = 0
+
+
+@dataclass
+class _UsageTelemetryState:
+    successful_calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    estimated_calls: int = 0
+    provider_reported_calls: int = 0
 
 
 _ENDPOINT_CAPACITY_CONDITION = threading.Condition()
 _ENDPOINT_CAPACITY_STATES: Dict[str, _EndpointCapacityState] = {}
+_GLOBAL_CAPACITY_STATE = _GlobalCapacityState()
 
 
 class LLMClient:
@@ -59,6 +83,9 @@ class LLMClient:
     MODEL_CONTEXT_SUMMARY_MAX_KEYS = 18
     LOCAL_FD_EXHAUSTION_COOLDOWN_SECONDS = 2.0
     SESSION_POOL_MAXSIZE = 1
+    DEFAULT_GLOBAL_MAX_INFLIGHT = 8
+    AIMD_SUCCESS_THRESHOLD = 20
+    AIMD_DECREASE_FACTOR = 0.5
     _SUMMARY_PRIORITY_KEYS = (
         "success",
         "error",
@@ -105,11 +132,13 @@ class LLMClient:
         api_key: str,
         base_url: Union[str, Sequence[str]],
         models: List[str],
-        timeout: int = 120,
+        timeout: Optional[float] = 120.0,
         max_retries: int = 2,
+        retry_until_available: bool = False,
         max_tokens: int = 4096,
-        base_url_rate_limit_per_minute: int = 0,
-        base_url_max_concurrent_requests: int = 0,
+        base_url_rate_limit_per_minute: Optional[int] = None,
+        base_url_max_concurrent_requests: Optional[int] = None,
+        global_max_concurrent_requests: int = DEFAULT_GLOBAL_MAX_INFLIGHT,
         supports_structured_output: bool = False,
     ):
         """
@@ -121,24 +150,42 @@ class LLMClient:
             models: List of model names in order of priority
             timeout: Request timeout in seconds
             max_retries: Retries per model
+            retry_until_available: Keep retrying transient transport/provider
+                failures after ``max_retries`` until the request succeeds or
+                the scan is cancelled.
         """
         self.api_key = api_key
         self.base_urls = self._normalize_base_urls(base_url)
         self.base_url = self.base_urls[0]
         self.models = models
-        self.timeout = timeout
+        self.timeout = float(timeout) if timeout is not None else None
         self.max_retries = max_retries
+        self.retry_until_available = bool(retry_until_available)
         self.max_tokens = max_tokens
         self.supports_structured_output = bool(supports_structured_output)
         self.base_url_rate_limit_per_minute = max(0, int(base_url_rate_limit_per_minute or 0))
         self.base_url_max_concurrent_requests = max(0, int(base_url_max_concurrent_requests or 0))
+        configured_global_limit = int(global_max_concurrent_requests or 0)
+        self.global_max_concurrent_requests = (
+            configured_global_limit
+            if configured_global_limit > 0
+            else self.DEFAULT_GLOBAL_MAX_INFLIGHT
+        )
+        self.effective_max_concurrent_requests = self._strictest_positive_limit(
+            self.base_url_max_concurrent_requests,
+            self.global_max_concurrent_requests,
+        )
+        self._global_capacity_state = self._shared_global_capacity_state(
+            self.global_max_concurrent_requests
+        )
         self._session_pool_connections = max(1, len(self.base_urls))
         self._session_pool_maxsize = self.SESSION_POOL_MAXSIZE
         self._base_url_states = [_BaseUrlState(url=url) for url in self.base_urls]
         self._endpoint_capacity_states = {
             url: self._shared_endpoint_capacity_state(
                 url,
-                self.base_url_max_concurrent_requests,
+                self.effective_max_concurrent_requests,
+                self.base_url_rate_limit_per_minute,
             )
             for url in self.base_urls
         }
@@ -154,13 +201,35 @@ class LLMClient:
         self._thread_local = threading.local()
         self._sessions_lock = threading.Lock()
         self._sessions: Set[requests.Session] = set()
+        self._usage_lock = threading.Lock()
+        self._usage_telemetry = _UsageTelemetryState()
         self.session = self._new_session()
         self._thread_local.session = self.session
+
+    @staticmethod
+    def _strictest_positive_limit(*limits: int) -> int:
+        positive = [int(limit) for limit in limits if int(limit or 0) > 0]
+        return min(positive) if positive else 0
+
+    @staticmethod
+    def _shared_global_capacity_state(
+        max_concurrent_requests: int,
+    ) -> _GlobalCapacityState:
+        with _ENDPOINT_CAPACITY_CONDITION:
+            if max_concurrent_requests > 0:
+                _GLOBAL_CAPACITY_STATE.hard_max_concurrent_requests = (
+                    LLMClient._strictest_positive_limit(
+                        _GLOBAL_CAPACITY_STATE.hard_max_concurrent_requests,
+                        max_concurrent_requests,
+                    )
+                )
+            return _GLOBAL_CAPACITY_STATE
 
     @staticmethod
     def _shared_endpoint_capacity_state(
         url: str,
         max_concurrent_requests: int,
+        rate_limit_per_minute: int = 0,
     ) -> _EndpointCapacityState:
         with _ENDPOINT_CAPACITY_CONDITION:
             state = _ENDPOINT_CAPACITY_STATES.get(url)
@@ -168,11 +237,97 @@ class LLMClient:
                 state = _EndpointCapacityState(url=url)
                 _ENDPOINT_CAPACITY_STATES[url] = state
             if max_concurrent_requests > 0:
-                state.max_concurrent_requests = max(
-                    state.max_concurrent_requests,
+                state.hard_max_concurrent_requests = LLMClient._strictest_positive_limit(
+                    state.hard_max_concurrent_requests,
                     max_concurrent_requests,
                 )
+                if state.max_concurrent_requests <= 0:
+                    state.max_concurrent_requests = state.hard_max_concurrent_requests
+                else:
+                    state.max_concurrent_requests = min(
+                        state.max_concurrent_requests,
+                        state.hard_max_concurrent_requests,
+                    )
+            if rate_limit_per_minute > 0:
+                state.rate_limit_per_minute = LLMClient._strictest_positive_limit(
+                    state.rate_limit_per_minute,
+                    rate_limit_per_minute,
+                )
             return state
+
+    def endpoint_capacity_snapshot(self) -> Dict[str, Dict[str, int]]:
+        """Return observable process-wide capacity state for this client's endpoints."""
+        with self._base_url_condition:
+            return {
+                url: {
+                    "hard_max_concurrent_requests": state.hard_max_concurrent_requests,
+                    "max_concurrent_requests": state.max_concurrent_requests,
+                    "in_flight": state.in_flight,
+                    "rate_limit_per_minute": state.rate_limit_per_minute,
+                    "recent_requests": len(state.requests_started),
+                    "overload_events": state.overload_events,
+                }
+                for url, state in self._endpoint_capacity_states.items()
+            }
+
+    def global_capacity_snapshot(self) -> Dict[str, int]:
+        """Return the process-wide capacity shared by all configured endpoints."""
+        with self._base_url_condition:
+            return {
+                "hard_max_concurrent_requests": (
+                    self._global_capacity_state.hard_max_concurrent_requests
+                ),
+                "in_flight": self._global_capacity_state.in_flight,
+            }
+
+    def usage_snapshot(self) -> Dict[str, Union[int, float]]:
+        """Return response-boundary usage that survives caller cancellation.
+
+        Usage is committed as soon as a successful provider response has been
+        assembled.  It is deliberately owned by the shared client rather than
+        an entry result, so abandoning or replacing that result cannot erase
+        tokens already consumed by the scan.
+        """
+        with self._usage_lock:
+            usage = self._usage_telemetry
+            successful_calls = usage.successful_calls
+            return {
+                "successful_calls": successful_calls,
+                "prompt_tokens": usage.prompt_tokens,
+                "completion_tokens": usage.completion_tokens,
+                "total_tokens": usage.total_tokens,
+                "estimated_calls": usage.estimated_calls,
+                "provider_reported_calls": usage.provider_reported_calls,
+                "provider_usage_coverage": (
+                    usage.provider_reported_calls / successful_calls
+                    if successful_calls
+                    else 0.0
+                ),
+            }
+
+    def _record_successful_usage(self, usage: Dict[str, Any]) -> None:
+        def _token_count(value: Any, fallback: int = 0) -> int:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return fallback
+            return max(0, int(value))
+
+        prompt_tokens = _token_count(usage.get("prompt_tokens"))
+        completion_tokens = _token_count(usage.get("completion_tokens"))
+        total_tokens = _token_count(
+            usage.get("total_tokens"),
+            prompt_tokens + completion_tokens,
+        )
+        estimated = bool(usage.get("estimated", True))
+        with self._usage_lock:
+            telemetry = self._usage_telemetry
+            telemetry.successful_calls += 1
+            telemetry.prompt_tokens += prompt_tokens
+            telemetry.completion_tokens += completion_tokens
+            telemetry.total_tokens += total_tokens
+            if estimated:
+                telemetry.estimated_calls += 1
+            else:
+                telemetry.provider_reported_calls += 1
 
     def _new_session(self) -> requests.Session:
         session = requests.Session()
@@ -249,17 +404,28 @@ class LLMClient:
 
     def _select_base_url(self) -> _BaseUrlState:
         while True:
+            token = current_cancellation_token()
+            if token is not None:
+                token.raise_if_cancelled()
             now = time.monotonic()
             with self._base_url_condition:
                 for state in self._base_url_states:
                     self._prune_recent_requests(state, now)
+                    self._prune_endpoint_requests(
+                        self._endpoint_capacity_states[state.url],
+                        now,
+                    )
 
+                has_global_capacity = self._has_global_concurrent_capacity()
                 candidates = [
                     state
                     for state in self._base_url_states
                     if (
-                        state.cooldown_until <= now
-                        and self._has_minute_capacity(state)
+                        has_global_capacity
+                        and state.cooldown_until <= now
+                        and self._has_minute_capacity(
+                            self._endpoint_capacity_states[state.url]
+                        )
                         and self._has_concurrent_capacity(self._endpoint_capacity_states[state.url])
                     )
                 ]
@@ -267,18 +433,39 @@ class LLMClient:
                     selected = min(
                         candidates,
                         key=lambda state: (
-                            len(state.requests_started),
+                            len(
+                                self._endpoint_capacity_states[
+                                    state.url
+                                ].requests_started
+                            ),
                             self._endpoint_capacity_states[state.url].in_flight,
+                            len(state.requests_started),
                         ),
                     )
                     selected.requests_started.append(now)
-                    self._endpoint_capacity_states[selected.url].in_flight += 1
+                    endpoint = self._endpoint_capacity_states[selected.url]
+                    endpoint.requests_started.append(now)
+                    endpoint.in_flight += 1
+                    self._global_capacity_state.in_flight += 1
                     return selected
 
-                blocked_by_concurrency_only = any(
+                blocked_by_concurrency_only = (
+                    not has_global_capacity
+                    and any(
+                        state.cooldown_until <= now
+                        and self._has_minute_capacity(
+                            self._endpoint_capacity_states[state.url]
+                        )
+                        for state in self._base_url_states
+                    )
+                ) or any(
                     state.cooldown_until <= now
-                    and self._has_minute_capacity(state)
-                    and not self._has_concurrent_capacity(self._endpoint_capacity_states[state.url])
+                    and self._has_minute_capacity(
+                        self._endpoint_capacity_states[state.url]
+                    )
+                    and not self._has_concurrent_capacity(
+                        self._endpoint_capacity_states[state.url]
+                    )
                     for state in self._base_url_states
                 )
                 wait_until = min(
@@ -286,6 +473,10 @@ class LLMClient:
                 )
 
                 wait_time = max(0.05, min(wait_until - now, 10.0))
+                if token is not None:
+                    remaining = token.remaining_seconds()
+                    if remaining is not None:
+                        wait_time = min(wait_time, max(0.01, remaining))
                 self._log_base_url_wait(blocked_by_concurrency_only, wait_time, now)
                 self._base_url_condition.wait(timeout=wait_time)
 
@@ -294,6 +485,10 @@ class LLMClient:
             endpoint = self._endpoint_capacity_states.get(state.url)
             if endpoint is not None:
                 endpoint.in_flight = max(0, endpoint.in_flight - 1)
+            self._global_capacity_state.in_flight = max(
+                0,
+                self._global_capacity_state.in_flight - 1,
+            )
             self._base_url_condition.notify_all()
 
     def _mark_base_url_cooldown(self, state: _BaseUrlState, seconds: float) -> None:
@@ -341,26 +536,107 @@ class LLMClient:
         while state.requests_started and now - state.requests_started[0] >= 60.0:
             state.requests_started.popleft()
 
-    def _has_minute_capacity(self, state: _BaseUrlState) -> bool:
-        if self.base_url_rate_limit_per_minute <= 0:
+    @staticmethod
+    def _prune_endpoint_requests(
+        state: _EndpointCapacityState,
+        now: float,
+    ) -> None:
+        while state.requests_started and now - state.requests_started[0] >= 60.0:
+            state.requests_started.popleft()
+
+    @staticmethod
+    def _has_minute_capacity(state: _EndpointCapacityState) -> bool:
+        if state.rate_limit_per_minute <= 0:
             return True
-        return len(state.requests_started) < self.base_url_rate_limit_per_minute
+        return len(state.requests_started) < state.rate_limit_per_minute
 
     def _has_concurrent_capacity(self, state: _EndpointCapacityState) -> bool:
         if state.max_concurrent_requests <= 0:
             return True
         return state.in_flight < state.max_concurrent_requests
 
+    def _has_global_concurrent_capacity(self) -> bool:
+        hard_limit = self._global_capacity_state.hard_max_concurrent_requests
+        if hard_limit <= 0:
+            return True
+        return self._global_capacity_state.in_flight < hard_limit
+
     def _next_available_at(self, state: _BaseUrlState, now: float) -> float:
+        endpoint = self._endpoint_capacity_states[state.url]
         available_at = max(state.cooldown_until, now)
         if (
-            self.base_url_rate_limit_per_minute > 0
-            and len(state.requests_started) >= self.base_url_rate_limit_per_minute
+            endpoint.rate_limit_per_minute > 0
+            and len(endpoint.requests_started) >= endpoint.rate_limit_per_minute
         ):
-            available_at = max(available_at, state.requests_started[0] + 60.0)
-        if not self._has_concurrent_capacity(self._endpoint_capacity_states[state.url]):
+            available_at = max(available_at, endpoint.requests_started[0] + 60.0)
+        if not self._has_concurrent_capacity(endpoint):
+            available_at = max(available_at, now + 0.5)
+        if not self._has_global_concurrent_capacity():
             available_at = max(available_at, now + 0.5)
         return available_at
+
+    def _record_endpoint_success(self, state: _BaseUrlState) -> None:
+        endpoint = self._endpoint_capacity_states[state.url]
+        with self._base_url_condition:
+            hard_limit = endpoint.hard_max_concurrent_requests
+            if hard_limit <= 0 or endpoint.max_concurrent_requests >= hard_limit:
+                endpoint.success_streak = 0
+                return
+            endpoint.success_streak += 1
+            if endpoint.success_streak < self.AIMD_SUCCESS_THRESHOLD:
+                return
+            endpoint.max_concurrent_requests = min(
+                hard_limit,
+                endpoint.max_concurrent_requests + 1,
+            )
+            endpoint.success_streak = 0
+            self._base_url_condition.notify_all()
+            logger.info(
+                "LLM endpoint %s AIMD increased concurrency to %d/%d",
+                state.url,
+                endpoint.max_concurrent_requests,
+                hard_limit,
+            )
+
+    def _record_endpoint_overload(
+        self,
+        state: _BaseUrlState,
+        *,
+        reason: str,
+    ) -> None:
+        endpoint = self._endpoint_capacity_states[state.url]
+        with self._base_url_condition:
+            current_limit = (
+                endpoint.max_concurrent_requests
+                or endpoint.hard_max_concurrent_requests
+            )
+            if current_limit <= 1:
+                endpoint.success_streak = 0
+                endpoint.overload_events += 1
+                return
+            reduced_limit = max(
+                2,
+                int(current_limit * self.AIMD_DECREASE_FACTOR),
+            )
+            endpoint.max_concurrent_requests = min(current_limit, reduced_limit)
+            endpoint.success_streak = 0
+            endpoint.overload_events += 1
+            self._base_url_condition.notify_all()
+            if endpoint.max_concurrent_requests < current_limit:
+                logger.warning(
+                    "LLM endpoint %s AIMD reduced concurrency from %d to %d (%s)",
+                    state.url,
+                    current_limit,
+                    endpoint.max_concurrent_requests,
+                    reason,
+                )
+            else:
+                logger.debug(
+                    "LLM endpoint %s remains at AIMD concurrency floor %d (%s)",
+                    state.url,
+                    endpoint.max_concurrent_requests,
+                    reason,
+                )
 
     @staticmethod
     def _retry_after_seconds(response: requests.Response) -> Optional[float]:
@@ -402,6 +678,40 @@ class LLMClient:
                 pending.extend(arg for arg in current.args if isinstance(arg, BaseException))
         return False
 
+    @classmethod
+    def _endpoint_overload_reason(cls, error: BaseException) -> Optional[str]:
+        """Classify transient endpoint failures that require AIMD load shedding."""
+        pending: List[Any] = [error]
+        seen: set[int] = set()
+        while pending:
+            current = pending.pop()
+            if current is None:
+                continue
+            current_id = id(current)
+            if current_id in seen:
+                continue
+            seen.add(current_id)
+            if isinstance(current, (requests.exceptions.Timeout, TimeoutError)):
+                return "timeout"
+            if isinstance(current, (requests.exceptions.SSLError, ssl.SSLError)):
+                return "ssl_error"
+            if isinstance(
+                current,
+                (
+                    requests.exceptions.ConnectionError,
+                    requests.exceptions.ChunkedEncodingError,
+                    ConnectionError,
+                ),
+            ):
+                return "connection_error"
+            if isinstance(current, BaseException):
+                pending.append(current.__cause__)
+                pending.append(current.__context__)
+                pending.extend(
+                    arg for arg in current.args if isinstance(arg, BaseException)
+                )
+        return None
+
     def _recover_from_local_fd_exhaustion(
         self,
         error: BaseException,
@@ -432,6 +742,9 @@ class LLMClient:
         """
         Send chat completion request with model fallback.
         """
+        token = current_cancellation_token()
+        if token is not None:
+            token.raise_if_cancelled()
         last_error = None
         recorder = get_conversation_recorder()
         created_trace_session = False
@@ -459,7 +772,16 @@ class LLMClient:
             payload["stream"] = True
 
             total_attempts = (self.max_retries + 1) * max(1, len(self._base_url_states))
-            for attempt in range(total_attempts):
+            attempt = 0
+            retry_transient = False
+            while attempt < total_attempts or (
+                self.retry_until_available and retry_transient
+            ):
+                retry_transient = False
+                attempt += 1
+                token = current_cancellation_token()
+                if token is not None:
+                    token.raise_if_cancelled()
                 endpoint = self._select_base_url()
                 post_attempt_delay = 0.0
                 response: Optional[requests.Response] = None
@@ -473,6 +795,16 @@ class LLMClient:
                         )
                         prompt_tokens = LLMClient.estimate_tokens(messages)
                         completion_tokens = LLMClient.estimate_tokens([assembled_message])
+                        usage = {
+                            "prompt_tokens": prompt_tokens,
+                            "completion_tokens": completion_tokens,
+                            "total_tokens": prompt_tokens + completion_tokens,
+                            "estimated": True,
+                        }
+                        if provider_usage:
+                            usage.update(provider_usage)
+                            usage["estimated"] = False
+                        self._record_successful_usage(usage)
                         logger.info(
                             f"[LLM API Trace] Model: {model} | "
                             f"Prompt ~{prompt_tokens:,} tk | "
@@ -496,15 +828,7 @@ class LLMClient:
                                     trace_iteration or 1,
                                     prompt_tokens + completion_tokens,
                                 )
-                        usage = {
-                            "prompt_tokens": prompt_tokens,
-                            "completion_tokens": completion_tokens,
-                            "total_tokens": prompt_tokens + completion_tokens,
-                            "estimated": True,
-                        }
-                        if provider_usage:
-                            usage.update(provider_usage)
-                            usage["estimated"] = False
+                        self._record_endpoint_success(endpoint)
                         return {
                             "choices": [{
                                 "message": assembled_message,
@@ -514,8 +838,17 @@ class LLMClient:
                             "usage": usage,
                         }
 
+                    request_timeout = self.timeout
+                    if token is not None:
+                        remaining = token.remaining_seconds()
+                        if remaining is not None:
+                            request_timeout = (
+                                max(0.1, remaining)
+                                if request_timeout is None
+                                else max(0.1, min(request_timeout, remaining))
+                            )
                     response = self._session_for_thread().post(
-                        url, json=payload, timeout=self.timeout, stream=True
+                        url, json=payload, timeout=request_timeout, stream=True
                     )
 
                     if response.status_code == 200:
@@ -524,6 +857,13 @@ class LLMClient:
                         # Estimate single API call cost and log prominently
                         prompt_tokens = LLMClient.estimate_tokens(messages)
                         completion_tokens = LLMClient.estimate_tokens([assembled_message])
+                        usage = {
+                            "prompt_tokens": prompt_tokens,
+                            "completion_tokens": completion_tokens,
+                            "total_tokens": prompt_tokens + completion_tokens,
+                            "estimated": True,
+                        }
+                        self._record_successful_usage(usage)
                         
                         logger.info(
                             f"[LLM API Trace] Model: {model} | "
@@ -549,33 +889,49 @@ class LLMClient:
                                     prompt_tokens + completion_tokens,
                                 )
 
+                        self._record_endpoint_success(endpoint)
                         return {
                             "choices": [{
                                 "message": assembled_message,
                                 "finish_reason": finish_reason
                             }],
                             "model": model,
-                            "usage": {
-                                "prompt_tokens": prompt_tokens,
-                                "completion_tokens": completion_tokens,
-                                "total_tokens": prompt_tokens + completion_tokens,
-                                "estimated": True,
-                            },
+                            "usage": usage,
                         }
                     
                     error_msg = f"HTTP {response.status_code}: {response.text}"
+                    transient_http_error = (
+                        response.status_code >= 500
+                        or response.status_code == 429
+                    )
                     logger.warning(
-                        "Model %s via %s failed (attempt %d/%d): %s",
+                        "Model %s via %s failed (attempt %d/%s): %s",
                         model,
                         endpoint.url,
-                        attempt + 1,
-                        total_attempts,
+                        attempt,
+                        (
+                            "unbounded"
+                            if (
+                                self.retry_until_available
+                                and transient_http_error
+                            )
+                            else str(total_attempts)
+                        ),
                         error_msg,
                     )
                     
-                    if response.status_code >= 500 or response.status_code == 429:
+                    if transient_http_error:
+                        retry_transient = True
+                        if response.status_code in {429, 502, 503, 504}:
+                            self._record_endpoint_overload(
+                                endpoint,
+                                reason=f"http_{response.status_code}",
+                            )
                         retry_after = self._retry_after_seconds(response)
-                        wait_time = retry_after or min(2**attempt, 10) + random.uniform(0, 3)
+                        wait_time = retry_after or min(
+                            2 ** min(attempt - 1, 4),
+                            10,
+                        ) + random.uniform(0, 3)
                         self._mark_base_url_cooldown(endpoint, wait_time)
                         logger.warning(
                             "Rate limited or server error on %s; cooling it down for %.1fs...",
@@ -590,29 +946,59 @@ class LLMClient:
                         
                 except Exception as e:
                     local_fd_exhausted = self._is_too_many_open_files(e)
-                    wait_time = min(2**attempt, 10) + random.uniform(0, 3)
+                    overload_reason = (
+                        None
+                        if local_fd_exhausted
+                        else self._endpoint_overload_reason(e)
+                    )
+                    retry_transient = (
+                        local_fd_exhausted or overload_reason is not None
+                    )
+                    wait_time = min(
+                        2 ** min(attempt - 1, 4),
+                        10,
+                    ) + random.uniform(0, 3)
+                    if overload_reason is not None:
+                        self._record_endpoint_overload(
+                            endpoint,
+                            reason=overload_reason,
+                        )
+                        self._mark_base_url_cooldown(endpoint, wait_time)
                     if local_fd_exhausted:
                         wait_time = max(wait_time, self.LOCAL_FD_EXHAUSTION_COOLDOWN_SECONDS)
                         self._recover_from_local_fd_exhaustion(e, wait_time)
-                    is_last = attempt >= total_attempts - 1
+                    is_last = (
+                        attempt >= total_attempts
+                        and not (
+                            self.retry_until_available and retry_transient
+                        )
+                    )
                     post_attempt_delay = 0.0 if is_last else wait_time
                     if is_last:
                         logger.warning(
                             "Model %s via %s request error (attempt %d/%d, final): %s",
                             model,
                             endpoint.url,
-                            attempt + 1,
+                            attempt,
                             total_attempts,
                             e,
                         )
                     else:
                         logger.warning(
                             "Model %s via %s request error "
-                            "(attempt %d/%d, retrying after %.1fs): %s",
+                            "(attempt %d/%s, retrying after %.1fs): %s",
                             model,
                             endpoint.url,
-                            attempt + 1,
-                            total_attempts,
+                            attempt,
+                            (
+                                "unbounded"
+                                if (
+                                    self.retry_until_available
+                                    and retry_transient
+                                    and attempt >= total_attempts
+                                )
+                                else str(total_attempts)
+                            ),
                             wait_time,
                             e,
                         )
@@ -625,7 +1011,11 @@ class LLMClient:
                             close_response()
                     self._release_base_url(endpoint)
                     if post_attempt_delay > 0:
-                        time.sleep(post_attempt_delay)
+                        token = current_cancellation_token()
+                        if token is None:
+                            time.sleep(post_attempt_delay)
+                        elif token.wait(post_attempt_delay):
+                            token.raise_if_cancelled()
             
             logger.info(f"Falling back from model {model}...")
             
@@ -648,7 +1038,21 @@ class LLMClient:
         curl_payload["stream"] = False
         request_bytes = json.dumps(curl_payload, ensure_ascii=False).encode("utf-8")
         status_marker = "\n__Z_SCOPE_HTTP_STATUS__:"
-        timeout_seconds = max(float(self.timeout) * 3.0, 60.0)
+        timeout_seconds = (
+            max(float(self.timeout) * 3.0, 60.0)
+            if self.timeout is not None
+            else None
+        )
+        token = current_cancellation_token()
+        if token is not None:
+            token.raise_if_cancelled()
+            remaining = token.remaining_seconds()
+            if remaining is not None:
+                timeout_seconds = (
+                    max(1.0, remaining)
+                    if timeout_seconds is None
+                    else max(1.0, min(timeout_seconds, remaining))
+                )
         config_path = self._write_curl_config(
             url=url,
             timeout_seconds=timeout_seconds,
@@ -705,7 +1109,7 @@ class LLMClient:
         self,
         *,
         url: str,
-        timeout_seconds: float,
+        timeout_seconds: Optional[float],
         status_marker: str,
     ) -> str:
         fd, path = tempfile.mkstemp(prefix="zscope-curl-", suffix=".cfg")
@@ -719,7 +1123,8 @@ class LLMClient:
             handle.write(f"header = {self._curl_config_quote(auth_header)}\n")
             handle.write('header = "Content-Type: application/json"\n')
             handle.write('data-binary = "@-"\n')
-            handle.write(f'max-time = "{int(timeout_seconds)}"\n')
+            if timeout_seconds is not None:
+                handle.write(f'max-time = "{int(timeout_seconds)}"\n')
             handle.write(f"write-out = {self._curl_config_quote(status_marker + '%{http_code}')}\n")
         return path
 
@@ -771,11 +1176,15 @@ class LLMClient:
         tool_calls_map: Dict[Any, Dict[str, Any]] = {}
         finish_reason = "stop"
 
-        stream_deadline = max(float(self.timeout) * 3.0, 300.0)
+        # A stream that continues to yield valid provider chunks is healthy.
+        # Do not turn request elapsed time into a local analysis budget; the
+        # HTTP read timeout and idle-valid-chunk guard still detect a stalled
+        # or unavailable service.
+        stream_deadline = None
         for chunk in self._iter_chat_chunks(
             response,
             max_stream_seconds=stream_deadline,
-            max_idle_valid_chunk_seconds=float(self.timeout),
+            max_idle_valid_chunk_seconds=self.timeout,
         ):
             choices = chunk.get("choices", [])
             if not choices:
@@ -833,6 +1242,9 @@ class LLMClient:
         stream_started_at = time.monotonic()
         last_valid_chunk_at = stream_started_at
         for line in response.iter_lines():
+            token = current_cancellation_token()
+            if token is not None:
+                token.raise_if_cancelled()
             now = time.monotonic()
             if (
                 max_stream_seconds is not None

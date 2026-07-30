@@ -55,7 +55,7 @@ class BitcodeBuilder:
         gclang_path: str = "gclang",
         get_bc_path: str = "get-bc",
         llvm_link_path: str = "llvm-link",
-        timeout: int = 1800,
+        timeout: Optional[float] = 1800.0,
     ):
         self.source_root = Path(source_root).resolve()
         self.compile_commands_path = Path(compile_commands_path).resolve()

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 import threading
@@ -88,6 +89,31 @@ def test_snapshot_load_cache_returns_independent_copies(tmp_path) -> None:
     loaded["items"][0]["name"] = "mutated"
 
     assert store.load_snapshot(index_name) == snapshot
+
+
+def test_snapshot_and_report_cache_share_a_byte_bounded_lru(tmp_path) -> None:
+    snapshot = _snapshot(summary="x" * 80)
+    report = {"entry_function": "handle_request", "notes": ["y" * 80]}
+    encode = lambda value: json.dumps(  # noqa: E731
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    cache_limit = max(len(encode(snapshot)), len(encode(report)))
+    store = SnapshotStore(
+        tmp_path / "snapshots",
+        cache_max_bytes=cache_limit,
+    )
+
+    store._cache_snapshot("snapshot-key", snapshot)
+    assert store._cached_snapshot("snapshot-key") == snapshot
+    store._cache_final_report("report-key", report)
+
+    assert store._cached_snapshot("snapshot-key") is None
+    assert store._cached_final_report("report-key") == report
+    assert store.cache_stats()["bytes"] <= cache_limit
+    assert store.cache_stats()["entries"] == 1
 
 
 def test_snapshot_save_refreshes_cache_and_fingerprints(tmp_path) -> None:
@@ -636,6 +662,165 @@ def test_snapshot_filename_and_sqlite_primary_key_derive_from_index_name(tmp_pat
     assert row == (index_name, expected_file)
 
 
+def test_snapshot_filename_keeps_readable_prefix_and_uses_index_digest() -> None:
+    index_name = "Widget::run<int>@src/widget.cpp:10-40"
+    encoded = SnapshotStore._encoded_index_name(index_name)
+
+    assert encoded.startswith("Widget_run_int_src_widget.cpp_10-40-")
+    assert encoded.endswith(
+        hashlib.sha256(index_name.encode("utf-8")).hexdigest()[:16]
+    )
+
+
+def test_punctuation_collisions_remain_isolated_after_process_reload(tmp_path) -> None:
+    snapshot_dir = tmp_path / "snapshots"
+    index_names = [
+        "a::b@src/x.c:1-2",
+        "a/b@src/x.c:1-2",
+        "a:b@src/x.c:1-2",
+    ]
+    store = SnapshotStore(snapshot_dir)
+    for position, index_name in enumerate(index_names):
+        store.save_snapshot(
+            index_name,
+            _snapshot(
+                index_name,
+                summary=f"snapshot-{position}",
+                file_path="src/x.c",
+                start_line=1,
+                end_line=2,
+            ),
+            f"int collision_{position}(void) {{ return {position}; }}",
+        )
+        store.save_final_report(index_name, {"owner": position})
+
+    assert len({store._snapshot_filename(name) for name in index_names}) == 3
+    assert len({store._final_report_filename(name) for name in index_names}) == 3
+
+    reloaded = SnapshotStore(snapshot_dir)
+    for position, index_name in enumerate(index_names):
+        assert reloaded.load_snapshot(index_name)["summary"] == f"snapshot-{position}"
+        assert reloaded.load_final_report(index_name) == {"owner": position}
+
+
+def test_long_index_names_with_same_readable_prefix_remain_distinct(tmp_path) -> None:
+    snapshot_dir = tmp_path / "snapshots"
+    common_prefix = "Namespace::" + ("VeryLongTemplateArgument" * 10)
+    left = f"{common_prefix}::left@src/long.cpp:1-2"
+    right = f"{common_prefix}::right@src/long.cpp:1-2"
+    store = SnapshotStore(snapshot_dir)
+
+    store.save_snapshot(
+        left,
+        _snapshot(
+            left,
+            summary="left",
+            file_path="src/long.cpp",
+            start_line=1,
+            end_line=2,
+        ),
+        "int left(void) { return 1; }",
+    )
+    store.save_snapshot(
+        right,
+        _snapshot(
+            right,
+            summary="right",
+            file_path="src/long.cpp",
+            start_line=1,
+            end_line=2,
+        ),
+        "int right(void) { return 2; }",
+    )
+
+    left_file = store._snapshot_filename(left)
+    right_file = store._snapshot_filename(right)
+    assert left_file.rsplit("-", 1)[0] == right_file.rsplit("-", 1)[0]
+    assert left_file != right_file
+
+    reloaded = SnapshotStore(snapshot_dir)
+    assert reloaded.load_snapshot(left)["summary"] == "left"
+    assert reloaded.load_snapshot(right)["summary"] == "right"
+
+
+def test_legacy_filename_collision_invalidates_ambiguous_data_without_deleting_files(
+    tmp_path,
+) -> None:
+    snapshot_dir = tmp_path / "snapshots"
+    left = "a::b@src/x.c:1-2"
+    right = "a/b@src/x.c:1-2"
+    store = SnapshotStore(snapshot_dir)
+    for index_name, summary in ((left, "left"), (right, "right")):
+        store.save_snapshot(
+            index_name,
+            _snapshot(
+                index_name,
+                summary=summary,
+                file_path="src/x.c",
+                start_line=1,
+                end_line=2,
+            ),
+            f"int {summary}(void) {{ return 0; }}",
+        )
+        store.save_final_report(index_name, {"owner": summary})
+
+    legacy_snapshot_file = "a_b_src_x.c_1-2.json"
+    legacy_final_file = "a_b_src_x.c_1-2_final.json"
+    legacy_snapshot_path = snapshot_dir / legacy_snapshot_file
+    legacy_final_path = snapshot_dir / legacy_final_file
+    legacy_snapshot_path.write_text(
+        json.dumps(
+            _snapshot(
+                right,
+                summary="last-writer",
+                file_path="src/x.c",
+                start_line=1,
+                end_line=2,
+            )
+        ),
+        encoding="utf-8",
+    )
+    legacy_final_path.write_text(
+        json.dumps({"owner": "cannot-be-attributed"}),
+        encoding="utf-8",
+    )
+    with sqlite3.connect(snapshot_dir / "snapshots.db") as conn:
+        conn.execute(
+            "UPDATE snapshots SET snapshot_file = ?, final_report_file = ? "
+            "WHERE index_name IN (?, ?)",
+            (legacy_snapshot_file, legacy_final_file, left, right),
+        )
+        conn.commit()
+
+    reloaded = SnapshotStore(snapshot_dir)
+
+    assert reloaded.load_snapshot(left) is None
+    assert reloaded.needs_refresh(
+        left,
+        "int left(void) { return 0; }",
+        _snapshot(
+            left,
+            file_path="src/x.c",
+            start_line=1,
+            end_line=2,
+        ),
+    ) == (True, "no_snapshot")
+    assert reloaded.load_snapshot(right)["summary"] == "last-writer"
+    assert reloaded.load_final_report(left) is None
+    assert reloaded.load_final_report(right) is None
+    assert legacy_snapshot_path.exists()
+    assert legacy_final_path.exists()
+    with sqlite3.connect(snapshot_dir / "snapshots.db") as conn:
+        final_links = conn.execute(
+            "SELECT final_report_file FROM snapshots ORDER BY index_name"
+        ).fetchall()
+    assert final_links == [(None,), (None,)]
+
+    reloaded.delete_snapshot(left)
+    assert legacy_snapshot_path.exists()
+    assert legacy_final_path.exists()
+
+
 def test_save_rejects_index_name_mismatch(tmp_path) -> None:
     store = SnapshotStore(tmp_path / "snapshots")
     with pytest.raises(ValueError, match="does not match"):
@@ -793,3 +978,40 @@ def test_index_name_database_backfills_split_context_hash_columns(tmp_path) -> N
     assert symbol_hash == compute_symbol_context_hash(loaded)
     assert callee_hash == compute_callee_summary_hash(loaded)
     assert type_hash == compute_type_context_hash({"referenced_types": []})
+
+
+def test_validation_cache_requires_exact_v3_environment(tmp_path) -> None:
+    store = SnapshotStore(tmp_path / "snapshots")
+    store.save_validation_result(
+        "CACHE_KEY",
+        {"verdict": "verified"},
+        protocol="zscope.validator-cache.v3",
+        candidate_schema_version="zscope.candidate.v3",
+        environment_fingerprint="ENV_A",
+        max_entries=8,
+    )
+
+    assert store.load_validation_result(
+        "CACHE_KEY",
+        protocol="zscope.validator-cache.v3",
+        candidate_schema_version="zscope.candidate.v3",
+        environment_fingerprint="ENV_A",
+    ) == {"verdict": "verified"}
+    assert (
+        store.load_validation_result(
+            "CACHE_KEY",
+            protocol="zscope.validator-cache.v2",
+            candidate_schema_version="zscope.candidate.v2",
+            environment_fingerprint="ENV_A",
+        )
+        is None
+    )
+    assert (
+        store.load_validation_result(
+            "CACHE_KEY",
+            protocol="zscope.validator-cache.v3",
+            candidate_schema_version="zscope.candidate.v3",
+            environment_fingerprint="ENV_B",
+        )
+        is None
+    )
