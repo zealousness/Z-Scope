@@ -44,8 +44,11 @@ from zscope.benchmarking.protocol import (
     CONDITION_FULL_ZSCOPE,
     CONDITION_PURE_LLM_ENTRY,
     CONDITION_PURE_LLM_REPO,
+    DEFAULT_BOOTSTRAP_SAMPLES,
+    MIN_RELEASE_TRIALS,
     RUN_KINDS,
     aggregate_trial_summaries,
+    build_benchmark_artifact_manifest,
     build_trial_summary,
     collect_environment_metadata,
     copy_conversation_trajectory,
@@ -53,6 +56,8 @@ from zscope.benchmarking.protocol import (
     load_summaries,
     score_report,
     score_report_views,
+    sha256_file,
+    sha256_payload,
 )
 
 
@@ -448,11 +453,25 @@ analysis:
   enable_snapshot_cache: true
   user_config_db: ""
   parallel_workers: 4
+  entry_workers: 8
+  llm_max_inflight: 8
+  validator_workers: 4
+  investigator_workers: 2
+  request_deadline_seconds: 120
+  validation_deadline_seconds: 240
+  subagent_ticket_timeout: 300
+  entry_deadline_seconds: 1800
+  scan_deadline_seconds: 3600
   max_premodel_depth: 3
   max_premodel_callees: 12
   trivial_function_max_lines: 8
   enable_subagent_workers: true
   max_subagent_tickets: 4
+
+reporting:
+  semantic_dedup:
+    enabled: true
+    llm_enabled: false
 """
     (suite_root / "zscope.benchmark.yaml").write_text(config, encoding="utf-8")
 
@@ -1019,6 +1038,185 @@ def _suite_config_metadata(suite_root: Path, env: dict[str, str] | None = None) 
     return metadata
 
 
+def _prepare_trial_config(
+    suite_root: Path,
+    run_dir: Path,
+    *,
+    warm_cache: bool,
+) -> Path:
+    """Create an isolated cold-trial snapshot config without touching user caches."""
+
+    config_path = suite_root / "zscope.benchmark.yaml"
+    if warm_cache:
+        return config_path
+    if yaml is None:
+        raise RuntimeError("PyYAML is required to create an isolated benchmark trial config")
+    loaded = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(loaded, dict):
+        raise RuntimeError(f"Benchmark config is not a mapping: {config_path}")
+    analysis = loaded.get("analysis")
+    if not isinstance(analysis, dict):
+        analysis = {}
+        loaded["analysis"] = analysis
+    isolated_snapshot_dir = (run_dir / ".cold_snapshot_cache").resolve()
+    if isolated_snapshot_dir.exists():
+        if not isolated_snapshot_dir.is_dir() or any(isolated_snapshot_dir.iterdir()):
+            raise RuntimeError(
+                "Cold benchmark cache is not empty; use a fresh run directory "
+                f"or pass --warm-cache: {isolated_snapshot_dir}"
+            )
+    analysis["snapshot_dir"] = isolated_snapshot_dir.as_posix()
+    analysis["enable_snapshot_cache"] = True
+    trial_config = run_dir / "zscope.benchmark.cold.yaml"
+    trial_config.write_text(
+        yaml.safe_dump(loaded, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    return trial_config
+
+
+def _file_integrity_state(path: Path) -> dict[str, Any]:
+    path = Path(path)
+    if not path.is_file():
+        return {
+            "exists": False,
+            "sha256": "",
+            "size": 0,
+            "mtime_ns": 0,
+        }
+    stat = path.stat()
+    return {
+        "exists": True,
+        "sha256": sha256_file(path),
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def _integrity_manifest_changes(
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> list[str]:
+    protected_keys = (
+        "truth_sha256",
+        "scorer_sha256",
+        "config_sha256",
+        "execution_config_sha256",
+        "benchmark_manifest_sha256",
+        "entries_sha256",
+        "source_manifest_sha256",
+        "source_file_count",
+    )
+    return [
+        key
+        for key in protected_keys
+        if before.get(key) != after.get(key)
+    ]
+
+
+def _validate_trial_integrity(
+    *,
+    condition: str,
+    return_code: int | None,
+    started_at: float,
+    report_before: dict[str, Any],
+    report_after: dict[str, Any],
+    report_payload: dict[str, Any],
+    artifact_manifest_before: dict[str, Any],
+    artifact_manifest_after: dict[str, Any],
+    expected_entry_count: int,
+    cold_snapshot_cache: bool,
+) -> dict[str, Any]:
+    errors: list[str] = []
+    changed_inputs = _integrity_manifest_changes(
+        artifact_manifest_before,
+        artifact_manifest_after,
+    )
+    if changed_inputs:
+        errors.append(f"benchmark inputs changed during trial: {', '.join(changed_inputs)}")
+    required_hashes = (
+        "truth_sha256",
+        "scorer_sha256",
+        "config_sha256",
+        "execution_config_sha256",
+        "entries_sha256",
+        "source_manifest_sha256",
+    )
+    missing_hashes = [
+        key for key in required_hashes if not artifact_manifest_after.get(key)
+    ]
+    if missing_hashes:
+        errors.append(f"required integrity hashes are missing: {', '.join(missing_hashes)}")
+    if return_code not in {0, 1}:
+        errors.append(f"unexpected process return code: {return_code}")
+    if not report_after.get("exists"):
+        errors.append("report was not produced")
+    else:
+        if int(report_after.get("mtime_ns") or 0) < int((started_at - 2.0) * 1_000_000_000):
+            errors.append("report predates this trial")
+        if (
+            report_before.get("exists")
+            and report_before.get("mtime_ns") == report_after.get("mtime_ns")
+            and report_before.get("sha256") == report_after.get("sha256")
+        ):
+            errors.append("report was not refreshed and may be stale")
+    if str(report_payload.get("overall_verdict") or "").lower() == "error":
+        errors.append("report contains an error verdict")
+
+    summary = report_payload.get("summary")
+    metadata = report_payload.get("metadata")
+    reported_completeness = str(
+        report_payload.get("completeness")
+        or (
+            metadata.get("completeness")
+            if isinstance(metadata, dict)
+            else ""
+        )
+        or ""
+    ).strip().lower()
+    if reported_completeness and reported_completeness != "complete":
+        errors.append(
+            f"report completeness is {reported_completeness}, expected complete"
+        )
+    if str(report_payload.get("scan_outcome") or "").strip().lower() == "incomplete":
+        errors.append("report scan outcome is incomplete")
+    if isinstance(summary, dict) and summary.get("interrupted") is True:
+        errors.append("report summary is marked interrupted")
+    if isinstance(metadata, dict) and metadata.get("interrupted") is True:
+        errors.append("report metadata is marked interrupted")
+    if condition == CONDITION_FULL_ZSCOPE:
+        if not isinstance(summary, dict):
+            errors.append("full-pipeline report is missing its completion summary")
+        else:
+            analyzed = summary.get("functions_analyzed")
+            if not isinstance(analyzed, int):
+                errors.append("full-pipeline report is missing functions_analyzed")
+            elif expected_entry_count and analyzed < expected_entry_count:
+                errors.append(
+                    "full-pipeline report analyzed fewer functions than requested "
+                    f"({analyzed} < {expected_entry_count})"
+                )
+
+    chain_payload = {
+        "condition": condition,
+        "return_code": return_code,
+        "artifact_manifest_before": artifact_manifest_before,
+        "artifact_manifest_after": artifact_manifest_after,
+        "report_after": report_after,
+        "errors": errors,
+    }
+    return {
+        "schema_version": "zscope.benchmark.integrity.v1",
+        "status": "failed" if errors else "passed",
+        "errors": errors,
+        "cold_snapshot_cache": cold_snapshot_cache,
+        "report_before": report_before,
+        "report_after": report_after,
+        "input_changes": changed_inputs,
+        "chain_sha256": sha256_payload(chain_payload),
+    }
+
+
 def _condition_from_args(args: argparse.Namespace) -> str:
     condition = str(getattr(args, "condition", "") or "").strip()
     if condition:
@@ -1047,7 +1245,29 @@ def _load_report(path: Path) -> dict[str, Any]:
             "issues": [],
             "metadata": {"missing_report": path.as_posix()},
         }
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return {
+            "entry_function": "external_benchmark_invalid_report",
+            "overall_verdict": "error",
+            "issues": [],
+            "metadata": {
+                "invalid_report": path.as_posix(),
+                "parse_error": f"{type(exc).__name__}: {exc}",
+            },
+        }
+    if not isinstance(payload, dict):
+        return {
+            "entry_function": "external_benchmark_invalid_report",
+            "overall_verdict": "error",
+            "issues": [],
+            "metadata": {
+                "invalid_report": path.as_posix(),
+                "parse_error": "top-level report must be a JSON object",
+            },
+        }
+    return payload
 
 
 def _extract_llm_issues(content: str) -> list[dict[str, Any]]:
@@ -1323,19 +1543,19 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     truth_path = Path(args.truth)
     truth = json.loads(truth_path.read_text(encoding="utf-8"))
     fp_audit_classifier = _fp_audit_classifier_for_truth(truth, truth_path=truth_path)
-    result = score_report(
-        report,
-        truth,
-        view=args.view,
-        line_tolerance=args.line_tolerance,
-        fp_audit_classifier=fp_audit_classifier,
-    )
-    result["evaluation_views"] = score_report_views(
+    evaluation_views = score_report_views(
         report,
         truth,
         line_tolerance=args.line_tolerance,
         fp_audit_classifier=fp_audit_classifier,
     )
+    selected_view = (
+        args.view
+        if args.view in evaluation_views
+        else "default"
+    )
+    result = dict(evaluation_views[selected_view])
+    result["evaluation_views"] = evaluation_views
     if args.output:
         _json_dump(Path(args.output), result)
     return result
@@ -1353,8 +1573,34 @@ def run_prepared(args: argparse.Namespace) -> dict[str, Any]:
         else suite_root / "runs" / time.strftime("%Y%m%d_%H%M%S") / run_suffix
     )
     run_dir.mkdir(parents=True, exist_ok=True)
-    started = time.time()
+    config_path = suite_root / "zscope.benchmark.yaml"
+    warm_cache = bool(getattr(args, "warm_cache", False))
+    cold_snapshot_cache = condition == CONDITION_FULL_ZSCOPE and not warm_cache
+    execution_config = (
+        _prepare_trial_config(suite_root, run_dir, warm_cache=warm_cache)
+        if condition == CONDITION_FULL_ZSCOPE
+        else config_path
+    )
+    truth = _load_truth(suite_root)
+    entries = _load_entries(suite_root / "benchmark" / "entries.json")
+    expected_entry_count = len(
+        {
+            (
+                str(entry.get("function_name") or ""),
+                str(entry.get("file_path") or ""),
+            )
+            for entry in entries
+            if entry.get("function_name")
+        }
+    )
+    artifact_manifest_before = build_benchmark_artifact_manifest(
+        suite_root,
+        truth=truth,
+        config_path=config_path,
+        execution_config_path=execution_config,
+    )
     report = run_dir / "missing_report.json"
+    report_before = _file_integrity_state(report)
     command = [sys.executable, "scripts/external_benchmark.py", "run-prepared"]
     return_code: int | None = 0
     conversation_files: list[str] = []
@@ -1363,9 +1609,11 @@ def run_prepared(args: argparse.Namespace) -> dict[str, Any]:
     run_env.update(_load_env_file(env_file))
     run_env.setdefault("Z_SCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
     run_env.setdefault("Z_SCOPE_MODEL", "glm-5")
+    started = time.time()
 
     if condition == CONDITION_CANDIDATES:
         report = run_dir / "candidate_report.json"
+        report_before = _file_integrity_state(report)
         run_result = run_candidates(
             argparse.Namespace(
                 project=_suite_project_dir(suite_root),
@@ -1373,7 +1621,14 @@ def run_prepared(args: argparse.Namespace) -> dict[str, Any]:
                 output=report,
             )
         )
+        return_code = int(run_result.get("return_code", 0) or 0)
     elif condition in {CONDITION_PURE_LLM_ENTRY, CONDITION_PURE_LLM_REPO}:
+        report = run_dir / (
+            "pure_llm_repo_report.json"
+            if condition == CONDITION_PURE_LLM_REPO
+            else "pure_llm_entry_report.json"
+        )
+        report_before = _file_integrity_state(report)
         pure_args = argparse.Namespace(**vars(args))
         pure_args.run_dir = run_dir.as_posix()
         run_result = run_pure_llm(
@@ -1381,28 +1636,45 @@ def run_prepared(args: argparse.Namespace) -> dict[str, Any]:
             repo_context=condition == CONDITION_PURE_LLM_REPO,
         )
         report = Path(run_result["report"])
+        return_code = int(run_result.get("return_code", 0) or 0)
         transcript = run_result.get("transcript")
         if transcript:
             conversation_files = [Path(transcript).relative_to(run_dir).as_posix()]
     else:
         project_dir = _suite_project_dir(suite_root)
         report = project_dir / "zscope_batch_report.json"
+        report_before = _file_integrity_state(report)
         cmd = [
             sys.executable,
             "-m",
             "zscope.cli.cli",
             "-c",
-            str(suite_root / "zscope.benchmark.yaml"),
+            str(execution_config),
             "--verbose",
         ]
         command = cmd
-        completed = subprocess.run(
-            cmd,
-            cwd=Path.cwd(),
-            text=True,
-            capture_output=True,
-            env=run_env,
-        )
+        try:
+            completed = subprocess.run(
+                cmd,
+                cwd=Path.cwd(),
+                text=True,
+                capture_output=True,
+                env=run_env,
+                timeout=3660,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout or ""
+            stderr = exc.stderr or ""
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode("utf-8", errors="replace")
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", errors="replace")
+            completed = subprocess.CompletedProcess(
+                cmd,
+                returncode=2,
+                stdout=stdout,
+                stderr=f"{stderr}\nbenchmark_total_deadline_exceeded",
+            )
         (run_dir / "zscope.stdout.log").write_text(completed.stdout, encoding="utf-8")
         (run_dir / "zscope.stderr.log").write_text(completed.stderr, encoding="utf-8")
         return_code = completed.returncode
@@ -1411,12 +1683,48 @@ def run_prepared(args: argparse.Namespace) -> dict[str, Any]:
             "duration_seconds": round(time.time() - started, 4),
             "report": report.as_posix(),
         }
-        if report.exists():
-            shutil.copy2(report, run_dir / "zscope_batch_report.json")
-            report = run_dir / "zscope_batch_report.json"
-        conversation_files = copy_conversation_trajectory(project_dir, run_dir)
 
     finished = time.time()
+    report_after = _file_integrity_state(report)
+    report_payload = _load_report(Path(report))
+    artifact_manifest_after = build_benchmark_artifact_manifest(
+        suite_root,
+        truth=truth,
+        config_path=config_path,
+        execution_config_path=execution_config,
+    )
+    integrity = _validate_trial_integrity(
+        condition=condition,
+        return_code=return_code,
+        started_at=started,
+        report_before=report_before,
+        report_after=report_after,
+        report_payload=report_payload,
+        artifact_manifest_before=artifact_manifest_before,
+        artifact_manifest_after=artifact_manifest_after,
+        expected_entry_count=expected_entry_count,
+        cold_snapshot_cache=cold_snapshot_cache,
+    )
+    integrity["cache_mode"] = (
+        ("warm" if warm_cache else "isolated_cold")
+        if condition == CONDITION_FULL_ZSCOPE
+        else "not_applicable"
+    )
+    integrity["artifact_manifest_before"] = artifact_manifest_before
+    integrity["artifact_manifest_after"] = artifact_manifest_after
+    benchmark_json_dump(run_dir / "integrity.json", integrity)
+    if integrity["status"] != "passed":
+        raise RuntimeError(
+            "Benchmark integrity validation failed: "
+            + "; ".join(str(item) for item in integrity["errors"])
+        )
+
+    if condition == CONDITION_FULL_ZSCOPE:
+        copied_report = run_dir / "zscope_batch_report.json"
+        shutil.copy2(report, copied_report)
+        report = copied_report
+        conversation_files = copy_conversation_trajectory(project_dir, run_dir)
+
     env_metadata = collect_environment_metadata(
         suite_root=suite_root,
         condition=condition,
@@ -1427,8 +1735,8 @@ def run_prepared(args: argparse.Namespace) -> dict[str, Any]:
         return_code=return_code,
         config=_suite_config_metadata(suite_root, run_env),
     )
-    report_payload = _load_report(Path(report))
-    truth = _load_truth(suite_root)
+    env_metadata["execution_config"] = execution_config.as_posix()
+    env_metadata["cache_mode"] = integrity["cache_mode"]
     fp_audit_classifier = _fp_audit_classifier_for_truth(truth, suite_root=suite_root)
     summary = build_trial_summary(
         suite_root=suite_root,
@@ -1442,6 +1750,8 @@ def run_prepared(args: argparse.Namespace) -> dict[str, Any]:
         line_tolerance=args.line_tolerance,
         conversation_files=conversation_files,
         fp_audit_classifier=fp_audit_classifier,
+        integrity=integrity,
+        artifact_manifest=artifact_manifest_after,
     )
     summary["mode"] = _mode_from_condition(condition)
     summary["run"] = run_result
@@ -1453,6 +1763,14 @@ def run_prepared(args: argparse.Namespace) -> dict[str, Any]:
 
 def run_matrix(args: argparse.Namespace) -> dict[str, Any]:
     suite_root = Path(args.suite_root).resolve()
+    trial_count = int(args.trials or 1)
+    run_kind = str(getattr(args, "run_kind", "sample") or "sample")
+    if run_kind == "formal" and trial_count < MIN_RELEASE_TRIALS:
+        raise ValueError(
+            f"Formal benchmark matrices require at least {MIN_RELEASE_TRIALS} paired trials"
+        )
+    if run_kind == "formal" and bool(getattr(args, "warm_cache", False)):
+        raise ValueError("Formal benchmark matrices require isolated cold caches")
     matrix_root = (
         Path(args.run_dir).resolve()
         if args.run_dir
@@ -1461,28 +1779,65 @@ def run_matrix(args: argparse.Namespace) -> dict[str, Any]:
     matrix_root.mkdir(parents=True, exist_ok=True)
     summaries: list[dict[str, Any]] = []
     for condition in args.conditions:
-        for trial_index in range(1, int(args.trials or 1) + 1):
+        for trial_index in range(1, trial_count + 1):
             trial_args = argparse.Namespace(**vars(args))
             trial_args.condition = condition
             trial_args.mode = _mode_from_condition(condition)
             trial_args.trial_index = trial_index
             trial_args.run_dir = (matrix_root / condition / f"trial_{trial_index:02d}").as_posix()
             summaries.append(run_prepared(trial_args))
-    aggregate = aggregate_trial_summaries(summaries)
+    baseline_summaries = load_summaries(
+        [Path(path) for path in getattr(args, "baseline_summaries", [])]
+    )
+    aggregate = aggregate_trial_summaries(
+        summaries,
+        baseline_summaries=baseline_summaries,
+        baseline_tokens_per_tp=getattr(args, "baseline_tokens_per_tp", None),
+        bootstrap_samples=int(
+            getattr(args, "bootstrap_samples", DEFAULT_BOOTSTRAP_SAMPLES)
+            or DEFAULT_BOOTSTRAP_SAMPLES
+        ),
+        require_improvement_claim=bool(
+            getattr(args, "require_improvement_claim", False)
+        ),
+    )
     aggregate["run_dir"] = matrix_root.as_posix()
     aggregate["summary_files"] = [
         (Path(summary["run_dir"]) / "summary.json").as_posix()
         for summary in summaries
     ]
     benchmark_json_dump(matrix_root / "matrix_summary.json", aggregate)
+    if run_kind == "formal" and not aggregate["release_readiness"]["passed"]:
+        raise RuntimeError(
+            "Formal benchmark matrix failed release gates; inspect "
+            f"{matrix_root / 'matrix_summary.json'}"
+        )
     return aggregate
 
 
 def aggregate_trials(args: argparse.Namespace) -> dict[str, Any]:
     summaries = load_summaries([Path(path) for path in args.summaries])
-    aggregate = aggregate_trial_summaries(summaries)
+    baseline_summaries = load_summaries(
+        [Path(path) for path in getattr(args, "baseline_summaries", [])]
+    )
+    aggregate = aggregate_trial_summaries(
+        summaries,
+        baseline_summaries=baseline_summaries,
+        baseline_tokens_per_tp=getattr(args, "baseline_tokens_per_tp", None),
+        bootstrap_samples=int(
+            getattr(args, "bootstrap_samples", DEFAULT_BOOTSTRAP_SAMPLES)
+            or DEFAULT_BOOTSTRAP_SAMPLES
+        ),
+        require_improvement_claim=bool(
+            getattr(args, "require_improvement_claim", False)
+        ),
+    )
     if args.output:
         benchmark_json_dump(Path(args.output), aggregate)
+    if bool(getattr(args, "require_release_pass", False)) and not aggregate[
+        "release_readiness"
+    ]["passed"]:
+        raise RuntimeError("Aggregated benchmark summaries failed release gates")
     return aggregate
 
 
@@ -1553,6 +1908,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--line-tolerance", type=int, default=8)
     p.add_argument("--view", default="default")
     p.add_argument("--env-file", default="test/range/zscope.local.env")
+    p.add_argument(
+        "--warm-cache",
+        action="store_true",
+        help="Reuse the suite snapshot cache; default trials use an isolated cold cache",
+    )
     p.set_defaults(func=run_prepared)
 
     p = sub.add_parser("run-matrix", help="Run one or more benchmark conditions for multiple trials")
@@ -1570,11 +1930,44 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--line-tolerance", type=int, default=8)
     p.add_argument("--view", default="default")
     p.add_argument("--env-file", default="test/range/zscope.local.env")
+    p.add_argument(
+        "--warm-cache",
+        action="store_true",
+        help="Reuse the suite snapshot cache; default trials use isolated per-trial caches",
+    )
+    p.add_argument(
+        "--baseline-summaries",
+        nargs="*",
+        default=[],
+        help="Frozen baseline summary.json files for paired improvement claims",
+    )
+    p.add_argument(
+        "--baseline-tokens-per-tp",
+        type=float,
+        default=None,
+        help="Frozen baseline tokens/true-positive value for the 30%% reduction gate",
+    )
+    p.add_argument(
+        "--bootstrap-samples",
+        type=int,
+        default=DEFAULT_BOOTSTRAP_SAMPLES,
+        help="Bootstrap resamples used for 95%% confidence intervals",
+    )
+    p.add_argument(
+        "--require-improvement-claim",
+        action="store_true",
+        help="Require the paired improvement-claim rule in addition to release gates",
+    )
     p.set_defaults(func=run_matrix)
 
     p = sub.add_parser("aggregate-trials", help="Aggregate existing benchmark summary.json files")
     p.add_argument("summaries", nargs="+")
     p.add_argument("--output", default="")
+    p.add_argument("--baseline-summaries", nargs="*", default=[])
+    p.add_argument("--baseline-tokens-per-tp", type=float, default=None)
+    p.add_argument("--bootstrap-samples", type=int, default=DEFAULT_BOOTSTRAP_SAMPLES)
+    p.add_argument("--require-improvement-claim", action="store_true")
+    p.add_argument("--require-release-pass", action="store_true")
     p.set_defaults(func=aggregate_trials)
     return parser
 

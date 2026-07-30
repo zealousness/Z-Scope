@@ -148,7 +148,7 @@ int entry(plugin_callback_t cb, void* ctx) {
     assert any(issue.get("rule") == "callback_while_lock_held" for issue in issues)
 
 
-def test_project_limit_and_global_array_rules_are_generic() -> None:
+def test_fixture_shaped_names_do_not_create_special_candidates() -> None:
     code = r"""
 int label(unsigned int element_count) {
     size_t label_len = (size_t)element_count * PROJECT_ELEMENT_INFO_SIZE;
@@ -169,12 +169,129 @@ int expand(size_t task_index) {
     }
     return 0;
 }
+
+int bridge(int reliable_fd) {
+    return lower_is_inter_fd(reliable_fd);
+}
+
+int authorize(int detected_protocol, int auth_level) {
+    if (detected_protocol != 3 && auth_level != 7) {
+        return 0;
+    }
+    return -1;
+}
+
+int transform(int work_fd) {
+    int raw_work_fd = work_fd + 1;
+    return project_validate_encoded_fd(raw_work_fd);
+}
+
+int inspect(const unsigned char* report) {
+    uint8_t version = report[0];
+    (void)version;
+    return 0;
+}
+
+int retry(Node* node, int fail_step) {
+    node->tag = 1;
+    if (fail_step) {
+        return -1;
+    }
+    return 0;
+}
+
+void close_resource(Resource* res) {
+    int count = res->ref_count;
+    (void)count;
+    SAFE_FREE(res);
+}
 """
     issues = RegexCandidateGenerator().generate_issues("entry", code, "src/demo.c")
     rules = {issue.get("rule") for issue in issues}
 
-    assert "implementation_limit_differs_from_protocol_limit" in rules
-    assert "global_array_resize_without_lock" in rules
+    assert rules.isdisjoint(
+        {
+            "implementation_limit_differs_from_protocol_limit",
+            "global_array_resize_without_lock",
+            "reliable_fd_passed_to_raw_fd_classifier",
+            "protocol_mismatch_can_return_success",
+            "parsed_version_is_ignored",
+            "raw_fd_revalidated_as_encoded",
+            "partial_resource_not_released_on_retry_failure",
+            "shared_resource_freed_without_refcount_protocol",
+        }
+    )
+
+
+def test_structural_error_path_candidate_is_invariant_to_identifier_renaming() -> None:
+    observed = []
+    for owner, allocator in (
+        ("orchid_buffer", "arena_alloc"),
+        ("quartz_payload", "region_create"),
+        ("violet_record", "object_new"),
+    ):
+        code = f"""
+int load(int should_stop) {{
+    void* {owner} = {allocator}(64);
+    if (should_stop) {{
+        return -1;
+    }}
+    free({owner});
+    return 0;
+}}
+"""
+        issues = RegexCandidateGenerator().generate_issues("load", code, "src/demo.c")
+        observed.append(
+            {
+                (issue.get("defect_class"), issue.get("rule"))
+                for issue in issues
+                if issue.get("rule") == "error_path_allocation_not_released"
+            }
+        )
+
+    assert observed == [
+        {("memory_leak", "error_path_allocation_not_released")},
+        {("memory_leak", "error_path_allocation_not_released")},
+        {("memory_leak", "error_path_allocation_not_released")},
+    ]
+
+
+def test_ignored_decoded_control_field_is_structural_and_name_invariant() -> None:
+    observed = []
+    for dropped, checked, packet in (
+        ("orchid_tag", "quartz_state", "wire_record"),
+        ("violet_mode", "amber_status", "input_bytes"),
+    ):
+        code = f"""
+int inspect(const unsigned char* {packet}, size_t payload_size) {{
+    if (!{packet} || payload_size < 2) {{
+        return -1;
+    }}
+    uint8_t {dropped} = {packet}[0];
+    uint8_t {checked} = {packet}[1];
+    (void){dropped};
+    if ({checked} == 7) {{
+        return -1;
+    }}
+    return 0;
+}}
+"""
+        issues = RegexCandidateGenerator().generate_issues(
+            "inspect", code, "src/demo.c"
+        )
+        observed.append(
+            [
+                issue
+                for issue in issues
+                if issue.get("rule") == "decoded_control_field_ignored"
+            ]
+        )
+
+    assert [len(items) for items in observed] == [1, 1]
+    assert all(
+        item[0].get("defect_class") == "protocol_validation"
+        for item in observed
+    )
 
 
 def test_project_semantics_extend_typedefs_and_custom_memory_apis() -> None:

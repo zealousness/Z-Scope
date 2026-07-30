@@ -6,6 +6,7 @@ from copy import deepcopy
 from typing import Any, Callable, Dict, List, Optional
 
 from ...common.issue_identity import canonical_issue_key, flatten_issue_text, parse_issue_location
+from ..candidates.evidence_models import build_evidence_models
 from ...snapshots.modeling_input import SemanticModelInputError, resolve_function_info
 
 
@@ -27,7 +28,7 @@ def validation_verdict(val_data: Dict[str, Any]) -> str:
     verdict = aliases.get(verdict, verdict)
     if verdict in {"verified", "rejected", "uncertain"}:
         return verdict
-    return "rejected"
+    return "uncertain"
 
 
 def is_entry_root_dead_code_rejection(
@@ -191,6 +192,8 @@ def build_validation_evidence_pack(
             "candidate_path": candidate_evidence.get("path") if isinstance(candidate_evidence, dict) else {},
         },
         "candidate_evidence": candidate_evidence,
+        "evidence_models": issue.get("evidence_models")
+        or build_evidence_models(issue),
         "positive_evidence": issue.get("positive_evidence") or candidate_evidence.get("positive_evidence") or [],
         "negative_evidence": issue.get("negative_evidence") or candidate_evidence.get("negative_evidence") or [],
         "primary_location_snippet": snippet,
@@ -456,6 +459,15 @@ FINDING_CORE_FIELDS = (
     "candidate_id",
     "candidate_source",
     "candidate_role",
+    "candidate_schema_version",
+    "candidate_uid",
+    "occurrence_uid",
+    "history_key",
+    "evidence_hash",
+    "decision_evidence_hash",
+    "provenance_hash",
+    "validation_cluster_uid",
+    "context_signature",
     "dedup_key",
     "function",
     "entry_function",
@@ -501,6 +513,7 @@ FINDING_CORE_FIELDS = (
     "validation_required",
     "audit_observation_reason",
     "proofs",
+    "evidence_models",
     "va_unreviewed",
 )
 
@@ -598,6 +611,7 @@ def _compact_candidate_evidence(value: Dict[str, Any]) -> Dict[str, Any]:
             "negative_evidence",
             "finding_summary",
             "semantic_overlays",
+            "evidence_models",
             "semantic_overlay_evidence",
             "path_constraints",
             "score_components",

@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from zscope.orchestration.candidates import CandidateLedger
+from zscope.orchestration.subagents import SubAgentTicket
 from zscope.reporting.report import ReportGenerator
 from zscope.reporting.assembler import ReportAssembler
 
@@ -62,7 +64,13 @@ def test_report_assembler_builds_views_and_persists(tmp_path: Path) -> None:
 
     assert report.overall_verdict == "issues_found"
     assert report.metadata["run_id"] == "RUN1"
-    assert state["observations"] == [{"id": "OBS_1"}]
+    assert [item["id"] for item in state["observations"]] == ["OBS_1"]
+    assert state["observations"][0]["candidate_schema_version"] == "zscope.candidate.v3"
+    assert state["observations"][0]["run_issue_uid"].startswith("RUNISSUE_")
+    assert saved["schema_version"] == 2
+    assert saved["finding_status"] == "confirmed"
+    assert saved["completeness"] == "complete"
+    assert saved["run_manifest"]["run_id"] == "RUN1"
     assert "report_view_summary" in saved["metadata"]
     assert (tmp_path / "report.json").exists()
     assert (tmp_path / "report.md").exists()
@@ -164,3 +172,124 @@ def test_report_assembler_includes_needs_review_observation_with_recovered_locat
     assert with_review[0]["validation_status"] == "needs_review"
     assert with_review[0]["location"] == "src/recovered.c:88"
     assert with_review[0]["line"] == 88
+
+
+def test_report_assembler_terminalizes_and_routes_pending_ledger_candidates(
+    tmp_path: Path,
+) -> None:
+    ledger = CandidateLedger(
+        project_id="demo",
+        project_root=str(tmp_path),
+        revision="rev",
+    )
+    ledger.add(
+        SubAgentTicket(
+            id="CANDIDATE_1",
+            skill="bounds_and_integer",
+            task="Length can exceed the destination buffer.",
+            trigger="memcpy",
+            line=42,
+            context_slice="memcpy(dst, src, len);",
+            priority_score=85,
+            origin="src/demo.c:40:len",
+            sink="src/demo.c:42:memcpy",
+            evidence={
+                "function": "copy_message",
+                "defect_class": "buffer_overflow",
+                "source": {"file": "src/demo.c", "line": 40},
+                "sink": {"file": "src/demo.c", "line": 42},
+                "candidate_payload": {
+                    "id": "CANDIDATE_1",
+                    "function": "copy_message",
+                    "location": "src/demo.c:42",
+                    "category": "buffer_overflow",
+                    "description": "Length can exceed the destination buffer.",
+                },
+            },
+        ),
+        source="clang_ast_cfg",
+        call_path=["entry", "copy_message"],
+        record_role="validation_obligation",
+        entry_identity="src/demo.c::int entry(void)",
+    )
+    assembler = ReportAssembler(
+        ReportGenerator(tmp_path),
+        None,
+        resolve_issue_locations=lambda items: None,
+        deduplicate_observations=lambda items: items,
+        metadata_factory=lambda state: {"run_id": state["run_id"]},
+    )
+    state = {
+        "run_id": "RUN_LEDGER",
+        "entry_func": "entry",
+        "entry_identity": "src/demo.c::int entry(void)",
+        "entry_index_name": "entry@src/demo.c:1-50",
+        "issues": [],
+        "verified_hist_issues": [],
+        "observations": [],
+        "notes": [],
+        "any_failure": False,
+        "candidate_ledger": ledger,
+        "candidate_lifecycle_snapshot": ledger.lifecycle_snapshot(
+            entry_identity="src/demo.c::int entry(void)"
+        ),
+    }
+
+    report = assembler.build(state)
+
+    assert len(state["observations"]) == 1
+    observation = state["observations"][0]
+    assert observation["candidate_disposition"] == "needs_review"
+    assert observation["validation_status"] == "needs_review"
+    assert observation["function"] == "copy_message"
+    assert observation["location"] == "src/demo.c:42"
+    assert observation["description"]
+    assert report.report_views["with_needs_review"]["issue_count"] == 1
+    assert {
+        item.get("status")
+        for item in report.candidate_terminal_states
+    } == {"needs_review"}
+    assert all(
+        item.get("status") != "pending"
+        for item in report.candidate_terminal_states
+    )
+
+
+def test_report_assembler_does_not_read_mutable_shared_ledger(tmp_path: Path) -> None:
+    ledger = CandidateLedger(project_id="demo", revision="rev")
+    ledger.add(
+        SubAgentTicket(
+            id="LEAD",
+            skill="bounds",
+            task="investigate",
+            trigger="copy",
+            line=1,
+            context_slice="",
+            priority_score=20,
+            origin="src/demo.c:1",
+            sink="src/demo.c:2",
+        ),
+        source="source_rule",
+        call_path=["other_entry", "sink"],
+    )
+    assembler = ReportAssembler(
+        ReportGenerator(tmp_path),
+        None,
+        resolve_issue_locations=lambda items: None,
+        deduplicate_observations=lambda items: items,
+        metadata_factory=lambda state: {"run_id": state["run_id"]},
+    )
+    state = {
+        "run_id": "RUN_PURE",
+        "entry_func": "entry",
+        "issues": [],
+        "verified_hist_issues": [],
+        "observations": [],
+        "notes": [],
+        "any_failure": False,
+        "candidate_ledger": ledger,
+    }
+
+    assembler.build(state)
+
+    assert state["observations"] == []

@@ -16,6 +16,10 @@ from typing import Any, Dict, List, Optional, cast
 logger = logging.getLogger(__name__)
 
 
+class JoernQueryError(RuntimeError):
+    """Raised when a Joern fact query failed or returned an invalid payload."""
+
+
 class JoernClient:
     """Client for Joern CPG server via cpgqls-client WebSocket."""
 
@@ -542,8 +546,9 @@ class JoernClient:
             f'"signature" -> m.signature'
             f')).l.toJson'
         )
-        if isinstance(result, list) and result:
-            return cast(Dict[str, Any], result[0])
+        rows = self._require_list_result(result, "get_method")
+        if rows:
+            return cast(Dict[str, Any], rows[0])
         return None
 
     def get_method_callers(
@@ -568,7 +573,7 @@ class JoernClient:
             f'"lineNumber" -> m.lineNumber.getOrElse(-1)))'
             f'.take({limit}).l.toJson'
         )
-        return result if isinstance(result, list) else []
+        return self._require_list_result(result, "get_method_callers")
 
     def get_method_callees(self, name: str, limit: int = 30) -> List[Dict[str, Any]]:
         """Get functions called by the given function."""
@@ -578,7 +583,7 @@ class JoernClient:
             f'"lineNumber" -> m.lineNumber.getOrElse(-1)))'
             f'.take({limit}).l.toJson'
         )
-        return result if isinstance(result, list) else []
+        return self._require_list_result(result, "get_method_callees")
 
     def get_type_decl(self, name: str) -> Optional[Dict[str, Any]]:
         """Get type declaration (struct/union/enum) by name."""
@@ -588,8 +593,9 @@ class JoernClient:
             f'"lineNumber" -> t.lineNumber.getOrElse(-1)'
             f')).l.toJson'
         )
-        if isinstance(result, list) and result:
-            return cast(Dict[str, Any], result[0])
+        rows = self._require_list_result(result, "get_type_decl")
+        if rows:
+            return cast(Dict[str, Any], rows[0])
         return None
 
     def get_type_decls(self, name: str) -> List[Dict[str, Any]]:
@@ -603,7 +609,7 @@ class JoernClient:
             f'"full_definition" -> t.code'
             f')).l.toJson'
         )
-        return result if isinstance(result, list) else []
+        return self._require_list_result(result, "get_type_decls")
 
     def get_type_members(self, name: str) -> List[Dict[str, Any]]:
         """Get members of a type declaration."""
@@ -612,7 +618,7 @@ class JoernClient:
             f'.map(m => Map("name" -> m.name, "typeFullName" -> m.typeFullName))'
             f'.l.toJson'
         )
-        return result if isinstance(result, list) else []
+        return self._require_list_result(result, "get_type_members")
 
     def get_function_type_references(
         self,
@@ -641,14 +647,15 @@ class JoernClient:
             + '"referenceKind" -> "local"))'
             + ').l.toJson'
         )
-        return result if isinstance(result, list) else []
+        return self._require_list_result(result, "get_function_type_references")
 
     def find_methods(self, pattern: str, limit: int = 50) -> List[str]:
         """Find method names matching a regex pattern."""
         result = self.query(
             f'cpg.method.name("{pattern}").name.distinct.take({limit}).l.toJson'
         )
-        return result if isinstance(result, list) else []
+        rows = self._require_list_result(result, "find_methods")
+        return [str(item) for item in rows]
 
     def get_data_flow_to_sink(
         self, source_func: str, source_param: str, sink_pattern: str
@@ -663,7 +670,7 @@ class JoernClient:
             f'"filename" -> e.file.name.headOption.getOrElse(""))).l'
             f')).l.toJson'
         )
-        return result if isinstance(result, list) else []
+        return self._require_list_result(result, "get_data_flow_to_sink")
 
     def find_function_pointers(self, func_name: str) -> List[Dict[str, Any]]:
         """Find assignments/references to function as pointer."""
@@ -674,4 +681,15 @@ class JoernClient:
             f'"lineNumber" -> a.lineNumber.getOrElse(-1)))'
             f'.l.toJson'
         )
-        return result if isinstance(result, list) else []
+        return self._require_list_result(result, "find_function_pointers")
+
+    @staticmethod
+    def _require_list_result(result: Any, operation: str) -> List[Any]:
+        """Distinguish a valid empty fact set from a failed Joern query."""
+
+        if isinstance(result, list):
+            return result
+        result_type = type(result).__name__
+        raise JoernQueryError(
+            f"Joern {operation} query returned {result_type}, expected list"
+        )

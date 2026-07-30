@@ -184,6 +184,7 @@ class RegexCandidateGenerator:
         "size_limit_mismatch": "bounds_and_integer",
         "fd_type_mismatch": "ownership_contract",
         "protocol_mixup": "ownership_contract",
+        "protocol_validation": "ownership_contract",
         "partial_resource_leak": "resource_lifecycle",
         "dynamic_array_race": "shared_state_race",
         "version_filtering": "ownership_contract",
@@ -240,6 +241,7 @@ class RegexCandidateGenerator:
         "size_limit_mismatch": "memory",
         "fd_type_mismatch": "handle",
         "protocol_mixup": "protocol",
+        "protocol_validation": "protocol",
         "partial_resource_leak": "memory",
         "dynamic_array_race": "shared_state",
         "version_filtering": "protocol",
@@ -1580,44 +1582,114 @@ class RegexCandidateGenerator:
                 )
                 break
 
-        impl_limit_re = re.compile(
-            r"\b[A-Z][A-Z0-9_]*(?:LABEL|CACHE)[A-Z0-9_]*LIMIT\b"
+        # Detect a decoded control/discriminator field that is explicitly
+        # discarded while a sibling field from the same input record drives a
+        # branch.  Identity names are irrelevant: the evidence is the local
+        # use-def relation, sibling decode, and validation asymmetry.
+        decoded_field_re = re.compile(
+            r"\b(?:u?int(?:8|16|32|64)_t|unsigned\s+(?:char|short|int|long)|"
+            r"signed\s+(?:char|short|int|long)|char|short|int|long)\s+"
+            r"(?P<var>[A-Za-z_]\w*)\s*=\s*"
+            r"(?P<base>[A-Za-z_]\w*(?:(?:->|\.)[A-Za-z_]\w*)*)"
+            r"\s*\[\s*(?P<index>[^\]]+)\s*\]\s*;"
         )
-        spec_limit_re = re.compile(
-            r"\b[A-Z][A-Z0-9_]*SPEC[A-Z0-9_]*(?:MAX|LIMIT|ELEMENTS|COUNT)[A-Z0-9_]*\b"
+        decoded_fields: List[tuple[CodeLine, re.Match[str]]] = []
+        for decoded_line in lines:
+            match = decoded_field_re.search(decoded_line.text)
+            if match:
+                decoded_fields.append((decoded_line, match))
+        has_input_bound_guard = bool(
+            re.search(
+                r"\bif\s*\([^)]*\b[A-Za-z_]\w*\s*"
+                r"(?:<|<=|>|>=)\s*(?:\d+|sizeof\s*\([^)]*\))"
+                r"[^)]*\)\s*\{?[\s\S]{0,120}\breturn\b",
+                text,
+                re.IGNORECASE,
+            )
         )
-        if impl_limit_re.search(text) and spec_limit_re.search(text):
-            line = self._first_line_matching(lines, impl_limit_re)
-            if line:
-                emit(
-                    defect_class="size_limit_mismatch",
-                    rule="implementation_limit_differs_from_protocol_limit",
-                    line=line,
-                    description="Implementation byte limit and protocol element limit are enforced independently.",
-                    root_cause="A converted byte length can satisfy one limit while the original element count violates the protocol limit.",
-                    suggested_fix="Validate the original element count against the protocol maximum before deriving byte sizes.",
-                    source=line.text.strip(),
-                    sink="protocol max element comparison",
-                    confidence=0.76,
-                    impact_level="high",
-                    positive=[
-                        f"line {line.number}: implementation byte limit check",
-                        "same function also compares a separate protocol element limit",
-                    ],
-                )
+        for decoded_line, decoded in decoded_fields:
+            discarded = decoded.group("var")
+            base = decoded.group("base")
+            if not has_input_bound_guard or not re.search(
+                rf"\(\s*void\s*\)\s*{re.escape(discarded)}\s*;",
+                text,
+            ):
+                continue
+            if re.search(
+                rf"\b(?:if|while|switch)\s*\([^)]*\b{re.escape(discarded)}\b",
+                text,
+            ) or re.search(
+                rf"\b{re.escape(discarded)}\b\s*(?:==|!=|<=|>=|<|>)",
+                text,
+            ):
+                continue
+            sibling = next(
+                (
+                    (sibling_line, sibling_match)
+                    for sibling_line, sibling_match in decoded_fields
+                    if sibling_match.group("var") != discarded
+                    and sibling_match.group("base") == base
+                    and (
+                        re.search(
+                            rf"\b(?:if|while|switch)\s*\([^)]*"
+                            rf"\b{re.escape(sibling_match.group('var'))}\b",
+                            text,
+                        )
+                        or re.search(
+                            rf"\b{re.escape(sibling_match.group('var'))}\b\s*"
+                            r"(?:==|!=|<=|>=|<|>)",
+                            text,
+                        )
+                    )
+                ),
+                None,
+            )
+            if sibling is None:
+                continue
+            sibling_name = sibling[1].group("var")
+            emit(
+                defect_class="protocol_validation",
+                rule="decoded_control_field_ignored",
+                line=decoded_line,
+                description=(
+                    f"Decoded control/discriminator field `{discarded}` is explicitly "
+                    f"ignored while sibling field `{sibling_name}` drives validation."
+                ),
+                root_cause=(
+                    "One input-record discriminator/version field has no comparison, "
+                    "switch, or range filter although a sibling decoded field is checked."
+                ),
+                suggested_fix=(
+                    "Validate every decoded control/discriminator field against the "
+                    "supported protocol contract before processing sibling state."
+                ),
+                source=decoded_line.text.strip(),
+                sink=f"(void){discarded}",
+                confidence=0.78,
+                impact_level="high",
+                positive=[
+                    f"line {decoded_line.number}: `{discarded}` is decoded from `{base}`",
+                    f"`{discarded}` is explicitly discarded without a filter",
+                    f"sibling decoded field `{sibling_name}` controls a branch",
+                ],
+            )
+            break
 
         if "LOG_ERROR" in text and re.search(r"\breturn\s+(?:ret|rc|status)\s*;", text) and re.search(r"\breturn\s+0\s*;", text):
-            line = self._first_line_matching(lines, re.compile(r"\breturn\s+0\s*;"))
-            if line:
+            success_line = self._first_line_matching(
+                lines,
+                re.compile(r"\breturn\s+0\s*;"),
+            )
+            if success_line:
                 emit(
                     defect_class="unchecked_return",
                     rule="error_probe_can_return_success",
-                    line=line,
+                    line=success_line,
                     description="Error/probe path can fall through to a success return.",
                     root_cause="The function logs or returns a low-level status in one branch but treats other failed/ambiguous probe states as success.",
                     suggested_fix="Normalize low-level return codes and explicitly fail ambiguous probe results.",
                     source="error/probe branch",
-                    sink=line.text.strip(),
+                    sink=success_line.text.strip(),
                     confidence=0.7,
                     positive=["function contains error logging/status return and a final success return"],
                 )
@@ -1702,54 +1774,6 @@ class RegexCandidateGenerator:
                 positive=[f"line {trunc.number}: bounded strncpy truncates a key before insertion"],
             )
 
-        fd_type = self._first_line_matching(lines, re.compile(r"\b[A-Za-z_]\w*is_inter_fd\s*\(\s*reliable_fd\s*\)"))
-        if fd_type:
-            emit(
-                defect_class="fd_type_mismatch",
-                rule="reliable_fd_passed_to_raw_fd_classifier",
-                line=fd_type,
-                description="Reliable/encoded fd is passed to a raw/inter-fd classifier.",
-                root_cause="The API contract mixes encoded/reliable descriptors with raw fd validation.",
-                suggested_fix="Decode and validate the fd representation before passing it to raw-fd helpers.",
-                source="reliable_fd",
-                sink=fd_type.text.strip(),
-                confidence=0.84,
-                impact_level="high",
-                positive=[f"line {fd_type.number}: reliable fd is used as raw fd input"],
-            )
-
-        protocol_line = self._first_line_matching(lines, re.compile(r"detected_protocol\s*!="))
-        if protocol_line and "auth_level" in text and re.search(r"\breturn\s+0\s*;", text):
-            emit(
-                defect_class="protocol_mixup",
-                rule="protocol_mismatch_can_return_success",
-                line=protocol_line,
-                description="Protocol mismatch can return success when authentication is not strict.",
-                root_cause="A non-RPC protocol is accepted on a weaker auth branch instead of being rejected at the boundary.",
-                suggested_fix="Reject protocol mismatch before auth-level fallback or require strict origin validation.",
-                source=protocol_line.text.strip(),
-                sink="success return on mismatch branch",
-                confidence=0.82,
-                impact_level="high",
-                positive=[f"line {protocol_line.number}: protocol mismatch branch", "same function has success return"],
-            )
-
-        version_line = self._first_line_matching(lines, re.compile(r"\buint8_t\s+version\s*="))
-        if version_line and re.search(r"\(void\)\s*version\s*;", text):
-            emit(
-                defect_class="version_filtering",
-                rule="parsed_version_is_ignored",
-                line=version_line,
-                description="Protocol version is parsed and then explicitly ignored.",
-                root_cause="Messages from unsupported versions can pass state-only validation.",
-                suggested_fix="Validate version against the supported protocol set before processing message state.",
-                source=version_line.text.strip(),
-                sink="(void)version",
-                confidence=0.86,
-                impact_level="high",
-                positive=[f"line {version_line.number}: version parsed", "same function marks version unused"],
-            )
-
         write_line = self._first_line_matching(lines, re.compile(r"\bwrite\s*\("))
         if write_line and "SIGPIPE" not in text and "MSG_NOSIGNAL" not in text:
             emit(
@@ -1765,59 +1789,6 @@ class RegexCandidateGenerator:
                 impact_level="high",
                 positive=[f"line {write_line.number}: write to peer fd without SIGPIPE handling"],
             )
-
-        raw_fd = self._first_line_matching(lines, re.compile(r"\braw_[A-Za-z_0-9]*fd\s*="))
-        if raw_fd and "_validate_encoded_fd" in text:
-            emit(
-                defect_class="fd_encoding_mismatch",
-                rule="raw_fd_revalidated_as_encoded",
-                line=raw_fd,
-                description="Raw fd arithmetic is later validated as if it were encoded.",
-                root_cause="The encoding/check bits are not constructed before the fd reaches encoded-fd validation.",
-                suggested_fix="Encode raw fds with the expected check value before calling encoded-fd validators.",
-                source=raw_fd.text.strip(),
-                sink="validate_encoded_fd(raw fd)",
-                confidence=0.84,
-                impact_level="high",
-                positive=[f"line {raw_fd.number}: raw fd value is derived", "same function validates it as encoded fd"],
-            )
-
-        global_array_assign_re = re.compile(
-            r"\bg_[A-Za-z_0-9]*(?:array|table|list|tasks|items)[A-Za-z_0-9]*\s*=\s*new_array\s*;"
-        )
-        if global_array_assign_re.search(text) and "old_array" in text and "SAFE_FREE(old_array)" in text:
-            line = self._first_line_matching(lines, global_array_assign_re)
-            if line:
-                emit(
-                    defect_class="dynamic_array_race",
-                    rule="global_array_resize_without_lock",
-                    line=line,
-                    description="Global dynamic array is replaced and old storage is freed without a visible lock.",
-                    root_cause="Concurrent readers can observe the old or new array while resize/free is in progress.",
-                    suggested_fix="Guard resize and publication with a mutex or use an RCU-style handoff.",
-                    source=line.text.strip(),
-                    sink="SAFE_FREE(old_array)",
-                    confidence=0.78,
-                    impact_level="high",
-                    positive=[f"line {line.number}: global array pointer is replaced", "old array is freed in same resize path"],
-                )
-
-        if "fail_step" in text and re.search(r"\breturn\s+-1\s*;", text) and re.search(r"->tag\s*=", text):
-            line = self._first_line_matching(lines, re.compile(r"\bfail_step\b"))
-            if line:
-                emit(
-                    defect_class="partial_resource_leak",
-                    rule="partial_resource_not_released_on_retry_failure",
-                    line=line,
-                    description="Retry failure path returns after partial resource initialization.",
-                    root_cause="Allocated partition/tag state is not released when a later retry step fails.",
-                    suggested_fix="Free all partially initialized members before returning from retry failures.",
-                    source="partial resource initialization",
-                    sink=line.text.strip(),
-                    confidence=0.76,
-                    impact_level="high",
-                    positive=["function initializes resource fields and has fail_step error return"],
-                )
 
         for idx, line in enumerate(lines):
             alloc = re.search(
@@ -1877,23 +1848,6 @@ class RegexCandidateGenerator:
                             f"later path frees parent `{base}` without freeing the member",
                         ],
                     )
-
-        if "ref_count" in text and re.search(r"\bSAFE_FREE\s*\(\s*res\s*\)", text):
-            line = self._first_line_matching(lines, re.compile(r"\bSAFE_FREE\s*\(\s*res\s*\)"))
-            if line:
-                emit(
-                    defect_class="missing_refcount",
-                    rule="shared_resource_freed_without_refcount_protocol",
-                    line=line,
-                    description="Shared resource is freed while ref_count/list ownership remains visible.",
-                    root_cause="The close path frees a shared resource without unlinking it or decrementing the reference count protocol.",
-                    suggested_fix="Detach the resource from the shared list and update ref_count before freeing.",
-                    source="res->ref_count",
-                    sink=line.text.strip(),
-                    confidence=0.72,
-                    impact_level="high",
-                    positive=[f"line {line.number}: resource freed in function that maintains ref_count"],
-                )
 
     @staticmethod
     def _first_line_matching(lines: List[CodeLine], pattern: re.Pattern[str]) -> Optional[CodeLine]:

@@ -37,7 +37,7 @@ class SvfAnalyzer:
         get_bc_path: str = "get-bc",
         llvm_link_path: str = "llvm-link",
         heap_limit_mb: int = 32768,
-        timeout: int = 1800,
+        timeout: Optional[float] = 1800.0,
         scope: str = "auto",
         entry_depth: int = 4,
         max_selected_tus: int = 200,

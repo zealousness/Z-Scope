@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import heapq
 import math
 import os
 import platform
+import random
 import re
 import shutil
 import subprocess
@@ -20,6 +23,36 @@ from zscope.common.issue_identity import issues_may_share_root_cause, stable_iss
 
 
 SCHEMA_VERSION = "zscope.benchmark.v3"
+INTEGRITY_SCHEMA_VERSION = "zscope.benchmark.integrity.v1"
+SOURCE_FILE_SUFFIXES = {
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".h",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".i",
+}
+
+MIN_RELEASE_TRIALS = 5
+DEFAULT_BOOTSTRAP_SAMPLES = 2000
+RELEASE_THRESHOLDS = {
+    "actionable_precision": 0.70,
+    "distinct_root_recall": 0.80,
+    "high_critical_recall": 0.90,
+    "safe_entry_alert_rate": 0.10,
+    "per_cwe_recall": 0.65,
+    "per_cwe_min_samples": 20,
+    "actionable_f1_stdev": 0.02,
+    "true_positive_jaccard": 0.90,
+    "alert_jaccard": 0.80,
+    "median_wall_time_seconds": 3600.0,
+    "median_billable_tokens": 30_000_000.0,
+    "median_report_tail_seconds": 120.0,
+    "tokens_per_true_positive_reduction": 0.30,
+}
 
 FP_AUDIT_DUPLICATE_OF_GT = "duplicate_of_gt"
 FP_AUDIT_TRUE_EXTRA_ADD_GT = "true_extra_add_gt"
@@ -54,6 +87,110 @@ class BenchmarkTrialKey:
 def json_dump(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def sha256_file(path: Path) -> str:
+    """Return the SHA-256 digest for a file, or an empty string when unavailable."""
+
+    path = Path(path)
+    if not path.is_file():
+        return ""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_payload(payload: Any) -> str:
+    """Return a deterministic SHA-256 digest for a JSON-compatible payload."""
+
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def source_tree_manifest(project_root: Path) -> Dict[str, Any]:
+    """Hash source inputs without including generated reports, caches, or build output."""
+
+    project_root = Path(project_root)
+    digest = hashlib.sha256()
+    file_count = 0
+    if not project_root.is_dir():
+        return {"sha256": "", "file_count": 0}
+
+    ignored_parts = {
+        ".git",
+        "build",
+        "benchmark",
+        "benchmark_runs",
+        "runs",
+    }
+    candidates: List[Path] = []
+    for path in project_root.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(project_root)
+        if any(part in ignored_parts or part.startswith(".zscope") for part in relative.parts):
+            continue
+        if path.suffix.lower() not in SOURCE_FILE_SUFFIXES and path.name != "compile_commands.json":
+            continue
+        candidates.append(path)
+
+    for path in sorted(candidates, key=lambda item: item.relative_to(project_root).as_posix()):
+        relative = path.relative_to(project_root).as_posix()
+        file_digest = sha256_file(path)
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(file_digest.encode("ascii"))
+        digest.update(b"\n")
+        file_count += 1
+    return {
+        "sha256": digest.hexdigest() if file_count else "",
+        "file_count": file_count,
+    }
+
+
+def build_benchmark_artifact_manifest(
+    suite_root: Path,
+    *,
+    truth: Optional[Dict[str, Any]] = None,
+    config_path: Optional[Path] = None,
+    execution_config_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Capture immutable benchmark/scorer/config/source identities for a trial."""
+
+    suite_root = Path(suite_root)
+    project_root = suite_root / "project"
+    if not project_root.is_dir():
+        project_root = suite_root
+    truth_path = suite_root / "benchmark" / "ground_truth.json"
+    entries_path = suite_root / "benchmark" / "entries.json"
+    benchmark_manifest_path = suite_root / "benchmark" / "manifest.json"
+    selected_config = Path(config_path) if config_path else suite_root / "zscope.benchmark.yaml"
+    selected_execution_config = (
+        Path(execution_config_path) if execution_config_path else selected_config
+    )
+    source_manifest = source_tree_manifest(project_root)
+    truth_digest = sha256_file(truth_path)
+    if not truth_digest and truth is not None:
+        truth_digest = sha256_payload(truth)
+    return {
+        "schema_version": INTEGRITY_SCHEMA_VERSION,
+        "hash_algorithm": "sha256",
+        "truth_sha256": truth_digest,
+        "scorer_sha256": sha256_file(Path(__file__)),
+        "config_sha256": sha256_file(selected_config),
+        "execution_config_sha256": sha256_file(selected_execution_config),
+        "benchmark_manifest_sha256": sha256_file(benchmark_manifest_path),
+        "entries_sha256": sha256_file(entries_path),
+        "source_manifest_sha256": source_manifest["sha256"],
+        "source_file_count": source_manifest["file_count"],
+    }
 
 
 def issue_identity(issue: Dict[str, Any]) -> str:
@@ -152,6 +289,60 @@ def report_issues(report: Dict[str, Any], view: str = "default") -> List[Dict[st
     return issues
 
 
+def _alerted_safe_entry_identities(
+    issues: Sequence[Dict[str, Any]],
+    safe_entries: Sequence[Dict[str, Any]],
+) -> List[str]:
+    """Return known-safe entry identities that have an attributed alert."""
+
+    alerted: Set[str] = set()
+    for safe_index, safe_entry in enumerate(safe_entries):
+        name = str(
+            safe_entry.get("function")
+            or safe_entry.get("function_name")
+            or safe_entry.get("name")
+            or ""
+        ).strip()
+        if not name:
+            continue
+        signature = str(
+            safe_entry.get("signature")
+            or safe_entry.get("full_signature")
+            or ""
+        ).strip()
+        file_path = str(
+            safe_entry.get("file")
+            or safe_entry.get("file_path")
+            or ""
+        ).strip().replace("\\", "/")
+        identity = "|".join(
+            part
+            for part in (
+                file_path.lower(),
+                signature.lower() or name.lower(),
+            )
+            if part
+        ) or f"safe-entry-{safe_index}"
+        expected_names = {name.lower()}
+        if signature:
+            expected_names.add(signature.lower())
+        for issue in issues:
+            if _issue_function_anchors(issue).intersection(expected_names):
+                alerted.add(identity)
+                break
+    return sorted(alerted)
+
+
+def _normalize_cwe(value: Any) -> str:
+    text = str(value or "").strip().upper().replace("_", "-")
+    if not text:
+        return ""
+    if text.isdigit():
+        return f"CWE-{text}"
+    match = re.search(r"CWE-?(\d+)", text)
+    return f"CWE-{match.group(1)}" if match else text
+
+
 def score_report(
     report: Dict[str, Any],
     truth: Dict[str, Any],
@@ -162,6 +353,10 @@ def score_report(
     fp_audit_classifier: Optional[FalsePositiveClassifier] = None,
 ) -> Dict[str, Any]:
     issues = report_issues(report, view)
+    issue_texts = [
+        _flatten(issue).lower().replace("\\", "/")
+        for issue in issues
+    ]
     vulns = [item for item in truth.get("vulnerabilities", []) if isinstance(item, dict)]
     matched_truth: Dict[str, int] = {}
     matched_pairs: List[Dict[str, Any]] = []
@@ -170,7 +365,13 @@ def score_report(
     for truth_index, vuln in enumerate(vulns):
         truth_id = str(vuln.get("id") or truth_index)
         for issue_index, issue in enumerate(issues):
-            match_detail = issue_match_detail(issue, vuln, line_tolerance)
+            issue_text = issue_texts[issue_index]
+            match_detail = issue_match_detail(
+                issue,
+                vuln,
+                line_tolerance,
+                preflattened_text=issue_text,
+            )
             if match_detail is not None:
                 potential_pairs.append(
                     {
@@ -179,7 +380,12 @@ def score_report(
                         "issue_index": issue_index,
                         "issue": issue,
                         "match": match_detail,
-                        "score": _issue_match_score(issue, vuln, match_detail),
+                        "score": _issue_match_score(
+                            issue,
+                            vuln,
+                            match_detail,
+                            preflattened_text=issue_text,
+                        ),
                     }
                 )
 
@@ -239,8 +445,23 @@ def score_report(
     fp = effective_fp
     fn = max(0, len(vulns) - tp)
     precision = tp / (tp + fp) if tp + fp else 0.0
+    actionable_precision = tp / (tp + raw_fp) if tp + raw_fp else 0.0
     recall = tp / len(vulns) if vulns else 0.0
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    actionable_f1 = (
+        2 * actionable_precision * recall / (actionable_precision + recall)
+        if actionable_precision + recall
+        else 0.0
+    )
+    false_discovery_rate = fp / (tp + fp) if tp + fp else 0.0
+    actionable_false_discovery_rate = raw_fp / (tp + raw_fp) if tp + raw_fp else 0.0
+    safe_entries = [
+        item for item in truth.get("safe_entries", []) if isinstance(item, dict)
+    ]
+    alerted_safe_entries = _alerted_safe_entry_identities(issues, safe_entries)
+    standard_false_positive_rate = (
+        len(alerted_safe_entries) / len(safe_entries) if safe_entries else None
+    )
     issue_ids = [issue_identity(issue) for issue in issues]
     issue_records = [issue_identity_record(issue) for issue in issues]
     raw_fp_indices = [
@@ -266,6 +487,44 @@ def score_report(
         duplicate_records,
         fp_audit_classifier=fp_audit_classifier,
     )
+    high_critical_truth = [
+        (index, vuln)
+        for index, vuln in enumerate(vulns)
+        if str(
+            vuln.get("severity")
+            or vuln.get("impact_level")
+            or vuln.get("priority")
+            or ""
+        ).strip().lower()
+        in {"high", "critical"}
+    ]
+    high_critical_tp = sum(
+        1
+        for index, vuln in high_critical_truth
+        if str(vuln.get("id") or index) in matched_truth
+    )
+    high_critical_recall = (
+        high_critical_tp / len(high_critical_truth)
+        if high_critical_truth
+        else None
+    )
+    cwe_groups: Dict[str, List[tuple[int, Dict[str, Any]]]] = {}
+    for index, vuln in enumerate(vulns):
+        cwe = _normalize_cwe(vuln.get("cwe"))
+        if cwe:
+            cwe_groups.setdefault(cwe, []).append((index, vuln))
+    per_cwe_recall: Dict[str, Dict[str, Any]] = {}
+    for cwe, group in sorted(cwe_groups.items()):
+        matched_count = sum(
+            1
+            for index, vuln in group
+            if str(vuln.get("id") or index) in matched_truth
+        )
+        per_cwe_recall[cwe] = {
+            "sample_count": len(group),
+            "true_positives": matched_count,
+            "recall": round(matched_count / len(group), 4),
+        }
     return {
         "schema_version": SCHEMA_VERSION,
         "benchmark": truth.get("benchmark", "unknown"),
@@ -273,16 +532,48 @@ def score_report(
         "view": view,
         "report_issue_count": len(issues),
         "ground_truth_count": len(vulns),
-        "safe_entry_count": len(truth.get("safe_entries", [])),
+        "safe_entry_count": len(safe_entries),
+        "alerted_safe_entry_count": len(alerted_safe_entries),
+        "alerted_safe_entries": alerted_safe_entries,
+        "safe_entry_alert_rate": (
+            round(standard_false_positive_rate, 4)
+            if standard_false_positive_rate is not None
+            else None
+        ),
+        "standard_false_positive_rate": (
+            round(standard_false_positive_rate, 4)
+            if standard_false_positive_rate is not None
+            else None
+        ),
         "true_positives": tp,
         "false_positives": fp,
         "false_positives_raw": raw_fp,
         "false_positives_effective": effective_fp,
         "duplicate_of_matched_count": len(duplicate_of_matched_indices),
         "false_negatives": fn,
+        "actionable_precision": round(actionable_precision, 4),
+        "actionable_f1": round(actionable_f1, 4),
+        "actionable_false_discovery_rate": round(actionable_false_discovery_rate, 4),
+        "root_cause_precision": round(precision, 4),
+        "root_cause_f1": round(f1, 4),
+        "root_cause_false_discovery_rate": round(false_discovery_rate, 4),
+        "effective_precision": round(precision, 4),
+        "effective_f1": round(f1, 4),
         "precision": round(precision, 4),
-        "false_positive_rate": round(fp / (tp + fp), 4) if tp + fp else 0.0,
+        "false_discovery_rate": round(false_discovery_rate, 4),
+        # Deprecated compatibility alias. This has always been a false-discovery
+        # rate because benchmark reports do not enumerate true negatives.
+        "false_positive_rate": round(false_discovery_rate, 4),
         "recall": round(recall, 4),
+        "distinct_root_recall": round(recall, 4),
+        "high_critical_recall": (
+            round(high_critical_recall, 4)
+            if high_critical_recall is not None
+            else None
+        ),
+        "high_critical_sample_count": len(high_critical_truth),
+        "high_critical_true_positives": high_critical_tp,
+        "per_cwe_recall": per_cwe_recall,
         "f1": round(f1, 4),
         "matched": sorted(matched_truth),
         "matched_pairs": matched_pairs,
@@ -322,6 +613,13 @@ def score_report(
             ],
             "line_placeholder_policy": "truth line <= 1 is treated as unknown",
             "category_policy": "category/cwe aliases or at least two ground-truth keyword hits",
+            "primary_precision_metric": "actionable_precision",
+            "primary_f1_metric": "actionable_f1",
+            "primary_recall_metric": "distinct_root_recall",
+            "standard_false_positive_rate_metric": (
+                "safe_entry_alert_rate" if safe_entries else "unavailable"
+            ),
+            "legacy_precision_metric": "precision (root-cause/effective; duplicates excluded)",
         },
     }
 
@@ -347,7 +645,31 @@ def _select_max_weight_pairs(
     for issue_index in range(issue_count):
         add_edge(truth_count + issue_index, sink, 1, 0)
 
-    cardinality_bonus = 1_000_000
+    # Encode the objectives lexicographically:
+    #   1. maximum cardinality,
+    #   2. maximum total match score,
+    #   3. deterministic minimum stable tie value.
+    #
+    # A fixed cardinality bonus is incorrect because ``stable_tie`` grows with
+    # the report size.  Once a report contains enough findings, a valid edge can
+    # otherwise become non-negative and the min-cost flow stops before reaching
+    # maximum cardinality.
+    matching_bound = max(1, min(truth_count, issue_count))
+    max_stable_tie = max(
+        (
+            int(pair.get("truth_index") or 0) * (issue_count + 1)
+            + int(pair.get("issue_index") or 0)
+            for pair in potential_pairs
+        ),
+        default=0,
+    )
+    max_score = max((max(0, int(pair.get("score") or 0)) for pair in potential_pairs), default=0)
+    tie_total_bound = matching_bound * max_stable_tie
+    score_scale = tie_total_bound + 1
+    secondary_total_bound = matching_bound * (
+        max_score * score_scale + max_stable_tie
+    )
+    cardinality_bonus = secondary_total_bound + 1
     for pair in potential_pairs:
         truth_index = int(pair.get("truth_index") or 0)
         issue_index = int(pair.get("issue_index") or 0)
@@ -359,35 +681,70 @@ def _select_max_weight_pairs(
             truth_index,
             truth_count + issue_index,
             1,
-            -cardinality_bonus - score * 1000 + stable_tie,
+            -cardinality_bonus - score * score_scale + stable_tie,
             pair,
         )
 
+    # Initial Johnson potentials are the shortest distances in the initial
+    # acyclic residual graph.  They make every reduced edge cost non-negative,
+    # allowing Dijkstra for each augmentation instead of SPFA.  SPFA degrades
+    # badly on large needs-review reports because residual rerouting introduces
+    # many alternating paths.
+    infinity = 10**100
+    potential = [0] * len(graph)
+    issue_distances = [infinity] * issue_count
+    for truth_index in range(truth_count):
+        for edge in graph[truth_index]:
+            if edge.get("payload") is None or int(edge.get("cap") or 0) <= 0:
+                continue
+            issue_index = int(edge["to"]) - truth_count
+            if 0 <= issue_index < issue_count:
+                issue_distances[issue_index] = min(
+                    issue_distances[issue_index],
+                    int(edge["cost"]),
+                )
+    reachable_issue_distances = [
+        distance for distance in issue_distances if distance < infinity
+    ]
+    for issue_index, distance in enumerate(issue_distances):
+        if distance < infinity:
+            potential[truth_count + issue_index] = distance
+    potential[sink] = min(reachable_issue_distances, default=0)
+
     while True:
-        dist = [10**18] * len(graph)
+        dist = [infinity] * len(graph)
         prev_node = [-1] * len(graph)
         prev_edge = [-1] * len(graph)
-        in_queue = [False] * len(graph)
         dist[source] = 0
-        queue = [source]
-        in_queue[source] = True
+        queue: List[tuple[int, int]] = [(0, source)]
         while queue:
-            node = queue.pop(0)
-            in_queue[node] = False
+            current_dist, node = heapq.heappop(queue)
+            if current_dist != dist[node]:
+                continue
             for edge_index, edge in enumerate(graph[node]):
                 if int(edge["cap"]) <= 0:
                     continue
                 nxt = int(edge["to"])
-                new_dist = dist[node] + int(edge["cost"])
+                reduced_cost = (
+                    int(edge["cost"])
+                    + potential[node]
+                    - potential[nxt]
+                )
+                if reduced_cost < 0:
+                    raise RuntimeError(
+                        "negative reduced cost in benchmark matching graph"
+                    )
+                new_dist = current_dist + reduced_cost
                 if new_dist < dist[nxt]:
                     dist[nxt] = new_dist
                     prev_node[nxt] = node
                     prev_edge[nxt] = edge_index
-                    if not in_queue[nxt]:
-                        queue.append(nxt)
-                        in_queue[nxt] = True
-        if prev_node[sink] < 0 or dist[sink] >= 0:
+                    heapq.heappush(queue, (new_dist, nxt))
+        if prev_node[sink] < 0:
             break
+        for node, distance in enumerate(dist):
+            if distance < infinity:
+                potential[node] += distance
         node = sink
         while node != source:
             parent = prev_node[node]
@@ -522,8 +879,14 @@ def issue_match_detail(
     issue: Dict[str, Any],
     truth: Dict[str, Any],
     line_tolerance: int,
+    *,
+    preflattened_text: Optional[str] = None,
 ) -> Optional[Dict[str, str]]:
-    text = _flatten(issue).lower().replace("\\", "/")
+    text = (
+        preflattened_text
+        if preflattened_text is not None
+        else _flatten(issue).lower().replace("\\", "/")
+    )
     category_reason = _category_match_reason(text, truth)
     if not category_reason:
         return None
@@ -544,7 +907,13 @@ def issue_match_detail(
     }
 
 
-def _issue_match_score(issue: Dict[str, Any], truth: Dict[str, Any], detail: Dict[str, str]) -> int:
+def _issue_match_score(
+    issue: Dict[str, Any],
+    truth: Dict[str, Any],
+    detail: Dict[str, str],
+    *,
+    preflattened_text: Optional[str] = None,
+) -> int:
     score = 0
     issue_category = str(issue.get("category") or issue.get("type") or "").lower().replace("-", "_")
     truth_category = str(truth.get("category") or "").lower().replace("-", "_")
@@ -561,7 +930,11 @@ def _issue_match_score(issue: Dict[str, Any], truth: Dict[str, Any], detail: Dic
 
     issue_func = _issue_function(issue)
     anchors = _issue_function_anchors(issue)
-    text = _flatten(issue).lower().replace("\\", "/")
+    text = (
+        preflattened_text
+        if preflattened_text is not None
+        else _flatten(issue).lower().replace("\\", "/")
+    )
     expected_functions = _truth_function_anchors(truth)
     scored_function = False
     for kind, func in expected_functions:
@@ -646,6 +1019,15 @@ def build_cost_metrics(
     context_tokens = _sum_numeric(metadata, ("context_tokens",))
     cumulative_tokens = _sum_numeric(metadata, ("cumulative_total_tokens",))
     tool_calls = _sum_numeric(metadata, ("tool_call_count", "tool_calls"))
+    report_tail_seconds = _max_numeric(
+        metadata,
+        (
+            "report_tail_seconds",
+            "report_assembly_seconds",
+            "reporting_seconds",
+            "final_report_seconds",
+        ),
+    )
     billable_tokens = cumulative_tokens or context_tokens
     verified = max(1, int(evaluation.get("true_positives") or 0))
     return {
@@ -654,6 +1036,7 @@ def build_cost_metrics(
         "billable_tokens": billable_tokens,
         "tool_calls": tool_calls,
         "wall_time_seconds": round(wall_time_seconds, 4),
+        "report_tail_seconds": report_tail_seconds,
         "tokens_per_verified_issue": round(billable_tokens / verified, 4) if billable_tokens else 0.0,
         "tool_calls_per_verified_issue": round(tool_calls / verified, 4) if tool_calls else 0.0,
     }
@@ -704,7 +1087,11 @@ def grade_trial(
     cost: Dict[str, Any],
     trajectory: Dict[str, Any],
 ) -> Dict[str, Any]:
-    final_outcome_score = float(evaluation.get("f1") or 0.0)
+    final_outcome_score = float(
+        evaluation.get("actionable_f1")
+        if evaluation.get("actionable_f1") is not None
+        else evaluation.get("f1") or 0.0
+    )
     has_trajectory = bool(trajectory.get("conversation_files") or trajectory.get("workflow_progress"))
     evidence_score = 1.0 if has_trajectory or trajectory.get("worker_report_count", 0) else 0.5
     tool_behavior_score = 1.0
@@ -714,7 +1101,10 @@ def grade_trial(
         "schema_version": SCHEMA_VERSION,
         "final_outcome": {
             "score": round(final_outcome_score, 4),
-            "basis": "F1 against generated ground truth.",
+            "basis": (
+                "Actionable F1 against ground truth; every surfaced duplicate "
+                "counts as a false positive."
+            ),
         },
         "tool_behavior": {
             "score": tool_behavior_score,
@@ -744,6 +1134,8 @@ def build_trial_summary(
     line_tolerance: int = 8,
     conversation_files: Optional[List[str]] = None,
     fp_audit_classifier: Optional[FalsePositiveClassifier] = None,
+    integrity: Optional[Dict[str, Any]] = None,
+    artifact_manifest: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     evaluation_views = score_report_views(
         report,
@@ -763,6 +1155,17 @@ def build_trial_summary(
         conversation_files=conversation_files,
     )
     grader = grade_trial(default_eval, cost, trajectory)
+    if artifact_manifest is None:
+        artifact_manifest = build_benchmark_artifact_manifest(
+            suite_root,
+            truth=truth,
+        )
+    if integrity is None:
+        integrity = {
+            "schema_version": INTEGRITY_SCHEMA_VERSION,
+            "status": "not_run_verified",
+            "errors": [],
+        }
     return {
         "schema_version": SCHEMA_VERSION,
         "benchmark": truth.get("benchmark", suite_root.name),
@@ -777,6 +1180,8 @@ def build_trial_summary(
         "cost": cost,
         "trajectory": trajectory,
         "grader": grader,
+        "artifact_manifest": artifact_manifest,
+        "integrity": integrity,
         "final_answer": {
             "report_issue_count": default_eval.get("report_issue_count", 0),
             "issue_identities": default_eval.get("issue_identities", []),
@@ -791,7 +1196,15 @@ def build_trial_summary(
     }
 
 
-def aggregate_trial_summaries(summaries: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+def aggregate_trial_summaries(
+    summaries: Sequence[Dict[str, Any]],
+    *,
+    baseline_summaries: Optional[Sequence[Dict[str, Any]]] = None,
+    baseline_tokens_per_tp: Optional[float] = None,
+    bootstrap_samples: int = DEFAULT_BOOTSTRAP_SAMPLES,
+    confidence_level: float = 0.95,
+    require_improvement_claim: bool = False,
+) -> Dict[str, Any]:
     summaries = [summary for summary in summaries if isinstance(summary, dict)]
     by_condition: Dict[str, List[Dict[str, Any]]] = {}
     for summary in summaries:
@@ -800,8 +1213,26 @@ def aggregate_trial_summaries(summaries: Sequence[Dict[str, Any]]) -> Dict[str, 
     conditions: Dict[str, Any] = {}
     for condition, items in by_condition.items():
         f1_values = [float(item.get("evaluation", {}).get("f1") or 0.0) for item in items]
+        actionable_f1_values = [
+            float(
+                item.get("evaluation", {}).get("actionable_f1")
+                if item.get("evaluation", {}).get("actionable_f1") is not None
+                else item.get("evaluation", {}).get("f1")
+                or 0.0
+            )
+            for item in items
+        ]
         precision_values = [
             float(item.get("evaluation", {}).get("precision") or 0.0) for item in items
+        ]
+        actionable_precision_values = [
+            float(
+                item.get("evaluation", {}).get("actionable_precision")
+                if item.get("evaluation", {}).get("actionable_precision") is not None
+                else item.get("evaluation", {}).get("precision")
+                or 0.0
+            )
+            for item in items
         ]
         recall_values = [float(item.get("evaluation", {}).get("recall") or 0.0) for item in items]
         issue_sets = [
@@ -814,19 +1245,855 @@ def aggregate_trial_summaries(summaries: Sequence[Dict[str, Any]]) -> Dict[str, 
             set(item.get("evaluation", {}).get("false_positive_issue_identities") or [])
             for item in items
         ]
+        wall_values = _summary_numeric_values(items, "cost", "wall_time_seconds")
+        token_values = _summary_numeric_values(items, "cost", "billable_tokens")
+        token_per_tp_values = _summary_numeric_values(
+            items,
+            "cost",
+            "tokens_per_verified_issue",
+            positive_only=True,
+        )
+        report_tail_values = _summary_numeric_values(
+            items,
+            "cost",
+            "report_tail_seconds",
+        )
+        high_critical_values = _summary_numeric_values(
+            items,
+            "evaluation",
+            "high_critical_recall",
+        )
+        safe_alert_values = _summary_numeric_values(
+            items,
+            "evaluation",
+            "safe_entry_alert_rate",
+        )
+        cwe_values = _aggregate_cwe_series(
+            items,
+            bootstrap_samples=bootstrap_samples,
+            confidence_level=confidence_level,
+        )
+        release_valid = [item for item in items if _is_valid_release_trial(item)]
         conditions[condition] = {
             "trial_count": len(items),
-            "precision": _series_stats(precision_values),
-            "recall": _series_stats(recall_values),
-            "f1": _series_stats(f1_values),
+            "valid_release_trial_count": len(release_valid),
+            "precision": _series_stats(
+                precision_values,
+                bootstrap_samples=bootstrap_samples,
+                confidence_level=confidence_level,
+            ),
+            "actionable_precision": _series_stats(
+                actionable_precision_values,
+                bootstrap_samples=bootstrap_samples,
+                confidence_level=confidence_level,
+            ),
+            "recall": _series_stats(
+                recall_values,
+                bootstrap_samples=bootstrap_samples,
+                confidence_level=confidence_level,
+            ),
+            "distinct_root_recall": _series_stats(
+                recall_values,
+                bootstrap_samples=bootstrap_samples,
+                confidence_level=confidence_level,
+            ),
+            "high_critical_recall": _series_stats(
+                high_critical_values,
+                bootstrap_samples=bootstrap_samples,
+                confidence_level=confidence_level,
+            ),
+            "safe_entry_alert_rate": _series_stats(
+                safe_alert_values,
+                bootstrap_samples=bootstrap_samples,
+                confidence_level=confidence_level,
+            ),
+            "per_cwe_recall": cwe_values,
+            "f1": _series_stats(
+                f1_values,
+                bootstrap_samples=bootstrap_samples,
+                confidence_level=confidence_level,
+            ),
+            "actionable_f1": _series_stats(
+                actionable_f1_values,
+                bootstrap_samples=bootstrap_samples,
+                confidence_level=confidence_level,
+            ),
+            "wall_time_seconds": _series_stats(
+                wall_values,
+                bootstrap_samples=bootstrap_samples,
+                confidence_level=confidence_level,
+                ci_statistic="median",
+            ),
+            "billable_tokens": _series_stats(
+                token_values,
+                bootstrap_samples=bootstrap_samples,
+                confidence_level=confidence_level,
+                ci_statistic="median",
+            ),
+            "tokens_per_verified_issue": _series_stats(
+                token_per_tp_values,
+                bootstrap_samples=bootstrap_samples,
+                confidence_level=confidence_level,
+                ci_statistic="median",
+            ),
+            "report_tail_seconds": _series_stats(
+                report_tail_values,
+                bootstrap_samples=bootstrap_samples,
+                confidence_level=confidence_level,
+                ci_statistic="median",
+            ),
             "issue_jaccard": _mean_pairwise_jaccard(issue_sets),
             "true_positive_overlap": _mean_pairwise_jaccard(tp_sets),
             "false_positive_overlap": _mean_pairwise_jaccard(fp_sets),
         }
-    return {
+    result = {
         "schema_version": SCHEMA_VERSION,
         "trial_count": len(summaries),
+        "bootstrap": {
+            "method": "nonparametric_resampling_with_replacement",
+            "confidence_level": confidence_level,
+            "samples": max(0, int(bootstrap_samples)),
+            "seed": 0,
+        },
         "conditions": conditions,
+    }
+    result["release_readiness"] = evaluate_release_readiness(
+        summaries,
+        conditions=conditions,
+        baseline_summaries=baseline_summaries,
+        baseline_tokens_per_tp=baseline_tokens_per_tp,
+        bootstrap_samples=bootstrap_samples,
+        confidence_level=confidence_level,
+        require_improvement_claim=require_improvement_claim,
+    )
+    return result
+
+
+def _summary_numeric_values(
+    summaries: Sequence[Dict[str, Any]],
+    section: str,
+    key: str,
+    *,
+    positive_only: bool = False,
+) -> List[float]:
+    values: List[float] = []
+    for summary in summaries:
+        data = summary.get(section)
+        value = data.get(key) if isinstance(data, dict) else None
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            continue
+        number = float(value)
+        if positive_only and number <= 0:
+            continue
+        values.append(number)
+    return values
+
+
+def _aggregate_cwe_series(
+    summaries: Sequence[Dict[str, Any]],
+    *,
+    bootstrap_samples: int,
+    confidence_level: float,
+) -> Dict[str, Any]:
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for summary in summaries:
+        evaluation = summary.get("evaluation")
+        per_cwe = evaluation.get("per_cwe_recall") if isinstance(evaluation, dict) else None
+        if not isinstance(per_cwe, dict):
+            continue
+        for raw_cwe, row in per_cwe.items():
+            if not isinstance(row, dict):
+                continue
+            cwe = _normalize_cwe(raw_cwe)
+            if not cwe:
+                continue
+            target = grouped.setdefault(cwe, {"sample_counts": [], "values": []})
+            sample_count = row.get("sample_count")
+            recall = row.get("recall")
+            if isinstance(sample_count, int) and not isinstance(sample_count, bool):
+                target["sample_counts"].append(sample_count)
+            if isinstance(recall, (int, float)) and not isinstance(recall, bool):
+                target["values"].append(float(recall))
+    result: Dict[str, Any] = {}
+    for cwe, row in sorted(grouped.items()):
+        sample_counts = row["sample_counts"]
+        result[cwe] = {
+            "sample_count": max(sample_counts) if sample_counts else 0,
+            **_series_stats(
+                row["values"],
+                bootstrap_samples=bootstrap_samples,
+                confidence_level=confidence_level,
+            ),
+        }
+    return result
+
+
+def _release_trial_errors(summary: Dict[str, Any]) -> List[str]:
+    errors: List[str] = []
+    if str(summary.get("run_kind") or "") != "formal":
+        errors.append("run_kind is not formal")
+    integrity = summary.get("integrity")
+    if not isinstance(integrity, dict) or integrity.get("status") != "passed":
+        errors.append("integrity status is not passed")
+    else:
+        chain_sha = str(integrity.get("chain_sha256") or "")
+        if len(chain_sha) != 64:
+            errors.append("integrity chain hash is missing")
+    environment = summary.get("environment")
+    return_code = environment.get("return_code") if isinstance(environment, dict) else None
+    if return_code not in {0, 1}:
+        errors.append(f"unexpected return code: {return_code}")
+    condition = str(summary.get("condition") or "")
+    cache_mode = ""
+    if isinstance(integrity, dict):
+        cache_mode = str(integrity.get("cache_mode") or "")
+    if not cache_mode and isinstance(environment, dict):
+        cache_mode = str(environment.get("cache_mode") or "")
+    expected_cache_modes = (
+        {"isolated_cold"}
+        if condition == CONDITION_FULL_ZSCOPE
+        else {"isolated_cold", "not_applicable"}
+    )
+    if cache_mode not in expected_cache_modes:
+        errors.append(f"invalid cache mode for release trial: {cache_mode or 'missing'}")
+    manifest = summary.get("artifact_manifest")
+    required_hashes = (
+        "truth_sha256",
+        "scorer_sha256",
+        "config_sha256",
+        "entries_sha256",
+        "source_manifest_sha256",
+    )
+    if not isinstance(manifest, dict):
+        errors.append("artifact manifest is missing")
+    else:
+        missing = [key for key in required_hashes if len(str(manifest.get(key) or "")) != 64]
+        if missing:
+            errors.append(f"artifact hashes missing: {', '.join(missing)}")
+    return errors
+
+
+def _is_valid_release_trial(summary: Dict[str, Any]) -> bool:
+    return not _release_trial_errors(summary)
+
+
+def _artifact_protocol_signature(summary: Dict[str, Any]) -> tuple[str, ...]:
+    manifest = summary.get("artifact_manifest")
+    if not isinstance(manifest, dict):
+        return ()
+    environment = summary.get("environment")
+    environment = environment if isinstance(environment, dict) else {}
+    return tuple(
+        str(manifest.get(key) or "")
+        for key in (
+            "truth_sha256",
+            "scorer_sha256",
+            "config_sha256",
+            "entries_sha256",
+            "source_manifest_sha256",
+        )
+    ) + (
+        str(environment.get("backend") or ""),
+        str(environment.get("model") or ""),
+    )
+
+
+def _artifact_dataset_signature(summary: Dict[str, Any]) -> tuple[str, ...]:
+    manifest = summary.get("artifact_manifest")
+    if not isinstance(manifest, dict):
+        return ()
+    return tuple(
+        str(manifest.get(key) or "")
+        for key in (
+            "truth_sha256",
+            "scorer_sha256",
+            "entries_sha256",
+            "source_manifest_sha256",
+        )
+    )
+
+
+def _trial_protocol_status(
+    summaries: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    by_condition: Dict[str, List[Dict[str, Any]]] = {}
+    for summary in summaries:
+        by_condition.setdefault(str(summary.get("condition") or "unknown"), []).append(summary)
+    condition_rows: Dict[str, Any] = {}
+    valid_index_sets: List[Set[int]] = []
+    protocol_passed = bool(by_condition)
+    all_signatures: Set[tuple[str, ...]] = set()
+    for condition, items in sorted(by_condition.items()):
+        valid_items = [item for item in items if _is_valid_release_trial(item)]
+        valid_indices = {
+            int(item.get("trial_index"))
+            for item in valid_items
+            if isinstance(item.get("trial_index"), int)
+            and not isinstance(item.get("trial_index"), bool)
+        }
+        valid_index_sets.append(valid_indices)
+        signatures = {
+            signature
+            for signature in (_artifact_protocol_signature(item) for item in valid_items)
+            if signature
+        }
+        all_signatures.update(
+            signature
+            for signature in (_artifact_dataset_signature(item) for item in valid_items)
+            if signature
+        )
+        duplicate_indices = len(valid_indices) != len(valid_items)
+        passed = (
+            len(items) >= MIN_RELEASE_TRIALS
+            and len(valid_items) == len(items)
+            and len(valid_indices) >= MIN_RELEASE_TRIALS
+            and not duplicate_indices
+            and len(signatures) == 1
+        )
+        protocol_passed = protocol_passed and passed
+        condition_rows[condition] = {
+            "trial_count": len(items),
+            "valid_cold_trial_count": len(valid_items),
+            "valid_trial_indices": sorted(valid_indices),
+            "minimum_required": MIN_RELEASE_TRIALS,
+            "duplicate_trial_indices": duplicate_indices,
+            "artifact_signature_count": len(signatures),
+            "passed": passed,
+            "invalid_trials": [
+                {
+                    "trial_index": item.get("trial_index"),
+                    "errors": _release_trial_errors(item),
+                }
+                for item in items
+                if not _is_valid_release_trial(item)
+            ],
+        }
+    paired_indices = (
+        set.intersection(*valid_index_sets)
+        if valid_index_sets
+        else set()
+    )
+    paired_passed = len(paired_indices) >= MIN_RELEASE_TRIALS
+    protocol_passed = (
+        protocol_passed
+        and paired_passed
+        and len(all_signatures) == 1
+    )
+    return {
+        "minimum_trials_per_condition": MIN_RELEASE_TRIALS,
+        "conditions": condition_rows,
+        "paired_trial_indices": sorted(paired_indices),
+        "paired_trial_count": len(paired_indices),
+        "paired_trials_passed": paired_passed,
+        "cross_condition_artifact_signature_count": len(all_signatures),
+        "passed": protocol_passed,
+    }
+
+
+def _metric_gate(
+    *,
+    actual: Optional[float],
+    threshold: float,
+    operator: str,
+    statistics: Optional[Dict[str, Any]] = None,
+    details: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    available = actual is not None
+    if operator == ">=":
+        passed = available and float(actual) >= threshold
+    elif operator == "<=":
+        passed = available and float(actual) <= threshold
+    else:  # pragma: no cover - internal contract
+        raise ValueError(f"Unsupported release gate operator: {operator}")
+    result: Dict[str, Any] = {
+        "actual": round(float(actual), 4) if available else None,
+        "threshold": threshold,
+        "operator": operator,
+        "available": available,
+        "passed": bool(passed),
+    }
+    if statistics is not None:
+        result["statistics"] = statistics
+    if details:
+        result["details"] = details
+    return result
+
+
+def evaluate_release_readiness(
+    summaries: Sequence[Dict[str, Any]],
+    *,
+    conditions: Optional[Dict[str, Any]] = None,
+    baseline_summaries: Optional[Sequence[Dict[str, Any]]] = None,
+    baseline_tokens_per_tp: Optional[float] = None,
+    bootstrap_samples: int = DEFAULT_BOOTSTRAP_SAMPLES,
+    confidence_level: float = 0.95,
+    require_improvement_claim: bool = False,
+) -> Dict[str, Any]:
+    summaries = [item for item in summaries if isinstance(item, dict)]
+    trial_protocol = _trial_protocol_status(summaries)
+    target_items = [
+        item
+        for item in summaries
+        if str(item.get("condition") or "") == CONDITION_FULL_ZSCOPE
+        and _is_valid_release_trial(item)
+    ]
+    if not target_items:
+        return {
+            "status": "not_evaluated",
+            "passed": False,
+            "reason": "no valid formal cold full-pipeline trials",
+            "trial_protocol": trial_protocol,
+            "hard_gates": {},
+            "optional_gates": {},
+            "improvement_claim": {
+                "status": "not_evaluated",
+                "passed": False,
+                "reason": "baseline and current paired trials are unavailable",
+            },
+        }
+
+    def eval_values(key: str, *, fallback: str = "") -> List[float]:
+        values = _summary_numeric_values(target_items, "evaluation", key)
+        return values or (
+            _summary_numeric_values(target_items, "evaluation", fallback)
+            if fallback
+            else []
+        )
+
+    precision_stats = _series_stats(
+        eval_values("actionable_precision"),
+        bootstrap_samples=bootstrap_samples,
+        confidence_level=confidence_level,
+    )
+    recall_stats = _series_stats(
+        eval_values("distinct_root_recall", fallback="recall"),
+        bootstrap_samples=bootstrap_samples,
+        confidence_level=confidence_level,
+    )
+    high_stats = _series_stats(
+        eval_values("high_critical_recall"),
+        bootstrap_samples=bootstrap_samples,
+        confidence_level=confidence_level,
+    )
+    safe_stats = _series_stats(
+        eval_values("safe_entry_alert_rate"),
+        bootstrap_samples=bootstrap_samples,
+        confidence_level=confidence_level,
+    )
+    actionable_f1_stats = _series_stats(
+        eval_values("actionable_f1"),
+        bootstrap_samples=bootstrap_samples,
+        confidence_level=confidence_level,
+    )
+    wall_stats = _series_stats(
+        _summary_numeric_values(target_items, "cost", "wall_time_seconds", positive_only=True),
+        bootstrap_samples=bootstrap_samples,
+        confidence_level=confidence_level,
+        ci_statistic="median",
+    )
+    token_stats = _series_stats(
+        _summary_numeric_values(target_items, "cost", "billable_tokens", positive_only=True),
+        bootstrap_samples=bootstrap_samples,
+        confidence_level=confidence_level,
+        ci_statistic="median",
+    )
+    token_per_tp_stats = _series_stats(
+        _summary_numeric_values(
+            target_items,
+            "cost",
+            "tokens_per_verified_issue",
+            positive_only=True,
+        ),
+        bootstrap_samples=bootstrap_samples,
+        confidence_level=confidence_level,
+        ci_statistic="median",
+    )
+    report_tail_stats = _series_stats(
+        _summary_numeric_values(target_items, "cost", "report_tail_seconds"),
+        bootstrap_samples=bootstrap_samples,
+        confidence_level=confidence_level,
+        ci_statistic="median",
+    )
+    issue_sets = [
+        set(item.get("evaluation", {}).get("issue_identities") or [])
+        for item in target_items
+    ]
+    tp_sets = [
+        set(item.get("evaluation", {}).get("true_positive_truth_ids") or [])
+        for item in target_items
+    ]
+    tp_jaccard = _mean_pairwise_jaccard(tp_sets)
+    alert_jaccard = _mean_pairwise_jaccard(issue_sets)
+    cwe_stats = _aggregate_cwe_series(
+        target_items,
+        bootstrap_samples=bootstrap_samples,
+        confidence_level=confidence_level,
+    )
+    eligible_cwes = {
+        cwe: row
+        for cwe, row in cwe_stats.items()
+        if int(row.get("sample_count") or 0)
+        >= int(RELEASE_THRESHOLDS["per_cwe_min_samples"])
+    }
+    failing_cwes = {
+        cwe: row
+        for cwe, row in eligible_cwes.items()
+        if float(row.get("mean") or 0.0) < RELEASE_THRESHOLDS["per_cwe_recall"]
+    }
+
+    hard_gates: Dict[str, Any] = {
+        "trial_protocol": {
+            "actual": trial_protocol.get("paired_trial_count", 0),
+            "threshold": MIN_RELEASE_TRIALS,
+            "operator": ">=",
+            "available": True,
+            "passed": bool(trial_protocol.get("passed")),
+            "details": trial_protocol,
+        },
+        "actionable_precision": _metric_gate(
+            actual=precision_stats.get("mean") if precision_stats["values"] else None,
+            threshold=RELEASE_THRESHOLDS["actionable_precision"],
+            operator=">=",
+            statistics=precision_stats,
+        ),
+        "distinct_root_recall": _metric_gate(
+            actual=recall_stats.get("mean") if recall_stats["values"] else None,
+            threshold=RELEASE_THRESHOLDS["distinct_root_recall"],
+            operator=">=",
+            statistics=recall_stats,
+        ),
+        "high_critical_recall": _metric_gate(
+            actual=high_stats.get("mean") if len(high_stats["values"]) == len(target_items) else None,
+            threshold=RELEASE_THRESHOLDS["high_critical_recall"],
+            operator=">=",
+            statistics=high_stats,
+        ),
+        "safe_entry_alert_rate": _metric_gate(
+            actual=safe_stats.get("mean") if len(safe_stats["values"]) == len(target_items) else None,
+            threshold=RELEASE_THRESHOLDS["safe_entry_alert_rate"],
+            operator="<=",
+            statistics=safe_stats,
+        ),
+        "per_cwe_recall": {
+            "actual": (
+                min(float(row.get("mean") or 0.0) for row in eligible_cwes.values())
+                if eligible_cwes
+                else None
+            ),
+            "threshold": RELEASE_THRESHOLDS["per_cwe_recall"],
+            "operator": ">=",
+            "available": True,
+            "passed": not failing_cwes,
+            "details": {
+                "minimum_samples": RELEASE_THRESHOLDS["per_cwe_min_samples"],
+                "eligible": eligible_cwes,
+                "failing": failing_cwes,
+            },
+        },
+        "actionable_f1_stdev": _metric_gate(
+            actual=float(actionable_f1_stats.get("stdev") or 0.0)
+            if actionable_f1_stats["values"]
+            else None,
+            threshold=RELEASE_THRESHOLDS["actionable_f1_stdev"],
+            operator="<=",
+            statistics=actionable_f1_stats,
+        ),
+        "true_positive_jaccard": _metric_gate(
+            actual=tp_jaccard,
+            threshold=RELEASE_THRESHOLDS["true_positive_jaccard"],
+            operator=">=",
+        ),
+        "alert_jaccard": _metric_gate(
+            actual=alert_jaccard,
+            threshold=RELEASE_THRESHOLDS["alert_jaccard"],
+            operator=">=",
+        ),
+        "median_wall_time_seconds": _metric_gate(
+            actual=wall_stats.get("median") if len(wall_stats["values"]) == len(target_items) else None,
+            threshold=RELEASE_THRESHOLDS["median_wall_time_seconds"],
+            operator="<=",
+            statistics=wall_stats,
+        ),
+        "median_billable_tokens": _metric_gate(
+            actual=token_stats.get("median") if len(token_stats["values"]) == len(target_items) else None,
+            threshold=RELEASE_THRESHOLDS["median_billable_tokens"],
+            operator="<=",
+            statistics=token_stats,
+        ),
+        "median_report_tail_seconds": _metric_gate(
+            actual=(
+                report_tail_stats.get("median")
+                if len(report_tail_stats["values"]) == len(target_items)
+                else None
+            ),
+            threshold=RELEASE_THRESHOLDS["median_report_tail_seconds"],
+            operator="<=",
+            statistics=report_tail_stats,
+        ),
+    }
+
+    provided_baseline_summaries = [
+        item for item in (baseline_summaries or []) if isinstance(item, dict)
+    ]
+    baseline_protocol = (
+        _trial_protocol_status(provided_baseline_summaries)
+        if provided_baseline_summaries
+        else None
+    )
+    baseline_items = [
+        item
+        for item in provided_baseline_summaries
+        if str(item.get("condition") or "") == CONDITION_FULL_ZSCOPE
+        and _is_valid_release_trial(item)
+    ]
+    baseline_token_value = (
+        float(baseline_tokens_per_tp)
+        if isinstance(baseline_tokens_per_tp, (int, float))
+        and not isinstance(baseline_tokens_per_tp, bool)
+        and float(baseline_tokens_per_tp) > 0
+        else None
+    )
+    if (
+        baseline_token_value is None
+        and baseline_items
+        and baseline_protocol is not None
+        and baseline_protocol.get("passed")
+    ):
+        baseline_token_stats = _series_stats(
+            _summary_numeric_values(
+                baseline_items,
+                "cost",
+                "tokens_per_verified_issue",
+                positive_only=True,
+            ),
+            bootstrap_samples=bootstrap_samples,
+            confidence_level=confidence_level,
+            ci_statistic="median",
+        )
+        if baseline_token_stats["values"]:
+            baseline_token_value = float(baseline_token_stats["median"])
+    current_token_value = (
+        float(token_per_tp_stats["median"])
+        if token_per_tp_stats["values"]
+        else None
+    )
+    if baseline_token_value is not None:
+        reduction = (
+            (baseline_token_value - current_token_value) / baseline_token_value
+            if current_token_value is not None
+            else None
+        )
+        token_baseline_gate = _metric_gate(
+            actual=reduction,
+            threshold=RELEASE_THRESHOLDS["tokens_per_true_positive_reduction"],
+            operator=">=",
+            statistics=token_per_tp_stats,
+            details={
+                "baseline_tokens_per_true_positive": baseline_token_value,
+                "current_tokens_per_true_positive": current_token_value,
+            },
+        )
+        hard_gates["tokens_per_true_positive_reduction"] = token_baseline_gate
+    elif provided_baseline_summaries and baseline_protocol is not None:
+        token_baseline_gate = {
+            "status": "invalid_baseline",
+            "passed": False,
+            "available": False,
+            "reason": "frozen baseline summaries failed the five-trial protocol",
+            "details": baseline_protocol,
+        }
+        hard_gates["tokens_per_true_positive_reduction"] = token_baseline_gate
+    else:
+        token_baseline_gate = {
+            "status": "not_evaluated",
+            "passed": True,
+            "reason": "no frozen baseline was supplied",
+        }
+
+    if provided_baseline_summaries and baseline_protocol is not None and not baseline_protocol.get(
+        "passed"
+    ):
+        improvement_claim = {
+            "status": "invalid_baseline",
+            "passed": False,
+            "reason": "baseline summaries failed the five-trial cold protocol",
+            "trial_protocol": baseline_protocol,
+        }
+    else:
+        improvement_claim = evaluate_improvement_claim(
+            target_items,
+            baseline_items,
+            bootstrap_samples=bootstrap_samples,
+            confidence_level=confidence_level,
+        )
+    if require_improvement_claim:
+        hard_gates["improvement_claim"] = {
+            **improvement_claim,
+            "available": improvement_claim.get("status") != "not_evaluated",
+        }
+    passed = all(bool(gate.get("passed")) for gate in hard_gates.values())
+    return {
+        "status": "passed" if passed else "failed",
+        "passed": passed,
+        "target_condition": CONDITION_FULL_ZSCOPE,
+        "thresholds": dict(RELEASE_THRESHOLDS),
+        "trial_protocol": trial_protocol,
+        "hard_gates": hard_gates,
+        "optional_gates": {
+            "tokens_per_true_positive_reduction": token_baseline_gate,
+        },
+        "improvement_claim": improvement_claim,
+        "require_improvement_claim": require_improvement_claim,
+    }
+
+
+def evaluate_improvement_claim(
+    current_summaries: Sequence[Dict[str, Any]],
+    baseline_summaries: Sequence[Dict[str, Any]],
+    *,
+    bootstrap_samples: int = DEFAULT_BOOTSTRAP_SAMPLES,
+    confidence_level: float = 0.95,
+) -> Dict[str, Any]:
+    if not current_summaries or not baseline_summaries:
+        return {
+            "status": "not_evaluated",
+            "passed": False,
+            "reason": "paired current and baseline summaries are required",
+        }
+    current_by_index = {
+        int(item["trial_index"]): item
+        for item in current_summaries
+        if isinstance(item.get("trial_index"), int)
+        and not isinstance(item.get("trial_index"), bool)
+    }
+    baseline_by_index = {
+        int(item["trial_index"]): item
+        for item in baseline_summaries
+        if isinstance(item.get("trial_index"), int)
+        and not isinstance(item.get("trial_index"), bool)
+    }
+    paired_indices = sorted(set(current_by_index).intersection(baseline_by_index))
+    if len(paired_indices) < MIN_RELEASE_TRIALS:
+        return {
+            "status": "insufficient_data",
+            "passed": False,
+            "reason": f"at least {MIN_RELEASE_TRIALS} paired trials are required",
+            "paired_trial_indices": paired_indices,
+        }
+    current_signatures = {
+        _artifact_dataset_signature(current_by_index[index]) for index in paired_indices
+    }
+    baseline_signatures = {
+        _artifact_dataset_signature(baseline_by_index[index]) for index in paired_indices
+    }
+    if len(current_signatures) != 1 or current_signatures != baseline_signatures:
+        return {
+            "status": "invalid_pairing",
+            "passed": False,
+            "reason": "current and baseline trials do not share one artifact signature",
+            "paired_trial_indices": paired_indices,
+        }
+
+    quality_deltas: List[float] = []
+    current_walls: List[float] = []
+    baseline_walls: List[float] = []
+    for index in paired_indices:
+        current = current_by_index[index]
+        baseline = baseline_by_index[index]
+        current_eval = current.get("evaluation")
+        baseline_eval = baseline.get("evaluation")
+        current_quality = (
+            current_eval.get("actionable_f1")
+            if isinstance(current_eval, dict)
+            else None
+        )
+        baseline_quality = (
+            baseline_eval.get("actionable_f1")
+            if isinstance(baseline_eval, dict)
+            else None
+        )
+        if current_quality is None and isinstance(current_eval, dict):
+            current_quality = current_eval.get("f1")
+        if baseline_quality is None and isinstance(baseline_eval, dict):
+            baseline_quality = baseline_eval.get("f1")
+        current_cost = current.get("cost")
+        baseline_cost = baseline.get("cost")
+        current_wall = current_cost.get("wall_time_seconds") if isinstance(current_cost, dict) else None
+        baseline_wall = baseline_cost.get("wall_time_seconds") if isinstance(baseline_cost, dict) else None
+        if not all(
+            isinstance(value, (int, float)) and not isinstance(value, bool)
+            for value in (current_quality, baseline_quality, current_wall, baseline_wall)
+        ):
+            return {
+                "status": "insufficient_data",
+                "passed": False,
+                "reason": "paired trials are missing actionable F1 or wall time",
+                "paired_trial_indices": paired_indices,
+            }
+        quality_deltas.append(float(current_quality) - float(baseline_quality))
+        current_walls.append(float(current_wall))
+        baseline_walls.append(float(baseline_wall))
+
+    quality_delta = sum(quality_deltas) / len(quality_deltas)
+    quality_ci = _bootstrap_ci(
+        quality_deltas,
+        confidence_level=confidence_level,
+        samples=bootstrap_samples,
+        statistic="mean",
+    )
+    current_wall_stats = _series_stats(
+        current_walls,
+        bootstrap_samples=bootstrap_samples,
+        confidence_level=confidence_level,
+        ci_statistic="median",
+    )
+    baseline_wall_stats = _series_stats(
+        baseline_walls,
+        bootstrap_samples=bootstrap_samples,
+        confidence_level=confidence_level,
+        ci_statistic="median",
+    )
+    median_reduction = (
+        1.0 - float(current_wall_stats["median"]) / float(baseline_wall_stats["median"])
+        if float(baseline_wall_stats["median"]) > 0
+        else 0.0
+    )
+    p95_reduction = (
+        1.0 - float(current_wall_stats["p95"]) / float(baseline_wall_stats["p95"])
+        if float(baseline_wall_stats["p95"]) > 0
+        else 0.0
+    )
+    quality_gain_path = (
+        quality_delta >= 0.05
+        and quality_ci is not None
+        and float(quality_ci["lower"]) > 0.0
+    )
+    performance_path = (
+        quality_delta >= -0.02
+        and max(median_reduction, p95_reduction) >= 0.20
+    )
+    passed = quality_gain_path or performance_path
+    return {
+        "status": "passed" if passed else "failed",
+        "passed": passed,
+        "paired_trial_indices": paired_indices,
+        "paired_trial_count": len(paired_indices),
+        "quality_metric": "actionable_f1",
+        "quality_delta": round(quality_delta, 4),
+        "quality_delta_percentage_points": round(quality_delta * 100.0, 4),
+        "quality_delta_bootstrap_ci": quality_ci,
+        "median_wall_time_reduction": round(median_reduction, 4),
+        "p95_wall_time_reduction": round(p95_reduction, 4),
+        "quality_gain_path": {
+            "required_delta_percentage_points": 5.0,
+            "requires_ci_lower_above_zero": True,
+            "passed": quality_gain_path,
+        },
+        "performance_path": {
+            "maximum_quality_degradation_percentage_points": 2.0,
+            "required_wall_time_reduction": 0.20,
+            "passed": performance_path,
+        },
     }
 
 
@@ -861,6 +2128,19 @@ def _sum_numeric(dicts: Iterable[Dict[str, Any]], keys: Sequence[str]) -> float:
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 total += float(value)
     return round(total, 4)
+
+
+def _max_numeric(
+    dicts: Iterable[Dict[str, Any]],
+    keys: Sequence[str],
+) -> Optional[float]:
+    values: List[float] = []
+    for data in dicts:
+        for key in keys:
+            value = data.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                values.append(float(value))
+    return round(max(values), 4) if values else None
 
 
 def _flatten(value: Any) -> str:
@@ -1490,15 +2770,91 @@ def _short_text(issue: Dict[str, Any]) -> str:
     return " ".join(text.lower().split())[:120]
 
 
-def _series_stats(values: Sequence[float]) -> Dict[str, Any]:
+def _percentile(values: Sequence[float], quantile: float) -> float:
     if not values:
-        return {"mean": 0.0, "stdev": 0.0, "values": []}
-    mean = sum(values) / len(values)
-    variance = sum((value - mean) ** 2 for value in values) / len(values)
+        return 0.0
+    ordered = sorted(float(value) for value in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = min(1.0, max(0.0, quantile)) * (len(ordered) - 1)
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return ordered[lower]
+    fraction = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
+
+
+def _bootstrap_ci(
+    values: Sequence[float],
+    *,
+    confidence_level: float = 0.95,
+    samples: int = DEFAULT_BOOTSTRAP_SAMPLES,
+    statistic: str = "mean",
+) -> Optional[Dict[str, Any]]:
+    values = [float(value) for value in values]
+    samples = max(0, int(samples))
+    if not values or samples <= 0:
+        return None
+    if statistic not in {"mean", "median"}:
+        raise ValueError(f"Unsupported bootstrap statistic: {statistic}")
+    confidence_level = min(0.999, max(0.001, float(confidence_level)))
+    rng = random.Random(0)
+    estimates: List[float] = []
+    size = len(values)
+    for _ in range(samples):
+        resample = [values[rng.randrange(size)] for _ in range(size)]
+        if statistic == "median":
+            estimate = _percentile(resample, 0.5)
+        else:
+            estimate = sum(resample) / size
+        estimates.append(estimate)
+    alpha = (1.0 - confidence_level) / 2.0
+    return {
+        "confidence_level": round(confidence_level, 4),
+        "method": "percentile_bootstrap",
+        "statistic": statistic,
+        "samples": samples,
+        "lower": round(_percentile(estimates, alpha), 4),
+        "upper": round(_percentile(estimates, 1.0 - alpha), 4),
+    }
+
+
+def _series_stats(
+    values: Sequence[float],
+    *,
+    bootstrap_samples: int = DEFAULT_BOOTSTRAP_SAMPLES,
+    confidence_level: float = 0.95,
+    ci_statistic: str = "mean",
+) -> Dict[str, Any]:
+    if not values:
+        return {
+            "mean": 0.0,
+            "median": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "stdev": 0.0,
+            "values": [],
+            "bootstrap_ci": None,
+        }
+    numeric_values = [float(value) for value in values]
+    mean = sum(numeric_values) / len(numeric_values)
+    variance = sum((value - mean) ** 2 for value in numeric_values) / len(numeric_values)
     return {
         "mean": round(mean, 4),
+        "median": round(_percentile(numeric_values, 0.5), 4),
+        "p95": round(_percentile(numeric_values, 0.95), 4),
+        "min": round(min(numeric_values), 4),
+        "max": round(max(numeric_values), 4),
         "stdev": round(math.sqrt(variance), 4),
-        "values": [round(value, 4) for value in values],
+        "values": [round(value, 4) for value in numeric_values],
+        "bootstrap_ci": _bootstrap_ci(
+            numeric_values,
+            confidence_level=confidence_level,
+            samples=bootstrap_samples,
+            statistic=ci_statistic,
+        ),
     }
 
 

@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from ..agents.deep_worker.agent import DeepWorkerAgent
+from ..common.cancellation import (
+    CancellationError,
+    CancellationToken,
+    bind_cancellation_token,
+    current_cancellation_token,
+)
 from ..tools.policy import ToolPolicy
 from ..framework.llm_client import LLMClient
+from .scheduler import INVESTIGATOR_ROLE, ScanScheduler
 from .specs import SpecRegistry
 
 
@@ -122,9 +129,16 @@ class SubAgentOrchestrator:
         ),
     ]
 
-    def __init__(self, spec_registry: SpecRegistry, tools: List[Any]):
+    def __init__(
+        self,
+        spec_registry: SpecRegistry,
+        tools: List[Any],
+        *,
+        scheduler: Optional[ScanScheduler] = None,
+    ):
         self.spec_registry = spec_registry
         self.tools = tools
+        self.scheduler = scheduler
 
     def plan(
         self,
@@ -265,7 +279,8 @@ class SubAgentOrchestrator:
         max_iterations: int = 20,
         tool_policy: Optional[ToolPolicy] = None,
         max_workers: int = 1,
-        ticket_timeout: float = 0.0,
+        ticket_timeout: Optional[float] = 300.0,
+        budget_exhaustion_policy: str = "observe",
         agent_type: str = "deep_worker",
         spawn_allowlist: Optional[List[str]] = None,
         nested_spawn_allowed: bool = False,
@@ -286,7 +301,15 @@ class SubAgentOrchestrator:
                 for ticket in tickets
             ]
         workers = max(1, min(int(max_workers or 1), len(tickets)))
-        if workers == 1:
+        # Budget thresholds are telemetry only.  Parent/user cancellation
+        # remains authoritative, but a local ticket budget never kills work.
+        budget_policy = "observe"
+        parent_token = current_cancellation_token()
+        if (
+            self.scheduler is None
+            and workers == 1
+            and not (ticket_timeout and ticket_timeout > 0)
+        ):
             return [
                 self._run_one_ticket(
                     llm_client,
@@ -299,22 +322,38 @@ class SubAgentOrchestrator:
                     llm_client_resolver=llm_client_resolver,
                     execution_policy_resolver=execution_policy_resolver,
                     worktree_isolation=worktree_isolation,
+                    parent_token=parent_token,
+                    ticket_timeout=ticket_timeout,
+                    budget_exhaustion_policy=budget_policy,
                 )
                 for ticket in tickets
             ]
 
         reports_by_id: Dict[str, Dict[str, Any]] = {}
-        futures = {}
+        futures: Dict[Future[Any], tuple[SubAgentTicket, int]] = {}
         started_at = time.perf_counter()
-        timed_out = False
-        executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="zscope-deep-worker")
+        detached_futures = False
+        executor: Optional[ThreadPoolExecutor] = None
+        if self.scheduler is None:
+            executor = ThreadPoolExecutor(
+                max_workers=workers,
+                thread_name_prefix="zscope-deep-worker",
+            )
         try:
             for idx, ticket in enumerate(tickets):
                 worker_index = idx % workers
-                future = executor.submit(
-                    self._run_one_ticket,
-                    llm_client,
-                    ticket,
+                submitter = (
+                    self.scheduler.submit
+                    if self.scheduler is not None
+                    else executor.submit
+                )
+                submit_args = (
+                    (INVESTIGATOR_ROLE, self._run_one_ticket, llm_client, ticket)
+                    if self.scheduler is not None
+                    else (self._run_one_ticket, llm_client, ticket)
+                )
+                future = submitter(
+                    *submit_args,
                     max_iterations=max_iterations,
                     tool_policy=tool_policy,
                     worker_index=worker_index,
@@ -323,59 +362,81 @@ class SubAgentOrchestrator:
                     llm_client_resolver=llm_client_resolver,
                     execution_policy_resolver=execution_policy_resolver,
                     worktree_isolation=worktree_isolation,
+                    parent_token=parent_token,
+                    ticket_timeout=ticket_timeout,
+                    budget_exhaustion_policy=budget_policy,
+                    **(
+                        {"priority": int(ticket.priority_score or 0)}
+                        if self.scheduler is not None
+                        else {}
+                    ),
                 )
                 futures[future] = (ticket, worker_index)
 
             pending = set(futures)
             try:
-                iterator = as_completed(
-                    pending,
-                    timeout=ticket_timeout if ticket_timeout and ticket_timeout > 0 else None,
-                )
-                for future in iterator:
-                    pending.discard(future)
-                    ticket, _worker_index = futures[future]
-                    try:
-                        reports_by_id[ticket.id] = future.result()
-                    except Exception as exc:
-                        reports_by_id[ticket.id] = self._exception_report(
-                            ticket,
-                            exc,
-                            agent_type=agent_type,
-                            worker_index=_worker_index,
-                            max_iterations=max_iterations,
-                            execution_policy=self._execution_policy_for_ticket(
-                                ticket,
-                                execution_policy_resolver,
-                            ),
-                            worktree_isolation=worktree_isolation,
-                        )
-            except TimeoutError:
-                timed_out = True
-                for future in list(pending):
-                    ticket, _worker_index = futures[future]
-                    future.cancel()
-                    reports_by_id[ticket.id] = self._timeout_report(
-                        ticket,
-                        timeout=ticket_timeout,
-                        elapsed_ms=(time.perf_counter() - started_at) * 1000,
-                        agent_type=agent_type,
-                        worker_index=_worker_index,
-                        max_iterations=max_iterations,
-                        execution_policy=self._execution_policy_for_ticket(
-                            ticket,
-                            execution_policy_resolver,
-                        ),
-                        worktree_isolation=worktree_isolation,
+                while pending:
+                    if parent_token is not None:
+                        parent_token.raise_if_cancelled()
+                    wait_timeout = self._batch_poll_timeout(
+                        parent_token=parent_token,
                     )
+                    completed, _ = wait(
+                        pending,
+                        timeout=wait_timeout,
+                        return_when=FIRST_COMPLETED,
+                    )
+                    for future in completed:
+                        pending.discard(future)
+                        ticket, _worker_index = futures[future]
+                        try:
+                            reports_by_id[ticket.id] = future.result()
+                        except CancellationError:
+                            if parent_token is not None and parent_token.is_cancelled():
+                                raise
+                            reports_by_id[ticket.id] = self._exception_report(
+                                ticket,
+                                CancellationError("subagent_cancelled"),
+                                agent_type=agent_type,
+                                worker_index=_worker_index,
+                                max_iterations=max_iterations,
+                                execution_policy=self._execution_policy_for_ticket(
+                                    ticket,
+                                    execution_policy_resolver,
+                                ),
+                                worktree_isolation=worktree_isolation,
+                            )
+                        except Exception as exc:
+                            reports_by_id[ticket.id] = self._exception_report(
+                                ticket,
+                                exc,
+                                agent_type=agent_type,
+                                worker_index=_worker_index,
+                                max_iterations=max_iterations,
+                                execution_policy=self._execution_policy_for_ticket(
+                                    ticket,
+                                    execution_policy_resolver,
+                                ),
+                                worktree_isolation=worktree_isolation,
+                            )
+
+            except CancellationError:
+                detached_futures = True
+                for future in pending:
+                    future.cancel()
+                raise
         finally:
-            executor.shutdown(wait=not timed_out, cancel_futures=True)
+            if executor is not None:
+                executor.shutdown(
+                    wait=not detached_futures,
+                    cancel_futures=detached_futures,
+                )
 
         for ticket in tickets:
             if ticket.id not in reports_by_id:
-                reports_by_id[ticket.id] = self._timeout_report(
+                reports_by_id[ticket.id] = self._exception_report(
                     ticket,
-                    timeout=ticket_timeout,
+                    RuntimeError("subagent completed without a result"),
                     elapsed_ms=(time.perf_counter() - started_at) * 1000,
                     agent_type=agent_type,
                     max_iterations=max_iterations,
@@ -400,6 +461,9 @@ class SubAgentOrchestrator:
         llm_client_resolver: Optional[Callable[[SubAgentTicket], LLMClient]] = None,
         execution_policy_resolver: Optional[Callable[[SubAgentTicket], Dict[str, Any]]] = None,
         worktree_isolation: Optional[Dict[str, Any]] = None,
+        parent_token: Optional[CancellationToken] = None,
+        ticket_timeout: Optional[float] = 300.0,
+        budget_exhaustion_policy: str = "observe",
     ) -> Dict[str, Any]:
         started = time.perf_counter()
         selected_llm_client = (
@@ -411,6 +475,7 @@ class SubAgentOrchestrator:
             if model:
                 execution_policy["model"] = str(model[0])
         isolation = dict(worktree_isolation or {"mode": "read_only", "snapshot_writes": False})
+        budget_policy = "observe"
         worker = DeepWorkerAgent(selected_llm_client, self.tools, tool_policy=tool_policy)
         skill = self.spec_registry.get_skill(ticket.skill)
         agent = self.spec_registry.get_agent(agent_type)
@@ -435,14 +500,27 @@ class SubAgentOrchestrator:
             "worktree_isolation": isolation,
         }
         try:
-            response = worker.run(input_data)
+            ticket_token = (
+                parent_token.child(
+                    timeout_seconds=None
+                )
+                if parent_token is not None
+                else CancellationToken(
+                    timeout_seconds=None
+                )
+            )
+            with bind_cancellation_token(ticket_token):
+                ticket_token.raise_if_cancelled()
+                response = worker.run(input_data)
+                ticket_token.raise_if_cancelled()
             status = self._report_status(response)
             metadata = dict(response.metadata or {})
+            duration_seconds = max(0.0, time.perf_counter() - started)
             metadata.update(
                 {
                     "ticket_id": ticket.id,
                     "worker_index": worker_index,
-                    "duration_ms": (time.perf_counter() - started) * 1000,
+                    "duration_ms": duration_seconds * 1000,
                     "max_iterations": max_iterations,
                     "max_turns": max_iterations,
                     "stop_reason": status,
@@ -459,6 +537,13 @@ class SubAgentOrchestrator:
                     "needs_human_review": self._needs_human_review(response, status),
                 }
             )
+            metadata.update(
+                self._ticket_budget_metadata(
+                    duration_seconds,
+                    ticket_timeout,
+                    budget_policy,
+                )
+            )
             return {
                 "ticket": ticket.to_dict(),
                 "status": status,
@@ -467,8 +552,29 @@ class SubAgentOrchestrator:
                 "error": response.error,
                 "metadata": metadata,
             }
+        except CancellationError:
+            if parent_token is not None and parent_token.is_cancelled():
+                raise
+            report = self._exception_report(
+                ticket,
+                CancellationError("subagent_cancelled"),
+                elapsed_ms=(time.perf_counter() - started) * 1000,
+                agent_type=agent_type,
+                worker_index=worker_index,
+                max_iterations=max_iterations,
+                execution_policy=execution_policy,
+                worktree_isolation=isolation,
+            )
+            report["metadata"].update(
+                self._ticket_budget_metadata(
+                    max(0.0, time.perf_counter() - started),
+                    ticket_timeout,
+                    budget_policy,
+                )
+            )
+            return report
         except Exception as exc:
-            return self._exception_report(
+            report = self._exception_report(
                 ticket,
                 exc,
                 worker_index=worker_index,
@@ -478,8 +584,58 @@ class SubAgentOrchestrator:
                 execution_policy=execution_policy,
                 worktree_isolation=isolation,
             )
+            report["metadata"].update(
+                self._ticket_budget_metadata(
+                    max(0.0, time.perf_counter() - started),
+                    ticket_timeout,
+                    budget_policy,
+                )
+            )
+            return report
         finally:
             self._close_thread_llm_sessions(llm_client, selected_llm_client)
+
+    @staticmethod
+    def _batch_poll_timeout(
+        *,
+        parent_token: Optional[CancellationToken],
+    ) -> Optional[float]:
+        """Poll only when parent cancellation must remain responsive."""
+
+        if parent_token is None:
+            return None
+
+        poll_seconds = 0.05
+        parent_remaining = parent_token.remaining_seconds()
+        if parent_remaining is not None:
+            poll_seconds = min(poll_seconds, max(0.0, parent_remaining))
+        return poll_seconds
+
+    @staticmethod
+    def _ticket_budget_metadata(
+        duration_seconds: float,
+        ticket_budget_seconds: Optional[float],
+        policy: str,
+    ) -> Dict[str, Any]:
+        try:
+            budget = (
+                float(ticket_budget_seconds)
+                if ticket_budget_seconds is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            budget = None
+        if budget is not None and budget <= 0:
+            budget = None
+        duration = max(0.0, float(duration_seconds or 0.0))
+        exceeded = budget is not None and duration > budget
+        overrun = max(0.0, duration - budget) if budget is not None else 0.0
+        return {
+            "ticket_budget_seconds": budget,
+            "ticket_budget_exceeded": exceeded,
+            "ticket_budget_overrun_seconds": round(overrun, 4),
+            "budget_exhaustion_policy": str(policy or "observe"),
+        }
 
     @staticmethod
     def _close_thread_llm_sessions(*clients: LLMClient) -> None:
@@ -517,40 +673,6 @@ class SubAgentOrchestrator:
                 "duration_ms": elapsed_ms,
                 "failure_kind": "exception",
                 "stop_reason": "failed",
-                "agent_type": agent_type,
-                "max_iterations": max_iterations,
-                "max_turns": max_iterations,
-                "execution_policy": dict(execution_policy or {}),
-                "worktree_isolation": dict(worktree_isolation or {}),
-                "needs_human_review": True,
-            },
-        }
-
-    @staticmethod
-    def _timeout_report(
-        ticket: SubAgentTicket,
-        *,
-        timeout: float,
-        elapsed_ms: float,
-        agent_type: str = "deep_worker",
-        worker_index: int = -1,
-        max_iterations: int = 0,
-        execution_policy: Optional[Dict[str, Any]] = None,
-        worktree_isolation: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        return {
-            "ticket": ticket.to_dict(),
-            "status": "killed",
-            "success": False,
-            "data": {},
-            "error": f"Subagent ticket timed out after {timeout:.2f}s",
-            "metadata": {
-                "ticket_id": ticket.id,
-                "worker_index": worker_index,
-                "duration_ms": elapsed_ms,
-                "timeout_seconds": timeout,
-                "failure_kind": "timeout",
-                "stop_reason": "timeout",
                 "agent_type": agent_type,
                 "max_iterations": max_iterations,
                 "max_turns": max_iterations,

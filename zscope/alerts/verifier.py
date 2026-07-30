@@ -20,6 +20,7 @@ from ..tools.policy import ToolPolicy, deny_sensitive_paths_hook
 from ..tools.runtime import ToolsRuntime
 from ..framework.llm_client import LLMClient
 from ..reporting.report import FinalReport, Issue, ReportGenerator
+from ..orchestration.scheduler import VALIDATOR_ROLE, ScanScheduler
 from ..orchestration.specs import SpecRegistry
 
 logger = logging.getLogger(__name__)
@@ -34,11 +35,13 @@ class AlertVerifier:
         code_index: CodeIndex,
         llm_client: LLMClient,
         user_config: Optional[UserConfigStore] = None,
+        scheduler: Optional[ScanScheduler] = None,
     ):
         self.config = config
         self.code_index = code_index
         self.llm_client = llm_client
         self.user_config = user_config
+        self.scheduler = scheduler
         self.snapshot_store = SnapshotStore(Path(config.analysis.snapshot_dir))
         self.spec_registry = SpecRegistry(project_root=config.project.project_root)
         self.tools_runtime = ToolsRuntime(
@@ -75,6 +78,38 @@ class AlertVerifier:
                 self._verify_alert_safely(alert, idx, total)
                 for idx, alert in enumerate(alerts, 1)
             ]
+        elif getattr(self, "scheduler", None) is not None:
+            logger.info(
+                "Verifying %d alert(s) through the scan-level scheduler.",
+                total,
+            )
+            results_by_index = {}
+            future_to_index = {
+                self.scheduler.submit(
+                    VALIDATOR_ROLE,
+                    self._verify_alert_safely,
+                    alert,
+                    idx,
+                    total,
+                ): idx
+                for idx, alert in enumerate(alerts, 1)
+            }
+            for future in as_completed(future_to_index):
+                idx = future_to_index[future]
+                try:
+                    results_by_index[idx] = future.result()
+                except Exception as e:
+                    alert = alerts[idx - 1]
+                    logger.exception(
+                        "Scheduled alert verification crashed for alert %d.",
+                        idx,
+                    )
+                    results_by_index[idx] = self._make_error_result(
+                        alert,
+                        idx,
+                        str(e),
+                    )
+            results = [results_by_index[idx] for idx in range(1, total + 1)]
         else:
             logger.info(
                 "Verifying %d alert(s) with %d worker(s).",
@@ -278,6 +313,14 @@ class AlertVerifier:
         if not parsed:
             logger.warning("No JSON block found in verification response for %s", alert_id)
             base.update({"verdict": "uncertain", "confidence": 0.0, "reasoning": "无法解析验证结果"})
+            base.update(
+                {
+                    "validation_status": "pending",
+                    "candidate_disposition": "engine_failed",
+                    "engine_status": "failed",
+                    "verification_error": "validator_response_parse_failed",
+                }
+            )
             return base
 
         base.update({
@@ -287,6 +330,18 @@ class AlertVerifier:
             "severity_adjustment": parsed.get("severity_adjustment", ""),
             "missing_context": parsed.get("missing_context", []),
         })
+        verdict = str(base.get("verdict") or "uncertain").strip().lower()
+        confirmed = verdict in {"confirmed", "verified"}
+        base.update(
+            {
+                "verdict": verdict,
+                # This is an LLM boundary. A model-proposed rejection is not
+                # deterministic proof that the external alert is false.
+                "validation_status": "validated" if confirmed else "needs_review",
+                "candidate_disposition": "confirmed" if confirmed else "needs_review",
+                "engine_status": "complete",
+            }
+        )
         return base
 
     def _make_error_result(
@@ -300,6 +355,10 @@ class AlertVerifier:
             "line": alert.line,
             "original_message": alert.message,
             "original_severity": alert.severity.value,
+            "validation_status": "pending",
+            "candidate_disposition": "engine_failed",
+            "engine_status": "failed",
+            "verification_error": error,
             "verdict": "uncertain",
             "confidence": 0.0,
             "reasoning": f"验证过程出错: {error}",

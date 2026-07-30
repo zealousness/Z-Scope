@@ -2,6 +2,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sqlite3
 
+import pytest
+
 from zscope.config.user_config_store import UserConfigStore
 from zscope.retrieval.knowledge_db import KnowledgeDB
 from zscope.web import server as web_server
@@ -36,7 +38,113 @@ def test_knowledge_db_migrates_legacy_macro_identity_and_range(tmp_path: Path) -
         assert macro["macro_index_name"] == "WRAP@include/wrap.h:10-11"
         assert macro["start_line"] == 10
         assert macro["end_line"] == 11
-        assert db.get_metadata("schema_version") == "13"
+        assert db.get_metadata("schema_version") == "14"
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("legacy_schema_version", ["10", "11", "13"])
+def test_knowledge_db_migrates_complete_taint_identity_and_forces_reindex(
+    tmp_path: Path,
+    legacy_schema_version: str,
+) -> None:
+    db_path = tmp_path / "legacy-taint.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+            CREATE TABLE taint_signatures (
+                id          INTEGER PRIMARY KEY,
+                source_func TEXT,
+                sink_func   TEXT,
+                bug_type    TEXT NOT NULL,
+                file_path   TEXT,
+                line        INTEGER DEFAULT 0,
+                tool        TEXT DEFAULT 'saber',
+                svf_group   TEXT DEFAULT 'default',
+                UNIQUE(bug_type, file_path, line, svf_group)
+            );
+            INSERT INTO taint_signatures
+                (source_func, sink_func, bug_type, file_path, line, tool, svf_group)
+            VALUES
+                ('unreachable', 'sink_a', 'Double Free', 'src/shared.c', 42, 'saber', 'g1');
+            INSERT INTO metadata (key, value) VALUES
+                ('svf_source_hash', 'legacy-source'),
+                ('svf_artifact_hash', 'legacy-artifact'),
+                ('svf_tool_status:saber:g1', '{"status": "success"}'),
+                ('svf_db_import:saber:g1', '{"generation": 7}'),
+                ('svf_db_generation', '7');
+            """
+        )
+        conn.execute(
+            "INSERT INTO metadata (key, value) VALUES (?, ?)",
+            ("schema_version", legacy_schema_version),
+        )
+
+    db = KnowledgeDB(str(db_path))
+    try:
+        assert db.get_metadata("schema_version") == "14"
+        assert db.get_svf_hash() == ""
+        assert db.get_metadata("svf_artifact_hash") == ""
+        assert db.get_metadata("svf_tool_status:saber:g1") == ""
+        assert db.get_metadata("svf_db_import:saber:g1") == ""
+        assert db.get_svf_db_generation() == 7
+        assert db.get_metadata(KnowledgeDB.TAINT_REINDEX_REQUIRED_KEY) == "1"
+
+        db.insert_taint_signature(
+            "entry",
+            "sink_b",
+            "Double Free",
+            file_path="src/shared.c",
+            line=42,
+            tool="saber",
+            svf_group="g1",
+        )
+        db.insert_taint_signature(
+            "entry",
+            "sink_b",
+            "Double Free",
+            file_path="src/shared.c",
+            line=42,
+            tool="saber",
+            svf_group="g1",
+        )
+        db.commit()
+
+        rows = db.get_taint_bugs("Double Free")
+        assert {
+            (row["source_func"], row["sink_func"])
+            for row in rows
+        } == {
+            ("entry", "sink_b"),
+            ("unreachable", "sink_a"),
+        }
+        assert db.stats()["taint_signatures"] == 2
+
+        unique_identities = []
+        for index_row in db._conn.execute(
+            "PRAGMA index_list(taint_signatures)"
+        ).fetchall():
+            if not index_row["unique"]:
+                continue
+            index_name = str(index_row["name"]).replace('"', '""')
+            unique_identities.append(
+                tuple(
+                    row["name"]
+                    for row in db._conn.execute(
+                        f'PRAGMA index_info("{index_name}")'
+                    ).fetchall()
+                )
+            )
+        assert KnowledgeDB.TAINT_SIGNATURE_IDENTITY in unique_identities
+
+        db.set_svf_hash("fresh-source")
+        assert db.get_svf_hash() == "fresh-source"
+        assert db.get_metadata(KnowledgeDB.TAINT_REINDEX_REQUIRED_KEY) == ""
+        assert db.get_metadata(KnowledgeDB.TAINT_REINDEX_REASON_KEY) == ""
     finally:
         db.close()
 
@@ -937,6 +1045,79 @@ def test_enriched_taint_bugs_can_filter_by_reachable_function_names(tmp_path: Pa
         assert bugs[0]["bug_type"] == "Double Free"
         assert bugs[0]["func_name"] == "callee"
         assert bugs[0]["svf_groups"] == ["saber:default"]
+    finally:
+        db.close()
+
+
+def test_enriched_taint_bugs_preserve_distinct_source_sink_identities(
+    tmp_path: Path,
+) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_taint_signature(
+            "unreachable",
+            "sink_a",
+            "Double Free",
+            file_path="src/shared.c",
+            line=42,
+            tool="saber",
+            svf_group="g1",
+        )
+        db.insert_taint_signature(
+            "entry",
+            "sink_b",
+            "Double Free",
+            file_path="src/shared.c",
+            line=42,
+            tool="saber",
+            svf_group="g1",
+        )
+        db.commit()
+
+        all_rows = db.get_enriched_taint_bugs(limit=10)
+        reachable_rows = db.get_enriched_taint_bugs(
+            func_names=["entry"],
+            limit=10,
+        )
+
+        assert {
+            (row["source_func"], row["sink_func"])
+            for row in all_rows
+        } == {
+            ("entry", "sink_b"),
+            ("unreachable", "sink_a"),
+        }
+        assert len(reachable_rows) == 1
+        assert reachable_rows[0]["source_func"] == "entry"
+        assert reachable_rows[0]["sink_func"] == "sink_b"
+        assert reachable_rows[0]["svf_groups"] == ["g1"]
+    finally:
+        db.close()
+
+
+def test_enriched_taint_reachability_filter_uses_one_sql_parameter(
+    tmp_path: Path,
+) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_taint_signature(
+            "reachable_10999",
+            "sink",
+            "Memory Leak",
+            file_path="src/large.c",
+            line=7,
+            tool="saber",
+            svf_group="full",
+        )
+        db.commit()
+
+        rows = db.get_enriched_taint_bugs(
+            func_names=[f"reachable_{index}" for index in range(11_000)],
+            limit=10,
+        )
+
+        assert len(rows) == 1
+        assert rows[0]["source_func"] == "reachable_10999"
     finally:
         db.close()
 
