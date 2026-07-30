@@ -339,19 +339,6 @@ class JsonToolAgent(ToolCallingAgent):
                     metadata=metadata,
                 )
 
-            if result.get("loop_guard_triggered"):
-                metadata = self._conversation_token_metadata(result)
-                repeated = result.get("repeated_tool_call")
-                if isinstance(repeated, dict):
-                    metadata["repeated_tool_call"] = repeated
-                metadata["loop_guard_triggered"] = True
-                return AgentResponse(
-                    success=False,
-                    data={},
-                    error="Stopped after repeated identical tool calls.",
-                    metadata=metadata,
-                )
-
             if json_output_spec:
                 error_type, json_blocks_found = self._classify_json_result_failure(
                     content,
@@ -380,6 +367,12 @@ class JsonToolAgent(ToolCallingAgent):
                     max_json_retries=max_json_retries,
                     post_process=post_process,
                 )
+                if result.get("loop_guard_triggered"):
+                    repair_response.metadata = dict(repair_response.metadata or {})
+                    repair_response.metadata["loop_guard_triggered"] = True
+                    repeated = result.get("repeated_tool_call")
+                    if isinstance(repeated, dict):
+                        repair_response.metadata["repeated_tool_call"] = repeated
                 if repair_response.success:
                     return repair_response
                 if fail_on_truncated and result.get("truncated"):
@@ -399,6 +392,19 @@ class JsonToolAgent(ToolCallingAgent):
                         "partial_result": self._extract_last_assistant_text(content, conversation),
                     }
                 return repair_response
+
+            if result.get("loop_guard_triggered"):
+                metadata = self._conversation_token_metadata(result)
+                repeated = result.get("repeated_tool_call")
+                if isinstance(repeated, dict):
+                    metadata["repeated_tool_call"] = repeated
+                metadata["loop_guard_triggered"] = True
+                return AgentResponse(
+                    success=False,
+                    data={},
+                    error="Stopped after repeated identical tool calls.",
+                    metadata=metadata,
+                )
 
             if fail_on_truncated and result.get("truncated"):
                 return AgentResponse(success=False, data={}, error=truncated_error)
