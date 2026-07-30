@@ -10,6 +10,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECKER_PATH = REPO_ROOT / "test" / "range" / "benchmark" / "check_entry_coverage.py"
 RUNNER_PATH = REPO_ROOT / "test" / "range" / "benchmark" / "run_auto_unified_wsl.sh"
+GIT_ATTRIBUTES_PATH = REPO_ROOT / ".gitattributes"
 
 SPEC = importlib.util.spec_from_file_location("range_entry_coverage", CHECKER_PATH)
 assert SPEC is not None and SPEC.loader is not None
@@ -239,3 +240,8 @@ def test_wsl_runner_separates_process_report_and_valid_scan_states() -> None:
     assert '"scan_completed": scan_completed' in runner
     assert '"benchmark_valid": benchmark_valid' in runner
     assert '--knowledge-db "${knowledge_db_path}"' in runner
+
+
+def test_wsl_runner_is_forced_to_lf_line_endings() -> None:
+    assert b"\r\n" not in RUNNER_PATH.read_bytes()
+    assert "*.sh text eol=lf" in GIT_ATTRIBUTES_PATH.read_text(encoding="utf-8")
