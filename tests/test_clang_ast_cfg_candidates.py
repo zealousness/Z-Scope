@@ -1894,7 +1894,7 @@ def test_clang_ast_cfg_detects_multiline_allocation_used_without_null_check() ->
     assert issue["location"] == "src/demo.c:615"
 
 
-def test_analyzer_candidate_budget_keeps_exact_before_generic_and_defers_excess() -> None:
+def test_analyzer_candidate_budget_keeps_exact_before_generic_and_observes_excess() -> None:
     issues = [
         {
             "id": "GEN1",
@@ -1941,8 +1941,10 @@ def test_analyzer_candidate_budget_keeps_exact_before_generic_and_defers_excess(
     budgeted = Analyzer._apply_candidate_validation_budget(issues)
 
     assert budgeted[0]["id"] == "EXACT"
-    assert [issue["id"] for issue in budgeted if issue.get("validation_required") is False] == ["GEN3"]
-    assert budgeted[-1]["finding_kind"] == "audit_observation"
+    assert [issue["id"] for issue in budgeted if issue.get("validation_required") is False] == []
+    assert budgeted[-1]["id"] == "GEN3"
+    assert budgeted[-1]["validation_budget_class"] == "generic_soft_overrun"
+    assert "retained for validation" in budgeted[-1]["validation_budget_observation"]
 
 
 def test_analyzer_candidate_budget_keeps_quota_lifetime_sensitive_generic() -> None:

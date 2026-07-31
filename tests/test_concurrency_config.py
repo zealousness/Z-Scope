@@ -114,6 +114,17 @@ def test_budget_exhaustion_defaults_to_observe_and_normalizes_aliases() -> None:
         AnalysisConfig(budget_exhaustion_policy="discard")
 
 
+def test_candidate_first_validation_is_default_and_configurable(tmp_path) -> None:
+    assert AnalysisConfig().candidate_first_validation is True
+
+    data = _base_config(tmp_path)
+    data["analysis"] = {"candidate_first_validation": False}
+    path = tmp_path / "zscope.yaml"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert ConfigLoader.load(str(path)).analysis.candidate_first_validation is False
+
+
 @pytest.mark.parametrize("sentinel", [None, 0, -1, "unlimited", "disabled"])
 def test_validation_cache_sentinels_disable_cache(sentinel) -> None:
     assert AnalysisConfig(validation_cache_entries=sentinel).validation_cache_entries == 0

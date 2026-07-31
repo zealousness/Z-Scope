@@ -308,6 +308,11 @@ class AnalysisConfig:
     validation_cache_entries: int = 4096
     user_config_db: str = ""  # Path to user config workbook or directory, defaults to {snapshot_dir}/
     enable_global_model: bool = False  # Batch-level global premodel/model_entry replacement.
+    # The normal v3 path is deterministic discovery followed by validation.
+    # Keep unconstrained whole-entry LLM exploration opt-in: it is useful for
+    # investigations, but is not a substitute for a candidate lifecycle and
+    # multiplies the same reasoning across overlapping entries.
+    candidate_first_validation: bool = True
     max_premodel_depth: int = 3  # Callee recursive pre-modeling max depth
     max_premodel_callees: int = 20  # Max callees to expand per level
     trivial_function_max_lines: int = 5  # Skip modeling if function <= this many valid lines
@@ -768,6 +773,9 @@ class ConfigLoader:
                 ),
                 user_config_db=analysis_data.get("user_config_db", ""),
                 enable_global_model=analysis_data.get("enable_global_model", False),
+                candidate_first_validation=analysis_data.get(
+                    "candidate_first_validation", True
+                ),
                 max_premodel_depth=analysis_data.get("max_premodel_depth", 3),
                 max_premodel_callees=analysis_data.get("max_premodel_callees", 20),
                 trivial_function_max_lines=analysis_data.get("trivial_function_max_lines", 5),

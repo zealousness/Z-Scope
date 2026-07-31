@@ -1273,6 +1273,47 @@ class Analyzer:
                 candidate_signals,
                 limit=80,
             )
+
+            # Candidate lifecycle v3 deliberately separates cheap, complete
+            # discovery from expensive semantic investigation.  Running a
+            # general-purpose tool agent once for every entry re-discovers the
+            # same sinks, re-builds snapshots, and creates entry-local copies
+            # of the same validation obligation.  The default route therefore
+            # sends structured deterministic candidates directly to the shared
+            # validator.  Focused deep workers remain available for the small
+            # set of high-risk contradictory tickets planned above, while an
+            # operator can explicitly opt into broad synthesis for exploration.
+            if bool(
+                getattr(
+                    self.config.analysis,
+                    "candidate_first_validation",
+                    True,
+                )
+            ):
+                self._register_candidate_issues(
+                    state,
+                    candidate_signals,
+                    source="deterministic_candidate_discovery",
+                )
+                new_issues = self._deduplicate_against_history(
+                    list(candidate_signals),
+                    state,
+                )
+                state["pending_new_issues"].extend(new_issues)
+                state["notes"].append(
+                    "Routed structured deterministic candidates directly to "
+                    "validation; broad vulnerability synthesis is disabled "
+                    "for the candidate-first lifecycle."
+                )
+                self._record_engine_capability(
+                    "vulnerability_analyzer",
+                    status="complete",
+                    active=False,
+                    reason="candidate_first_validation",
+                    candidate_count=len(candidate_signals),
+                )
+                continue
+
             response = analyzer_agent.run(
                 agent_context,
                 max_iterations=self.config.analysis.max_tool_iterations,
@@ -1590,6 +1631,15 @@ class Analyzer:
                 reason="deterministic_graph_budget_disabled",
             )
             return []
+        # Deterministic graph facts are a prerequisite for validation, not an
+        # expensive-reasoning budget.  Traverse the complete known project
+        # graph from this entry.  ``GraphCandidateGenerator`` is cycle-safe,
+        # and the function count provides the exact finite bound rather than
+        # silently truncating at an adaptive per-entry quota.
+        project_function_count = self._known_project_function_count()
+        if project_function_count:
+            graph_depth = max(graph_depth, project_function_count)
+            graph_functions = max(graph_functions, project_function_count)
         generator = GraphCandidateGenerator(
             self.code_index,
             self._get_local_pattern_semantics(),
@@ -1641,6 +1691,27 @@ class Analyzer:
             checker=self._graph_candidate_checker(),
             path_kind="cross_function_protocol",
         )
+
+    def _known_project_function_count(self) -> int:
+        """Return a finite complete bound for deterministic graph traversal.
+
+        A CodeIndex already owns the indexed function set, so this is a cheap
+        metadata query.  If a third-party index cannot enumerate functions we
+        leave its configured bound untouched; any resulting truncation remains
+        visible as degraded rather than being hidden.
+        """
+
+        list_functions = getattr(self.code_index, "list_functions", None)
+        if not callable(list_functions):
+            return 0
+        try:
+            functions = list_functions(limit=None)
+        except Exception:
+            logger.debug("Unable to enumerate indexed functions for deterministic facts.", exc_info=True)
+            return 0
+        if not isinstance(functions, (list, tuple, set)):
+            return 0
+        return len({str(item) for item in functions if str(item)})
 
     def _detect_graph_rule_tickets(
         self,
@@ -1696,7 +1767,15 @@ class Analyzer:
 
     @staticmethod
     def _apply_candidate_validation_budget(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Keep exact sink candidates ahead of broad audit-style rules."""
+        """Prioritize broad candidates without turning a soft quota into loss.
+
+        The previous implementation set ``validation_required=False`` and a
+        ``deferred_budget`` disposition after a per-function quota.  That made
+        an available Validator silently skip concrete security obligations.
+        Quotas now affect queue priority only; every candidate keeps its normal
+        validation lifecycle and an explicit telemetry marker records the soft
+        overrun for later tuning.
+        """
         generic_categories = {
             "integer_overflow",
             "protocol_validation",
@@ -1725,22 +1804,17 @@ class Analyzer:
             counters[key] = count + 1
             if count < per_function_category_limit:
                 continue
-            issue["validation_required"] = False
-            issue["finding_kind"] = "audit_observation"
-            issue["validation_budget_class"] = "generic_deferred"
-            issue["candidate_disposition"] = "deferred_budget"
+            issue["validation_budget_class"] = "generic_soft_overrun"
+            issue["validation_priority"] = "normal"
             reason = (
-                "Deferred broad static candidate after the per-function generic validation budget; "
-                "exact sink candidates retain validator priority."
+                "Broad static candidate exceeded the per-function prioritization "
+                "quota; retained for validation because budgets are observe-only."
             )
-            issue["audit_observation_reason"] = reason
-            issue["deferred_reason"] = reason
+            issue["validation_budget_observation"] = reason
             pack = issue.get("evidence_pack")
             if isinstance(pack, dict):
-                pack["validation_required"] = False
-                pack["audit_observation_reason"] = reason
-                pack["validation_budget_class"] = "generic_deferred"
-                pack["candidate_disposition"] = "deferred_budget"
+                pack["validation_budget_observation"] = reason
+                pack["validation_budget_class"] = "generic_soft_overrun"
         return ordered
 
     @staticmethod
@@ -1815,6 +1889,13 @@ class Analyzer:
         limit = max(16, min(64, configured_breadth))
         max_depth = max(2, min(4, configured_depth))
         total_limit = max(80, min(256, limit * max_depth * 4))
+        # As for graph candidates, direct-callee facts must not be silently
+        # truncated because a local heuristic quota is small.  The indexed
+        # function count is a finite, complete work bound for this traversal.
+        project_function_count = self._known_project_function_count()
+        if project_function_count:
+            max_depth = max(max_depth, project_function_count)
+            total_limit = max(total_limit, project_function_count)
         return {"limit": limit, "max_depth": max_depth, "total_limit": total_limit}
 
     def _detect_direct_callee_rule_candidates(

@@ -722,6 +722,18 @@ class ValidationRunner:
             issue.get("validation_cluster_uid")
             or pack.get("validation_cluster_uid")
         )
+        # v3's cluster identity already includes the project revision, root
+        # cause, decision-changing code/evidence, and validator contract.
+        # Adding occurrence-local function/location/source fields here defeats
+        # cross-entry in-flight coalescing and revalidates the same obligation.
+        if validation_cluster_uid:
+            payload = {
+                "protocol": self._VALIDATION_CACHE_PROTOCOL,
+                "environment": self._validation_environment_fingerprint,
+                "validation_cluster_uid": validation_cluster_uid,
+            }
+            stable = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+            return hashlib.sha256(stable.encode("utf-8")).hexdigest()
         source_value = issue.get("source") or pack.get("source")
         sink_value = issue.get("sink") or pack.get("sink")
         resource_value = (

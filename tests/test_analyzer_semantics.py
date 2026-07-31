@@ -253,6 +253,28 @@ def test_direct_callee_fact_limit_is_reported_as_deferred_work() -> None:
     )
 
 
+def test_direct_callee_scan_budget_expands_to_complete_indexed_project() -> None:
+    class FakeIndex:
+        def list_functions(self, limit=None):
+            assert limit is None
+            return ["entry", "first", "second", "third", "fourth"]
+
+    analyzer = object.__new__(Analyzer)
+    analyzer.code_index = FakeIndex()
+    analyzer.config = type(
+        "Config",
+        (),
+        {"analysis": type("Analysis", (), {"max_premodel_callees": 16, "max_premodel_depth": 2})()},
+    )()
+
+    budget = analyzer._direct_callee_rule_scan_budget(
+        {"premodel_callees": 2, "premodel_depth": 1, "hard_caps": {}}
+    )
+
+    assert budget["max_depth"] >= 5
+    assert budget["total_limit"] >= 5
+
+
 def test_graph_impl_query_failure_is_exposed() -> None:
     class FailingIndex:
         def get_function_impl(self, name: str, warn_missing: bool = False):
