@@ -102,6 +102,32 @@ def test_llm_iteration_budget_is_observed_without_hard_failure() -> None:
     ]
 
 
+def test_candidate_first_skips_entry_scoped_investigator_planning() -> None:
+    analyzer = object.__new__(Analyzer)
+    analyzer.config = SimpleNamespace(
+        analysis=SimpleNamespace(candidate_first_validation=True)
+    )
+    recorded = []
+    analyzer._record_engine_capability = lambda *args, **kwargs: recorded.append(
+        (args, kwargs)
+    )
+    state = {"notes": []}
+
+    analyzer._step_focused_subagent_planning(state)
+
+    assert "skipped for the candidate-first" in state["notes"][0]
+    assert recorded == [
+        (
+            ("focused_investigators",),
+            {
+                "status": "complete",
+                "active": False,
+                "reason": "candidate_first_validation",
+            },
+        )
+    ]
+
+
 def test_snapshot_contract_text_prefers_new_fields_and_keeps_legacy_fallback() -> None:
     current = snapshot_contract_text(
         {

@@ -919,6 +919,33 @@ class Analyzer:
             )
 
     def _step_focused_subagent_planning(self, state: Dict[str, Any]) -> None:
+        # Candidate-first is deliberately a *single* deterministic discovery
+        # path.  The old planning step duplicated those collectors for every
+        # entry and then asked the LLM to choose worker tickets before there
+        # was a validation group.  Besides producing the same lead repeatedly,
+        # it consumed an LLM request per entry even when no contradictory
+        # decision evidence existed.  Keep deep investigation opt-in through
+        # the legacy broad-synthesis mode until it can be scheduled from a
+        # frozen, high-risk validation group.
+        if bool(
+            getattr(
+                self.config.analysis,
+                "candidate_first_validation",
+                True,
+            )
+        ):
+            state["notes"].append(
+                "Focused investigator planning skipped for the candidate-first "
+                "lifecycle; deterministic discovery owns candidate creation."
+            )
+            self._record_engine_capability(
+                "focused_investigators",
+                status="complete",
+                active=False,
+                reason="candidate_first_validation",
+            )
+            return
+
         va_agent_cfg = next(
             (a for a in self.config.project.agents if a.enabled and a.name == "vulnerability_analyzer"),
             None,
