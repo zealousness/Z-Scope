@@ -156,12 +156,9 @@ def test_candidate_first_uses_local_skill_routing_before_fact_collection() -> No
         accumulate_summary=lambda state, candidate_batch: None,
         persist=lambda candidate_batch: None,
     )
-    observed_clients = []
-    analyzer._select_vulnerability_skills_for_config = (
-        lambda cfg, llm_client=None: (
-            observed_clients.append(llm_client)
-            or SkillSelection(skills=[], restricted=False)
-        )
+    observed_configs = []
+    analyzer._candidate_first_skill_selection = lambda cfg: (
+        observed_configs.append(cfg) or SkillSelection(skills=[], restricted=False)
     )
     analyzer._attach_agent_contract = lambda *args, **kwargs: None
     analyzer._compact_candidate_signal_items = lambda *args, **kwargs: []
@@ -172,8 +169,31 @@ def test_candidate_first_uses_local_skill_routing_before_fact_collection() -> No
 
     analyzer._step_vulnerability_mining(state)
 
-    assert observed_clients == [None]
+    assert observed_configs == [analyzer.config.project.agents[0]]
     assert state["pending_new_issues"] == []
+
+
+def test_candidate_first_skill_selection_keeps_every_deterministic_skill() -> None:
+    analyzer = object.__new__(Analyzer)
+    analyzer.spec_registry = SimpleNamespace(
+        skills_for_agent=lambda name, extra: [
+            SimpleNamespace(name="bounds_and_integer"),
+            SimpleNamespace(name="resource_lifecycle"),
+            SimpleNamespace(name="shared_state_race"),
+        ]
+    )
+
+    selection = analyzer._candidate_first_skill_selection(
+        SimpleNamespace(skills=[])
+    )
+
+    assert selection.skills == [
+        "bounds_and_integer",
+        "resource_lifecycle",
+        "shared_state_race",
+    ]
+    assert selection.restricted is False
+    assert selection.source == "candidate_first_complete"
 
 
 def test_snapshot_contract_text_prefers_new_fields_and_keeps_legacy_fallback() -> None:
