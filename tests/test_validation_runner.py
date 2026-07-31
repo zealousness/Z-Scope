@@ -231,6 +231,36 @@ def test_validation_runner_cache_key_ignores_occurrence_only_entry_context() -> 
     )
 
 
+def test_validation_runner_cluster_cache_key_ignores_occurrence_payload() -> None:
+    runner = _runner(None)
+    first = SimpleNamespace(
+        raw_issue=_issue(
+            validation_cluster_uid="VAL_SHARED",
+            function="wrapper_a",
+            location="src/a.c:10",
+            source="entry_a_arg",
+            sink="shared_sink",
+        ),
+        issue_func="wrapper_a",
+        issue_code="void wrapper_a(void) { shared_sink(); }",
+        evidence_pack={"validation_cluster_uid": "VAL_SHARED"},
+    )
+    second = SimpleNamespace(
+        raw_issue=_issue(
+            validation_cluster_uid="VAL_SHARED",
+            function="wrapper_b",
+            location="src/b.c:99",
+            source="entry_b_arg",
+            sink="shared_sink",
+        ),
+        issue_func="wrapper_b",
+        issue_code="void wrapper_b(void) { shared_sink(); }",
+        evidence_pack={"validation_cluster_uid": "VAL_SHARED"},
+    )
+
+    assert runner._validator_cache_key(first) == runner._validator_cache_key(second)
+
+
 def test_validation_runner_selects_one_representative_per_validation_cluster() -> None:
     runner = _runner(None)
     issues = [
