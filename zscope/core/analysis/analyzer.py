@@ -1261,17 +1261,33 @@ class Analyzer:
                 continue
 
             logger.info("Running Vulnerability Analyzer agent for task: %s", agent_cfg.task)
-            va_llm_ref = agent_cfg.llm_ref if agent_cfg.llm_ref else "default"
-            va_client = self.llm_clients.get(va_llm_ref, self.llm_clients["default"])
-            selection = self._select_vulnerability_skills_for_config(agent_cfg, va_client)
-            analyzer_agent = VulnerabilityAnalyzer(
-                va_client,
-                self._get_tools("vulnerability_analyzer", active_skill_names=selection.skills),
-                tool_policy=self._tool_policy_for_agent(
-                    "vulnerability_analyzer",
-                    active_skill_names=selection.skills,
-                ),
+            candidate_first = bool(
+                getattr(
+                    self.config.analysis,
+                    "candidate_first_validation",
+                    True,
+                )
             )
+            if candidate_first:
+                # Skill routing is merely a collector filter here.  Calling an
+                # LLM to choose it before deterministic discovery turns a
+                # single scan-level fact pass into an entry-scoped LLM fanout.
+                # The local router is deterministic and sees the same task
+                # vocabulary, while the expensive semantic route remains for
+                # explicit legacy broad synthesis below.
+                selection = self._select_vulnerability_skills_for_config(agent_cfg)
+            else:
+                va_llm_ref = agent_cfg.llm_ref if agent_cfg.llm_ref else "default"
+                va_client = self.llm_clients.get(va_llm_ref, self.llm_clients["default"])
+                selection = self._select_vulnerability_skills_for_config(agent_cfg, va_client)
+                analyzer_agent = VulnerabilityAnalyzer(
+                    va_client,
+                    self._get_tools("vulnerability_analyzer", active_skill_names=selection.skills),
+                    tool_policy=self._tool_policy_for_agent(
+                        "vulnerability_analyzer",
+                        active_skill_names=selection.skills,
+                    ),
+                )
 
             agent_context["task"] = agent_cfg.task
             agent_context["entry_custom_prompt"] = getattr(
@@ -1310,13 +1326,7 @@ class Analyzer:
             # validator.  Focused deep workers remain available for the small
             # set of high-risk contradictory tickets planned above, while an
             # operator can explicitly opt into broad synthesis for exploration.
-            if bool(
-                getattr(
-                    self.config.analysis,
-                    "candidate_first_validation",
-                    True,
-                )
-            ):
+            if candidate_first:
                 self._register_candidate_issues(
                     state,
                     candidate_signals,

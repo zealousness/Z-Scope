@@ -16,6 +16,7 @@ from zscope.core.candidates.backend_signals import (
 from zscope.common.issue_identity import normalize_issue_category, normalize_issue_fields
 from zscope.core.validation.evidence import compact_snapshot
 from zscope.orchestration.candidates import CandidateLedger
+from zscope.orchestration.skill_selection import SkillSelection
 from zscope.semantics.inference import add_api_from_semantic_text, snapshot_contract_text
 from zscope.snapshots.policy import (
     DETERMINISTIC_SNAPSHOT_OPTIONAL_FIELDS,
@@ -126,6 +127,53 @@ def test_candidate_first_skips_entry_scoped_investigator_planning() -> None:
             },
         )
     ]
+
+
+def test_candidate_first_uses_local_skill_routing_before_fact_collection() -> None:
+    batch = SimpleNamespace(
+        local_candidates=[],
+        graph_candidates=[],
+        backend_candidates=[],
+        merged_candidates=[],
+        summary_increment=lambda: {},
+    )
+    analyzer = object.__new__(Analyzer)
+    analyzer.config = SimpleNamespace(
+        analysis=SimpleNamespace(candidate_first_validation=True),
+        project=SimpleNamespace(
+            agents=[
+                SimpleNamespace(
+                    enabled=True,
+                    name="vulnerability_analyzer",
+                    task="Audit memory and concurrency defects",
+                    skills=[],
+                )
+            ]
+        ),
+    )
+    analyzer.candidate_pipeline = SimpleNamespace(
+        collect_signal_candidates=lambda state: batch,
+        accumulate_summary=lambda state, candidate_batch: None,
+        persist=lambda candidate_batch: None,
+    )
+    observed_clients = []
+    analyzer._select_vulnerability_skills_for_config = (
+        lambda cfg, llm_client=None: (
+            observed_clients.append(llm_client)
+            or SkillSelection(skills=[], restricted=False)
+        )
+    )
+    analyzer._attach_agent_contract = lambda *args, **kwargs: None
+    analyzer._compact_candidate_signal_items = lambda *args, **kwargs: []
+    analyzer._register_candidate_issues = lambda *args, **kwargs: None
+    analyzer._deduplicate_against_history = lambda candidates, state: candidates
+    analyzer._record_engine_capability = lambda *args, **kwargs: None
+    state = {"agent_context": {}, "pending_new_issues": [], "notes": []}
+
+    analyzer._step_vulnerability_mining(state)
+
+    assert observed_clients == [None]
+    assert state["pending_new_issues"] == []
 
 
 def test_snapshot_contract_text_prefers_new_fields_and_keeps_legacy_fallback() -> None:
