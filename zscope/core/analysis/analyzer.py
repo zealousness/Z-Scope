@@ -1269,13 +1269,13 @@ class Analyzer:
                 )
             )
             if candidate_first:
-                # Skill routing is merely a collector filter here.  Calling an
-                # LLM to choose it before deterministic discovery turns a
-                # single scan-level fact pass into an entry-scoped LLM fanout.
-                # The local router is deterministic and sees the same task
-                # vocabulary, while the expensive semantic route remains for
-                # explicit legacy broad synthesis below.
-                selection = self._select_vulnerability_skills_for_config(agent_cfg)
+                # The candidate-first path must collect *all* inexpensive
+                # deterministic facts before it considers an expensive model.
+                # A task router, even a local one, is a lossy pre-filter (for
+                # example, "memory corruption" does not necessarily name a
+                # bounds skill).  Restricting collectors here would silently
+                # turn an omitted keyword into a false negative.
+                selection = self._candidate_first_skill_selection(agent_cfg)
             else:
                 va_llm_ref = agent_cfg.llm_ref if agent_cfg.llm_ref else "default"
                 va_client = self.llm_clients.get(va_llm_ref, self.llm_clients["default"])
@@ -5333,6 +5333,23 @@ class Analyzer:
                 selection.confidence,
             )
         return selection
+
+    def _candidate_first_skill_selection(self, agent_cfg: Any) -> SkillSelection:
+        """Return every deterministic vulnerability skill without semantic routing."""
+        available = [
+            skill.name
+            for skill in self.spec_registry.skills_for_agent(
+                "vulnerability_analyzer",
+                extra=getattr(agent_cfg, "skills", None),
+            )
+        ]
+        return SkillSelection(
+            skills=available,
+            restricted=False,
+            source="candidate_first_complete",
+            confidence=1.0,
+            reasons=["complete deterministic fact collection"],
+        )
 
     def _route_vulnerability_skills_with_llm(
         self,
