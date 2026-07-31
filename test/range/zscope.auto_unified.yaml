@@ -136,4 +136,7 @@ analysis:
   validation_deadline_seconds: 240
   subagent_ticket_timeout: 300
   entry_deadline_seconds: 1800
-  scan_deadline_seconds: 3600
+  # The benchmark records a 60-minute performance target in its manifest, but
+  # an available LLM service must never leave candidates unclosed merely
+  # because that target is exceeded.
+  scan_deadline_seconds: null
