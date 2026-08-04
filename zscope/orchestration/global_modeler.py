@@ -26,6 +26,7 @@ from ..snapshots.modeling_input import (
     build_semantic_model_input,
     hydrate_project_callee_summaries,
     hydrate_project_callee_summaries_from_map,
+    is_header_like_path,
 )
 from ..tools.policy import ToolPolicy
 
@@ -603,12 +604,28 @@ class GlobalModeler:
 
     def _get_impl(self, key: FunctionKey, *, include_context: bool) -> Optional[Dict[str, Any]]:
         try:
-            return self.code_index.get_function_impl(
+            impl = self.code_index.get_function_impl(
                 key.name,
                 max_lines=self.config.analysis.max_function_lines,
                 warn_missing=False,
                 include_context=include_context,
                 file_path=key.file_path,
+            )
+        except TypeError:
+            return self.code_index.get_function_impl(key.name)
+        if impl or not key.file_path or not is_header_like_path(key.file_path):
+            return impl
+        logger.debug(
+            "[global-model] retrying header declaration without file constraint key=%s",
+            self._format_key(key),
+        )
+        try:
+            return self.code_index.get_function_impl(
+                key.name,
+                max_lines=self.config.analysis.max_function_lines,
+                warn_missing=False,
+                include_context=include_context,
+                file_path="",
             )
         except TypeError:
             return self.code_index.get_function_impl(key.name)

@@ -108,6 +108,54 @@ def test_build_semantic_model_input_uses_unique_function_info_and_indexed_impl()
     assert "location" not in result
 
 
+def test_build_semantic_model_input_resolves_header_declaration_to_unique_implementation():
+    info = _info()
+    index = FakeCodeIndex([info], {info["index_name"]: _impl()})
+
+    result = build_semantic_model_input(
+        index,
+        "target",
+        file_path="include/public_api.h",
+    )
+
+    assert result["index_name"] == info["index_name"]
+    assert result["file_path"] == "src/target.c"
+
+
+def test_build_semantic_model_input_keeps_header_fallback_ambiguous():
+    left = _info("target@src/a.c:10-20", file_path="src/a.c")
+    right = _info("target@src/b.c:10-20", file_path="src/b.c")
+    index = FakeCodeIndex([left, right])
+
+    with pytest.raises(SemanticModelInputError) as exc:
+        build_semantic_model_input(
+            index,
+            "target",
+            file_path="include/public_api.h",
+        )
+
+    assert exc.value.reason == "function_info_ambiguous"
+
+
+def test_build_semantic_model_input_uses_indexed_header_implementation_when_selected():
+    left = _info("target@src/a.c:10-20", file_path="src/a.c")
+    right = _info("target@src/b.c:10-20", file_path="src/b.c")
+    selected_impl = _impl(left["index_name"])
+    selected_impl["file"] = left["file_path"]
+    index = FakeCodeIndex(
+        [left, right],
+        {"target": selected_impl, left["index_name"]: selected_impl},
+    )
+
+    result = build_semantic_model_input(
+        index,
+        "target",
+        file_path="include/public_api.h",
+    )
+
+    assert result["index_name"] == left["index_name"]
+
+
 def test_build_semantic_model_input_rejects_missing_or_internal_type_fields() -> None:
     missing = _info()
     missing.pop("referenced_types")

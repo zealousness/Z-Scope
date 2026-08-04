@@ -432,6 +432,26 @@ def test_global_modeler_unresolved_entry_fails_stage_gate(tmp_path):
     assert stats.reconciled_functions == 0
 
 
+def test_global_modeler_resolves_header_api_to_source_implementation(tmp_path):
+    calls = []
+    config = _config(tmp_path)
+    index = FakeCodeIndex()
+    index.impls = {"entry": index._impl("entry", [])}
+    store = SnapshotStore(Path(config.analysis.snapshot_dir))
+    user_config = UserConfigStore(Path(config.analysis.user_config_db))
+    stats = GlobalModeler(
+        config,
+        index,
+        store,
+        user_config,
+        semantic_agent_factory=lambda: RecordingAgent(calls),
+    ).run([FunctionEntry("entry", file_path="include/public_api.h")])
+
+    assert calls == ["entry"]
+    assert stats.unresolved_entry_functions == 0
+    assert stats.stage_complete is True
+
+
 def test_global_modeler_models_same_name_entries_in_different_files(tmp_path):
     calls = []
     config = _config(tmp_path)

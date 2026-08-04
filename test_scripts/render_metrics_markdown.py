@@ -39,6 +39,15 @@ def read_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def find_json(run_dir: Path, names: List[str]) -> Path:
+    for name in names:
+        path = run_dir / name
+        if path.exists():
+            return path
+    expected = ", ".join(names)
+    raise FileNotFoundError(f"none of {expected} found under {run_dir}")
+
+
 def fmt_int(value: Any) -> str:
     try:
         return f"{int(value):,}"
@@ -98,8 +107,12 @@ def row_line(cells: List[str]) -> str:
 def vulnerability_view(metrics: Dict[str, Any], name: str) -> Dict[str, Any]:
     views = metrics.get("benchmark_views") or {}
     view = dict(views.get(name) or {})
+    evaluation = metrics.get("evaluation") or {}
+    nested_views = evaluation.get("evaluation_views") or {}
+    if not view:
+        view = dict(nested_views.get(name) or {})
     if not view and name == "default":
-        view = dict(metrics.get("evaluation") or {})
+        view = dict(evaluation)
     tp = int(view.get("true_positives") or 0)
     fp = int(view.get("false_positives") or view.get("false_positives_effective") or 0)
     fn = int(view.get("false_negatives") or 0)
@@ -131,8 +144,10 @@ def vulnerability_view(metrics: Dict[str, Any], name: str) -> Dict[str, Any]:
 
 def render(run_dir: Path, model: str = "GLM-5") -> str:
     efficiency = read_json(run_dir / "efficiency_metrics.json")
-    metrics = read_json(run_dir / "metrics.json")
+    metrics_path = find_json(run_dir, ["metrics.json", "global_model_metrics.json"])
+    metrics = read_json(metrics_path)
     report = read_json(run_dir / "zscope_batch_report.json")
+    is_global_model_run = metrics_path.name == "global_model_metrics.json" or "global_model" in run_dir.name
 
     entry_count = int(efficiency["total"].get("entry_count") or metrics.get("entry_count") or 0)
     trace_by_agent = efficiency["llm_trace_tokens"]["by_agent"]
@@ -204,24 +219,35 @@ def render(run_dir: Path, model: str = "GLM-5") -> str:
         "工作流开始前的 CodeIndex/clangd/CPG 准备成本；无 LLM token",
     )
     add_metric_row(lines, "discover_entries<br>(step1)", "-", 0, 0, 0, 0, "直接使用配置的 entries；无 LLM token")
-    pre = token_row(trace_by_step.get("premodel_reachable_callees", {}))
-    add_metric_row(
-        lines,
-        "premodel_reachable_callees<br>(step1.5)",
-        "semantic_modeler",
-        *pre,
-        float(step_seconds.get("premodel_reachable_callees") or 0),
-        "workflow step 累计工作时长",
-    )
-    model_entry = token_row(trace_by_step.get("model_entry", {}))
-    add_metric_row(
-        lines,
-        "model_entry<br>(step2)",
-        "semantic_modeler",
-        *model_entry,
-        float(step_seconds.get("model_entry") or 0),
-        "workflow step 累计工作时长",
-    )
+    if is_global_model_run:
+        global_model = token_row(trace_by_step.get("global_model", {}))
+        add_metric_row(
+            lines,
+            "global_model<br>(step2)",
+            "semantic_modeler",
+            *global_model,
+            float(step_seconds.get("global_model") or 0),
+            "全局语义建模阶段；生成可达函数 snapshot 并供入口复用",
+        )
+    else:
+        pre = token_row(trace_by_step.get("premodel_reachable_callees", {}))
+        add_metric_row(
+            lines,
+            "premodel_reachable_callees<br>(step1.5)",
+            "semantic_modeler",
+            *pre,
+            float(step_seconds.get("premodel_reachable_callees") or 0),
+            "workflow step 累计工作时长",
+        )
+        model_entry = token_row(trace_by_step.get("model_entry", {}))
+        add_metric_row(
+            lines,
+            "model_entry<br>(step2)",
+            "semantic_modeler",
+            *model_entry,
+            float(step_seconds.get("model_entry") or 0),
+            "workflow step 累计工作时长",
+        )
     skill = token_row(trace_by_agent.get("skill_selection_or_deep_worker", {}))
     add_metric_row(
         lines,
@@ -278,8 +304,11 @@ def render(run_dir: Path, model: str = "GLM-5") -> str:
     add_metric_row(lines, "Total", "-", trace_total["total_tokens"], trace_total["prompt_tokens"], trace_total["completion_tokens"], float(efficiency["total"].get("scan_wall_seconds") or 0), "以入口数量均摊外层 scan wall time 与 API trace token", per_entry=True)
     add_metric_row(lines, "build_cpg / index warmup<br>(step0)", "-", 0, 0, 0, build_seconds or 0, "工作流开始前准备成本均摊", per_entry=True)
     add_metric_row(lines, "discover_entries<br>(step1)", "-", 0, 0, 0, 0, "直接使用配置的 entries", per_entry=True)
-    add_metric_row(lines, "premodel_reachable_callees<br>(step1.5)", "semantic_modeler", *pre, float(step_seconds.get("premodel_reachable_callees") or 0), "", per_entry=True)
-    add_metric_row(lines, "model_entry<br>(step2)", "semantic_modeler", *model_entry, float(step_seconds.get("model_entry") or 0), "", per_entry=True)
+    if is_global_model_run:
+        add_metric_row(lines, "global_model<br>(step2)", "semantic_modeler", *global_model, float(step_seconds.get("global_model") or 0), "全局语义建模阶段均摊", per_entry=True)
+    else:
+        add_metric_row(lines, "premodel_reachable_callees<br>(step1.5)", "semantic_modeler", *pre, float(step_seconds.get("premodel_reachable_callees") or 0), "", per_entry=True)
+        add_metric_row(lines, "model_entry<br>(step2)", "semantic_modeler", *model_entry, float(step_seconds.get("model_entry") or 0), "", per_entry=True)
     add_metric_row(lines, "focused_subagent_planning<br>(step3)", "skill_selection", *skill, float(conversation.get("skill_selection", {}).get("session_duration_seconds") or step_seconds.get("focused_subagent_planning") or 0), "skill routing session 累计", per_entry=True)
     add_metric_row(lines, "focused_subagent_planning<br>(step3)", "deep_worker", *deep, float(conversation.get("deep_worker", {}).get("session_duration_seconds") or 0), "Agent session 累计；实际执行发生在 step3", per_entry=True)
     add_metric_row(lines, "vulnerability_mining<br>(step4)", "vulnerability_analyzer", *vuln, float(step_seconds.get("vulnerability_mining") or 0), "", per_entry=True)
@@ -288,7 +317,9 @@ def render(run_dir: Path, model: str = "GLM-5") -> str:
     lines.append("")
     lines.append("说明：")
     lines.append("- `build_cpg / index warmup（step0）` 不属于 `zscope/workflows/default.yaml` 的步骤，表示 CLI 创建 CodeIndex、clangd/CPG/KnowledgeDB 准备等工作流开始前成本。")
-    lines.append("- 用时口径：`Total` 用时来自 `metrics.json.scan_wall_seconds`；workflow step 用时来自日志 step start/completed 的累计工作时长；`deep_worker` 与 `issue_reconciler_agent` 使用 conversation session 累计时长。")
+    if is_global_model_run:
+        lines.append("- 全局建模模式下，入口级 `premodel_reachable_callees` 和 `model_entry` 被全局 `global_model` 阶段替代；后续入口分析复用全局 snapshot。")
+    lines.append(f"- 用时口径：`Total` 用时来自 `{metrics_path.name}.scan_wall_seconds`；workflow step 用时来自日志 step start/completed 的累计工作时长；`deep_worker` 与 `issue_reconciler_agent` 使用 conversation session 累计时长。")
     lines.append(f"- 报告归档口径 token：Prompt {fmt_int(efficiency['total'].get('total_prompt_tokens'))}，Completion {fmt_int(efficiency['total'].get('total_completion_tokens'))}，Total {fmt_int(efficiency['total'].get('total_tokens'))}。")
 
     by_tool = tool_calls["by_tool"]
@@ -384,7 +415,7 @@ def render(run_dir: Path, model: str = "GLM-5") -> str:
     lines.append(row_line(["Needs Review 视图", fmt_int(needs["issues"]), fmt_int(needs["ground_truth"]), fmt_int(needs["tp"]), fmt_int(needs["fp"]), fmt_int(needs["fn"]), fmt_pct_value(needs["recall"]), fmt_pct_value(needs["precision"]), fmt_pct_value(needs["f1"]), fmt_pct_value(needs["false_positive_rate"]), fmt_pct_value(needs_ratio)]))
     lines.append("")
     lines.append("说明：")
-    lines.append("- `误报率` 使用 `metrics.json` 中的 `false_positive_rate` 字段。")
+    lines.append(f"- `误报率` 使用 `{metrics_path.name}` 中的 `false_positive_rate` 字段。")
     lines.append(f"- `Needs Review 比例 = (Needs Review 视图 Report Issues - 默认视图 Report Issues) / Needs Review 视图 Report Issues = {needs['issues'] - default['issues']} / {needs['issues']} = {fmt_pct_value(needs_ratio)}`。")
     lines.append("")
     lines.append("## 五、后端质量指标")

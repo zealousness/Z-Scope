@@ -30,6 +30,14 @@ LLM_TRACE_RE = re.compile(
     r"\[LLM API Trace\].*Prompt ≈ (?P<prompt>[\d,]+) tk \| "
     r"Completion ≈ (?P<completion>[\d,]+) tk \| Total ≈ (?P<total>[\d,]+) tk"
 )
+GLOBAL_MODEL_START_RE = re.compile(
+    r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*"
+    r"\[global-model\] start\b"
+)
+GLOBAL_MODEL_END_RE = re.compile(
+    r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*"
+    r"\[global-model\] end\b.*duration=(?P<duration>[\d.]+)s"
+)
 
 
 def _empty_token_bucket() -> Dict[str, int]:
@@ -54,6 +62,15 @@ def _empty_tool_bucket() -> Dict[str, int]:
 
 def _read_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _find_json(run_dir: Path, names: Iterable[str]) -> Path:
+    for name in names:
+        path = run_dir / name
+        if path.exists():
+            return path
+    expected = ", ".join(names)
+    raise FileNotFoundError(f"none of {expected} found under {run_dir}")
 
 
 def _fmt_seconds(value: float) -> str:
@@ -379,6 +396,10 @@ def _parse_step_work_seconds(log_path: Path) -> Dict[str, float]:
     active: Dict[Tuple[str, str], datetime] = {}
     totals: Dict[str, float] = defaultdict(float)
     for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        global_end = GLOBAL_MODEL_END_RE.search(line)
+        if global_end:
+            totals["global_model"] += float(global_end.group("duration"))
+            continue
         start = STEP_START_RE.search(line)
         if start:
             key = (start.group("thread"), start.group("step"))
@@ -417,9 +438,16 @@ def _agent_for_trace_thread(thread: str, active_step: str) -> str:
 
 def _parse_llm_trace_tokens(log_path: Path) -> Dict[str, Any]:
     active_by_thread: Dict[str, str] = {}
+    global_model_active = False
     by_agent: Dict[str, Dict[str, int]] = defaultdict(_empty_token_bucket)
     by_step: Dict[str, Dict[str, int]] = defaultdict(_empty_token_bucket)
     for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if GLOBAL_MODEL_START_RE.search(line):
+            global_model_active = True
+            continue
+        if GLOBAL_MODEL_END_RE.search(line):
+            global_model_active = False
+            continue
         start = STEP_START_RE.search(line)
         if start:
             active_by_thread[start.group("thread")] = start.group("step")
@@ -432,9 +460,13 @@ def _parse_llm_trace_tokens(log_path: Path) -> Dict[str, Any]:
         if not trace:
             continue
         thread = trace.group("thread")
-        active_step = active_by_thread.get(thread, "")
-        agent = _agent_for_trace_thread(thread, active_step)
-        step = active_step or ("validate_findings" if agent == "validator_agent" else "")
+        if global_model_active:
+            agent = "semantic_modeler"
+            step = "global_model"
+        else:
+            active_step = active_by_thread.get(thread, "")
+            agent = _agent_for_trace_thread(thread, active_step)
+            step = active_step or ("validate_findings" if agent == "validator_agent" else "")
         if not step and agent == "deep_worker":
             step = "focused_subagent_planning"
         if not step and agent == "issue_reconciler_agent":
@@ -454,7 +486,8 @@ def _parse_llm_trace_tokens(log_path: Path) -> Dict[str, Any]:
 
 
 def extract(run_dir: Path, conv_dir: Path) -> Dict[str, Any]:
-    metrics = _read_json(run_dir / "metrics.json")
+    metrics_path = _find_json(run_dir, ("metrics.json", "global_model_metrics.json"))
+    metrics = _read_json(metrics_path)
     report = _read_json(run_dir / "zscope_batch_report.json")
     summary = report.get("summary") or {}
     entry_count = int(metrics.get("entry_count") or summary.get("functions_analyzed") or 0)
@@ -479,6 +512,7 @@ def extract(run_dir: Path, conv_dir: Path) -> Dict[str, Any]:
     }
     return {
         "run_dir": str(run_dir),
+        "metrics_file": str(metrics_path),
         "conversation_dir": str(conv_dir),
         "total": total,
         "per_entry_average": averages,
