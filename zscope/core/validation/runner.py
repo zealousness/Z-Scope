@@ -34,6 +34,7 @@ from .evidence import (
     validation_verdict,
 )
 from .pipeline import ValidationPipeline
+from .evidence_completion import EvidenceCompletionQueue
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ class _ValidationWorkerResult:
     val_data: Dict[str, Any] = field(default_factory=dict)
     error: Any = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    evidence_pack: Dict[str, Any] = field(default_factory=dict)
 
 
 class ValidationResultCache:
@@ -203,6 +205,15 @@ class ValidationRunner:
             self._validator_result_cache_size
         )
         self._validation_environment_fingerprint = self._build_validation_environment_fingerprint()
+        analysis_cfg = getattr(config, "analysis", None)
+        self._evidence_completion_queue = EvidenceCompletionQueue(
+            enabled=bool(
+                getattr(analysis_cfg, "enable_evidence_completion_queue", True)
+            ),
+            max_workers=int(
+                getattr(analysis_cfg, "evidence_completion_workers", 2) or 2
+            ),
+        )
 
     def run(self, state: Dict[str, Any]) -> None:
         new_issues = state.get("pending_new_issues", [])
@@ -418,6 +429,7 @@ class ValidationRunner:
                     item,
                     validator_agent=validator_agent,
                 )
+                result.evidence_pack = dict(item.evidence_pack)
                 token.raise_if_cancelled()
         except CancellationError:
             # validation_deadline_seconds is a soft observability budget.  Only
@@ -542,6 +554,11 @@ class ValidationRunner:
     ) -> Optional[_PreparedValidation]:
         issue_func = self._issue_function(raw_issue, state)
         logger.info("Validating issue: %s in %s", raw_issue.get("id", "unknown"), issue_func)
+
+        ledger = state.get("candidate_ledger")
+        mark_running = getattr(ledger, "mark_validation_running", None)
+        if callable(mark_running):
+            mark_running(raw_issue)
 
         decision = self.validation_pipeline.apply_pre_validation_feedback(raw_issue, issue_func)
         if decision:
@@ -942,6 +959,30 @@ class ValidationRunner:
             verdict=verdict,
             score_data=score_data,
         )
+        if outcome.memory_status == "needs_review":
+            completion = self._evidence_completion_queue.complete(
+                raw_issue,
+                validator_data={**val_data, "verdict": verdict},
+                validation_evidence=result.evidence_pack,
+            )
+            if completion is not None:
+                state.setdefault("evidence_completion_requests", []).append(
+                    {
+                        "validation_cluster_uid": completion.validation_cluster_uid,
+                        "missing_fact": completion.missing_fact,
+                        "reason": completion.reason,
+                        "status": raw_issue.get("evidence_completion_status"),
+                    }
+                )
+                # Completion may only surface backend-produced structured facts.
+                # Re-run the policy, never the LLM, once for this group.
+                if raw_issue.get("evidence_completion_status") == "completed":
+                    outcome = self.validation_pipeline.apply_validator_result(
+                        raw_issue,
+                        val_data,
+                        verdict=verdict,
+                        score_data=score_data,
+                    )
         if outcome.report_bucket:
             state[outcome.report_bucket].append(raw_issue)
         if outcome.memory_status:

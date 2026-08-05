@@ -326,6 +326,67 @@ def test_validation_pipeline_accepts_engine_verified_rejection_proof() -> None:
     assert issue["deterministic_rejection"] is True
 
 
+def test_validation_pipeline_accepts_structured_lock_dominance_proof() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_LOCK_SAFE",
+        "code_hash": "code-v1",
+        "deterministic_proofs": [
+            {
+                "outcome": "reject",
+                "proof_kind": "lock_dominates_access",
+                "producer_engine": "clang_ast_cfg",
+                "fact_ids": ["cfg:11", "cfg:27"],
+                "code_hash": "code-v1",
+                "facts": ["lock_dominates_access", "all_accesses_guarded"],
+                "completeness": "complete",
+                "scope": "all accesses to runtime.event",
+            }
+        ],
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {"reasoning": "The named lock protects every access."},
+        verdict="rejected",
+        score_data=_score(0.8),
+    )
+
+    assert outcome.report_bucket is None
+    assert issue["candidate_disposition"] == "rejected_with_proof"
+    assert issue["decision_proof"]["proof_kind"] == "lock_dominates_access"
+
+
+def test_validation_pipeline_promotes_complete_structured_positive_proof() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_BOUNDS",
+        "code_hash": "code-v1",
+        "deterministic_proofs": [
+            {
+                "outcome": "confirm",
+                "proof_kind": "unguarded_source_to_sink",
+                "producer_engine": "svf_value_flow",
+                "fact_ids": ["flow:source", "flow:sink"],
+                "code_hash": "code-v1",
+                "facts": ["source_to_sink_complete", "missing_guard"],
+                "complete": True,
+            }
+        ],
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {"reasoning": "The path is exploitable."},
+        verdict="verified",
+        score_data=_score(0.55),
+    )
+
+    assert outcome.report_bucket == "issues"
+    assert issue["candidate_disposition"] == "confirmed"
+    assert issue["promotion_reason"] == "deterministic_confirmation_proof"
+
+
 def test_validation_pipeline_corrects_rejected_allocator_mismatch_to_memory_leak() -> None:
     pipeline = ValidationPipeline(FakeUserConfig())
     issue = {

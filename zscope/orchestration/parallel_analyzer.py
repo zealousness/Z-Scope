@@ -1183,7 +1183,40 @@ class ParallelAnalyzer:
             for item in final_records
             if item.get("validation_cluster_uid")
         }
-        if final_by_cluster:
+        canonical_outcomes = ReportAssembler._canonical_outcome_items(
+            {"candidate_lifecycle_snapshot": ledger_snapshot}
+        )
+        analysis_config = getattr(base_config, "analysis", None)
+        canonical_projection = bool(
+            getattr(analysis_config, "candidate_lifecycle_v3", True)
+        ) and bool(
+            getattr(analysis_config, "canonical_outcome_projection", True)
+        ) and canonical_outcomes is not None
+        if canonical_projection:
+            # A scan-level outcome is authoritative.  Per-entry reports may
+            # have been assembled before another entry completed the shared
+            # validation future, so they are provenance only at this point.
+            all_issues = [
+                item
+                for item in canonical_outcomes
+                if str(item.get("candidate_disposition") or "").lower()
+                == "confirmed"
+            ]
+            all_observations = [
+                item
+                for item in canonical_outcomes
+                if str(item.get("candidate_disposition") or "").lower()
+                == "needs_review"
+            ]
+            all_terminal_states = [
+                {
+                    key: value
+                    for key, value in item.items()
+                    if key != "issue" and value not in (None, "", [], {})
+                }
+                for item in canonical_outcomes
+            ]
+        elif final_by_cluster:
             all_observations = [
                 item
                 for item in all_observations
@@ -1216,11 +1249,25 @@ class ParallelAnalyzer:
         # by single-entry reports. Observations stay programmatic to avoid an
         # extra batch LLM pass over needs_review-only material.
         interrupted = bool(getattr(self, "_interrupted", False))
-        unique_issues, semantic_dedup_summary = self._deduplicate_report_issues(
-            all_issues,
-            allow_llm=not interrupted,
+        if canonical_projection:
+            unique_issues = list(all_issues)
+            semantic_dedup_summary = {
+                "input_count": len(all_issues),
+                "after_programmatic_count": len(all_issues),
+                "final_count": len(all_issues),
+                "llm_enabled": False,
+                "canonical_projection": True,
+            }
+        else:
+            unique_issues, semantic_dedup_summary = self._deduplicate_report_issues(
+                all_issues,
+                allow_llm=not interrupted,
+            )
+        review_observations = (
+            list(all_observations)
+            if canonical_projection
+            else coalesce_review_observations(all_observations)
         )
-        review_observations = coalesce_review_observations(all_observations)
         review_fingerprints = {
             str(item.get("validation_cluster_uid") or "")
             or str(item.get("candidate_uid") or "")
@@ -1235,14 +1282,21 @@ class ParallelAnalyzer:
             )
             in review_fingerprints
         ]
-        unique_observations = self._deduplicate_issues(non_review_observations)
-        unique_observations.extend(review_observations)
+        unique_observations = (
+            review_observations
+            if canonical_projection
+            else self._deduplicate_issues(non_review_observations) + review_observations
+        )
         unique_terminal_states = [
             dict(item)
             for item in coalesce_terminal_candidates(all_terminal_states)
             if isinstance(item, dict)
         ]
-        report_views = build_report_views(unique_issues, unique_observations)
+        report_views = build_report_views(
+            unique_issues,
+            unique_observations,
+            canonical_projection=canonical_projection,
+        )
         view_summary = report_view_summary({"report_views": report_views})
         with_review_view = report_views.get("with_needs_review", {})
         
@@ -1397,6 +1451,8 @@ class ParallelAnalyzer:
                 "any_failure": error_result_count > 0,
                 "candidate_terminal_states": unique_terminal_states,
                 "engine_capabilities": engine_capabilities,
+                "canonical_outcome_projection": canonical_projection,
+                "candidate_ledger_summary": ledger_snapshot.get("summary", {}),
             },
             issues=unique_issues,
             observations=unique_observations,

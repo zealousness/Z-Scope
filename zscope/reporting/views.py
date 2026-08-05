@@ -631,18 +631,37 @@ def attach_related_needs_review(
 def build_report_views(
     issues: Iterable[Any],
     audit_observations: Iterable[Any],
+    *,
+    canonical_projection: bool = False,
 ) -> Dict[str, Dict[str, Any]]:
-    """Build default and needs-review-inclusive issue lists."""
-    base_issues = deduplicate_issues(issue_dicts(issues))
+    """Build default and needs-review-inclusive issue lists.
+
+    A v3 canonical projection is already one row per immutable validation
+    group.  Running legacy semantic de-duplication or attaching a review row
+    to a confirmed finding at this point would change the ledger decision and
+    break the public count invariant.  The legacy behaviour remains available
+    for reports that predate lifecycle outcomes.
+    """
+    raw_issues = issue_dicts(issues)
+    base_issues = raw_issues if canonical_projection else deduplicate_issues(raw_issues)
     default_issues = deepcopy(base_issues)
     review_base_issues = deepcopy(base_issues)
     raw_observations = issue_dicts(audit_observations)
-    review_issues = coalesce_review_observations(raw_observations)
-    independent_review_issues, attached_review_count = attach_related_needs_review(
-        review_base_issues,
-        review_issues,
-    )
-    with_review = deduplicate_issues(review_base_issues + independent_review_issues)
+    if canonical_projection:
+        # Canonical outcomes have already been structurally clustered by
+        # validation_cluster_uid.  Keep every security obligation visible,
+        # including an unresolved group that is related to a confirmed one.
+        review_issues = needs_review_observations(raw_observations)
+        independent_review_issues = deepcopy(review_issues)
+        attached_review_count = 0
+        with_review = review_base_issues + independent_review_issues
+    else:
+        review_issues = coalesce_review_observations(raw_observations)
+        independent_review_issues, attached_review_count = attach_related_needs_review(
+            review_base_issues,
+            review_issues,
+        )
+        with_review = deduplicate_issues(review_base_issues + independent_review_issues)
     review_count = len(review_issues)
     governance = review_governance_summary(
         raw_observations,

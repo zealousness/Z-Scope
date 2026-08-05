@@ -1,0 +1,169 @@
+"""Structured deterministic proof extraction for validation decisions.
+
+The validator may explain a decision, but it is not a proof authority.  This
+module accepts only facts attached by deterministic analysis (or an explicitly
+versioned proof record), and turns them into small auditable decision proofs.
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, Iterable, Mapping, Optional
+
+
+@dataclass(frozen=True)
+class DecisionProof:
+    outcome: str
+    proof_kind: str
+    producer_engine: str
+    fact_ids: tuple[str, ...]
+    code_hash: str
+    assumptions: tuple[str, ...]
+    contradiction_or_obligation: str
+    scope: str
+    completeness: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+_REJECTION_REQUIREMENTS = {
+    "guard_dominates_sink": {"guard_dominates_sink"},
+    "sanitizer_dominates_sink": {"sanitizer_dominates_sink"},
+    "lock_dominates_access": {"lock_dominates_access", "all_accesses_guarded"},
+    "happens_before_orders_access": {"happens_before_proved"},
+    "ownership_cleanup_complete": {"cleanup_all_paths"},
+    "release_after_last_use": {"release_after_last_use"},
+    "sink_unreachable": {"sink_unreachable"},
+    "error_path_returns_before_sink": {"error_path_returns_before_sink"},
+    "contract_precondition_enforced": {"contract_precondition_enforced"},
+}
+
+_CONFIRMATION_REQUIREMENTS = {
+    "unguarded_source_to_sink": {"source_to_sink_complete", "missing_guard"},
+    "out_of_range_value_reaches_sink": {"source_to_sink_complete", "out_of_range_value"},
+    "use_after_free_path": {"free_before_use", "source_to_sink_complete"},
+    "missing_cleanup_path": {"allocation_reachable", "cleanup_missing"},
+    "race_without_happens_before": {"conflicting_accesses", "no_happens_before"},
+    "contract_violation_path": {"caller_contract_violated", "source_to_sink_complete"},
+}
+
+
+def deterministic_decision_proof(
+    issue: Mapping[str, Any],
+    *,
+    outcome: str,
+) -> Optional[DecisionProof]:
+    """Return a complete proof from deterministic facts or ``None``.
+
+    Proof records must originate in the issue/evidence pack, never in the LLM
+    response.  This keeps a model from self-attesting that a guard or lock is
+    complete merely by describing it in prose.
+    """
+
+    expected = str(outcome or "").lower()
+    requirements = (
+        _REJECTION_REQUIREMENTS if expected == "reject" else _CONFIRMATION_REQUIREMENTS
+    )
+    for proof in _proof_records(issue):
+        proof_outcome = str(proof.get("outcome") or proof.get("decision") or "").lower()
+        if proof_outcome not in {expected, "rejected" if expected == "reject" else "confirmed"}:
+            continue
+        kind = str(proof.get("proof_kind") or proof.get("kind") or "").lower()
+        required = requirements.get(kind)
+        if not required:
+            continue
+        facts = _fact_names(proof)
+        if not required.issubset(facts):
+            continue
+        if not _complete(proof) or not _has_fact_ids(proof) or not _has_code_hash(proof, issue):
+            continue
+        engine = str(proof.get("producer_engine") or proof.get("engine") or "").lower()
+        if not engine or engine in {"llm", "validator", "model"}:
+            continue
+        return DecisionProof(
+            outcome=expected,
+            proof_kind=kind,
+            producer_engine=engine,
+            fact_ids=tuple(sorted(_string_values(proof.get("fact_ids") or proof.get("evidence_refs")))),
+            code_hash=str(proof.get("code_hash") or _code_hash(issue)),
+            assumptions=tuple(sorted(_string_values(proof.get("assumptions")))),
+            contradiction_or_obligation=str(
+                proof.get("contradiction_or_obligation")
+                or proof.get("summary")
+                or proof.get("reason")
+                or kind
+            ),
+            scope=str(proof.get("scope") or "candidate"),
+            completeness="complete",
+        )
+    return None
+
+
+def _proof_records(issue: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]:
+    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), Mapping) else {}
+    sources = (
+        issue.get("deterministic_proofs"),
+        issue.get("decision_proofs"),
+        issue.get("proofs"),
+        pack.get("deterministic_proofs"),
+        pack.get("decision_proofs"),
+        pack.get("proofs"),
+    )
+    for source in sources:
+        if isinstance(source, Mapping):
+            # A keyed collection may contain multiple proof objects.
+            if "proof_kind" in source or "kind" in source:
+                yield source
+            else:
+                for value in source.values():
+                    if isinstance(value, Mapping):
+                        yield value
+        elif isinstance(source, (list, tuple)):
+            for value in source:
+                if isinstance(value, Mapping):
+                    yield value
+
+
+def _fact_names(proof: Mapping[str, Any]) -> set[str]:
+    raw = proof.get("facts") or proof.get("fact_kinds") or proof.get("fact_names") or []
+    result = {str(value).strip().lower() for value in _string_values(raw)}
+    for key, value in proof.items():
+        if value is True:
+            result.add(str(key).strip().lower())
+    return result
+
+
+def _complete(proof: Mapping[str, Any]) -> bool:
+    return str(proof.get("completeness") or "").lower() == "complete" or bool(
+        proof.get("complete") is True
+    )
+
+
+def _has_fact_ids(proof: Mapping[str, Any]) -> bool:
+    return bool(_string_values(proof.get("fact_ids") or proof.get("evidence_refs")))
+
+
+def _code_hash(issue: Mapping[str, Any]) -> str:
+    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), Mapping) else {}
+    return str(
+        issue.get("dependency_code_hash")
+        or issue.get("code_hash")
+        or issue.get("source_fingerprint")
+        or pack.get("dependency_code_hash")
+        or pack.get("code_hash")
+        or pack.get("source_fingerprint")
+        or ""
+    )
+
+
+def _has_code_hash(proof: Mapping[str, Any], issue: Mapping[str, Any]) -> bool:
+    return bool(str(proof.get("code_hash") or _code_hash(issue)).strip())
+
+
+def _string_values(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item).strip()]
+    return []
