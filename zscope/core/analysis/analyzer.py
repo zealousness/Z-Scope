@@ -190,7 +190,12 @@ class Analyzer:
         )
         db_dir = Path(config.analysis.user_config_db) if config.analysis.user_config_db else Path(config.analysis.snapshot_dir)
         self.user_config = user_config or UserConfigStore(db_dir)
-        self.validation_pipeline = ValidationPipeline(self.user_config)
+        self.validation_pipeline = ValidationPipeline(
+            self.user_config,
+            enable_deterministic_proof_routing=bool(
+                getattr(config.analysis, "deterministic_proof_routing", True)
+            ),
+        )
         self.candidate_pipeline = CandidatePipeline(
             local_detector=self._detect_local_rule_candidates,
             graph_detector=self._detect_graph_rule_candidates,
@@ -449,6 +454,12 @@ class Analyzer:
             "candidate_ledger": self.candidate_ledger,
             "candidate_ledger_context": [],
             "candidate_ledger_summary": {},
+            "candidate_lifecycle_v3": bool(
+                getattr(self.config.analysis, "candidate_lifecycle_v3", True)
+            ),
+            "canonical_outcome_projection_enabled": bool(
+                getattr(self.config.analysis, "canonical_outcome_projection", True)
+            ),
             "deferred_deterministic_work": [],
             "engine_capabilities": self._engine_capabilities(),
             "total_context_tokens": 0,
@@ -4296,7 +4307,17 @@ class Analyzer:
                         return None
 
                 user_config = EmptyUserConfig()
-            pipeline = ValidationPipeline(user_config, issue_key_fn=self._canonical_issue_key)
+            pipeline = ValidationPipeline(
+                user_config,
+                issue_key_fn=self._canonical_issue_key,
+                enable_deterministic_proof_routing=bool(
+                    getattr(
+                        getattr(getattr(self, "config", None), "analysis", None),
+                        "deterministic_proof_routing",
+                        True,
+                    )
+                ),
+            )
         return pipeline.score_components(issue, val_data)
 
     def _finding_baseline_for_issue(self, issue: Dict[str, Any]) -> Optional[Dict[str, Any]]:

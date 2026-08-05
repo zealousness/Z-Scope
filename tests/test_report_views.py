@@ -82,6 +82,43 @@ def test_build_report_views_attaches_duplicate_needs_review_observations() -> No
     assert "related_needs_review_observations" not in views["default"]["issues"][0]
 
 
+def test_canonical_projection_does_not_hide_review_related_to_confirmed() -> None:
+    confirmed = {
+        "id": "ISSUE_CONFIRMED",
+        "candidate_disposition": "confirmed",
+        "validation_cluster_uid": "VAL_confirmed",
+        "function": "sink",
+        "location": "src/main.c:42",
+        "category": "memory_leak",
+        "resource_signature": "shared_buffer",
+    }
+    review = {
+        "id": "ISSUE_REVIEW",
+        "candidate_disposition": "needs_review",
+        "validation_status": "needs_review",
+        "validation_cluster_uid": "VAL_review",
+        "function": "sink",
+        "location": "src/main.c:42",
+        "category": "memory_leak",
+        "resource_signature": "shared_buffer",
+    }
+
+    views = build_report_views(
+        [confirmed],
+        [review],
+        canonical_projection=True,
+    )
+
+    with_review = views["with_needs_review"]
+    assert with_review["issue_count"] == 2
+    assert with_review["included_needs_review_count"] == 1
+    assert with_review["attached_needs_review_count"] == 0
+    assert [item["id"] for item in with_review["issues"]] == [
+        "ISSUE_CONFIRMED",
+        "ISSUE_REVIEW",
+    ]
+
+
 def test_build_report_views_treats_null_related_observations_as_empty() -> None:
     issues = [
         {

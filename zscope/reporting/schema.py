@@ -588,6 +588,7 @@ def apply_report_schema_v2(
         )
     )
     terminal_candidates = coalesce_terminal_candidates(terminal_candidates)
+    canonical_projection = bool(state.get("canonical_outcome_projection"))
     finding = finding_status(issues, list(observations) + list(terminal_candidates))
     completeness = completeness_status(
         state,
@@ -595,11 +596,29 @@ def apply_report_schema_v2(
     )
     review_count = needs_review_count(
         observations,
-        terminal_candidates,
+        () if canonical_projection else terminal_candidates,
     )
+    operational_terminal = [
+        item
+        for item in terminal_candidates
+        if str(item.get("record_role") or "") == "operational_obligation"
+        or str(item.get("candidate_disposition") or "").lower()
+        in {"deferred_budget", "engine_failed", "interrupted"}
+    ]
     governance = review_governance_summary(
-        list(observations) + list(terminal_candidates),
+        list(observations) + (operational_terminal if canonical_projection else list(terminal_candidates)),
+        canonical_review=[item for item in observations if isinstance(item, Mapping)]
+        if canonical_projection
+        else None,
     )
+    invariant = report_invariant_status(
+        issues,
+        observations,
+        terminal_candidates,
+        canonical_projection=canonical_projection,
+    )
+    if not invariant["valid"] and completeness == "complete":
+        completeness = "degraded"
     report.update(
         {
             "schema_version": REPORT_SCHEMA_VERSION,
@@ -619,7 +638,70 @@ def apply_report_schema_v2(
             ),
         }
     )
+    report["run_manifest"]["canonical_validation_group_count"] = int(
+        invariant["canonical_validation_group_count"]
+    )
+    report["run_manifest"]["report_invariant_status"] = invariant
     return report
+
+
+def report_invariant_status(
+    issues: Sequence[Any],
+    observations: Sequence[Any],
+    terminal_candidates: Sequence[Any],
+    *,
+    canonical_projection: bool,
+) -> Dict[str, Any]:
+    """Check that public report projections share one terminal source of truth."""
+
+    confirmed = sum(
+        1
+        for item in _dict_items(issues)
+        if str(item.get("candidate_disposition") or "").lower() == "confirmed"
+        or str(item.get("validation_status") or "").lower()
+        in {"validated", "verified", "confirmed"}
+    )
+    review = sum(
+        1
+        for item in _dict_items(observations)
+        if str(item.get("candidate_disposition") or "").lower() == "needs_review"
+        or str(item.get("validation_status") or "").lower()
+        in {"needs_review", "uncertain", "unvalidated"}
+    )
+    terminal_confirmed = sum(
+        1
+        for item in _dict_items(terminal_candidates)
+        if str(item.get("candidate_disposition") or "").lower() == "confirmed"
+    )
+    terminal_review = sum(
+        1
+        for item in _dict_items(terminal_candidates)
+        if str(item.get("candidate_disposition") or "").lower() == "needs_review"
+    )
+    security_terminal = [
+        item
+        for item in _dict_items(terminal_candidates)
+        if str(item.get("record_role") or "") != "operational_obligation"
+    ]
+    clusters = {
+        str(item.get("validation_cluster_uid") or "")
+        for item in security_terminal
+        if item.get("validation_cluster_uid")
+    }
+    valid = not canonical_projection or (
+        confirmed == terminal_confirmed
+        and review == terminal_review
+        and len(clusters) == len(security_terminal)
+    )
+    return {
+        "valid": valid,
+        "canonical_projection": canonical_projection,
+        "default_confirmed_count": confirmed,
+        "terminal_confirmed_count": terminal_confirmed,
+        "displayed_review_count": review,
+        "terminal_review_count": terminal_review,
+        "canonical_validation_group_count": len(clusters),
+    }
 
 
 def exit_code_for_report(
