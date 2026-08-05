@@ -274,6 +274,40 @@ def test_report_schema_exposes_engine_failure_as_review_terminal() -> None:
     assert terminal[0]["engine"] == "clang_tooling"
 
 
+def test_canonical_projection_counts_review_once_not_as_terminal_duplicate() -> None:
+    report = {}
+    issue = {
+        "candidate_uid": "CAND_1",
+        "validation_cluster_uid": "VAL_1",
+        "candidate_disposition": "confirmed",
+        "validation_status": "validated",
+    }
+    review = {
+        "candidate_uid": "CAND_2",
+        "validation_cluster_uid": "VAL_2",
+        "candidate_disposition": "needs_review",
+        "validation_status": "needs_review",
+    }
+
+    apply_report_schema_v2(
+        report,
+        state={
+            "canonical_outcome_projection": True,
+            "candidate_terminal_states": [issue, review],
+        },
+        issues=[issue],
+        observations=[review],
+        metadata={"run_id": "RUN"},
+        entry_function="entry",
+    )
+
+    assert report["run_manifest"]["needs_review_count"] == 1
+    assert report["needs_review_governance"]["by_disposition"] == {
+        "needs_review": 1
+    }
+    assert report["run_manifest"]["report_invariant_status"]["valid"] is True
+
+
 def test_interrupted_engine_marks_whole_report_interrupted() -> None:
     report = {}
 

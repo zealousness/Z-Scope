@@ -10,6 +10,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECKER_PATH = REPO_ROOT / "test" / "range" / "benchmark" / "check_entry_coverage.py"
 RUNNER_PATH = REPO_ROOT / "test" / "range" / "benchmark" / "run_auto_unified_wsl.sh"
+BENCHMARK_CONFIG_PATH = REPO_ROOT / "test" / "range" / "zscope.auto_unified.yaml"
 GIT_ATTRIBUTES_PATH = REPO_ROOT / ".gitattributes"
 
 SPEC = importlib.util.spec_from_file_location("range_entry_coverage", CHECKER_PATH)
@@ -237,6 +238,12 @@ def test_wsl_runner_separates_process_report_and_valid_scan_states() -> None:
     assert "report_completeness == \"complete\"" in runner
     assert "manifest_valid" in runner
     assert "valid_scan_exit" in runner
+    assert "and entry_coverage_rc == 0" in runner
+    assert 'models != {"glm-5.1"}' in runner
+    assert 'base_urls != {"https://open.bigmodel.cn/api/paas/v4"}' in runner
+    assert '"candidate_lifecycle_v3"' in runner
+    assert '"canonical_outcome_projection"' in runner
+    assert "model_trace_valid" in runner
     assert '"scan_completed": scan_completed' in runner
     assert '"benchmark_valid": benchmark_valid' in runner
     assert '--knowledge-db "${knowledge_db_path}"' in runner
@@ -245,3 +252,12 @@ def test_wsl_runner_separates_process_report_and_valid_scan_states() -> None:
 def test_wsl_runner_is_forced_to_lf_line_endings() -> None:
     assert b"\r\n" not in RUNNER_PATH.read_bytes()
     assert "*.sh text eol=lf" in GIT_ATTRIBUTES_PATH.read_text(encoding="utf-8")
+
+
+def test_range_benchmark_uses_zhipu_glm51_endpoint() -> None:
+    config = BENCHMARK_CONFIG_PATH.read_text(encoding="utf-8")
+
+    assert config.count("https://open.bigmodel.cn/api/paas/v4/") == 2
+    assert "candidate_lifecycle_v3: true" in config
+    assert "canonical_outcome_projection: true" in config
+    assert "deterministic_proof_routing: true" in config

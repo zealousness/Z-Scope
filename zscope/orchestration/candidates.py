@@ -6,8 +6,9 @@ import hashlib
 import json
 import re
 import threading
+from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .candidate_envelope import (
     CANDIDATE_SCHEMA_VERSION,
@@ -16,6 +17,20 @@ from .candidate_envelope import (
     validation_cluster_uid_for,
 )
 from .subagents import SubAgentTicket
+
+
+TERMINAL_DISPOSITIONS = frozenset(
+    {
+        "confirmed",
+        "rejected_with_proof",
+        "needs_review",
+        "deferred_budget",
+        "engine_failed",
+        "interrupted",
+        "deduplicated_alias",
+    }
+)
+NONTERMINAL_STATUSES = frozenset({"pending", "queued", "planned", "running"})
 
 
 @dataclass(frozen=True)
@@ -33,6 +48,47 @@ class CandidateOccurrence:
             "entry_identity": self.entry_identity,
             "call_paths": [list(path) for path in self.call_paths],
             "context_signature": self.context_signature,
+        }
+
+
+@dataclass(frozen=True)
+class ValidationGroupOutcome:
+    """One immutable, reportable decision for a validation group.
+
+    Candidate records are mutable while discovery and validation are in flight.
+    A report must instead consume this projection, which has exactly one
+    terminal disposition per validation cluster and retains occurrence
+    attribution as aliases rather than additional findings.
+    """
+
+    validation_cluster_uid: str
+    terminal_disposition: str
+    decision_evidence_hash: str
+    primary_occurrence_uid: str
+    alias_occurrence_uids: Tuple[str, ...] = ()
+    decision_proof: Mapping[str, Any] = field(default_factory=dict)
+    validation_attempt_count: int = 0
+    evidence_completion_status: str = "not_requested"
+    engine_status: str = "complete"
+    issue: Mapping[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "validation_cluster_uid": self.validation_cluster_uid,
+            "terminal_disposition": self.terminal_disposition,
+            "candidate_disposition": self.terminal_disposition,
+            "decision_evidence_hash": self.decision_evidence_hash,
+            "primary_occurrence_uid": self.primary_occurrence_uid,
+            "alias_occurrence_uids": list(self.alias_occurrence_uids),
+            "occurrence_uids": [
+                self.primary_occurrence_uid,
+                *self.alias_occurrence_uids,
+            ] if self.primary_occurrence_uid else list(self.alias_occurrence_uids),
+            "decision_proof": deepcopy(dict(self.decision_proof)),
+            "validation_attempt_count": self.validation_attempt_count,
+            "evidence_completion_status": self.evidence_completion_status,
+            "engine_status": self.engine_status,
+            "issue": deepcopy(dict(self.issue)),
         }
 
 
@@ -65,6 +121,11 @@ class CandidateRecord:
     occurrences: List[CandidateOccurrence] = field(default_factory=list)
     record_role: str = "triage_lead"
     disposition: str = ""
+    decision_proof: Dict[str, Any] = field(default_factory=dict)
+    terminal_issue: Dict[str, Any] = field(default_factory=dict)
+    validation_attempt_count: int = 0
+    evidence_completion_status: str = "not_requested"
+    engine_status: str = "complete"
     schema_version: str = CANDIDATE_SCHEMA_VERSION
 
     def to_ticket(self) -> SubAgentTicket:
@@ -131,6 +192,10 @@ class CandidateRecord:
             ),
             "record_role": self.record_role,
             "candidate_disposition": self.disposition,
+            "decision_proof": deepcopy(self.decision_proof),
+            "validation_attempt_count": self.validation_attempt_count,
+            "evidence_completion_status": self.evidence_completion_status,
+            "engine_status": self.engine_status,
             "sources": list(self.sources),
             "call_paths": [list(path) for path in self.call_paths],
             "entry_paths": [list(path) for path in self.call_paths],
@@ -234,9 +299,7 @@ class CandidateLedger:
                         else "pending"
                     ),
                     disposition=(
-                        "needs_review"
-                        if record_role == "validation_obligation"
-                        else ""
+                        ""
                     ),
                 )
                 self._records[validation_key] = record
@@ -249,7 +312,7 @@ class CandidateLedger:
                 ):
                     record.record_role = "validation_obligation"
                     record.status = "queued"
-                    record.disposition = "needs_review"
+                    record.disposition = ""
                 if ticket.priority_score > record.ticket.priority_score:
                     ticket.id = record.ticket.id
                     self._merge_ticket_evidence(ticket, record.ticket)
@@ -352,26 +415,18 @@ class CandidateLedger:
                     continue
                 for record in self._records.values():
                     if record.candidate_id == candidate_id:
-                        report_status = str(report.get("status") or "analyzed").lower()
-                        record.status = (
-                            "triage_failed"
-                            if report_status in {"failed", "engine_failed"}
-                            else "investigated"
-                        )
-                        validation_status = str(
-                            report.get("validation_status")
-                            or report.get("status")
-                            or ""
-                        ).lower()
-                        # A deep worker is an investigator, not a proof
-                        # authority.  Main validation owns terminal truth.
+                        # A deep worker is an evidence producer, not a proof
+                        # authority.  It must never turn a queued validation
+                        # obligation into a security review finding.
                         if record.record_role == "validation_obligation":
-                            record.disposition = (
-                                "engine_failed"
-                                if validation_status in {"failed", "engine_failed"}
-                                else "needs_review"
-                            )
+                            record.evidence_completion_status = "evidence_collected"
                         else:
+                            report_status = str(report.get("status") or "analyzed").lower()
+                            record.status = (
+                                "triage_failed"
+                                if report_status in {"failed", "engine_failed"}
+                                else "investigated"
+                            )
                             record.disposition = ""
                         record.worker_report_id = candidate_id
                         break
@@ -434,21 +489,50 @@ class CandidateLedger:
                     continue
                 record.disposition = (
                     disposition
-                    if disposition
-                    in {
-                        "confirmed",
-                        "rejected_with_proof",
-                        "needs_review",
-                        "deferred_budget",
-                        "engine_failed",
-                        "interrupted",
-                        "deduplicated_alias",
-                    }
+                    if disposition in TERMINAL_DISPOSITIONS
                     else "needs_review"
                 )
                 record.status = status or record.disposition
+                record.terminal_issue = deepcopy(issue)
+                proof = issue.get("decision_proof") or issue.get("rejection_proof")
+                record.decision_proof = (
+                    deepcopy(proof) if isinstance(proof, dict) else {}
+                )
+                record.evidence_completion_status = str(
+                    issue.get("evidence_completion_status")
+                    or record.evidence_completion_status
+                )
+                record.engine_status = str(
+                    issue.get("engine_status")
+                    or (
+                        "failed"
+                        if record.disposition == "engine_failed"
+                        else "interrupted"
+                        if record.disposition == "interrupted"
+                        else "complete"
+                    )
+                )
                 updated += 1
         return updated
+
+    def mark_validation_running(self, issue: Mapping[str, Any]) -> int:
+        """Claim a validation group without assigning a security disposition."""
+
+        pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+        cluster_uid = str(
+            issue.get("validation_cluster_uid") or pack.get("validation_cluster_uid") or ""
+        )
+        if not cluster_uid:
+            return 0
+        with self._lock:
+            record = self._records.get(cluster_uid)
+            if record is None or record.record_role != "validation_obligation":
+                return 0
+            if record.disposition in TERMINAL_DISPOSITIONS:
+                return 0
+            record.status = "running"
+            record.validation_attempt_count += 1
+            return 1
 
     def records(self) -> List[CandidateRecord]:
         with self._lock:
@@ -505,10 +589,19 @@ class CandidateLedger:
                     str(item.get("candidate_uid") or ""),
                 )
             )
+            outcomes = [
+                self._outcome_for_record(record, entry_identity=entry_identity)
+                for record in self._records.values()
+                if record.record_role == "validation_obligation"
+                and self._outcome_for_record(record, entry_identity=entry_identity)
+                is not None
+            ]
+            outcomes.sort(key=lambda item: item.validation_cluster_uid)
             return {
                 "candidate_schema_version": CANDIDATE_SCHEMA_VERSION,
                 "entry_identity": entry_identity,
                 "records": projected,
+                "outcomes": [item.to_dict() for item in outcomes],
                 "summary": self._summary_unlocked(),
             }
 
@@ -568,14 +661,85 @@ class CandidateLedger:
                 )
             },
             "incomplete": any(
-                record.disposition
-                in {"deferred_budget", "engine_failed", "interrupted"}
+                record.disposition in {"deferred_budget", "engine_failed", "interrupted"}
+                or (self._frozen and record.status in NONTERMINAL_STATUSES)
                 for record in obligations
+            ),
+            "nonterminal_validation_count": sum(
+                1 for record in obligations if record.status in NONTERMINAL_STATUSES
             ),
             "duplicates_merged": sum(
                 record.duplicate_count for record in self._records.values()
             ),
         }
+
+    def _outcome_for_record(
+        self,
+        record: CandidateRecord,
+        *,
+        entry_identity: str = "",
+    ) -> Optional[ValidationGroupOutcome]:
+        """Create the only reportable projection for a closed validation group."""
+
+        if record.disposition not in TERMINAL_DISPOSITIONS:
+            return None
+        occurrences = [
+            item
+            for item in record.occurrences
+            if not entry_identity or item.entry_identity == entry_identity
+        ]
+        if entry_identity and not occurrences:
+            return None
+        occurrence_uids = sorted(
+            {item.occurrence_uid for item in occurrences}
+            or set(record.occurrence_uids)
+        )
+        primary = occurrence_uids[0] if occurrence_uids else ""
+        issue = deepcopy(record.terminal_issue)
+        if not issue:
+            ticket_evidence = record.ticket.evidence if isinstance(record.ticket.evidence, dict) else {}
+            issue = deepcopy(ticket_evidence.get("candidate_payload") or {})
+        canonical = record.to_dict(include_context=False)
+        # Preserve validator-produced content but make lifecycle identity and
+        # disposition authoritative.
+        issue.update(
+            {
+                key: deepcopy(value)
+                for key, value in canonical.items()
+                if key not in {"ticket", "occurrence_uids", "occurrences", "call_paths", "entry_paths"}
+            }
+        )
+        issue.update(
+            {
+                "candidate_disposition": record.disposition,
+                "status": record.status,
+                "validation_cluster_uid": record.validation_cluster_uid,
+                "occurrence_uid": primary,
+                "occurrence_uids": occurrence_uids,
+                "alias_occurrence_uids": occurrence_uids[1:],
+                "occurrences": [item.to_dict() for item in occurrences],
+                "occurrence_count": len(occurrence_uids),
+                "entry_count": len({item.entry_identity for item in occurrences if item.entry_identity}),
+                "entries": sorted({item.entry_identity for item in occurrences if item.entry_identity}),
+                "entry_paths": [list(path) for item in occurrences for path in item.call_paths],
+                "decision_proof": deepcopy(record.decision_proof),
+                "validation_attempt_count": record.validation_attempt_count,
+                "evidence_completion_status": record.evidence_completion_status,
+                "engine_status": record.engine_status,
+            }
+        )
+        return ValidationGroupOutcome(
+            validation_cluster_uid=record.validation_cluster_uid,
+            terminal_disposition=record.disposition,
+            decision_evidence_hash=record.decision_evidence_hash,
+            primary_occurrence_uid=primary,
+            alias_occurrence_uids=tuple(occurrence_uids[1:]),
+            decision_proof=record.decision_proof,
+            validation_attempt_count=record.validation_attempt_count,
+            evidence_completion_status=record.evidence_completion_status,
+            engine_status=record.engine_status,
+            issue=issue,
+        )
 
     @classmethod
     def canonical_key(cls, ticket: SubAgentTicket) -> str:

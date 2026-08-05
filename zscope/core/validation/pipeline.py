@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from ...common.issue_identity import canonical_issue_key, parse_issue_location
 from ...memory import ReviewMemory
+from .proofs import deterministic_decision_proof
 
 
 FALSE_POSITIVE_BASELINE_STATUSES = {"false_positive", "suppressed"}
@@ -80,6 +81,8 @@ class ValidationPipeline:
         deterministic_proof_verifier: Optional[
             Callable[[Dict[str, Any], Dict[str, Any]], bool]
         ] = None,
+        *,
+        enable_deterministic_proof_routing: bool = True,
     ):
         self.user_config = user_config
         self.review_memory = (
@@ -89,6 +92,9 @@ class ValidationPipeline:
         # Proof authority must be supplied by a deterministic engine boundary.
         # Validator JSON is untrusted and cannot self-attest a contradiction.
         self.deterministic_proof_verifier = deterministic_proof_verifier
+        self.enable_deterministic_proof_routing = bool(
+            enable_deterministic_proof_routing
+        )
 
     def suppression_category(self, issue: Dict[str, Any]) -> str:
         return str(
@@ -265,11 +271,19 @@ class ValidationPipeline:
         issue["final_score"] = final_score
         issue["validator_verdict"] = verdict
 
-        if verdict == "verified" and final_score >= 0.6:
-            if self._has_confirmed_evidence(score_data, val_data):
+        confirmation_proof = (
+            deterministic_decision_proof(issue, outcome="confirm")
+            if self.enable_deterministic_proof_routing
+            else None
+        )
+        if verdict == "verified" and (final_score >= 0.6 or confirmation_proof is not None):
+            if confirmation_proof is not None or self._has_confirmed_evidence(score_data, val_data):
                 issue["validation_status"] = "validated"
                 issue["candidate_disposition"] = "confirmed"
                 issue["finding_kind"] = val_data.get("finding_kind") or "verified_vulnerability"
+                if confirmation_proof is not None:
+                    issue["decision_proof"] = confirmation_proof.to_dict()
+                    issue["promotion_reason"] = "deterministic_confirmation_proof"
                 report_bucket = "issues"
             else:
                 issue["validation_status"] = "needs_review"
@@ -389,12 +403,19 @@ class ValidationPipeline:
                 final_score=final_score,
             )
 
-        if self._has_deterministic_rejection_proof(issue, val_data):
+        rejection_proof = (
+            deterministic_decision_proof(issue, outcome="reject")
+            if self.enable_deterministic_proof_routing
+            else None
+        )
+        if rejection_proof is not None or self._has_deterministic_rejection_proof(issue, val_data):
             issue["validation_status"] = "rejected"
             issue["candidate_disposition"] = "rejected_with_proof"
             issue["finding_kind"] = "rejected"
             issue["rejection_source"] = "deterministic_validator_proof"
             issue["deterministic_rejection"] = True
+            if rejection_proof is not None:
+                issue["decision_proof"] = rejection_proof.to_dict()
             issue["validation_reasoning"] = val_data.get("reasoning")
             preserve_issue_location(issue, val_data)
             return ValidationOutcome(

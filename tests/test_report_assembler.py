@@ -237,22 +237,12 @@ def test_report_assembler_terminalizes_and_routes_pending_ledger_candidates(
 
     report = assembler.build(state)
 
-    assert len(state["observations"]) == 1
-    observation = state["observations"][0]
-    assert observation["candidate_disposition"] == "needs_review"
-    assert observation["validation_status"] == "needs_review"
-    assert observation["function"] == "copy_message"
-    assert observation["location"] == "src/demo.c:42"
-    assert observation["description"]
-    assert report.report_views["with_needs_review"]["issue_count"] == 1
-    assert {
-        item.get("status")
-        for item in report.candidate_terminal_states
-    } == {"needs_review"}
-    assert all(
-        item.get("status") != "pending"
-        for item in report.candidate_terminal_states
-    )
+    # A queued candidate is an unfinished operational obligation, never a
+    # security review row manufactured by report assembly.
+    assert state["observations"] == []
+    assert report.report_views["with_needs_review"]["issue_count"] == 0
+    assert report.candidate_terminal_states == []
+    assert report.completeness == "degraded"
 
 
 def test_report_assembler_does_not_read_mutable_shared_ledger(tmp_path: Path) -> None:

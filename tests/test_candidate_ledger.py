@@ -73,6 +73,22 @@ def test_main_validation_backfills_candidate_terminal_state() -> None:
     assert record.disposition == "confirmed"
 
 
+def test_investigator_completion_cannot_close_validation_obligation() -> None:
+    ledger = CandidateLedger()
+    record, _ = ledger.add(
+        _ticket(),
+        source="local_rule:entry",
+        call_path=["entry", "sink"],
+        record_role="validation_obligation",
+    )
+
+    ledger.mark_reported([{"ticket": {"id": record.candidate_id}, "status": "analyzed"}])
+
+    assert record.status == "queued"
+    assert record.disposition == ""
+    assert record.evidence_completion_status == "evidence_collected"
+
+
 def test_deep_investigator_requires_high_risk_conflicting_evidence() -> None:
     assert Analyzer._is_high_risk_conflicting_ticket(
         _ticket(negative=["a dominating guard may bound len"])
@@ -154,8 +170,10 @@ def test_repeated_display_id_across_entries_cannot_cross_update_terminal_state()
         disposition="confirmed",
         status="validated",
     ) == 0
-    assert first.disposition == "needs_review"
-    assert second.disposition == "needs_review"
+    # Queue state is not a security disposition; only a closed validation
+    # group may become confirmed/rejected/review.
+    assert first.disposition == ""
+    assert second.disposition == ""
 
     assert ledger.mark_issue_terminal(
         {"occurrence_uid": first.occurrence_uids[0], "id": "ISSUE_1"},
@@ -201,7 +219,7 @@ def test_same_candidate_and_context_keep_distinct_evidence_validation_records() 
         status="rejected",
     ) == 1
     assert first.disposition == "rejected_with_proof"
-    assert second.disposition == "needs_review"
+    assert second.disposition == ""
 
 
 def test_lifecycle_snapshot_filters_entry_and_excludes_triage_leads() -> None:
@@ -248,3 +266,54 @@ def test_frozen_candidate_ledger_rejects_late_discovery() -> None:
     assert snapshot["summary"]["total"] == 1
     with pytest.raises(RuntimeError, match="frozen"):
         ledger.add(_ticket(), source="late")
+
+
+def test_validation_group_outcome_is_the_only_reportable_terminal_projection() -> None:
+    ledger = CandidateLedger(project_id="demo", revision="rev")
+    first, _ = ledger.add(
+        _ticket(),
+        source="clang_ast_cfg",
+        call_path=["entry_b", "sink"],
+        record_role="validation_obligation",
+        entry_identity="entry_b",
+    )
+    ledger.add(
+        _ticket(),
+        source="graph_rule",
+        call_path=["entry_a", "sink"],
+        record_role="validation_obligation",
+        entry_identity="entry_a",
+    )
+
+    # A queued group is diagnostic state, not an actionable review row.
+    assert ledger.lifecycle_snapshot()["outcomes"] == []
+    assert ledger.mark_issue_terminal(
+        {"validation_cluster_uid": first.validation_cluster_uid, "description": "confirmed"},
+        disposition="confirmed",
+        status="validated",
+    ) == 1
+
+    outcome = ledger.freeze()["outcomes"]
+    assert len(outcome) == 1
+    assert outcome[0]["candidate_disposition"] == "confirmed"
+    assert outcome[0]["primary_occurrence_uid"] == min(first.occurrence_uids)
+    assert len(outcome[0]["occurrence_uids"]) == 2
+    assert outcome[0]["issue"]["candidate_uid"] == first.candidate_uid
+    assert outcome[0]["issue"]["validation_cluster_uid"] == first.validation_cluster_uid
+    assert ledger.summary()["nonterminal_validation_count"] == 0
+
+
+def test_frozen_nonterminal_validation_group_marks_scan_incomplete() -> None:
+    ledger = CandidateLedger(project_id="demo", revision="rev")
+    ledger.add(
+        _ticket(),
+        source="clang_ast_cfg",
+        call_path=["entry", "sink"],
+        record_role="validation_obligation",
+    )
+
+    snapshot = ledger.freeze()
+
+    assert snapshot["outcomes"] == []
+    assert snapshot["summary"]["nonterminal_validation_count"] == 1
+    assert snapshot["summary"]["incomplete"] is True

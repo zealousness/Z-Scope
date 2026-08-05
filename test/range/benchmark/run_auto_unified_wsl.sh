@@ -59,6 +59,18 @@ cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
 backend = ((cfg.get("indexing") or {}).get("backend") or "").lower()
 entry_cfg = (cfg.get("project") or {}).get("entry_discovery") or {}
 semantic_dedup = ((cfg.get("reporting") or {}).get("semantic_dedup") or {})
+analysis = cfg.get("analysis") or {}
+models = {
+    str(model)
+    for section in (cfg.get("llms") or {}).values()
+    if isinstance(section, dict)
+    for model in (section.get("models") or [])
+}
+base_urls = {
+    str(section.get("base_url") or "").rstrip("/")
+    for section in (cfg.get("llms") or {}).values()
+    if isinstance(section, dict)
+}
 entry_discovery = bool(entry_cfg.get("enabled"))
 header_files = entry_cfg.get("header_files") or []
 max_candidates = int(entry_cfg.get("max_candidates") or 0)
@@ -80,6 +92,18 @@ if semantic_dedup.get("enabled", True) is not True:
     raise SystemExit("[range] ERROR: expected reporting.semantic_dedup.enabled to default to true")
 if semantic_dedup.get("llm_enabled", False) is not False:
     raise SystemExit("[range] ERROR: final LLM semantic dedup must remain disabled for the benchmark")
+for key in (
+    "candidate_lifecycle_v3",
+    "canonical_outcome_projection",
+    "deterministic_proof_routing",
+    "enable_evidence_completion_queue",
+):
+    if analysis.get(key, True) is not True:
+        raise SystemExit(f"[range] ERROR: analysis.{key} must be true for the v3 benchmark")
+if models != {"glm-5.1"}:
+    raise SystemExit(f"[range] ERROR: benchmark must use only glm-5.1, got {sorted(models)!r}")
+if base_urls != {"https://open.bigmodel.cn/api/paas/v4"}:
+    raise SystemExit(f"[range] ERROR: benchmark must use the Zhipu GLM endpoint, got {sorted(base_urls)!r}")
 print("[range] config preflight passed: unified backend + automatic entry discovery + *.h headers + programmatic final dedup")
 PY
 
@@ -166,6 +190,8 @@ review_eval = load_json(run_dir / "evaluation.with_needs_review.json")
 build_log = (run_dir / "build_cpg.log").read_text(encoding="utf-8", errors="replace") if (run_dir / "build_cpg.log").exists() else ""
 scan_log = (run_dir / "zscope_run.log").read_text(encoding="utf-8", errors="replace") if (run_dir / "zscope_run.log").exists() else ""
 combined_log = build_log + "\n" + scan_log
+trace_models = sorted(set(re.findall(r"\[LLM API Trace\] Model:\s*([^|\s]+)", combined_log)))
+model_trace_valid = bool(trace_models) and trace_models == ["glm-5.1"]
 report_emitted = bool(report)
 completion_marker_observed = "Batch Analysis Complete." in scan_log
 manifest = report.get("run_manifest") if isinstance(report.get("run_manifest"), dict) else {}
@@ -179,8 +205,10 @@ scan_completed = (
     and report_completeness == "complete"
     and manifest_valid
     and valid_scan_exit
+    and entry_coverage_rc == 0
+    and model_trace_valid
 )
-benchmark_valid = scan_completed and entry_coverage_rc == 0
+benchmark_valid = scan_completed
 
 metric_keys = [
     "report_issue_count",
@@ -206,6 +234,8 @@ summary = {
     "benchmark_valid": benchmark_valid,
     "report_completeness": report_completeness or None,
     "run_manifest_valid": manifest_valid,
+    "model_trace_valid": model_trace_valid,
+    "trace_models": trace_models,
     "scan_exit_semantics": (
         "valid_complete_scan_with_actionable_findings"
         if scan_completed and scan_rc == 1

@@ -305,6 +305,13 @@ class AnalysisConfig:
     llm_max_inflight: int = 8  # Process-wide hard cap; legacy non-positive values map to 8.
     validator_workers: int = 0  # Normalized to legacy override or role default 4.
     investigator_workers: int = 0  # Normalized to role default 2.
+    evidence_completion_workers: int = 2
+    enable_evidence_completion_queue: bool = True
+    # v3 rollout controls.  They default on for new scans, but can be
+    # independently disabled for one-release shadow/rollback comparisons.
+    candidate_lifecycle_v3: bool = True
+    canonical_outcome_projection: bool = True
+    deterministic_proof_routing: bool = True
     validation_cache_entries: int = 4096
     user_config_db: str = ""  # Path to user config workbook or directory, defaults to {snapshot_dir}/
     enable_global_model: bool = False  # Batch-level global premodel/model_entry replacement.
@@ -383,6 +390,8 @@ class AnalysisConfig:
             if configured_investigator_workers > 0
             else 2
         )
+        configured_completion_workers = _safe_int(self.evidence_completion_workers, 2)
+        self.evidence_completion_workers = max(1, configured_completion_workers)
 
 
 @dataclass
@@ -768,6 +777,21 @@ class ConfigLoader:
                 llm_max_inflight=analysis_data.get("llm_max_inflight", 8),
                 validator_workers=analysis_data.get("validator_workers", 4),
                 investigator_workers=analysis_data.get("investigator_workers", 2),
+                evidence_completion_workers=analysis_data.get(
+                    "evidence_completion_workers", 2
+                ),
+                enable_evidence_completion_queue=analysis_data.get(
+                    "enable_evidence_completion_queue", True
+                ),
+                candidate_lifecycle_v3=analysis_data.get(
+                    "candidate_lifecycle_v3", True
+                ),
+                canonical_outcome_projection=analysis_data.get(
+                    "canonical_outcome_projection", True
+                ),
+                deterministic_proof_routing=analysis_data.get(
+                    "deterministic_proof_routing", True
+                ),
                 validation_cache_entries=analysis_data.get(
                     "validation_cache_entries", 4096
                 ),

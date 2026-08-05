@@ -5,7 +5,7 @@
 llms:
   default:
     provider: openai
-    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    base_url: "https://open.bigmodel.cn/api/paas/v4/"
     base_url_max_concurrent_requests: 4
     models:
       - "glm-5.1"
@@ -18,7 +18,7 @@ llms:
 
   smart_model:
     provider: openai
-    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    base_url: "https://open.bigmodel.cn/api/paas/v4/"
     base_url_max_concurrent_requests: 4
     models:
       - "glm-5.1"
@@ -124,6 +124,13 @@ analysis:
   llm_max_inflight: 8
   validator_workers: 4
   investigator_workers: 2
+  # Keep lifecycle behavior explicit in benchmark manifests so a run cannot
+  # silently fall back to legacy report-time semantic de-duplication.
+  candidate_lifecycle_v3: true
+  canonical_outcome_projection: true
+  deterministic_proof_routing: true
+  enable_evidence_completion_queue: true
+  evidence_completion_workers: 2
   max_premodel_depth: 5
   max_premodel_callees: 20
   trivial_function_max_lines: 10
