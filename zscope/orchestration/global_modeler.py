@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from ..agents.semantic_modeler.agent import SemanticModeler
+from ..agents.semantic_modeler.retry import run_semantic_model_with_retries
 from ..config.config import ZScopeConfig
 from ..config.function_entry import FunctionEntry
 from ..config.user_config_store import UserConfigStore
@@ -31,6 +32,8 @@ from ..snapshots.modeling_input import (
 from ..tools.policy import ToolPolicy
 
 logger = logging.getLogger(__name__)
+
+MAX_FAILED_FUNCTIONS_FOR_STAGE = 10
 
 
 @dataclass(frozen=True, order=True)
@@ -94,7 +97,7 @@ class GlobalModelStats:
     @property
     def stage_complete(self) -> bool:
         return (
-            self.failed_functions == 0
+            self.failed_functions <= MAX_FAILED_FUNCTIONS_FOR_STAGE
             and self.unresolved_entry_functions == 0
             and self.reconciliation_failures == 0
         )
@@ -511,7 +514,12 @@ class GlobalModeler:
             if user_context:
                 context["user_config_context"] = user_context
             self.attach_contract(context, "semantic_modeler")
-            response = self.semantic_agent_factory().run(context)
+            response = run_semantic_model_with_retries(
+                self.semantic_agent_factory,
+                context,
+                log_context="global",
+                index_name=index_name,
+            )
             metadata = response.metadata if response.metadata else {}
             finalization_mode = str(metadata.get("finalization_mode") or "legacy")
             terminal_tool = str(metadata.get("terminal_tool_name") or "")

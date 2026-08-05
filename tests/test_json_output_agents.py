@@ -465,6 +465,57 @@ def test_semantic_modeler_repairs_invalid_terminal_payload_in_same_conversation(
     assert response.data["referenced_globals"] == _semantic_model_input()["referenced_globals"]
 
 
+def test_semantic_modeler_rejects_guarded_duplicate_terminal_payloads(monkeypatch) -> None:
+    from zscope.framework.llm_client import LLMClient
+
+    llm = LLMClient(
+        api_key="test",
+        base_url="http://example.invalid",
+        models=["unit-model"],
+    )
+    calls = []
+
+    def duplicate_chat_completion(messages, **kwargs):
+        calls.append((messages, kwargs))
+        tool_calls = [
+            {
+                "id": f"call_emit_{len(calls)}_{index}",
+                "type": "function",
+                "function": {
+                    "name": "emit_function_snapshot",
+                    "arguments": json.dumps(_snapshot_payload()),
+                },
+            }
+            for index in range(2)
+        ]
+        return {
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": tool_calls,
+                    },
+                }
+            ],
+            "model": "unit-model",
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+        }
+
+    monkeypatch.setattr(llm, "chat_completion", duplicate_chat_completion)
+    response = SemanticModeler(llm, []).run(_semantic_model_input())
+
+    assert response.success is False
+    assert len(calls) == 2
+    assert response.metadata["reason"] == "terminal_tool_loop_guard"
+    assert response.metadata["terminal_loop_guard_triggered"] is True
+    assert response.metadata["terminal_loop_guard_reason"] == (
+        "identical_invalid_terminal_call_limit"
+    )
+    assert response.metadata["terminal_invalid_call_count"] == 3
+
+
 def test_semantic_modeler_uses_effective_schema_for_initial_terminal_tool() -> None:
     custom_schema = dict(DEFAULT_FUNCTION_SNAPSHOT_SCHEMA)
     custom_schema["description"] = "custom-schema-marker"

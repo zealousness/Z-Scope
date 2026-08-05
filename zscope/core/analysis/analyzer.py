@@ -99,6 +99,7 @@ from ...snapshots.policy import (
 )
 from ...framework.llm_client import LLMClient
 from ...agents.semantic_modeler.agent import SemanticModeler
+from ...agents.semantic_modeler.retry import run_semantic_model_with_retries
 from ...agents.vulnerability_analyzer.agent import VulnerabilityAnalyzer
 from ...reporting.report import FinalReport, Issue, ReportGenerator
 from ...common.issue_identity import (
@@ -739,17 +740,23 @@ class Analyzer:
         sm_agent_cfg = next((a for a in self.config.project.agents if a.name == "semantic_modeler"), None)
         sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
         sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients["default"])
-        semantic_agent = SemanticModeler(
-            sm_client,
-            self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
-            tool_policy=self._tool_policy_for_agent("semantic_modeler"),
-        )
+        def make_semantic_agent() -> SemanticModeler:
+            return SemanticModeler(
+                sm_client,
+                self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
+                tool_policy=self._tool_policy_for_agent("semantic_modeler"),
+            )
         agent_context = state["agent_context"]
         semantic_context = deepcopy(state["semantic_model_input"])
 
         logger.info("Running Semantic Modeler agent with '%s' LLM...", sm_llm_ref)
         self._attach_agent_contract(semantic_context, "semantic_modeler")
-        response = semantic_agent.run(semantic_context)
+        response = run_semantic_model_with_retries(
+            make_semantic_agent,
+            semantic_context,
+            log_context="entry",
+            index_name=state["entry_index_name"],
+        )
         sm_tokens = response.metadata.get("context_tokens", 0) if response.metadata else 0
         state["total_context_tokens"] += sm_tokens
         self._accumulate_cumulative_token_metadata(state, response.metadata if response.metadata else {})
@@ -4020,14 +4027,20 @@ class Analyzer:
                     "reason": "semantic_model_llm_missing",
                 }
 
-            semantic_agent = SemanticModeler(
-                sm_client,
-                self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
-                tool_policy=self._tool_policy_for_agent("semantic_modeler"),
-            )
+            def make_semantic_agent() -> SemanticModeler:
+                return SemanticModeler(
+                    sm_client,
+                    self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
+                    tool_policy=self._tool_policy_for_agent("semantic_modeler"),
+                )
             self._attach_agent_contract(context, "semantic_modeler")
             logger.info("[snapshot] On-demand modeling index_name=%s", index_name)
-            response = semantic_agent.run(context)
+            response = run_semantic_model_with_retries(
+                make_semantic_agent,
+                context,
+                log_context="on_demand",
+                index_name=index_name,
+            )
             response_metadata = response.metadata or {}
             context_tokens = int(
                 response_metadata.get("context_tokens", 0)
@@ -4217,11 +4230,12 @@ class Analyzer:
         logger.info(f"[premodel] {len(order)} reachable callees to pre-model for '{entry_func}'")
 
         # 3. 逐个建模
-        semantic_agent = SemanticModeler(
-            sm_client,
-            self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
-            tool_policy=self._tool_policy_for_agent("semantic_modeler"),
-        )
+        def make_semantic_agent() -> SemanticModeler:
+            return SemanticModeler(
+                sm_client,
+                self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
+                tool_policy=self._tool_policy_for_agent("semantic_modeler"),
+            )
         modeled = 0
         skipped = 0
         total_tokens = 0
@@ -4321,7 +4335,12 @@ class Analyzer:
                     "[premodel] Modeling callee index_name=%s ...",
                     context["index_name"],
                 )
-                resp = semantic_agent.run(context)
+                resp = run_semantic_model_with_retries(
+                    make_semantic_agent,
+                    context,
+                    log_context="premodel",
+                    index_name=index_name,
+                )
                 call_tokens = resp.metadata.get("context_tokens", 0) if resp.metadata else 0
                 total_tokens += call_tokens
 
