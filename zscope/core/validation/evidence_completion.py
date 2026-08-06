@@ -283,7 +283,12 @@ class EvidenceCompletionQueue:
                         proof_kind="guard_dominates_sink",
                         producer_engine="clang_ast_cfg_guard_dominance",
                         events=[acquire, {"kind": "null_guard", "line": guard_line}, use],
-                        facts=["same_symbol", "terminating_null_guard", "guard_dominates_reported_use"],
+                        facts=[
+                            "same_symbol",
+                            "terminating_null_guard",
+                            "guard_dominates_reported_use",
+                            "guard_dominates_sink",
+                        ],
                         summary="a terminating null guard dominates the reported allocation use",
                         scope="complete intraprocedural allocation-to-use path",
                         subject_identity=symbol,
@@ -323,7 +328,7 @@ class EvidenceCompletionQueue:
                     proof_kind="durable_global_owner_transfer",
                     producer_engine="clang_ast_cfg_fd_ownership",
                     events=[opened],
-                    facts=["fd_stored_in_global_owner"],
+                    facts=["fd_stored_in_global_owner", "ownership_transfer_complete"],
                     summary="the descriptor is assigned to an explicit global owner",
                     scope="descriptor ownership transfer",
                     subject_identity=lhs,
@@ -340,7 +345,7 @@ class EvidenceCompletionQueue:
                         proof_kind="return_value_ownership_transfer",
                         producer_engine="clang_ast_cfg_fd_ownership",
                         events=[opened, exited],
-                        facts=["descriptor_returned_to_caller"],
+                        facts=["descriptor_returned_to_caller", "ownership_transfer_complete"],
                         summary="the descriptor is returned to the caller as the ownership result",
                         scope="descriptor ownership transfer",
                         subject_identity=fd,
@@ -374,10 +379,10 @@ class EvidenceCompletionQueue:
         """Reject allocation-limit leads when a complete local fact disproves them.
 
         The provider does not guess that a caller has a limit.  It accepts only
-        (a) an explicit terminating upper-bound guard in the same function, or
-        (b) the allocation-wrapper implementation itself.  The latter cannot
-        establish external controllability without a caller fact and therefore
-        is a triage lead rather than a security obligation.
+        an explicit terminating upper-bound guard in the same function.  An
+        allocation-wrapper body without a caller fact remains a triage signal,
+        not a rejection proof: missing caller evidence cannot prove that no
+        reachable caller controls the allocation size.
         """
 
         if str(issue.get("rule") or "").lower() != "clang_cfg_external_size_allocation_without_limit":
@@ -392,25 +397,6 @@ class EvidenceCompletionQueue:
         for allocation in allocations:
             expression = str(allocation.get("expression") or "")
             line = int(allocation.get("line") or 0)
-            # A declaration-like allocator wrapper body has no caller source
-            # fact.  The pattern deliberately requires the opening function
-            # brace so ordinary calls such as ``ptr = malloc(size)`` do not
-            # match this exemption.
-            if re.search(
-                r"\b[A-Za-z_]\w*(?:alloc|malloc|calloc|realloc)[A-Za-z_0-9]*\s*\([^)]*\b(?:size|len|count|nmemb)\b[^)]*\)\s*\{",
-                expression,
-                re.IGNORECASE,
-            ):
-                return EvidenceCompletionQueue._proof_from_ast(
-                    issue,
-                    outcome="reject",
-                    proof_kind="allocator_wrapper_missing_caller_taint",
-                    producer_engine="clang_ast_cfg_allocation_context",
-                    events=[allocation],
-                    facts=["allocator_wrapper_body", "caller_control_not_established"],
-                    summary="the candidate is the allocator wrapper itself without a caller-controlled size fact",
-                    scope="allocator wrapper implementation",
-                )
             terms = {
                 token
                 for token in re.findall(r"\b[A-Za-z_]\w*\b", str(allocation.get("variable") or ""))
@@ -548,7 +534,7 @@ class EvidenceCompletionQueue:
                     proof_kind="durable_global_owner_transfer",
                     producer_engine="clang_ast_cfg_ownership",
                     events=[acquire],
-                    facts=["resource_stored_in_global_owner"],
+                    facts=["resource_stored_in_global_owner", "ownership_transfer_complete"],
                     summary="the acquired resource is stored in explicit global ownership",
                     scope="resource ownership transfer",
                     subject_identity=lhs,
@@ -560,7 +546,7 @@ class EvidenceCompletionQueue:
                     proof_kind="output_parameter_ownership_transfer",
                     producer_engine="clang_ast_cfg_ownership",
                     events=[acquire],
-                    facts=["resource_stored_in_output_parameter"],
+                    facts=["resource_stored_in_output_parameter", "ownership_transfer_complete"],
                     summary="the resource is returned through an output ownership parameter",
                     scope="resource ownership transfer",
                     subject_identity=lhs,
@@ -573,7 +559,11 @@ class EvidenceCompletionQueue:
                     proof_kind="returned_parent_ownership_transfer",
                     producer_engine="clang_ast_cfg_ownership",
                     events=[acquire, *exits],
-                    facts=["resource_stored_in_parent", "parent_returned_to_caller"],
+                    facts=[
+                        "resource_stored_in_parent",
+                        "parent_returned_to_caller",
+                        "ownership_transfer_complete",
+                    ],
                     summary="the parent holding the resource is returned to the caller",
                     scope="resource ownership transfer",
                     subject_identity=parent,

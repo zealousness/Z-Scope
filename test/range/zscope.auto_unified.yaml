@@ -129,6 +129,7 @@ analysis:
   candidate_lifecycle_v3: true
   canonical_outcome_projection: true
   deterministic_proof_routing: true
+  global_validation_group_queue: true
   enable_evidence_completion_queue: true
   evidence_completion_workers: 2
   max_premodel_depth: 5
