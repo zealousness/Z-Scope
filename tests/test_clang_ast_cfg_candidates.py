@@ -294,6 +294,20 @@ def test_clang_ast_cfg_treats_returning_allocator_wrappers_as_ownership_transfer
     assert not any(issue["rule"] == "clang_cfg_acquire_without_release_on_exit" for issue in issues)
 
 
+def test_clang_ast_cfg_treats_explicit_global_assignment_as_ownership_transfer() -> None:
+    code = """
+10 | int install(void) {
+11 |     g_cache.buffer = malloc(32);
+12 |     if (!g_cache.buffer) return -1;
+13 |     return 0;
+14 | }
+"""
+
+    issues = _rules(code)
+
+    assert not any(issue["rule"] == "clang_cfg_acquire_without_release_on_exit" for issue in issues)
+
+
 def test_clang_ast_cfg_suppresses_varargs_format_forwarding_wrappers() -> None:
     wrapper = """
 20 | void log_wrapper(const char *fmt, ...) {

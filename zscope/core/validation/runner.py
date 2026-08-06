@@ -146,9 +146,9 @@ class ValidationResultCache:
 class ValidationRunner:
     """Owns validation-stage orchestration around ``ValidationPipeline``."""
 
-    # v4 invalidates v3 entries whose key included sink/provenance-local facts
-    # and whose outcome predated deterministic completion routing.
-    _VALIDATION_CACHE_PROTOCOL = "zscope.validator-cache.v4"
+    # v5 invalidates v4 entries after source-centric validation groups stopped
+    # carrying occurrence-only reachability projections.
+    _VALIDATION_CACHE_PROTOCOL = "zscope.validator-cache.v5"
     _DEFAULT_VALIDATION_CACHE_SIZE = 4096
     _EXTERNAL_API_NAMES = {
         "calloc",
