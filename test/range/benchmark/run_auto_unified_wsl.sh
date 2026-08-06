@@ -120,10 +120,10 @@ echo "[range] build unified CPG with SVF/Saber"
 python3 -m zscope.cli.cli -c "${config_path}" --build-cpg \
   > "${run_dir}/build_cpg.log" 2>&1
 
-echo "[range] scan with automatic entry discovery"
+echo "[range] scan with YAML-configured automatic entry discovery"
 start_epoch="$(date +%s)"
 set +e
-python3 -m zscope.cli.cli -c "${config_path}" --discover-entries --verbose \
+python3 -m zscope.cli.cli -c "${config_path}" --verbose \
   > "${run_dir}/zscope_run.log" 2>&1
 scan_rc="$?"
 set -e
