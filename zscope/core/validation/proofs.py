@@ -42,6 +42,33 @@ _REJECTION_REQUIREMENTS = {
     "contract_precondition_enforced": {"contract_precondition_enforced"},
     "distinct_object_identity": {"distinct_object_identity"},
     "branch_paths_mutually_exclusive": {"branch_paths_mutually_exclusive"},
+    # Evidence-completion providers use these narrower facts for common
+    # ownership, allocation and bounds obligations.  They are all derived
+    # from a complete local AST/CFG path and have their own proof kind, so a
+    # model verdict can never turn them into a rejection by itself.
+    "failed_acquisition_exit": {"fd_failure_guard", "failure_return"},
+    "return_value_ownership_transfer": {"descriptor_returned_to_caller"},
+    "durable_global_owner_transfer": {"ownership_transfer_complete"},
+    "output_parameter_ownership_transfer": {"ownership_transfer_complete"},
+    "returned_parent_ownership_transfer": {"ownership_transfer_complete"},
+    "terminating_allocation_upper_bound": {
+        "explicit_upper_bound",
+        "terminating_guard",
+        "guard_dominates_allocation",
+    },
+    "array_sink_identity_mismatch": {
+        "fixed_array_identity",
+        "write_identity_mismatch",
+    },
+    "dynamic_array_not_fixed_storage": {
+        "pointer_declaration",
+        "dynamic_array_storage",
+    },
+    "array_bound_guard_dominates_loop": {
+        "fixed_array_bound",
+        "terminating_upper_bound_guard",
+        "guard_dominates_loop",
+    },
 }
 
 _CONFIRMATION_REQUIREMENTS = {
@@ -54,6 +81,14 @@ _CONFIRMATION_REQUIREMENTS = {
     "deterministic_cfg_obligation_path": {
         "source_to_sink_complete",
         "event_path_complete",
+    },
+    "ordered_publication_before_initialization": {
+        "allocation_before_publication",
+        "publication_before_initialization",
+    },
+    "same_function_owned_member_cleanup_gap": {
+        "same_function_helper_contract",
+        "owned_member_not_released",
     },
 }
 

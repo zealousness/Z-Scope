@@ -11,7 +11,7 @@ import re
 import threading
 import time
 import uuid
-from copy import copy
+from copy import copy, deepcopy
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 from dataclasses import dataclass, field, replace
@@ -169,6 +169,8 @@ class ParallelAnalyzer:
         self._last_scan_budget_metadata: Dict[str, Any] = {}
         self._last_global_model_stats: Optional[Dict[str, Any]] = None
         self._global_modeling_succeeded = False
+        self._global_validation_state: Dict[str, Any] = {}
+        self._global_validation_duration_seconds = 0.0
         self._semantic_dedup_llm_cache: Dict[str, Dict[str, Any]] = {}
         self.deferred_entry_candidates: List[Dict[str, Any]] = []
         self.run_id = uuid.uuid4().hex
@@ -222,6 +224,8 @@ class ParallelAnalyzer:
                 self.base_config.project.project_root
             ),
         )
+        self._global_validation_state = {}
+        self._global_validation_duration_seconds = 0.0
         self._cancellation_token.raise_if_cancelled()
         scheduler = ScanScheduler(
             entry_workers=self.max_workers,
@@ -333,6 +337,9 @@ class ParallelAnalyzer:
                 scheduler.shutdown(wait=False, cancel_futures=True)
                 return results
 
+            if self._uses_scan_validation_queue():
+                self._run_scan_validation_queue()
+
         finally:
             self._last_batch_wall_seconds = time.monotonic() - batch_started
             self._last_scan_budget_metadata = self._scan_budget_metadata(
@@ -364,6 +371,156 @@ class ParallelAnalyzer:
                     pass
                     
         return results
+
+    def _uses_scan_validation_queue(self) -> bool:
+        # A few embedding and compatibility callers construct this facade with
+        # ``object.__new__`` to exercise report projection only.  Those paths
+        # have no configuration or batch lifecycle, so retain the pre-v3
+        # per-entry behavior instead of assuming scan-level validation.
+        analysis = getattr(getattr(self, "base_config", None), "analysis", None)
+        return bool(
+            getattr(analysis, "candidate_lifecycle_v3", True)
+            and getattr(analysis, "global_validation_group_queue", True)
+        )
+
+    def _run_scan_validation_queue(self) -> None:
+        """Validate each frozen v3 obligation once after all entries discover it.
+
+        Entry workers can discover the same local sink through many wrappers.
+        The shared ledger has already merged those occurrences by
+        ``validation_cluster_uid``.  Validating inside each entry therefore
+        spends LLM calls before that merge can have any effect.  This method
+        restores the intended lifecycle: discovery -> ledger -> one global
+        validation queue -> final report projection.
+        """
+
+        pending: List[Dict[str, Any]] = []
+        for record in self._candidate_ledger.records():
+            if (
+                record.record_role != "validation_obligation"
+                or record.disposition
+            ):
+                continue
+            evidence = deepcopy(
+                record.ticket.evidence
+                if isinstance(record.ticket.evidence, dict)
+                else {}
+            )
+            issue = deepcopy(evidence.pop("candidate_payload", {}) or {})
+            if not issue:
+                # Candidate payloads are persisted with every v3 obligation.
+                # Retain a minimally reportable diagnostic rather than
+                # silently dropping a malformed legacy producer.
+                issue = {
+                    "id": record.ticket.id,
+                    "category": record.defect_class,
+                    "defect_class": record.defect_class,
+                    "description": record.ticket.task,
+                    "source": record.ticket.origin,
+                    "sink": record.ticket.sink,
+                }
+            issue["evidence_pack"] = evidence
+            issue.setdefault("code_snippet", record.ticket.context_slice)
+            issue.update(
+                {
+                    "candidate_schema_version": record.schema_version,
+                    "candidate_uid": record.candidate_uid,
+                    "history_key": record.history_key,
+                    "obligation_uid": record.obligation_uid,
+                    "decision_context_version": record.decision_context_version,
+                    "evidence_hash": record.evidence_hash,
+                    "decision_evidence_hash": record.decision_evidence_hash,
+                    "validation_cluster_uid": record.validation_cluster_uid,
+                    "context_signature": record.context_signature,
+                    "occurrence_uid": (
+                        record.occurrence_uids[0]
+                        if record.occurrence_uids
+                        else ""
+                    ),
+                    "occurrence_uids": list(record.occurrence_uids),
+                    "call_paths": [list(path) for path in record.call_paths],
+                    "entry_paths": [list(path) for path in record.call_paths],
+                    "entry_identity": (
+                        record.occurrences[0].entry_identity
+                        if record.occurrences
+                        else str(issue.get("entry_identity") or "")
+                    ),
+                }
+            )
+            evidence.update(
+                {
+                    "candidate_uid": record.candidate_uid,
+                    "evidence_hash": record.evidence_hash,
+                    "decision_evidence_hash": record.decision_evidence_hash,
+                    "validation_cluster_uid": record.validation_cluster_uid,
+                    "context_signature": record.context_signature,
+                }
+            )
+            pending.append(issue)
+
+        if not pending:
+            self._global_validation_state = {
+                "pending_new_issues": [],
+                "issues": [],
+                "observations": [],
+                "notes": ["Scan-level validation queue had no open obligations."],
+            }
+            return
+
+        helper = Analyzer(
+            self.base_config,
+            code_index=self.code_index,
+            snapshot_store=self.snapshot_store,
+            user_config=self.user_config,
+            force_ignore_history=self.force_ignore_history,
+            maintain_mode=self.maintain_mode,
+            candidate_ledger=self._candidate_ledger,
+            # The queue only validates frozen candidate evidence.  It must not
+            # trigger a second semantic-discovery build after all entry
+            # workers have already completed one.
+            shared_local_pattern_semantics=self._shared_local_pattern_semantics,
+            shared_semantic_overlay=self._shared_semantic_overlay,
+            llm_clients=self._shared_llm_clients,
+            validation_result_cache=self._validation_result_cache,
+            cancellation_token=self._cancellation_token,
+            scheduler=self._scheduler,
+            write_root_reports=False,
+            defer_validation_to_scan=False,
+        )
+        raw_occurrence_count = sum(
+            len(record.occurrence_uids)
+            for record in self._candidate_ledger.records()
+        )
+        state: Dict[str, Any] = {
+            "entry_func": "__batch__",
+            "entry_identity": "__batch__",
+            "entry_index_name": "",
+            "agent_context": {"func_name": "__batch__", "code": ""},
+            "pending_new_issues": pending,
+            "issues": [],
+            "observations": [],
+            "notes": [],
+            "candidate_ledger": self._candidate_ledger,
+            "scan_level_raw_occurrence_count": raw_occurrence_count,
+        }
+        started = time.monotonic()
+        logger.info(
+            "[validation-queue] start unique_groups=%d raw_occurrences=%d",
+            len(pending),
+            raw_occurrence_count,
+        )
+        helper.validation_runner.run(state)
+        self._global_validation_duration_seconds = max(
+            0.0, time.monotonic() - started
+        )
+        self._global_validation_state = state
+        logger.info(
+            "[validation-queue] end unique_groups=%d confirmed=%d review=%d duration=%.2fs",
+            len(pending),
+            len(state["issues"]),
+            len(state["observations"]),
+            self._global_validation_duration_seconds,
+        )
 
     @staticmethod
     def _scan_budget_metadata(
@@ -765,6 +922,7 @@ class ParallelAnalyzer:
                  cancellation_token=entry_token,
                  scheduler=self._scheduler,
                  write_root_reports=False,
+                 defer_validation_to_scan=self._uses_scan_validation_queue(),
             )
             logger.info(
                 "[entry-worker] analyzer-ready entry=%s key=%s duration=%.2fs",
@@ -1305,6 +1463,13 @@ class ParallelAnalyzer:
         
         diff_relevance_summary = self._diff_relevance_summary(unique_issues, unique_observations)
         diff_coverage = self._diff_coverage_metadata()
+        global_validation_state = dict(
+            getattr(self, "_global_validation_state", {}) or {}
+        )
+        global_validation_duration = float(
+            getattr(self, "_global_validation_duration_seconds", 0.0) or 0.0
+        )
+        total_duration += global_validation_duration
         batch_wall_seconds = round(float(getattr(self, "_last_batch_wall_seconds", 0.0) or 0.0), 2)
         effective_speedup = (total_duration / batch_wall_seconds) if batch_wall_seconds > 0 else 0.0
         worker_utilization = (
@@ -1328,6 +1493,18 @@ class ParallelAnalyzer:
         )
         retained_total_tokens = sum(
             r.cumulative_total_tokens for r in results.values()
+        )
+        retained_prompt_tokens += int(
+            global_validation_state.get("total_cumulative_prompt_tokens", 0) or 0
+        )
+        retained_completion_tokens += int(
+            global_validation_state.get("total_cumulative_completion_tokens", 0) or 0
+        )
+        retained_total_tokens += int(
+            global_validation_state.get("total_cumulative_total_tokens", 0) or 0
+        )
+        total_context_tokens = sum(r.context_tokens for r in results.values()) + int(
+            global_validation_state.get("total_context_tokens", 0) or 0
         )
         response_prompt_tokens = int(
             llm_usage_summary.get("prompt_tokens") or 0
@@ -1371,7 +1548,7 @@ class ParallelAnalyzer:
                 ),
                 "total_duration_seconds": round(total_duration, 2),
                 "batch_wall_seconds": batch_wall_seconds,
-                "total_context_tokens": sum(r.context_tokens for r in results.values()),
+                "total_context_tokens": total_context_tokens,
                 "total_cumulative_prompt_tokens": (
                     response_prompt_tokens or retained_prompt_tokens
                 ),
@@ -1390,6 +1567,16 @@ class ParallelAnalyzer:
                 "diff_relevance": diff_relevance_summary["issues"],
                 "diff_coverage": diff_coverage.get("coverage_summary", {}),
                 "validation_performance": validation_performance_summary,
+                "global_validation_queue": {
+                    "enabled": self._uses_scan_validation_queue(),
+                    "duration_seconds": round(global_validation_duration, 4),
+                    "unique_group_count": int(
+                        global_validation_state.get("validation_group_count", 0) or 0
+                    ),
+                    "raw_occurrence_count": int(
+                        global_validation_state.get("scan_level_raw_occurrence_count", 0) or 0
+                    ),
+                },
                 "va_candidate_coverage": va_candidate_coverage_summary,
                 "entry_budget": entry_budget_summary,
                 "llm_iteration_budget": llm_iteration_budget_summary,
@@ -1423,7 +1610,7 @@ class ParallelAnalyzer:
                 "report_view_summary": view_summary,
                 "diff_relevance_summary": diff_relevance_summary,
                 "diff_impact_coverage": diff_coverage,
-                "context_tokens": sum(r.context_tokens for r in results.values()),
+                "context_tokens": total_context_tokens,
                 "cumulative_prompt_tokens": (
                     response_prompt_tokens or retained_prompt_tokens
                 ),
@@ -1438,6 +1625,16 @@ class ParallelAnalyzer:
                 "retained_entry_total_tokens": retained_total_tokens,
                 "llm_usage": llm_usage_summary,
                 "validation_performance": validation_performance_summary,
+                "global_validation_queue": {
+                    "enabled": self._uses_scan_validation_queue(),
+                    "duration_seconds": round(global_validation_duration, 4),
+                    "unique_group_count": int(
+                        global_validation_state.get("validation_group_count", 0) or 0
+                    ),
+                    "raw_occurrence_count": int(
+                        global_validation_state.get("scan_level_raw_occurrence_count", 0) or 0
+                    ),
+                },
                 "va_candidate_coverage_summary": va_candidate_coverage_summary,
                 "entry_budget": entry_budget_summary,
                 "llm_iteration_budget": llm_iteration_budget_summary,
@@ -1512,8 +1709,8 @@ class ParallelAnalyzer:
             )
         return terminal
 
-    @staticmethod
     def _validation_performance_summary(
+        self,
         results: Dict[str, ParallelAnalysisResult],
     ) -> Dict[str, Any]:
         keys = (
@@ -1539,6 +1736,24 @@ class ParallelAnalyzer:
                     summary[key] += int(perf.get(key, 0) or 0)
                 except (TypeError, ValueError):
                     continue
+        global_state = getattr(self, "_global_validation_state", {}) or {}
+        for key in keys:
+            try:
+                summary[key] += int(global_state.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                continue
+        raw_occurrences = int(global_state.get("scan_level_raw_occurrence_count", 0) or 0)
+        scan_groups = int(global_state.get("validation_group_count", 0) or 0)
+        grouped_aliases = max(0, raw_occurrences - scan_groups)
+        if grouped_aliases:
+            summary["validation_group_merged_count"] += grouped_aliases
+        summary["scan_level_raw_occurrence_count"] = raw_occurrences
+        summary["scan_level_grouped_alias_count"] = grouped_aliases
+        summary["structural_coalescing_rate"] = (
+            round(grouped_aliases / raw_occurrences, 4)
+            if raw_occurrences
+            else 1.0
+        )
         eligible = int(summary.get("validation_group_merged_count") or 0)
         reused = int(summary.get("validator_cache_hit") or 0)
         summary["validation_reuse_rate"] = (

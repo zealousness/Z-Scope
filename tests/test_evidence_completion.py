@@ -1,4 +1,5 @@
 from zscope.core.validation.evidence_completion import EvidenceCompletionQueue
+from zscope.core.validation.proofs import deterministic_decision_proof
 
 
 def test_evidence_completion_promotes_only_backend_attached_proof_once() -> None:
@@ -252,7 +253,7 @@ def test_evidence_completion_confirms_ordered_publication_contract() -> None:
     assert proof["proof_kind"] == "ordered_publication_before_initialization"
 
 
-def test_evidence_completion_rejects_allocator_wrapper_without_caller_taint() -> None:
+def test_evidence_completion_keeps_allocator_wrapper_without_caller_taint_as_review() -> None:
     queue = EvidenceCompletionQueue()
     issue = {
         "impact_level": "high",
@@ -273,7 +274,8 @@ def test_evidence_completion_rejects_allocator_wrapper_without_caller_taint() ->
 
     queue.complete(issue, validator_data={"verdict": "rejected"})
 
-    assert issue["deterministic_proofs"][0]["proof_kind"] == "allocator_wrapper_missing_caller_taint"
+    assert issue["evidence_completion_status"] == "exhausted"
+    assert "deterministic_proofs" not in issue
 
 
 def test_evidence_completion_rejects_dynamic_array_as_fixed_array() -> None:
@@ -318,3 +320,41 @@ def test_evidence_completion_rejects_global_resource_owner_transfer() -> None:
     queue.complete(issue, validator_data={"verdict": "rejected"})
 
     assert issue["deterministic_proofs"][0]["proof_kind"] == "durable_global_owner_transfer"
+    proof = deterministic_decision_proof(issue, outcome="reject")
+    assert proof is not None
+    assert proof.proof_kind == "durable_global_owner_transfer"
+
+
+def test_evidence_completion_proofs_route_all_structured_transfer_and_graph_contracts() -> None:
+    queue = EvidenceCompletionQueue()
+    fd_issue = {
+        "impact_level": "high",
+        "rule": "clang_cfg_fd_open_return_without_close",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {"kind": "fd_open", "line": 10, "variable": "fd", "expression": "int fd = open(path, 0);"},
+                    {"kind": "return_without_fd_close", "line": 12, "variable": "fd", "expression": "return fd;"},
+                ]
+            },
+        },
+    }
+    queue.complete(fd_issue, validator_data={"verdict": "rejected"})
+    assert deterministic_decision_proof(fd_issue, outcome="reject") is not None
+
+    graph_issue = {
+        "impact_level": "high",
+        "rule": "published_before_member_initialization",
+        "evidence_pack": {
+            "path": {
+                "function": "publish",
+                "source_line": 10,
+                "publish_line": 20,
+                "late_init_line": 30,
+                "complete_in_function": True,
+            }
+        },
+    }
+    queue.complete(graph_issue, validator_data={"verdict": "verified"})
+    assert deterministic_decision_proof(graph_issue, outcome="confirm") is not None

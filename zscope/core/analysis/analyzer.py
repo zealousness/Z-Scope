@@ -165,11 +165,16 @@ class Analyzer:
                  validation_result_cache: Optional[ValidationResultCache] = None,
                  cancellation_token: Optional[CancellationToken] = None,
                  scheduler: Optional[ScanScheduler] = None,
-                 write_root_reports: bool = True):
+                 write_root_reports: bool = True,
+                 defer_validation_to_scan: bool = False):
         self.config = config
         self.cancellation_token = cancellation_token
         self.scheduler = scheduler
         self.write_root_reports = write_root_reports
+        # Parallel batch execution owns validation at scan scope.  A standalone
+        # Analyzer still validates locally, preserving the existing public
+        # facade and avoiding an incomplete one-entry report.
+        self.defer_validation_to_scan = bool(defer_validation_to_scan)
         self.code_index = code_index or CodeIndex(
             config.project.project_root,
             config.project.compile_commands_path,
@@ -4247,6 +4252,20 @@ class Analyzer:
             )
 
     def _step_validate_findings(self, state: Dict[str, Any]) -> None:
+        # Preserve compatibility for focused callers/tests that construct the
+        # legacy facade without running ``__init__``.
+        if getattr(self, "defer_validation_to_scan", False):
+            pending = len(state.get("pending_new_issues") or [])
+            if pending:
+                state.setdefault("notes", []).append(
+                    f"Deferred {pending} deterministic candidate(s) to the scan-level validation queue."
+                )
+            # Candidate records have already been atomically registered in
+            # the shared ledger.  Do not create an entry-local validation
+            # future: it would race another wrapper occurrence and defeat the
+            # v3 validation_cluster_uid contract.
+            state["pending_new_issues"] = []
+            return
         runner = getattr(self, "validation_runner", None)
         if runner is None:
             runner = self._make_validation_runner()
