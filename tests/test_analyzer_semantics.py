@@ -1923,6 +1923,17 @@ def test_config_pair_names_split_csv() -> None:
 
 
 def test_candidate_ir_database_failure_marks_engine_incomplete() -> None:
+    class RecordingLock:
+        def __init__(self):
+            self.entries = 0
+
+        def __enter__(self):
+            self.entries += 1
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
     class FailedDb:
         def upsert_ir_statement(self, *args, **kwargs):
             raise RuntimeError("database is read-only")
@@ -1932,6 +1943,8 @@ def test_candidate_ir_database_failure_marks_engine_incomplete() -> None:
 
     analyzer = object.__new__(Analyzer)
     analyzer._get_knowledge_db = lambda: FailedDb()
+    writer_lock = RecordingLock()
+    analyzer._candidate_ir_persistence_lock = writer_lock
 
     analyzer._persist_candidate_ir_records(
         [
@@ -1949,4 +1962,5 @@ def test_candidate_ir_database_failure_marks_engine_incomplete() -> None:
     assert capability["status"] == "failed"
     assert capability["persisted_count"] == 0
     assert capability["failure_count"] == 2
+    assert writer_lock.entries == 1
  

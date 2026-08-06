@@ -165,11 +165,17 @@ class Analyzer:
                  validation_result_cache: Optional[ValidationResultCache] = None,
                  cancellation_token: Optional[CancellationToken] = None,
                  scheduler: Optional[ScanScheduler] = None,
+                 candidate_ir_persistence_lock: Optional[Any] = None,
                  write_root_reports: bool = True,
                  defer_validation_to_scan: bool = False):
         self.config = config
         self.cancellation_token = cancellation_token
         self.scheduler = scheduler
+        # A batch shares one KnowledgeDB connection between entry workers.
+        # Candidate IR persistence performs several writes followed by a
+        # commit, so it must be one critical section rather than independent
+        # SQLite writes from each entry thread.
+        self._candidate_ir_persistence_lock = candidate_ir_persistence_lock
         self.write_root_reports = write_root_reports
         # Parallel batch execution owns validation at scan scope.  A standalone
         # Analyzer still validates locally, preserving the existing public
@@ -4092,6 +4098,15 @@ class Analyzer:
         """Persist compact candidate evidence into KnowledgeDB inspection IR tables."""
         if not issues:
             return
+        lock = getattr(self, "_candidate_ir_persistence_lock", None)
+        if lock is not None:
+            with lock:
+                self._persist_candidate_ir_records_locked(issues)
+            return
+        self._persist_candidate_ir_records_locked(issues)
+
+    def _persist_candidate_ir_records_locked(self, issues: List[Dict[str, Any]]) -> None:
+        """Persist one batch while the shared KnowledgeDB writer is held."""
         db = self._get_knowledge_db()
         if db is None:
             return
