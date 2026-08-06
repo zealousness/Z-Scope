@@ -15,6 +15,7 @@ from zscope.config.function_entry import FunctionEntry
 from zscope.core.analysis import analyzer as analyzer_module
 from zscope.orchestration import parallel_analyzer as parallel_module
 from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
+from zscope.orchestration.subagents import SubAgentTicket
 from zscope.semantics.models import LocalPatternSemantics
 
 
@@ -303,3 +304,65 @@ def test_parallel_analyzer_stops_when_global_model_fails(monkeypatch, tmp_path) 
         "failed_functions": 1,
         "stage_complete": False,
     }
+
+
+def test_scan_validation_queue_validates_one_shared_ledger_group(tmp_path) -> None:
+    """Wrapper occurrences are merged before any validator work is scheduled."""
+
+    parallel = ParallelAnalyzer(_config(tmp_path), code_index=FakeCodeIndex())
+    ticket = SubAgentTicket(
+        id="RULE_1",
+        skill="bounds",
+        task="validate one structured bounds obligation",
+        trigger="copy",
+        line=12,
+        context_slice="copy(dst, src, count);",
+        priority_score=90,
+        origin="src/demo.c:10",
+        sink="src/demo.c:12",
+        resource_kind="buffer",
+        evidence={
+            "candidate_uid": "CAND_SHARED",
+            "evidence_hash": "evidence",
+            "decision_evidence_hash": "decision",
+            "validation_cluster_uid": "VAL_SHARED",
+            "context_signature": "context",
+            "candidate_payload": {
+                "id": "RULE_1",
+                "category": "bounds",
+                "defect_class": "bounds",
+                "function": "sink",
+                "source": "count",
+                "sink": "copy(dst, src, count)",
+                "location": "src/demo.c:12",
+            },
+        },
+    )
+    parallel._candidate_ledger.add(
+        ticket,
+        source="clang_ast_cfg",
+        call_path=["entry_a", "sink"],
+        record_role="validation_obligation",
+        entry_identity="entry_a",
+    )
+    parallel._candidate_ledger.add(
+        ticket,
+        source="graph_rule",
+        call_path=["entry_b", "sink"],
+        record_role="validation_obligation",
+        entry_identity="entry_b",
+    )
+
+    parallel._run_scan_validation_queue()
+
+    assert parallel._global_validation_state["validation_group_count"] == 1
+    assert parallel._global_validation_state["scan_level_raw_occurrence_count"] == 2
+    snapshot = parallel._candidate_ledger.lifecycle_snapshot()
+    assert snapshot["summary"]["validation_group_count"] == 1
+    assert snapshot["summary"]["raw_occurrence_count"] == 2
+    assert snapshot["outcomes"][0]["candidate_disposition"] == "needs_review"
+    # This fixture deliberately has no Validator agent, so the runner closes
+    # the one queued obligation as review without issuing an LLM attempt.
+    # ``test_validation_runner_selects_one_representative_per_validation_cluster``
+    # covers the corresponding one-validator-call coalescing behavior.
+    assert snapshot["outcomes"][0]["validation_attempt_count"] == 0

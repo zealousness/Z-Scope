@@ -261,3 +261,4 @@ def test_range_benchmark_uses_zhipu_glm51_endpoint() -> None:
     assert "candidate_lifecycle_v3: true" in config
     assert "canonical_outcome_projection: true" in config
     assert "deterministic_proof_routing: true" in config
+    assert "global_validation_group_queue: true" in config

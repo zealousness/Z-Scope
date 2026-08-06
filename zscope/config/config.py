@@ -312,6 +312,10 @@ class AnalysisConfig:
     candidate_lifecycle_v3: bool = True
     canonical_outcome_projection: bool = True
     deterministic_proof_routing: bool = True
+    # Batch scans collect all deterministic candidates before one shared
+    # validation queue.  Keeping this switch separate permits a one-release
+    # rollback to entry-local validation for compatibility diagnostics.
+    global_validation_group_queue: bool = True
     validation_cache_entries: int = 4096
     user_config_db: str = ""  # Path to user config workbook or directory, defaults to {snapshot_dir}/
     enable_global_model: bool = False  # Batch-level global premodel/model_entry replacement.
@@ -791,6 +795,9 @@ class ConfigLoader:
                 ),
                 deterministic_proof_routing=analysis_data.get(
                     "deterministic_proof_routing", True
+                ),
+                global_validation_group_queue=analysis_data.get(
+                    "global_validation_group_queue", True
                 ),
                 validation_cache_entries=analysis_data.get(
                     "validation_cache_entries", 4096
