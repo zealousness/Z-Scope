@@ -96,6 +96,7 @@ for key in (
     "candidate_lifecycle_v3",
     "canonical_outcome_projection",
     "deterministic_proof_routing",
+    "global_validation_group_queue",
     "enable_evidence_completion_queue",
 ):
     if analysis.get(key, True) is not True:
