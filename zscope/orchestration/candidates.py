@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .candidate_envelope import (
     CANDIDATE_SCHEMA_VERSION,
+    DECISION_CONTEXT_VERSION,
     context_signature_for,
     occurrence_uid_for,
     validation_cluster_uid_for,
@@ -110,6 +111,8 @@ class CandidateRecord:
     root_cause_key: str = ""
     candidate_uid: str = ""
     history_key: str = ""
+    obligation_uid: str = ""
+    decision_context_version: str = DECISION_CONTEXT_VERSION
     evidence_hash: str = ""
     decision_evidence_hash: str = ""
     provenance_hashes: List[str] = field(default_factory=list)
@@ -161,6 +164,8 @@ class CandidateRecord:
             "candidate_schema_version": self.schema_version,
             "candidate_uid": self.candidate_uid or self.candidate_id,
             "history_key": self.history_key,
+            "obligation_uid": self.obligation_uid,
+            "decision_context_version": self.decision_context_version,
             "evidence_hash": self.evidence_hash,
             "decision_evidence_hash": self.decision_evidence_hash,
             "provenance_hash": (
@@ -254,6 +259,15 @@ class CandidateLedger:
                 str(evidence.get("decision_evidence_hash") or "")
                 or self._decision_evidence_hash(ticket, candidate_uid)
             )
+            obligation_uid = (
+                str(evidence.get("obligation_uid") or "") or candidate_uid
+            )
+            decision_context_version = str(
+                evidence.get("decision_context_version")
+                or DECISION_CONTEXT_VERSION
+            )
+            evidence.setdefault("obligation_uid", obligation_uid)
+            evidence.setdefault("decision_context_version", decision_context_version)
             validation_cluster_uid = (
                 str(evidence.get("validation_cluster_uid") or "")
                 or validation_cluster_uid_for(
@@ -261,6 +275,8 @@ class CandidateLedger:
                     decision_evidence_hash=decision_evidence_hash,
                     validator_contract=evidence.get("validator_contract")
                     or evidence.get("validation_requirements"),
+                    obligation_uid=obligation_uid,
+                    decision_context_version=decision_context_version,
                 )
             )
             provenance_hash = (
@@ -281,6 +297,8 @@ class CandidateLedger:
                     root_cause_key=self._ticket_root_cause_key(ticket, dedup_key),
                     candidate_uid=candidate_uid,
                     history_key=history_key,
+                    obligation_uid=obligation_uid,
+                    decision_context_version=decision_context_version,
                     evidence_hash=evidence_hash,
                     decision_evidence_hash=decision_evidence_hash,
                     provenance_hashes=[provenance_hash] if provenance_hash else [],

@@ -94,6 +94,18 @@ class Issue:
     evidence_completeness: Optional[str] = None
     evidence_sources: Optional[List[str]] = None
     entry_paths: Optional[List[List[str]]] = None
+    obligation_uid: Optional[str] = None
+    decision_context_version: Optional[str] = None
+    decision_proof: Optional[Dict[str, Any]] = None
+    promotion_reason: Optional[str] = None
+    proof_provider: Optional[str] = None
+    proof_coverage: Optional[str] = None
+    evidence_completion_status: Optional[str] = None
+    evidence_completion_terminal_status: Optional[str] = None
+    validation_group_alias_count: Optional[int] = None
+    validator_invocation_count: Optional[int] = None
+    rejected_with_proof_count: Optional[int] = None
+    cluster_fragmentation_count: Optional[int] = None
 
 
     @classmethod

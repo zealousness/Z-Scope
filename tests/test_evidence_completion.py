@@ -36,7 +36,8 @@ def test_evidence_completion_records_missing_fact_without_inventing_proof() -> N
     request = queue.complete(issue, validator_data={"verdict": "verified"})
 
     assert request is not None
-    assert issue["evidence_completion_status"] == "requested"
+    assert issue["evidence_completion_status"] == "exhausted"
+    assert issue["evidence_completion_terminal_status"] == "exhausted"
     assert "deterministic_proofs" not in issue
 
 
@@ -96,5 +97,60 @@ state.current = NULL;
         validation_evidence=evidence,
     )
 
-    assert issue["evidence_completion_status"] == "requested"
+    assert issue["evidence_completion_status"] == "exhausted"
     assert "deterministic_proofs" not in issue
+
+
+def test_evidence_completion_derives_terminating_null_guard_proof() -> None:
+    queue = EvidenceCompletionQueue()
+    issue = {
+        "impact_level": "high",
+        "rule": "clang_cfg_allocation_result_used_without_null_check",
+        "source": "task = _safe_calloc(1, sizeof(*task));",
+        "sink": "task->state = READY;",
+    }
+    evidence = {
+        "function_context": {
+            "code": """
+task = _safe_calloc(1, sizeof(*task));
+if (!task || !frame) {
+    SAFE_FREE(task);
+    return NULL;
+}
+task->state = READY;
+"""
+        }
+    }
+
+    queue.complete(issue, validator_data={"verdict": "rejected"}, validation_evidence=evidence)
+
+    assert issue["evidence_completion_status"] == "completed"
+    assert issue["deterministic_proofs"][0]["proof_kind"] == "guard_dominates_sink"
+
+
+def test_evidence_completion_confirms_complete_cfg_obligation_path() -> None:
+    queue = EvidenceCompletionQueue()
+    issue = {
+        "impact_level": "high",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {"kind": "header_length", "line": 10},
+                    {"kind": "header_length_copy", "line": 14},
+                ]
+            },
+        },
+    }
+    evidence = {
+        "function_context": {
+            "code": "uint32_t len = header.length;\nmemcpy(dst, src, len);"
+        }
+    }
+
+    queue.complete(issue, validator_data={"verdict": "verified"}, validation_evidence=evidence)
+
+    assert issue["evidence_completion_status"] == "completed"
+    proof = issue["deterministic_proofs"][0]
+    assert proof["outcome"] == "confirm"
+    assert proof["proof_kind"] == "deterministic_cfg_obligation_path"

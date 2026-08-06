@@ -276,6 +276,64 @@ class ValidationPipeline:
             if self.enable_deterministic_proof_routing
             else None
         )
+        rejection_proof = (
+            deterministic_decision_proof(issue, outcome="reject")
+            if self.enable_deterministic_proof_routing
+            else None
+        )
+        # A proof is an explicit, reproducible decision authority.  Conflicting
+        # complete proofs must be visible for review rather than silently
+        # following a model verdict or whichever branch happened to run first.
+        if confirmation_proof is not None and rejection_proof is not None:
+            issue["validation_status"] = "needs_review"
+            issue["candidate_disposition"] = "needs_review"
+            issue["finding_kind"] = "needs_review"
+            issue["evidence_conflict"] = True
+            issue["validation_reasoning"] = (
+                "Conflicting complete deterministic confirmation and rejection proofs "
+                "require human review."
+            )
+            return ValidationOutcome(
+                report_bucket="observations",
+                memory_status="needs_review",
+                verdict="needs_review",
+                final_score=final_score,
+            )
+        if confirmation_proof is not None:
+            issue["validation_status"] = "validated"
+            issue["candidate_disposition"] = "confirmed"
+            issue["finding_kind"] = val_data.get("finding_kind") or "verified_vulnerability"
+            issue["decision_proof"] = confirmation_proof.to_dict()
+            issue["promotion_reason"] = "deterministic_confirmation_proof"
+            issue["proof_provider"] = confirmation_proof.producer_engine
+            issue["proof_coverage"] = "complete"
+            issue["validation_reasoning"] = val_data.get("reasoning")
+            issue["confidence"] = val_data.get("confidence_score", issue.get("confidence", 0.5))
+            self._copy_validator_detail_fields(issue, val_data)
+            preserve_issue_location(issue, val_data)
+            return ValidationOutcome(
+                report_bucket="issues",
+                memory_status="validated",
+                verdict=verdict,
+                final_score=final_score,
+            )
+        if rejection_proof is not None:
+            issue["validation_status"] = "rejected"
+            issue["candidate_disposition"] = "rejected_with_proof"
+            issue["finding_kind"] = "rejected"
+            issue["rejection_source"] = "deterministic_validator_proof"
+            issue["deterministic_rejection"] = True
+            issue["decision_proof"] = rejection_proof.to_dict()
+            issue["proof_provider"] = rejection_proof.producer_engine
+            issue["proof_coverage"] = "complete"
+            issue["validation_reasoning"] = val_data.get("reasoning")
+            preserve_issue_location(issue, val_data)
+            return ValidationOutcome(
+                report_bucket=None,
+                memory_status="rejected",
+                verdict=verdict,
+                final_score=final_score,
+            )
         if verdict == "verified" and (final_score >= 0.6 or confirmation_proof is not None):
             if confirmation_proof is not None or self._has_confirmed_evidence(score_data, val_data):
                 issue["validation_status"] = "validated"
@@ -403,11 +461,6 @@ class ValidationPipeline:
                 final_score=final_score,
             )
 
-        rejection_proof = (
-            deterministic_decision_proof(issue, outcome="reject")
-            if self.enable_deterministic_proof_routing
-            else None
-        )
         if rejection_proof is not None or self._has_deterministic_rejection_proof(issue, val_data):
             issue["validation_status"] = "rejected"
             issue["candidate_disposition"] = "rejected_with_proof"
@@ -447,13 +500,19 @@ class ValidationPipeline:
         issue: Dict[str, Any],
         error: Any,
     ) -> ValidationOutcome:
-        """Keep failed Validator calls visible as pending observations."""
+        """Close a failed Validator call as an operational obligation."""
         preserve_issue_location(issue)
-        issue["validation_status"] = "pending"
+        issue["validation_status"] = "engine_failed"
         issue["candidate_disposition"] = "engine_failed"
-        issue.setdefault("finding_kind", "validation_pending")
+        issue.setdefault("finding_kind", "validation_engine_failed")
+        issue["record_role"] = "operational_obligation"
+        issue["engine_status"] = "failed"
         issue["validation_error"] = error
-        return ValidationOutcome(report_bucket="observations", verdict="pending")
+        return ValidationOutcome(
+            report_bucket="observations",
+            memory_status="engine_failed",
+            verdict="engine_failed",
+        )
 
     @staticmethod
     def _has_confirmed_evidence(
