@@ -24,7 +24,10 @@ from ...common.issue_identity import canonical_issue_key, deduplicate_issues
 from ...config.function_entry import FunctionEntry
 from ...framework.llm_client import LLMClient
 from ...orchestration.scheduler import VALIDATOR_ROLE, ScanScheduler
-from ...orchestration.candidate_envelope import CANDIDATE_SCHEMA_VERSION
+from ...orchestration.candidate_envelope import (
+    CANDIDATE_SCHEMA_VERSION,
+    DECISION_CONTEXT_VERSION,
+)
 from .evidence import (
     build_validation_evidence_pack,
     compact_validation_evidence_pack,
@@ -143,7 +146,9 @@ class ValidationResultCache:
 class ValidationRunner:
     """Owns validation-stage orchestration around ``ValidationPipeline``."""
 
-    _VALIDATION_CACHE_PROTOCOL = "zscope.validator-cache.v3"
+    # v4 invalidates v3 entries whose key included sink/provenance-local facts
+    # and whose outcome predated deterministic completion routing.
+    _VALIDATION_CACHE_PROTOCOL = "zscope.validator-cache.v4"
     _DEFAULT_VALIDATION_CACHE_SIZE = 4096
     _EXTERNAL_API_NAMES = {
         "calloc",
@@ -746,6 +751,7 @@ class ValidationRunner:
         if validation_cluster_uid:
             payload = {
                 "protocol": self._VALIDATION_CACHE_PROTOCOL,
+                "decision_context_version": DECISION_CONTEXT_VERSION,
                 "environment": self._validation_environment_fingerprint,
                 "validation_cluster_uid": validation_cluster_uid,
             }
@@ -775,6 +781,7 @@ class ValidationRunner:
                 return ""
         payload = {
             "protocol": self._VALIDATION_CACHE_PROTOCOL,
+            "decision_context_version": DECISION_CONTEXT_VERSION,
             "environment": self._validation_environment_fingerprint,
             "validation_cluster_uid": validation_cluster_uid,
             "candidate_uid": stable_id,
@@ -835,6 +842,7 @@ class ValidationRunner:
         client = self.llm_clients.get(llm_ref) or self.llm_clients.get("default")
         payload = {
             "protocol": self._VALIDATION_CACHE_PROTOCOL,
+            "decision_context_version": DECISION_CONTEXT_VERSION,
             "project_root": project_root.resolve().as_posix(),
             "project_revision": self._project_revision(project_root),
             "index_epoch": self._index_epoch(),

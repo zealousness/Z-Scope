@@ -6,9 +6,36 @@ from zscope.reporting.schema import (
     apply_report_schema_v2,
     coalesce_terminal_candidates,
     exit_code_for_report,
+    report_invariant_status,
     report_is_reusable,
     report_reuse_blockers,
 )
+
+
+def test_report_invariant_rejects_open_evidence_completion() -> None:
+    confirmed = {
+        "candidate_disposition": "confirmed",
+        "validation_cluster_uid": "VAL_1",
+        "status": "validated",
+        "obligation_uid": "OBL_1",
+    }
+    review = {
+        "candidate_disposition": "needs_review",
+        "validation_cluster_uid": "VAL_2",
+        "status": "needs_review",
+        "obligation_uid": "OBL_2",
+        "evidence_completion_status": "requested",
+    }
+
+    status = report_invariant_status(
+        [confirmed],
+        [review],
+        [confirmed, review],
+        canonical_projection=True,
+    )
+
+    assert status["valid"] is False
+    assert status["open_evidence_completion_count"] == 1
 
 
 def test_candidate_envelope_separates_display_id_from_internal_occurrence() -> None:

@@ -641,6 +641,17 @@ def apply_report_schema_v2(
     report["run_manifest"]["canonical_validation_group_count"] = int(
         invariant["canonical_validation_group_count"]
     )
+    report["run_manifest"].update(
+        {
+            key: int(invariant.get(key) or 0)
+            for key in (
+                "validation_group_alias_count",
+                "validator_invocation_count",
+                "rejected_with_proof_count",
+                "cluster_fragmentation_count",
+            )
+        }
+    )
     report["run_manifest"]["report_invariant_status"] = invariant
     return report
 
@@ -688,10 +699,31 @@ def report_invariant_status(
         for item in security_terminal
         if item.get("validation_cluster_uid")
     }
+    terminal_items = _dict_items(terminal_candidates)
+    open_completion_count = sum(
+        1
+        for item in terminal_items
+        if str(item.get("evidence_completion_status") or "").lower()
+        in {"requested", "running", "queued"}
+        or str(item.get("evidence_completion_terminal_status") or "").lower()
+        in {"requested", "running", "queued"}
+    )
+    open_validation_count = sum(
+        1
+        for item in terminal_items
+        if str(item.get("status") or "").lower()
+        in {"pending", "queued", "planned", "running"}
+    )
+    obligation_uids = {
+        str(item.get("obligation_uid") or item.get("candidate_uid") or "")
+        for item in security_terminal
+    }
     valid = not canonical_projection or (
         confirmed == terminal_confirmed
         and review == terminal_review
         and len(clusters) == len(security_terminal)
+        and open_completion_count == 0
+        and open_validation_count == 0
     )
     return {
         "valid": valid,
@@ -701,6 +733,23 @@ def report_invariant_status(
         "displayed_review_count": review,
         "terminal_review_count": terminal_review,
         "canonical_validation_group_count": len(clusters),
+        "validation_group_alias_count": sum(
+            len(item.get("alias_occurrence_uids") or [])
+            for item in terminal_items
+        ),
+        "validator_invocation_count": sum(
+            int(item.get("validation_attempt_count") or 0)
+            for item in terminal_items
+        ),
+        "rejected_with_proof_count": sum(
+            1
+            for item in terminal_items
+            if str(item.get("candidate_disposition") or "").lower()
+            == "rejected_with_proof"
+        ),
+        "cluster_fragmentation_count": max(0, len(clusters) - len(obligation_uids)),
+        "open_evidence_completion_count": open_completion_count,
+        "open_validation_group_count": open_validation_count,
     }
 
 

@@ -22,6 +22,9 @@ class DecisionProof:
     contradiction_or_obligation: str
     scope: str
     completeness: str
+    proof_version: str = "zscope.decision-proof.v2"
+    subject_identity: str = ""
+    cfg_nodes: tuple[str, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -37,6 +40,8 @@ _REJECTION_REQUIREMENTS = {
     "sink_unreachable": {"sink_unreachable"},
     "error_path_returns_before_sink": {"error_path_returns_before_sink"},
     "contract_precondition_enforced": {"contract_precondition_enforced"},
+    "distinct_object_identity": {"distinct_object_identity"},
+    "branch_paths_mutually_exclusive": {"branch_paths_mutually_exclusive"},
 }
 
 _CONFIRMATION_REQUIREMENTS = {
@@ -46,6 +51,10 @@ _CONFIRMATION_REQUIREMENTS = {
     "missing_cleanup_path": {"allocation_reachable", "cleanup_missing"},
     "race_without_happens_before": {"conflicting_accesses", "no_happens_before"},
     "contract_violation_path": {"caller_contract_violated", "source_to_sink_complete"},
+    "deterministic_cfg_obligation_path": {
+        "source_to_sink_complete",
+        "event_path_complete",
+    },
 }
 
 
@@ -96,6 +105,14 @@ def deterministic_decision_proof(
             ),
             scope=str(proof.get("scope") or "candidate"),
             completeness="complete",
+            proof_version=str(proof.get("proof_version") or "zscope.decision-proof.v2"),
+            subject_identity=str(
+                proof.get("subject_identity")
+                or issue.get("resource_identity")
+                or issue.get("source_identity")
+                or ""
+            ),
+            cfg_nodes=tuple(sorted(_string_values(proof.get("cfg_nodes") or proof.get("fact_ids")))),
         )
     return None
 

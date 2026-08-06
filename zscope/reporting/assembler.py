@@ -235,6 +235,17 @@ class ReportAssembler:
         final_report.run_manifest["canonical_validation_group_count"] = int(
             invariant_status["canonical_validation_group_count"]
         )
+        final_report.run_manifest.update(
+            {
+                key: int(invariant_status.get(key) or 0)
+                for key in (
+                    "validation_group_alias_count",
+                    "validator_invocation_count",
+                    "rejected_with_proof_count",
+                    "cluster_fragmentation_count",
+                )
+            }
+        )
         final_report.run_manifest["report_invariant_status"] = invariant_status
         self.refresh(final_report, state)
         state["final_report"] = final_report
@@ -362,6 +373,8 @@ class ReportAssembler:
                     for key in (
                         "candidate_schema_version",
                         "candidate_uid",
+                        "obligation_uid",
+                        "decision_context_version",
                         "occurrence_uid",
                         "history_key",
                         "evidence_hash",
@@ -397,6 +410,16 @@ class ReportAssembler:
                         "call_paths",
                         "duplicate_count",
                         "engine_status",
+                        "decision_proof",
+                        "promotion_reason",
+                        "proof_provider",
+                        "proof_coverage",
+                        "evidence_completion_status",
+                        "evidence_completion_terminal_status",
+                        "validation_group_alias_count",
+                        "validator_invocation_count",
+                        "rejected_with_proof_count",
+                        "cluster_fragmentation_count",
                         "function",
                         "location",
                         "line",
@@ -546,12 +569,34 @@ class ReportAssembler:
             for item in terminal_states
             if str(item.get("record_role") or "") != "operational_obligation"
         )
+        terminal_items = [item for item in terminal_states if isinstance(item, dict)]
+        open_completion_count = sum(
+            1
+            for item in terminal_items
+            if str(item.get("evidence_completion_status") or "").lower()
+            in {"requested", "running", "queued"}
+            or str(item.get("evidence_completion_terminal_status") or "").lower()
+            in {"requested", "running", "queued"}
+        )
+        open_validation_count = sum(
+            1
+            for item in terminal_items
+            if str(item.get("status") or "").lower()
+            in {"pending", "queued", "planned", "running"}
+        )
+        obligation_uids = {
+            str(item.get("obligation_uid") or item.get("candidate_uid") or "")
+            for item in terminal_items
+            if str(item.get("record_role") or "") != "operational_obligation"
+        }
         valid = (
             not canonical_enabled
             or (
                 default_count == terminal_confirmed
                 and review_count == terminal_review
                 and len(clusters) == security_terminal_count
+                and open_completion_count == 0
+                and open_validation_count == 0
             )
         )
         return {
@@ -562,6 +607,23 @@ class ReportAssembler:
             "displayed_review_count": review_count,
             "terminal_review_count": terminal_review,
             "canonical_validation_group_count": len(clusters),
+            "validation_group_alias_count": sum(
+                len(item.get("alias_occurrence_uids") or [])
+                for item in terminal_items
+            ),
+            "validator_invocation_count": sum(
+                int(item.get("validation_attempt_count") or 0)
+                for item in terminal_items
+            ),
+            "rejected_with_proof_count": sum(
+                1
+                for item in terminal_items
+                if str(item.get("candidate_disposition") or "").lower()
+                == "rejected_with_proof"
+            ),
+            "cluster_fragmentation_count": max(0, len(clusters) - len(obligation_uids)),
+            "open_evidence_completion_count": open_completion_count,
+            "open_validation_group_count": open_validation_count,
         }
 
     @staticmethod
@@ -614,6 +676,8 @@ class ReportAssembler:
             for key in (
                 "candidate_schema_version",
                 "candidate_uid",
+                "obligation_uid",
+                "decision_context_version",
                 "history_key",
                 "evidence_hash",
                 "decision_evidence_hash",
@@ -637,6 +701,16 @@ class ReportAssembler:
                 "sources",
                 "call_paths",
                 "duplicate_count",
+                "decision_proof",
+                "promotion_reason",
+                "proof_provider",
+                "proof_coverage",
+                "evidence_completion_status",
+                "evidence_completion_terminal_status",
+                "validation_group_alias_count",
+                "validator_invocation_count",
+                "rejected_with_proof_count",
+                "cluster_fragmentation_count",
             ):
                 if terminal.get(key) not in (None, "", [], {}):
                     observation[key] = deepcopy(terminal[key])
