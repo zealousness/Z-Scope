@@ -16,6 +16,7 @@ from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional
 from ..core.candidates.evidence_models import build_evidence_models
 
 CANDIDATE_SCHEMA_VERSION = "zscope.candidate.v3"
+DECISION_CONTEXT_VERSION = "zscope.decision-context.v2"
 CANDIDATE_DISPOSITIONS = {
     "confirmed",
     "rejected_with_proof",
@@ -86,6 +87,8 @@ def validation_cluster_uid_for(
     *,
     decision_evidence_hash: str,
     validator_contract: Any = None,
+    obligation_uid: str = "",
+    decision_context_version: str = DECISION_CONTEXT_VERSION,
 ) -> str:
     """Return the identity of one semantic validation obligation.
 
@@ -96,12 +99,90 @@ def validation_cluster_uid_for(
 
     return "VAL_" + _digest(
         {
-            "candidate": candidate_uid,
+            # The candidate stays occurrence/sink precise.  A validation
+            # obligation can deliberately be broader when the safety question
+            # is about one acquisition, resource, or lock protocol rather
+            # than each individual use of it.
+            "obligation": obligation_uid or candidate_uid,
             "decision_evidence": decision_evidence_hash,
             "validator_contract": validator_contract,
+            "decision_context_version": decision_context_version,
         },
         length=32,
     )
+
+
+# These rules ask one source/resource-centric question.  Their individual
+# dereferences or reporting wrappers are provenance, not independent security
+# decisions.  Rules whose sink can change the result (UAF, bounds, command
+# injection, etc.) deliberately remain sink-sensitive.
+_SOURCE_CENTRIC_RULES = {
+    "clang_cfg_allocation_result_used_without_null_check",
+    "clang_cfg_alloc_result_deref_without_null_guard",
+    "clang_cfg_acquire_without_release_on_exit",
+    "clang_cfg_unlock_without_matching_lock",
+    "clang_cfg_return_with_lock_held",
+}
+
+
+def _is_source_centric_rule(rule: str) -> bool:
+    return _normalize_text(rule) in _SOURCE_CENTRIC_RULES
+
+
+def _obligation_uid_for(
+    *,
+    project_id: str,
+    revision: str,
+    defect_class: str,
+    source_identity: str,
+    sink_identity: str,
+    resource_identity: str,
+    rule: str,
+) -> str:
+    """Return the structured subject of one validation decision.
+
+    The fallback keeps sink-sensitive findings separate.  This is intentionally
+    rule based rather than text/LLM based: any rule omitted from the small
+    allow-list remains conservative.
+    """
+
+    source_centric = _is_source_centric_rule(rule)
+    payload = {
+        "version": DECISION_CONTEXT_VERSION,
+        "project": project_id,
+        "revision": revision,
+        "defect_class": defect_class,
+        # Detector/rule naming is provenance.  Only the source-centric
+        # decision shape belongs here so equivalent detectors still coalesce.
+        "decision_shape": "source_centric" if source_centric else "sink_sensitive",
+        "source": source_identity,
+        "resource": resource_identity,
+    }
+    if not source_centric:
+        payload["sink"] = sink_identity
+    return "OBL_" + _digest(payload, length=32)
+
+
+def _decision_model(
+    value: Any,
+    *,
+    exclude: Iterable[str] = (),
+) -> Dict[str, Any]:
+    """Keep only facts that can change a security decision.
+
+    Entry names, call paths, source/sink display text and other occurrence
+    attribution are valuable provenance but must not fragment the shared
+    validation group.
+    """
+
+    if not isinstance(value, Mapping):
+        return {}
+    excluded = {str(key) for key in exclude}
+    return {
+        str(key): item
+        for key, item in value.items()
+        if str(key) not in excluded and item not in (None, "", [], {})
+    }
 
 
 def _normalize_text(value: Any) -> str:
@@ -216,6 +297,8 @@ def _evidence_pack(issue: Mapping[str, Any]) -> Dict[str, Any]:
         "decision_evidence_hash",
         "provenance_hash",
         "validation_cluster_uid",
+        "obligation_uid",
+        "decision_context_version",
         "context_signature",
         "run_issue_uid",
         "candidate_disposition",
@@ -285,6 +368,8 @@ class CandidateEnvelope:
     evidence_completeness: str
     disposition: str
     context_signature: str
+    obligation_uid: str = ""
+    decision_context_version: str = DECISION_CONTEXT_VERSION
     record_role: str = "validation_obligation"
     evidence_models: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     evidence_sources: List[str] = field(default_factory=list)
@@ -311,6 +396,8 @@ class CandidateEnvelope:
             and issue.get("occurrence_uid")
             and issue.get("decision_evidence_hash")
             and issue.get("validation_cluster_uid")
+            and str(issue.get("decision_context_version") or "")
+            == DECISION_CONTEXT_VERSION
         ):
             raw_paths = issue.get("entry_paths") or issue.get("call_paths") or []
             existing_paths = [
@@ -344,6 +431,8 @@ class CandidateEnvelope:
                     default=default_disposition,
                 ),
                 context_signature=str(issue.get("context_signature") or ""),
+                obligation_uid=str(issue.get("obligation_uid") or issue.get("candidate_uid") or ""),
+                decision_context_version=DECISION_CONTEXT_VERSION,
                 record_role=str(issue.get("record_role") or "validation_obligation"),
                 evidence_models=dict(issue.get("evidence_models") or {}),
                 evidence_sources=[
@@ -428,6 +517,17 @@ class CandidateEnvelope:
         }
         history_key = f"HIST_{_digest(structural)}"
         candidate_uid = f"CAND_{_digest({**structural, 'revision': revision})}"
+        rule = str(issue.get("rule") or pack.get("rule") or "")
+        source_centric = _is_source_centric_rule(rule)
+        obligation_uid = _obligation_uid_for(
+            project_id=normalized_project_id,
+            revision=str(revision or ""),
+            defect_class=defect_class,
+            source_identity=source,
+            sink_identity=sink,
+            resource_identity=resource,
+            rule=rule,
+        )
 
         raw_call_paths = issue.get("call_paths")
         if isinstance(raw_call_paths, list) and raw_call_paths and isinstance(raw_call_paths[0], list):
@@ -467,16 +567,21 @@ class CandidateEnvelope:
         }
         evidence_hash = _digest(evidence, length=64)
         decision_evidence = {
-            "candidate": candidate_uid,
-            "negative": issue.get("negative_evidence")
-            or pack.get("negative_evidence")
-            or [],
-            "constraints": issue.get("path_constraints")
-            or pack.get("path_constraints")
-            or (
-                pack.get("path", {}).get("path_constraints")
-                if isinstance(pack.get("path"), Mapping)
-                else []
+            "version": DECISION_CONTEXT_VERSION,
+            "obligation": obligation_uid,
+            # Free-form negative evidence and path narration are audit data,
+            # not decision identity.  They used to make one cluster per
+            # occurrence even when all structured decision facts matched.
+            "constraints": (
+                []
+                if source_centric
+                else issue.get("path_constraints")
+                or pack.get("path_constraints")
+                or (
+                    pack.get("path", {}).get("path_constraints")
+                    if isinstance(pack.get("path"), Mapping)
+                    else []
+                )
             ),
             "guards": issue.get("guards")
             or issue.get("guard")
@@ -488,16 +593,22 @@ class CandidateEnvelope:
             or pack.get("sanitizer"),
             "ownership": issue.get("ownership_facts")
             or pack.get("ownership_facts")
-            or evidence_models.get("ownership"),
+            or _decision_model(evidence_models.get("ownership_typestate")),
             "reachability": issue.get("reachability_facts")
             or pack.get("reachability_facts")
-            or evidence_models.get("contract"),
+            or _decision_model(
+                evidence_models.get("cross_procedure_contract"),
+                exclude={"entry_function", "call_path"},
+            ),
             "concurrency": issue.get("concurrency_facts")
             or pack.get("concurrency_facts")
             or evidence_models.get("concurrency"),
             "value_domain": issue.get("value_domain_facts")
             or pack.get("value_domain_facts")
-            or evidence_models.get("value_domain"),
+            or _decision_model(
+                evidence_models.get("value_flow"),
+                exclude={"source", "sink", "path_constraints"},
+            ),
             "dependency_code_hash": issue.get("dependency_code_hash")
             or issue.get("code_hash")
             or issue.get("source_fingerprint")
@@ -530,6 +641,8 @@ class CandidateEnvelope:
             candidate_uid,
             decision_evidence_hash=decision_evidence_hash,
             validator_contract=validator_contract,
+            obligation_uid=obligation_uid,
+            decision_context_version=DECISION_CONTEXT_VERSION,
         )
         context_signature = context_signature_for(
             entry=entry,
@@ -574,6 +687,8 @@ class CandidateEnvelope:
             evidence_completeness=evidence_completeness,
             disposition=infer_candidate_disposition(issue, default=default_disposition),
             context_signature=context_signature,
+            obligation_uid=obligation_uid,
+            decision_context_version=DECISION_CONTEXT_VERSION,
             record_role=str(issue.get("record_role") or "validation_obligation"),
             evidence_models=evidence_models,
             evidence_sources=evidence_sources,
@@ -611,6 +726,8 @@ def annotate_issue_identity(
             "candidate_uid": envelope.candidate_uid,
             "occurrence_uid": envelope.occurrence_uid,
             "history_key": envelope.history_key,
+            "obligation_uid": envelope.obligation_uid,
+            "decision_context_version": envelope.decision_context_version,
             "project_id": envelope.project_id,
             "revision": envelope.revision,
             "defect_class": envelope.defect_class,

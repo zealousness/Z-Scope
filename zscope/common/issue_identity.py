@@ -1341,6 +1341,14 @@ def issues_may_share_root_cause(
     """Guardrail for deterministic and LLM-backed duplicate decisions."""
     if confidence < threshold:
         return False
+    # A v3 validation cluster is the immutable structured decision identity.
+    # Two explicit, different clusters may share text, function, or a broad
+    # category but must not be destructively merged without a primary/alias
+    # relationship created by the ledger.
+    left_cluster = _internal_occurrence_identity(left)
+    right_cluster = _internal_occurrence_identity(right)
+    if left_cluster and right_cluster and left_cluster != right_cluster:
+        return False
     normalize_issue_fields(left)
     normalize_issue_fields(right)
     if not category_families_compatible(left.get("category"), right.get("category")):

@@ -109,6 +109,73 @@ def test_validation_pipeline_reports_high_score_verified_issue() -> None:
     assert issue["sink"] == "free"
 
 
+def test_validation_pipeline_promotes_complete_confirmation_proof_without_llm_verdict() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_CFG_PROOF",
+        "deterministic_proofs": [
+            {
+                "outcome": "confirm",
+                "proof_kind": "deterministic_cfg_obligation_path",
+                "producer_engine": "clang_ast_cfg_obligation_prover",
+                "fact_ids": ["cfg:10:header_length", "cfg:14:header_length_copy"],
+                "code_hash": "body-v1",
+                "facts": ["source_to_sink_complete", "event_path_complete"],
+                "completeness": "complete",
+            }
+        ],
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {"reasoning": "validator remains uncertain"},
+        verdict="uncertain",
+        score_data=_score(0.2),
+    )
+
+    assert outcome.report_bucket == "issues"
+    assert issue["candidate_disposition"] == "confirmed"
+    assert issue["proof_provider"] == "clang_ast_cfg_obligation_prover"
+
+
+def test_validation_pipeline_keeps_conflicting_complete_proofs_reviewable() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_PROOF_CONFLICT",
+        "deterministic_proofs": [
+            {
+                "outcome": "confirm",
+                "proof_kind": "deterministic_cfg_obligation_path",
+                "producer_engine": "clang_ast_cfg_obligation_prover",
+                "fact_ids": ["cfg:10", "cfg:14"],
+                "code_hash": "body-v1",
+                "facts": ["source_to_sink_complete", "event_path_complete"],
+                "completeness": "complete",
+            },
+            {
+                "outcome": "reject",
+                "proof_kind": "guard_dominates_sink",
+                "producer_engine": "clang_ast_cfg_guard_dominance",
+                "fact_ids": ["cfg:11"],
+                "code_hash": "body-v1",
+                "facts": ["guard_dominates_sink"],
+                "completeness": "complete",
+            },
+        ],
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {"reasoning": "conflicting evidence"},
+        verdict="verified",
+        score_data=_score(0.9),
+    )
+
+    assert outcome.report_bucket == "observations"
+    assert issue["candidate_disposition"] == "needs_review"
+    assert issue["evidence_conflict"] is True
+
+
 def test_validation_pipeline_downgrades_mid_score_verified_issue() -> None:
     pipeline = ValidationPipeline(FakeUserConfig())
     issue = {"id": "ISSUE_4"}
@@ -607,16 +674,18 @@ def test_validation_pipeline_keeps_transferred_resource_rejected() -> None:
     assert issue["validation_status"] == "needs_review"
 
 
-def test_validation_pipeline_keeps_validation_failure_pending() -> None:
+def test_validation_pipeline_closes_validation_failure_as_operational() -> None:
     pipeline = ValidationPipeline(FakeUserConfig())
     issue = {"id": "ISSUE_8"}
 
     outcome = pipeline.apply_validation_failure(issue, "timeout")
 
     assert outcome.report_bucket == "observations"
-    assert issue["validation_status"] == "pending"
+    assert outcome.memory_status == "engine_failed"
+    assert issue["validation_status"] == "engine_failed"
     assert issue["candidate_disposition"] == "engine_failed"
-    assert issue["finding_kind"] == "validation_pending"
+    assert issue["finding_kind"] == "validation_engine_failed"
+    assert issue["record_role"] == "operational_obligation"
     assert issue["validation_error"] == "timeout"
 
 

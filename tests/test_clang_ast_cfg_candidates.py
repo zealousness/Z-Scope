@@ -178,6 +178,38 @@ def test_clang_ast_cfg_detects_same_member_double_free() -> None:
     assert "node->payload" in double_free["description"]
 
 
+def test_clang_ast_cfg_keeps_full_nested_member_identity() -> None:
+    code = """
+10 | int demo(Task *task) {
+11 |     SAFE_FREE(task->payload.command.command);
+12 |     SAFE_FREE(task->payload.command.args[0]);
+13 |     return 0;
+14 | }
+"""
+
+    rules = {issue["rule"] for issue in _rules(code)}
+
+    assert "clang_cfg_same_object_released_twice" not in rules
+
+
+def test_clang_ast_cfg_recognizes_compound_terminating_null_guard() -> None:
+    code = """
+10 | Task *demo(Frame *frame) {
+11 |     Task *task = _safe_calloc(1, sizeof(*task));
+12 |     if (!task || !frame) {
+13 |         SAFE_FREE(task);
+14 |         return NULL;
+15 |     }
+16 |     task->state = READY;
+17 |     return task;
+18 | }
+"""
+
+    rules = {issue["rule"] for issue in _rules(code)}
+
+    assert "clang_cfg_allocation_result_used_without_null_check" not in rules
+
+
 def test_clang_ast_cfg_detects_parent_release_without_owned_member_cleanup() -> None:
     explicit_code = """
 10 | int demo(const char *key) {
@@ -362,6 +394,40 @@ def test_clang_ast_cfg_detects_return_while_lock_held() -> None:
     assert issue["defect_class"] == "missing_unlock"
     assert "line 31" in "\n".join(issue["positive_evidence"])
     assert issue["evidence_pack"]["path"]["backend"] == "Clang function body plus synthesized local CFG"
+
+
+def test_clang_ast_cfg_keeps_lock_state_on_terminating_unlock_branch() -> None:
+    code = """
+10 | int demo(int fail) {
+11 |     LOCK(&g_state.lock);
+12 |     if (fail) {
+13 |         UNLOCK(&g_state.lock);
+14 |         return -1;
+15 |     }
+16 |     update_state();
+17 |     UNLOCK(&g_state.lock);
+18 |     return 0;
+19 | }
+"""
+
+    rules = {issue["rule"] for issue in _rules(code)}
+
+    assert "clang_cfg_unlock_without_matching_lock" not in rules
+    assert "clang_cfg_return_with_lock_held" not in rules
+
+
+def test_clang_ast_cfg_does_not_analyze_unlock_wrapper_or_macro_definition() -> None:
+    macro = """
+10 | #define UNLOCK(mutex) _unlock_wrapper(mutex, __FILE__, __LINE__)
+"""
+    wrapper = """
+20 | void _unlock_wrapper(pthread_mutex_t *mutex) {
+21 |     pthread_mutex_unlock(mutex);
+22 | }
+"""
+
+    assert "clang_cfg_unlock_without_matching_lock" not in {issue["rule"] for issue in _rules(macro)}
+    assert "clang_cfg_unlock_without_matching_lock" not in {issue["rule"] for issue in _rules(wrapper)}
 
 
 def test_clang_ast_cfg_respects_custom_user_config_out_param_acquire() -> None:

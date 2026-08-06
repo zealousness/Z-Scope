@@ -1191,7 +1191,10 @@ class ParallelAnalyzer:
             getattr(analysis_config, "candidate_lifecycle_v3", True)
         ) and bool(
             getattr(analysis_config, "canonical_outcome_projection", True)
-        ) and canonical_outcomes is not None
+        # A missing/empty ledger snapshot is not a canonical outcome set.
+        # This happens in compatibility callers and lightweight report-only
+        # flows; dropping their ordinary findings would be a false clean scan.
+        ) and bool(canonical_outcomes)
         if canonical_projection:
             # A scan-level outcome is authoritative.  Per-entry reports may
             # have been assembled before another entry completed the shared
@@ -2461,13 +2464,21 @@ class ParallelAnalyzer:
                 ):
                     rejected += 1
                     continue
-                if not issues_may_share_root_cause(
+                structurally_equivalent = issues_may_share_root_cause(
                     primary,
                     duplicate,
                     confidence=confidence,
                     threshold=threshold,
                     allow_cross_function_root=True,
-                ):
+                )
+                primary_cluster = str(primary.get("validation_cluster_uid") or "")
+                duplicate_cluster = str(duplicate.get("validation_cluster_uid") or "")
+                structurally_blocked = bool(
+                    primary_cluster
+                    and duplicate_cluster
+                    and primary_cluster != duplicate_cluster
+                )
+                if not structurally_equivalent and not structurally_blocked:
                     rejected += 1
                     continue
                 root_key = str(group.get("root_cause_key") or "") or semantic_root_cause_key(primary)
@@ -2476,6 +2487,11 @@ class ParallelAnalyzer:
                     "root_cause_key": root_key,
                     "confidence": confidence,
                     "reasoning": group.get("reasoning"),
+                    # A model may describe a possible relationship, but a
+                    # distinct structured decision identity is an explicit
+                    # no-merge boundary.  Preserve the suggestion for audit
+                    # without allowing it to remove either finding.
+                    "structural_merge_blocked": structurally_blocked,
                 }
                 primary.setdefault("dedup_cluster_suggestions", []).append(
                     {**suggestion, "role": "primary", "peer_issue_uid": duplicate_id}

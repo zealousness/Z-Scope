@@ -785,8 +785,28 @@ class ClangAstCfgCandidateGenerator:
         lines: Sequence[ClangCfgLine],
         allowed_skills: Optional[Set[str]],
     ) -> None:
+        signature = "\n".join(item.text for item in lines[:3])
+        if (
+            re.search(r"\b[A-Za-z_]\w*unlock[A-Za-z_]\w*\s*\(", signature, re.I)
+            and any(
+                re.search(r"\bpthread_(?:mutex|rwlock)_unlock\s*\(", item.text)
+                for item in lines
+            )
+        ):
+            return
         held: List[LockState] = []
         for line in lines:
+            # Macro definitions and thin unlock wrappers describe a protocol;
+            # they are not call sites that can establish whether a caller
+            # holds the lock.  Treating their bodies as ordinary functions
+            # produced one false candidate for every use of the macro.
+            if line.text.lstrip().startswith("#"):
+                continue
+            if (
+                "wrapper" in func_name.lower()
+                and re.search(r"\b(?:unlock|pthread_mutex_unlock|pthread_rwlock_unlock)\b", line.text, re.I)
+            ):
+                continue
             lock = self._match_lock(line.text)
             if lock:
                 api, lock_id = lock
@@ -806,12 +826,18 @@ class ClangAstCfgCandidateGenerator:
                 )
             elif unlock and held:
                 _, lock_id = unlock
-                match_idx = next(
-                    (idx for idx in range(len(held) - 1, -1, -1) if held[idx].lock_id == lock_id),
-                    len(held) - 1,
-                )
-                held.pop(match_idx)
+                # An unlock on a branch that returns does not release the
+                # fall-through path.  Keeping it in the linear state machine
+                # made the later normal-path unlock look unmatched.
+                if not self._is_terminal_conditional_branch_line(lines, line):
+                    match_idx = next(
+                        (idx for idx in range(len(held) - 1, -1, -1) if held[idx].lock_id == lock_id),
+                        len(held) - 1,
+                    )
+                    held.pop(match_idx)
             if not held or not self._is_return(line.text):
+                continue
+            if self._is_terminal_conditional_branch_line(lines, line):
                 continue
             if self._return_is_error_guard_for_lock(line.text, held[-1].lock_id):
                 continue
@@ -3643,8 +3669,7 @@ class ClangAstCfgCandidateGenerator:
         alloc_line = self._find_allocation_assignment(lines, line, var)
         if alloc_line is None:
             return
-        guard_window = lines[alloc_line.index + 1 : line.index + 1]
-        if any(self._is_null_guard(item.text, var) for item in guard_window):
+        if self._has_terminating_null_guard(lines, alloc_line, line, var):
             return
         self._emit(
             issues,
@@ -6234,6 +6259,44 @@ class ClangAstCfgCandidateGenerator:
         ]
         return any(re.search(pattern, text) for pattern in patterns)
 
+    def _has_terminating_null_guard(
+        self,
+        lines: Sequence[ClangCfgLine],
+        allocation_line: ClangCfgLine,
+        use_line: ClangCfgLine,
+        var: str,
+    ) -> bool:
+        """Return true only for a null branch that exits before this use.
+
+        A null test on its own is not a proof: it might just log or recover.
+        For a candidate produced from an allocation result, the false path is
+        safe only when the guarded branch terminates before the dereference.
+        This also handles compound guards such as ``if (!task || !frame)``.
+        """
+
+        escaped = re.escape(var)
+        null_condition = re.compile(
+            rf"(?:!\s*{escaped}\b|\b{escaped}\s*==\s*(?:NULL|nullptr|0)\b|\b(?:NULL|nullptr|0)\s*==\s*{escaped}\b)"
+        )
+        start = allocation_line.index + 1
+        end = use_line.index
+        for index in range(start, end):
+            text = lines[index].text
+            if not re.search(r"\bif\s*\(", text) or not null_condition.search(text):
+                continue
+            branch = text
+            brace_depth = text.count("{") - text.count("}")
+            cursor = index + 1
+            if brace_depth > 0:
+                while cursor < end and brace_depth > 0:
+                    next_text = lines[cursor].text
+                    branch += "\n" + next_text
+                    brace_depth += next_text.count("{") - next_text.count("}")
+                    cursor += 1
+            if re.search(r"\b(?:return|goto)\b", branch):
+                return True
+        return False
+
     @staticmethod
     def _is_status_success_guard(text: str, status_var: str) -> bool:
         if not status_var:
@@ -6469,7 +6532,14 @@ class ClangAstCfgCandidateGenerator:
         clean = str(arg or "").strip()
         clean = re.sub(r"^\s*\([^)]*\)\s*", "", clean)
         clean = clean.lstrip("*&").strip()
-        match = re.match(r"(?P<expr>[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)?)", clean)
+        # A resource identity must retain the complete field/index access path.
+        # Retaining only the first member collapsed union/struct siblings (for
+        # example ``task->payload.command.command`` and
+        # ``task->payload.command.args[i]``) into the same freed object.
+        match = re.match(
+            r"(?P<expr>[A-Za-z_]\w*(?:(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)|(?:\s*\[[^\]]+\]))*)",
+            clean,
+        )
         if not match:
             return ""
         return re.sub(r"\s+", "", match.group("expr"))
