@@ -16,7 +16,7 @@ from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional
 from ..core.candidates.evidence_models import build_evidence_models
 
 CANDIDATE_SCHEMA_VERSION = "zscope.candidate.v3"
-DECISION_CONTEXT_VERSION = "zscope.decision-context.v2"
+DECISION_CONTEXT_VERSION = "zscope.decision-context.v3"
 CANDIDATE_DISPOSITIONS = {
     "confirmed",
     "rejected_with_proof",
@@ -555,6 +555,9 @@ class CandidateEnvelope:
             entry_paths=entry_paths,
         )
         evidence_models = build_evidence_models(issue)
+        ast_cfg = pack.get("ast_cfg") if isinstance(pack.get("ast_cfg"), Mapping) else {}
+        local_path = pack.get("path") if isinstance(pack.get("path"), Mapping) else {}
+        local_decision_complete = local_path.get("complete_in_function") is True
         evidence = {
             "pack": pack,
             "positive": issue.get("positive_evidence") or [],
@@ -594,11 +597,21 @@ class CandidateEnvelope:
             "ownership": issue.get("ownership_facts")
             or pack.get("ownership_facts")
             or _decision_model(evidence_models.get("ownership_typestate")),
-            "reachability": issue.get("reachability_facts")
-            or pack.get("reachability_facts")
-            or _decision_model(
-                evidence_models.get("cross_procedure_contract"),
-                exclude={"entry_function", "call_path"},
+            # A source/resource-centric obligation is decided by the local
+            # acquisition/guard/ownership facts.  A sink-sensitive candidate
+            # with a complete local CFG has the same property: wrapper reach-
+            # ability explains provenance, not whether that already-complete
+            # local source-to-sink obligation is true.  Caller contracts stay
+            # decision facts only when the local path is incomplete.
+            "reachability": (
+                []
+                if source_centric or local_decision_complete
+                else issue.get("reachability_facts")
+                or pack.get("reachability_facts")
+                or _decision_model(
+                    evidence_models.get("cross_procedure_contract"),
+                    exclude={"entry_function", "call_path"},
+                )
             ),
             "concurrency": issue.get("concurrency_facts")
             or pack.get("concurrency_facts")
@@ -608,6 +621,14 @@ class CandidateEnvelope:
             or _decision_model(
                 evidence_models.get("value_flow"),
                 exclude={"source", "sink", "path_constraints"},
+            ),
+            "local_cfg": _decision_model(
+                {
+                    "condition_guards": ast_cfg.get("condition_guards"),
+                    "events": ast_cfg.get("events"),
+                    "cfg_path": ast_cfg.get("cfg_path"),
+                    "complete_in_function": local_decision_complete,
+                }
             ),
             "dependency_code_hash": issue.get("dependency_code_hash")
             or issue.get("code_hash")

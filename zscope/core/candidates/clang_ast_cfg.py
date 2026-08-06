@@ -448,6 +448,13 @@ class ClangAstCfgCandidateGenerator:
                             ),
                         )
                         emitted_realloc.add((var, line.number))
+                # Assignment directly into an explicit global lvalue transfers
+                # this local acquisition to durable program ownership.  It may
+                # still be subject to a separate global-lifetime analysis, but
+                # it is not a leak on this function's return path.
+                if self._is_global_owner_lvalue(var):
+                    freed.pop(var, None)
+                    continue
                 live[var] = ResourceState(var=var, api=api, line=line, carrier="return_value")
                 freed.pop(var, None)
                 continue
@@ -6323,6 +6330,7 @@ class ClangAstCfgCandidateGenerator:
         transfer_patterns = [
             rf"\breturn\s+{escaped}\s*;",
             rf"\*\s*[A-Za-z_]\w*\s*=\s*{escaped}\s*;",
+            rf"\bg_[A-Za-z_]\w*\s*=\s*{escaped}\s*;",
             rf"\b[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)+\s*=\s*{escaped}\s*;",
             rf"\b[A-Za-z_]\w*\s*\[[^\]]+\]\s*=\s*{escaped}\s*;",
         ]
@@ -6350,6 +6358,17 @@ class ClangAstCfgCandidateGenerator:
             if any(re.search(rf"\b{re.escape(len_var)}\b", arg) for arg in self._split_args(args)):
                 return True
         return False
+
+    @staticmethod
+    def _is_global_owner_lvalue(value: str) -> bool:
+        """Identify explicit global storage, not a naming-only local alias."""
+
+        return bool(
+            re.fullmatch(
+                r"g_[A-Za-z_]\w*(?:(?:->|\.)[A-Za-z_]\w*)*",
+                re.sub(r"\s+", "", str(value or "")),
+            )
+        )
 
     def _find_dependent_count_sink(
         self,
