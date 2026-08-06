@@ -165,6 +165,9 @@ class ParallelAnalyzer:
         self._shared_local_pattern_semantics: Optional[LocalPatternSemantics] = None
         self._shared_semantic_overlay: Optional[Dict[str, Any]] = None
         self._shared_semantics_lock = threading.Lock()
+        # Candidate IR writes use the shared CodeIndex KnowledgeDB.  Serialize
+        # the multi-statement write + commit transaction across entry workers.
+        self._candidate_ir_persistence_lock = threading.Lock()
         self._last_batch_wall_seconds = 0.0
         self._last_scan_budget_metadata: Dict[str, Any] = {}
         self._last_global_model_stats: Optional[Dict[str, Any]] = None
@@ -484,6 +487,7 @@ class ParallelAnalyzer:
             validation_result_cache=self._validation_result_cache,
             cancellation_token=self._cancellation_token,
             scheduler=self._scheduler,
+            candidate_ir_persistence_lock=self._candidate_ir_persistence_lock,
             write_root_reports=False,
             defer_validation_to_scan=False,
         )
@@ -921,6 +925,7 @@ class ParallelAnalyzer:
                  validation_result_cache=self._validation_result_cache,
                  cancellation_token=entry_token,
                  scheduler=self._scheduler,
+                 candidate_ir_persistence_lock=self._candidate_ir_persistence_lock,
                  write_root_reports=False,
                  defer_validation_to_scan=self._uses_scan_validation_queue(),
             )
