@@ -10,6 +10,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECKER_PATH = REPO_ROOT / "test" / "range" / "benchmark" / "check_entry_coverage.py"
 RUNNER_PATH = REPO_ROOT / "test" / "range" / "benchmark" / "run_auto_unified_wsl.sh"
+ZHIPU_PREFLIGHT_PATH = REPO_ROOT / "test" / "range" / "benchmark" / "preflight_zhipu_glm51_wsl.sh"
 BENCHMARK_CONFIG_PATH = REPO_ROOT / "test" / "range" / "zscope.auto_unified.yaml"
 GIT_ATTRIBUTES_PATH = REPO_ROOT / ".gitattributes"
 
@@ -241,6 +242,10 @@ def test_wsl_runner_separates_process_report_and_valid_scan_states() -> None:
     assert "and entry_coverage_rc == 0" in runner
     assert 'models != {"glm-5.1"}' in runner
     assert 'base_urls != {"https://open.bigmodel.cn/api/paas/v4"}' in runner
+    assert "ConfigLoader.load(str(path))" in runner
+    assert "did not resolve in the benchmark configuration" in runner
+    assert "bash test/range/benchmark/preflight_zhipu_glm51_wsl.sh" in runner
+    assert 'preexisting_entry_functions_list.json' in runner
     assert '"candidate_lifecycle_v3"' in runner
     assert '"canonical_outcome_projection"' in runner
     assert "model_trace_valid" in runner
@@ -251,7 +256,18 @@ def test_wsl_runner_separates_process_report_and_valid_scan_states() -> None:
 
 def test_wsl_runner_is_forced_to_lf_line_endings() -> None:
     assert b"\r\n" not in RUNNER_PATH.read_bytes()
+    assert b"\r\n" not in ZHIPU_PREFLIGHT_PATH.read_bytes()
     assert "*.sh text eol=lf" in GIT_ATTRIBUTES_PATH.read_text(encoding="utf-8")
+
+
+def test_zhipu_auth_preflight_never_prints_key_or_response_body() -> None:
+    script = ZHIPU_PREFLIGHT_PATH.read_text(encoding="utf-8")
+
+    assert 'Authorization: Bearer ${Z_SCOPE_API_KEY}' in script
+    assert '--output "${response_file}"' in script
+    assert "response_file" in script
+    assert "cat \"${response_file}\"" not in script
+    assert "authentication: ok (HTTP" in script
 
 
 def test_range_benchmark_uses_zhipu_glm51_endpoint() -> None:
@@ -262,3 +278,11 @@ def test_range_benchmark_uses_zhipu_glm51_endpoint() -> None:
     assert "canonical_outcome_projection: true" in config
     assert "deterministic_proof_routing: true" in config
     assert "global_validation_group_queue: true" in config
+    assert "decision_fact_graph_v1: true" in config
+    assert "security_obligation_v1: true" in config
+    assert "deterministic_prevalidation_v2: true" in config
+    assert "decision_context_v31: true" in config
+    assert "project_deterministic_fact_pass_v1: true" in config
+    assert "proof_providers_v11: true" in config
+    assert "decision_context_v32: true" in config
+    assert "structured_candidate_promotion_v1: true" in config

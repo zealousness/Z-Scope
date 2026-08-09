@@ -74,6 +74,7 @@ Output exactly one JSON block and no extra prose:
   "reasoning": "Chinese explanation of why the issue is triggerable, rejected, or uncertain.",
   "positive_evidence": ["line/file/path evidence supporting the candidate"],
   "negative_evidence": ["guards or facts that weaken or disprove the candidate"],
+  "blocking_negative_evidence": false,
   "missing_context": [],
   "exploit_scenario": "If verified, describe the concrete trigger path in Chinese; otherwise empty.",
   "source": "Attacker/caller-controlled source, or empty if absent.",
@@ -93,6 +94,8 @@ Field requirements:
 - `finding_kind` should be `verified_vulnerability`, `rejected`, or
   `audit_observation`.
 - `confidence_score` is a number from 0 to 1.
+- `blocking_negative_evidence` is true only for a concrete counter-fact; it is
+  false for missing context or an unresolved assumption.
 - `positive_evidence`, `negative_evidence`, and `missing_context` must be
   arrays of strings.
 - `reasoning`, `exploit_scenario`, `source`, `sink`, `control_of_source`, and

@@ -348,6 +348,35 @@ def test_validation_runner_validates_issue_and_remembers_outcome() -> None:
     assert agent.inputs[0]["agent_contract"] == "validator_agent"
 
 
+def test_validation_runner_skips_validator_for_prevalidation_proof() -> None:
+    agent = FakeValidatorAgent([])
+    runner = _runner(
+        agent,
+        analysis=SimpleNamespace(deterministic_prevalidation_v2=True),
+    )
+    issue = _issue(
+        deterministic_proofs=[
+            {
+                "outcome": "confirm",
+                "proof_kind": "deterministic_cfg_obligation_path",
+                "producer_engine": "clang_ast_cfg_obligation_prover",
+                "fact_ids": ["cfg:10", "cfg:14"],
+                "code_hash": "body-v1",
+                "facts": ["source_to_sink_complete", "event_path_complete"],
+                "completeness": "complete",
+            }
+        ]
+    )
+    state = _state(issue)
+
+    runner.run(state)
+
+    assert agent.inputs == []
+    assert state["issues"] == [issue]
+    assert state["validator_avoided_count"] == 1
+    assert state["deterministic_prevalidation_confirmed_count"] == 1
+
+
 def test_validation_runner_logs_needs_review_without_validated_label(caplog) -> None:
     caplog.set_level(logging.INFO, logger="zscope.core.validation.runner")
 

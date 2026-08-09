@@ -14,9 +14,17 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional
 
 from ..core.candidates.evidence_models import build_evidence_models
+from ..core.candidates.decision_facts import (
+    DECISION_CONTEXT_V31,
+    DECISION_CONTEXT_V32,
+    DECISION_FACT_VERSION,
+    DecisionFactGraphCache,
+    attach_decision_facts,
+    security_obligation_for,
+)
 
-CANDIDATE_SCHEMA_VERSION = "zscope.candidate.v3"
-DECISION_CONTEXT_VERSION = "zscope.decision-context.v3"
+CANDIDATE_SCHEMA_VERSION = "zscope.candidate.v3.2"
+DECISION_CONTEXT_VERSION = "zscope.decision-context.v3.2"
 CANDIDATE_DISPOSITIONS = {
     "confirmed",
     "rejected_with_proof",
@@ -369,6 +377,8 @@ class CandidateEnvelope:
     disposition: str
     context_signature: str
     obligation_uid: str = ""
+    obligation_shape: str = "sink_sensitive"
+    decision_fact_version: str = ""
     decision_context_version: str = DECISION_CONTEXT_VERSION
     record_role: str = "validation_obligation"
     evidence_models: Dict[str, Dict[str, Any]] = field(default_factory=dict)
@@ -388,7 +398,18 @@ class CandidateEnvelope:
         run_id: str = "",
         ordinal: int = 0,
         default_disposition: str = "needs_review",
+        decision_fact_cache: Optional[DecisionFactGraphCache] = None,
     ) -> "CandidateEnvelope":
+        requested_context_version = (
+            DECISION_CONTEXT_V32
+            if bool(issue.get("decision_context_v32"))
+            else DECISION_CONTEXT_V31
+            if bool(
+                issue.get("decision_context_v31")
+                or issue.get("decision_fact_graph_v1")
+            )
+            else DECISION_CONTEXT_VERSION
+        )
         existing_schema = str(issue.get("candidate_schema_version") or "")
         if (
             existing_schema == CANDIDATE_SCHEMA_VERSION
@@ -397,7 +418,7 @@ class CandidateEnvelope:
             and issue.get("decision_evidence_hash")
             and issue.get("validation_cluster_uid")
             and str(issue.get("decision_context_version") or "")
-            == DECISION_CONTEXT_VERSION
+            == requested_context_version
         ):
             raw_paths = issue.get("entry_paths") or issue.get("call_paths") or []
             existing_paths = [
@@ -432,7 +453,9 @@ class CandidateEnvelope:
                 ),
                 context_signature=str(issue.get("context_signature") or ""),
                 obligation_uid=str(issue.get("obligation_uid") or issue.get("candidate_uid") or ""),
-                decision_context_version=DECISION_CONTEXT_VERSION,
+                obligation_shape=str(issue.get("obligation_shape") or "sink_sensitive"),
+                decision_fact_version=str(issue.get("decision_fact_version") or ""),
+                decision_context_version=requested_context_version,
                 record_role=str(issue.get("record_role") or "validation_obligation"),
                 evidence_models=dict(issue.get("evidence_models") or {}),
                 evidence_sources=[
@@ -518,16 +541,68 @@ class CandidateEnvelope:
         history_key = f"HIST_{_digest(structural)}"
         candidate_uid = f"CAND_{_digest({**structural, 'revision': revision})}"
         rule = str(issue.get("rule") or pack.get("rule") or "")
-        source_centric = _is_source_centric_rule(rule)
-        obligation_uid = _obligation_uid_for(
+        obligation = security_obligation_for(
+            issue,
             project_id=normalized_project_id,
             revision=str(revision or ""),
-            defect_class=defect_class,
-            source_identity=source,
-            sink_identity=sink,
-            resource_identity=resource,
-            rule=rule,
+            defect_family=defect_class,
+            source_uid=source,
+            sink_uid=sink,
+            subject_uid=resource or source,
         )
+        obligation_uid = obligation.obligation_uid
+        obligation_shape = obligation.obligation_shape
+        source_centric = obligation_shape == "source_centric"
+        if isinstance(issue, MutableMapping) and bool(issue.get("decision_fact_graph_v1")):
+            issue.update(
+                {
+                    "project_id": normalized_project_id,
+                    "revision": str(revision or ""),
+                    "defect_class": defect_class,
+                    "source_identity": source,
+                    "sink_identity": sink,
+                    "resource_identity": resource,
+                    "obligation_uid": obligation_uid,
+                    "obligation_shape": obligation_shape,
+                    "decision_context_v31": True,
+                    "decision_context_v32": requested_context_version == DECISION_CONTEXT_V32,
+                }
+            )
+            fact_target = issue if isinstance(issue, dict) else dict(issue)
+            graph = (
+                decision_fact_cache.get_or_build(fact_target)
+                if decision_fact_cache is not None
+                else None
+            )
+            obligation = attach_decision_facts(
+                fact_target,
+                obligation=obligation,
+                graph=graph,
+            )
+            # Preserve the attached fields on the original mutable issue without
+            # making CandidateEnvelope itself a mutable lifecycle record.
+            issue.update(
+                {
+                    "decision_fact_version": DECISION_FACT_VERSION,
+                    "decision_fact_coverage": (
+                        obligation.decision_fact_slice.coverage
+                        if obligation.decision_fact_slice is not None
+                        else "partial"
+                    ),
+                    "decision_fact_slice": obligation.decision_fact_slice.to_dict()
+                    if obligation.decision_fact_slice is not None
+                    else {},
+                    "missing_fact_kinds": list(
+                        obligation.decision_fact_slice.missing_fact_kinds
+                    )
+                    if obligation.decision_fact_slice is not None
+                    else [],
+                    "security_obligation": obligation.to_dict(),
+                    "deterministic_proofs": list(
+                        fact_target.get("deterministic_proofs") or []
+                    ),
+                }
+            )
 
         raw_call_paths = issue.get("call_paths")
         if isinstance(raw_call_paths, list) and raw_call_paths and isinstance(raw_call_paths[0], list):
@@ -570,8 +645,9 @@ class CandidateEnvelope:
         }
         evidence_hash = _digest(evidence, length=64)
         decision_evidence = {
-            "version": DECISION_CONTEXT_VERSION,
+            "version": requested_context_version,
             "obligation": obligation_uid,
+            "obligation_shape": obligation_shape,
             # Free-form negative evidence and path narration are audit data,
             # not decision identity.  They used to make one cluster per
             # occurrence even when all structured decision facts matched.
@@ -625,8 +701,12 @@ class CandidateEnvelope:
             "local_cfg": _decision_model(
                 {
                     "condition_guards": ast_cfg.get("condition_guards"),
-                    "events": ast_cfg.get("events"),
-                    "cfg_path": ast_cfg.get("cfg_path"),
+                    # A source-centric obligation asks about one acquisition
+                    # or lock protocol.  The individual later use event is
+                    # occurrence provenance and must not fragment an otherwise
+                    # equivalent validation group.
+                    "events": None if source_centric else ast_cfg.get("events"),
+                    "cfg_path": None if source_centric else ast_cfg.get("cfg_path"),
                     "complete_in_function": local_decision_complete,
                 }
             ),
@@ -637,6 +717,9 @@ class CandidateEnvelope:
             or pack.get("code_hash")
             or pack.get("source_fingerprint"),
         }
+        if requested_context_version in {DECISION_CONTEXT_V31, DECISION_CONTEXT_V32}:
+            decision_evidence["decision_fact_slice"] = issue.get("decision_fact_slice") or {}
+            decision_evidence["required_fact_kinds"] = list(obligation.required_fact_kinds)
         decision_evidence_hash = _digest(decision_evidence, length=64)
         provenance_hash = _digest(
             {
@@ -663,7 +746,7 @@ class CandidateEnvelope:
             decision_evidence_hash=decision_evidence_hash,
             validator_contract=validator_contract,
             obligation_uid=obligation_uid,
-            decision_context_version=DECISION_CONTEXT_VERSION,
+            decision_context_version=requested_context_version,
         )
         context_signature = context_signature_for(
             entry=entry,
@@ -709,7 +792,13 @@ class CandidateEnvelope:
             disposition=infer_candidate_disposition(issue, default=default_disposition),
             context_signature=context_signature,
             obligation_uid=obligation_uid,
-            decision_context_version=DECISION_CONTEXT_VERSION,
+            obligation_shape=obligation_shape,
+            decision_fact_version=(
+                DECISION_FACT_VERSION
+                if requested_context_version in {DECISION_CONTEXT_V31, DECISION_CONTEXT_V32}
+                else ""
+            ),
+            decision_context_version=requested_context_version,
             record_role=str(issue.get("record_role") or "validation_obligation"),
             evidence_models=evidence_models,
             evidence_sources=evidence_sources,
@@ -730,6 +819,7 @@ def annotate_issue_identity(
     run_id: str = "",
     ordinal: int = 0,
     default_disposition: str = "needs_review",
+    decision_fact_cache: Optional[DecisionFactGraphCache] = None,
 ) -> CandidateEnvelope:
     envelope = CandidateEnvelope.from_issue(
         issue,
@@ -740,6 +830,7 @@ def annotate_issue_identity(
         run_id=run_id,
         ordinal=ordinal,
         default_disposition=default_disposition,
+        decision_fact_cache=decision_fact_cache,
     )
     issue.update(
         {
@@ -748,6 +839,8 @@ def annotate_issue_identity(
             "occurrence_uid": envelope.occurrence_uid,
             "history_key": envelope.history_key,
             "obligation_uid": envelope.obligation_uid,
+            "obligation_shape": envelope.obligation_shape,
+            "decision_fact_version": envelope.decision_fact_version,
             "decision_context_version": envelope.decision_context_version,
             "project_id": envelope.project_id,
             "revision": envelope.revision,
@@ -781,6 +874,7 @@ def annotate_issue_collection(
     entry_function: str = "",
     run_id: str = "",
     default_disposition: str = "needs_review",
+    decision_fact_cache: Optional[DecisionFactGraphCache] = None,
 ) -> List[CandidateEnvelope]:
     envelopes: List[CandidateEnvelope] = []
     for ordinal, issue in enumerate(issues):
@@ -796,6 +890,7 @@ def annotate_issue_collection(
                 run_id=run_id,
                 ordinal=ordinal,
                 default_disposition=default_disposition,
+                decision_fact_cache=decision_fact_cache,
             )
         )
     return envelopes

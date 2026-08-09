@@ -269,6 +269,10 @@ class ValidatorAgent(JsonToolAgent):
                 "reasoning": {"type": "string"},
                 "positive_evidence": {"type": "array", "items": {"type": "string"}},
                 "negative_evidence": {"type": "array", "items": {"type": "string"}},
+                "blocking_negative_evidence": {
+                    "type": "boolean",
+                    "description": "True only when a concrete guard, ownership, lock, reachability, or contract fact blocks confirmation; uncertainty alone is false.",
+                },
                 "missing_context": {"type": "array", "items": {"type": "string"}},
                 "exploit_scenario": {"type": "string"},
                 "source": {"type": "string"},
@@ -276,7 +280,7 @@ class ValidatorAgent(JsonToolAgent):
                 "control_of_source": {"type": "string"},
                 "guard_analysis": {"type": "string"},
             },
-            "required": ["type", "verdict", "reasoning"],
+            "required": ["type", "verdict", "reasoning", "blocking_negative_evidence"],
             "additionalProperties": True,
         }
 
@@ -618,6 +622,7 @@ class ValidatorAgent(JsonToolAgent):
 
     _VALIDATION_RESULT_KEYS = {
         "confidence_score",
+        "blocking_negative_evidence",
         "control_of_source",
         "exploit_scenario",
         "finding_kind",

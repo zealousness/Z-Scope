@@ -37,6 +37,10 @@ printf '%s\n' "${run_dir}" > test/range/benchmark_runs/latest_auto_unified_wsl.t
 echo "[range] run_dir=${run_dir}"
 echo "[range] enforcing WSL + unified backend + automatic entry discovery"
 
+# Fail closed before deleting any prior generated benchmark state. The helper
+# prints only an HTTP status, never the secret or the provider response body.
+bash test/range/benchmark/preflight_zhipu_glm51_wsl.sh
+
 missing_tools=()
 for tool in cmake python3 clangd gclang get-bc llvm-link wpa saber; do
   if ! command -v "$tool" >/dev/null 2>&1; then
@@ -53,6 +57,7 @@ import sys
 from pathlib import Path
 
 import yaml
+from zscope.config.config import ConfigLoader
 
 path = Path(sys.argv[1])
 cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -98,6 +103,14 @@ for key in (
     "deterministic_proof_routing",
     "global_validation_group_queue",
     "enable_evidence_completion_queue",
+    "decision_fact_graph_v1",
+    "security_obligation_v1",
+    "deterministic_prevalidation_v2",
+    "decision_context_v31",
+    "project_deterministic_fact_pass_v1",
+    "proof_providers_v11",
+    "decision_context_v32",
+    "structured_candidate_promotion_v1",
 ):
     if analysis.get(key, True) is not True:
         raise SystemExit(f"[range] ERROR: analysis.{key} must be true for the v3 benchmark")
@@ -105,10 +118,26 @@ if models != {"glm-5.1"}:
     raise SystemExit(f"[range] ERROR: benchmark must use only glm-5.1, got {sorted(models)!r}")
 if base_urls != {"https://open.bigmodel.cn/api/paas/v4"}:
     raise SystemExit(f"[range] ERROR: benchmark must use the Zhipu GLM endpoint, got {sorted(base_urls)!r}")
-print("[range] config preflight passed: unified backend + automatic entry discovery + *.h headers + programmatic final dedup")
+# Resolve environment interpolation through the same loader used by the scan.
+# This catches the common case where a runner is launched outside the shell
+# that sourced zscope.local.env, without ever logging secret material.
+resolved = ConfigLoader.load(str(path))
+resolved_keys = [str(section.api_key or "") for section in resolved.llms.values()]
+if not resolved_keys or any(
+    not value or value == "${Z_SCOPE_API_KEY}" for value in resolved_keys
+):
+    raise SystemExit(
+        "[range] ERROR: Z_SCOPE_API_KEY did not resolve in the benchmark configuration"
+    )
+print("[range] config preflight passed: unified backend + automatic entry discovery + structured decision facts")
 PY
 
 echo "[range] clean generated WSL benchmark state"
+# Preserve a pre-existing generated entry manifest for audit only; it is never
+# consumed by this cold scan, whose entries come from YAML discovery.
+if [[ -f test/range/entry_functions_list.json ]]; then
+  cp test/range/entry_functions_list.json "${run_dir}/preexisting_entry_functions_list.json"
+fi
 rm -rf test/range/.zscope_snapshots_auto_unified_wsl test/range/.zscope_knowledge_auto_unified_wsl
 rm -rf test/range/test/range/.zscope_knowledge_auto_unified_wsl
 rm -f test/range/zscope_batch_report.json test/range/zscope_batch_report.md test/range/entry_functions_list.json

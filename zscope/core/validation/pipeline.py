@@ -21,6 +21,7 @@ VALIDATOR_DETAIL_FIELDS = (
     "guard_analysis",
     "positive_evidence",
     "negative_evidence",
+    "blocking_negative_evidence",
 )
 _CWE_BY_CORRECTED_CATEGORY = {
     "memory_leak": "CWE-772",
@@ -144,6 +145,94 @@ class ValidationPipeline:
                 baseline=baseline,
             )
         return None
+
+    def apply_deterministic_prevalidation(
+        self,
+        issue: Dict[str, Any],
+        score_data: Optional[Dict[str, float]] = None,
+    ) -> Optional[ValidationOutcome]:
+        """Close a group from complete deterministic proof before the Validator.
+
+        The method intentionally accepts neither model text nor a validator
+        verdict.  It is therefore safe to use as a token-saving pre-pass in a
+        shared validation queue.
+        """
+
+        if not self.enable_deterministic_proof_routing:
+            return None
+        confirmation_proof = deterministic_decision_proof(issue, outcome="confirm")
+        rejection_proof = deterministic_decision_proof(issue, outcome="reject")
+        if confirmation_proof is None and rejection_proof is None:
+            return None
+
+        score_data = score_data or self.score_components(issue, {})
+        final_score = self._final_score(score_data)
+        preserve_issue_location(issue)
+        issue["score_components"] = score_data
+        issue["final_score"] = final_score
+        issue["validator_avoided"] = True
+
+        if confirmation_proof is not None and rejection_proof is not None:
+            issue.update(
+                {
+                    "validation_status": "needs_review",
+                    "candidate_disposition": "needs_review",
+                    "finding_kind": "needs_review",
+                    "evidence_conflict": True,
+                    "deterministic_prevalidation_decision": "evidence_conflict",
+                    "validation_reasoning": (
+                        "Conflicting complete deterministic confirmation and rejection proofs "
+                        "require human review."
+                    ),
+                }
+            )
+            return ValidationOutcome(
+                report_bucket="observations",
+                memory_status="needs_review",
+                verdict="needs_review",
+                final_score=final_score,
+            )
+        if confirmation_proof is not None:
+            issue.update(
+                {
+                    "validation_status": "validated",
+                    "candidate_disposition": "confirmed",
+                    "finding_kind": "verified_vulnerability",
+                    "decision_proof": confirmation_proof.to_dict(),
+                    "promotion_reason": "deterministic_prevalidation_proof",
+                    "proof_provider": confirmation_proof.producer_engine,
+                    "proof_coverage": "complete",
+                    "deterministic_prevalidation_decision": "confirmed",
+                    "validation_reasoning": confirmation_proof.contradiction_or_obligation,
+                }
+            )
+            return ValidationOutcome(
+                report_bucket="issues",
+                memory_status="validated",
+                verdict="confirmed",
+                final_score=final_score,
+            )
+        assert rejection_proof is not None
+        issue.update(
+            {
+                "validation_status": "rejected",
+                "candidate_disposition": "rejected_with_proof",
+                "finding_kind": "rejected",
+                "rejection_source": "deterministic_prevalidation_proof",
+                "deterministic_rejection": True,
+                "decision_proof": rejection_proof.to_dict(),
+                "proof_provider": rejection_proof.producer_engine,
+                "proof_coverage": "complete",
+                "deterministic_prevalidation_decision": "rejected_with_proof",
+                "validation_reasoning": rejection_proof.contradiction_or_obligation,
+            }
+        )
+        return ValidationOutcome(
+            report_bucket=None,
+            memory_status="rejected",
+            verdict="rejected",
+            final_score=final_score,
+        )
 
     @staticmethod
     def _apply_static_validation_gate(issue: Dict[str, Any]) -> Optional[PreValidationDecision]:
@@ -270,6 +359,8 @@ class ValidationPipeline:
         final_score = self._final_score(score_data)
         issue["final_score"] = final_score
         issue["validator_verdict"] = verdict
+        if isinstance(val_data.get("blocking_negative_evidence"), bool):
+            issue["blocking_negative_evidence"] = val_data["blocking_negative_evidence"]
 
         confirmation_proof = (
             deterministic_decision_proof(issue, outcome="confirm")
@@ -335,7 +426,11 @@ class ValidationPipeline:
                 final_score=final_score,
             )
         if verdict == "verified" and (final_score >= 0.6 or confirmation_proof is not None):
-            if confirmation_proof is not None or self._has_confirmed_evidence(score_data, val_data):
+            if confirmation_proof is not None or self._has_confirmed_evidence(
+                issue,
+                score_data,
+                val_data,
+            ):
                 issue["validation_status"] = "validated"
                 issue["candidate_disposition"] = "confirmed"
                 issue["finding_kind"] = val_data.get("finding_kind") or "verified_vulnerability"
@@ -516,10 +611,21 @@ class ValidationPipeline:
 
     @staticmethod
     def _has_confirmed_evidence(
+        issue: Dict[str, Any],
         score_data: Dict[str, float],
         val_data: Dict[str, Any],
     ) -> bool:
-        """Evidence-tier promotion; avoids a single opaque 0.8 hard gate."""
+        """Return whether a verified result has a complete promotion tier.
+
+        A missing inter-procedural contract is not negative evidence.  The
+        legacy score nevertheless assigns it the neutral value ``0.55`` and
+        used to block every otherwise structured v3.1 verification.  Preserve
+        the legacy tier for old candidates, and let v3.1 use an explicit,
+        auditable tier that requires a hashed decision-fact slice and an
+        explicit Validator statement that no *blocking* counter-fact exists.
+        Free-form uncertainty remains reportable evidence; it is not treated
+        as a deterministic contradiction.
+        """
         try:
             final_score = float(score_data.get("final_score", 0.0) or 0.0)
             path = float(score_data.get("path_completeness", 0.0) or 0.0)
@@ -529,12 +635,49 @@ class ValidationPipeline:
             return False
         negative = val_data.get("negative_evidence")
         has_negative = bool(negative) if isinstance(negative, list) else bool(str(negative or "").strip())
-        return bool(
+        legacy_tier = bool(
             final_score >= 0.70
             and path >= 0.75
             and contract >= 0.70
             and validator >= 0.80
             and not has_negative
+        )
+        if legacy_tier:
+            return True
+
+        # v3.1 only: a structured fact slice means that a future report can
+        # audit exactly the code snapshot that supported promotion.  Older
+        # candidates cannot opt into this route by merely setting a score.
+        if str(issue.get("decision_context_version") or "") not in {
+            "zscope.decision-context.v3.1",
+            "zscope.decision-context.v3.2",
+        }:
+            return False
+        fact_slice = issue.get("decision_fact_slice")
+        if not isinstance(fact_slice, dict):
+            return False
+        fact_ids = fact_slice.get("fact_uids") or []
+        code_hashes = fact_slice.get("dependency_code_hashes") or []
+        coverage = str(issue.get("decision_fact_coverage") or fact_slice.get("coverage") or "")
+        source = issue.get("source_identity") or issue.get("canonical_source") or issue.get("source")
+        sink = issue.get("sink_identity") or issue.get("canonical_sink") or issue.get("sink")
+        blocking = val_data.get("blocking_negative_evidence")
+        if not isinstance(blocking, bool):
+            return False
+        return bool(
+            final_score >= 0.75
+            and path >= 0.75
+            # 0.55 is the neutral default emitted when no cross-procedure
+            # contract is available.  A lower value remains a negative signal.
+            and contract >= 0.55
+            and validator >= 0.80
+            and blocking is False
+            and coverage in {"complete", "partial"}
+            and fact_ids
+            and code_hashes
+            and source not in (None, "", {}, [])
+            and sink not in (None, "", {}, [])
+            and not bool(issue.get("evidence_conflict"))
         )
 
     def _has_deterministic_rejection_proof(

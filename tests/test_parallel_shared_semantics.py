@@ -366,3 +366,60 @@ def test_scan_validation_queue_validates_one_shared_ledger_group(tmp_path) -> No
     # ``test_validation_runner_selects_one_representative_per_validation_cluster``
     # covers the corresponding one-validator-call coalescing behavior.
     assert snapshot["outcomes"][0]["validation_attempt_count"] == 0
+
+
+def test_project_deterministic_fact_pass_collects_reachable_function_once(tmp_path) -> None:
+    class ReachableCodeIndex:
+        def get_function_impl(self, name, **_kwargs):
+            code = {
+                "entry_a": """
+int entry_a(void) {
+    return worker();
+}
+""",
+                "entry_b": """
+int entry_b(void) {
+    return worker();
+}
+""",
+                "worker": """
+int worker(void) {
+    Job job;
+    pthread_create(&tid, NULL, thread_main, &job);
+    pthread_detach(tid);
+    return 0;
+}
+""",
+            }.get(name)
+            if code is None:
+                return None
+            return {
+                "name": name,
+                "index_name": f"{name}@src/demo.c",
+                "file": "src/demo.c",
+                "code": code,
+            }
+
+        def get_callees(self, name, limit=0):
+            del limit
+            return [{"name": "worker", "file": "src/demo.c"}] if name.startswith("entry_") else []
+
+    config = _config(tmp_path)
+    config.analysis.project_deterministic_fact_pass_v1 = True
+    config.analysis.decision_fact_graph_v1 = True
+    config.analysis.decision_context_v32 = True
+    parallel = ParallelAnalyzer(config, code_index=ReachableCodeIndex())
+    parallel._shared_local_pattern_semantics = LocalPatternSemantics()
+    parallel._shared_semantic_overlay = {}
+
+    parallel._run_project_deterministic_fact_pass(
+        [FunctionEntry("entry_a"), FunctionEntry("entry_b")]
+    )
+
+    state = parallel._project_fact_pass_state
+    assert state["status"] == "complete"
+    assert state["reachable_functions"] == 3
+    records = parallel._candidate_ledger.records()
+    stack_records = [record for record in records if record.defect_class == "stack_escape"]
+    assert len(stack_records) == 1
+    assert len(stack_records[0].occurrence_uids) == 2
