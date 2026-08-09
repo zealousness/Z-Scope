@@ -1,7 +1,13 @@
 from zscope.core.analysis.analyzer import Analyzer
+from zscope.core.candidates.decision_facts import (
+    DECISION_CONTEXT_V31,
+    DecisionFactGraphCache,
+)
 from zscope.orchestration.candidates import CandidateLedger
 from zscope.orchestration.subagents import SubAgentTicket
 import pytest
+from pathlib import Path
+from types import SimpleNamespace
 
 
 def _ticket(*, priority=90, negative=None):
@@ -148,6 +154,57 @@ def test_candidate_ledger_shares_validation_across_equivalent_entry_wrappers() -
     }
 
 
+def test_analyzer_propagates_v31_identity_into_scan_ledger() -> None:
+    """The ledger, rather than the transient issue, owns report identity."""
+
+    analyzer = object.__new__(Analyzer)
+    analyzer.config = SimpleNamespace(
+        project=SimpleNamespace(
+            project_id="demo",
+            project_root=Path("."),
+        ),
+        analysis=SimpleNamespace(
+            decision_fact_graph_v1=True,
+            security_obligation_v1=True,
+            decision_context_v31=True,
+        ),
+    )
+    analyzer.decision_fact_cache = DecisionFactGraphCache()
+    ledger = CandidateLedger(project_id="demo", revision="rev")
+    state = {
+        "candidate_ledger": ledger,
+        "entry_identity": "src/demo.c::entry(void)",
+        "run_id": "run",
+    }
+    issue = {
+        "id": "RULE_1",
+        "function": "entry",
+        "location": "src/demo.c:12",
+        "category": "bounds",
+        "source": "len",
+        "sink": "memcpy(dst, src, len)",
+        "impact_level": "high",
+        "evidence_pack": {
+            "dependency_code_hash": "code-v1",
+            "path": {"function": "entry", "complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {"kind": "signed_io_result", "line": 10},
+                    {"kind": "signed_to_unsigned_cast", "line": 11},
+                    {"kind": "unsigned_length_sink", "line": 12},
+                ]
+            },
+        },
+    }
+
+    analyzer._register_candidate_issues(state, [issue], source="clang_ast_cfg")
+
+    record = ledger.records()[0]
+    assert record.decision_context_version == DECISION_CONTEXT_V31
+    assert record.ticket.evidence["decision_context_version"] == DECISION_CONTEXT_V31
+    assert record.ticket.evidence["decision_fact_version"]
+
+
 def test_repeated_display_id_across_entries_cannot_cross_update_terminal_state() -> None:
     ledger = CandidateLedger(project_id="demo", revision="rev")
     first, _ = ledger.add(
@@ -247,7 +304,7 @@ def test_lifecycle_snapshot_filters_entry_and_excludes_triage_leads() -> None:
 
     snapshot = ledger.lifecycle_snapshot(entry_identity="entry_a")
 
-    assert snapshot["candidate_schema_version"] == "zscope.candidate.v3"
+    assert snapshot["candidate_schema_version"] == "zscope.candidate.v3.2"
     assert len(snapshot["records"]) == 1
     assert snapshot["records"][0]["validation_cluster_uid"] == (
         obligation.validation_cluster_uid

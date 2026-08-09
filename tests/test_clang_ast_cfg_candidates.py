@@ -37,6 +37,59 @@ def test_clang_ast_cfg_detects_double_free_and_use_after_free() -> None:
     assert double_free["evidence_pack"]["ast_cfg"]["cfg_path"] == [12, 13]
 
 
+def test_clang_ast_cfg_detects_detached_container_member_without_transfer() -> None:
+    issues = _rules(
+        """
+10 | void detach(struct list *head, struct session *session) {
+11 |     head->next = session->next;
+12 |     return;
+13 | }
+"""
+    )
+
+    issue = next(
+        item
+        for item in issues
+        if item["rule"] == "clang_cfg_container_unlink_without_release"
+    )
+    assert issue["category"] == "memory_leak"
+    assert issue["evidence_pack"]["path"]["complete_in_function"] is True
+
+
+def test_clang_ast_cfg_does_not_report_container_member_released_after_unlink() -> None:
+    issues = _rules(
+        """
+10 | void detach(struct list *head, struct session *session) {
+11 |     head->next = session->next;
+12 |     session_release(session);
+13 | }
+"""
+    )
+
+    assert "clang_cfg_container_unlink_without_release" not in {
+        item["rule"] for item in issues
+    }
+
+
+def test_clang_ast_cfg_detects_partial_composite_owner_cleanup() -> None:
+    issues = _rules(
+        """
+10 | void reset(struct cache *cache, const char *name) {
+11 |     cache->primary = duplicate(name);
+12 |     cache->scratch = duplicate(name);
+13 |     SAFE_FREE(cache->primary);
+14 | }
+"""
+    )
+
+    issue = next(
+        item
+        for item in issues
+        if item["rule"] == "clang_cfg_incomplete_owned_member_cleanup"
+    )
+    assert issue["category"] == "incomplete_cleanup"
+
+
 def test_clang_ast_cfg_suppresses_terminal_branch_release_before_normal_cleanup() -> None:
     cases = {
         "multiline": """

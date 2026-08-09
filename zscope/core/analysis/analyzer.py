@@ -69,6 +69,7 @@ from ...orchestration.agent_policy import (
     tool_policy_for_agent,
 )
 from ..candidates.pipeline import CandidatePipeline
+from ..candidates.decision_facts import DecisionFactGraphCache
 from ..candidates.clang_ast_cfg import ClangAstCfgCandidateGenerator
 from ...retrieval.clang_tooling_evidence import ClangToolingEvidenceProvider
 from ..candidates.regex import RegexCandidateGenerator
@@ -166,6 +167,7 @@ class Analyzer:
                  cancellation_token: Optional[CancellationToken] = None,
                  scheduler: Optional[ScanScheduler] = None,
                  candidate_ir_persistence_lock: Optional[Any] = None,
+                 decision_fact_cache: Optional[DecisionFactGraphCache] = None,
                  write_root_reports: bool = True,
                  defer_validation_to_scan: bool = False):
         self.config = config
@@ -176,6 +178,9 @@ class Analyzer:
         # commit, so it must be one critical section rather than independent
         # SQLite writes from each entry thread.
         self._candidate_ir_persistence_lock = candidate_ir_persistence_lock
+        # Scope this bounded cache to one scan.  It is never a class-level
+        # cache, so facts cannot leak across revisions or projects.
+        self.decision_fact_cache = decision_fact_cache or DecisionFactGraphCache()
         self.write_root_reports = write_root_reports
         # Parallel batch execution owns validation at scan scope.  A standalone
         # Analyzer still validates locally, preserving the existing public
@@ -3798,6 +3803,18 @@ class Analyzer:
             getattr(getattr(self, "candidate_ledger", None), "revision", "")
             or ""
         )
+        analysis_cfg = getattr(config, "analysis", None)
+        enable_decision_facts = bool(
+            getattr(analysis_cfg, "decision_fact_graph_v1", False)
+            or getattr(analysis_cfg, "security_obligation_v1", False)
+        )
+        enable_context_v31 = bool(
+            getattr(analysis_cfg, "decision_context_v31", False)
+            or enable_decision_facts
+        )
+        enable_context_v32 = bool(
+            getattr(analysis_cfg, "decision_context_v32", False)
+        )
         for issue in issues:
             evidence_pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
             issue_checker = str(issue.get("evidence_checker") or evidence_pack.get("checker") or checker)
@@ -3816,6 +3833,15 @@ class Analyzer:
                 or ""
             )
             issue.setdefault("entry_identity", entry_identity)
+            if enable_decision_facts:
+                issue["decision_fact_graph_v1"] = True
+                issue["security_obligation_v1"] = bool(
+                    getattr(analysis_cfg, "security_obligation_v1", False)
+                )
+            if enable_context_v31:
+                issue["decision_context_v31"] = True
+            if enable_context_v32:
+                issue["decision_context_v32"] = True
             envelope = annotate_issue_identity(
                 issue,
                 project_id=project_id,
@@ -3823,6 +3849,7 @@ class Analyzer:
                 revision=revision,
                 entry_function=entry_identity,
                 default_disposition="needs_review",
+                decision_fact_cache=getattr(self, "decision_fact_cache", None),
             )
             evidence_pack = issue.get("evidence_pack")
             if isinstance(evidence_pack, dict):
@@ -3863,10 +3890,31 @@ class Analyzer:
                 signature=str(getattr(project, "entry_signature", "") or "") or None,
             ).identity_key(project.project_root)
         )
+        analysis_cfg = getattr(getattr(self, "config", None), "analysis", None)
+        enable_decision_facts = bool(
+            getattr(analysis_cfg, "decision_fact_graph_v1", False)
+            or getattr(analysis_cfg, "security_obligation_v1", False)
+        )
+        enable_context_v31 = bool(
+            getattr(analysis_cfg, "decision_context_v31", False)
+            or enable_decision_facts
+        )
+        enable_context_v32 = bool(
+            getattr(analysis_cfg, "decision_context_v32", False)
+        )
         for issue in issues:
             if not isinstance(issue, dict):
                 continue
             issue.setdefault("entry_identity", entry_identity)
+            if enable_decision_facts:
+                issue["decision_fact_graph_v1"] = True
+                issue["security_obligation_v1"] = bool(
+                    getattr(analysis_cfg, "security_obligation_v1", False)
+                )
+            if enable_context_v31:
+                issue["decision_context_v31"] = True
+            if enable_context_v32:
+                issue["decision_context_v32"] = True
             envelope = annotate_issue_identity(
                 issue,
                 project_id=str(
@@ -3878,6 +3926,7 @@ class Analyzer:
                 entry_function=entry_identity,
                 run_id=str(state.get("run_id") or ""),
                 default_disposition="needs_review",
+                decision_fact_cache=getattr(self, "decision_fact_cache", None),
             )
             evidence = dict(issue.get("evidence_pack") or {})
             evidence.update(
@@ -3889,6 +3938,33 @@ class Analyzer:
                     "candidate_uid": envelope.candidate_uid,
                     "occurrence_uid": envelope.occurrence_uid,
                     "history_key": envelope.history_key,
+                    "obligation_uid": envelope.obligation_uid,
+                    "obligation_shape": envelope.obligation_shape,
+                    "decision_context_version": envelope.decision_context_version,
+                    "decision_fact_version": issue.get(
+                        "decision_fact_version"
+                    ) or envelope.decision_fact_version,
+                    "decision_fact_coverage": issue.get(
+                        "decision_fact_coverage"
+                    ),
+                    "decision_fact_slice": deepcopy(
+                        issue.get("decision_fact_slice") or {}
+                    ),
+                    "missing_fact_kinds": list(
+                        issue.get("missing_fact_kinds") or []
+                    ),
+                    "security_obligation": deepcopy(
+                        issue.get("security_obligation") or {}
+                    ),
+                    "candidate_promotion_eligible": issue.get(
+                        "candidate_promotion_eligible"
+                    ),
+                    "candidate_promotion_reason": issue.get(
+                        "candidate_promotion_reason"
+                    ),
+                    "candidate_promotion_terminal_status": issue.get(
+                        "candidate_promotion_terminal_status"
+                    ),
                     "evidence_hash": envelope.evidence_hash,
                     "decision_evidence_hash": envelope.decision_evidence_hash,
                     "provenance_hash": envelope.provenance_hash,

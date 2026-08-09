@@ -132,6 +132,18 @@ analysis:
   global_validation_group_queue: true
   enable_evidence_completion_queue: true
   evidence_completion_workers: 2
+  # Stage the new structured fact/obligation pipeline explicitly for this
+  # diagnostic benchmark. Defaults remain false for compatibility configs.
+  decision_fact_graph_v1: true
+  security_obligation_v1: true
+  deterministic_prevalidation_v2: true
+  decision_context_v31: true
+  # v3.2 deterministic evidence closure.  These remain independent feature
+  # switches so replay can audit each transition before it becomes default.
+  project_deterministic_fact_pass_v1: true
+  proof_providers_v11: true
+  decision_context_v32: true
+  structured_candidate_promotion_v1: true
   max_premodel_depth: 5
   max_premodel_callees: 20
   trivial_function_max_lines: 10

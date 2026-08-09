@@ -28,9 +28,19 @@ class EvidenceCompletionQueue:
     into a completed report.
     """
 
-    def __init__(self, *, enabled: bool = True, max_workers: int = 2) -> None:
+    def __init__(
+        self,
+        *,
+        enabled: bool = True,
+        max_workers: int = 2,
+        enable_v11_providers: bool = True,
+    ) -> None:
         self.enabled = bool(enabled)
         self.max_workers = max(1, int(max_workers or 2))
+        # v1.1 providers are independently switchable while their transition
+        # audit is running.  Existing v3 providers remain available so a
+        # disabled rollout cannot change prior evidence semantics.
+        self.enable_v11_providers = bool(enable_v11_providers)
 
     def complete(
         self,
@@ -58,6 +68,16 @@ class EvidenceCompletionQueue:
             reason=str(validator_data.get("reasoning") or "deterministic evidence incomplete"),
         )
         proofs = list(self._completion_proofs(issue, validation_evidence))
+        # A Validator may identify a concrete counter-fact that conflicts with
+        # an otherwise local rejection proof.  Keep that conflict visible for
+        # review instead of allowing the post-validation completion pass to
+        # erase it.  This is intentionally scoped to rejection: a complete
+        # positive proof is still evidence of a real obligation.
+        if issue.get("blocking_negative_evidence") is True:
+            proofs = [
+                proof for proof in proofs
+                if str(proof.get("outcome") or "").lower() != "reject"
+            ]
         if proofs:
             existing = issue.get("deterministic_proofs")
             if not isinstance(existing, list):
@@ -78,8 +98,61 @@ class EvidenceCompletionQueue:
         ) + 1
         return request
 
-    @staticmethod
+    def complete_prevalidation(
+        self,
+        issue: Dict[str, Any],
+        *,
+        validation_evidence: Optional[Mapping[str, Any]] = None,
+    ) -> bool:
+        """Promote already available deterministic facts before an LLM call.
+
+        This is intentionally not a second validation path: it runs the same
+        bounded providers used after a Validator response, but does not mark an
+        unresolved candidate exhausted.  That lets a later Validator name one
+        missing fact while ensuring complete local proof never pays for an LLM
+        invocation.
+        """
+
+        if not self.enabled:
+            return False
+        existing = issue.get("deterministic_proofs")
+        proofs = list(self._completion_proofs(issue, validation_evidence))
+        # A Validator may identify a concrete counter-fact that conflicts with
+        # an otherwise local rejection proof.  Keep that conflict visible for
+        # review instead of allowing the post-validation completion pass to
+        # erase it.  This is intentionally scoped to rejection: a complete
+        # positive proof is still evidence of a real obligation.
+        if issue.get("blocking_negative_evidence") is True:
+            proofs = [
+                proof for proof in proofs
+                if str(proof.get("outcome") or "").lower() != "reject"
+            ]
+        if not proofs:
+            issue.setdefault("prevalidation_fact_completion", "not_applicable")
+            return False
+        if not isinstance(existing, list):
+            existing = []
+            issue["deterministic_proofs"] = existing
+        known = {
+            (str(item.get("outcome") or ""), str(item.get("proof_kind") or ""))
+            for item in existing
+            if isinstance(item, Mapping)
+        }
+        for proof in proofs:
+            key = (str(proof.get("outcome") or ""), str(proof.get("proof_kind") or ""))
+            if key not in known:
+                existing.append(proof)
+                known.add(key)
+        issue["prevalidation_fact_completion"] = "completed_with_proof"
+        issue["evidence_completion_status"] = "completed"
+        issue["evidence_completion_terminal_status"] = "completed_with_proof"
+        issue["evidence_completion_attempt_count"] = int(
+            issue.get("evidence_completion_attempt_count") or 0
+        ) + 1
+        return True
+
     def _completion_proofs(
+        self,
         issue: Mapping[str, Any],
         validation_evidence: Optional[Mapping[str, Any]] = None,
     ) -> Iterable[Dict[str, Any]]:
@@ -142,6 +215,136 @@ class EvidenceCompletionQueue:
         graph_confirmation_proof = EvidenceCompletionQueue._graph_contract_confirmation_proof(issue)
         if graph_confirmation_proof is not None:
             yield graph_confirmation_proof
+        if self.enable_v11_providers:
+            lock_protocol_proof = EvidenceCompletionQueue._balanced_lock_protocol_proof(
+                issue,
+                validation_evidence,
+            )
+            if lock_protocol_proof is not None:
+                yield lock_protocol_proof
+            allocation_copy_proof = EvidenceCompletionQueue._allocation_copy_capacity_proof(
+                issue,
+                validation_evidence,
+            )
+            if allocation_copy_proof is not None:
+                yield allocation_copy_proof
+            failed_member_proof = EvidenceCompletionQueue._failed_member_acquisition_cleanup_proof(
+                issue,
+                validation_evidence,
+            )
+            if failed_member_proof is not None:
+                yield failed_member_proof
+            pointer_provenance_proof = EvidenceCompletionQueue._pointer_offset_provenance_proof(
+                issue,
+                validation_evidence,
+            )
+            if pointer_provenance_proof is not None:
+                yield pointer_provenance_proof
+            async_stack_proof = EvidenceCompletionQueue._async_stack_escape_proof(
+                issue,
+                validation_evidence,
+            )
+            if async_stack_proof is not None:
+                yield async_stack_proof
+            unlink_proof = EvidenceCompletionQueue._container_unlink_without_release_proof(
+                issue,
+                validation_evidence,
+            )
+            if unlink_proof is not None:
+                yield unlink_proof
+            failure_lock_proof = EvidenceCompletionQueue._lock_held_on_failure_return_proof(
+                issue,
+                validation_evidence,
+            )
+            if failure_lock_proof is not None:
+                yield failure_lock_proof
+            incomplete_cleanup_proof = EvidenceCompletionQueue._incomplete_owner_cleanup_proof(
+                issue,
+                validation_evidence,
+            )
+            if incomplete_cleanup_proof is not None:
+                yield incomplete_cleanup_proof
+            lifecycle_protocol_proof = EvidenceCompletionQueue._lifecycle_protocol_confirmation_proof(
+                issue,
+                validation_evidence,
+            )
+            if lifecycle_protocol_proof is not None:
+                yield lifecycle_protocol_proof
+
+    @staticmethod
+    def _lifecycle_protocol_confirmation_proof(
+        issue: Mapping[str, Any],
+        validation_evidence: Optional[Mapping[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Confirm explicit borrow/owner/concurrency protocol violations.
+
+        These patterns used to reach a Validator with an accurate structured
+        event but no proof because the earlier provider covered only generic
+        source-to-sink pairs.  Each branch below requires the detector's
+        field-sensitive event and a complete local path; it never treats a
+        rule name or a model explanation as proof on its own.
+        """
+
+        ast_cfg, path, events = EvidenceCompletionQueue._ast_pack(issue)
+        if path.get("complete_in_function") is not True:
+            return None
+        rule = str(issue.get("rule") or "").lower()
+        by_kind: Dict[str, list[Mapping[str, Any]]] = {}
+        for event in events:
+            kind = str(event.get("kind") or "").lower()
+            if kind:
+                by_kind.setdefault(kind, []).append(event)
+        code = EvidenceCompletionQueue._function_code(validation_evidence, issue)
+
+        def proof(
+            kind: str,
+            selected: Iterable[Mapping[str, Any]],
+            facts: list[str],
+            summary: str,
+            subject: str = "",
+        ) -> Dict[str, Any]:
+            return EvidenceCompletionQueue._proof_from_ast(
+                issue,
+                outcome="confirm",
+                proof_kind=kind,
+                producer_engine="clang_ast_cfg_protocol_v11",
+                events=selected,
+                facts=facts,
+                summary=summary,
+                scope="complete intraprocedural ownership/concurrency protocol path",
+                subject_identity=subject,
+            )
+
+        if rule == "clang_cfg_parent_release_without_owned_member_cleanup":
+            leaks = by_kind.get("owned_member_leak", [])
+            if len(leaks) == 1:
+                member = EvidenceCompletionQueue._normalize_symbol(
+                    leaks[0].get("variable")
+                ).replace("->", ".")
+                owner = member.rsplit(".", 1)[0] if "." in member else ""
+                if owner and re.search(
+                    rf"\b(?:safe_free|free|release|destroy)\s*\(\s*{re.escape(owner)}\s*\)",
+                    code,
+                    re.IGNORECASE,
+                ) and not re.search(
+                    rf"\b(?:safe_free|free|release|destroy)\s*\(\s*{re.escape(member.replace('.', '->'))}\s*\)",
+                    code,
+                    re.IGNORECASE,
+                ) and re.search(
+                    rf"\b{re.escape(member.replace('.', '->'))}\s*=\s*"
+                    r"(?:[A-Za-z_]\w*\s*\()?[^;]*(?:alloc|dup|open|create)[A-Za-z_0-9]*\s*\(",
+                    code,
+                    re.IGNORECASE,
+                ):
+                    return proof(
+                        "owned_member_left_live_when_parent_released",
+                        [leaks[0]],
+                        ["field_sensitive_owned_member", "parent_release", "member_not_released"],
+                        "a field identified as owned remains live when its parent is released",
+                        member,
+                    )
+
+        return None
 
     @staticmethod
     def _function_code(
@@ -213,7 +416,7 @@ class EvidenceCompletionQueue:
             "outcome": outcome,
             "proof_kind": proof_kind,
             "producer_engine": producer_engine,
-            "proof_version": "zscope.decision-proof.v2",
+            "proof_version": "zscope.decision-proof.v3",
             "fact_ids": fact_ids,
             "cfg_nodes": [str(item.get("line")) for item in selected if item.get("line") not in (None, "")],
             "subject_identity": subject_identity,
@@ -223,6 +426,567 @@ class EvidenceCompletionQueue:
             "scope": scope,
             "summary": summary,
         }
+
+    @staticmethod
+    def _proof_from_code(
+        issue: Mapping[str, Any],
+        *,
+        outcome: str,
+        proof_kind: str,
+        producer_engine: str,
+        code: str,
+        line_numbers: Iterable[int],
+        facts: Iterable[str],
+        summary: str,
+        scope: str,
+        subject_identity: str = "",
+    ) -> Dict[str, Any]:
+        lines = sorted({int(line) for line in line_numbers if int(line) > 0})
+        return {
+            "outcome": outcome,
+            "proof_kind": proof_kind,
+            "producer_engine": producer_engine,
+            "proof_version": "zscope.decision-proof.v3",
+            "fact_ids": [f"source_cfg:{line}" for line in lines],
+            "cfg_nodes": [str(line) for line in lines],
+            "subject_identity": subject_identity,
+            "code_hash": EvidenceCompletionQueue._code_hash(code, issue),
+            "facts": list(facts),
+            "completeness": "complete",
+            "scope": scope,
+            "summary": summary,
+        }
+
+    @staticmethod
+    def _code_lines(
+        issue: Mapping[str, Any],
+        validation_evidence: Optional[Mapping[str, Any]],
+    ) -> list[str]:
+        code = EvidenceCompletionQueue._function_code(validation_evidence, issue)
+        if not code or len(code) > 64 * 1024:
+            return []
+        return code.splitlines()
+
+    @staticmethod
+    def _lock_argument(text: str, *, acquire: bool) -> str:
+        names = (
+            r"(?:LOCK|pthread_mutex_lock|pthread_rwlock_[rw]dlock)"
+            if acquire
+            else r"(?:UNLOCK|pthread_mutex_unlock|pthread_rwlock_unlock)"
+        )
+        match = re.search(rf"\b{names}\s*\(\s*&?([^,)]+)", text)
+        return EvidenceCompletionQueue._normalize_symbol(match.group(1)) if match else ""
+
+    @staticmethod
+    def _balanced_lock_protocol_proof(
+        issue: Mapping[str, Any],
+        validation_evidence: Optional[Mapping[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Reject simple lock-protocol false positives from complete source CFG.
+
+        The provider deliberately handles only lexical lock/unlock pairs with
+        no ``goto``/``switch``/``else`` ambiguity between the matching pair.
+        More complicated interprocedural or branch-dependent protocols remain
+        reviewable until the project fact pass supplies a formal contract.
+        """
+
+        rule = str(issue.get("rule") or "").lower()
+        if rule not in {
+            "clang_cfg_return_with_lock_held",
+            "clang_cfg_unlock_without_matching_lock",
+        }:
+            return None
+        _ast_cfg, path, _events = EvidenceCompletionQueue._ast_pack(issue)
+        if path.get("complete_in_function") is not True:
+            return None
+        lines = EvidenceCompletionQueue._code_lines(issue, validation_evidence)
+        if not lines:
+            return None
+        code = "\n".join(lines)
+        if re.search(r"\b(?:goto|switch|case)\b", code):
+            return None
+
+        if rule == "clang_cfg_unlock_without_matching_lock":
+            for index, text in enumerate(lines):
+                lock = EvidenceCompletionQueue._lock_argument(text, acquire=False)
+                if not lock:
+                    continue
+                # A matching lexical acquire must appear after the previous
+                # return and before the reported unlock, without an ``else``
+                # branch that could bypass it.
+                previous_return = next(
+                    (
+                        prior + 1
+                        for prior in range(index - 1, -1, -1)
+                        if re.search(r"\breturn\b", lines[prior])
+                    ),
+                    0,
+                )
+                segment = lines[previous_return:index]
+                if any(re.search(r"\belse\b", item) for item in segment):
+                    continue
+                acquire_index = next(
+                    (
+                        prior
+                        for prior in range(index - 1, -1, -1)
+                        if EvidenceCompletionQueue._lock_argument(lines[prior], acquire=True) == lock
+                    ),
+                    -1,
+                )
+                if acquire_index < 0:
+                    continue
+                if any("return" in item for item in lines[acquire_index + 1:index]):
+                    continue
+                return EvidenceCompletionQueue._proof_from_code(
+                    issue,
+                    outcome="reject",
+                    proof_kind="matching_lock_dominates_unlock",
+                    producer_engine="clang_ast_cfg_lock_protocol",
+                    code=code,
+                    line_numbers=[acquire_index + 1, index + 1],
+                    facts=["matching_lock_dominates_unlock"],
+                    summary="a matching local lock acquisition precedes the reported unlock on the same complete path",
+                    scope="complete lexical lock protocol segment",
+                    subject_identity=lock,
+                )
+            return None
+
+        # For a return-with-lock-held candidate, inspect every return in a
+        # branch-free local body.  Each acquire must have a matching release
+        # before its subsequent return.  This intentionally refuses to prove
+        # safety in a body containing ``else`` because a linear scan is then
+        # insufficient to establish all paths.
+        if re.search(r"\belse\b", code):
+            return None
+        held: list[tuple[str, int]] = []
+        return_lines: list[int] = []
+        for index, text in enumerate(lines):
+            acquired = EvidenceCompletionQueue._lock_argument(text, acquire=True)
+            if acquired:
+                held.append((acquired, index + 1))
+            released = EvidenceCompletionQueue._lock_argument(text, acquire=False)
+            if released:
+                match_index = next(
+                    (item for item in range(len(held) - 1, -1, -1) if held[item][0] == released),
+                    -1,
+                )
+                if match_index >= 0:
+                    held.pop(match_index)
+            if re.search(r"\breturn\b", text):
+                return_lines.append(index + 1)
+                if held:
+                    return None
+        if return_lines:
+            return EvidenceCompletionQueue._proof_from_code(
+                issue,
+                outcome="reject",
+                proof_kind="balanced_lock_return_paths",
+                producer_engine="clang_ast_cfg_lock_protocol",
+                code=code,
+                line_numbers=return_lines,
+                facts=["all_return_paths_unlocked"],
+                summary="every reachable return in the complete local lock protocol is preceded by matching unlocks",
+                scope="complete branch-free local lock protocol",
+            )
+        return None
+
+    @staticmethod
+    def _allocation_copy_capacity_proof(
+        issue: Mapping[str, Any],
+        validation_evidence: Optional[Mapping[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Reject a copy-overflow claim when a complete capacity relation is explicit."""
+
+        if str(issue.get("rule") or "").lower() not in {
+            "clang_cfg_narrowed_allocation_original_length_copy",
+            "clang_cfg_heap_copy_length_mismatch",
+        }:
+            return None
+        _ast_cfg, path, _events = EvidenceCompletionQueue._ast_pack(issue)
+        if path.get("complete_in_function") is not True:
+            return None
+        lines = EvidenceCompletionQueue._code_lines(issue, validation_evidence)
+        if not lines:
+            return None
+        code = "\n".join(lines)
+        allocations: dict[str, tuple[str, int]] = {}
+        for index, text in enumerate(lines, start=1):
+            match = re.search(
+                r"\b(?P<var>[A-Za-z_]\w*)\s*=\s*(?:\([^;=]+\)\s*)?"
+                r"(?:[A-Za-z_]\w*(?:alloc|malloc|calloc)[A-Za-z_0-9]*)\s*\(\s*(?P<size>[^,)]+)",
+                text,
+                re.IGNORECASE,
+            )
+            if match:
+                allocations[match.group("var")] = (match.group("size").replace(" ", ""), index)
+        for index, text in enumerate(lines, start=1):
+            call = re.search(r"\b(?:memcpy|memmove)\s*\(\s*(?P<dst>[A-Za-z_]\w*)\s*,[^,]+,\s*(?P<len>[^)]+)\)", text)
+            if not call or call.group("dst") not in allocations:
+                continue
+            size, allocation_line = allocations[call.group("dst")]
+            length = call.group("len").replace(" ", "")
+            plus_one = re.fullmatch(r"\(?([A-Za-z_]\w*)\+1\)?", size)
+            if plus_one is None or plus_one.group(1) != length:
+                continue
+            # A terminating overflow guard is the explicit source-derived
+            # witness that makes ``n + 1`` a complete capacity proof.
+            symbol = plus_one.group(1)
+            guard = next(
+                (
+                    guard_line
+                    for guard_line, item in enumerate(lines[: allocation_line - 1], start=1)
+                    if re.search(
+                        rf"\b{re.escape(symbol)}\b\s*>=\s*(?:SIZE_MAX|UINT(?:32|64)_MAX|[A-Z][A-Z0-9_]*)",
+                        item,
+                    )
+                    and re.search(r"\breturn\b", "\n".join(lines[guard_line - 1:guard_line + 3]))
+                ),
+                0,
+            )
+            if not guard:
+                continue
+            return EvidenceCompletionQueue._proof_from_code(
+                issue,
+                outcome="reject",
+                proof_kind="allocation_capacity_dominates_copy",
+                producer_engine="clang_ast_cfg_capacity_relation",
+                code=code,
+                line_numbers=[guard, allocation_line, index],
+                facts=["allocation_capacity_exceeds_copy", "same_length_symbol"],
+                summary="a guarded allocation of n + 1 bytes dominates a copy of n bytes",
+                scope="complete allocation-to-copy capacity relation",
+                subject_identity=call.group("dst"),
+            )
+        return None
+
+    @staticmethod
+    def _failed_member_acquisition_cleanup_proof(
+        issue: Mapping[str, Any],
+        validation_evidence: Optional[Mapping[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Reject parent-member leak reports on an allocation-failure-only branch."""
+
+        if str(issue.get("rule") or "").lower() != "clang_cfg_parent_release_without_owned_member_cleanup":
+            return None
+        _ast_cfg, path, _events = EvidenceCompletionQueue._ast_pack(issue)
+        if path.get("complete_in_function") is not True:
+            return None
+        lines = EvidenceCompletionQueue._code_lines(issue, validation_evidence)
+        if not lines:
+            return None
+        code = "\n".join(lines)
+        source = str(issue.get("source") or "")
+        member_match = re.search(r"\b([A-Za-z_]\w*)\s*->\s*([A-Za-z_]\w*)", source)
+        parent_match = re.search(r"SAFE_FREE\s*\(\s*([A-Za-z_]\w*)\s*\)", str(issue.get("sink") or ""))
+        if not member_match or not parent_match or member_match.group(1) != parent_match.group(1):
+            return None
+        parent, member = member_match.groups()
+        pattern = re.compile(
+            rf"if\s*\(\s*!\s*{re.escape(parent)}\s*->\s*{re.escape(member)}\s*\)"
+        )
+        for index, text in enumerate(lines, start=1):
+            if not pattern.search(text):
+                continue
+            window = "\n".join(lines[index - 1:index + 5])
+            if not re.search(rf"SAFE_FREE\s*\(\s*{re.escape(parent)}\s*\)", window):
+                continue
+            if not re.search(r"\breturn\b", window):
+                continue
+            return EvidenceCompletionQueue._proof_from_code(
+                issue,
+                outcome="reject",
+                proof_kind="failed_member_acquisition_cleanup",
+                producer_engine="clang_ast_cfg_ownership",
+                code=code,
+                line_numbers=[index],
+                facts=["member_acquisition_failed", "parent_cleanup_on_failure_only"],
+                summary="the parent is released only on the branch where its owned member acquisition failed",
+                scope="complete member-acquisition failure branch",
+                subject_identity=f"{parent}->{member}",
+            )
+        return None
+
+    @staticmethod
+    def _pointer_offset_provenance_proof(
+        issue: Mapping[str, Any],
+        validation_evidence: Optional[Mapping[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Distinguish pointer-relative buffer access from integer-to-pointer use."""
+
+        if str(issue.get("rule") or "").lower() != "clang_cfg_wire_integer_cast_to_pointer_deref":
+            return None
+        _ast_cfg, path, _events = EvidenceCompletionQueue._ast_pack(issue)
+        if path.get("complete_in_function") is not True:
+            return None
+        lines = EvidenceCompletionQueue._code_lines(issue, validation_evidence)
+        if not lines:
+            return None
+        code = "\n".join(lines)
+        pointer_params = {
+            item
+            for item in re.findall(r"\b[A-Za-z_]\w*\s*\*\s*([A-Za-z_]\w*)", code.split("{")[0])
+        }
+        for index, text in enumerate(lines, start=1):
+            match = re.search(
+                r"\([^)]*\*[^)]*\)\s*\(\s*([A-Za-z_]\w*)\s*\+\s*[^)]+\)",
+                text,
+            )
+            if not match or match.group(1) not in pointer_params:
+                continue
+            return EvidenceCompletionQueue._proof_from_code(
+                issue,
+                outcome="reject",
+                proof_kind="pointer_offset_not_data_pointer",
+                producer_engine="clang_ast_cfg_pointer_provenance",
+                code=code,
+                line_numbers=[index],
+                facts=["pointer_derived_from_pointer_base", "not_data_integer_cast"],
+                summary="the reported cast is derived from a pointer parameter plus an offset, not from serialized integer data",
+                scope="complete local pointer provenance",
+                subject_identity=match.group(1),
+            )
+        return None
+
+    @staticmethod
+    def _async_stack_escape_proof(
+        issue: Mapping[str, Any],
+        validation_evidence: Optional[Mapping[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Confirm a local stack address escaping through an asynchronous worker."""
+
+        category = str(issue.get("defect_class") or issue.get("category") or "").lower()
+        rule = str(issue.get("rule") or "").lower()
+        if category != "stack_escape" and rule != "clang_cfg_stack_address_passed_to_thread":
+            return None
+        ast_cfg, path, events = EvidenceCompletionQueue._ast_pack(issue)
+        if path.get("complete_in_function") is not True:
+            return None
+        stack_events = [item for item in events if str(item.get("kind") or "").lower() == "stack_object"]
+        escape_events = [item for item in events if str(item.get("kind") or "").lower() == "thread_arg_escape"]
+        if not stack_events or not escape_events:
+            return None
+        stack = stack_events[0]
+        escaped = next(
+            (
+                item for item in escape_events
+                if EvidenceCompletionQueue._normalize_symbol(item.get("variable"))
+                == EvidenceCompletionQueue._normalize_symbol(stack.get("variable"))
+            ),
+            None,
+        )
+        if escaped is None:
+            return None
+        lines = EvidenceCompletionQueue._code_lines(issue, validation_evidence)
+        if not lines:
+            return None
+        code = "\n".join(lines)
+        escape_line = int(escaped.get("line") or 0)
+        # The asynchronous lifetime proof is deliberately strict: detached
+        # worker creation is enough, while a join before every return negates
+        # the escape.  A non-detached thread without a join remains reviewable.
+        detached = bool(re.search(r"\bpthread_detach\s*\(", code))
+        joined_after_escape = any(
+            re.search(r"\bpthread_join\s*\(", text)
+            for text in lines[max(escape_line, 0):]
+        )
+        if not detached or joined_after_escape:
+            return None
+        return EvidenceCompletionQueue._proof_from_ast(
+            issue,
+            outcome="confirm",
+            proof_kind="async_stack_address_escape",
+            producer_engine="clang_ast_cfg_async_lifetime",
+            events=[stack, escaped],
+            facts=["stack_object_address_escapes", "async_lifetime_unbounded"],
+            summary="a local stack object is passed to a detached worker without a completing join",
+            scope="complete local asynchronous thread handoff",
+            subject_identity=EvidenceCompletionQueue._normalize_symbol(stack.get("variable")),
+        )
+
+    @staticmethod
+    def _container_unlink_without_release_proof(
+        issue: Mapping[str, Any],
+        validation_evidence: Optional[Mapping[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Confirm an unlinked container owner that has no release or transfer path."""
+
+        rule = str(issue.get("rule") or "").lower()
+        if rule not in {
+            "container_unlink_without_release",
+            "clang_cfg_container_unlink_without_release",
+        }:
+            return None
+        ast_cfg, path, events = EvidenceCompletionQueue._ast_pack(issue)
+        if path.get("complete_in_function") is not True:
+            return None
+        unlink_events = [
+            item for item in events
+            if str(item.get("kind") or "").lower()
+            in {"container_unlink", "container_detach", "ownership_unlink"}
+        ]
+        if not unlink_events:
+            lines = EvidenceCompletionQueue._code_lines(issue, validation_evidence)
+            if not lines:
+                return None
+            for index, text in enumerate(lines, start=1):
+                if re.search(r"\*\s*[A-Za-z_]\w*\s*=\s*[A-Za-z_]\w*\s*->\s*next", text):
+                    unlink_events = [{"kind": "container_unlink", "line": index, "expression": text}]
+                    break
+        if not unlink_events:
+            return None
+        lines = EvidenceCompletionQueue._code_lines(issue, validation_evidence)
+        if not lines:
+            return None
+        code = "\n".join(lines)
+        unlink_line = int(unlink_events[0].get("line") or 0)
+        remainder = "\n".join(lines[unlink_line:])
+        subject = EvidenceCompletionQueue._normalize_symbol(
+            unlink_events[0].get("variable") or issue.get("resource_identity")
+        )
+        if not subject:
+            assign = re.search(r"\*\s*[A-Za-z_]\w*\s*=\s*([A-Za-z_]\w*)\s*->\s*next", str(unlink_events[0].get("expression") or ""))
+            subject = assign.group(1) if assign else ""
+        if not subject:
+            return None
+        if re.search(rf"\b(?:SAFE_FREE|free|release|destroy)\s*\(\s*{re.escape(subject)}\b", remainder, re.IGNORECASE):
+            return None
+        if re.search(rf"\b(?:return|\*)\s*{re.escape(subject)}\b", remainder):
+            return None
+        return EvidenceCompletionQueue._proof_from_code(
+            issue,
+            outcome="confirm",
+            proof_kind="container_unlink_without_release",
+            producer_engine="clang_ast_cfg_container_ownership",
+            code=code,
+            line_numbers=[unlink_line],
+            facts=["container_owner_unlinked", "ownership_not_transferred_or_released"],
+            summary="the container ownership link is removed and no release or transfer of the detached object follows",
+            scope="complete local container-detach path",
+            subject_identity=subject,
+        )
+
+    @staticmethod
+    def _lock_held_on_failure_return_proof(
+        issue: Mapping[str, Any],
+        validation_evidence: Optional[Mapping[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Confirm a failure branch that returns while a local lock remains held."""
+
+        if str(issue.get("rule") or "").lower() != "clang_cfg_return_with_lock_held":
+            return None
+        _ast_cfg, path, _events = EvidenceCompletionQueue._ast_pack(issue)
+        if path.get("complete_in_function") is not True:
+            return None
+        lines = EvidenceCompletionQueue._code_lines(issue, validation_evidence)
+        if not lines:
+            return None
+        code = "\n".join(lines)
+        held: list[tuple[str, int]] = []
+        for index, text in enumerate(lines, start=1):
+            acquired = EvidenceCompletionQueue._lock_argument(text, acquire=True)
+            if acquired:
+                held.append((acquired, index))
+            released = EvidenceCompletionQueue._lock_argument(text, acquire=False)
+            if released:
+                match_index = next(
+                    (item for item in range(len(held) - 1, -1, -1) if held[item][0] == released),
+                    -1,
+                )
+                if match_index >= 0:
+                    held.pop(match_index)
+            if not (held and re.search(r"\breturn\s*-?(?:1|[A-Za-z_]\w*)\s*;", text)):
+                continue
+            # A return inside a failure branch is a complete witness only if a
+            # preceding condition names the failed acquisition or NULL guard.
+            preceding = "\n".join(lines[max(0, index - 5):index])
+            if not re.search(r"\bif\s*\([^)]*(?:!|==\s*NULL|<\s*0)", preceding):
+                continue
+            lock, lock_line = held[-1]
+            return EvidenceCompletionQueue._proof_from_code(
+                issue,
+                outcome="confirm",
+                proof_kind="lock_held_on_failure_return",
+                producer_engine="clang_ast_cfg_lock_protocol",
+                code=code,
+                line_numbers=[lock_line, index],
+                facts=["lock_acquired_before_failure", "failure_returns_with_lock_held"],
+                summary="a failure branch returns after a matching local lock acquisition without an intervening unlock",
+                scope="complete local failure-return lock path",
+                subject_identity=lock,
+            )
+        return None
+
+    @staticmethod
+    def _incomplete_owner_cleanup_proof(
+        issue: Mapping[str, Any],
+        validation_evidence: Optional[Mapping[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Confirm a field-sensitive cleanup that omits initialized owner members."""
+
+        category = str(issue.get("defect_class") or issue.get("category") or "").lower()
+        rule = str(issue.get("rule") or "").lower()
+        if category not in {"incomplete_cleanup", "memory_leak"} and "member_cleanup" not in rule:
+            return None
+        _ast_cfg, path, _events = EvidenceCompletionQueue._ast_pack(issue)
+        if path.get("complete_in_function") is not True:
+            return None
+        lines = EvidenceCompletionQueue._code_lines(issue, validation_evidence)
+        if not lines:
+            return None
+        code = "\n".join(lines)
+        initialized: dict[str, set[str]] = {}
+        released: dict[str, set[str]] = {}
+        for index, text in enumerate(lines, start=1):
+            assignment = re.search(
+                r"\b(?P<owner>[A-Za-z_]\w*(?:(?:\s*->\s*|\s*\.\s*)[A-Za-z_]\w+)*?)\s*(?:->|\.)\s*(?P<field>[A-Za-z_]\w*)\s*=\s*"
+                r"(?P<api>[A-Za-z_]\w*)\s*\(",
+                text,
+                re.IGNORECASE,
+            )
+            if assignment and re.search(r"(?:alloc|dup|open|create)", assignment.group("api"), re.IGNORECASE):
+                owner = EvidenceCompletionQueue._normalize_symbol(assignment.group("owner"))
+                initialized.setdefault(owner, set()).add(assignment.group("field"))
+            cleanup = re.search(
+                r"\b(?:SAFE_FREE|free|close|release)\s*\(\s*(?P<owner>[A-Za-z_]\w*(?:(?:\s*->\s*|\s*\.\s*)[A-Za-z_]\w+)*?)\s*(?:->|\.)\s*(?P<field>[A-Za-z_]\w*)",
+                text,
+                re.IGNORECASE,
+            )
+            if cleanup:
+                owner = EvidenceCompletionQueue._normalize_symbol(cleanup.group("owner"))
+                released.setdefault(owner, set()).add(cleanup.group("field"))
+        for owner, fields in initialized.items():
+            missing = fields - released.get(owner, set())
+            if len(fields) < 2 or not missing:
+                continue
+            owner_release_line = next(
+                (
+                    index
+                    for index, text in enumerate(lines, start=1)
+                    if re.search(
+                        rf"\b(?:SAFE_FREE|free|close|release|reset|destroy)\s*\(\s*"
+                        rf"(?:{re.escape(owner.replace('.', '->'))}|{re.escape(owner)})"
+                        rf"(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)?",
+                        text,
+                        re.IGNORECASE,
+                    )
+                ),
+                0,
+            )
+            if not owner_release_line:
+                continue
+            return EvidenceCompletionQueue._proof_from_code(
+                issue,
+                outcome="confirm",
+                proof_kind="incomplete_owner_cleanup",
+                producer_engine="clang_ast_cfg_ownership",
+                code=code,
+                line_numbers=[owner_release_line],
+                facts=["multiple_owned_members_initialized", "owned_member_not_released"],
+                summary="a cleanup/reset path releases an owner while initialized owned members remain uncleaned",
+                scope="complete field-sensitive owner cleanup path",
+                subject_identity=owner,
+            )
+        return None
 
     @staticmethod
     def _ast_guard_dominance_proof(issue: Mapping[str, Any]) -> Optional[Dict[str, Any]]:

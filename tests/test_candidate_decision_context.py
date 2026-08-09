@@ -57,6 +57,72 @@ def test_source_centric_null_check_aliases_multiple_uses() -> None:
     assert first.decision_context_version == DECISION_CONTEXT_VERSION
 
 
+def test_source_centric_lifecycle_obligation_aliases_multiple_exit_sites() -> None:
+    first = CandidateEnvelope.from_issue(
+        _issue(
+            rule="graph_resource_lifecycle",
+            category="memory_leak",
+            sink_expression="return -1",
+            sink_line=20,
+        ),
+        project_id="demo",
+        revision="rev1",
+    )
+    second = CandidateEnvelope.from_issue(
+        _issue(
+            rule="clang_cfg_cleanup_path",
+            category="memory_leak",
+            sink_expression="return 0",
+            sink_line=24,
+            entry="entry_b",
+        ),
+        project_id="demo",
+        revision="rev1",
+    )
+
+    assert first.candidate_uid != second.candidate_uid
+    assert first.obligation_shape == "source_centric"
+    assert first.obligation_uid == second.obligation_uid
+    assert first.validation_cluster_uid == second.validation_cluster_uid
+
+
+def test_v32_source_centric_identity_uses_acquisition_fact_not_use_site() -> None:
+    first_issue = _issue(
+        rule="clang_cfg_allocation_result_used_without_null_check",
+        category="unchecked_allocation",
+        sink_expression="task->state = READY",
+        sink_line=20,
+    )
+    second_issue = _issue(
+        rule="clang_cfg_allocation_result_used_without_null_check",
+        category="unchecked_allocation",
+        sink_expression="task->name = name",
+        sink_line=21,
+        entry="entry_b",
+    )
+    for issue in (first_issue, second_issue):
+        issue["decision_context_v32"] = True
+        issue["evidence_pack"] = {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {
+                        "kind": "allocation_result",
+                        "line": 10,
+                        "access_path": "task",
+                    }
+                ]
+            },
+        }
+
+    first = CandidateEnvelope.from_issue(first_issue, project_id="demo", revision="rev1")
+    second = CandidateEnvelope.from_issue(second_issue, project_id="demo", revision="rev1")
+
+    assert first.obligation_uid == second.obligation_uid
+    assert first.validation_cluster_uid == second.validation_cluster_uid
+    assert first.decision_context_version.endswith("v3.2")
+
+
 def test_sink_sensitive_lifetime_obligations_do_not_merge() -> None:
     first = CandidateEnvelope.from_issue(
         _issue(

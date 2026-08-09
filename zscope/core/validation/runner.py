@@ -36,7 +36,7 @@ from .evidence import (
     trim_code,
     validation_verdict,
 )
-from .pipeline import ValidationPipeline
+from .pipeline import ValidationOutcome, ValidationPipeline
 from .evidence_completion import EvidenceCompletionQueue
 
 logger = logging.getLogger(__name__)
@@ -217,6 +217,9 @@ class ValidationRunner:
             ),
             max_workers=int(
                 getattr(analysis_cfg, "evidence_completion_workers", 2) or 2
+            ),
+            enable_v11_providers=bool(
+                getattr(analysis_cfg, "proof_providers_v11", False)
             ),
         )
 
@@ -474,6 +477,10 @@ class ValidationRunner:
             return 240.0
         return value if value > 0 else None
 
+    def _deterministic_prevalidation_enabled(self) -> bool:
+        analysis_cfg = getattr(self.config, "analysis", None)
+        return bool(getattr(analysis_cfg, "deterministic_prevalidation_v2", False))
+
     @staticmethod
     def _record_validation_budget(
         item: _PreparedValidation,
@@ -581,6 +588,30 @@ class ValidationRunner:
 
         issue_code = self._issue_code(issue_func, state)
         evidence_pack = self._build_evidence_pack(raw_issue, state, issue_code)
+        if self._deterministic_prevalidation_enabled():
+            self._evidence_completion_queue.complete_prevalidation(
+                raw_issue,
+                validation_evidence=evidence_pack,
+            )
+            deterministic_outcome = self.validation_pipeline.apply_deterministic_prevalidation(
+                raw_issue,
+                self.validation_pipeline.score_components(raw_issue, {}),
+            )
+            if deterministic_outcome is not None:
+                self._record_deterministic_prevalidation_outcome(
+                    state,
+                    raw_issue,
+                    deterministic_outcome,
+                )
+                if deterministic_outcome.report_bucket:
+                    state[deterministic_outcome.report_bucket].append(raw_issue)
+                if deterministic_outcome.memory_status:
+                    self.remember_validation_result(
+                        raw_issue,
+                        deterministic_outcome.memory_status,
+                    )
+                self._update_candidate_ledger(state, raw_issue)
+                return None
         return _PreparedValidation(
             index=index,
             raw_issue=raw_issue,
@@ -1185,6 +1216,39 @@ class ValidationRunner:
             state["static_audit_observation_count"] = int(state.get("static_audit_observation_count", 0) or 0) + 1
         if decision.action == "suppress":
             state["static_suppressed_count"] = int(state.get("static_suppressed_count", 0) or 0) + 1
+        if raw_issue.get("candidate_source") == "clang_ast_cfg":
+            state["clang_prevalidation_decision_count"] = int(
+                state.get("clang_prevalidation_decision_count", 0) or 0
+            ) + 1
+
+    @staticmethod
+    def _record_deterministic_prevalidation_outcome(
+        state: Dict[str, Any],
+        raw_issue: Dict[str, Any],
+        outcome: ValidationOutcome,
+    ) -> None:
+        state["prevalidation_decision_count"] = int(
+            state.get("prevalidation_decision_count", 0) or 0
+        ) + 1
+        state["deterministic_prevalidation_decision_count"] = int(
+            state.get("deterministic_prevalidation_decision_count", 0) or 0
+        ) + 1
+        state["validator_avoided_count"] = int(
+            state.get("validator_avoided_count", 0) or 0
+        ) + 1
+        decision = str(raw_issue.get("deterministic_prevalidation_decision") or "")
+        if decision == "confirmed":
+            state["deterministic_prevalidation_confirmed_count"] = int(
+                state.get("deterministic_prevalidation_confirmed_count", 0) or 0
+            ) + 1
+        elif decision == "rejected_with_proof":
+            state["deterministic_prevalidation_rejected_count"] = int(
+                state.get("deterministic_prevalidation_rejected_count", 0) or 0
+            ) + 1
+        elif outcome.report_bucket == "observations":
+            state["deterministic_prevalidation_conflict_count"] = int(
+                state.get("deterministic_prevalidation_conflict_count", 0) or 0
+            ) + 1
         if raw_issue.get("candidate_source") == "clang_ast_cfg":
             state["clang_prevalidation_decision_count"] = int(
                 state.get("clang_prevalidation_decision_count", 0) or 0
