@@ -65,7 +65,7 @@ def test_report_assembler_builds_views_and_persists(tmp_path: Path) -> None:
     assert report.overall_verdict == "issues_found"
     assert report.metadata["run_id"] == "RUN1"
     assert [item["id"] for item in state["observations"]] == ["OBS_1"]
-    assert state["observations"][0]["candidate_schema_version"] == "zscope.candidate.v3"
+    assert state["observations"][0]["candidate_schema_version"] == "zscope.candidate.v3.2"
     assert state["observations"][0]["run_issue_uid"].startswith("RUNISSUE_")
     assert saved["schema_version"] == 2
     assert saved["finding_status"] == "confirmed"

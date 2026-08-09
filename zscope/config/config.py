@@ -312,6 +312,18 @@ class AnalysisConfig:
     candidate_lifecycle_v3: bool = True
     canonical_outcome_projection: bool = True
     deterministic_proof_routing: bool = True
+    # v3.1 fact/proof rollout.  These remain independently shadowable so a
+    # scan can attach facts and compare identities before changing outcomes.
+    decision_fact_graph_v1: bool = False
+    security_obligation_v1: bool = False
+    deterministic_prevalidation_v2: bool = False
+    decision_context_v31: bool = False
+    # v3.2 closes the proof/fact contract and keeps its cache namespace
+    # independent from v3.1 while it is rolled out in shadow mode.
+    project_deterministic_fact_pass_v1: bool = False
+    proof_providers_v11: bool = False
+    decision_context_v32: bool = False
+    structured_candidate_promotion_v1: bool = False
     # Batch scans collect all deterministic candidates before one shared
     # validation queue.  Keeping this switch separate permits a one-release
     # rollback to entry-local validation for compatibility diagnostics.
@@ -795,6 +807,30 @@ class ConfigLoader:
                 ),
                 deterministic_proof_routing=analysis_data.get(
                     "deterministic_proof_routing", True
+                ),
+                decision_fact_graph_v1=analysis_data.get(
+                    "decision_fact_graph_v1", False
+                ),
+                security_obligation_v1=analysis_data.get(
+                    "security_obligation_v1", False
+                ),
+                deterministic_prevalidation_v2=analysis_data.get(
+                    "deterministic_prevalidation_v2", False
+                ),
+                decision_context_v31=analysis_data.get(
+                    "decision_context_v31", False
+                ),
+                project_deterministic_fact_pass_v1=analysis_data.get(
+                    "project_deterministic_fact_pass_v1", False
+                ),
+                proof_providers_v11=analysis_data.get(
+                    "proof_providers_v11", False
+                ),
+                decision_context_v32=analysis_data.get(
+                    "decision_context_v32", False
+                ),
+                structured_candidate_promotion_v1=analysis_data.get(
+                    "structured_candidate_promotion_v1", False
                 ),
                 global_validation_group_queue=analysis_data.get(
                     "global_validation_group_queue", True

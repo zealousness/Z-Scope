@@ -68,3 +68,41 @@ def test_config_loader_reads_global_model_flag(tmp_path) -> None:
     cfg = ConfigLoader.load(str(path))
 
     assert cfg.analysis.enable_global_model is True
+
+
+def test_config_loader_reads_independent_v31_fact_rollout_flags(tmp_path) -> None:
+    data = _base_config(tmp_path)
+    data["analysis"] = {
+        "decision_fact_graph_v1": True,
+        "security_obligation_v1": True,
+        "deterministic_prevalidation_v2": True,
+        "decision_context_v31": True,
+    }
+    path = tmp_path / "zscope.yaml"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    cfg = ConfigLoader.load(str(path))
+
+    assert cfg.analysis.decision_fact_graph_v1 is True
+    assert cfg.analysis.security_obligation_v1 is True
+    assert cfg.analysis.deterministic_prevalidation_v2 is True
+    assert cfg.analysis.decision_context_v31 is True
+
+
+def test_config_loader_reads_independent_v32_evidence_closure_flags(tmp_path) -> None:
+    data = _base_config(tmp_path)
+    data["analysis"] = {
+        "project_deterministic_fact_pass_v1": True,
+        "proof_providers_v11": True,
+        "decision_context_v32": True,
+        "structured_candidate_promotion_v1": True,
+    }
+    path = tmp_path / "zscope.yaml"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    cfg = ConfigLoader.load(str(path))
+
+    assert cfg.analysis.project_deterministic_fact_pass_v1 is True
+    assert cfg.analysis.proof_providers_v11 is True
+    assert cfg.analysis.decision_context_v32 is True
+    assert cfg.analysis.structured_candidate_promotion_v1 is True

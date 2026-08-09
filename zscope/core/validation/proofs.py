@@ -22,7 +22,7 @@ class DecisionProof:
     contradiction_or_obligation: str
     scope: str
     completeness: str
-    proof_version: str = "zscope.decision-proof.v2"
+    proof_version: str = "zscope.decision-proof.v3"
     subject_identity: str = ""
     cfg_nodes: tuple[str, ...] = ()
 
@@ -69,12 +69,30 @@ _REJECTION_REQUIREMENTS = {
         "terminating_upper_bound_guard",
         "guard_dominates_loop",
     },
+    "balanced_lock_return_paths": {"all_return_paths_unlocked"},
+    "matching_lock_dominates_unlock": {"matching_lock_dominates_unlock"},
+    "allocation_capacity_dominates_copy": {
+        "allocation_capacity_exceeds_copy",
+        "same_length_symbol",
+    },
+    "failed_member_acquisition_cleanup": {
+        "member_acquisition_failed",
+        "parent_cleanup_on_failure_only",
+    },
+    "pointer_offset_not_data_pointer": {
+        "pointer_derived_from_pointer_base",
+        "not_data_integer_cast",
+    },
+    "cursor_progress_dominates_iteration": {"cursor_advances_before_iteration"},
+    "not_signal_handler_reachable": {"ordinary_call_context"},
+    "constant_contract_makes_sink_irrelevant": {"constant_contract_precondition"},
 }
 
 _CONFIRMATION_REQUIREMENTS = {
     "unguarded_source_to_sink": {"source_to_sink_complete", "missing_guard"},
     "out_of_range_value_reaches_sink": {"source_to_sink_complete", "out_of_range_value"},
     "use_after_free_path": {"free_before_use", "source_to_sink_complete"},
+    "double_release_path": {"first_release", "second_release", "same_object_path"},
     "missing_cleanup_path": {"allocation_reachable", "cleanup_missing"},
     "race_without_happens_before": {"conflicting_accesses", "no_happens_before"},
     "contract_violation_path": {"caller_contract_violated", "source_to_sink_complete"},
@@ -89,6 +107,27 @@ _CONFIRMATION_REQUIREMENTS = {
     "same_function_owned_member_cleanup_gap": {
         "same_function_helper_contract",
         "owned_member_not_released",
+    },
+    "async_stack_address_escape": {
+        "stack_object_address_escapes",
+        "async_lifetime_unbounded",
+    },
+    "container_unlink_without_release": {
+        "container_owner_unlinked",
+        "ownership_not_transferred_or_released",
+    },
+    "lock_held_on_failure_return": {
+        "lock_acquired_before_failure",
+        "failure_returns_with_lock_held",
+    },
+    "incomplete_owner_cleanup": {
+        "multiple_owned_members_initialized",
+        "owned_member_not_released",
+    },
+    "owned_member_left_live_when_parent_released": {
+        "field_sensitive_owned_member",
+        "parent_release",
+        "member_not_released",
     },
 }
 
@@ -140,7 +179,7 @@ def deterministic_decision_proof(
             ),
             scope=str(proof.get("scope") or "candidate"),
             completeness="complete",
-            proof_version=str(proof.get("proof_version") or "zscope.decision-proof.v2"),
+            proof_version=str(proof.get("proof_version") or "zscope.decision-proof.v3"),
             subject_identity=str(
                 proof.get("subject_identity")
                 or issue.get("resource_identity")

@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""Replay deterministic candidate outcomes without contacting an LLM.
+
+The tool consumes a frozen schema-v2 report and re-runs only the versioned
+fact/proof routing on copies of its canonical validation groups.  It never
+rewrites the input report, never reads a secret, and emits an auditable
+old-to-new disposition transition table for shadow comparisons.
+"""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import hashlib
+import json
+from pathlib import Path
+from typing import Any, Dict, Iterable, Mapping
+
+from zscope.core.validation.evidence_completion import EvidenceCompletionQueue
+from zscope.core.validation.proofs import deterministic_decision_proof
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _load_json(path: Path) -> Dict[str, Any]:
+    with path.open(encoding="utf-8") as handle:
+        value = json.load(handle)
+    if not isinstance(value, dict):
+        raise ValueError(f"expected a JSON object: {path}")
+    return value
+
+
+def _input_fingerprints(paths: Mapping[str, Path]) -> Dict[str, str]:
+    return {
+        name: _sha256(path)
+        for name, path in paths.items()
+        if path.exists() and path.is_file()
+    }
+
+
+def _verify_baseline(
+    fingerprints: Mapping[str, str],
+    baseline_manifest: Path | None,
+) -> None:
+    if baseline_manifest is None:
+        return
+    baseline = _load_json(baseline_manifest)
+    expected = baseline.get("input_fingerprints")
+    if not isinstance(expected, dict):
+        raise ValueError("baseline manifest has no input_fingerprints object")
+    for name, digest in expected.items():
+        actual = fingerprints.get(str(name))
+        if actual != digest:
+            raise ValueError(
+                f"baseline fingerprint mismatch for {name}: expected {digest}, got {actual}"
+            )
+
+
+def _canonical_groups(report: Mapping[str, Any]) -> Iterable[Dict[str, Any]]:
+    records = report.get("candidate_terminal_states")
+    if not isinstance(records, list):
+        records = report.get("issues_with_needs_review") or report.get("issues") or []
+    seen: set[str] = set()
+    for raw in records:
+        if not isinstance(raw, dict):
+            continue
+        cluster = str(raw.get("validation_cluster_uid") or raw.get("candidate_uid") or "")
+        if not cluster or cluster in seen:
+            continue
+        seen.add(cluster)
+        yield raw
+
+
+def _deterministic_replay(issue: Mapping[str, Any]) -> Dict[str, Any]:
+    replay = copy.deepcopy(dict(issue))
+    old = str(
+        replay.get("terminal_disposition")
+        or replay.get("candidate_disposition")
+        or "needs_review"
+    ).lower()
+    evidence = {
+        "function_context": {
+            "code": str(replay.get("code_snippet") or ""),
+        }
+    }
+    EvidenceCompletionQueue().complete_prevalidation(
+        replay,
+        validation_evidence=evidence,
+    )
+    confirmation = deterministic_decision_proof(replay, outcome="confirm")
+    rejection = deterministic_decision_proof(replay, outcome="reject")
+    if confirmation is not None and rejection is not None:
+        new = "needs_review"
+        reason = "evidence_conflict"
+    elif confirmation is not None:
+        new = "confirmed"
+        reason = confirmation.proof_kind
+    elif rejection is not None:
+        new = "rejected_with_proof"
+        reason = rejection.proof_kind
+    else:
+        new = old
+        reason = "no_new_complete_proof"
+    return {
+        "candidate_uid": replay.get("candidate_uid"),
+        "validation_cluster_uid": replay.get("validation_cluster_uid"),
+        "old_disposition": old,
+        "new_disposition": new,
+        "transitioned": old != new,
+        "reason": reason,
+        "proof": (
+            confirmation.to_dict()
+            if confirmation is not None and rejection is None
+            else rejection.to_dict()
+            if rejection is not None and confirmation is None
+            else None
+        ),
+    }
+
+
+def replay_report(
+    report: Mapping[str, Any],
+    *,
+    source_revision: str = "",
+) -> Dict[str, Any]:
+    manifest = report.get("run_manifest") if isinstance(report.get("run_manifest"), dict) else {}
+    recorded_revision = str(manifest.get("source_revision") or report.get("metadata", {}).get("commit_sha") or "")
+    if source_revision and recorded_revision and source_revision != recorded_revision:
+        raise ValueError(
+            f"source revision mismatch: report={recorded_revision}, requested={source_revision}"
+        )
+    transitions = [_deterministic_replay(item) for item in _canonical_groups(report)]
+    changed = [item for item in transitions if item["transitioned"]]
+    return {
+        "schema_version": "zscope.candidate-replay.v1",
+        "source_revision": recorded_revision,
+        "canonical_group_count": len(transitions),
+        "transition_count": len(changed),
+        "transitions": transitions,
+        "changed_transitions": changed,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--report", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--truth", type=Path)
+    parser.add_argument("--scorer", type=Path)
+    parser.add_argument("--log", type=Path)
+    parser.add_argument("--baseline-manifest", type=Path)
+    parser.add_argument("--source-revision", default="")
+    parser.add_argument(
+        "--shadow",
+        action="store_true",
+        help="Record an immutable comparison only; the input report is never modified in either mode.",
+    )
+    args = parser.parse_args()
+
+    if not args.report.is_file():
+        raise SystemExit(f"report does not exist: {args.report}")
+    input_paths = {"report": args.report}
+    for name in ("config", "truth", "scorer", "log"):
+        value = getattr(args, name)
+        if value is not None:
+            if not value.is_file():
+                raise SystemExit(f"{name} does not exist: {value}")
+            input_paths[name] = value
+    fingerprints = _input_fingerprints(input_paths)
+    try:
+        _verify_baseline(fingerprints, args.baseline_manifest)
+        result = replay_report(_load_json(args.report), source_revision=args.source_revision)
+    except ValueError as exc:
+        raise SystemExit(f"replay refused: {exc}") from exc
+    result["input_fingerprints"] = fingerprints
+    result["shadow"] = bool(args.shadow)
+    result["input_report_unchanged"] = _sha256(args.report) == fingerprints["report"]
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

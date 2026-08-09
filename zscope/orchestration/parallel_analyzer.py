@@ -20,6 +20,8 @@ from ..config.config import ZScopeConfig, minimum_optional_positive_seconds
 from ..config.function_entry import FunctionEntry
 from ..config.user_config_store import UserConfigStore
 from ..core.candidates.evidence import SemanticOverlayCompiler
+from ..core.candidates.decision_facts import DecisionFactGraphCache
+from ..core.candidates.clang_ast_cfg import ClangAstCfgCandidateGenerator
 from ..core.analysis.analyzer import Analyzer
 from ..core.validation.runner import ValidationResultCache
 from ..framework.llm_client import LLMClient
@@ -133,6 +135,7 @@ class ParallelAnalyzer:
         self._validation_result_cache = ValidationResultCache(
             max_entries=getattr(config.analysis, "validation_cache_entries", 4096)
         )
+        self._decision_fact_cache = DecisionFactGraphCache()
         self._candidate_ledger = CandidateLedger(
             project_id=str(
                 getattr(config.project, "project_id", "")
@@ -174,6 +177,7 @@ class ParallelAnalyzer:
         self._global_modeling_succeeded = False
         self._global_validation_state: Dict[str, Any] = {}
         self._global_validation_duration_seconds = 0.0
+        self._project_fact_pass_state: Dict[str, Any] = {}
         self._semantic_dedup_llm_cache: Dict[str, Dict[str, Any]] = {}
         self.deferred_entry_candidates: List[Dict[str, Any]] = []
         self.run_id = uuid.uuid4().hex
@@ -227,8 +231,10 @@ class ParallelAnalyzer:
                 self.base_config.project.project_root
             ),
         )
+        self._decision_fact_cache = DecisionFactGraphCache()
         self._global_validation_state = {}
         self._global_validation_duration_seconds = 0.0
+        self._project_fact_pass_state = {}
         self._cancellation_token.raise_if_cancelled()
         scheduler = ScanScheduler(
             entry_workers=self.max_workers,
@@ -258,6 +264,14 @@ class ParallelAnalyzer:
                         raise RuntimeError(
                             "Global semantic modeling did not complete; entry analysis was not started."
                         )
+                if bool(
+                    getattr(
+                        self.base_config.analysis,
+                        "project_deterministic_fact_pass_v1",
+                        False,
+                    )
+                ):
+                    self._run_project_deterministic_fact_pass(entries)
         except Exception:
             scheduler.shutdown(wait=True, cancel_futures=True)
             self._scheduler = None
@@ -488,12 +502,27 @@ class ParallelAnalyzer:
             cancellation_token=self._cancellation_token,
             scheduler=self._scheduler,
             candidate_ir_persistence_lock=self._candidate_ir_persistence_lock,
+            decision_fact_cache=self._decision_fact_cache,
             write_root_reports=False,
             defer_validation_to_scan=False,
         )
+        ledger_records = list(self._candidate_ledger.records())
         raw_occurrence_count = sum(
             len(record.occurrence_uids)
-            for record in self._candidate_ledger.records()
+            for record in ledger_records
+        )
+        eligible_records = [
+            record
+            for record in ledger_records
+            if str(record.decision_context_version or "").endswith(("v3.1", "v3.2"))
+            and record.record_role == "validation_obligation"
+        ]
+        eligible_occurrence_count = sum(
+            len(record.occurrence_uids) for record in eligible_records
+        )
+        eligible_duplicate_request_count = sum(
+            max(0, len(record.occurrence_uids) - 1)
+            for record in eligible_records
         )
         state: Dict[str, Any] = {
             "entry_func": "__batch__",
@@ -506,6 +535,14 @@ class ParallelAnalyzer:
             "notes": [],
             "candidate_ledger": self._candidate_ledger,
             "scan_level_raw_occurrence_count": raw_occurrence_count,
+            "eligible_alias_occurrence_count": eligible_occurrence_count,
+            "eligible_validation_group_count": len(eligible_records),
+            # Only already-proven structural aliases participate in this
+            # denominator.  The ledger creates one record for a shared future,
+            # so every alias here avoided a second Validator invocation.
+            "eligible_duplicate_request_count": eligible_duplicate_request_count,
+            "coalesced_duplicate_request_count": eligible_duplicate_request_count,
+            "cluster_fragmentation_by_reason": {},
         }
         started = time.monotonic()
         logger.info(
@@ -575,6 +612,7 @@ class ParallelAnalyzer:
                 validation_result_cache=self._validation_result_cache,
                 cancellation_token=self._cancellation_token,
                 scheduler=self._scheduler,
+                decision_fact_cache=self._decision_fact_cache,
                 write_root_reports=False,
             )
             modeler = GlobalModeler.from_analyzer_helpers(
@@ -622,6 +660,215 @@ class ParallelAnalyzer:
             self._last_global_model_stats = {"error": str(exc)}
             logger.exception("[global-model] failed before entry fan-out.")
             return False
+
+    def _run_project_deterministic_fact_pass(
+        self,
+        entries: List[FunctionEntry],
+    ) -> None:
+        """Collect local deterministic facts once for the union of entry reachability.
+
+        The ordinary entry workers still own caller-specific context and report
+        projection.  This pass owns only cheap function-local collection: it
+        traverses the complete reachable union without an LLM skill filter or
+        a per-entry depth quota, then registers each result against the entry
+        path that reached it.  Ledger identity coalesces those paths before a
+        Validator can run.
+        """
+
+        started = time.monotonic()
+        state: Dict[str, Any] = {
+            "enabled": True,
+            "status": "complete",
+            "reachable_functions": 0,
+            "analyzed_functions": 0,
+            "candidate_count": 0,
+            "unresolved_internal_functions": 0,
+            "failures": [],
+        }
+        generator = ClangAstCfgCandidateGenerator(
+            self._get_shared_local_pattern_semantics(),
+            semantic_overlay=self._get_shared_semantic_overlay(),
+            tooling_evidence_provider=None,
+        )
+        helper = Analyzer(
+            self.base_config,
+            code_index=self.code_index,
+            snapshot_store=self.snapshot_store,
+            user_config=self.user_config,
+            force_ignore_history=self.force_ignore_history,
+            maintain_mode=self.maintain_mode,
+            candidate_ledger=self._candidate_ledger,
+            shared_local_pattern_semantics=self._get_shared_local_pattern_semantics(),
+            shared_semantic_overlay=self._get_shared_semantic_overlay(),
+            llm_clients=self._shared_llm_clients,
+            validation_result_cache=self._validation_result_cache,
+            cancellation_token=self._cancellation_token,
+            scheduler=self._scheduler,
+            decision_fact_cache=self._decision_fact_cache,
+            write_root_reports=False,
+            defer_validation_to_scan=True,
+        )
+
+        # Keep one call path per (entry, function) to avoid exponential path
+        # expansion in recursive dispatcher graphs.  The fact collection is
+        # function-scoped; all extra paths remain discoverable through normal
+        # entry analysis and will attach as aliases to the same obligation.
+        pending: List[tuple[str, str, str, List[str]]] = []
+        for entry in entries:
+            identity = entry.identity_key(self.base_config.project.project_root)
+            pending.append(
+                (
+                    entry.function_name,
+                    str(entry.file_path or ""),
+                    identity,
+                    [entry.function_name],
+                )
+            )
+        seen_routes: Set[tuple[str, str, str]] = set()
+        implementations: Dict[str, Dict[str, Any]] = {}
+        routes: Dict[str, List[tuple[str, List[str]]]] = {}
+
+        while pending:
+            self._cancellation_token.raise_if_cancelled()
+            function, file_hint, entry_identity, call_path = pending.pop(0)
+            route_key = (entry_identity, function, file_hint)
+            if route_key in seen_routes:
+                continue
+            seen_routes.add(route_key)
+            try:
+                impl = self.code_index.get_function_impl(
+                    function,
+                    max_lines=None,
+                    warn_missing=False,
+                    file_path=file_hint,
+                )
+            except Exception as exc:
+                state["failures"].append(
+                    {
+                        "function": function,
+                        "entry_identity": entry_identity,
+                        "reason": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                continue
+            if not impl:
+                # Calls into a system library or unresolved indirect callback
+                # are retained as coverage telemetry, not fabricated failures.
+                state["unresolved_internal_functions"] += 1
+                continue
+            index_name = str(
+                impl.get("index_name")
+                or impl.get("qualified_name")
+                or f"{impl.get('file') or file_hint}::{function}"
+            )
+            implementations.setdefault(index_name, impl)
+            route_list = routes.setdefault(index_name, [])
+            if (entry_identity, call_path) not in route_list:
+                route_list.append((entry_identity, call_path))
+            try:
+                callees = self.code_index.get_callees(function, limit=1_000_000)
+            except Exception as exc:
+                state["failures"].append(
+                    {
+                        "function": function,
+                        "entry_identity": entry_identity,
+                        "reason": f"callee_query:{type(exc).__name__}: {exc}",
+                    }
+                )
+                continue
+            for callee in callees:
+                if not isinstance(callee, dict):
+                    continue
+                callee_name = str(
+                    callee.get("name")
+                    or callee.get("function")
+                    or callee.get("callee")
+                    or ""
+                ).strip()
+                if not callee_name or callee_name in call_path:
+                    continue
+                pending.append(
+                    (
+                        callee_name,
+                        str(callee.get("file") or callee.get("file_path") or ""),
+                        entry_identity,
+                        [*call_path, callee_name],
+                    )
+                )
+
+        state["reachable_functions"] = len(implementations)
+        for index_name, impl in sorted(implementations.items()):
+            self._cancellation_token.raise_if_cancelled()
+            # CodeIndex exposes this as ``func_name``.  Accept legacy test/
+            # backend aliases as compatibility fallbacks, but never mark a
+            # complete implementation failed merely because its display key
+            # differs from the index record schema.
+            function = str(
+                impl.get("func_name")
+                or impl.get("qualified_name")
+                or impl.get("name")
+                or impl.get("function")
+                or ""
+            )
+            if not function:
+                # CodeIndex index names include source coordinates, but an
+                # empty source function is not analysable evidence.
+                state["failures"].append(
+                    {"function": index_name, "reason": "implementation_missing_function_name"}
+                )
+                continue
+            try:
+                findings = generator.generate_issues(
+                    function,
+                    str(impl.get("code") or ""),
+                    str(impl.get("file") or ""),
+                    # No ``allowed_skills``: deterministic fact collection is
+                    # never a lossy task-router filter.
+                    allowed_skills=None,
+                )
+            except Exception as exc:
+                state["failures"].append(
+                    {
+                        "function": function,
+                        "reason": f"candidate_generation:{type(exc).__name__}: {exc}",
+                    }
+                )
+                continue
+            state["analyzed_functions"] += 1
+            for entry_identity, call_path in routes.get(index_name, []):
+                emitted = []
+                for finding in findings:
+                    issue = deepcopy(finding)
+                    issue["entry_identity"] = entry_identity
+                    issue["call_path"] = list(call_path)
+                    issue["internal_sink_lifted"] = len(call_path) > 1
+                    issue["project_fact_pass_v1"] = True
+                    emitted.append(issue)
+                if emitted:
+                    helper._register_candidate_issues(
+                        {
+                            "candidate_ledger": self._candidate_ledger,
+                            "entry_identity": entry_identity,
+                            "run_id": self.run_id,
+                        },
+                        emitted,
+                        source="project_deterministic_fact_pass",
+                    )
+                    state["candidate_count"] += len(emitted)
+
+        if state["failures"]:
+            state["status"] = "failed"
+        state["duration_seconds"] = round(time.monotonic() - started, 4)
+        self._project_fact_pass_state = state
+        logger.info(
+            "[project-facts] end reachable=%d analyzed=%d candidates=%d unresolved=%d failures=%d duration=%.2fs",
+            state["reachable_functions"],
+            state["analyzed_functions"],
+            state["candidate_count"],
+            state["unresolved_internal_functions"],
+            len(state["failures"]),
+            state["duration_seconds"],
+        )
 
     @staticmethod
     def _build_shared_llm_clients(config: ZScopeConfig) -> Dict[str, LLMClient]:
@@ -925,8 +1172,9 @@ class ParallelAnalyzer:
                  validation_result_cache=self._validation_result_cache,
                  cancellation_token=entry_token,
                  scheduler=self._scheduler,
-                 candidate_ir_persistence_lock=self._candidate_ir_persistence_lock,
-                 write_root_reports=False,
+                candidate_ir_persistence_lock=self._candidate_ir_persistence_lock,
+                decision_fact_cache=self._decision_fact_cache,
+                write_root_reports=False,
                  defer_validation_to_scan=self._uses_scan_validation_queue(),
             )
             logger.info(
@@ -1526,6 +1774,21 @@ class ParallelAnalyzer:
             )
             for entry_key, result in results.items()
         }
+        project_fact_state = dict(
+            getattr(self, "_project_fact_pass_state", {}) or {}
+        )
+        if project_fact_state:
+            engine_capabilities["__project_deterministic_fact_pass__"] = {
+                "project_deterministic_fact_pass": {
+                    "status": str(project_fact_state.get("status") or "complete"),
+                    "active": bool(project_fact_state.get("enabled", False)),
+                    "candidate_count": int(project_fact_state.get("candidate_count", 0) or 0),
+                    "reachable_functions": int(project_fact_state.get("reachable_functions", 0) or 0),
+                    "analyzed_functions": int(project_fact_state.get("analyzed_functions", 0) or 0),
+                    "unresolved_internal_functions": int(project_fact_state.get("unresolved_internal_functions", 0) or 0),
+                    "failures": list(project_fact_state.get("failures") or []),
+                }
+            }
         error_result_count = sum(
             1
             for result in results.values()
@@ -1582,6 +1845,7 @@ class ParallelAnalyzer:
                         global_validation_state.get("scan_level_raw_occurrence_count", 0) or 0
                     ),
                 },
+                "project_deterministic_fact_pass": project_fact_state,
                 "va_candidate_coverage": va_candidate_coverage_summary,
                 "entry_budget": entry_budget_summary,
                 "llm_iteration_budget": llm_iteration_budget_summary,
@@ -1640,6 +1904,7 @@ class ParallelAnalyzer:
                         global_validation_state.get("scan_level_raw_occurrence_count", 0) or 0
                     ),
                 },
+                "project_deterministic_fact_pass": project_fact_state,
                 "va_candidate_coverage_summary": va_candidate_coverage_summary,
                 "entry_budget": entry_budget_summary,
                 "llm_iteration_budget": llm_iteration_budget_summary,
@@ -1728,6 +1993,11 @@ class ParallelAnalyzer:
             "validation_group_count",
             "validation_group_merged_count",
             "prevalidation_decision_count",
+            "deterministic_prevalidation_decision_count",
+            "deterministic_prevalidation_confirmed_count",
+            "deterministic_prevalidation_rejected_count",
+            "deterministic_prevalidation_conflict_count",
+            "validator_avoided_count",
             "clang_prevalidation_decision_count",
             "static_audit_observation_count",
             "static_suppressed_count",
@@ -1754,6 +2024,47 @@ class ParallelAnalyzer:
             summary["validation_group_merged_count"] += grouped_aliases
         summary["scan_level_raw_occurrence_count"] = raw_occurrences
         summary["scan_level_grouped_alias_count"] = grouped_aliases
+        # The eligibility denominator intentionally includes only occurrences
+        # already assigned to a canonical validation cluster.  Legacy records
+        # without a structural identity remain visible but cannot be counted as
+        # safely coalescible work.
+        eligible_occurrences = int(
+            global_state.get("eligible_alias_occurrence_count", raw_occurrences)
+            or 0
+        )
+        eligible_groups = int(
+            global_state.get("eligible_validation_group_count", scan_groups)
+            or 0
+        )
+        eligible_aliases = max(0, eligible_occurrences - eligible_groups)
+        summary["eligible_alias_occurrence_count"] = eligible_occurrences
+        summary["eligible_validation_group_count"] = eligible_groups
+        summary["eligible_coalescing_rate"] = (
+            round(eligible_aliases / eligible_occurrences, 4)
+            if eligible_occurrences
+            else 1.0
+        )
+        summary["all_occurrence_reduction_rate"] = (
+            round(grouped_aliases / raw_occurrences, 4)
+            if raw_occurrences
+            else 1.0
+        )
+        eligible_duplicate_requests = int(
+            global_state.get("eligible_duplicate_request_count", 0) or 0
+        )
+        coalesced_duplicate_requests = int(
+            global_state.get("coalesced_duplicate_request_count", 0) or 0
+        )
+        summary["eligible_duplicate_request_count"] = eligible_duplicate_requests
+        summary["coalesced_duplicate_request_count"] = coalesced_duplicate_requests
+        summary["coalescing_hit_rate"] = (
+            round(coalesced_duplicate_requests / eligible_duplicate_requests, 4)
+            if eligible_duplicate_requests
+            else 1.0
+        )
+        summary["cluster_fragmentation_by_reason"] = dict(
+            global_state.get("cluster_fragmentation_by_reason") or {}
+        )
         summary["structural_coalescing_rate"] = (
             round(grouped_aliases / raw_occurrences, 4)
             if raw_occurrences

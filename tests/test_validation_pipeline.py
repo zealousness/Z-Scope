@@ -109,6 +109,74 @@ def test_validation_pipeline_reports_high_score_verified_issue() -> None:
     assert issue["sink"] == "free"
 
 
+def test_validation_pipeline_promotes_v31_verified_fact_slice_with_neutral_contract() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_V31_TIER",
+        "decision_context_version": "zscope.decision-context.v3.1",
+        "decision_fact_coverage": "partial",
+        "decision_fact_slice": {
+            "fact_uids": ["FACT_source", "FACT_sink"],
+            "dependency_code_hashes": ["SNAP_source-v1"],
+            "coverage": "partial",
+        },
+        "canonical_source": "request.length",
+        "canonical_sink": "memcpy(dst, src, request.length)",
+    }
+    score = {
+        "final_score": 0.78,
+        "path_completeness": 1.0,
+        "contract_consistency": 0.55,
+        "validation_confidence": 0.85,
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {
+            "reasoning": "source reaches sink through a feasible path",
+            "confidence_score": 0.85,
+            "blocking_negative_evidence": False,
+            "negative_evidence": ["callee implementation was not separately inspected"],
+        },
+        verdict="verified",
+        score_data=score,
+    )
+
+    assert outcome.report_bucket == "issues"
+    assert issue["candidate_disposition"] == "confirmed"
+
+
+def test_validation_pipeline_requires_explicit_nonblocking_flag_for_v31_promotion() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_V31_NO_FLAG",
+        "decision_context_version": "zscope.decision-context.v3.1",
+        "decision_fact_coverage": "partial",
+        "decision_fact_slice": {
+            "fact_uids": ["FACT_source", "FACT_sink"],
+            "dependency_code_hashes": ["SNAP_source-v1"],
+        },
+        "source_identity": "request.length",
+        "sink_identity": "memcpy",
+    }
+    score = {
+        "final_score": 0.78,
+        "path_completeness": 1.0,
+        "contract_consistency": 0.55,
+        "validation_confidence": 0.85,
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {"reasoning": "verified but response contract is old", "confidence_score": 0.85},
+        verdict="verified",
+        score_data=score,
+    )
+
+    assert outcome.report_bucket == "observations"
+    assert issue["candidate_disposition"] == "needs_review"
+
+
 def test_validation_pipeline_promotes_complete_confirmation_proof_without_llm_verdict() -> None:
     pipeline = ValidationPipeline(FakeUserConfig())
     issue = {
@@ -136,6 +204,32 @@ def test_validation_pipeline_promotes_complete_confirmation_proof_without_llm_ve
     assert outcome.report_bucket == "issues"
     assert issue["candidate_disposition"] == "confirmed"
     assert issue["proof_provider"] == "clang_ast_cfg_obligation_prover"
+
+
+def test_validation_pipeline_closes_complete_proof_before_validator() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_PREVALIDATION_PROOF",
+        "deterministic_proofs": [
+            {
+                "outcome": "confirm",
+                "proof_kind": "deterministic_cfg_obligation_path",
+                "producer_engine": "clang_ast_cfg_obligation_prover",
+                "fact_ids": ["cfg:10:header_length", "cfg:14:header_length_copy"],
+                "code_hash": "body-v1",
+                "facts": ["source_to_sink_complete", "event_path_complete"],
+                "completeness": "complete",
+            }
+        ],
+    }
+
+    outcome = pipeline.apply_deterministic_prevalidation(issue, _score(0.2))
+
+    assert outcome is not None
+    assert outcome.report_bucket == "issues"
+    assert issue["candidate_disposition"] == "confirmed"
+    assert issue["validator_avoided"] is True
+    assert issue["promotion_reason"] == "deterministic_prevalidation_proof"
 
 
 def test_validation_pipeline_keeps_conflicting_complete_proofs_reviewable() -> None:

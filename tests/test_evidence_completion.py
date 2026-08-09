@@ -157,6 +157,31 @@ def test_evidence_completion_confirms_complete_cfg_obligation_path() -> None:
     assert proof["proof_kind"] == "deterministic_cfg_obligation_path"
 
 
+def test_evidence_completion_prevalidation_promotes_complete_cfg_proof() -> None:
+    queue = EvidenceCompletionQueue()
+    issue = {
+        "impact_level": "high",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {"kind": "header_length", "line": 10},
+                    {"kind": "header_length_copy", "line": 14},
+                ]
+            },
+        },
+    }
+
+    completed = queue.complete_prevalidation(
+        issue,
+        validation_evidence={"function_context": {"code": "uint32_t len;\nmemcpy(dst, src, len);"}},
+    )
+
+    assert completed is True
+    assert issue["evidence_completion_terminal_status"] == "completed_with_proof"
+    assert issue["deterministic_proofs"][0]["proof_kind"] == "deterministic_cfg_obligation_path"
+
+
 def test_evidence_completion_uses_structured_ast_null_guard_without_source_text() -> None:
     queue = EvidenceCompletionQueue()
     issue = {
@@ -358,3 +383,203 @@ def test_evidence_completion_proofs_route_all_structured_transfer_and_graph_cont
     }
     queue.complete(graph_issue, validator_data={"verdict": "verified"})
     assert deterministic_decision_proof(graph_issue, outcome="confirm") is not None
+
+
+def test_evidence_completion_rejects_matched_unlock_on_complete_local_path() -> None:
+    queue = EvidenceCompletionQueue()
+    issue = {
+        "impact_level": "high",
+        "rule": "clang_cfg_unlock_without_matching_lock",
+        "evidence_pack": {"path": {"complete_in_function": True}},
+    }
+    evidence = {
+        "function_context": {
+            "code": """
+void tick(void) {
+    LOCK(&state.lock);
+    update();
+    UNLOCK(&state.lock);
+}
+"""
+        }
+    }
+
+    queue.complete(issue, validator_data={"verdict": "rejected"}, validation_evidence=evidence)
+
+    proof = deterministic_decision_proof(issue, outcome="reject")
+    assert proof is not None
+    assert proof.proof_kind == "matching_lock_dominates_unlock"
+
+
+def test_evidence_completion_confirms_failure_return_while_lock_is_held() -> None:
+    queue = EvidenceCompletionQueue()
+    issue = {
+        "impact_level": "critical",
+        "rule": "clang_cfg_return_with_lock_held",
+        "evidence_pack": {"path": {"complete_in_function": True}},
+    }
+    evidence = {
+        "function_context": {
+            "code": """
+int link(void) {
+    LOCK(&state.lock);
+    void *node = allocate();
+    if (!node) {
+        return -1;
+    }
+    UNLOCK(&state.lock);
+    return 0;
+}
+"""
+        }
+    }
+
+    queue.complete(issue, validator_data={"verdict": "verified"}, validation_evidence=evidence)
+
+    proof = deterministic_decision_proof(issue, outcome="confirm")
+    assert proof is not None
+    assert proof.proof_kind == "lock_held_on_failure_return"
+
+
+def test_evidence_completion_rejects_parent_cleanup_when_member_acquisition_failed() -> None:
+    queue = EvidenceCompletionQueue()
+    issue = {
+        "impact_level": "high",
+        "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+        "source": "proc->name = duplicate(input);",
+        "sink": "SAFE_FREE(proc);",
+        "evidence_pack": {"path": {"complete_in_function": True}},
+    }
+    evidence = {
+        "function_context": {
+            "code": """
+int attach(void) {
+    proc->name = duplicate(input);
+    if (!proc->name) {
+        SAFE_FREE(proc);
+        return -1;
+    }
+    return 0;
+}
+"""
+        }
+    }
+
+    queue.complete(issue, validator_data={"verdict": "rejected"}, validation_evidence=evidence)
+
+    proof = deterministic_decision_proof(issue, outcome="reject")
+    assert proof is not None
+    assert proof.proof_kind == "failed_member_acquisition_cleanup"
+
+
+def test_evidence_completion_confirms_detached_stack_thread_argument() -> None:
+    queue = EvidenceCompletionQueue()
+    issue = {
+        "impact_level": "high",
+        "category": "stack_escape",
+        "rule": "clang_cfg_stack_address_passed_to_thread",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {"kind": "stack_object", "line": 2, "variable": "job"},
+                    {"kind": "thread_arg_escape", "line": 3, "variable": "job"},
+                ]
+            },
+        },
+    }
+    evidence = {
+        "function_context": {
+            "code": """
+void start(void) {
+    Job job;
+    pthread_create(&tid, NULL, worker, &job);
+    pthread_detach(tid);
+}
+"""
+        }
+    }
+
+    queue.complete(issue, validator_data={"verdict": "verified"}, validation_evidence=evidence)
+
+    proof = deterministic_decision_proof(issue, outcome="confirm")
+    assert proof is not None
+    assert proof.proof_kind == "async_stack_address_escape"
+
+
+def test_evidence_completion_confirms_field_sensitive_incomplete_cleanup() -> None:
+    queue = EvidenceCompletionQueue()
+    issue = {
+        "impact_level": "high",
+        "category": "incomplete_cleanup",
+        "evidence_pack": {"path": {"complete_in_function": True}},
+    }
+    evidence = {
+        "function_context": {
+            "code": """
+void reset(Cache *cache) {
+    cache->primary = duplicate(name);
+    cache->scratch = duplicate(name);
+    SAFE_FREE(cache->primary);
+}
+"""
+        }
+    }
+
+    queue.complete(issue, validator_data={"verdict": "verified"}, validation_evidence=evidence)
+
+    proof = deterministic_decision_proof(issue, outcome="confirm")
+    assert proof is not None
+    assert proof.proof_kind == "incomplete_owner_cleanup"
+
+
+def test_evidence_completion_does_not_reject_when_validator_reports_blocking_counterfact() -> None:
+    queue = EvidenceCompletionQueue()
+    issue = {
+        "impact_level": "high",
+        "rule": "clang_cfg_unlock_without_matching_lock",
+        "blocking_negative_evidence": True,
+        "evidence_pack": {"path": {"complete_in_function": True}},
+    }
+    evidence = {"function_context": {"code": "LOCK(&lock);\nUNLOCK(&lock);"}}
+
+    queue.complete(issue, validator_data={"verdict": "rejected"}, validation_evidence=evidence)
+
+    assert issue["evidence_completion_status"] == "exhausted"
+    assert deterministic_decision_proof(issue, outcome="reject") is None
+
+
+def test_evidence_completion_confirms_owned_member_left_live_when_parent_freed() -> None:
+    queue = EvidenceCompletionQueue()
+    issue = {
+        "impact_level": "high",
+        "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {"events": [{"kind": "owned_member_leak", "line": 8, "variable": "node->children"}]},
+        },
+    }
+    evidence = {"function_context": {"code": "node->children = service_alloc_child();\nSAFE_FREE(node);"}}
+
+    queue.complete(issue, validator_data={"verdict": "uncertain"}, validation_evidence=evidence)
+
+    proof = deterministic_decision_proof(issue, outcome="confirm")
+    assert proof is not None
+    assert proof.proof_kind == "owned_member_left_live_when_parent_released"
+
+
+def test_evidence_completion_keeps_parent_release_as_review_without_member_acquisition() -> None:
+    queue = EvidenceCompletionQueue()
+    issue = {
+        "impact_level": "high",
+        "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {"events": [{"kind": "owned_member_leak", "line": 7, "variable": "node->children"}]},
+        },
+    }
+    evidence = {"function_context": {"code": "SAFE_FREE(node);"}}
+
+    queue.complete(issue, validator_data={"verdict": "uncertain"}, validation_evidence=evidence)
+
+    assert deterministic_decision_proof(issue, outcome="confirm") is None

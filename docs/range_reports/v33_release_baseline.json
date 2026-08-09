@@ -1,0 +1,42 @@
+{
+  "schema_version": "zscope.release-baseline.v1",
+  "release_candidate": "v3.3",
+  "baseline_run_id": "v32_deterministic_closure_glm51_20260808_r2",
+  "source_head": "d57baa0",
+  "worktree_patch_hash": "f2fdf640d1e067ba9666c294d89c1cbc6f0946af",
+  "baseline_tests": {
+    "command": ".venv/Scripts/python.exe -m pytest -q",
+    "passed": 1067,
+    "duration_seconds": 146.32
+  },
+  "input_fingerprints": {
+    "report": "81de44a198fdd2590e48becb11ce542b829dac2448f5fc9715f8911ab285a896",
+    "config": "6b6bdcb8298388351165aaf68bf4ead066cc968405e87aef24586ee545dcea9b",
+    "truth": "5d14c94a4baebf65f161762f6bf124563197f2ba97175b5106975c1275050ec5",
+    "scorer": "c069e5edaf8396d385b688eb506dfc19a1013c01c52d81f6fd103d35af0ebe9c",
+    "log": "00c27128427f242d05d6cbccba767d9f8dd24f5b36a1d57e867a559a4f937933"
+  },
+  "evaluation_fingerprints": {
+    "default": "0c0df57b444ac4dd06f99814570d5b177ba0dce44dcca5eab11348bb4f5afc55",
+    "with_needs_review": "c58c967811f658739e6386ca90fa20af67038b357f039e4ddd8b8f9fb9ba08ad"
+  },
+  "metrics": {
+    "confirmed_tp": 78,
+    "confirmed_raw_fp": 3,
+    "confirmed_raw_precision": 0.962963,
+    "with_review_tp": 134,
+    "with_review_raw_fp": 111,
+    "needs_review": 164,
+    "tokens": 6075901,
+    "wall_seconds": 3000.84
+  },
+  "shadow_replay": {
+    "canonical_group_count": 272,
+    "transition_count": 4,
+    "input_report_unchanged": true,
+    "confirmed_transition_candidate_uids": [
+      "CAND_50fc53b9cfecd02f44fb6b31",
+      "CAND_df441bb2a663395778f0c926"
+    ]
+  }
+}

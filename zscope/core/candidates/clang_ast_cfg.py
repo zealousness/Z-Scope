@@ -110,6 +110,7 @@ class ClangAstCfgCandidateGenerator:
         "permission": "CWE-732",
         "key_truncation": "CWE-187",
         "key_generation_race": "CWE-362",
+        "incomplete_cleanup": "CWE-401",
     }
     _SKILL_BY_CLASS = {
         "memory_leak": "resource_lifecycle",
@@ -1293,6 +1294,163 @@ class ClangAstCfgCandidateGenerator:
         self._emit_unlocked_global_state_write_candidates(issues, func_name, file_path, lines, allowed_skills)
         self._emit_permission_mode_candidate(issues, func_name, file_path, lines, allowed_skills)
         self._emit_timer_callback_lock_order_candidate(issues, func_name, file_path, lines, allowed_skills)
+        self._emit_container_unlink_lifecycle_candidate(
+            issues, func_name, file_path, lines, allowed_skills
+        )
+        self._emit_incomplete_owner_cleanup_candidate(
+            issues, func_name, file_path, lines, allowed_skills
+        )
+
+    def _emit_container_unlink_lifecycle_candidate(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+    ) -> None:
+        """Find a detached container member that loses all visible ownership.
+
+        This is deliberately based on the unlink/transfer/release protocol,
+        not on container API names.  An unlink by itself is harmless when the
+        member is returned, stored in another owner, or released locally.
+        """
+
+        for line in lines:
+            unlink = re.search(
+                r"(?P<link>[A-Za-z_]\w*(?:->|\.)[A-Za-z_]\w*)\s*=\s*"
+                r"(?P<object>[A-Za-z_]\w*)\s*->\s*(?:next|prev)\s*;",
+                line.text,
+            )
+            if not unlink:
+                continue
+            obj = unlink.group("object")
+            tail = "\n".join(item.text for item in lines[line.index + 1 :])
+            if re.search(
+                rf"\b[A-Za-z_0-9]*(?:free|release|destroy|cleanup|close)[A-Za-z_0-9]*\s*\([^;]*\b{re.escape(obj)}\b",
+                tail,
+                re.IGNORECASE,
+            ):
+                continue
+            if re.search(
+                rf"\breturn\s+{re.escape(obj)}\s*;|"
+                rf"\b[A-Za-z_]\w*(?:->|\.)[A-Za-z_]\w*\s*=\s*{re.escape(obj)}\s*;",
+                tail,
+            ):
+                continue
+            self._emit(
+                issues,
+                func_name,
+                file_path,
+                lines,
+                allowed_skills,
+                defect_class="memory_leak",
+                rule="clang_cfg_container_unlink_without_release",
+                line=line,
+                description=(
+                    f"Container member `{obj}` is unlinked without a visible release or ownership transfer."
+                ),
+                root_cause=(
+                    "The object becomes unreachable from its container and no subsequent local operation "
+                    "establishes a new owner or releases it."
+                ),
+                suggested_fix="Release the detached object or transfer it to an explicit owner before returning.",
+                source=f"{obj} ownership before line {line.number}",
+                sink=line.text,
+                confidence=0.86,
+                impact_level="high",
+                positive=[
+                    f"line {line.number}: container link is reassigned around `{obj}`",
+                    "no local release or ownership transfer follows the unlink",
+                ],
+                negative=["Validator must confirm no callee retains ownership of the detached object."],
+                ast_cfg=self._ast_cfg_pack(
+                    lines,
+                    [
+                        self._event("container_unlink", line, obj, "unlink", line.text),
+                        self._event("exit_without_release", lines[-1], obj, "", lines[-1].text),
+                    ],
+                    [line.number, lines[-1].number],
+                ),
+            )
+            return
+
+    def _emit_incomplete_owner_cleanup_candidate(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+    ) -> None:
+        """Emit only when initialized owner fields and cleanup are explicit."""
+
+        initialized: Dict[Tuple[str, str], ClangCfgLine] = {}
+        released: Dict[Tuple[str, str], ClangCfgLine] = {}
+        for line in lines:
+            assign = re.search(
+                r"(?P<owner>[A-Za-z_]\w*)\s*(?:->|\.)\s*(?P<field>[A-Za-z_]\w*)\s*=\s*"
+                r"[^;]*(?:malloc|calloc|realloc|strdup|open|create|dup(?:licate)?)\s*\(",
+                line.text,
+                re.IGNORECASE,
+            )
+            if assign:
+                initialized[(assign.group("owner"), assign.group("field"))] = line
+            release = re.search(
+                r"\b[A-Za-z_0-9]*(?:free|release|destroy|cleanup|close)[A-Za-z_0-9]*\s*\(\s*"
+                r"(?P<owner>[A-Za-z_]\w*)\s*(?:->|\.)\s*(?P<field>[A-Za-z_]\w*)",
+                line.text,
+                re.IGNORECASE,
+            )
+            if release:
+                released[(release.group("owner"), release.group("field"))] = line
+        owners = sorted({owner for owner, _field in initialized})
+        for owner in owners:
+            owned = {(candidate_owner, field) for candidate_owner, field in initialized if candidate_owner == owner}
+            cleaned = owned & set(released)
+            missing = sorted(field for candidate_owner, field in owned - cleaned if candidate_owner == owner)
+            if len(owned) < 2 or not cleaned or not missing:
+                continue
+            cleanup_line = min(
+                (released[item] for item in cleaned), key=lambda item: item.index
+            )
+            first_init = min(
+                (initialized[item] for item in owned), key=lambda item: item.index
+            )
+            self._emit(
+                issues,
+                func_name,
+                file_path,
+                lines,
+                allowed_skills,
+                defect_class="incomplete_cleanup",
+                rule="clang_cfg_incomplete_owned_member_cleanup",
+                line=cleanup_line,
+                description=(
+                    f"Owner `{owner}` initializes multiple resource fields but its visible cleanup omits "
+                    f"`{', '.join(missing)}`."
+                ),
+                root_cause="A composite owner resets only part of the resources it explicitly acquires.",
+                suggested_fix="Release or transfer every initialized owned field on the destroy/reset path.",
+                source=f"{owner} owned fields at line {first_init.number}",
+                sink=cleanup_line.text,
+                confidence=0.88,
+                impact_level="high",
+                positive=[
+                    f"line {first_init.number}: `{owner}` initializes {len(owned)} owned fields",
+                    f"line {cleanup_line.number}: cleanup releases only a strict subset of those fields",
+                ],
+                negative=["Validator must confirm omitted fields are not released by an owner destructor called on this path."],
+                ast_cfg=self._ast_cfg_pack(
+                    lines,
+                    [
+                        self._event("owner_init", first_init, owner, "", first_init.text),
+                        self._event("partial_owner_cleanup", cleanup_line, owner, "", cleanup_line.text),
+                    ],
+                    [first_init.number, cleanup_line.number],
+                ),
+            )
+            return
 
     def _track_heap_thread_argument_owner(
         self,
