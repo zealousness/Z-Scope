@@ -1,11 +1,21 @@
 import json
 import logging
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
+import pytest
+
+from zscope.common.cancellation import (
+    CancellationError,
+    CancellationToken,
+    bind_cancellation_token,
+)
 from zscope.core.validation.pipeline import ValidationPipeline
-from zscope.core.validation.runner import ValidationRunner
+from zscope.core.validation.runner import ValidationResultCache, ValidationRunner
 from zscope.framework.base import AgentResponse
+from zscope.orchestration.scheduler import ScanScheduler
 
 
 class FakeUserConfig:
@@ -59,6 +69,9 @@ def _runner(
     analysis=None,
     code_index=None,
     validator_agent_factory=None,
+    result_cache=None,
+    scheduler=None,
+    get_tools=None,
 ):
     memory = memory if memory is not None else []
     config = SimpleNamespace(
@@ -73,11 +86,13 @@ def _runner(
         validation_pipeline=ValidationPipeline(FakeUserConfig()),
         code_index=code_index or FakeCodeIndex(),
         snapshot_store=FakeSnapshotStore(),
-        get_tools=lambda agent_name: [],
+        get_tools=get_tools or (lambda agent_name: []),
         tool_policy_for_agent=lambda agent_name: None,
         attach_agent_contract=lambda context, agent_name: context.update({"agent_contract": agent_name}),
         remember_validation_result=lambda issue, status: memory.append((issue["id"], status)),
         validator_agent_factory=validator_agent_factory or (lambda *args, **kwargs: agent),
+        result_cache=result_cache,
+        scheduler=scheduler,
     )
 
 
@@ -144,6 +159,168 @@ def test_validation_runner_cache_key_rejects_weak_fingerprint_without_candidate_
     assert runner._validator_cache_key(item) == ""
 
 
+def test_validation_runner_cache_is_scoped_to_runner_instance() -> None:
+    first = _runner(None)
+    second = _runner(None)
+
+    first._validator_cache_put("same-candidate", {"verdict": "verified"})
+
+    assert first._validator_cache_get("same-candidate") == {"verdict": "verified"}
+    assert second._validator_cache_get("same-candidate") is None
+
+
+def test_zero_sized_validation_cache_is_really_disabled() -> None:
+    cache = ValidationResultCache(max_entries=0)
+
+    assert cache.max_entries == 0
+    assert not cache.enabled
+    assert cache.reserve("same-candidate")
+    assert cache.reserve("same-candidate")
+    cache.put("same-candidate", {"verdict": "verified"})
+    assert cache.get("same-candidate") is None
+
+    runner = _runner(
+        None,
+        analysis=SimpleNamespace(
+            validation_cache_entries=0,
+            validation_deadline_seconds=None,
+        ),
+    )
+    assert runner._validator_result_cache_size == 0
+    assert not runner._validator_result_cache.enabled
+    assert runner._validation_cache_wait_seconds() is None
+
+
+def test_validation_runner_cache_key_ignores_occurrence_only_entry_context() -> None:
+    runner = _runner(None)
+    base = _issue(candidate_id="CAND_STABLE", call_path=["api_entry", "sink_func"])
+    first = SimpleNamespace(
+        raw_issue=base,
+        issue_func="sink_func",
+        issue_code="void sink_func(void) { free(arg); }",
+        evidence_pack={"candidate_id": "CAND_STABLE", "path": {"complete": True}},
+    )
+    changed_code = SimpleNamespace(
+        raw_issue=dict(base),
+        issue_func="sink_func",
+        issue_code="void sink_func(void) { if (arg) free(arg); }",
+        evidence_pack=dict(first.evidence_pack),
+    )
+    changed_evidence = SimpleNamespace(
+        raw_issue=dict(base),
+        issue_func="sink_func",
+        issue_code=first.issue_code,
+        evidence_pack={"candidate_id": "CAND_STABLE", "path": {"complete": False}},
+    )
+    changed_entry = SimpleNamespace(
+        raw_issue={**base, "entry_function": "other_entry"},
+        issue_func="sink_func",
+        issue_code=first.issue_code,
+        evidence_pack=dict(first.evidence_pack),
+    )
+
+    keys = {
+        runner._validator_cache_key(first),
+        runner._validator_cache_key(changed_code),
+        runner._validator_cache_key(changed_evidence),
+        runner._validator_cache_key(changed_entry),
+    }
+
+    assert len(keys) == 3
+    assert runner._validator_cache_key(first) == runner._validator_cache_key(
+        changed_entry
+    )
+
+
+def test_validation_runner_cluster_cache_key_ignores_occurrence_payload() -> None:
+    runner = _runner(None)
+    first = SimpleNamespace(
+        raw_issue=_issue(
+            validation_cluster_uid="VAL_SHARED",
+            function="wrapper_a",
+            location="src/a.c:10",
+            source="entry_a_arg",
+            sink="shared_sink",
+        ),
+        issue_func="wrapper_a",
+        issue_code="void wrapper_a(void) { shared_sink(); }",
+        evidence_pack={"validation_cluster_uid": "VAL_SHARED"},
+    )
+    second = SimpleNamespace(
+        raw_issue=_issue(
+            validation_cluster_uid="VAL_SHARED",
+            function="wrapper_b",
+            location="src/b.c:99",
+            source="entry_b_arg",
+            sink="shared_sink",
+        ),
+        issue_func="wrapper_b",
+        issue_code="void wrapper_b(void) { shared_sink(); }",
+        evidence_pack={"validation_cluster_uid": "VAL_SHARED"},
+    )
+
+    assert runner._validator_cache_key(first) == runner._validator_cache_key(second)
+
+
+def test_validation_runner_selects_one_representative_per_validation_cluster() -> None:
+    runner = _runner(None)
+    issues = [
+        _issue(
+            id=f"ISSUE_{index}",
+            validation_cluster_uid="VAL_SHARED",
+            occurrence_uid=f"OCC_{index}",
+            provenance_hash=f"PROV_{index}",
+            evidence_hash=f"EVIDENCE_{index}",
+            evidence_completeness="complete" if index == 1 else "partial",
+        )
+        for index in range(4)
+    ]
+
+    grouped = runner._coalesce_validation_groups(issues)
+
+    assert len(grouped) == 1
+    assert grouped[0]["id"] == "ISSUE_1"
+    assert grouped[0]["grouped_candidate_count"] == 4
+    assert len(grouped[0]["occurrence_uids"]) == 4
+    assert len(grouped[0]["provenance_hashes"]) == 4
+
+
+def test_validation_runner_coalesces_identical_inflight_work_across_entry_runners() -> None:
+    cache = ValidationResultCache(max_entries=16)
+    calls = []
+    calls_lock = threading.Lock()
+
+    class SlowValidator:
+        def run(self, _input_data):
+            with calls_lock:
+                calls.append(threading.current_thread().name)
+            time.sleep(0.05)
+            return AgentResponse(
+                success=True,
+                data={
+                    "verdict": "verified",
+                    "reasoning": "same immutable evidence",
+                    "confidence_score": 1.0,
+                },
+            )
+
+    first = _runner(SlowValidator(), result_cache=cache)
+    second = _runner(SlowValidator(), result_cache=cache)
+    first_state = _state(_issue(candidate_id="CAND_SHARED"))
+    second_state = _state(_issue(candidate_id="CAND_SHARED"))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(lambda pair: pair[0].run(pair[1]), [(first, first_state), (second, second_state)]))
+
+    assert len(calls) == 1
+    assert len(first_state["issues"]) == 1
+    assert len(second_state["issues"]) == 1
+    cache_hits = int(first_state.get("validator_cache_hit", 0)) + int(
+        second_state.get("validator_cache_hit", 0)
+    )
+    assert cache_hits == 1
+
+
 def test_validation_runner_validates_issue_and_remembers_outcome() -> None:
     memory = []
     agent = FakeValidatorAgent(
@@ -170,6 +347,54 @@ def test_validation_runner_validates_issue_and_remembers_outcome() -> None:
     assert state["issues"][0]["validator_verdict"] == "verified"
     assert memory == [("ISSUE_1", "validated")]
     assert agent.inputs[0]["agent_contract"] == "validator_agent"
+
+
+def test_validation_runner_skips_validator_for_prevalidation_proof() -> None:
+    agent = FakeValidatorAgent([])
+    runner = _runner(
+        agent,
+        analysis=SimpleNamespace(deterministic_prevalidation_v2=True),
+    )
+    issue = _issue(
+        deterministic_proofs=[
+            {
+                "outcome": "confirm",
+                "proof_kind": "deterministic_cfg_obligation_path",
+                "producer_engine": "clang_ast_cfg_obligation_prover",
+                "fact_ids": ["cfg:10", "cfg:14"],
+                "code_hash": "body-v1",
+                "facts": ["source_to_sink_complete", "event_path_complete"],
+                "completeness": "complete",
+            }
+        ]
+    )
+    state = _state(issue)
+
+    runner.run(state)
+
+    assert agent.inputs == []
+    assert state["issues"] == [issue]
+    assert state["validator_avoided_count"] == 1
+    assert state["deterministic_prevalidation_confirmed_count"] == 1
+
+
+def test_validator_evidence_slice_v2_disables_open_ended_tools() -> None:
+    captured = {}
+
+    def factory(client, tools, **kwargs):
+        captured["tools"] = tools
+        return FakeValidatorAgent([])
+
+    runner = _runner(
+        FakeValidatorAgent([]),
+        analysis=SimpleNamespace(validator_evidence_slice_v2=True),
+        validator_agent_factory=factory,
+        get_tools=lambda _agent_name: ["broad_code_browser"],
+    )
+
+    runner._build_validator_agent()
+
+    assert captured["tools"] == []
 
 
 def test_validation_runner_logs_needs_review_without_validated_label(caplog) -> None:
@@ -232,7 +457,7 @@ def test_validation_runner_compacts_large_validator_payloads() -> None:
     ]
 
 
-def test_validation_runner_discards_entry_root_dead_code_rejection_after_retry() -> None:
+def test_validation_runner_keeps_entry_root_rejection_without_proof_for_review() -> None:
     memory = []
     agent = FakeValidatorAgent(
         [
@@ -253,11 +478,12 @@ def test_validation_runner_discards_entry_root_dead_code_rejection_after_retry()
     assert len(agent.inputs) == 2
     assert agent.inputs[1]["evidence_pack"]["mode"] == "tri_state_exploitability_validation_entry_root_retry"
     assert state["issues"] == []
-    assert state["observations"] == []
-    assert memory == [("ISSUE_2", "rejected")]
+    assert len(state["observations"]) == 1
+    assert state["observations"][0]["validation_status"] == "needs_review"
+    assert memory == [("ISSUE_2", "needs_review")]
 
 
-def test_validation_runner_discards_contract_scope_rejection() -> None:
+def test_validation_runner_keeps_contract_scope_rejection_without_proof_for_review() -> None:
     memory = []
     agent = FakeValidatorAgent(
         [
@@ -281,11 +507,12 @@ def test_validation_runner_discards_contract_scope_rejection() -> None:
     _runner(agent, memory=memory).run(state)
 
     assert state["issues"] == []
-    assert state["observations"] == []
-    assert memory == [("ISSUE_3", "rejected")]
+    assert len(state["observations"]) == 1
+    assert state["observations"][0]["validation_status"] == "needs_review"
+    assert memory == [("ISSUE_3", "needs_review")]
 
 
-def test_validation_runner_keeps_structured_reachable_caller_control_rejection() -> None:
+def test_validation_runner_keeps_structured_reachable_rejection_for_review() -> None:
     memory = []
     agent = FakeValidatorAgent(
         [
@@ -316,8 +543,9 @@ def test_validation_runner_keeps_structured_reachable_caller_control_rejection()
     _runner(agent, memory=memory).run(state)
 
     assert state["issues"] == []
-    assert state["observations"] == []
-    assert memory == [("ISSUE_5", "rejected")]
+    assert len(state["observations"]) == 1
+    assert state["observations"][0]["validation_status"] == "needs_review"
+    assert memory == [("ISSUE_5", "needs_review")]
 
 
 def test_validation_runner_recovers_uncertain_observation_location_from_evidence_pack() -> None:
@@ -351,7 +579,7 @@ def test_validation_runner_recovers_uncertain_observation_location_from_evidence
     assert state["issues"] == []
     assert len(state["observations"]) == 1
     observation = state["observations"][0]
-    assert observation["validation_status"] == "uncertain"
+    assert observation["validation_status"] == "needs_review"
     assert observation["location"] == "src/recovered.c:77-79"
     assert observation["file"] == "src/recovered.c"
     assert observation["line"] == 77
@@ -409,6 +637,234 @@ def test_validation_runner_parallel_workers_preserve_order_and_token_totals() ->
     assert state["total_cumulative_completion_tokens"] == 15
     assert state["total_cumulative_total_tokens"] == 75
     assert all(thread_name.startswith("zscope-validator") for thread_name, _issue_id in calls)
+
+
+def test_validation_deadline_is_a_soft_budget_and_retains_late_result() -> None:
+    class SlowSuccessfulValidator:
+        def run(self, _input_data):
+            time.sleep(0.03)
+            return AgentResponse(
+                success=True,
+                data={
+                    "verdict": "verified",
+                    "reasoning": "late but complete validation",
+                    "confidence_score": 1.0,
+                    "source": "arg",
+                    "sink": "free",
+                },
+            )
+
+    issue = _issue(id="ISSUE_SOFT_BUDGET")
+    state = _state(issue)
+    runner = _runner(
+        SlowSuccessfulValidator(),
+        analysis=SimpleNamespace(validation_deadline_seconds=0.005),
+    )
+
+    runner.run(state)
+
+    assert [item["id"] for item in state["issues"]] == ["ISSUE_SOFT_BUDGET"]
+    assert issue["validation_status"] == "validated"
+    assert issue["validation_soft_budget_overrun"] is True
+    assert issue["validation_soft_budget_overrun_seconds"] > 0
+    assert issue["validation_duration_seconds"] >= 0.02
+    assert state["validation_soft_budget_overrun_count"] == 1
+    assert state["validation_soft_budget_overrun_seconds"] > 0
+
+
+def test_parent_cancellation_cancels_unstarted_validation_futures_without_draining() -> None:
+    release = threading.Event()
+    first_started = threading.Event()
+    calls = []
+    calls_lock = threading.Lock()
+
+    class BlockingValidator:
+        def run(self, _input_data):
+            with calls_lock:
+                calls.append(threading.current_thread().name)
+                first_started.set()
+            release.wait(timeout=2.0)
+            return AgentResponse(
+                success=True,
+                data={
+                    "verdict": "verified",
+                    "reasoning": "should be discarded after parent cancellation",
+                    "confidence_score": 1.0,
+                },
+            )
+
+    issues = [
+        _issue(
+            id=f"ISSUE_CANCEL_{index}",
+            location=f"src/cancel_{index}.c:{index + 1}",
+            dedup_key=f"cancel-validation-{index}",
+        )
+        for index in range(8)
+    ]
+    state = _state(issues[0])
+    state["pending_new_issues"] = issues
+    runner = _runner(
+        None,
+        analysis=SimpleNamespace(
+            validation_deadline_seconds=0.001,
+            validation_parallel_workers=2,
+        ),
+        validator_agent_factory=lambda *args, **kwargs: BlockingValidator(),
+    )
+    parent = CancellationToken()
+
+    def cancel_parent() -> None:
+        assert first_started.wait(timeout=1.0)
+        parent.cancel("entry_cancelled")
+
+    cancel_thread = threading.Thread(target=cancel_parent, daemon=True)
+    cancel_thread.start()
+    started = time.monotonic()
+    try:
+        with bind_cancellation_token(parent):
+            with pytest.raises(CancellationError, match="entry_cancelled"):
+                runner.run(state)
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        cancel_thread.join(timeout=1.0)
+
+    time.sleep(0.05)
+    assert elapsed < 0.5
+    assert len(calls) <= 2
+    assert state["pending_new_issues"] == issues
+
+
+def test_parent_deadline_is_a_hard_cutoff_for_parallel_validation_batch() -> None:
+    release = threading.Event()
+    calls = []
+    calls_lock = threading.Lock()
+
+    class BlockingValidator:
+        def run(self, _input_data):
+            with calls_lock:
+                calls.append(threading.current_thread().name)
+            release.wait(timeout=2.0)
+            return AgentResponse(
+                success=True,
+                data={
+                    "verdict": "verified",
+                    "reasoning": "should be discarded after parent deadline",
+                    "confidence_score": 1.0,
+                },
+            )
+
+    issues = [
+        _issue(
+            id=f"ISSUE_DEADLINE_{index}",
+            location=f"src/deadline_{index}.c:{index + 1}",
+            dedup_key=f"deadline-validation-{index}",
+        )
+        for index in range(8)
+    ]
+    state = _state(issues[0])
+    state["pending_new_issues"] = issues
+    runner = _runner(
+        None,
+        analysis=SimpleNamespace(
+            validation_deadline_seconds=0.001,
+            validation_parallel_workers=2,
+        ),
+        validator_agent_factory=lambda *args, **kwargs: BlockingValidator(),
+    )
+    parent = CancellationToken(timeout_seconds=0.05)
+
+    started = time.monotonic()
+    try:
+        with bind_cancellation_token(parent):
+            with pytest.raises(CancellationError, match="deadline_exceeded"):
+                runner.run(state)
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+
+    time.sleep(0.05)
+    assert elapsed < 0.5
+    assert len(calls) <= 2
+    assert state["pending_new_issues"] == issues
+
+
+def test_parent_cancellation_cancels_queued_scan_scheduler_validations() -> None:
+    release = threading.Event()
+    first_started = threading.Event()
+    calls = []
+
+    class BlockingValidator:
+        def run(self, _input_data):
+            calls.append(threading.current_thread().name)
+            first_started.set()
+            release.wait(timeout=2.0)
+            return AgentResponse(
+                success=True,
+                data={
+                    "verdict": "verified",
+                    "reasoning": "scheduler work should stop with its parent",
+                    "confidence_score": 1.0,
+                },
+            )
+
+    issues = [
+        _issue(
+            id=f"ISSUE_SCHEDULER_CANCEL_{index}",
+            location=f"src/scheduler_cancel_{index}.c:{index + 1}",
+            dedup_key=f"scheduler-cancel-validation-{index}",
+        )
+        for index in range(6)
+    ]
+    state = _state(issues[0])
+    state["pending_new_issues"] = issues
+    parent = CancellationToken()
+    scheduler = ScanScheduler(
+        entry_workers=1,
+        validator_workers=1,
+        investigator_workers=1,
+    )
+    runner = _runner(
+        None,
+        analysis=SimpleNamespace(
+            validation_deadline_seconds=0.001,
+            validator_workers=1,
+        ),
+        validator_agent_factory=lambda *args, **kwargs: BlockingValidator(),
+        scheduler=scheduler,
+    )
+
+    def cancel_parent() -> None:
+        assert first_started.wait(timeout=1.0)
+        parent.cancel("scan_cancelled")
+
+    cancel_thread = threading.Thread(target=cancel_parent, daemon=True)
+    cancel_thread.start()
+    try:
+        with bind_cancellation_token(parent):
+            with pytest.raises(CancellationError, match="scan_cancelled"):
+                runner.run(state)
+    finally:
+        release.set()
+        cancel_thread.join(timeout=1.0)
+        scheduler.shutdown(wait=True, cancel_futures=True)
+
+    assert calls == ["zscope-validator-0"]
+    assert state["pending_new_issues"] == issues
+
+
+def test_validation_runner_prefers_role_specific_validator_workers() -> None:
+    runner = _runner(
+        None,
+        analysis=SimpleNamespace(
+            entry_workers=8,
+            parallel_workers=2,
+            validator_workers=3,
+            validation_parallel_workers=1,
+        ),
+    )
+
+    assert runner._validation_worker_count(5) == 3
 
 
 def test_validation_runner_normalizes_external_api_function_to_entry_function() -> None:

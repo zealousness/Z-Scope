@@ -50,6 +50,25 @@ class MultiFunctionBackend:
         pass
 
 
+class FailingAsyncBackend(MultiFunctionBackend):
+    def __init__(self):
+        super().__init__({})
+        self.closed = False
+
+    def wait_for_ready(self, timeout=None):
+        return False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class EmptyReadyBackend(MultiFunctionBackend):
+    _status = "ready"
+
+    def __init__(self):
+        super().__init__({})
+
+
 def _write_source(tmp_path: Path) -> Path:
     source_path = tmp_path / "demo.c"
     source_path.write_text(
@@ -108,9 +127,68 @@ def test_function_impl_cache_reuses_file_content_and_returns_isolated_results(
 
     index.close()
     assert backend.closed is True
+
+
+def test_shared_source_cache_is_bounded_by_bytes(tmp_path) -> None:
+    source_path = _write_source(tmp_path)
+    backend = FakeBackend(source_path)
+    index = CodeIndex(
+        tmp_path,
+        source_root=tmp_path,
+        backend=backend,
+        indexing_config=SimpleNamespace(
+            backend="clang",
+            shared_cache_max_bytes=64,
+        ),
+    )
+
+    result = index.get_function_impl("cached_api", warn_missing=False)
+
+    assert result is not None
+    assert index._shared_cache_bytes <= 64
+    assert len(index._file_lines_cache) + len(index._function_impl_cache) <= 1
+
+
+def test_code_index_reports_regex_fallback_as_degraded(tmp_path) -> None:
+    backend = FailingAsyncBackend()
+    index = CodeIndex(
+        tmp_path,
+        source_root=tmp_path,
+        backend=backend,
+        wait_for_cpg=False,
+    )
+
+    assert index.ensure_index_ready(timeout=1) is True
+
+    capabilities = index.capability_status()
+    assert capabilities["index"]["configured"] == "joern"
+    assert capabilities["index"]["active"] == "regex"
+    assert capabilities["index"]["status"] == "degraded"
+    assert capabilities["index"]["reason"] == "configured_backend_unavailable_regex_fallback"
+    assert backend.closed is True
     assert index._file_lines_cache == {}
     assert index._function_impl_cache == {}
     assert index._declaration_comment_index is None
+
+
+def test_code_index_reports_empty_backend_index_fallback_as_degraded(tmp_path) -> None:
+    source_path = tmp_path / "fallback.c"
+    source_path.write_text("int fallback_entry(void) { return 0; }\n", encoding="utf-8")
+
+    index = CodeIndex(
+        tmp_path,
+        source_root=tmp_path,
+        backend=EmptyReadyBackend(),
+    )
+
+    capabilities = index.capability_status()
+    assert index.get_function_impl("fallback_entry", warn_missing=False) is not None
+    assert capabilities["index"]["status"] == "degraded"
+    assert capabilities["index"]["active"].endswith("+regex")
+    assert (
+        capabilities["index"]["reason"]
+        == "configured_backend_index_empty_regex_fallback"
+    )
 
 
 def test_file_snippet_applies_explicit_and_implicit_line_limits(tmp_path) -> None:
@@ -563,6 +641,40 @@ def test_function_impl_uses_unique_fallback_and_reuses_canonical_cache(tmp_path)
     assert exact == fallback
     assert fallback["index_name"] == "Target@src/target.c:1-1"
     assert len(index._function_impl_cache) == 1
+
+
+def test_code_index_canonicalizes_windows_paths_to_project_relative_posix(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    source_root = project_root / "src"
+    source = source_root / "nested" / "target.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int Target(void) { return 7; }\n", encoding="utf-8")
+    windows_absolute_path = str(source).replace("/", "\\")
+    backend = MultiFunctionBackend(
+        {
+            "Target": {
+                "name": "Target",
+                "file": windows_absolute_path,
+                "start_line": 1,
+                "end_line": 1,
+                "signature": "int Target(void)",
+            }
+        }
+    )
+    index = CodeIndex(project_root, source_root=source_root, backend=backend)
+
+    info = index.find_function_infos("Target")[0]
+    impl = index.get_function_impl("Target", include_context=False)
+    snippet = index.get_file_snippet("src\\nested\\target.c", 1, 1)
+
+    assert info["file_path"] == "src/nested/target.c"
+    assert info["index_name"] == "Target@src/nested/target.c:1-1"
+    assert impl is not None
+    assert impl["file"] == "src/nested/target.c"
+    assert snippet is not None
+    assert snippet["file"] == "src/nested/target.c"
+    assert index.get_function_location("Target") == "src/nested/target.c:1-1"
+    assert "\\" not in info["index_name"]
 
 
 def test_function_impl_rejects_ambiguous_derived_fallback(tmp_path) -> None:

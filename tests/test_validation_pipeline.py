@@ -109,6 +109,167 @@ def test_validation_pipeline_reports_high_score_verified_issue() -> None:
     assert issue["sink"] == "free"
 
 
+def test_validation_pipeline_promotes_v31_verified_fact_slice_with_neutral_contract() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_V31_TIER",
+        "decision_context_version": "zscope.decision-context.v3.1",
+        "decision_fact_coverage": "partial",
+        "decision_fact_slice": {
+            "fact_uids": ["FACT_source", "FACT_sink"],
+            "dependency_code_hashes": ["SNAP_source-v1"],
+            "coverage": "partial",
+        },
+        "canonical_source": "request.length",
+        "canonical_sink": "memcpy(dst, src, request.length)",
+    }
+    score = {
+        "final_score": 0.78,
+        "path_completeness": 1.0,
+        "contract_consistency": 0.55,
+        "validation_confidence": 0.85,
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {
+            "reasoning": "source reaches sink through a feasible path",
+            "confidence_score": 0.85,
+            "blocking_negative_evidence": False,
+            "negative_evidence": ["callee implementation was not separately inspected"],
+        },
+        verdict="verified",
+        score_data=score,
+    )
+
+    assert outcome.report_bucket == "issues"
+    assert issue["candidate_disposition"] == "confirmed"
+
+
+def test_validation_pipeline_requires_explicit_nonblocking_flag_for_v31_promotion() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_V31_NO_FLAG",
+        "decision_context_version": "zscope.decision-context.v3.1",
+        "decision_fact_coverage": "partial",
+        "decision_fact_slice": {
+            "fact_uids": ["FACT_source", "FACT_sink"],
+            "dependency_code_hashes": ["SNAP_source-v1"],
+        },
+        "source_identity": "request.length",
+        "sink_identity": "memcpy",
+    }
+    score = {
+        "final_score": 0.78,
+        "path_completeness": 1.0,
+        "contract_consistency": 0.55,
+        "validation_confidence": 0.85,
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {"reasoning": "verified but response contract is old", "confidence_score": 0.85},
+        verdict="verified",
+        score_data=score,
+    )
+
+    assert outcome.report_bucket == "observations"
+    assert issue["candidate_disposition"] == "needs_review"
+
+
+def test_validation_pipeline_promotes_complete_confirmation_proof_without_llm_verdict() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_CFG_PROOF",
+        "deterministic_proofs": [
+            {
+                "outcome": "confirm",
+                "proof_kind": "deterministic_cfg_obligation_path",
+                "producer_engine": "clang_ast_cfg_obligation_prover",
+                "fact_ids": ["cfg:10:header_length", "cfg:14:header_length_copy"],
+                "code_hash": "body-v1",
+                "facts": ["source_to_sink_complete", "event_path_complete"],
+                "completeness": "complete",
+            }
+        ],
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {"reasoning": "validator remains uncertain"},
+        verdict="uncertain",
+        score_data=_score(0.2),
+    )
+
+    assert outcome.report_bucket == "issues"
+    assert issue["candidate_disposition"] == "confirmed"
+    assert issue["proof_provider"] == "clang_ast_cfg_obligation_prover"
+
+
+def test_validation_pipeline_closes_complete_proof_before_validator() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_PREVALIDATION_PROOF",
+        "deterministic_proofs": [
+            {
+                "outcome": "confirm",
+                "proof_kind": "deterministic_cfg_obligation_path",
+                "producer_engine": "clang_ast_cfg_obligation_prover",
+                "fact_ids": ["cfg:10:header_length", "cfg:14:header_length_copy"],
+                "code_hash": "body-v1",
+                "facts": ["source_to_sink_complete", "event_path_complete"],
+                "completeness": "complete",
+            }
+        ],
+    }
+
+    outcome = pipeline.apply_deterministic_prevalidation(issue, _score(0.2))
+
+    assert outcome is not None
+    assert outcome.report_bucket == "issues"
+    assert issue["candidate_disposition"] == "confirmed"
+    assert issue["validator_avoided"] is True
+    assert issue["promotion_reason"] == "deterministic_prevalidation_proof"
+
+
+def test_validation_pipeline_keeps_conflicting_complete_proofs_reviewable() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_PROOF_CONFLICT",
+        "deterministic_proofs": [
+            {
+                "outcome": "confirm",
+                "proof_kind": "deterministic_cfg_obligation_path",
+                "producer_engine": "clang_ast_cfg_obligation_prover",
+                "fact_ids": ["cfg:10", "cfg:14"],
+                "code_hash": "body-v1",
+                "facts": ["source_to_sink_complete", "event_path_complete"],
+                "completeness": "complete",
+            },
+            {
+                "outcome": "reject",
+                "proof_kind": "guard_dominates_sink",
+                "producer_engine": "clang_ast_cfg_guard_dominance",
+                "fact_ids": ["cfg:11"],
+                "code_hash": "body-v1",
+                "facts": ["guard_dominates_sink"],
+                "completeness": "complete",
+            },
+        ],
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {"reasoning": "conflicting evidence"},
+        verdict="verified",
+        score_data=_score(0.9),
+    )
+
+    assert outcome.report_bucket == "observations"
+    assert issue["candidate_disposition"] == "needs_review"
+    assert issue["evidence_conflict"] is True
+
+
 def test_validation_pipeline_downgrades_mid_score_verified_issue() -> None:
     pipeline = ValidationPipeline(FakeUserConfig())
     issue = {"id": "ISSUE_4"}
@@ -138,9 +299,10 @@ def test_validation_pipeline_keeps_low_score_verified_issue_as_observation() -> 
     )
 
     assert outcome.report_bucket == "observations"
-    assert outcome.memory_status == "uncertain"
-    assert issue["validation_status"] == "uncertain"
-    assert issue["finding_kind"] == "audit_observation"
+    assert outcome.memory_status == "needs_review"
+    assert issue["validation_status"] == "needs_review"
+    assert issue["finding_kind"] == "needs_review"
+    assert issue["candidate_disposition"] == "needs_review"
 
 
 def test_validation_pipeline_keeps_uncertain_validator_result_as_observation() -> None:
@@ -155,9 +317,9 @@ def test_validation_pipeline_keeps_uncertain_validator_result_as_observation() -
     )
 
     assert outcome.report_bucket == "observations"
-    assert outcome.memory_status == "uncertain"
-    assert issue["validation_status"] == "uncertain"
-    assert issue["finding_kind"] == "needs_manual_review"
+    assert outcome.memory_status == "needs_review"
+    assert issue["validation_status"] == "needs_review"
+    assert issue["finding_kind"] == "needs_review"
 
 
 def test_validation_pipeline_keeps_structural_uncertain_as_needs_review() -> None:
@@ -242,8 +404,10 @@ def test_validation_pipeline_keeps_strongly_disproved_permission_rejected() -> N
         score_data=_score(0.8),
     )
 
-    assert outcome.report_bucket is None
-    assert issue["validation_status"] == "rejected"
+    assert outcome.report_bucket == "observations"
+    assert outcome.memory_status == "needs_review"
+    assert issue["validation_status"] == "needs_review"
+    assert issue["rejection_source"] == "validator_without_deterministic_proof"
 
 
 def test_validation_pipeline_discards_rejected_validator_result() -> None:
@@ -257,11 +421,131 @@ def test_validation_pipeline_discards_rejected_validator_result() -> None:
         score_data=_score(0.9),
     )
 
+    assert outcome.report_bucket == "observations"
+    assert outcome.memory_status == "needs_review"
+    assert issue["validation_status"] == "needs_review"
+    assert issue["finding_kind"] == "needs_review"
+    assert issue["rejection_source"] == "validator_without_deterministic_proof"
+
+
+def test_validation_pipeline_does_not_trust_validator_self_attested_proof() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_SAFE",
+        "negative_evidence": ["the dominating guard bounds len before every sink path"],
+        "evidence_refs": ["src/demo.c:8", "src/demo.c:12"],
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {
+            "reasoning": "The guard dominates the sink.",
+            "proof_kind": "guard_dominates_sink",
+            "negative_evidence": ["len <= capacity on all CFG predecessors"],
+            "evidence_refs": ["src/demo.c:8", "src/demo.c:12"],
+        },
+        verdict="rejected",
+        score_data=_score(0.9),
+    )
+
+    assert outcome.report_bucket == "observations"
+    assert outcome.memory_status == "needs_review"
+    assert issue["validation_status"] == "needs_review"
+    assert issue["candidate_disposition"] == "needs_review"
+
+
+def test_validation_pipeline_accepts_engine_verified_rejection_proof() -> None:
+    def verify_engine_proof(issue, val_data):
+        return (
+            issue.get("engine_proof_id") == "CFG_PROOF_1"
+            and val_data.get("proof_kind") == "guard_dominates_sink"
+        )
+
+    pipeline = ValidationPipeline(
+        FakeUserConfig(),
+        deterministic_proof_verifier=verify_engine_proof,
+    )
+    issue = {
+        "id": "ISSUE_SAFE",
+        "engine_proof_id": "CFG_PROOF_1",
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {
+            "reasoning": "The guard dominates the sink.",
+            "proof_kind": "guard_dominates_sink",
+        },
+        verdict="rejected",
+        score_data=_score(0.9),
+    )
+
     assert outcome.report_bucket is None
     assert outcome.memory_status == "rejected"
     assert issue["validation_status"] == "rejected"
-    assert issue["finding_kind"] == "rejected"
-    assert issue["rejection_source"] == "validator"
+    assert issue["candidate_disposition"] == "rejected_with_proof"
+    assert issue["deterministic_rejection"] is True
+
+
+def test_validation_pipeline_accepts_structured_lock_dominance_proof() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_LOCK_SAFE",
+        "code_hash": "code-v1",
+        "deterministic_proofs": [
+            {
+                "outcome": "reject",
+                "proof_kind": "lock_dominates_access",
+                "producer_engine": "clang_ast_cfg",
+                "fact_ids": ["cfg:11", "cfg:27"],
+                "code_hash": "code-v1",
+                "facts": ["lock_dominates_access", "all_accesses_guarded"],
+                "completeness": "complete",
+                "scope": "all accesses to runtime.event",
+            }
+        ],
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {"reasoning": "The named lock protects every access."},
+        verdict="rejected",
+        score_data=_score(0.8),
+    )
+
+    assert outcome.report_bucket is None
+    assert issue["candidate_disposition"] == "rejected_with_proof"
+    assert issue["decision_proof"]["proof_kind"] == "lock_dominates_access"
+
+
+def test_validation_pipeline_promotes_complete_structured_positive_proof() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "id": "ISSUE_BOUNDS",
+        "code_hash": "code-v1",
+        "deterministic_proofs": [
+            {
+                "outcome": "confirm",
+                "proof_kind": "unguarded_source_to_sink",
+                "producer_engine": "svf_value_flow",
+                "fact_ids": ["flow:source", "flow:sink"],
+                "code_hash": "code-v1",
+                "facts": ["source_to_sink_complete", "missing_guard"],
+                "complete": True,
+            }
+        ],
+    }
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {"reasoning": "The path is exploitable."},
+        verdict="verified",
+        score_data=_score(0.55),
+    )
+
+    assert outcome.report_bucket == "issues"
+    assert issue["candidate_disposition"] == "confirmed"
+    assert issue["promotion_reason"] == "deterministic_confirmation_proof"
 
 
 def test_validation_pipeline_corrects_rejected_allocator_mismatch_to_memory_leak() -> None:
@@ -451,9 +735,9 @@ def test_validation_pipeline_keeps_hardcoded_empty_callback_rejected() -> None:
         score_data=_score(0.82),
     )
 
-    assert outcome.report_bucket is None
-    assert outcome.memory_status == "rejected"
-    assert issue["validation_status"] == "rejected"
+    assert outcome.report_bucket == "observations"
+    assert outcome.memory_status == "needs_review"
+    assert issue["validation_status"] == "needs_review"
 
 
 def test_validation_pipeline_keeps_transferred_resource_rejected() -> None:
@@ -479,20 +763,23 @@ def test_validation_pipeline_keeps_transferred_resource_rejected() -> None:
         score_data=_score(0.82),
     )
 
-    assert outcome.report_bucket is None
-    assert outcome.memory_status == "rejected"
-    assert issue["validation_status"] == "rejected"
+    assert outcome.report_bucket == "observations"
+    assert outcome.memory_status == "needs_review"
+    assert issue["validation_status"] == "needs_review"
 
 
-def test_validation_pipeline_keeps_validation_failure_pending() -> None:
+def test_validation_pipeline_closes_validation_failure_as_operational() -> None:
     pipeline = ValidationPipeline(FakeUserConfig())
     issue = {"id": "ISSUE_8"}
 
     outcome = pipeline.apply_validation_failure(issue, "timeout")
 
     assert outcome.report_bucket == "observations"
-    assert issue["validation_status"] == "pending"
-    assert issue["finding_kind"] == "validation_pending"
+    assert outcome.memory_status == "engine_failed"
+    assert issue["validation_status"] == "engine_failed"
+    assert issue["candidate_disposition"] == "engine_failed"
+    assert issue["finding_kind"] == "validation_engine_failed"
+    assert issue["record_role"] == "operational_obligation"
     assert issue["validation_error"] == "timeout"
 
 
@@ -502,10 +789,11 @@ def test_validation_pipeline_marks_unvalidated_issue_for_report() -> None:
 
     outcome = pipeline.apply_unvalidated(issue, _score(0.45))
 
-    assert outcome.report_bucket == "issues"
+    assert outcome.report_bucket == "observations"
     assert outcome.memory_status is None
-    assert issue["validation_status"] == "unvalidated"
-    assert issue["finding_kind"] == "unvalidated_candidate"
+    assert issue["validation_status"] == "needs_review"
+    assert issue["finding_kind"] == "needs_review"
+    assert issue["candidate_disposition"] == "needs_review"
     assert issue["final_score"] == 0.45
 
 

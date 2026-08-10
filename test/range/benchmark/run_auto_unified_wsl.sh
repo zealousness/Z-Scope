@@ -28,6 +28,7 @@ export LLVM_COMPILER=clang
 export LLVM_CC_NAME=clang-18
 
 config_path="test/range/zscope.auto_unified.yaml"
+knowledge_db_path="test/range/.zscope_knowledge_auto_unified_wsl/code_knowledge.db"
 run_id="${1:-auto_unified_wsl_$(date +%Y%m%d_%H%M%S)}"
 run_dir="test/range/benchmark_runs/${run_id}"
 mkdir -p "${run_dir}"
@@ -35,6 +36,10 @@ printf '%s\n' "${run_dir}" > test/range/benchmark_runs/latest_auto_unified_wsl.t
 
 echo "[range] run_dir=${run_dir}"
 echo "[range] enforcing WSL + unified backend + automatic entry discovery"
+
+# Fail closed before deleting any prior generated benchmark state. The helper
+# prints only an HTTP status, never the secret or the provider response body.
+bash test/range/benchmark/preflight_zhipu_glm51_wsl.sh
 
 missing_tools=()
 for tool in cmake python3 clangd gclang get-bc llvm-link wpa saber; do
@@ -52,12 +57,25 @@ import sys
 from pathlib import Path
 
 import yaml
+from zscope.config.config import ConfigLoader
 
 path = Path(sys.argv[1])
 cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
 backend = ((cfg.get("indexing") or {}).get("backend") or "").lower()
 entry_cfg = (cfg.get("project") or {}).get("entry_discovery") or {}
 semantic_dedup = ((cfg.get("reporting") or {}).get("semantic_dedup") or {})
+analysis = cfg.get("analysis") or {}
+models = {
+    str(model)
+    for section in (cfg.get("llms") or {}).values()
+    if isinstance(section, dict)
+    for model in (section.get("models") or [])
+}
+base_urls = {
+    str(section.get("base_url") or "").rstrip("/")
+    for section in (cfg.get("llms") or {}).values()
+    if isinstance(section, dict)
+}
 entry_discovery = bool(entry_cfg.get("enabled"))
 header_files = entry_cfg.get("header_files") or []
 max_candidates = int(entry_cfg.get("max_candidates") or 0)
@@ -77,12 +95,53 @@ if clangd_path != "clangd":
     raise SystemExit(f"[range] ERROR: WSL config must use clangd_path=clangd, got {clangd_path!r}")
 if semantic_dedup.get("enabled", True) is not True:
     raise SystemExit("[range] ERROR: expected reporting.semantic_dedup.enabled to default to true")
-if semantic_dedup.get("llm_enabled", True) is not True:
-    raise SystemExit("[range] ERROR: expected reporting.semantic_dedup.llm_enabled to default to true")
-print("[range] config preflight passed: unified backend + automatic entry discovery + *.h headers + LLM semantic dedup")
+if semantic_dedup.get("llm_enabled", False) is not False:
+    raise SystemExit("[range] ERROR: final LLM semantic dedup must remain disabled for the benchmark")
+for key in (
+    "candidate_lifecycle_v3",
+    "canonical_outcome_projection",
+    "deterministic_proof_routing",
+    "global_validation_group_queue",
+    "enable_evidence_completion_queue",
+    "decision_fact_graph_v1",
+    "security_obligation_v1",
+    "deterministic_prevalidation_v2",
+    "decision_context_v31",
+    "project_deterministic_fact_pass_v1",
+    "proof_providers_v11",
+    "decision_context_v32",
+    "structured_candidate_promotion_v1",
+    "proof_providers_v12",
+    "decision_context_v33",
+    "finding_root_v1",
+    "validator_evidence_slice_v2",
+):
+    if analysis.get(key, True) is not True:
+        raise SystemExit(f"[range] ERROR: analysis.{key} must be true for the v3 benchmark")
+if models != {"glm-5.1"}:
+    raise SystemExit(f"[range] ERROR: benchmark must use only glm-5.1, got {sorted(models)!r}")
+if base_urls != {"https://open.bigmodel.cn/api/paas/v4"}:
+    raise SystemExit(f"[range] ERROR: benchmark must use the Zhipu GLM endpoint, got {sorted(base_urls)!r}")
+# Resolve environment interpolation through the same loader used by the scan.
+# This catches the common case where a runner is launched outside the shell
+# that sourced zscope.local.env, without ever logging secret material.
+resolved = ConfigLoader.load(str(path))
+resolved_keys = [str(section.api_key or "") for section in resolved.llms.values()]
+if not resolved_keys or any(
+    not value or value == "${Z_SCOPE_API_KEY}" for value in resolved_keys
+):
+    raise SystemExit(
+        "[range] ERROR: Z_SCOPE_API_KEY did not resolve in the benchmark configuration"
+    )
+print("[range] config preflight passed: unified backend + automatic entry discovery + structured decision facts")
 PY
 
 echo "[range] clean generated WSL benchmark state"
+# Preserve a pre-existing generated entry manifest for audit only; it is never
+# consumed by this cold scan, whose entries come from YAML discovery.
+if [[ -f test/range/entry_functions_list.json ]]; then
+  cp test/range/entry_functions_list.json "${run_dir}/preexisting_entry_functions_list.json"
+fi
 rm -rf test/range/.zscope_snapshots_auto_unified_wsl test/range/.zscope_knowledge_auto_unified_wsl
 rm -rf test/range/test/range/.zscope_knowledge_auto_unified_wsl
 rm -f test/range/zscope_batch_report.json test/range/zscope_batch_report.md test/range/entry_functions_list.json
@@ -95,10 +154,10 @@ echo "[range] build unified CPG with SVF/Saber"
 python3 -m zscope.cli.cli -c "${config_path}" --build-cpg \
   > "${run_dir}/build_cpg.log" 2>&1
 
-echo "[range] scan with automatic entry discovery"
+echo "[range] scan with YAML-configured automatic entry discovery"
 start_epoch="$(date +%s)"
 set +e
-python3 -m zscope.cli.cli -c "${config_path}" --discover-entries --verbose \
+python3 -m zscope.cli.cli -c "${config_path}" --verbose \
   > "${run_dir}/zscope_run.log" 2>&1
 scan_rc="$?"
 set -e
@@ -116,11 +175,17 @@ if [[ -f test/range/zscope_batch_report.md ]]; then
 fi
 cp "${config_path}" "${run_dir}/zscope.auto_unified.yaml"
 
+entry_coverage_rc=2
 if [[ -f "${run_dir}/entry_functions_list.json" ]]; then
+  set +e
   python3 test/range/benchmark/check_entry_coverage.py \
+    --root test/range \
     --entries "${run_dir}/entry_functions_list.json" \
     --truth test/range/benchmark/ground_truth.json \
-    > "${run_dir}/entry_coverage.json" || true
+    --knowledge-db "${knowledge_db_path}" \
+    > "${run_dir}/entry_coverage.json"
+  entry_coverage_rc="$?"
+  set -e
 fi
 
 if [[ -f "${run_dir}/zscope_batch_report.json" ]]; then
@@ -135,7 +200,7 @@ if [[ -f "${run_dir}/zscope_batch_report.json" ]]; then
     --view with_needs_review
 fi
 
-python3 - "${run_dir}" "${scan_rc}" "${wall_seconds}" <<'PY'
+python3 - "${run_dir}" "${scan_rc}" "${wall_seconds}" "${entry_coverage_rc}" <<'PY'
 import json
 import re
 import sys
@@ -144,6 +209,7 @@ from pathlib import Path
 run_dir = Path(sys.argv[1])
 scan_rc = int(sys.argv[2])
 wall_seconds = int(sys.argv[3])
+entry_coverage_rc = int(sys.argv[4])
 
 def load_json(path):
     if path.exists():
@@ -151,13 +217,32 @@ def load_json(path):
     return {}
 
 entries = load_json(run_dir / "entry_functions_list.json")
+entry_coverage = load_json(run_dir / "entry_coverage.json")
 report = load_json(run_dir / "zscope_batch_report.json")
 default_eval = load_json(run_dir / "evaluation.json")
 review_eval = load_json(run_dir / "evaluation.with_needs_review.json")
 build_log = (run_dir / "build_cpg.log").read_text(encoding="utf-8", errors="replace") if (run_dir / "build_cpg.log").exists() else ""
 scan_log = (run_dir / "zscope_run.log").read_text(encoding="utf-8", errors="replace") if (run_dir / "zscope_run.log").exists() else ""
 combined_log = build_log + "\n" + scan_log
-scan_completed = bool(report) and "Batch Analysis Complete." in scan_log
+trace_models = sorted(set(re.findall(r"\[LLM API Trace\] Model:\s*([^|\s]+)", combined_log)))
+model_trace_valid = bool(trace_models) and trace_models == ["glm-5.1"]
+report_emitted = bool(report)
+completion_marker_observed = "Batch Analysis Complete." in scan_log
+manifest = report.get("run_manifest") if isinstance(report.get("run_manifest"), dict) else {}
+report_completeness = str(
+    report.get("completeness") or manifest.get("completeness") or ""
+).lower()
+manifest_valid = manifest.get("valid") is True
+valid_scan_exit = scan_rc in {0, 1}
+scan_completed = (
+    report_emitted
+    and report_completeness == "complete"
+    and manifest_valid
+    and valid_scan_exit
+    and entry_coverage_rc == 0
+    and model_trace_valid
+)
+benchmark_valid = scan_completed
 
 metric_keys = [
     "report_issue_count",
@@ -169,18 +254,109 @@ metric_keys = [
     "duplicate_of_matched_count",
     "false_negatives",
     "precision",
+    "actionable_precision",
     "false_positive_rate",
     "recall",
     "f1",
 ]
+report_summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+release_runtime = manifest.get("release_gate_status")
+release_runtime = release_runtime if isinstance(release_runtime, dict) else {}
+
+def number(value, default=0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+confirmed_tp = int(number(default_eval.get("true_positives")))
+confirmed_raw_fp = int(number(default_eval.get("false_positives_raw")))
+confirmed_raw_precision = number(
+    default_eval.get("actionable_precision"),
+    confirmed_tp / max(1, confirmed_tp + confirmed_raw_fp),
+)
+review_tp = int(number(review_eval.get("true_positives")))
+review_raw_fp = int(number(review_eval.get("false_positives_raw")))
+needs_review_count = int(number(manifest.get("needs_review_count")))
+total_tokens = int(
+    number(
+        report_summary.get("total_cumulative_total_tokens"),
+        (report_summary.get("llm_usage") or {}).get("total_tokens", 0)
+        if isinstance(report_summary.get("llm_usage"), dict)
+        else 0,
+    )
+)
+measured_wall_seconds = number(report_summary.get("batch_wall_seconds"), wall_seconds)
+terminal_states = report.get("candidate_terminal_states")
+terminal_states = terminal_states if isinstance(terminal_states, list) else []
+deferred_budget_count = sum(
+    1
+    for item in terminal_states
+    if isinstance(item, dict) and item.get("candidate_disposition") == "deferred_budget"
+)
+pending_validation_count = int(number(manifest.get("pending_validation_count")))
+validation_not_completed_count = int(number(manifest.get("validation_not_completed_count")))
+budget_policy = str(manifest.get("budget_exhaustion_policy") or "")
+queue_drained = manifest.get("validation_queue_drained") is True
+runtime_gate_valid = release_runtime.get("runtime_valid") is True
+
+release_checks = {
+    "benchmark_valid": benchmark_valid,
+    "confirmed_tp_gte_85": confirmed_tp >= 85,
+    "confirmed_raw_precision_gte_0_95": confirmed_raw_precision >= 0.95,
+    "with_review_tp_gte_134": review_tp >= 134,
+    "with_review_raw_fp_lte_100": review_raw_fp <= 100,
+    "needs_review_lte_150": needs_review_count <= 150,
+    "tokens_lte_6m": total_tokens <= 6_000_000,
+    "wall_seconds_lte_3600": measured_wall_seconds <= 3_600,
+    "validation_queue_drained": queue_drained,
+    "runtime_gate_valid": runtime_gate_valid,
+    "pending_validation_zero": pending_validation_count == 0,
+    "validation_not_completed_zero": validation_not_completed_count == 0,
+    "deferred_budget_zero": deferred_budget_count == 0,
+    "budget_policy_observe_only": budget_policy == "observe",
+}
+release_blockers = [name for name, passed in release_checks.items() if not passed]
+release_gate_status = {
+    "passed": not release_blockers,
+    "checks": release_checks,
+    "blockers": release_blockers,
+    "metrics": {
+        "confirmed_tp": confirmed_tp,
+        "confirmed_raw_fp": confirmed_raw_fp,
+        "confirmed_raw_precision": round(confirmed_raw_precision, 6),
+        "with_review_tp": review_tp,
+        "with_review_raw_fp": review_raw_fp,
+        "needs_review": needs_review_count,
+        "total_tokens": total_tokens,
+        "wall_seconds": round(measured_wall_seconds, 4),
+    },
+}
+if report_emitted:
+    manifest["release_gate_status"] = release_gate_status
+    report["run_manifest"] = manifest
+    report["release_gate_status"] = release_gate_status
+    (run_dir / "zscope_batch_report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 summary = {
     "run_id": run_dir.name,
     "scan_return_code": scan_rc,
+    "process_ended": True,
+    "report_emitted": report_emitted,
+    "completion_marker_observed": completion_marker_observed,
     "scan_completed": scan_completed,
+    "benchmark_valid": benchmark_valid,
+    "report_completeness": report_completeness or None,
+    "run_manifest_valid": manifest_valid,
+    "model_trace_valid": model_trace_valid,
+    "trace_models": trace_models,
     "scan_exit_semantics": (
-        "zscope_cli_returns_1_when_findings_present"
+        "valid_complete_scan_with_actionable_findings"
         if scan_completed and scan_rc == 1
-        else "process_exit_code"
+        else "valid_complete_scan"
+        if scan_completed
+        else "process_ended_with_incomplete_or_invalid_scan"
     ),
     "scan_wall_seconds": wall_seconds,
     "mode": "wsl_auto_discover_entries_unified_backend_with_svf_required",
@@ -191,13 +367,19 @@ summary = {
         "evaluation_default": str((run_dir / "evaluation.json").resolve()),
         "evaluation_with_needs_review": str((run_dir / "evaluation.with_needs_review.json").resolve()),
         "entries": str((run_dir / "entry_functions_list.json").resolve()),
+        "entry_coverage": str((run_dir / "entry_coverage.json").resolve()),
         "build_cpg_log": str((run_dir / "build_cpg.log").resolve()),
         "zscope_run_log": str((run_dir / "zscope_run.log").resolve()),
     },
     "entry_discovery": {
         "entries_discovered": len(entries.get("functions", [])),
+        "coverage_return_code": entry_coverage_rc,
+        "coverage_mode": entry_coverage.get("mode"),
+        "reachable_function_nodes": entry_coverage.get("reachable_function_nodes"),
+        "missing_truth_reachability": entry_coverage.get("missing_truth_reachability", []),
     },
-    "report_summary": report.get("summary", {}),
+    "report_summary": report_summary,
+    "release_gate_status": release_gate_status,
     "benchmark_metrics": {
         "default": {k: default_eval.get(k) for k in metric_keys},
         "with_needs_review": {k: review_eval.get(k) for k in metric_keys},
@@ -219,9 +401,33 @@ summary = {
 print(json.dumps(summary, ensure_ascii=False, indent=2))
 PY
 
-if [[ "${scan_rc}" -ne 0 && ! -f "${run_dir}/zscope_batch_report.json" ]]; then
-  echo "[range] ERROR: scan failed with rc=${scan_rc} before writing a batch report; see ${run_dir}/zscope_run.log" >&2
+run_validity="$(python3 - "${run_dir}/run_summary.json" <<'PY'
+import json
+import sys
+
+summary = json.loads(open(sys.argv[1], encoding="utf-8").read())
+if summary.get("benchmark_valid") is True and (summary.get("release_gate_status") or {}).get("passed") is True:
+    print("valid")
+elif summary.get("benchmark_valid") is True:
+    print("release_failed")
+elif int(summary.get("scan_return_code") or 0) in {130, 143}:
+    print("interrupted")
+else:
+    print("invalid")
+PY
+)"
+
+if [[ "${run_validity}" == "interrupted" ]]; then
+  echo "[range] ERROR: scan was interrupted with rc=${scan_rc}; see ${run_dir}/zscope_run.log" >&2
   exit "${scan_rc}"
+fi
+if [[ "${run_validity}" != "valid" ]]; then
+  if [[ "${run_validity}" == "release_failed" ]]; then
+    echo "[range] ERROR: benchmark completed but v3.3 release gates failed; see ${run_dir}/run_summary.json" >&2
+    exit 2
+  fi
+  echo "[range] ERROR: benchmark is incomplete or invalid; see ${run_dir}/run_summary.json" >&2
+  exit 2
 fi
 
 echo "[range] completed: ${run_dir}"

@@ -1,0 +1,23 @@
+{
+  "entries": 88,
+  "entry_records": 88,
+  "entry_identities": 88,
+  "ground_truth": 136,
+  "missing_truth_entry": [],
+  "missing_truth_reachability": [],
+  "duplicate_entry_names": [],
+  "duplicate_entry_identities": [],
+  "missing_entry_definitions": [],
+  "duplicate_entry_definitions": {},
+  "mode": "call_graph_reachability",
+  "require_all_functions": false,
+  "root_nodes": 88,
+  "reachable_function_nodes": 404,
+  "knowledge_db": "/home/zeal/zscope_v33_release_20260809/test/range/.zscope_knowledge_auto_unified_wsl/code_knowledge.db",
+  "call_graph": {
+    "direct_edges": 1134,
+    "indirect_edges": 15,
+    "root_nodes": 88,
+    "reachable_nodes": 404
+  }
+}

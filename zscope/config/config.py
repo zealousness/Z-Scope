@@ -60,6 +60,113 @@ def _safe_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
+def _optional_positive_seconds(value: Any, default: Optional[float]) -> Optional[float]:
+    """Parse a deadline once, preserving one-release legacy sentinel support.
+
+    New configuration should use ``null`` for unlimited.  Legacy ``0``, ``-1``
+    and ``"unlimited"`` are accepted here only so individual subsystems never
+    assign conflicting meanings to them.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in {
+        "",
+        "none",
+        "null",
+        "unlimited",
+    }:
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid deadline value: {value!r}") from exc
+    return seconds if seconds > 0 else None
+
+
+def minimum_optional_positive_seconds(*values: Any) -> Optional[float]:
+    """Return the strictest configured deadline, or ``None`` if all are unlimited."""
+
+    parsed = [
+        _optional_positive_seconds(value, None)
+        for value in values
+        if value is not None
+    ]
+    positive = [value for value in parsed if value is not None]
+    return min(positive) if positive else None
+
+
+def _optional_positive_int(value: Any, default: Optional[int]) -> Optional[int]:
+    """Parse an optional positive limit at the configuration boundary.
+
+    ``null`` is the canonical unlimited value.  Legacy non-positive numbers
+    and the string ``unlimited`` remain accepted for one release, but are
+    normalized here so downstream schedulers never assign their own meaning.
+    """
+
+    if value is None:
+        return default
+    if isinstance(value, str) and value.strip().lower() in {
+        "",
+        "none",
+        "null",
+        "unlimited",
+    }:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid positive integer limit: {value!r}") from exc
+    return parsed if parsed > 0 else None
+
+
+def _bounded_cache_entries(value: Any, default: int = 4096) -> int:
+    """Normalize a bounded cache size; ``null`` means the cache is disabled."""
+
+    if value is None:
+        return 0
+    if isinstance(value, str) and value.strip().lower() in {
+        "",
+        "none",
+        "null",
+        "disabled",
+        "unlimited",
+    }:
+        return 0
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid cache entry limit: {value!r}") from exc
+    return parsed if parsed > 0 else 0
+
+
+def _normalize_budget_exhaustion_policy(value: Any) -> str:
+    """Normalize runtime budgets to observability-only semantics.
+
+    Budgets are tuning signals, not cancellation authority.  Legacy
+    ``cancel``/``hard`` spellings remain accepted for one release, but are
+    deliberately mapped to ``observe`` so an available LLM cannot be turned
+    into an entry failure merely by exhausting a local budget.
+    """
+
+    normalized = str(value or "observe").strip().lower().replace("-", "_")
+    aliases = {
+        "observe": "observe",
+        "observe_only": "observe",
+        "soft": "observe",
+        "cancel": "observe",
+        "hard": "observe",
+        "enforce": "observe",
+    }
+    try:
+        return aliases[normalized]
+    except KeyError as exc:
+        raise ValueError(
+            "Invalid budget_exhaustion_policy "
+            f"{value!r}; expected 'observe' (legacy cancel/hard are accepted "
+            "as observe-only aliases)."
+        ) from exc
+
+
 @dataclass
 class LLMConfig:
     """Configuration for LLM client."""
@@ -68,24 +175,28 @@ class LLMConfig:
     api_key: str = ""
     base_url: str = "https://api.openai.com/v1"
     base_urls: List[str] = field(default_factory=list)
-    base_url_rate_limit_per_minute: int = 0
-    base_url_max_concurrent_requests: int = 0
+    base_url_rate_limit_per_minute: Optional[int] = None
+    base_url_max_concurrent_requests: Optional[int] = None
     models: List[str] = field(default_factory=list)
     temperature: float = 0.1
     max_tokens: int = 4096
-    timeout: int = 120
+    timeout: Optional[float] = 120.0
     max_retries: int = 2
+    retry_until_available: bool = False
     supports_structured_output: bool = False
 
     def __post_init__(self) -> None:
         self.base_urls = _normalize_llm_base_urls(self.base_urls or self.base_url)
         self.base_url = self.base_urls[0]
-        self.base_url_rate_limit_per_minute = max(
-            0, _safe_int(self.base_url_rate_limit_per_minute, 0)
+        self.base_url_rate_limit_per_minute = _optional_positive_int(
+            self.base_url_rate_limit_per_minute,
+            None,
         )
-        self.base_url_max_concurrent_requests = max(
-            0, _safe_int(self.base_url_max_concurrent_requests, 0)
+        self.base_url_max_concurrent_requests = _optional_positive_int(
+            self.base_url_max_concurrent_requests,
+            None,
         )
+        self.timeout = _optional_positive_seconds(self.timeout, 120.0)
 
 
 @dataclass
@@ -156,13 +267,14 @@ class IndexingConfig:
     knowledge_db_path: str = ".zscope_knowledge/code_knowledge.db"
     batch_size: int = 50
     max_clangd_threads: int = 8
+    shared_cache_max_bytes: int = 512 * 1024 * 1024
     # SVF 配置（Phase 4+）
     svf_bin_dir: str = ""  # SVF 工具目录（含 wpa, saber 等）
     gclang_path: str = "gclang"  # gllvm 前端路径
     get_bc_path: str = "get-bc"  # gllvm 提取 bc 路径
     llvm_link_path: str = "llvm-link"
     svf_heap_limit_mb: int = 32768  # SVF 内存上限（默认 32GB）
-    svf_timeout: int = 1800  # SVF 单次执行超时（秒）
+    svf_timeout: Optional[float] = 1800.0  # null means no subprocess deadline.
     svf_groups_config: str = ""  # JSON file for multi-group bitcode linking
     svf_scope: str = "auto"  # full | auto | entry
     svf_entry_depth: int = 4
@@ -172,6 +284,9 @@ class IndexingConfig:
     svf_symbol_closure: bool = True
     svf_exclusive_pools: List[Dict[str, Any]] = field(default_factory=list)
     svf_shared_pools: List[Dict[str, Any]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.svf_timeout = _optional_positive_seconds(self.svf_timeout, 1800.0)
 
 
 @dataclass
@@ -183,9 +298,50 @@ class AnalysisConfig:
     max_tool_iterations: int = 50
     snapshot_dir: str = ".zscope_snapshots"
     enable_snapshot_cache: bool = True
-    parallel_workers: int = 5  # Number of concurrent workers for batch analysis
+    # Legacy shared worker count. New configurations should prefer the
+    # role-specific fields below; this remains the compatibility fallback.
+    parallel_workers: int = 5
+    entry_workers: int = 0  # 0 inherits parallel_workers.
+    llm_max_inflight: int = 8  # Process-wide hard cap; legacy non-positive values map to 8.
+    validator_workers: int = 0  # Normalized to legacy override or role default 4.
+    investigator_workers: int = 0  # Normalized to role default 2.
+    evidence_completion_workers: int = 2
+    enable_evidence_completion_queue: bool = True
+    # v3 rollout controls.  They default on for new scans, but can be
+    # independently disabled for one-release shadow/rollback comparisons.
+    candidate_lifecycle_v3: bool = True
+    canonical_outcome_projection: bool = True
+    deterministic_proof_routing: bool = True
+    # v3.1 fact/proof rollout.  These remain independently shadowable so a
+    # scan can attach facts and compare identities before changing outcomes.
+    decision_fact_graph_v1: bool = False
+    security_obligation_v1: bool = False
+    deterministic_prevalidation_v2: bool = False
+    decision_context_v31: bool = False
+    # v3.2 closes the proof/fact contract and keeps its cache namespace
+    # independent from v3.1 while it is rolled out in shadow mode.
+    project_deterministic_fact_pass_v1: bool = False
+    proof_providers_v11: bool = False
+    decision_context_v32: bool = False
+    structured_candidate_promotion_v1: bool = False
+    # v3.3 release convergence keeps its facts, proof outcomes, report roots,
+    # and Validator prompt/cache identity separate from v3.2.
+    proof_providers_v12: bool = False
+    decision_context_v33: bool = False
+    finding_root_v1: bool = False
+    validator_evidence_slice_v2: bool = False
+    # Batch scans collect all deterministic candidates before one shared
+    # validation queue.  Keeping this switch separate permits a one-release
+    # rollback to entry-local validation for compatibility diagnostics.
+    global_validation_group_queue: bool = True
+    validation_cache_entries: int = 4096
     user_config_db: str = ""  # Path to user config workbook or directory, defaults to {snapshot_dir}/
     enable_global_model: bool = False  # Batch-level global premodel/model_entry replacement.
+    # The normal v3 path is deterministic discovery followed by validation.
+    # Keep unconstrained whole-entry LLM exploration opt-in: it is useful for
+    # investigations, but is not a substitute for a candidate lifecycle and
+    # multiplies the same reasoning across overlapping entries.
+    candidate_first_validation: bool = True
     max_premodel_depth: int = 3  # Callee recursive pre-modeling max depth
     max_premodel_callees: int = 20  # Max callees to expand per level
     trivial_function_max_lines: int = 5  # Skip modeling if function <= this many valid lines
@@ -193,12 +349,71 @@ class AnalysisConfig:
     enable_subagent_workers: bool = False
     max_subagent_tickets: int = 4
     subagent_max_turns: int = 20  # Per-ticket tool/LLM turn budget for focused workers.
-    subagent_ticket_timeout: float = 0.0  # Seconds per focused worker ticket; 0 disables timeout.
+    request_deadline_seconds: Optional[float] = 120.0
+    validation_deadline_seconds: Optional[float] = 240.0
+    subagent_ticket_timeout: Optional[float] = 300.0
+    entry_deadline_seconds: Optional[float] = 1800.0
+    scan_deadline_seconds: Optional[float] = None
+    budget_exhaustion_policy: str = "observe"
     validation_parallel_workers: int = 0  # 0 auto; set 1 to keep validator calls serial per entry.
     subagent_spawn_allowlist: List[str] = field(default_factory=lambda: ["deep_worker"])
     subagent_skill_llm_refs: Dict[str, str] = field(default_factory=dict)
     subagent_skill_efforts: Dict[str, str] = field(default_factory=dict)
     tool_audit_log: str = ""  # Optional JSONL audit sink for tool/MCP policy events.
+
+    def __post_init__(self) -> None:
+        legacy_workers = max(1, _safe_int(self.parallel_workers, 5))
+        self.parallel_workers = legacy_workers
+
+        configured_entry_workers = _safe_int(self.entry_workers, 0)
+        self.entry_workers = (
+            configured_entry_workers if configured_entry_workers > 0 else legacy_workers
+        )
+        configured_llm_limit = _safe_int(self.llm_max_inflight, 8)
+        self.llm_max_inflight = (
+            configured_llm_limit if configured_llm_limit > 0 else 8
+        )
+
+        legacy_validator_workers = max(
+            0, _safe_int(self.validation_parallel_workers, 0)
+        )
+        configured_validator_workers = max(0, _safe_int(self.validator_workers, 4))
+        if configured_validator_workers <= 0:
+            configured_validator_workers = legacy_validator_workers or 4
+        self.validator_workers = configured_validator_workers
+        # Keep older consumers and serialized config views coherent.
+        self.validation_parallel_workers = configured_validator_workers
+        self.validation_cache_entries = _bounded_cache_entries(
+            self.validation_cache_entries,
+            4096,
+        )
+        self.request_deadline_seconds = _optional_positive_seconds(
+            self.request_deadline_seconds, 120.0
+        )
+        self.validation_deadline_seconds = _optional_positive_seconds(
+            self.validation_deadline_seconds, 240.0
+        )
+        self.subagent_ticket_timeout = _optional_positive_seconds(
+            self.subagent_ticket_timeout, 300.0
+        )
+        self.entry_deadline_seconds = _optional_positive_seconds(
+            self.entry_deadline_seconds, 1800.0
+        )
+        self.scan_deadline_seconds = _optional_positive_seconds(
+            self.scan_deadline_seconds, None
+        )
+        self.budget_exhaustion_policy = _normalize_budget_exhaustion_policy(
+            self.budget_exhaustion_policy
+        )
+
+        configured_investigator_workers = _safe_int(self.investigator_workers, 0)
+        self.investigator_workers = (
+            configured_investigator_workers
+            if configured_investigator_workers > 0
+            else 2
+        )
+        configured_completion_workers = _safe_int(self.evidence_completion_workers, 2)
+        self.evidence_completion_workers = max(1, configured_completion_workers)
 
 
 @dataclass
@@ -206,7 +421,7 @@ class SemanticDedupConfig:
     """Configuration for final-report semantic duplicate handling."""
 
     enabled: bool = True
-    llm_enabled: bool = True
+    llm_enabled: bool = False
     llm_confidence_threshold: float = 0.85
     max_cluster_size: int = 8
 
@@ -224,8 +439,10 @@ class ProjectConfig:
 
     project_root: Path
     source_root: Path
+    project_id: str = ""
     entry_function: Optional[str] = None
     entry_file_path: Optional[str] = None
+    entry_signature: Optional[str] = None
     agents: List[AgentConfig] = field(default_factory=list)
     compile_commands_path: Optional[Path] = None
     entry_functions_list: Optional[Path] = None  # Path to JSON file for batch mode
@@ -237,6 +454,7 @@ class ProjectConfig:
 
     def __post_init__(self):
         self.project_root = Path(self.project_root).resolve()
+        self.project_id = str(self.project_id or self.project_root.name or "project").strip()
 
         # Resolve source_root: relative to project_root if not absolute
         if not self.source_root:
@@ -442,29 +660,28 @@ class ConfigLoader:
                         api_key=llm_data.get("api_key", ""),
                         base_url=base_urls[0],
                         base_urls=base_urls,
-                        base_url_rate_limit_per_minute=_safe_int(
+                        base_url_rate_limit_per_minute=llm_data.get(
+                            "base_url_rate_limit_per_minute",
                             llm_data.get(
-                                "base_url_rate_limit_per_minute",
-                                llm_data.get(
-                                    "base_url_rpm",
-                                    llm_data.get("requests_per_minute", 0),
-                                ),
-                            )
+                                "base_url_rpm",
+                                llm_data.get("requests_per_minute"),
+                            ),
                         ),
-                        base_url_max_concurrent_requests=_safe_int(
+                        base_url_max_concurrent_requests=llm_data.get(
+                            "base_url_max_concurrent_requests",
                             llm_data.get(
-                                "base_url_max_concurrent_requests",
-                                llm_data.get(
-                                    "base_url_max_in_flight",
-                                    llm_data.get("max_concurrent_requests", 0),
-                                ),
-                            )
+                                "base_url_max_in_flight",
+                                llm_data.get("max_concurrent_requests"),
+                            ),
                         ),
                         models=models,
                         temperature=llm_data.get("temperature", 0.1),
                         max_tokens=llm_data.get("max_tokens", 4096),
                         timeout=llm_data.get("timeout", 120),
                         max_retries=llm_data.get("max_retries", 2),
+                        retry_until_available=_safe_bool(
+                            llm_data.get("retry_until_available", False)
+                        ),
                         supports_structured_output=_safe_bool(
                             llm_data.get("supports_structured_output", False)
                         ),
@@ -490,29 +707,28 @@ class ConfigLoader:
                     api_key=data.get("api_key", ""),
                     base_url=base_urls[0],
                     base_urls=base_urls,
-                    base_url_rate_limit_per_minute=_safe_int(
+                    base_url_rate_limit_per_minute=data.get(
+                        "base_url_rate_limit_per_minute",
                         data.get(
-                            "base_url_rate_limit_per_minute",
-                            data.get(
-                                "base_url_rpm",
-                                data.get("requests_per_minute", 0),
-                            ),
-                        )
+                            "base_url_rpm",
+                            data.get("requests_per_minute"),
+                        ),
                     ),
-                    base_url_max_concurrent_requests=_safe_int(
+                    base_url_max_concurrent_requests=data.get(
+                        "base_url_max_concurrent_requests",
                         data.get(
-                            "base_url_max_concurrent_requests",
-                            data.get(
-                                "base_url_max_in_flight",
-                                data.get("max_concurrent_requests", 0),
-                            ),
-                        )
+                            "base_url_max_in_flight",
+                            data.get("max_concurrent_requests"),
+                        ),
                     ),
                     models=models,
                     temperature=data.get("temperature", 0.1),
                     max_tokens=data.get("max_tokens", 4096),
                     timeout=data.get("timeout", 120),
                     max_retries=data.get("max_retries", 2),
+                    retry_until_available=_safe_bool(
+                        data.get("retry_until_available", False)
+                    ),
                     supports_structured_output=_safe_bool(
                         data.get("supports_structured_output", False)
                     ),
@@ -542,6 +758,9 @@ class ConfigLoader:
                 ),
                 batch_size=indexing_data.get("batch_size", 50),
                 max_clangd_threads=indexing_data.get("max_clangd_threads", 8),
+                shared_cache_max_bytes=indexing_data.get(
+                    "shared_cache_max_bytes", 512 * 1024 * 1024
+                ),
                 svf_bin_dir=indexing_data.get("svf_bin_dir", ""),
                 gclang_path=indexing_data.get("gclang_path", "gclang"),
                 get_bc_path=indexing_data.get("get_bc_path", "get-bc"),
@@ -573,8 +792,73 @@ class ConfigLoader:
                 snapshot_dir=analysis_data.get("snapshot_dir", ".zscope_snapshots"),
                 enable_snapshot_cache=analysis_data.get("enable_snapshot_cache", True),
                 parallel_workers=analysis_data.get("parallel_workers", 5),
+                entry_workers=analysis_data.get(
+                    "entry_workers",
+                    min(8, max(1, os.cpu_count() or 1)),
+                ),
+                llm_max_inflight=analysis_data.get("llm_max_inflight", 8),
+                validator_workers=analysis_data.get("validator_workers", 4),
+                investigator_workers=analysis_data.get("investigator_workers", 2),
+                evidence_completion_workers=analysis_data.get(
+                    "evidence_completion_workers", 2
+                ),
+                enable_evidence_completion_queue=analysis_data.get(
+                    "enable_evidence_completion_queue", True
+                ),
+                candidate_lifecycle_v3=analysis_data.get(
+                    "candidate_lifecycle_v3", True
+                ),
+                canonical_outcome_projection=analysis_data.get(
+                    "canonical_outcome_projection", True
+                ),
+                deterministic_proof_routing=analysis_data.get(
+                    "deterministic_proof_routing", True
+                ),
+                decision_fact_graph_v1=analysis_data.get(
+                    "decision_fact_graph_v1", False
+                ),
+                security_obligation_v1=analysis_data.get(
+                    "security_obligation_v1", False
+                ),
+                deterministic_prevalidation_v2=analysis_data.get(
+                    "deterministic_prevalidation_v2", False
+                ),
+                decision_context_v31=analysis_data.get(
+                    "decision_context_v31", False
+                ),
+                project_deterministic_fact_pass_v1=analysis_data.get(
+                    "project_deterministic_fact_pass_v1", False
+                ),
+                proof_providers_v11=analysis_data.get(
+                    "proof_providers_v11", False
+                ),
+                decision_context_v32=analysis_data.get(
+                    "decision_context_v32", False
+                ),
+                structured_candidate_promotion_v1=analysis_data.get(
+                    "structured_candidate_promotion_v1", False
+                ),
+                proof_providers_v12=analysis_data.get(
+                    "proof_providers_v12", False
+                ),
+                decision_context_v33=analysis_data.get(
+                    "decision_context_v33", False
+                ),
+                finding_root_v1=analysis_data.get("finding_root_v1", False),
+                validator_evidence_slice_v2=analysis_data.get(
+                    "validator_evidence_slice_v2", False
+                ),
+                global_validation_group_queue=analysis_data.get(
+                    "global_validation_group_queue", True
+                ),
+                validation_cache_entries=analysis_data.get(
+                    "validation_cache_entries", 4096
+                ),
                 user_config_db=analysis_data.get("user_config_db", ""),
                 enable_global_model=analysis_data.get("enable_global_model", False),
+                candidate_first_validation=analysis_data.get(
+                    "candidate_first_validation", True
+                ),
                 max_premodel_depth=analysis_data.get("max_premodel_depth", 3),
                 max_premodel_callees=analysis_data.get("max_premodel_callees", 20),
                 trivial_function_max_lines=analysis_data.get("trivial_function_max_lines", 5),
@@ -582,7 +866,22 @@ class ConfigLoader:
                 enable_subagent_workers=analysis_data.get("enable_subagent_workers", False),
                 max_subagent_tickets=analysis_data.get("max_subagent_tickets", 4),
                 subagent_max_turns=analysis_data.get("subagent_max_turns", 20),
-                subagent_ticket_timeout=analysis_data.get("subagent_ticket_timeout", 0.0),
+                request_deadline_seconds=analysis_data.get(
+                    "request_deadline_seconds", 120.0
+                ),
+                validation_deadline_seconds=analysis_data.get(
+                    "validation_deadline_seconds", 240.0
+                ),
+                subagent_ticket_timeout=analysis_data.get(
+                    "subagent_ticket_timeout", 300.0
+                ),
+                entry_deadline_seconds=analysis_data.get(
+                    "entry_deadline_seconds", 1800.0
+                ),
+                scan_deadline_seconds=analysis_data.get("scan_deadline_seconds"),
+                budget_exhaustion_policy=analysis_data.get(
+                    "budget_exhaustion_policy", "observe"
+                ),
                 validation_parallel_workers=analysis_data.get("validation_parallel_workers", 0),
                 subagent_spawn_allowlist=ConfigLoader._string_list(
                     analysis_data.get("subagent_spawn_allowlist"),
@@ -602,7 +901,7 @@ class ConfigLoader:
             reporting_config = ReportingConfig(
                 semantic_dedup=SemanticDedupConfig(
                     enabled=semantic_dedup_data.get("enabled", True),
-                    llm_enabled=semantic_dedup_data.get("llm_enabled", True),
+                    llm_enabled=semantic_dedup_data.get("llm_enabled", False),
                     llm_confidence_threshold=float(
                         semantic_dedup_data.get("llm_confidence_threshold", 0.85)
                     ),
@@ -621,6 +920,7 @@ class ConfigLoader:
 
             entry_function = project_data.get("entry_function")
             entry_file_path = project_data.get("entry_file_path")
+            entry_signature = project_data.get("entry_signature")
             entry_functions_list = project_data.get("entry_functions_list")
 
             entry_discovery_data = project_data.get("entry_discovery") or {}
@@ -686,8 +986,10 @@ class ConfigLoader:
             project_config = ProjectConfig(
                 project_root=Path(project_root),
                 source_root=Path(project_data.get("source_root", project_root)),
+                project_id=str(project_data.get("id") or project_data.get("project_id") or ""),
                 entry_function=entry_function,
                 entry_file_path=entry_file_path,
+                entry_signature=entry_signature,
                 agents=agents,
                 compile_commands_path=compile_commands_path,
                 entry_functions_list=Path(entry_functions_list) if entry_functions_list else None,

@@ -29,7 +29,7 @@ class UnifiedBackend(CodeBackend):
         get_bc_path: str = "get-bc",
         llvm_link_path: str = "llvm-link",
         svf_heap_limit_mb: int = 32768,
-        svf_timeout: int = 1800,
+        svf_timeout: Optional[float] = 1800.0,
         svf_groups_config: str = "",
         svf_scope: str = "auto",
         svf_entry_depth: int = 4,

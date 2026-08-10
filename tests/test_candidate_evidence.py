@@ -78,6 +78,29 @@ def test_semantic_overlay_compiles_user_config_models() -> None:
     assert overlay["resource_models"][0]["carrier"] == "return_value"
     assert any(row.get("name") == "malloc" for row in overlay["resource_models"])
     assert any(row.get("source") == "builtin_defaults" for row in overlay["resource_models"])
+    assert overlay["engine_status"] == "complete"
+    assert overlay["engine_errors"] == []
+
+
+def test_semantic_overlay_query_failure_is_visible_not_an_empty_success() -> None:
+    class FailingUserConfig:
+        def list_external_functions(self):
+            raise RuntimeError("database unavailable")
+
+        def list_paired_functions(self):
+            return []
+
+    overlay = SemanticOverlayCompiler(FailingUserConfig()).compile()
+
+    assert overlay["engine_status"] == "degraded"
+    assert overlay["engine_errors"] == [
+        {
+            "operation": "list_external_functions",
+            "error": "RuntimeError: database unavailable",
+        }
+    ]
+    # Built-in semantics remain usable while completeness is reported honestly.
+    assert any(row.get("name") == "malloc" for row in overlay["resource_models"])
 
 
 def test_builtin_semantics_defaults_feed_local_pattern_roles() -> None:

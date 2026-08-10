@@ -646,7 +646,7 @@
         <div class="flex items-center gap-3">
             <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center font-bold text-white">Z</div>
             <div>
-                <h1 class="text-lg font-bold tracking-tight text-slate-950">Z-SCOPE <span class="text-xs font-normal text-slate-500" x-text="appVersion">v1.2</span></h1>
+                <h1 class="text-lg font-bold tracking-tight text-slate-950">Z-SCOPE <span class="text-xs font-normal text-slate-500" x-text="appVersion">v1.3</span></h1>
                 <p class="text-xs text-slate-500">AI 代码审计工作台</p>
             </div>
         </div>
@@ -1248,6 +1248,11 @@
                         <label class="form-control"><span class="label-text">max_function_lines</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.max_function_lines" @input="markConfigDirty()"></label>
                         <label class="form-control"><span class="label-text">max_tool_iterations</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.max_tool_iterations" @input="markConfigDirty()"></label>
                         <label class="form-control"><span class="label-text">parallel_workers</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.parallel_workers" @input="markConfigDirty()"></label>
+                        <label class="form-control"><span class="label-text">entry_workers</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.entry_workers" @input="markConfigDirty()"></label>
+                        <label class="form-control"><span class="label-text">llm_max_inflight</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.llm_max_inflight" @input="markConfigDirty()"></label>
+                        <label class="form-control"><span class="label-text">validator_workers</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.validator_workers" @input="markConfigDirty()"></label>
+                        <label class="form-control"><span class="label-text">investigator_workers</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.investigator_workers" @input="markConfigDirty()"></label>
+                        <label class="form-control"><span class="label-text">validation_cache_entries</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.validation_cache_entries" @input="markConfigDirty()"></label>
                     </div>
                     <label class="form-control"><span class="label-text">snapshot_dir</span><input class="input input-bordered input-sm" x-model="configForm.analysis.snapshot_dir" @input="markConfigDirty()"></label>
                     <label class="form-control"><span class="label-text">user_config_db</span><input class="input input-bordered input-sm" x-model="configForm.analysis.user_config_db" @input="markConfigDirty()"><span class="label-text-alt subtle-text">用户配置 workbook 或目录；为空时使用 snapshot_dir/user_config.xlsx。</span></label>
@@ -1459,7 +1464,7 @@
                 reportViewCache: {},
                 reportViewRequests: {},
                 findingsRequestSeq: 0,
-                appVersion: 'v1.2',
+                appVersion: 'v1.3',
                 statusText: '就绪',
                 statusClass: 'badge-ghost',
                 statusDotClass: 'bg-ghost',
@@ -1514,6 +1519,11 @@
                         max_function_lines: 500,
                         max_tool_iterations: 50,
                         parallel_workers: 5,
+                        entry_workers: 5,
+                        llm_max_inflight: 8,
+                        validator_workers: 0,
+                        investigator_workers: 4,
+                        validation_cache_entries: 4096,
                         snapshot_dir: '.zscope_snapshots',
                         user_config_db: '',
                         enable_snapshot_cache: true,
@@ -1997,6 +2007,11 @@
                         max_function_lines: analysis.max_function_lines ?? 500,
                         max_tool_iterations: analysis.max_tool_iterations ?? 50,
                         parallel_workers: analysis.parallel_workers ?? 5,
+                        entry_workers: analysis.entry_workers ?? analysis.parallel_workers ?? 5,
+                        llm_max_inflight: analysis.llm_max_inflight ?? 8,
+                        validator_workers: analysis.validator_workers ?? analysis.validation_parallel_workers ?? 0,
+                        investigator_workers: analysis.investigator_workers ?? analysis.parallel_workers ?? 4,
+                        validation_cache_entries: analysis.validation_cache_entries ?? 4096,
                         snapshot_dir: analysis.snapshot_dir || '.zscope_snapshots',
                         user_config_db: analysis.user_config_db || '',
                         enable_snapshot_cache: analysis.enable_snapshot_cache ?? true,
@@ -2036,6 +2051,11 @@
                     cfg.analysis.max_function_lines = Number(this.configForm.analysis.max_function_lines) || 500;
                     cfg.analysis.max_tool_iterations = Number(this.configForm.analysis.max_tool_iterations) || 50;
                     cfg.analysis.parallel_workers = Number(this.configForm.analysis.parallel_workers) || 5;
+                    cfg.analysis.entry_workers = Number(this.configForm.analysis.entry_workers) || cfg.analysis.parallel_workers;
+                    cfg.analysis.llm_max_inflight = Math.max(0, Number(this.configForm.analysis.llm_max_inflight) || 0);
+                    cfg.analysis.validator_workers = Math.max(0, Number(this.configForm.analysis.validator_workers) || 0);
+                    cfg.analysis.investigator_workers = Number(this.configForm.analysis.investigator_workers) || cfg.analysis.entry_workers;
+                    cfg.analysis.validation_cache_entries = Math.max(0, Number(this.configForm.analysis.validation_cache_entries) || 0);
                     cfg.analysis.snapshot_dir = this.configForm.analysis.snapshot_dir || '.zscope_snapshots';
                     cfg.analysis.user_config_db = this.configForm.analysis.user_config_db || '';
                     cfg.analysis.enable_snapshot_cache = Boolean(this.configForm.analysis.enable_snapshot_cache);

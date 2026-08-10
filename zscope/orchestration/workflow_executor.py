@@ -6,6 +6,7 @@ import datetime
 import logging
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set
 
+from ..common.cancellation import CancellationToken
 from .specs import WorkflowStep
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,7 @@ class WorkflowExecutor:
         scope: str,
         handlers: Dict[str, WorkflowStepHandler],
         progress: Optional[List[Dict[str, Any]]] = None,
+        cancellation_token: Optional[CancellationToken] = None,
     ) -> None:
         if scope not in WORKFLOW_SCOPES:
             valid = ", ".join(sorted(WORKFLOW_SCOPES))
@@ -76,6 +78,7 @@ class WorkflowExecutor:
         self.scope = scope
         self.handlers = handlers
         self.progress = progress if progress is not None else []
+        self.cancellation_token = cancellation_token
         self.current_step: Optional[str] = None
 
     def validate(self, steps: Iterable[WorkflowStep]) -> None:
@@ -91,9 +94,13 @@ class WorkflowExecutor:
 
     def execute(self, state: Dict[str, Any], steps: Sequence[WorkflowStep]) -> None:
         for step in self.steps_for_scope(steps):
+            if self.cancellation_token is not None:
+                self.cancellation_token.raise_if_cancelled()
             self._begin_step(step)
             try:
                 should_stop = self._execute_step(state, step)
+                if self.cancellation_token is not None:
+                    self.cancellation_token.raise_if_cancelled()
                 self._finish_step(step, "completed")
                 if self._should_stop(step, should_stop):
                     return

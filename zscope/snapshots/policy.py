@@ -486,42 +486,6 @@ def trivial_suspicious_points(
             }
         )
 
-    if "detected_protocol" in text and "auth_level" in text and re.search(r"return\s+0\s*;", text):
-        add(
-            kind="protocol_contract",
-            category="protocol_mixup",
-            description="Short protocol/auth gate can accept a protocol mismatch on a success branch.",
-            reason="Protocol mismatch plus non-strict auth fallback is security semantics, not a trivial wrapper.",
-            pattern=r"detected_protocol\s!=",
-        )
-
-    if re.search(r"\bversion\s*=", text) and re.search(r"\(void\)\s*version\s*;", text):
-        add(
-            kind="version_filtering_contract",
-            category="version_filtering",
-            description="Protocol version is parsed and explicitly ignored.",
-            reason="Version filtering is a boundary contract even when the function body is short.",
-            pattern=r"\bversion\s*=",
-        )
-
-    if "_validate_encoded_fd" in text and re.search(r"\braw_[a-z_0-9]*fd\s*=", text):
-        add(
-            kind="fd_encoding_contract",
-            category="fd_encoding_mismatch",
-            description="Raw fd-derived value is passed to an encoded-fd validator.",
-            reason="Fd representation conversion is a contract check that should remain auditable.",
-            pattern=r"\braw_[A-Za-z_0-9]*fd\s*=",
-        )
-
-    if "reliable_fd" in text and re.search(r"\b[A-Za-z_]\w*is_inter_fd\s*\(\s*reliable_fd\s*\)", text):
-        add(
-            kind="fd_type_contract",
-            category="fd_type_mismatch",
-            description="Reliable/encoded fd is passed to a raw/inter-fd classifier.",
-            reason="Fd representation contracts remain auditable even when the wrapper is one return statement.",
-            pattern=r"[A-Za-z_]\w*is_inter_fd\s*\(\s*reliable_fd\s*\)",
-        )
-
     if re.search(r"\b\w+\s*=\s*(?:\([^)]*\)\s*)?\(?\s*\w+\s*(?:\*|<<)", text) and re.search(
         r"\bmem(?:cpy|move)\s*\([^;]*(?:packet|frame|wire|blob)\s*\+[^;]*\)",
         text,

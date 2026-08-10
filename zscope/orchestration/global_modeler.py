@@ -30,6 +30,7 @@ from ..snapshots.modeling_input import (
     is_header_like_path,
 )
 from ..tools.policy import ToolPolicy
+from .scheduler import ENTRY_ROLE, ScanScheduler
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ class FunctionKey:
 
     name: str
     file_path: str = ""
+    signature: str = ""
 
 
 @dataclass
@@ -132,6 +134,7 @@ class GlobalModeler:
         semantic_agent_factory: SemanticAgentFactory,
         attach_contract: Optional[AttachContract] = None,
         max_workers: Optional[int] = None,
+        scheduler: Optional[ScanScheduler] = None,
     ) -> None:
         self.config = config
         self.code_index = code_index
@@ -139,7 +142,16 @@ class GlobalModeler:
         self.user_config = user_config
         self.semantic_agent_factory = semantic_agent_factory
         self.attach_contract = attach_contract or (lambda context, agent_name: None)
-        self.max_workers = max(1, int(max_workers or config.analysis.parallel_workers or 1))
+        self.scheduler = scheduler
+        self.max_workers = max(
+            1,
+            int(
+                max_workers
+                or getattr(config.analysis, "entry_workers", 0)
+                or config.analysis.parallel_workers
+                or 1
+            ),
+        )
         self._stats_lock = threading.Lock()
 
     @classmethod
@@ -154,6 +166,7 @@ class GlobalModeler:
         tools_factory: Callable[..., List[Any]],
         tool_policy_factory: Callable[[str], ToolPolicy],
         attach_contract: AttachContract,
+        scheduler: Optional[ScanScheduler] = None,
     ) -> "GlobalModeler":
         sm_agent_cfg = next(
             (a for a in config.project.agents if a.name == "semantic_modeler"),
@@ -178,7 +191,11 @@ class GlobalModeler:
             user_config,
             semantic_agent_factory=make_agent,
             attach_contract=attach_contract,
-            max_workers=config.analysis.parallel_workers,
+            scheduler=scheduler,
+            max_workers=(
+                getattr(config.analysis, "entry_workers", 0)
+                or config.analysis.parallel_workers
+            ),
         )
 
     def run(self, entries: Sequence[FunctionEntry]) -> GlobalModelStats:
@@ -225,17 +242,34 @@ class GlobalModeler:
         ready = [idx for idx, count in pending_children.items() if count == 0]
         done_components: Set[int] = set()
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+        executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        if self.scheduler is None:
+            executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.max_workers,
+                thread_name_prefix="zscope-global-model",
+            )
+        try:
             future_to_component: Dict[concurrent.futures.Future[None], int] = {}
             while ready or future_to_component:
                 while ready:
                     component_idx = ready.pop()
-                    future = executor.submit(
-                        self._model_component,
-                        components[component_idx],
-                        graph,
-                        stats,
-                    )
+                    if self.scheduler is not None:
+                        future = self.scheduler.submit(
+                            ENTRY_ROLE,
+                            self._model_component,
+                            components[component_idx],
+                            graph,
+                            stats,
+                            priority=len(components[component_idx]),
+                        )
+                    else:
+                        assert executor is not None
+                        future = executor.submit(
+                            self._model_component,
+                            components[component_idx],
+                            graph,
+                            stats,
+                        )
                     future_to_component[future] = component_idx
 
                 done, _pending = concurrent.futures.wait(
@@ -250,6 +284,9 @@ class GlobalModeler:
                         pending_children[parent_idx] -= 1
                         if pending_children[parent_idx] == 0 and parent_idx not in done_components:
                             ready.append(parent_idx)
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
 
         if stats.failed_functions == 0 and stats.unresolved_entry_functions == 0:
             self._reconcile_project_callee_summaries(graph, stats)
@@ -260,7 +297,14 @@ class GlobalModeler:
     def _collect_graph(self, entries: Sequence[FunctionEntry]) -> _Graph:
         graph = _Graph()
         queue: List[Tuple[FunctionKey, int]] = [
-            (FunctionKey(entry.function_name, str(entry.file_path or "")), 0)
+            (
+                FunctionKey(
+                    entry.function_name,
+                    str(entry.file_path or ""),
+                    FunctionEntry.normalize_signature(entry.signature),
+                ),
+                0,
+            )
             for entry in entries
         ]
         graph.entry_keys = {key for key, _depth in queue}
@@ -611,6 +655,24 @@ class GlobalModeler:
         return not needs_refresh
 
     def _get_impl(self, key: FunctionKey, *, include_context: bool) -> Optional[Dict[str, Any]]:
+        result: Optional[Dict[str, Any]] = None
+        if key.signature:
+            try:
+                result = self.code_index.get_function_impl(
+                    key.signature,
+                    max_lines=self.config.analysis.max_function_lines,
+                    warn_missing=False,
+                    include_context=include_context,
+                    file_path=key.file_path,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "[global-model] Signature lookup unavailable key=%s error=%s",
+                    self._format_key(key),
+                    exc,
+                )
+        if result is not None:
+            return result
         try:
             impl = self.code_index.get_function_impl(
                 key.name,
@@ -639,10 +701,12 @@ class GlobalModeler:
             return self.code_index.get_function_impl(key.name)
 
     def _get_callee_records(self, key: FunctionKey, limit: int) -> List[Any]:
-        try:
+        records = self.code_index.get_callees(
+            key.signature or key.name,
+            limit=limit,
+        )
+        if not records and key.signature:
             records = self.code_index.get_callees(key.name, limit=limit)
-        except Exception:
-            records = []
         if records:
             return list(records)
         impl = self._get_impl(key, include_context=True)
@@ -652,7 +716,11 @@ class GlobalModeler:
 
     @staticmethod
     def _key_from_impl(func_name: str, impl: Dict[str, Any]) -> FunctionKey:
-        return FunctionKey(str(impl.get("func_name") or func_name), str(impl.get("file") or ""))
+        return FunctionKey(
+            str(impl.get("func_name") or func_name),
+            str(impl.get("file") or ""),
+            FunctionEntry.normalize_signature(impl.get("signature") or ""),
+        )
 
     @staticmethod
     def _key_from_callee_record(record: Any) -> FunctionKey:
@@ -674,11 +742,17 @@ class GlobalModeler:
             or record.get("callee_file")
             or ""
         )
-        return FunctionKey(name, file_path)
+        signature = FunctionEntry.normalize_signature(
+            record.get("signature")
+            or record.get("callee_signature")
+            or ""
+        )
+        return FunctionKey(name, file_path, signature)
 
     @staticmethod
     def _format_key(key: FunctionKey) -> str:
-        return f"{key.name}@{key.file_path}" if key.file_path else key.name
+        base = f"{key.name}@{key.file_path}" if key.file_path else key.name
+        return f"{base}::{key.signature}" if key.signature else base
 
     def _strongly_connected_components(
         self,

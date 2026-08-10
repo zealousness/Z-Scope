@@ -153,6 +153,107 @@ def test_function_list_loader_preserves_entry_discovery_metadata(tmp_path) -> No
     assert entries[0].reasons == ["input:argv"]
 
 
+def test_function_entry_identity_is_cross_platform_and_signature_complete(
+    tmp_path,
+) -> None:
+    source = tmp_path / "src" / "net" / "handler.c"
+    windows_style = str(source).replace("/", "\\")
+    absolute_entry = FunctionEntry(
+        "handle",
+        file_path=windows_style,
+        signature="int   handle( const char * value )",
+    )
+    relative_entry = FunctionEntry(
+        "handle",
+        file_path="src/net/handler.c",
+        signature="int handle( const char * value )",
+    )
+
+    assert absolute_entry.identity_key(tmp_path) == relative_entry.identity_key(
+        tmp_path
+    )
+    assert relative_entry.identity_key(tmp_path) == (
+        "src/net/handler.c::int handle( const char * value )"
+    )
+
+
+def test_function_list_loader_preserves_entry_signature(tmp_path) -> None:
+    path = tmp_path / "entries.json"
+    path.write_text(
+        """
+        {
+          "functions": [
+            {
+              "function_name": "handle",
+              "file_path": "src/handler.c",
+              "signature": "int handle(const char *value)"
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    entry = FunctionListLoader.load(path)[0]
+
+    assert entry.lookup_query() == "int handle(const char *value)"
+    assert entry.identity_key() == (
+        "src/handler.c::int handle(const char *value)"
+    )
+
+
+def test_parallel_entry_result_key_distinguishes_same_file_overloads() -> None:
+    integer = FunctionEntry(
+        "parse",
+        file_path=r"src\parser.cc",
+        signature="int parse(int value)",
+    )
+    text = FunctionEntry(
+        "parse",
+        file_path="src/parser.cc",
+        signature="int parse(const char *value)",
+    )
+
+    integer_key = ParallelAnalyzer._entry_result_key(integer)
+    text_key = ParallelAnalyzer._entry_result_key(text)
+
+    assert integer_key != text_key
+    assert "src/parser.cc" in integer_key
+    assert "int parse(int value)" in integer_key
+
+
+def test_parallel_materializes_ambiguous_legacy_entry_as_distinct_identities(
+    tmp_path,
+) -> None:
+    class SameNameIndex:
+        def find_function_identities(self, func_name, file_path=""):
+            assert func_name == "handle"
+            return [
+                {
+                    "function_name": "handle",
+                    "file_path": r"src\alpha\handler.c",
+                    "signature": "static int handle(int value)",
+                },
+                {
+                    "function_name": "handle",
+                    "file_path": "src/beta/handler.c",
+                    "signature": "static int handle(const char *value)",
+                },
+            ]
+
+    analyzer = object.__new__(ParallelAnalyzer)
+    analyzer.base_config = _config_with_task("general security audit")
+    analyzer.base_config.project.project_root = tmp_path
+    analyzer.code_index = SameNameIndex()
+
+    entries = analyzer._materialize_entry_identities([FunctionEntry("handle")])
+
+    assert [entry.identity_key(tmp_path) for entry in entries] == [
+        "src/alpha/handler.c::static int handle(int value)",
+        "src/beta/handler.c::static int handle(const char *value)",
+    ]
+
+
 def test_function_list_loader_restores_diff_focus_from_file_metadata(tmp_path) -> None:
     path = tmp_path / "entry_functions_diff.json"
     path.write_text(

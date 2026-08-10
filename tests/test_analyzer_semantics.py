@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from zscope.core.analysis.analyzer import Analyzer
 from zscope.core.candidates.regex import (
     RegexCandidateGenerator,
@@ -13,6 +15,8 @@ from zscope.core.candidates.backend_signals import (
 )
 from zscope.common.issue_identity import normalize_issue_category, normalize_issue_fields
 from zscope.core.validation.evidence import compact_snapshot
+from zscope.orchestration.candidates import CandidateLedger
+from zscope.orchestration.skill_selection import SkillSelection
 from zscope.semantics.inference import add_api_from_semantic_text, snapshot_contract_text
 from zscope.snapshots.policy import (
     DETERMINISTIC_SNAPSHOT_OPTIONAL_FIELDS,
@@ -63,6 +67,133 @@ def test_snapshot_semantic_text_does_not_reclassify_described_function_as_api() 
     assert "_lifecycle_tick_timer_callback" not in semantics.lock_apis
     assert "_lifecycle_tick_timer_callback" not in semantics.unlock_apis
     assert "_lifecycle_tick_timer_callback" not in semantics.deallocators
+
+
+def test_llm_iteration_budget_is_observed_without_hard_failure() -> None:
+    analyzer = object.__new__(Analyzer)
+    analyzer.config = SimpleNamespace(
+        analysis=SimpleNamespace(max_tool_iterations=50)
+    )
+    state = {"budget_observations": [], "any_failure": False}
+    response = SimpleNamespace(
+        success=False,
+        error="Max iterations reached without finding a JSON report in history",
+        metadata={"truncated": True, "iterations": 50},
+    )
+
+    reached = analyzer._record_llm_iteration_budget(
+        state,
+        response,
+        agent_name="vulnerability_analyzer",
+        outcome="incomplete",
+    )
+
+    assert reached is True
+    assert state["any_failure"] is False
+    assert state["budget_observations"] == [
+        {
+            "kind": "llm_iteration_budget",
+            "agent": "vulnerability_analyzer",
+            "configured_iterations": 50,
+            "observed_iterations": 50,
+            "budget_reached": True,
+            "outcome": "incomplete",
+            "hard_failure": False,
+        }
+    ]
+
+
+def test_candidate_first_skips_entry_scoped_investigator_planning() -> None:
+    analyzer = object.__new__(Analyzer)
+    analyzer.config = SimpleNamespace(
+        analysis=SimpleNamespace(candidate_first_validation=True)
+    )
+    recorded = []
+    analyzer._record_engine_capability = lambda *args, **kwargs: recorded.append(
+        (args, kwargs)
+    )
+    state = {"notes": []}
+
+    analyzer._step_focused_subagent_planning(state)
+
+    assert "skipped for the candidate-first" in state["notes"][0]
+    assert recorded == [
+        (
+            ("focused_investigators",),
+            {
+                "status": "complete",
+                "active": False,
+                "reason": "candidate_first_validation",
+            },
+        )
+    ]
+
+
+def test_candidate_first_uses_local_skill_routing_before_fact_collection() -> None:
+    batch = SimpleNamespace(
+        local_candidates=[],
+        graph_candidates=[],
+        backend_candidates=[],
+        merged_candidates=[],
+        summary_increment=lambda: {},
+    )
+    analyzer = object.__new__(Analyzer)
+    analyzer.config = SimpleNamespace(
+        analysis=SimpleNamespace(candidate_first_validation=True),
+        project=SimpleNamespace(
+            agents=[
+                SimpleNamespace(
+                    enabled=True,
+                    name="vulnerability_analyzer",
+                    task="Audit memory and concurrency defects",
+                    skills=[],
+                )
+            ]
+        ),
+    )
+    analyzer.candidate_pipeline = SimpleNamespace(
+        collect_signal_candidates=lambda state: batch,
+        accumulate_summary=lambda state, candidate_batch: None,
+        persist=lambda candidate_batch: None,
+    )
+    observed_configs = []
+    analyzer._candidate_first_skill_selection = lambda cfg: (
+        observed_configs.append(cfg) or SkillSelection(skills=[], restricted=False)
+    )
+    analyzer._attach_agent_contract = lambda *args, **kwargs: None
+    analyzer._compact_candidate_signal_items = lambda *args, **kwargs: []
+    analyzer._register_candidate_issues = lambda *args, **kwargs: None
+    analyzer._deduplicate_against_history = lambda candidates, state: candidates
+    analyzer._record_engine_capability = lambda *args, **kwargs: None
+    state = {"agent_context": {}, "pending_new_issues": [], "notes": []}
+
+    analyzer._step_vulnerability_mining(state)
+
+    assert observed_configs == [analyzer.config.project.agents[0]]
+    assert state["pending_new_issues"] == []
+
+
+def test_candidate_first_skill_selection_keeps_every_deterministic_skill() -> None:
+    analyzer = object.__new__(Analyzer)
+    analyzer.spec_registry = SimpleNamespace(
+        skills_for_agent=lambda name, extra: [
+            SimpleNamespace(name="bounds_and_integer"),
+            SimpleNamespace(name="resource_lifecycle"),
+            SimpleNamespace(name="shared_state_race"),
+        ]
+    )
+
+    selection = analyzer._candidate_first_skill_selection(
+        SimpleNamespace(skills=[])
+    )
+
+    assert selection.skills == [
+        "bounds_and_integer",
+        "resource_lifecycle",
+        "shared_state_race",
+    ]
+    assert selection.restricted is False
+    assert selection.source == "candidate_first_complete"
 
 
 def test_snapshot_contract_text_prefers_new_fields_and_keeps_legacy_fallback() -> None:
@@ -170,6 +301,97 @@ def test_facade_callee_candidates_expand_dispatcher_siblings_at_depth_cap() -> N
     )
 
     assert any(issue.get("function") == "handle_b" for issue in issues)
+
+
+def test_direct_callee_fact_limit_is_reported_as_deferred_work() -> None:
+    class FakeIndex:
+        def get_function_impl(self, name: str, warn_missing: bool = False):
+            return {
+                "first": {
+                    "file": "src/demo.c",
+                    "code": "1 | void first(void) { second(); }",
+                    "callees": ["second"],
+                },
+                "second": {
+                    "file": "src/demo.c",
+                    "code": "2 | void second(void) {}",
+                    "callees": [],
+                },
+            }.get(name)
+
+    analyzer = object.__new__(Analyzer)
+    analyzer.code_index = FakeIndex()
+    analyzer.candidate_ledger = CandidateLedger(project_id="demo", revision="rev")
+    state = {
+        "entry_func": "entry",
+        "entry_identity": "src/demo.c::entry(void)",
+        "deferred_deterministic_work": [],
+    }
+
+    analyzer._detect_direct_callee_rule_candidates(
+        {"callees": ["first"]},
+        RegexCandidateGenerator(),
+        state=state,
+        entry_func="entry",
+        max_depth=1,
+    )
+
+    deferred = state["deferred_deterministic_work"]
+    assert [item["function_name"] for item in deferred] == ["second"]
+    assert deferred[0]["candidate_disposition"] == "deferred_budget"
+    assert (
+        analyzer._runtime_engine_capabilities[
+            "deterministic_local_rules_callee_facts"
+        ]["status"]
+        == "degraded"
+    )
+
+
+def test_direct_callee_scan_budget_expands_to_complete_indexed_project() -> None:
+    class FakeIndex:
+        def list_functions(self, limit=None):
+            assert limit is None
+            return ["entry", "first", "second", "third", "fourth"]
+
+    analyzer = object.__new__(Analyzer)
+    analyzer.code_index = FakeIndex()
+    analyzer.config = type(
+        "Config",
+        (),
+        {"analysis": type("Analysis", (), {"max_premodel_callees": 16, "max_premodel_depth": 2})()},
+    )()
+
+    budget = analyzer._direct_callee_rule_scan_budget(
+        {"premodel_callees": 2, "premodel_depth": 1, "hard_caps": {}}
+    )
+
+    assert budget["max_depth"] >= 5
+    assert budget["total_limit"] >= 5
+
+
+def test_graph_impl_query_failure_is_exposed() -> None:
+    class FailingIndex:
+        def get_function_impl(self, name: str, warn_missing: bool = False):
+            raise RuntimeError("index offline")
+
+    generator = GraphCandidateGenerator(FailingIndex(), LocalPatternSemantics())
+    generator.generate_for_entry(
+        "entry",
+        {
+            "file": "src/demo.c",
+            "code": "1 | void entry(void) { child(); }",
+            "callees": ["child"],
+        },
+        max_depth=2,
+        max_functions=8,
+    )
+
+    assert generator.last_query_errors == [
+        {
+            "function_name": "child",
+            "error": "RuntimeError: index offline",
+        }
+    ]
 
 
 def test_graph_candidates_detect_free_wrapper_omitted_dynamic_payload() -> None:
@@ -640,7 +862,7 @@ def test_premodel_callee_collection_uses_per_level_cap_and_light_impls() -> None
     )
 
     assert (modeled, skipped, tokens) == (0, 4, 0)
-    assert analyzer.code_index.callee_calls == ["entry", "a0", "a1"]
+    assert analyzer.code_index.callee_calls == ["entry", "a0", "a1", "b0", "b1"]
     assert analyzer.code_index.impl_context_flags == [
         False,
         False,
@@ -656,70 +878,25 @@ def test_premodel_callee_collection_uses_per_level_cap_and_light_impls() -> None
 def test_trivial_snapshot_keeps_security_contract_points_auditable() -> None:
     cases = [
         (
-            "_issue41_lax_protocol_mismatch",
+            "update_shared_state",
             "state_protocol",
             """
-1731 | int _issue41_lax_protocol_mismatch(int detected_protocol, int auth_level) {
-1732 |     if (detected_protocol != ISSUE41_PROTOCOL_RPC) {
-1733 |         if (auth_level != ISSUE41_AUTH_STRICT) {
-1734 |             return 0;
-1735 |         }
-1736 |     }
-1737 |     return 0;
-1738 | }
-""",
-        ),
-        (
-            "_issue41_missing_version_filter",
-            "input_validation",
-            """
-1790 | int _issue41_missing_version_filter(const unsigned char* report, size_t len) {
-1791 |     uint8_t version = report[0];
-1792 |     uint8_t state = report[1];
-1793 |     (void)version;
-1794 |     return state == TASK_STATUS_FAILED ? -1 : 0;
-1795 | }
-""",
-        ),
-        (
-            "_issue41_raw_fd_missing_encode",
-            "type_confusion",
-            """
-1843 | int _issue41_raw_fd_missing_encode(int listen_fd, int work_fd) {
-1844 |     int raw_work_fd = work_fd + 1;
-1845 |     return _issue41_validate_encoded_fd(raw_work_fd);
-1846 | }
-""",
-        ),
-        (
-            "_issue41_reliable_fd_to_raw_interface",
-            "type_confusion",
-            """
-1727 | int _issue41_reliable_fd_to_raw_interface(int reliable_fd) {
-1728 |     return _issue41_is_inter_fd(reliable_fd);
-1729 | }
-""",
-        ),
-        (
-            "_real_model_syscall_state_not_restored",
-            "state_protocol",
-            """
-1461 | int _real_model_syscall_state_not_restored(int fd) {
-1462 |     int previous = g_real_registry.state;
-1463 |     g_real_registry.state = fd;
+1461 | int update_shared_state(int fd) {
+1462 |     int previous = g_service_registry.state;
+1463 |     g_service_registry.state = fd;
 1464 |     if (fcntl(fd, F_GETFD) < 0) {
 1465 |         return -1;
 1466 |     }
-1467 |     previous = g_real_registry.state;
+1467 |     previous = g_service_registry.state;
 1468 |     return previous;
 1469 | }
 """,
         ),
         (
-            "_real_model_protocol_length_miscalc",
+            "copy_record_body",
             "bounds",
             """
-1354 | int _real_model_protocol_length_miscalc(const unsigned char* packet, size_t packet_len,
+1354 | int copy_record_body(const unsigned char* packet, size_t packet_len,
 1355 |                                         unsigned char* out, size_t out_len) {
 1356 |     if (!packet || !out || packet_len < 4) {
 1357 |         return -1;
@@ -761,6 +938,63 @@ def test_trivial_snapshot_keeps_security_contract_points_auditable() -> None:
         assert all("confidence" not in point for point in snapshot["suspicious_points"])
 
     assert not Analyzer._is_trivial_function(cases[-1][2], max_lines_threshold=10)
+
+
+def test_trivial_snapshot_does_not_infer_contracts_from_fixture_names() -> None:
+    cases = [
+        """
+10 | int authorize(int detected_protocol, int auth_level) {
+11 |     if (detected_protocol != 3 && auth_level != 7) {
+12 |         return 0;
+13 |     }
+14 |     return -1;
+15 | }
+""",
+        """
+20 | int inspect(const unsigned char* report) {
+21 |     uint8_t version = report[0];
+22 |     (void)version;
+23 |     return 0;
+24 | }
+""",
+        """
+30 | int transform(int work_fd) {
+31 |     int raw_work_fd = work_fd + 1;
+32 |     return project_validate_encoded_fd(raw_work_fd);
+33 | }
+""",
+        """
+40 | int bridge(int reliable_fd) {
+41 |     return project_is_inter_fd(reliable_fd);
+42 | }
+""",
+    ]
+
+    forbidden_types = {
+        "protocol_contract",
+        "version_filtering_contract",
+        "fd_encoding_contract",
+        "fd_type_contract",
+    }
+    for index, code in enumerate(cases):
+        snapshot = Analyzer._build_trivial_snapshot(
+            f"fixture_name_case_{index}",
+            {
+                "file": "src/generic.c",
+                "index_name": f"fixture_name_case_{index}@src/generic.c:1-50",
+                "start_line": 1,
+                "end_line": 50,
+                "signature": f"int fixture_name_case_{index}(void)",
+                "is_static": False,
+                "is_macro": False,
+                "code": code,
+                "callees": [],
+            },
+        )
+
+        assert forbidden_types.isdisjoint(
+            point["type"] for point in snapshot["suspicious_points"]
+        )
 
 
 def test_trivial_snapshot_marks_facade_forwarding_as_auditable() -> None:
@@ -1567,6 +1801,96 @@ def test_clang_knowledge_candidates_reuse_precomputed_reachable_set() -> None:
     assert index.calls == calls_after_precompute
 
 
+def test_deterministic_database_collectors_page_until_exhausted() -> None:
+    taint_rows = [{"row": index} for index in range(5)]
+    pair_rows = [{"function": f"f{index}"} for index in range(5)]
+    taint_offsets = []
+    pair_offsets = []
+
+    class FakeDB:
+        def get_enriched_taint_bugs(
+            self,
+            *,
+            func_names,
+            limit: int,
+            offset: int,
+        ):
+            assert func_names == ["entry"]
+            taint_offsets.append(offset)
+            return taint_rows[offset : offset + limit]
+
+    def find_missing(
+        acquire: str,
+        release: str,
+        *,
+        limit: int,
+        offset: int,
+    ):
+        assert (acquire, release) == ("open", "close")
+        pair_offsets.append(offset)
+        return pair_rows[offset : offset + limit]
+
+    bugs, legacy = Analyzer._collect_enriched_taint_bugs(
+        FakeDB(),
+        reachable_funcs={"entry"},
+        entry_func="entry",
+        page_size=2,
+    )
+    missing, missing_legacy = Analyzer._collect_missing_release_rows(
+        find_missing,
+        "open",
+        "close",
+        page_size=2,
+    )
+
+    assert bugs == taint_rows
+    assert not legacy
+    assert taint_offsets == [0, 2, 4]
+    assert missing == pair_rows
+    assert not missing_legacy
+    assert pair_offsets == [0, 2, 4]
+
+
+def test_deterministic_pagination_fails_closed_when_adapter_ignores_offset() -> None:
+    class StuckDB:
+        def get_enriched_taint_bugs(
+            self,
+            *,
+            func_names,
+            limit: int,
+            offset: int,
+        ):
+            return [{"row": 1}, {"row": 2}]
+
+    with pytest.raises(RuntimeError, match="did not advance"):
+        Analyzer._collect_enriched_taint_bugs(
+            StuckDB(),
+            reachable_funcs={"entry"},
+            entry_func="entry",
+            page_size=2,
+        )
+
+
+def test_paged_adapter_internal_type_error_is_not_misread_as_legacy_api() -> None:
+    class BrokenDB:
+        def get_enriched_taint_bugs(
+            self,
+            *,
+            func_names,
+            limit: int,
+            offset: int,
+        ):
+            raise TypeError("decoder failed inside adapter")
+
+    with pytest.raises(TypeError, match="decoder failed"):
+        Analyzer._collect_enriched_taint_bugs(
+            BrokenDB(),
+            reachable_funcs={"entry"},
+            entry_func="entry",
+            page_size=2,
+        )
+
+
 def test_clang_pair_row_normalizes_to_candidate() -> None:
     analyzer = object.__new__(Analyzer)
     row = {
@@ -1596,4 +1920,47 @@ def test_clang_pair_row_normalizes_to_candidate() -> None:
 
 def test_config_pair_names_split_csv() -> None:
     assert split_config_pair_names("CloseA, CloseB") == ["CloseA", "CloseB"]
+
+
+def test_candidate_ir_database_failure_marks_engine_incomplete() -> None:
+    class RecordingLock:
+        def __init__(self):
+            self.entries = 0
+
+        def __enter__(self):
+            self.entries += 1
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FailedDb:
+        def upsert_ir_statement(self, *args, **kwargs):
+            raise RuntimeError("database is read-only")
+
+        def commit(self):
+            raise RuntimeError("commit failed")
+
+    analyzer = object.__new__(Analyzer)
+    analyzer._get_knowledge_db = lambda: FailedDb()
+    writer_lock = RecordingLock()
+    analyzer._candidate_ir_persistence_lock = writer_lock
+
+    analyzer._persist_candidate_ir_records(
+        [
+            {
+                "id": "CANDIDATE_1",
+                "function": "entry",
+                "location": "src/demo.c:7",
+                "defect_class": "bounds",
+                "description": "candidate",
+            }
+        ]
+    )
+
+    capability = analyzer._runtime_engine_capabilities["candidate_ir_persistence"]
+    assert capability["status"] == "failed"
+    assert capability["persisted_count"] == 0
+    assert capability["failure_count"] == 2
+    assert writer_lock.entries == 1
  

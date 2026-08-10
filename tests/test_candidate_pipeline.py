@@ -37,3 +37,30 @@ def test_candidate_pipeline_collects_merges_summarizes_and_persists() -> None:
     assert len(refreshed) == 1
     assert refreshed[0][0][1] == "candidate_signals"
     assert [item["id"] for item in persisted] == ["r", "c", "g"]
+
+
+def test_candidate_pipeline_reuses_deterministic_signal_batch_per_entry() -> None:
+    calls = {"local": 0, "graph": 0, "backend": 0}
+
+    def detector(name, result):
+        def run(_state):
+            calls[name] += 1
+            return [result]
+
+        return run
+
+    pipeline = CandidatePipeline(
+        local_detector=detector("local", {"id": "l"}),
+        graph_detector=detector("graph", {"id": "g"}),
+        backend_detector=detector("backend", {"id": "b"}),
+        unified_merger=lambda candidates: list(candidates),
+        budget_refresher=lambda *_args, **_kwargs: None,
+        candidate_persister=lambda _candidates: None,
+    )
+    state = {}
+
+    first = pipeline.collect_signal_candidates(state)
+    second = pipeline.collect_signal_candidates(state)
+
+    assert calls == {"local": 1, "graph": 1, "backend": 1}
+    assert first.merged_candidates == second.merged_candidates

@@ -201,9 +201,6 @@ class WorkflowStep:
     handler: str = ""
     agent: str = ""
     action: str = ""
-    skills: List[str] = field(default_factory=list)
-    context_policy: str = ""
-    spawn_policy: str = ""
     stop_policy: str = "continue"
     required: bool = True
 
@@ -215,7 +212,6 @@ class WorkflowSpec:
     name: str
     description: str = ""
     mode: str = "default"
-    entry_strategy: str = "configured"
     steps: List[WorkflowStep] = field(default_factory=list)
     path: Optional[Path] = None
 
@@ -228,6 +224,16 @@ class WorkflowSpec:
         for idx, raw in enumerate(data.get("steps") or []):
             if not isinstance(raw, dict):
                 continue
+            unsupported = sorted(
+                key
+                for key in ("skills", "context_policy", "spawn_policy")
+                if raw.get(key) not in (None, "", [], {})
+            )
+            if unsupported:
+                raise ValueError(
+                    f"Workflow step {raw.get('id') or idx + 1!r} uses unsupported "
+                    f"non-executable field(s): {', '.join(unsupported)}"
+                )
             steps.append(
                 WorkflowStep(
                     id=str(raw.get("id") or f"step_{idx + 1}"),
@@ -235,9 +241,6 @@ class WorkflowSpec:
                     handler=str(raw.get("handler") or ""),
                     agent=str(raw.get("agent") or ""),
                     action=str(raw.get("action") or ""),
-                    skills=_as_list(raw.get("skills")),
-                    context_policy=str(raw.get("context_policy") or ""),
-                    spawn_policy=str(raw.get("spawn_policy") or ""),
                     stop_policy=str(raw.get("stop_policy") or "continue"),
                     required=_as_bool(raw.get("required"), True),
                 )
@@ -246,7 +249,6 @@ class WorkflowSpec:
             name=str(data.get("name") or path.stem),
             description=str(data.get("description") or ""),
             mode=str(data.get("mode") or path.stem),
-            entry_strategy=str(data.get("entry_strategy") or "configured"),
             steps=steps,
             path=path,
         )
@@ -255,7 +257,6 @@ class WorkflowSpec:
         lines = [
             f"## Workflow: {self.name}",
             f"Mode: {self.mode}",
-            f"Entry strategy: {self.entry_strategy}",
             f"Description: {self.description}",
             "Steps:",
         ]
@@ -263,7 +264,6 @@ class WorkflowSpec:
             lines.append(
                 f"- {step.id}: scope={step.scope}, handler={step.handler or step.id}, "
                 f"agent={step.agent}, action={step.action}, "
-                f"skills={','.join(step.skills) or 'none'}, spawn={step.spawn_policy or 'none'}, "
                 f"stop={step.stop_policy}"
             )
         return "\n".join(lines)

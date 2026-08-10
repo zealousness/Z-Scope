@@ -110,6 +110,7 @@ class ClangAstCfgCandidateGenerator:
         "permission": "CWE-732",
         "key_truncation": "CWE-187",
         "key_generation_race": "CWE-362",
+        "incomplete_cleanup": "CWE-401",
     }
     _SKILL_BY_CLASS = {
         "memory_leak": "resource_lifecycle",
@@ -448,6 +449,13 @@ class ClangAstCfgCandidateGenerator:
                             ),
                         )
                         emitted_realloc.add((var, line.number))
+                # Assignment directly into an explicit global lvalue transfers
+                # this local acquisition to durable program ownership.  It may
+                # still be subject to a separate global-lifetime analysis, but
+                # it is not a leak on this function's return path.
+                if self._is_global_owner_lvalue(var):
+                    freed.pop(var, None)
+                    continue
                 live[var] = ResourceState(var=var, api=api, line=line, carrier="return_value")
                 freed.pop(var, None)
                 continue
@@ -785,8 +793,28 @@ class ClangAstCfgCandidateGenerator:
         lines: Sequence[ClangCfgLine],
         allowed_skills: Optional[Set[str]],
     ) -> None:
+        signature = "\n".join(item.text for item in lines[:3])
+        if (
+            re.search(r"\b[A-Za-z_]\w*unlock[A-Za-z_]\w*\s*\(", signature, re.I)
+            and any(
+                re.search(r"\bpthread_(?:mutex|rwlock)_unlock\s*\(", item.text)
+                for item in lines
+            )
+        ):
+            return
         held: List[LockState] = []
         for line in lines:
+            # Macro definitions and thin unlock wrappers describe a protocol;
+            # they are not call sites that can establish whether a caller
+            # holds the lock.  Treating their bodies as ordinary functions
+            # produced one false candidate for every use of the macro.
+            if line.text.lstrip().startswith("#"):
+                continue
+            if (
+                "wrapper" in func_name.lower()
+                and re.search(r"\b(?:unlock|pthread_mutex_unlock|pthread_rwlock_unlock)\b", line.text, re.I)
+            ):
+                continue
             lock = self._match_lock(line.text)
             if lock:
                 api, lock_id = lock
@@ -806,12 +834,18 @@ class ClangAstCfgCandidateGenerator:
                 )
             elif unlock and held:
                 _, lock_id = unlock
-                match_idx = next(
-                    (idx for idx in range(len(held) - 1, -1, -1) if held[idx].lock_id == lock_id),
-                    len(held) - 1,
-                )
-                held.pop(match_idx)
+                # An unlock on a branch that returns does not release the
+                # fall-through path.  Keeping it in the linear state machine
+                # made the later normal-path unlock look unmatched.
+                if not self._is_terminal_conditional_branch_line(lines, line):
+                    match_idx = next(
+                        (idx for idx in range(len(held) - 1, -1, -1) if held[idx].lock_id == lock_id),
+                        len(held) - 1,
+                    )
+                    held.pop(match_idx)
             if not held or not self._is_return(line.text):
+                continue
+            if self._is_terminal_conditional_branch_line(lines, line):
                 continue
             if self._return_is_error_guard_for_lock(line.text, held[-1].lock_id):
                 continue
@@ -1260,6 +1294,163 @@ class ClangAstCfgCandidateGenerator:
         self._emit_unlocked_global_state_write_candidates(issues, func_name, file_path, lines, allowed_skills)
         self._emit_permission_mode_candidate(issues, func_name, file_path, lines, allowed_skills)
         self._emit_timer_callback_lock_order_candidate(issues, func_name, file_path, lines, allowed_skills)
+        self._emit_container_unlink_lifecycle_candidate(
+            issues, func_name, file_path, lines, allowed_skills
+        )
+        self._emit_incomplete_owner_cleanup_candidate(
+            issues, func_name, file_path, lines, allowed_skills
+        )
+
+    def _emit_container_unlink_lifecycle_candidate(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+    ) -> None:
+        """Find a detached container member that loses all visible ownership.
+
+        This is deliberately based on the unlink/transfer/release protocol,
+        not on container API names.  An unlink by itself is harmless when the
+        member is returned, stored in another owner, or released locally.
+        """
+
+        for line in lines:
+            unlink = re.search(
+                r"(?P<link>[A-Za-z_]\w*(?:->|\.)[A-Za-z_]\w*)\s*=\s*"
+                r"(?P<object>[A-Za-z_]\w*)\s*->\s*(?:next|prev)\s*;",
+                line.text,
+            )
+            if not unlink:
+                continue
+            obj = unlink.group("object")
+            tail = "\n".join(item.text for item in lines[line.index + 1 :])
+            if re.search(
+                rf"\b[A-Za-z_0-9]*(?:free|release|destroy|cleanup|close)[A-Za-z_0-9]*\s*\([^;]*\b{re.escape(obj)}\b",
+                tail,
+                re.IGNORECASE,
+            ):
+                continue
+            if re.search(
+                rf"\breturn\s+{re.escape(obj)}\s*;|"
+                rf"\b[A-Za-z_]\w*(?:->|\.)[A-Za-z_]\w*\s*=\s*{re.escape(obj)}\s*;",
+                tail,
+            ):
+                continue
+            self._emit(
+                issues,
+                func_name,
+                file_path,
+                lines,
+                allowed_skills,
+                defect_class="memory_leak",
+                rule="clang_cfg_container_unlink_without_release",
+                line=line,
+                description=(
+                    f"Container member `{obj}` is unlinked without a visible release or ownership transfer."
+                ),
+                root_cause=(
+                    "The object becomes unreachable from its container and no subsequent local operation "
+                    "establishes a new owner or releases it."
+                ),
+                suggested_fix="Release the detached object or transfer it to an explicit owner before returning.",
+                source=f"{obj} ownership before line {line.number}",
+                sink=line.text,
+                confidence=0.86,
+                impact_level="high",
+                positive=[
+                    f"line {line.number}: container link is reassigned around `{obj}`",
+                    "no local release or ownership transfer follows the unlink",
+                ],
+                negative=["Validator must confirm no callee retains ownership of the detached object."],
+                ast_cfg=self._ast_cfg_pack(
+                    lines,
+                    [
+                        self._event("container_unlink", line, obj, "unlink", line.text),
+                        self._event("exit_without_release", lines[-1], obj, "", lines[-1].text),
+                    ],
+                    [line.number, lines[-1].number],
+                ),
+            )
+            return
+
+    def _emit_incomplete_owner_cleanup_candidate(
+        self,
+        issues: List[Dict[str, Any]],
+        func_name: str,
+        file_path: str,
+        lines: Sequence[ClangCfgLine],
+        allowed_skills: Optional[Set[str]],
+    ) -> None:
+        """Emit only when initialized owner fields and cleanup are explicit."""
+
+        initialized: Dict[Tuple[str, str], ClangCfgLine] = {}
+        released: Dict[Tuple[str, str], ClangCfgLine] = {}
+        for line in lines:
+            assign = re.search(
+                r"(?P<owner>[A-Za-z_]\w*)\s*(?:->|\.)\s*(?P<field>[A-Za-z_]\w*)\s*=\s*"
+                r"[^;]*(?:malloc|calloc|realloc|strdup|open|create|dup(?:licate)?)\s*\(",
+                line.text,
+                re.IGNORECASE,
+            )
+            if assign:
+                initialized[(assign.group("owner"), assign.group("field"))] = line
+            release = re.search(
+                r"\b[A-Za-z_0-9]*(?:free|release|destroy|cleanup|close)[A-Za-z_0-9]*\s*\(\s*"
+                r"(?P<owner>[A-Za-z_]\w*)\s*(?:->|\.)\s*(?P<field>[A-Za-z_]\w*)",
+                line.text,
+                re.IGNORECASE,
+            )
+            if release:
+                released[(release.group("owner"), release.group("field"))] = line
+        owners = sorted({owner for owner, _field in initialized})
+        for owner in owners:
+            owned = {(candidate_owner, field) for candidate_owner, field in initialized if candidate_owner == owner}
+            cleaned = owned & set(released)
+            missing = sorted(field for candidate_owner, field in owned - cleaned if candidate_owner == owner)
+            if len(owned) < 2 or not cleaned or not missing:
+                continue
+            cleanup_line = min(
+                (released[item] for item in cleaned), key=lambda item: item.index
+            )
+            first_init = min(
+                (initialized[item] for item in owned), key=lambda item: item.index
+            )
+            self._emit(
+                issues,
+                func_name,
+                file_path,
+                lines,
+                allowed_skills,
+                defect_class="incomplete_cleanup",
+                rule="clang_cfg_incomplete_owned_member_cleanup",
+                line=cleanup_line,
+                description=(
+                    f"Owner `{owner}` initializes multiple resource fields but its visible cleanup omits "
+                    f"`{', '.join(missing)}`."
+                ),
+                root_cause="A composite owner resets only part of the resources it explicitly acquires.",
+                suggested_fix="Release or transfer every initialized owned field on the destroy/reset path.",
+                source=f"{owner} owned fields at line {first_init.number}",
+                sink=cleanup_line.text,
+                confidence=0.88,
+                impact_level="high",
+                positive=[
+                    f"line {first_init.number}: `{owner}` initializes {len(owned)} owned fields",
+                    f"line {cleanup_line.number}: cleanup releases only a strict subset of those fields",
+                ],
+                negative=["Validator must confirm omitted fields are not released by an owner destructor called on this path."],
+                ast_cfg=self._ast_cfg_pack(
+                    lines,
+                    [
+                        self._event("owner_init", first_init, owner, "", first_init.text),
+                        self._event("partial_owner_cleanup", cleanup_line, owner, "", cleanup_line.text),
+                    ],
+                    [first_init.number, cleanup_line.number],
+                ),
+            )
+            return
 
     def _track_heap_thread_argument_owner(
         self,
@@ -3643,8 +3834,7 @@ class ClangAstCfgCandidateGenerator:
         alloc_line = self._find_allocation_assignment(lines, line, var)
         if alloc_line is None:
             return
-        guard_window = lines[alloc_line.index + 1 : line.index + 1]
-        if any(self._is_null_guard(item.text, var) for item in guard_window):
+        if self._has_terminating_null_guard(lines, alloc_line, line, var):
             return
         self._emit(
             issues,
@@ -6234,6 +6424,44 @@ class ClangAstCfgCandidateGenerator:
         ]
         return any(re.search(pattern, text) for pattern in patterns)
 
+    def _has_terminating_null_guard(
+        self,
+        lines: Sequence[ClangCfgLine],
+        allocation_line: ClangCfgLine,
+        use_line: ClangCfgLine,
+        var: str,
+    ) -> bool:
+        """Return true only for a null branch that exits before this use.
+
+        A null test on its own is not a proof: it might just log or recover.
+        For a candidate produced from an allocation result, the false path is
+        safe only when the guarded branch terminates before the dereference.
+        This also handles compound guards such as ``if (!task || !frame)``.
+        """
+
+        escaped = re.escape(var)
+        null_condition = re.compile(
+            rf"(?:!\s*{escaped}\b|\b{escaped}\s*==\s*(?:NULL|nullptr|0)\b|\b(?:NULL|nullptr|0)\s*==\s*{escaped}\b)"
+        )
+        start = allocation_line.index + 1
+        end = use_line.index
+        for index in range(start, end):
+            text = lines[index].text
+            if not re.search(r"\bif\s*\(", text) or not null_condition.search(text):
+                continue
+            branch = text
+            brace_depth = text.count("{") - text.count("}")
+            cursor = index + 1
+            if brace_depth > 0:
+                while cursor < end and brace_depth > 0:
+                    next_text = lines[cursor].text
+                    branch += "\n" + next_text
+                    brace_depth += next_text.count("{") - next_text.count("}")
+                    cursor += 1
+            if re.search(r"\b(?:return|goto)\b", branch):
+                return True
+        return False
+
     @staticmethod
     def _is_status_success_guard(text: str, status_var: str) -> bool:
         if not status_var:
@@ -6260,6 +6488,7 @@ class ClangAstCfgCandidateGenerator:
         transfer_patterns = [
             rf"\breturn\s+{escaped}\s*;",
             rf"\*\s*[A-Za-z_]\w*\s*=\s*{escaped}\s*;",
+            rf"\bg_[A-Za-z_]\w*\s*=\s*{escaped}\s*;",
             rf"\b[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)+\s*=\s*{escaped}\s*;",
             rf"\b[A-Za-z_]\w*\s*\[[^\]]+\]\s*=\s*{escaped}\s*;",
         ]
@@ -6287,6 +6516,17 @@ class ClangAstCfgCandidateGenerator:
             if any(re.search(rf"\b{re.escape(len_var)}\b", arg) for arg in self._split_args(args)):
                 return True
         return False
+
+    @staticmethod
+    def _is_global_owner_lvalue(value: str) -> bool:
+        """Identify explicit global storage, not a naming-only local alias."""
+
+        return bool(
+            re.fullmatch(
+                r"g_[A-Za-z_]\w*(?:(?:->|\.)[A-Za-z_]\w*)*",
+                re.sub(r"\s+", "", str(value or "")),
+            )
+        )
 
     def _find_dependent_count_sink(
         self,
@@ -6469,7 +6709,14 @@ class ClangAstCfgCandidateGenerator:
         clean = str(arg or "").strip()
         clean = re.sub(r"^\s*\([^)]*\)\s*", "", clean)
         clean = clean.lstrip("*&").strip()
-        match = re.match(r"(?P<expr>[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)?)", clean)
+        # A resource identity must retain the complete field/index access path.
+        # Retaining only the first member collapsed union/struct siblings (for
+        # example ``task->payload.command.command`` and
+        # ``task->payload.command.args[i]``) into the same freed object.
+        match = re.match(
+            r"(?P<expr>[A-Za-z_]\w*(?:(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)|(?:\s*\[[^\]]+\]))*)",
+            clean,
+        )
         if not match:
             return ""
         return re.sub(r"\s+", "", match.group("expr"))

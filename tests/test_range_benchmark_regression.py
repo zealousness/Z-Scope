@@ -25,14 +25,18 @@ def test_range_regex_candidate_coverage_when_available() -> None:
         regex_candidates=True,
         min_precision=0.50,
         min_recall=0.75,
-        min_f1=0.65,
+        min_f1=0.60,
     )
 
     assert result["threshold_status"] == "passed"
     assert result["recall"] >= 0.75
     assert result["precision"] >= 0.50
     assert result["f1"] >= 0.65
-    assert "false_positive_rate" in result
+    assert result["actionable_precision"] >= 0.50
+    assert result["actionable_f1"] >= 0.60
+    assert result["threshold_metric_fields"]["precision"] == "actionable_precision"
+    assert result["threshold_metric_fields"]["f1"] == "actionable_f1"
+    assert result["false_positive_rate"] == result["false_discovery_rate"]
     assert "duplicate_of_matched_count" in result
     assert "with_needs_review" in result["report_views"]
     assert result["graph_issue_count"] > 0

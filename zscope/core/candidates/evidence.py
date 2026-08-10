@@ -90,8 +90,12 @@ class SemanticOverlayCompiler:
 
     def __init__(self, user_config: "UserConfigStore"):
         self.user_config = user_config
+        self._query_attempts = 0
+        self._query_errors: List[Dict[str, str]] = []
 
     def compile(self) -> Dict[str, Any]:
+        self._query_attempts = 0
+        self._query_errors = []
         defaults = default_overlay_models()
         resources: List[Dict[str, Any]] = list(defaults.get("resource_models") or [])
         locks: List[Dict[str, Any]] = list(defaults.get("lock_models") or [])
@@ -114,7 +118,7 @@ class SemanticOverlayCompiler:
             resources.extend(self._paired_models(row, role="resource"))
             locks.extend(self._paired_models(row, role="lock"))
 
-        overlay = {
+        overlay: Dict[str, Any] = {
             "resource_models": self._dedupe_models(resources),
             "lock_models": self._dedupe_models(locks),
             "macro_models": self._dedupe_models(macros),
@@ -123,6 +127,14 @@ class SemanticOverlayCompiler:
             "pointer_target_models": self._sanitize_rows(self._safe_rows("get_pointer_targets")),
             "function_intent_models": self._sanitize_rows(self._safe_rows("list_function_intents")),
         }
+        if not self._query_errors:
+            engine_status = "complete"
+        elif len(self._query_errors) >= self._query_attempts:
+            engine_status = "failed"
+        else:
+            engine_status = "degraded"
+        overlay["engine_status"] = engine_status
+        overlay["engine_errors"] = list(self._query_errors)
         overlay["summary"] = overlay_summary(overlay)
         return overlay
 
@@ -130,9 +142,20 @@ class SemanticOverlayCompiler:
         method = getattr(self.user_config, method_name, None)
         if not callable(method):
             return []
+        self._query_attempts += 1
         try:
             rows = method()
-        except Exception:
+            if rows is None:
+                return []
+            if not isinstance(rows, (list, tuple)):
+                rows = list(rows)
+        except Exception as exc:
+            self._query_errors.append(
+                {
+                    "operation": method_name,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
             return []
         return [dict(row) for row in rows if isinstance(row, dict)]
 

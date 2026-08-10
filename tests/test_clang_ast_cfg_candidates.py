@@ -37,6 +37,59 @@ def test_clang_ast_cfg_detects_double_free_and_use_after_free() -> None:
     assert double_free["evidence_pack"]["ast_cfg"]["cfg_path"] == [12, 13]
 
 
+def test_clang_ast_cfg_detects_detached_container_member_without_transfer() -> None:
+    issues = _rules(
+        """
+10 | void detach(struct list *head, struct session *session) {
+11 |     head->next = session->next;
+12 |     return;
+13 | }
+"""
+    )
+
+    issue = next(
+        item
+        for item in issues
+        if item["rule"] == "clang_cfg_container_unlink_without_release"
+    )
+    assert issue["category"] == "memory_leak"
+    assert issue["evidence_pack"]["path"]["complete_in_function"] is True
+
+
+def test_clang_ast_cfg_does_not_report_container_member_released_after_unlink() -> None:
+    issues = _rules(
+        """
+10 | void detach(struct list *head, struct session *session) {
+11 |     head->next = session->next;
+12 |     session_release(session);
+13 | }
+"""
+    )
+
+    assert "clang_cfg_container_unlink_without_release" not in {
+        item["rule"] for item in issues
+    }
+
+
+def test_clang_ast_cfg_detects_partial_composite_owner_cleanup() -> None:
+    issues = _rules(
+        """
+10 | void reset(struct cache *cache, const char *name) {
+11 |     cache->primary = duplicate(name);
+12 |     cache->scratch = duplicate(name);
+13 |     SAFE_FREE(cache->primary);
+14 | }
+"""
+    )
+
+    issue = next(
+        item
+        for item in issues
+        if item["rule"] == "clang_cfg_incomplete_owned_member_cleanup"
+    )
+    assert issue["category"] == "incomplete_cleanup"
+
+
 def test_clang_ast_cfg_suppresses_terminal_branch_release_before_normal_cleanup() -> None:
     cases = {
         "multiline": """
@@ -178,6 +231,38 @@ def test_clang_ast_cfg_detects_same_member_double_free() -> None:
     assert "node->payload" in double_free["description"]
 
 
+def test_clang_ast_cfg_keeps_full_nested_member_identity() -> None:
+    code = """
+10 | int demo(Task *task) {
+11 |     SAFE_FREE(task->payload.command.command);
+12 |     SAFE_FREE(task->payload.command.args[0]);
+13 |     return 0;
+14 | }
+"""
+
+    rules = {issue["rule"] for issue in _rules(code)}
+
+    assert "clang_cfg_same_object_released_twice" not in rules
+
+
+def test_clang_ast_cfg_recognizes_compound_terminating_null_guard() -> None:
+    code = """
+10 | Task *demo(Frame *frame) {
+11 |     Task *task = _safe_calloc(1, sizeof(*task));
+12 |     if (!task || !frame) {
+13 |         SAFE_FREE(task);
+14 |         return NULL;
+15 |     }
+16 |     task->state = READY;
+17 |     return task;
+18 | }
+"""
+
+    rules = {issue["rule"] for issue in _rules(code)}
+
+    assert "clang_cfg_allocation_result_used_without_null_check" not in rules
+
+
 def test_clang_ast_cfg_detects_parent_release_without_owned_member_cleanup() -> None:
     explicit_code = """
 10 | int demo(const char *key) {
@@ -255,6 +340,20 @@ def test_clang_ast_cfg_treats_returning_allocator_wrappers_as_ownership_transfer
 14 |     }
 15 |     return ptr;
 16 | }
+"""
+
+    issues = _rules(code)
+
+    assert not any(issue["rule"] == "clang_cfg_acquire_without_release_on_exit" for issue in issues)
+
+
+def test_clang_ast_cfg_treats_explicit_global_assignment_as_ownership_transfer() -> None:
+    code = """
+10 | int install(void) {
+11 |     g_cache.buffer = malloc(32);
+12 |     if (!g_cache.buffer) return -1;
+13 |     return 0;
+14 | }
 """
 
     issues = _rules(code)
@@ -362,6 +461,40 @@ def test_clang_ast_cfg_detects_return_while_lock_held() -> None:
     assert issue["defect_class"] == "missing_unlock"
     assert "line 31" in "\n".join(issue["positive_evidence"])
     assert issue["evidence_pack"]["path"]["backend"] == "Clang function body plus synthesized local CFG"
+
+
+def test_clang_ast_cfg_keeps_lock_state_on_terminating_unlock_branch() -> None:
+    code = """
+10 | int demo(int fail) {
+11 |     LOCK(&g_state.lock);
+12 |     if (fail) {
+13 |         UNLOCK(&g_state.lock);
+14 |         return -1;
+15 |     }
+16 |     update_state();
+17 |     UNLOCK(&g_state.lock);
+18 |     return 0;
+19 | }
+"""
+
+    rules = {issue["rule"] for issue in _rules(code)}
+
+    assert "clang_cfg_unlock_without_matching_lock" not in rules
+    assert "clang_cfg_return_with_lock_held" not in rules
+
+
+def test_clang_ast_cfg_does_not_analyze_unlock_wrapper_or_macro_definition() -> None:
+    macro = """
+10 | #define UNLOCK(mutex) _unlock_wrapper(mutex, __FILE__, __LINE__)
+"""
+    wrapper = """
+20 | void _unlock_wrapper(pthread_mutex_t *mutex) {
+21 |     pthread_mutex_unlock(mutex);
+22 | }
+"""
+
+    assert "clang_cfg_unlock_without_matching_lock" not in {issue["rule"] for issue in _rules(macro)}
+    assert "clang_cfg_unlock_without_matching_lock" not in {issue["rule"] for issue in _rules(wrapper)}
 
 
 def test_clang_ast_cfg_respects_custom_user_config_out_param_acquire() -> None:
@@ -1894,7 +2027,7 @@ def test_clang_ast_cfg_detects_multiline_allocation_used_without_null_check() ->
     assert issue["location"] == "src/demo.c:615"
 
 
-def test_analyzer_candidate_budget_keeps_exact_before_generic_and_defers_excess() -> None:
+def test_analyzer_candidate_budget_keeps_exact_before_generic_and_observes_excess() -> None:
     issues = [
         {
             "id": "GEN1",
@@ -1941,8 +2074,10 @@ def test_analyzer_candidate_budget_keeps_exact_before_generic_and_defers_excess(
     budgeted = Analyzer._apply_candidate_validation_budget(issues)
 
     assert budgeted[0]["id"] == "EXACT"
-    assert [issue["id"] for issue in budgeted if issue.get("validation_required") is False] == ["GEN3"]
-    assert budgeted[-1]["finding_kind"] == "audit_observation"
+    assert [issue["id"] for issue in budgeted if issue.get("validation_required") is False] == []
+    assert budgeted[-1]["id"] == "GEN3"
+    assert budgeted[-1]["validation_budget_class"] == "generic_soft_overrun"
+    assert "retained for validation" in budgeted[-1]["validation_budget_observation"]
 
 
 def test_analyzer_candidate_budget_keeps_quota_lifetime_sensitive_generic() -> None:

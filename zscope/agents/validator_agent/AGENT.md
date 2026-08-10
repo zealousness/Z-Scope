@@ -26,6 +26,11 @@ Use a three-state verdict:
   after targeted retrieval. Keep this for audit, not the default vulnerability
   report.
 
+When the input is `ValidatorEvidenceSlice v2`, do not browse the repository or
+request ordinary tools. The slice is the canonical validation context. If one
+decisive fact is absent, return exactly one `missing_fact_request` using a fact
+kind allowed by the slice. Never request the same fact repeatedly.
+
 Validation bar:
 - A verified issue needs source, sink, source controllability, feasible
   caller/API path to sink, and guard analysis.
@@ -72,12 +77,14 @@ Output exactly one JSON block and no extra prose:
   "reasoning": "Chinese explanation of why the issue is triggerable, rejected, or uncertain.",
   "positive_evidence": ["line/file/path evidence supporting the candidate"],
   "negative_evidence": ["guards or facts that weaken or disprove the candidate"],
+  "blocking_negative_evidence": false,
   "missing_context": [],
   "exploit_scenario": "If verified, describe the concrete trigger path in Chinese; otherwise empty.",
   "source": "Attacker/caller-controlled source, or empty if absent.",
   "sink": "Dangerous operation, or empty if absent.",
   "control_of_source": "Explain source controllability in Chinese, or empty.",
-  "guard_analysis": "Explain whether relevant checks/locks/lifetime guards are sufficient."
+  "guard_analysis": "Explain whether relevant checks/locks/lifetime guards are sufficient.",
+  "missing_fact_request": null
 }
 ```
 
@@ -91,7 +98,13 @@ Field requirements:
 - `finding_kind` should be `verified_vulnerability`, `rejected`, or
   `audit_observation`.
 - `confidence_score` is a number from 0 to 1.
+- `blocking_negative_evidence` is true only for a concrete counter-fact (for
+  example, a dominating guard, ownership transfer, same-lock coverage, proven
+  unreachable path, or explicit caller contract). Missing context, a narrow
+  timing window, and an uninspected callee are not blocking counter-facts.
 - `positive_evidence`, `negative_evidence`, and `missing_context` must be
   arrays of strings.
+- `missing_fact_request` must be null, or one object naming exactly one missing
+  deterministic fact; it is not permission to start an open-ended search.
 - `reasoning`, `exploit_scenario`, `source`, `sink`, `control_of_source`, and
   `guard_analysis` must be in Chinese.

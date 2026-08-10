@@ -1,7 +1,7 @@
 import json
 
 from zscope.config.config import ConfigLoader
-from zscope.orchestration.entry_discovery import EntryDiscovery
+from zscope.orchestration.entry_discovery import EntryCandidate, EntryDiscovery
 from zscope.retrieval.code_index import CodeIndex
 
 
@@ -33,14 +33,17 @@ class FakeCodeIndex:
             code = value["code"]
             file_path = value.get("file", "src/demo.c")
             start_line = value.get("start_line", 1)
+            signature = value.get("signature", "")
         else:
             code = value
             file_path = "src/demo.c"
             start_line = 1
+            signature = ""
         return {
             "code": code,
             "file": file_path,
             "start_line": start_line,
+            "signature": signature,
         }
 
 
@@ -87,6 +90,25 @@ int TlsRecv(SSL *ssl, unsigned char *buf, size_t len) {
     assert candidate.function_name == "TlsRecv"
     assert candidate.exposure == "communication"
     assert "calls:SSL_read" in candidate.reasons
+
+
+def test_discovery_fact_collection_is_not_truncated_by_entry_budget():
+    discovery = EntryDiscovery(
+        FakeCodeIndex(
+            {
+                "RecvFirst": "int RecvFirst(void) { return recv(0, 0, 0, 0); }",
+                "RecvSecond": "int RecvSecond(void) { return recv(0, 0, 0, 0); }",
+            }
+        ),
+        max_functions=1,
+    )
+
+    result = discovery.discover()
+
+    assert {candidate.function_name for candidate in result.candidates} == {
+        "RecvFirst",
+        "RecvSecond",
+    }
 
 
 def test_user_input_prompt_guides_caller_side_validation_for_file_wrappers():
@@ -335,7 +357,7 @@ def test_code_index_lists_only_functions_under_file_root(tmp_path):
         code_index.close()
 
 
-def test_code_index_file_root_filter_uses_source_root_relative_paths(tmp_path):
+def test_code_index_file_root_filter_emits_project_relative_paths(tmp_path):
     project_root = tmp_path / "project"
     source_root = project_root / "src"
     net_dir = source_root / "net"
@@ -354,7 +376,7 @@ def test_code_index_file_root_filter_uses_source_root_relative_paths(tmp_path):
 
     try:
         assert code_index.list_functions(limit=20, file_root="net") == [
-            "NetRecv@net/net.c:1-1"
+            "NetRecv@src/net/net.c:1-1"
         ]
     finally:
         code_index.close()
@@ -568,3 +590,159 @@ def test_config_loader_accepts_absolute_entry_discovery_search_root(tmp_path):
     config = ConfigLoader.load(config_path)
 
     assert config.project.entry_discovery.search_root == search_root.resolve()
+
+
+def test_discovery_keeps_same_name_functions_from_different_files(tmp_path):
+    first = tmp_path / "src" / "alpha"
+    second = tmp_path / "src" / "beta"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    (first / "handler.c").write_text(
+        "static int Handle(int fd, char *buf, unsigned long len) "
+        "{ return recv(fd, buf, len, 0); }\n",
+        encoding="utf-8",
+    )
+    (second / "handler.c").write_text(
+        "static int Handle(int fd, char *buf, unsigned long len) "
+        "{ return recv(fd, buf, len, 0); }\n",
+        encoding="utf-8",
+    )
+    code_index = CodeIndex(tmp_path, source_root=tmp_path)
+
+    try:
+        identities = code_index.find_function_identities("Handle")
+        result = EntryDiscovery(
+            code_index,
+            project_root=tmp_path,
+            source_root=tmp_path,
+        ).discover()
+    finally:
+        code_index.close()
+
+    handles = [
+        candidate
+        for candidate in result.candidates
+        if candidate.function_name == "Handle"
+    ]
+    assert len(handles) == 2
+    assert len(identities) == 2
+    assert {identity["file_path"] for identity in identities} == {
+        "src/alpha/handler.c",
+        "src/beta/handler.c",
+    }
+    assert {candidate.file_path for candidate in handles} == {
+        "src/alpha/handler.c",
+        "src/beta/handler.c",
+    }
+    assert all(candidate.signature for candidate in handles)
+
+
+def test_discovery_filters_implementations_outside_active_translation_units(tmp_path):
+    src = tmp_path / "src"
+    build = tmp_path / "build"
+    src.mkdir()
+    build.mkdir()
+    linux_source = src / "platform_linux.c"
+    windows_source = src / "platform_windows.c"
+    linux_source.write_text(
+        "int PlatformRecv(int fd, char *buf, unsigned long len) "
+        "{ return recv(fd, buf, len, 0); }\n",
+        encoding="utf-8",
+    )
+    windows_source.write_text(
+        "int PlatformRecv(int fd, char *buf, unsigned long len) "
+        "{ return recv(fd, buf, len, 0); }\n",
+        encoding="utf-8",
+    )
+    compile_commands = build / "compile_commands.json"
+    compile_commands.write_text(
+        json.dumps(
+            [
+                {
+                    "directory": str(tmp_path),
+                    "file": str(linux_source),
+                    "command": f"cc -c {linux_source}",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    code_index = CodeIndex(
+        tmp_path,
+        compile_commands_path=compile_commands,
+        source_root=tmp_path,
+    )
+
+    try:
+        result = EntryDiscovery(
+            code_index,
+            project_root=tmp_path,
+            source_root=tmp_path,
+        ).discover()
+    finally:
+        code_index.close()
+
+    assert [
+        (candidate.function_name, candidate.file_path)
+        for candidate in result.candidates
+    ] == [("PlatformRecv", "src/platform_linux.c")]
+    assert any(
+        "outside the active compile_commands" in note
+        for note in result.notes
+    )
+
+
+def test_discovered_entry_payload_preserves_complete_identity():
+    discovery = EntryDiscovery(
+        FakeCodeIndex(
+            {
+                "ReadPacket": {
+                    "code": (
+                        "int ReadPacket(int fd, unsigned char *buf, size_t len) "
+                        "{ return recv(fd, buf, len, 0); }"
+                    ),
+                    "file": r"src\net\packet.c",
+                }
+            }
+        )
+    )
+    discovery.code_index.functions["ReadPacket"]["signature"] = (
+        "int ReadPacket(int fd, unsigned char *buf, size_t len)"
+    )
+    payload = discovery.discover().to_entry_functions_payload()
+
+    assert payload["functions"][0]["file_path"] == "src/net/packet.c"
+    assert payload["functions"][0]["signature"] == (
+        "int ReadPacket(int fd, unsigned char *buf, size_t len)"
+    )
+    entry = discovery.discover().to_function_entries()[0]
+    assert entry.exposure == "communication"
+    assert entry.reasons == ["calls:recv"]
+
+
+def test_entry_budget_is_stratified_and_marks_deferred_candidates(monkeypatch) -> None:
+    candidates = [
+        EntryCandidate(f"Api{index}", "api", confidence=0.99 - index / 100)
+        for index in range(4)
+    ] + [
+        EntryCandidate("Receive", "communication", confidence=0.7),
+        EntryCandidate("Worker", "thread", confidence=0.7),
+    ]
+
+    discovery = EntryDiscovery(FakeCodeIndex({}))
+    monkeypatch.setattr(discovery, "_discover_header_api", lambda: candidates)
+    monkeypatch.setattr(discovery, "_discover_body_entries", lambda: [])
+
+    result = discovery.discover(max_candidates=3)
+
+    assert {candidate.exposure for candidate in result.candidates} == {
+        "api",
+        "communication",
+        "thread",
+    }
+    assert len(result.deferred_candidates) == 3
+    assert all(
+        candidate.selection_status == "deferred_budget"
+        and candidate.deferred_reason == "entry_discovery_budget"
+        for candidate in result.deferred_candidates
+    )

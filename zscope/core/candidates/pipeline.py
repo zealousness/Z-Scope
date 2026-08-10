@@ -74,12 +74,26 @@ class CandidatePipeline:
         self._candidate_persister = candidate_persister
 
     def collect_signal_candidates(self, state: Dict[str, Any]) -> CandidateSignalBatch:
-        local_candidates = self._local_detector(state)
-        graph_candidates = self._graph_detector(state)
-        backend_candidates = self._backend_detector(state)
+        # Focused planning and vulnerability mining historically executed the
+        # same deterministic detectors twice.  Reuse the per-entry immutable
+        # signal batch so expensive AST/CFG/graph/backend queries run once.
+        cache = state.setdefault("_candidate_signal_cache", {})
+        local_candidates = cache.get("local")
+        if local_candidates is None:
+            local_candidates = self._local_detector(state)
+            cache["local"] = local_candidates
+        graph_candidates = cache.get("graph")
+        if graph_candidates is None:
+            graph_candidates = self._graph_detector(state)
+            cache["graph"] = graph_candidates
+        backend_candidates = cache.get("backend")
+        if backend_candidates is None:
+            backend_candidates = self._backend_detector(state)
+            cache["backend"] = backend_candidates
         merged_candidates = self._unified_merger(
             local_candidates + graph_candidates + backend_candidates
         )
+        cache["merged"] = merged_candidates
         self._budget_refresher(
             state,
             "candidate_signals",

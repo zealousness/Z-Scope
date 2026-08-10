@@ -1,7 +1,6 @@
 name: maintain
 mode: maintain
 description: Incremental maintenance scan that reuses unchanged function reports.
-entry_strategy: configured_or_discovered
 steps:
   - id: discover_entries
     scope: session
@@ -19,8 +18,6 @@ steps:
     scope: entry
     agent: issue_reconciler_agent
     action: verify whether historical issues still exist after source changes
-    skills:
-      - evidence_validation
   - id: rescan_changed
     scope: entry
     stop_policy: stop_if_handler_returns_true

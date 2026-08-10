@@ -7,7 +7,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from .backend_base import CodeBackend
-from ..common.joern_client import JoernClient
+from ..common.joern_client import JoernClient, JoernQueryError
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +91,10 @@ class JoernBackend(CodeBackend):
             ')).l.toJson'
         )
         if not isinstance(result, list):
-            logger.warning("Joern index query returned unexpected result")
-            return {}
+            raise JoernQueryError(
+                "Joern build_function_index query returned "
+                f"{type(result).__name__}, expected list"
+            )
         index = {}
         for m in result:
             name = m.get("name", "")

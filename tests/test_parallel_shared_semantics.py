@@ -15,6 +15,7 @@ from zscope.config.function_entry import FunctionEntry
 from zscope.core.analysis import analyzer as analyzer_module
 from zscope.orchestration import parallel_analyzer as parallel_module
 from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
+from zscope.orchestration.subagents import SubAgentTicket
 from zscope.semantics.models import LocalPatternSemantics
 
 
@@ -303,3 +304,122 @@ def test_parallel_analyzer_stops_when_global_model_fails(monkeypatch, tmp_path) 
         "failed_functions": 1,
         "stage_complete": False,
     }
+
+
+def test_scan_validation_queue_validates_one_shared_ledger_group(tmp_path) -> None:
+    """Wrapper occurrences are merged before any validator work is scheduled."""
+
+    parallel = ParallelAnalyzer(_config(tmp_path), code_index=FakeCodeIndex())
+    ticket = SubAgentTicket(
+        id="RULE_1",
+        skill="bounds",
+        task="validate one structured bounds obligation",
+        trigger="copy",
+        line=12,
+        context_slice="copy(dst, src, count);",
+        priority_score=90,
+        origin="src/demo.c:10",
+        sink="src/demo.c:12",
+        resource_kind="buffer",
+        evidence={
+            "candidate_uid": "CAND_SHARED",
+            "evidence_hash": "evidence",
+            "decision_evidence_hash": "decision",
+            "validation_cluster_uid": "VAL_SHARED",
+            "context_signature": "context",
+            "candidate_payload": {
+                "id": "RULE_1",
+                "category": "bounds",
+                "defect_class": "bounds",
+                "function": "sink",
+                "source": "count",
+                "sink": "copy(dst, src, count)",
+                "location": "src/demo.c:12",
+            },
+        },
+    )
+    parallel._candidate_ledger.add(
+        ticket,
+        source="clang_ast_cfg",
+        call_path=["entry_a", "sink"],
+        record_role="validation_obligation",
+        entry_identity="entry_a",
+    )
+    parallel._candidate_ledger.add(
+        ticket,
+        source="graph_rule",
+        call_path=["entry_b", "sink"],
+        record_role="validation_obligation",
+        entry_identity="entry_b",
+    )
+
+    parallel._run_scan_validation_queue()
+
+    assert parallel._global_validation_state["validation_group_count"] == 1
+    assert parallel._global_validation_state["scan_level_raw_occurrence_count"] == 2
+    snapshot = parallel._candidate_ledger.lifecycle_snapshot()
+    assert snapshot["summary"]["validation_group_count"] == 1
+    assert snapshot["summary"]["raw_occurrence_count"] == 2
+    assert snapshot["outcomes"][0]["candidate_disposition"] == "needs_review"
+    # This fixture deliberately has no Validator agent, so the runner closes
+    # the one queued obligation as review without issuing an LLM attempt.
+    # ``test_validation_runner_selects_one_representative_per_validation_cluster``
+    # covers the corresponding one-validator-call coalescing behavior.
+    assert snapshot["outcomes"][0]["validation_attempt_count"] == 0
+
+
+def test_project_deterministic_fact_pass_collects_reachable_function_once(tmp_path) -> None:
+    class ReachableCodeIndex:
+        def get_function_impl(self, name, **_kwargs):
+            code = {
+                "entry_a": """
+int entry_a(void) {
+    return worker();
+}
+""",
+                "entry_b": """
+int entry_b(void) {
+    return worker();
+}
+""",
+                "worker": """
+int worker(void) {
+    Job job;
+    pthread_create(&tid, NULL, thread_main, &job);
+    pthread_detach(tid);
+    return 0;
+}
+""",
+            }.get(name)
+            if code is None:
+                return None
+            return {
+                "name": name,
+                "index_name": f"{name}@src/demo.c",
+                "file": "src/demo.c",
+                "code": code,
+            }
+
+        def get_callees(self, name, limit=0):
+            del limit
+            return [{"name": "worker", "file": "src/demo.c"}] if name.startswith("entry_") else []
+
+    config = _config(tmp_path)
+    config.analysis.project_deterministic_fact_pass_v1 = True
+    config.analysis.decision_fact_graph_v1 = True
+    config.analysis.decision_context_v32 = True
+    parallel = ParallelAnalyzer(config, code_index=ReachableCodeIndex())
+    parallel._shared_local_pattern_semantics = LocalPatternSemantics()
+    parallel._shared_semantic_overlay = {}
+
+    parallel._run_project_deterministic_fact_pass(
+        [FunctionEntry("entry_a"), FunctionEntry("entry_b")]
+    )
+
+    state = parallel._project_fact_pass_state
+    assert state["status"] == "complete"
+    assert state["reachable_functions"] == 3
+    records = parallel._candidate_ledger.records()
+    stack_records = [record for record in records if record.defect_class == "stack_escape"]
+    assert len(stack_records) == 1
+    assert len(stack_records[0].occurrence_uids) == 2

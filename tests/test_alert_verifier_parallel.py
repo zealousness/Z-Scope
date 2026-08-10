@@ -56,6 +56,8 @@ def test_alert_verifier_worker_error_becomes_uncertain_result() -> None:
 
     assert [result["alert_id"] for result in results] == ["ALERT_1", "ALERT_2", "ALERT_3"]
     assert results[1]["verdict"] == "uncertain"
+    assert results[1]["candidate_disposition"] == "engine_failed"
+    assert results[1]["engine_status"] == "failed"
     assert "validator failed" in results[1]["reasoning"]
 
 
@@ -85,3 +87,32 @@ def test_alert_verifier_closes_worker_thread_llm_sessions() -> None:
     assert [result["alert_id"] for result in results] == ["ALERT_1", "ALERT_2", "ALERT_3"]
     assert len(verifier.llm_client.closed_threads) == 3
     assert all(name.startswith("zscope-alert-verifier") for name in verifier.llm_client.closed_threads)
+
+
+def test_alert_llm_rejection_remains_actionable_without_deterministic_proof() -> None:
+    verifier = AlertVerifier.__new__(AlertVerifier)
+
+    result = verifier._parse_verification(
+        '{"type":"alert_verification","verdict":"rejected","confidence":0.99}',
+        _alert(1),
+        "ALERT_1",
+    )
+
+    assert result["verdict"] == "rejected"
+    assert result["candidate_disposition"] == "needs_review"
+    assert result["validation_status"] == "needs_review"
+    assert result["engine_status"] == "complete"
+
+
+def test_unparseable_alert_validator_response_is_engine_failure() -> None:
+    verifier = AlertVerifier.__new__(AlertVerifier)
+
+    result = verifier._parse_verification(
+        "not json",
+        _alert(1),
+        "ALERT_1",
+    )
+
+    assert result["candidate_disposition"] == "engine_failed"
+    assert result["validation_status"] == "pending"
+    assert result["engine_status"] == "failed"

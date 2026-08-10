@@ -162,16 +162,19 @@ def _strip_c_comments_preserve_strings(code: str) -> str:
 
 def normalize_path(path: Union[str, Path], project_root: Optional[Path] = None) -> str:
     """
-    Normalize a file path.
-    If project_root is provided, return relative path; otherwise absolute.
+    Normalize a file path using POSIX separators.
+
+    If project_root is provided and the path is inside it, return a
+    project-relative path. Otherwise return an absolute POSIX path.
     """
     p = Path(path).resolve()
     if project_root:
+        root = Path(project_root).resolve()
         try:
-            return str(p.relative_to(project_root))
+            return p.relative_to(root).as_posix()
         except ValueError:
-            return str(p)
-    return str(p)
+            pass
+    return p.as_posix()
 
 
 def matches_configured_path(path: str, patterns: Optional[Sequence[str]]) -> bool:

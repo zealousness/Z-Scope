@@ -1,4 +1,5 @@
 from zscope.core.analysis.analyzer import Analyzer
+from zscope.core.candidates.adapters import merge_unified_evidence_candidates
 from zscope.core.candidates.svf_value_flow import SvfValueFlowCandidateGenerator
 from zscope.core.candidates.regex import LocalPatternSemantics
 
@@ -316,6 +317,7 @@ def test_unified_candidate_merge_combines_clang_and_svf_evidence_only() -> None:
         "location": "src/demo.c:42",
         "defect_class": "double_free",
         "rule": "clang_cfg_same_pointer_freed_twice",
+        "resource_signature": "obj",
         "source": "obj",
         "sink": "free(obj)",
         "positive_evidence": ["Clang saw two frees of obj."],
@@ -334,8 +336,9 @@ def test_unified_candidate_merge_combines_clang_and_svf_evidence_only() -> None:
         "location": "src/demo.c:44",
         "defect_class": "double_free",
         "rule": "svf_value_flow_doublefree",
+        "resource_signature": "obj",
         "source": "alloc_obj",
-        "sink": "free_obj",
+        "sink": "free(obj)",
         "positive_evidence": ["SVF/Saber reported DoubleFree."],
         "negative_evidence": ["Ownership transfer must be checked."],
         "evidence_pack": {
@@ -361,3 +364,28 @@ def test_unified_candidate_merge_combines_clang_and_svf_evidence_only() -> None:
     assert evidence["unified_backend_components"] == ["clang", "svf"]
     assert evidence["merged_backend_evidence"][0]["candidate_id"] == "svf-1"
     assert evidence["merged_backend_evidence"][0]["checker"] == "svf_value_flow_checker"
+
+
+def test_unified_candidate_merge_keeps_distinct_resources_separate() -> None:
+    left = {
+        "candidate_source": "clang_ast_cfg",
+        "function": "cleanup",
+        "location": "src/demo.c:42",
+        "defect_class": "double_free",
+        "resource_signature": "left_obj",
+        "sink": "free(left_obj)",
+        "evidence_pack": {"candidate_source": "clang_ast_cfg"},
+    }
+    right = {
+        "candidate_source": "svf_value_flow",
+        "function": "cleanup",
+        "location": "src/demo.c:44",
+        "defect_class": "double_free",
+        "resource_signature": "right_obj",
+        "sink": "free(right_obj)",
+        "evidence_pack": {"candidate_source": "svf_value_flow"},
+    }
+
+    assert len(
+        merge_unified_evidence_candidates([left, right], enabled=True)
+    ) == 2

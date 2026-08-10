@@ -573,8 +573,15 @@ class ReportFeedbackService:
         return {
             "entry_function": report.get("entry_function"),
             "overall_verdict": report.get("overall_verdict"),
+            "finding_status": report.get("finding_status"),
+            "completeness": report.get("completeness"),
+            "scan_outcome": report.get("scan_outcome"),
             "summary": report.get("summary"),
             "report_views": compact_views,
+            "run_manifest": report.get("run_manifest"),
+            "needs_review_governance": report.get(
+                "needs_review_governance"
+            ),
             "metadata": {
                 "report_view_summary": metadata.get("report_view_summary"),
             },

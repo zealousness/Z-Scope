@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from zscope.config.config import (
     AnalysisConfig,
     IndexingConfig,

@@ -2,11 +2,13 @@ from click.testing import CliRunner
 
 from zscope._version import __version__
 from zscope.cli.cli import main
-from zscope.cli.cli import _batch_interruption_lines
+from zscope.cli.cli import _batch_interruption_lines, _review_count_lines
 from zscope.orchestration.scan_session import ScanSessionResult
 
 
 def test_cli_version_reports_package_version() -> None:
+    assert __version__ == "1.3"
+
     result = CliRunner().invoke(main, ["--version"])
 
     assert result.exit_code == 0
@@ -39,4 +41,18 @@ def test_batch_interruption_lines_prompt_resume_for_unknown_interruption() -> No
     assert _batch_interruption_lines(result) == [
         "Interrupted entries: unknown (scan stopped before all workers reported status).",
         "Use --resume to continue from the last checkpoint.",
+    ]
+
+
+def test_review_count_lines_distinguish_visible_findings_from_obligations() -> None:
+    result = ScanSessionResult(
+        is_batch=True,
+        exit_code=1,
+        needs_review_count=30,
+        unresolved_obligations_count=951,
+    )
+
+    assert _review_count_lines(result) == [
+        "needs_review findings: 30",
+        "Unresolved candidate obligations: 951",
     ]
