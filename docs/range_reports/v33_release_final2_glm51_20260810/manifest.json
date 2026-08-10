@@ -1,0 +1,83 @@
+{
+  "schema_version": "zscope.range.release-evidence.v1",
+  "release_candidate": "v3.3",
+  "runtime_checkpoint": {
+    "commit": "7ba1fc4532a3b53081d5295acf9ff49c8136c1e9",
+    "tree": "28c940019654f252f78c1300cc44f31619d87a97",
+    "branch": "codex/v3.3-release-convergence"
+  },
+  "inputs": {
+    "truth_sha256": "5d14c94a4baebf65f161762f6bf124563197f2ba97175b5106975c1275050ec5",
+    "scorer_sha256": "c069e5edaf8396d385b688eb506dfc19a1013c01c52d81f6fd103d35af0ebe9c",
+    "fp_audit_rules_sha256": "90597b5af00a582040d86c1e78545bc70c8b62e6d612faaaad8d085574f49df1",
+    "config_sha256": "923fca55252927317b391ccf8cf2a66c493202ec01d0a437feede16bd4f26b8e",
+    "base_url": "https://open.bigmodel.cn/api/paas/v4/",
+    "trace_model": "glm-5.1",
+    "entry_mode": "yaml automatic discovery",
+    "backend": "unified+SVF"
+  },
+  "compact_evidence": {
+    "aggregate_sha256": "3b8ea6cb37cdd5e58b5fcc43448caba19a7a02d4af2021df44a8ae907b3f4d71",
+    "entry_coverage_sha256": "89123518b944cd4ac1de0cffd51a0116b6948b2668e441438cdf613b99d5ea87",
+    "run_summary_sha256": {
+      "01": "f46aba3c6ef40dc0da10b625ab20804a271e9f8448a7f6600078ac1c55260356",
+      "02": "724d65706c628e06edff176fa520aeaf23413755fc01f27527a8b645cd0bea76",
+      "03": "e85bbbf9cf147c325bc8d59c129e631e5aeaaf9407af15b852e2249ba3753d5d",
+      "04": "7139404fa85247759004549db91ec6b35ac80f195216df2cdbbbb69709992186",
+      "05": "72aad5b053ca3768992d304a1b8a519829763493946b3041b126a4f43e5b77c4"
+    }
+  },
+  "original_artifact_sha256": {
+    "01": {
+      "evaluation": "a5b1108d649b01eb04da47e9cc045e085086c18d6a0b0ebbb7c935664974665f",
+      "evaluation_with_needs_review": "f8d2d3e4bd44ad59b62ff104274d73b7214420050f07ee6170ff7ba380042eb7",
+      "report": "cae0d1477a7caa43a399f0c4bfb6a3d800a63d8e2be058133770e50f0f395694",
+      "zscope_log": "588f857bd0a2e0a597f8da13d720c687f9a4cff1e28827b0fba993cda14f1d97",
+      "build_log": "43bdad3564a51a0a316499be1e2cfcaa1d963da6e6879b28c9f5b5778ce0a6c3",
+      "driver_log": "9ef32a0cc3e819bd5b203d0cc5ab28616b89292eb72578b7107de7425717bda7"
+    },
+    "02": {
+      "evaluation": "a3b63264bc5f528c15e4f2460b27553e3b10b565b8dcf46d62a0de5d0e8b2417",
+      "evaluation_with_needs_review": "64cc08be0fc09744de76b1e39a9466d530de2c6e3839788d6273a4e8a5d657de",
+      "report": "2e8063434078e1b14a24f337ed4dacaf7a4e09bfd2a67353716159d8562ecba1",
+      "zscope_log": "a85c73a38a2ae8aaef48602fec4a6fccb6d35a5f97a9c070e4adf5167ee81946",
+      "build_log": "0efb7d550dd8f05556878e502b918aad21ca9ba726cb56b29a2717e48220d90a",
+      "driver_log": "d1819dee95b0809fcba83b050ef02b79716a5c18bec9d5f2d82794537aca5ebb"
+    },
+    "03": {
+      "evaluation": "2e33ecc211a513bcda4cf6578921afb3db94b971ad42d6bf106cf8ae6fef7045",
+      "evaluation_with_needs_review": "092bddb183746feb19f755a48159dd49a8891993ccf53e269eb0a02dddb055f9",
+      "report": "ec73ff800a68972d4043e7b569063bb88b59967de4fe73e27ecabb627ca5fc24",
+      "zscope_log": "efe839d6892a1ce2298b905a9524e597b2f0c213a8fee45d3f64dd523253a8a2",
+      "build_log": "ef531e8e459d8b050ed4dff426a76fd80bf3ff63510d8e9ec135782fa1c339cd",
+      "driver_log": "842cec6d4eccf1a6c1ef5f581a05ec23c939f185a77c3c2464bb0ed6634e4528"
+    },
+    "04": {
+      "evaluation": "8c73a45db7a14fe1136a8f97036efc34a388ccca40cb6a0d3784c29138d87baf",
+      "evaluation_with_needs_review": "90d526a7b516df71509a9d8a6b848be839361ad57d5cafa8d7a69c538fb2e78e",
+      "report": "cf454f91f257296cc846e3b35ab005cced8308fab021bf7ccc717bb7db3b880f",
+      "zscope_log": "d60e509edf2bc3c999157de19230a6715dcb454c8fb2ffbf5b357deffac6b989",
+      "build_log": "340104cc5ee693576b4db2ab836d3aff5233a4e964bdf54a5b00a684caffe50c",
+      "driver_log": "d92c9b48b7f844619be87c31dd0a9e561a10d943ffc3e8e41f087022e3cf5b14"
+    },
+    "05": {
+      "evaluation": "dc972f286e93a470c3edbf6f9f9035d2fc451863c30b913c77eb8656b7fd80fb",
+      "evaluation_with_needs_review": "66a063aa17291de024737daacd97056fcb07c5606d5fefbd4c6d83b3d6ceec16",
+      "report": "030f56610673ba716dc8e14a6ba3aa5023c12552fa38d7cc408aa1c15a020446",
+      "zscope_log": "a1392d98cb06f19374313ef5de29ab8fa4b49d9a45d55e032146ccb091457e83",
+      "build_log": "b000cb5a3b4f6b4455c2923eb7574dce76e6d922cc432505a3e4037b974f7003",
+      "driver_log": "48f51470df5314876e3f60e9ea9f91676be99a5c2b7e996471f5f5ac175ced28"
+    }
+  },
+  "verification": {
+    "windows_pytest": {"passed": 1115, "duration_seconds": 130.47},
+    "wsl_pytest": {"passed": 1115, "duration_seconds": 85.68},
+    "formal_runs": 5,
+    "all_formal_runs_release_gate_passed": true
+  },
+  "external_release_obligations": {
+    "anonymous_sealed_set_available_in_repository": false,
+    "sealed_set_quality_regression_verified": false,
+    "reason": "repository contains only the Range development truth set"
+  }
+}
