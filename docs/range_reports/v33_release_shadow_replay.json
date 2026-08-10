@@ -1,0 +1,4708 @@
+{
+  "schema_version": "zscope.candidate-replay.v1",
+  "source_revision": "",
+  "canonical_group_count": 272,
+  "transition_count": 21,
+  "transitions": [
+    {
+      "candidate_uid": "CAND_ac71bceea02f722f1636abf4",
+      "validation_cluster_uid": "VAL_00014eebf811ef1cf6b47ddd777bc945",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:1714:header_length",
+          "ast_cfg:1718:header_length_copy"
+        ],
+        "code_hash": "926694e28c80825db77b59244a270a29c7a1ffee2f56e22c33c341d6fd7c41fa",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"size_t body_len = (size_t)header.length - sizeof(peersessionheader);\",\"file\":\"src/lifecycle.c\",\"line\":\"1718\"}",
+        "cfg_nodes": [
+          "1714",
+          "1718"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_d8b4d0d63dafcdd8581bdce4",
+      "validation_cluster_uid": "VAL_0189c8c2673b5998333e773233ae2b03",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "guard_dominates_sink",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "guard_dominates_sink",
+        "producer_engine": "clang_ast_cfg_guard_dominance",
+        "fact_ids": [
+          "ast_cfg:1907:acquire",
+          "ast_cfg:1908:null_guard",
+          "ast_cfg:1913:deref"
+        ],
+        "code_hash": "605cedf9665ae2baacdc4cab72d155ffcaccf1c8f05fd9bbd5e8b4bf5ff0ba0d",
+        "assumptions": [],
+        "contradiction_or_obligation": "a terminating null guard dominates the reported allocation use",
+        "scope": "complete intraprocedural allocation-to-use path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "task",
+        "cfg_nodes": [
+          "1907",
+          "1908",
+          "1913"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_a64c04e79a9c14b824d2bb21",
+      "validation_cluster_uid": "VAL_023cb9bb25249e0b705515d2cec62d74",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_ab09591c9daa2a726f667691",
+      "validation_cluster_uid": "VAL_039bb17f98a5d143d9af21f76416ad5d",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "external_value_controls_unbounded_allocation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "external_value_controls_unbounded_allocation",
+        "producer_engine": "project_contract_allocation_v12",
+        "fact_ids": [
+          "ast_cfg:43:unbounded_allocation",
+          "call_edge:_control_session_add_to_global->_str_dup:488",
+          "call_edge:_lifecycle_add_entry->_str_dup:125",
+          "call_edge:_lifecycle_attach_proc_node->_str_dup:805",
+          "call_edge:_parse_config_string->_str_dup:111"
+        ],
+        "code_hash": "324d9a5a8ebf5922a1498530ee538d560ad086519b337dc393913d5902d69d56",
+        "assumptions": [],
+        "contradiction_or_obligation": "an externally controlled value reaches an allocation on a complete path without an upper-bound guard",
+        "scope": "complete entry-to-allocation caller contract",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "len",
+        "cfg_nodes": [
+          "43"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_07352244dea9945233527025",
+      "validation_cluster_uid": "VAL_040855586f5dec543c57a66d5983c2ad",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_b671c7117fb74576d1b27a71",
+      "validation_cluster_uid": "VAL_055e9780253ca20d987e777053527d0f",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_1f79cda5f32b0cdfd411a765",
+      "validation_cluster_uid": "VAL_05a31f1e387b5778e58e644742385d13",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_f7dac68d253391103be4ec2b",
+      "validation_cluster_uid": "VAL_067fc5204ffd78fe8224ec8c1913b1ad",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_4eaaae962bce88eef25f1509",
+      "validation_cluster_uid": "VAL_06b9e7a42313830c99e92114dcadcbcb",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:1337:unaligned_pointer_cast",
+          "ast_cfg:1338:unaligned_deref"
+        ],
+        "code_hash": "b3fa96e874ce1394d60ff3e71a4d15be2bdc3605b90a5dbde2c5e7e140106d07",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"const uint32_t* value = (const uint32_t*)(packet + 1);\",\"file\":\"src/lifecycle.c\",\"line\":\"1337\"}",
+        "cfg_nodes": [
+          "1337",
+          "1338"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_826f20c42a067889b0732f4f",
+      "validation_cluster_uid": "VAL_0724f7f8f6bea1bb4f567bd5e70c83ea",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_db682bddce266f3f2c30ccec",
+      "validation_cluster_uid": "VAL_0750917095d1a33d7a3e31ac644026ca",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_d518467de1e8e81109d813f6",
+      "validation_cluster_uid": "VAL_07cf41a96fc2f91f783abe05fa2aac21",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_ba209469892693e191e41d28",
+      "validation_cluster_uid": "VAL_0a7734e10482ba9721217619e5049319",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "matching_lock_dominates_unlock",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "matching_lock_dominates_unlock",
+        "producer_engine": "clang_ast_cfg_lock_protocol",
+        "fact_ids": [
+          "source_cfg:5",
+          "source_cfg:7"
+        ],
+        "code_hash": "f1333a2a4f39e02fb39f6dad375d69d5b73f01cdfd7aad9d00961a1891755960",
+        "assumptions": [],
+        "contradiction_or_obligation": "a matching local lock acquisition precedes the reported unlock on the same complete path",
+        "scope": "complete lexical lock protocol segment",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "pipe->ctrl_lock",
+        "cfg_nodes": [
+          "5",
+          "7"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_36ebf5fdc1d260e1bf5de411",
+      "validation_cluster_uid": "VAL_0b00c24e14f8e33463e278ef2d4f52b1",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_2575bc6b3392648aae672c51",
+      "validation_cluster_uid": "VAL_0b97bf6325091efe1c74f7a8fb559b53",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_69bdd312f9f1dd45698965c1",
+      "validation_cluster_uid": "VAL_0bc6ab41c6dce9e2b68ab0e430c6a7cf",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "allocation_arithmetic_overflow_reaches_sink",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "allocation_arithmetic_overflow_reaches_sink",
+        "producer_engine": "clang_value_range_v12",
+        "fact_ids": [
+          "ast_cfg:2681:integer_size_arithmetic"
+        ],
+        "code_hash": "14ef71537ad9f611f2d15e64d081959020cd948c98dbd535ae59132071089adb",
+        "assumptions": [],
+        "contradiction_or_obligation": "unchecked allocation-size arithmetic is evaluated before any overflow guard and reaches the allocator",
+        "scope": "complete intraprocedural allocation expression",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "char*raw=(char*)_safe_malloc(size+8u);",
+        "cfg_nodes": [
+          "2681"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_a2fe36a33455dfd10c714b4f",
+      "validation_cluster_uid": "VAL_0c1325b310e1bb020182b878b8a6dccb",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_eb1b6f4d4e058676ce680cd8",
+      "validation_cluster_uid": "VAL_0cb77c905aa2717aa0eea822d859398a",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_f9bb4a43f0fee774449be2b9",
+      "validation_cluster_uid": "VAL_0d659b9721b13e4c17242ac00eaef0bc",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_a3b4656058ef3bc14167beaf",
+      "validation_cluster_uid": "VAL_0ddc495e2f09243c730224709eb5c8a1",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_b84f12e5bf4b7bc9c966b9d3",
+      "validation_cluster_uid": "VAL_0e141099920f6ed181848c931ce7bb76",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_f18f5dff99ee8c9325ab439c",
+      "validation_cluster_uid": "VAL_0e4c36d9de8f2816327fad287990f7fd",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_8da0cdfb21570d3a1a1b60d6",
+      "validation_cluster_uid": "VAL_0e725a0bea9580846ecaa5f26b7b6fc9",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_50ad2811ffa78466c0f6397e",
+      "validation_cluster_uid": "VAL_0e7d68444478d2c25d6be4344b41f459",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "terminating_allocation_upper_bound",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "terminating_allocation_upper_bound",
+        "producer_engine": "clang_ast_cfg_allocation_context",
+        "fact_ids": [
+          "ast_cfg:1689:upper_bound_guard",
+          "ast_cfg:1693:unbounded_allocation"
+        ],
+        "code_hash": "5ddef28b2eaa1e854cd811a1b7743e9db16869a8a1ff916eca82c743cf343dbe",
+        "assumptions": [],
+        "contradiction_or_obligation": "a terminating upper-bound guard dominates the allocation",
+        "scope": "complete intraprocedural allocation path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"label_len + 1 * 1\",\"file\":\"src/lifecycle.c\",\"line\":\"1693\"}",
+        "cfg_nodes": [
+          "1689",
+          "1693"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_3055bc26dafe251efe09c784",
+      "validation_cluster_uid": "VAL_0f45735b35558db84715e619cd5bc0b9",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "allocation_arithmetic_overflow_reaches_sink",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "allocation_arithmetic_overflow_reaches_sink",
+        "producer_engine": "clang_value_range_v12",
+        "fact_ids": [
+          "ast_cfg:140:integer_size_arithmetic"
+        ],
+        "code_hash": "bc5d75671878b377fffd6cc2d2aeb025639830df246809e6d55cd7ca82251f81",
+        "assumptions": [],
+        "contradiction_or_obligation": "unchecked allocation-size arithmetic is evaluated before any overflow guard and reaches the allocator",
+        "scope": "complete intraprocedural allocation expression",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "void*response_buffer=_safe_malloc(task->payload.binary.size*2);",
+        "cfg_nodes": [
+          "140"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_849ff85d32ea4772c5b4c0f3",
+      "validation_cluster_uid": "VAL_0f6e915aa853c47241b26f2daa5ff77e",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_a004a5d30bcd1cd9377a4131",
+      "validation_cluster_uid": "VAL_129e99d66824e6280988ad2a5d8e27ed",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_eeb0604e5267a325be6018af",
+      "validation_cluster_uid": "VAL_143352861930dd8e59d2cc089dcf8363",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_6e1e9d458b4b3268297dba8f",
+      "validation_cluster_uid": "VAL_151f5c444897abf3119e48df195a5fd6",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_4215a2be9194dfe28ae5d6c6",
+      "validation_cluster_uid": "VAL_167992b902ba4ed0ca77fc02aa3764df",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:3124:offset_pointer",
+          "ast_cfg:3131:offset_length_copy"
+        ],
+        "code_hash": "2d19235cfc02c151d74b0d23aee7f44f645b739316f7b3dd6416d5f426bd1460",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"const unsigned char* digest = source + header.digest_offset;\",\"file\":\"src/lifecycle.c\",\"line\":\"3131\"}",
+        "cfg_nodes": [
+          "3124",
+          "3131"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_2726459c3d6698e67e36fdb8",
+      "validation_cluster_uid": "VAL_16d04d3cff988b0c53743b40132cf0f4",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_de84b1abf52ed2ed838b7ee7",
+      "validation_cluster_uid": "VAL_177623c128091d4008617c307929c2f4",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "matching_lock_dominates_unlock",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "matching_lock_dominates_unlock",
+        "producer_engine": "clang_ast_cfg_lock_protocol",
+        "fact_ids": [
+          "source_cfg:13",
+          "source_cfg:6"
+        ],
+        "code_hash": "d975bea2ab82249d7cd71714fd8d1a2c1347f965656ea513109fae7e0bdef775",
+        "assumptions": [],
+        "contradiction_or_obligation": "a matching local lock acquisition precedes the reported unlock on the same complete path",
+        "scope": "complete lexical lock protocol segment",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "g_dispatcher.queue.mutex",
+        "cfg_nodes": [
+          "13",
+          "6"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_28e4cdfc94afe847dffbcbd0",
+      "validation_cluster_uid": "VAL_18bcfc9ef9d2a483bd569cd3acf54c55",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_7ac0555cd197c29024ad0ff1",
+      "validation_cluster_uid": "VAL_191eae1accf2083cfe218874ea7c0327",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_d41b2a54fed62ada8fe1d9cd",
+      "validation_cluster_uid": "VAL_1a87ac27e88857697d83e7cc71105f25",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "external_value_controls_unbounded_allocation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "external_value_controls_unbounded_allocation",
+        "producer_engine": "project_contract_allocation_v12",
+        "fact_ids": [
+          "ast_cfg:2286:unbounded_allocation",
+          "call_edge:_runtime_refresh_worker_context->_runtime_close_thread_cache:2889"
+        ],
+        "code_hash": "36cc99d285e7e599ee79c501a3e903dbc710330a586e3167fd0d56017bfd228a",
+        "assumptions": [],
+        "contradiction_or_obligation": "an externally controlled value reaches an allocation on a complete path without an upper-bound guard",
+        "scope": "complete entry-to-allocation caller contract",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "block_size?block_size:64",
+        "cfg_nodes": [
+          "2286"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_a438ebc3d4c7bbb2b40bbb37",
+      "validation_cluster_uid": "VAL_1b10dd3456f0d0663d829b4e665fa616",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:739:global_scheduler_walk",
+          "ast_cfg:742:object_lock_in_callback"
+        ],
+        "code_hash": "debc79a484d2c0d2c932afb4b0f16666aa108869426e2230b3ff0310903ea8c6",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"pipenode* pipe = g_pipe_scheduler.head;\",\"file\":\"src/lifecycle.c\",\"line\":\"742\"}",
+        "cfg_nodes": [
+          "739",
+          "742"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_844a9dcc44fa68a089c54ec2",
+      "validation_cluster_uid": "VAL_1b65e8034b89ca3f2b1001567a55661b",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "guard_dominates_sink",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "guard_dominates_sink",
+        "producer_engine": "clang_ast_cfg_guard_dominance",
+        "fact_ids": [
+          "ast_cfg:224:allocation_result",
+          "ast_cfg:225:null_guard",
+          "ast_cfg:225:unchecked_allocation_use"
+        ],
+        "code_hash": "8409f78633184c460afa169cc8ab45911bb0605d151c7a4658477ad01c311bd1",
+        "assumptions": [],
+        "contradiction_or_obligation": "a terminating null guard dominates the reported allocation use",
+        "scope": "complete intraprocedural allocation-to-use path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "buffer",
+        "cfg_nodes": [
+          "224",
+          "225",
+          "225"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_61af2c229f199f9d4be40259",
+      "validation_cluster_uid": "VAL_1c32864b2d0b4fe15fbd4e60d00ccf8f",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:369:unaligned_pointer_cast",
+          "ast_cfg:370:unaligned_deref"
+        ],
+        "code_hash": "2014145620b7c0386c288b49413de2d0c3e914e097b0eeae9a971dabb21f3d2a",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"const uint32_t* id = (const uint32_t*)(packet + 1);\",\"file\":\"src/lifecycle.c\",\"line\":\"369\"}",
+        "cfg_nodes": [
+          "369",
+          "370"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_f1a0f371056913f226372046",
+      "validation_cluster_uid": "VAL_1f68f05a8d1e101343e9aa3462415fe6",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_1a104015852395ff1d4a7201",
+      "validation_cluster_uid": "VAL_208d7347cfac9ff36b5adce36f8611f2",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "matching_lock_dominates_unlock",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "matching_lock_dominates_unlock",
+        "producer_engine": "clang_ast_cfg_lock_protocol",
+        "fact_ids": [
+          "source_cfg:5",
+          "source_cfg:7"
+        ],
+        "code_hash": "f1333a2a4f39e02fb39f6dad375d69d5b73f01cdfd7aad9d00961a1891755960",
+        "assumptions": [],
+        "contradiction_or_obligation": "a matching local lock acquisition precedes the reported unlock on the same complete path",
+        "scope": "complete lexical lock protocol segment",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "pipe->ctrl_lock",
+        "cfg_nodes": [
+          "5",
+          "7"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_ef00b4b8d79b6c3ae895acfa",
+      "validation_cluster_uid": "VAL_2110171e65df9a261a25bd0bbf2a7f01",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_c7d6a2bbb276c57e29070a2e",
+      "validation_cluster_uid": "VAL_21f7d7071f9bac1f8974946d9d55cf03",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_7cde17c33bd05146bd2a487b",
+      "validation_cluster_uid": "VAL_222d5d0a716e4693cb2dc04c036a5964",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_7c85d7468aa3c530136d022d",
+      "validation_cluster_uid": "VAL_232f13b779c9722c49cc1dfcbb6f48f2",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "returned_parent_ownership_transfer",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "returned_parent_ownership_transfer",
+        "producer_engine": "clang_ast_cfg_ownership",
+        "fact_ids": [
+          "ast_cfg:2631:acquire",
+          "ast_cfg:2637:exit"
+        ],
+        "code_hash": "ac1a40e883e342899504a303bb6c9f2c9bdc1c2d664da6b5804a2011fc9ccc3c",
+        "assumptions": [],
+        "contradiction_or_obligation": "the parent holding the resource is returned to the caller",
+        "scope": "resource ownership transfer",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "zone",
+        "cfg_nodes": [
+          "2631",
+          "2637"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_bf0eb4f92f3fc7ee43537860",
+      "validation_cluster_uid": "VAL_253244ed2dcf4926fa891af149e30442",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:2730:path_state_check",
+          "ast_cfg:2733:key_generation",
+          "ast_cfg:2734:locked_registration_lookup"
+        ],
+        "code_hash": "81367ef5239a958e9048f3499fad2803fbec6c9f389d4c3eb754341c9cebf61d",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"if (!_file_exists(path)) {\",\"file\":\"src/lifecycle.c\",\"line\":\"2733\"}",
+        "cfg_nodes": [
+          "2730",
+          "2733",
+          "2734"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_5a38e85806542cdc2526ba9b",
+      "validation_cluster_uid": "VAL_272b73cecf5a3de9f164af712cfb21c1",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_59642b422469f7eaebdf13fb",
+      "validation_cluster_uid": "VAL_27d322edb78063955434c39964cc97d8",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_79e8f3bb9f25b3a543302e68",
+      "validation_cluster_uid": "VAL_2972dcd8bb19ade7dac84e0ad932643c",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "allocation_arithmetic_overflow_reaches_sink",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "allocation_arithmetic_overflow_reaches_sink",
+        "producer_engine": "clang_value_range_v12",
+        "fact_ids": [
+          "ast_cfg:175:integer_size_arithmetic"
+        ],
+        "code_hash": "a8a18c3d764a5f48a7a5a67c21ff8fbb9fb32c83f7fe33e4fedff7f229306100",
+        "assumptions": [],
+        "contradiction_or_obligation": "unchecked allocation-size arithmetic is evaluated before any overflow guard and reaches the allocator",
+        "scope": "complete intraprocedural allocation expression",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "char*buffer=(char*)_safe_malloc(max_len+1);",
+        "cfg_nodes": [
+          "175"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_43167826c8692f7b8062a4a4",
+      "validation_cluster_uid": "VAL_29bb120a4b3c22144e3b9184bc7d9097",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_1885e473d8a0d32fa5b64eec",
+      "validation_cluster_uid": "VAL_29fd349096f7788f0ef1a711d0de8f90",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_bffac81f1fb81748feeca43d",
+      "validation_cluster_uid": "VAL_2c71db518006f289287479a25817908c",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "registered_signal_path_calls_unsafe_operation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "registered_signal_path_calls_unsafe_operation",
+        "producer_engine": "project_call_contract_signal_v12",
+        "fact_ids": [
+          "source_cfg:2577"
+        ],
+        "code_hash": "e4337bff782cdf7ca5f70f3a2ba968ffcc51963b15ec70585401f8cc7a11fc92",
+        "assumptions": [],
+        "contradiction_or_obligation": "a signal-context entry reaches an operation outside the async-signal-safe subset",
+        "scope": "signal-root reachability and target function snapshot",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "{\"expression\":\"signal/exceptionhandlerpath\",\"file\":\"src/lifecycle.c\",\"line\":\"2577\"}",
+        "cfg_nodes": [
+          "2577"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_525325930a120140632a744d",
+      "validation_cluster_uid": "VAL_2caf9074200f426ae87d9b6f51a647f0",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_d47e675f30b59c88e30e56b4",
+      "validation_cluster_uid": "VAL_2db0269bed538e05e6cb238891bbb3c8",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_83844dbdf1a3656b379ccef4",
+      "validation_cluster_uid": "VAL_30718ccee355cb925b8ffb82e9108994",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "owned_member_left_live_when_parent_released",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "owned_member_left_live_when_parent_released",
+        "producer_engine": "clang_ast_cfg_protocol_v11",
+        "fact_ids": [
+          "ast_cfg:1349:owned_member_leak"
+        ],
+        "code_hash": "999d3533457ea41c42cdd8bf26c96f44fd239b8f84565300bee3e7078ae31575",
+        "assumptions": [],
+        "contradiction_or_obligation": "a field identified as owned remains live when its parent is released",
+        "scope": "complete intraprocedural ownership/concurrency protocol path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "root.children",
+        "cfg_nodes": [
+          "1349"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_c3b14ad07b8af909a2888bc4",
+      "validation_cluster_uid": "VAL_30b8308e693fd643b8895cdb01b113cd",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_65d23b212c30c2988140bcc6",
+      "validation_cluster_uid": "VAL_319a8b8d2c35ba3404ad9e09dcb50ad3",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_8fadc2de79b9c634f65d51e5",
+      "validation_cluster_uid": "VAL_31cef257da1388a1b8c76f42cb075b4f",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_04fee6ef5b454a0866bf2fd9",
+      "validation_cluster_uid": "VAL_31f9d46557e266706cfa716f6b97bfe8",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "external_value_controls_unbounded_allocation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "external_value_controls_unbounded_allocation",
+        "producer_engine": "project_contract_allocation_v12",
+        "fact_ids": [
+          "ast_cfg:93:unbounded_allocation",
+          "call_edge:td_submit_task->_parse_task_buffer:222"
+        ],
+        "code_hash": "d16a1a06db696c065763140ef87ce0d690a1b982703ec4046b63090e72b9bd70",
+        "assumptions": [],
+        "contradiction_or_obligation": "an externally controlled value reaches an allocation on a complete path without an upper-bound guard",
+        "scope": "complete entry-to-allocation caller contract",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "payload_len",
+        "cfg_nodes": [
+          "93"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_44d989fdc6ee960328c0baf7",
+      "validation_cluster_uid": "VAL_32eeb32452622e3322de2fde3ed680a2",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:223:integer_size_arithmetic"
+        ],
+        "code_hash": "6ea74f29894bf64364654bca8797a5dd79d52157b4772ce843018f299e3a80f9",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"sizeof(taskheader) + payload_len\",\"file\":\"src/parser.c\",\"line\":\"223\"}",
+        "cfg_nodes": [
+          "223"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_f62ad3184b0ea32192725ee8",
+      "validation_cluster_uid": "VAL_354c51c13a1ae84cfd16fe88f31e4ca4",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_370f340ca035b08fff0a1776",
+      "validation_cluster_uid": "VAL_35ccf3b287915814d3a867a5acf0103b",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_4420868c81969046d3051a98",
+      "validation_cluster_uid": "VAL_386d2980fb8c6ee411fe61886ac38a5a",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_72f401e3ec41cc02655cb51b",
+      "validation_cluster_uid": "VAL_3bb585cb585c5243bc36ade5dd83561b",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "allocation_arithmetic_overflow_reaches_sink",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "allocation_arithmetic_overflow_reaches_sink",
+        "producer_engine": "clang_value_range_v12",
+        "fact_ids": [
+          "ast_cfg:97:integer_size_arithmetic"
+        ],
+        "code_hash": "4a69a4df6da6f51c53a2169bb877c52a8e85c9cc2a4dca9df55fb8fc856c4a12",
+        "assumptions": [],
+        "contradiction_or_obligation": "unchecked allocation-size arithmetic is evaluated before any overflow guard and reaches the allocator",
+        "scope": "complete intraprocedural allocation expression",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "char*key=(char*)_safe_malloc(key_len+1);",
+        "cfg_nodes": [
+          "97"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_e050facd156ce3dc2e303c19",
+      "validation_cluster_uid": "VAL_3c2b26acc5c2a790311b67be8953e654",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_bd34973674aea69ca3d963d4",
+      "validation_cluster_uid": "VAL_3e3ca7dd60d322a68daf73e5083ef82d",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:3237:uninitialized_pointer_decl",
+          "ast_cfg:3246:uninitialized_pointer_use"
+        ],
+        "code_hash": "614b08891a231836dfa2cc128f2701c882ebf51099d78862545113a97b0935db",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"unsigned char* cursor;\",\"file\":\"src/lifecycle.c\",\"line\":\"3246\"}",
+        "cfg_nodes": [
+          "3237",
+          "3246"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_992cbaa7d305fdf9902928b1",
+      "validation_cluster_uid": "VAL_3e641acd48c2faa5d53a86deaabe6cce",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_81d6f5b5c8b3301d336329a6",
+      "validation_cluster_uid": "VAL_3f085aa872550872b9b4fcb54c1e94b6",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_f86b32568fc57f248c1340a1",
+      "validation_cluster_uid": "VAL_40560560742b8c27da224a3632728f73",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:1531:realloc_assign"
+        ],
+        "code_hash": "2ef0fcb1d496bac47f76e51e4c8f38e00bc38fdffc4609f5d206073ff0811218",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"_safe_realloc(g_service_metrics, count * sizeof(size_t))\",\"file\":\"src/lifecycle.c\",\"line\":\"1531\"}",
+        "cfg_nodes": [
+          "1531"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_71ba9b57a26b44cbae401180",
+      "validation_cluster_uid": "VAL_411c26badd20884bf54a559417369913",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "ordered_publication_before_initialization",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "ordered_publication_before_initialization",
+        "producer_engine": "graph_contract_prover",
+        "fact_ids": [
+          "graph_cfg:1318:allocation",
+          "graph_cfg:1325:publication",
+          "graph_cfg:1328:late_member_initialization"
+        ],
+        "code_hash": "6f01db406b9fcfd21edb8decf9b112de72089a92d236d020c2650b09c715872a",
+        "assumptions": [],
+        "contradiction_or_obligation": "the object is published before a later member initialization",
+        "scope": "complete same-function publication lifecycle",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v2",
+        "subject_identity": "_runtime_publish_init_sequence",
+        "cfg_nodes": [
+          "1318",
+          "1325",
+          "1328"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_098066249d5b6821732afbaa",
+      "validation_cluster_uid": "VAL_43ef6e30b6d35f7afa221c58a127b91f",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_662747a2f434a2b7e761b1f6",
+      "validation_cluster_uid": "VAL_441b88b0117737a2b04d2e8f0927dff3",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_bef116cc5999991263516ec8",
+      "validation_cluster_uid": "VAL_4421653ca02ce7f8d1444c2bf9d7f7df",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "return_value_ownership_transfer",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "return_value_ownership_transfer",
+        "producer_engine": "clang_ast_cfg_fd_ownership",
+        "fact_ids": [
+          "ast_cfg:55:fd_open",
+          "ast_cfg:66:return_without_fd_close"
+        ],
+        "code_hash": "96e1cc38af799bab3bdcec2666bd1f353231ce4579b25a7f341363cd7614c25a",
+        "assumptions": [],
+        "contradiction_or_obligation": "the descriptor is returned to the caller as the ownership result",
+        "scope": "descriptor ownership transfer",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "client_fd",
+        "cfg_nodes": [
+          "55",
+          "66"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_ad639c44a49b080e6bb29401",
+      "validation_cluster_uid": "VAL_443b50537b499d949a7f5f7e760134bb",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "ordered_publication_before_initialization",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "ordered_publication_before_initialization",
+        "producer_engine": "graph_contract_prover",
+        "fact_ids": [
+          "graph_cfg:113:allocation",
+          "graph_cfg:123:publication",
+          "graph_cfg:130:late_member_initialization"
+        ],
+        "code_hash": "531919e46c1330b8e80d5398597419efce0412f5e6a5709cff4a0995f85dc5d9",
+        "assumptions": [],
+        "contradiction_or_obligation": "the object is published before a later member initialization",
+        "scope": "complete same-function publication lifecycle",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v2",
+        "subject_identity": "_lifecycle_add_entry",
+        "cfg_nodes": [
+          "113",
+          "123",
+          "130"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_f37f19d91140efb78bbd064a",
+      "validation_cluster_uid": "VAL_44fb89b1cc62bf9eca63fb4ac3ba4812",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:2549:hardcoded_permission",
+          "ast_cfg:2554:requested_permission_check"
+        ],
+        "code_hash": "c1678b9c84f0be35e83100c4eb2578bf4c32de8574ffda9eb834f131f3e83630",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"g_runtime_named_pipe.perm = 0660u;\",\"file\":\"src/lifecycle.c\",\"line\":\"2554\"}",
+        "cfg_nodes": [
+          "2549",
+          "2554"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_256ddc380cf820b2f126c271",
+      "validation_cluster_uid": "VAL_46c3f24a9b45374a2f108a5d37d4ae71",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "allocation_arithmetic_overflow_reaches_sink",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "allocation_arithmetic_overflow_reaches_sink",
+        "producer_engine": "clang_value_range_v12",
+        "fact_ids": [
+          "ast_cfg:300:integer_size_arithmetic"
+        ],
+        "code_hash": "6a2e8eb18819ace8c3e0f7d9523108e83ec389d9e68478bc91a0af577bed417c",
+        "assumptions": [],
+        "contradiction_or_obligation": "unchecked allocation-size arithmetic is evaluated before any overflow guard and reaches the allocator",
+        "scope": "complete intraprocedural allocation expression",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "g_metrics=(size_t*)_safe_realloc(g_metrics,count*sizeof(size_t));",
+        "cfg_nodes": [
+          "300"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_bb73d77a480c9cafca3d47fd",
+      "validation_cluster_uid": "VAL_4764e2c7454d25f723290df9efee98da",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "needs_review",
+      "transitioned": true,
+      "reason": "evidence_conflict",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_539ddd720110669ce59ca560",
+      "validation_cluster_uid": "VAL_47a8c0af03a1bc00b6d9d4b4d3fcf5ba",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:95:strchr_result",
+          "ast_cfg:96:unchecked_pointer_use"
+        ],
+        "code_hash": "bc7ceb3399b2575cfce3be4eb9661e1379883e48f29a79625ed492eb79bb71d6",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"strchr result at line 95\",\"file\":\"src/lifecycle.c\",\"line\":\"95\"}",
+        "cfg_nodes": [
+          "95",
+          "96"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_41af579dcee1aee0c5716bc7",
+      "validation_cluster_uid": "VAL_485f59bbfa5e0ad49b85679c098677d3",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:51:slot_overwrite"
+        ],
+        "code_hash": "133e80c5e53d36a5146657f48d1faf450855d8154f19c639059d63c45b74fb21",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"plugin* plugin = &registry->plugins[slot];\",\"file\":\"src/plugin.c\",\"line\":\"51\"}",
+        "cfg_nodes": [
+          "51"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_8f9581d6a6dde595fef441ab",
+      "validation_cluster_uid": "VAL_492c23acc04525f4570ecde92678491d",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "output_parameter_ownership_transfer",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "output_parameter_ownership_transfer",
+        "producer_engine": "clang_ast_cfg_ownership",
+        "fact_ids": [
+          "ast_cfg:224:acquire"
+        ],
+        "code_hash": "850f2a702c0ae83e2768c71bc06653d835f44cac9b9cd8bb5e9fc069d9c20383",
+        "assumptions": [],
+        "contradiction_or_obligation": "the resource is returned through an output ownership parameter",
+        "scope": "resource ownership transfer",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "*buffer",
+        "cfg_nodes": [
+          "224"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_16fc733d0d1011670296fb86",
+      "validation_cluster_uid": "VAL_49df78f9bc7ae3f2f802225dc86a2431",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:356:path_check",
+          "ast_cfg:361:path_use"
+        ],
+        "code_hash": "96ba4472e2ff1c80ff2717ce1923420258ddacf2af717cd6ac0bb9f374af3afb",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"path check at line 356\",\"file\":\"src/parser.c\",\"line\":\"356\"}",
+        "cfg_nodes": [
+          "356",
+          "361"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_e00d64c2732de02060709a29",
+      "validation_cluster_uid": "VAL_4a07db7eb2408100f4342c0fe4586125",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_18f9a427ac2c21fbeec9c259",
+      "validation_cluster_uid": "VAL_4beac67beee823298cf2e6d1b7cd1c31",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "external_value_controls_unbounded_allocation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "external_value_controls_unbounded_allocation",
+        "producer_engine": "project_contract_allocation_v12",
+        "fact_ids": [
+          "ast_cfg:224:unbounded_allocation",
+          "call_edge:td_serialize_task_message->_serialize_task:330"
+        ],
+        "code_hash": "82098513fe3d61a7ea9acc9ce8874300c0a28cc24910080e7ae4a965c19d1631",
+        "assumptions": [],
+        "contradiction_or_obligation": "an externally controlled value reaches an allocation on a complete path without an upper-bound guard",
+        "scope": "complete entry-to-allocation caller contract",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "total_len",
+        "cfg_nodes": [
+          "224"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_81ab8231970c084486bf89cc",
+      "validation_cluster_uid": "VAL_4dd2717e948d29dc1c8dd469fdabd47a",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:339:aggregate_decl",
+          "ast_cfg:342:aggregate_send"
+        ],
+        "code_hash": "6ae8baed0839c5e8c21ec95051078f04eac534f7115c49f8c4ca81692c634b9e",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"statusreply reply at line 339\",\"file\":\"src/lifecycle.c\",\"line\":\"339\"}",
+        "cfg_nodes": [
+          "339",
+          "342"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_b9984aa88c95e224b34551b9",
+      "validation_cluster_uid": "VAL_4e737e5bc62c90374e1dd0444579a878",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_6f8fe97a7d2bae2b8acf68b7",
+      "validation_cluster_uid": "VAL_4e938576253ddcd2147975d9817937ab",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_d29a7ee399f80d5cbdce1e29",
+      "validation_cluster_uid": "VAL_4ec1aef2921911889258bb9b2868c161",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_123ce6b53fa99ea1945cd386",
+      "validation_cluster_uid": "VAL_4ef0129abee5de7167df636358ce2134",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_3f36dba172b287c944c9f8cc",
+      "validation_cluster_uid": "VAL_5043cba6239b6587376fb5218242f653",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_5eaea3c7b773d0f805caf72d",
+      "validation_cluster_uid": "VAL_51d1d2fa4317510e438f436adb68053d",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_9cbe7f4f5cc3ba470ebeddad",
+      "validation_cluster_uid": "VAL_52e4eaf9c42851ae30385ce9d8eb54fe",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_6a774277ad60d89013ea49b6",
+      "validation_cluster_uid": "VAL_52f009e8e73bf05cf9b1cabddeceef72",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_bfc4efcdaa9c08fa3820b1a8",
+      "validation_cluster_uid": "VAL_543b7b73cd5aba7463081e147a10b927",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:1552:fd_close"
+        ],
+        "code_hash": "0a74e863e074115c8284d2b268cd4e58af54169a3e33618eb23d661a3fbe33aa",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"fd\",\"file\":\"src/lifecycle.c\",\"line\":\"1552\"}",
+        "cfg_nodes": [
+          "1552"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_2053e59b3299cbe7013f7b65",
+      "validation_cluster_uid": "VAL_5699a9eef0a8c86ea365ad296c26e019",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:300:realloc_assign"
+        ],
+        "code_hash": "916693019ee54905916a58cf45b8159ada4616db217a2b89a7293b13192793e3",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"_safe_realloc(g_metrics, count * sizeof(size_t))\",\"file\":\"src/lifecycle.c\",\"line\":\"300\"}",
+        "cfg_nodes": [
+          "300"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_aa2ba623604555f4b1e82fc6",
+      "validation_cluster_uid": "VAL_5732931cd6299f8a2b9b91f06eb0754a",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_fe301f870fbed3b83e7d13a0",
+      "validation_cluster_uid": "VAL_5786c266822c3ee7299d87be9967adc4",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_451747b41deec6ac862d0888",
+      "validation_cluster_uid": "VAL_57e8b24e708b6eddc49c9fcc6d7db6e8",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_71440f32a4a3d7372b9d9b09",
+      "validation_cluster_uid": "VAL_586c9bdef2e78a50064b49b525dc67f2",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:53:length_field_load",
+          "ast_cfg:57:copy_length_use"
+        ],
+        "code_hash": "edd4da56ddeb676cb302f178263ae226095e1d0aca3b1f049427de44892954e0",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"header->payload_length at line 53\",\"file\":\"src/parser.c\",\"line\":\"53\"}",
+        "cfg_nodes": [
+          "53",
+          "57"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_c87e3255ea8ea92f0c99180d",
+      "validation_cluster_uid": "VAL_58cd95fa39f93142ad161d971e2dae7e",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_7425c26b0af8cfee14ecc6bf",
+      "validation_cluster_uid": "VAL_59898426312dd1225ff8e718fcd8b607",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_726adfe0d0dd1678645c4741",
+      "validation_cluster_uid": "VAL_5996d1a8a014b7792b66d242ca846510",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_e0f2e2034f0d69d232e5e559",
+      "validation_cluster_uid": "VAL_5c3549cf635b8d34734e88021215754f",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_f69cd75a53d9e7816e4cb9aa",
+      "validation_cluster_uid": "VAL_5da96e5bc47326dbbdf38936425d40ea",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_07fb1bc2be694bbd477f9c3e",
+      "validation_cluster_uid": "VAL_606b2df722e7e1e723f0b21134e4ba39",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "external_value_controls_unbounded_allocation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "external_value_controls_unbounded_allocation",
+        "producer_engine": "project_contract_allocation_v12",
+        "fact_ids": [
+          "ast_cfg:3103:unbounded_allocation",
+          "call_edge:_runtime_process_stream_batch->_runtime_stream_copy_fragment:3389"
+        ],
+        "code_hash": "1dc91f9955a7162a9a090c083e30f53d634debfc8108f2cb7aaf104874ae2a4a",
+        "assumptions": [],
+        "contradiction_or_obligation": "an externally controlled value reaches an allocation on a complete path without an upper-bound guard",
+        "scope": "complete entry-to-allocation caller contract",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "alloc_len+1",
+        "cfg_nodes": [
+          "3103"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_ba5a69e2263dcfdf8d8085da",
+      "validation_cluster_uid": "VAL_61a6afa29728071c23fbdf6610108554",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:1557:full_key_lookup",
+          "ast_cfg:1566:truncated_key_store"
+        ],
+        "code_hash": "8fef134eea1ef1861e6be472183617b7e1f827a8b9ed58d5a20a09a99aa5e141",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"servicenode* existing = _service_find_locked(route_key);\",\"file\":\"src/lifecycle.c\",\"line\":\"1566\"}",
+        "cfg_nodes": [
+          "1557",
+          "1566"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_a172b8377ba52ce59184c8e0",
+      "validation_cluster_uid": "VAL_63cef68105b6032d9619eafb783fbf2b",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_4af83f0b02ea8b45a2ed6819",
+      "validation_cluster_uid": "VAL_6566bf63f470d6821ea7e8f1f5c6b468",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_c4c67093a17176172201b97e",
+      "validation_cluster_uid": "VAL_65677ee70e91baa66ce559ff609d962c",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_f4fc76c50303dc9863418efd",
+      "validation_cluster_uid": "VAL_6689c6bb0ff06f370e3061b4d3ff568f",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_1c80d4b72fd8331919948236",
+      "validation_cluster_uid": "VAL_68db8bdc1c94ba2df9f86375caf9c13f",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_1d479da946be095908ce13ed",
+      "validation_cluster_uid": "VAL_69ac97adfa6a069f56b04a4f6c750fb1",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_4bc04c6db8460b57546e7850",
+      "validation_cluster_uid": "VAL_6b30c0224bcc59a87cb29b5fc2ca6ea6",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_c3e8fa29026e56b530bda240",
+      "validation_cluster_uid": "VAL_6ca031feed056275d1ffd2d93398902d",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "external_value_controls_unbounded_allocation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "external_value_controls_unbounded_allocation",
+        "producer_engine": "project_contract_allocation_v12",
+        "fact_ids": [
+          "ast_cfg:97:unbounded_allocation",
+          "call_edge:td_process_control_message->_lifecycle_parse_control_message:338"
+        ],
+        "code_hash": "60b1d21754047eaf13c7328052c5ee6877acef87656c531ee5b176ba0a354340",
+        "assumptions": [],
+        "contradiction_or_obligation": "an externally controlled value reaches an allocation on a complete path without an upper-bound guard",
+        "scope": "complete entry-to-allocation caller contract",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "key_len+1",
+        "cfg_nodes": [
+          "97"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_c9ae280f65114d14ef714af1",
+      "validation_cluster_uid": "VAL_6cac934c0859f58394e951fd5da1e0bc",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:686:object_lock_in_callback",
+          "ast_cfg:687:global_scheduler_walk"
+        ],
+        "code_hash": "fae5408df0dd5e65c8cabf41d62ae8404ded82bb731f3f80cb2ac47b256007e0",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"pipenode* pipe = g_pipe_scheduler.head;\",\"file\":\"src/lifecycle.c\",\"line\":\"686\"}",
+        "cfg_nodes": [
+          "686",
+          "687"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_1355576897e5e449d4b979ff",
+      "validation_cluster_uid": "VAL_6cbb6d378370ef4a4daee7c14e39d3c9",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_eb0f438a3463a60ecfdb3b9f",
+      "validation_cluster_uid": "VAL_6cec0340ca78c643ce8421f44dfd950a",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_102f21c94dd760faee3a7ac3",
+      "validation_cluster_uid": "VAL_6e0d1be2b3a80e295205e7c86d47011d",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_868009dbb4b8f562dbd64f2a",
+      "validation_cluster_uid": "VAL_6ea056779a8748b1d6406eb20969917e",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_45173d0cce1422a845f3d4ff",
+      "validation_cluster_uid": "VAL_6f75f876144eca24a4f3fccbcabf682b",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_65f924f3f275b652edab4ac8",
+      "validation_cluster_uid": "VAL_706c07e922225d672915bbc31f39214a",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "out_of_range_value_reaches_sink",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "out_of_range_value_reaches_sink",
+        "producer_engine": "decision_fact_graph_v1",
+        "fact_ids": [
+          "FACT_94c10c0618183374fd87c10543b88975",
+          "FACT_cdc8e85fb2e7e97ccec750879b0c738c"
+        ],
+        "code_hash": "SNAP_ce8be5432c43fe82ff6e2a0d27a46c4f6d40d0a59fe58f6e471aea9225a7e264",
+        "assumptions": [],
+        "contradiction_or_obligation": "a signed result reaches an unsigned length sink without a terminating range check",
+        "scope": "complete deterministic decision-fact slice",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"rcatline1541\",\"file\":\"src/lifecycle.c\",\"line\":\"1541\"}",
+        "cfg_nodes": [
+          "FACT_94c10c0618183374fd87c10543b88975",
+          "FACT_cdc8e85fb2e7e97ccec750879b0c738c"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_0a029a352043b4a75ad8f237",
+      "validation_cluster_uid": "VAL_707921f629083c2176e579cc6ce50953",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_1b642227bca6746685fee83f",
+      "validation_cluster_uid": "VAL_71ae879cc716a954407ae73e596e1a92",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_56d872becefa589b7914aeb5",
+      "validation_cluster_uid": "VAL_721afa7bde1d61b2501da787725fb836",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:221:environment_source",
+          "ast_cfg:236:command_concat"
+        ],
+        "code_hash": "c59a2575cfaa68cc0bac1647f4e73c53e584e24b52d8b67631d307407c283ee0",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"getenv at line 221\",\"file\":\"src/executor.c\",\"line\":\"221\"}",
+        "cfg_nodes": [
+          "221",
+          "236"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_92dbb1e35b8a94d181db7548",
+      "validation_cluster_uid": "VAL_72aa501b1d4152a2ef487233570b3a65",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_2cf13cf77a9d859a369d9f86",
+      "validation_cluster_uid": "VAL_72b367b71ea3e0808e68da4a0b383eae",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_afad4586dd7ef98464e51243",
+      "validation_cluster_uid": "VAL_73124179f4990113ede0e8ac45ec4c71",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_9711530188b866a4c08f3aa0",
+      "validation_cluster_uid": "VAL_73b52db828be3938877f24f846fefec7",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "durable_global_owner_transfer",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "durable_global_owner_transfer",
+        "producer_engine": "clang_ast_cfg_fd_ownership",
+        "fact_ids": [
+          "ast_cfg:3369:fd_open"
+        ],
+        "code_hash": "77363141a1393f4657a13650672148a49e16885a6cea5250364843fecd38584e",
+        "assumptions": [],
+        "contradiction_or_obligation": "the descriptor is assigned to an explicit global owner",
+        "scope": "descriptor ownership transfer",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "g_runtime_lock_cache.journal_fd",
+        "cfg_nodes": [
+          "3369"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_1fc3311176754b42d0525161",
+      "validation_cluster_uid": "VAL_7497023ce6111e866ed7ecd3d1cc846e",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_0a5cafa71d7d77361f3baa77",
+      "validation_cluster_uid": "VAL_74bc6a5f726009bee16653148fe0e312",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_6efa90b823af67bb72a89fb8",
+      "validation_cluster_uid": "VAL_75a5e5d136d98d09f45d83e461a68466",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_09d67ca5f6a0c79d2c32c69f",
+      "validation_cluster_uid": "VAL_75ce09c05f42271238a9e0a969f676f2",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_b8e210601030bed0f865e44e",
+      "validation_cluster_uid": "VAL_76be33b65f790c603b53ef620f386880",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "needs_review",
+      "transitioned": true,
+      "reason": "evidence_conflict",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_e08e67e2500d5af9c077f0fe",
+      "validation_cluster_uid": "VAL_79be546482ab712949db85c6986b074f",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "balanced_lock_return_paths",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "balanced_lock_return_paths",
+        "producer_engine": "clang_ast_cfg_lock_protocol",
+        "fact_ids": [
+          "source_cfg:12",
+          "source_cfg:18",
+          "source_cfg:3"
+        ],
+        "code_hash": "dacdb27d858740352cab35a00da06f806c8803b45b722f6240ea635aed58119a",
+        "assumptions": [],
+        "contradiction_or_obligation": "every reachable return in the complete local lock protocol is preceded by matching unlocks",
+        "scope": "complete branch-free local lock protocol",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"lock(g_runtime_fixpool_lock) at line 2463\",\"file\":\"src/lifecycle.c\",\"line\":\"2463\"}",
+        "cfg_nodes": [
+          "12",
+          "18",
+          "3"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_29740fa99155a7ab8d2c17bc",
+      "validation_cluster_uid": "VAL_7a19ebcf8872501841f170423986bb1f",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_fb663e25de15dcc08ecc1651",
+      "validation_cluster_uid": "VAL_7ae7351e6e94bf49f4691924090cf7f1",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_bd2487a91524c2220952baef",
+      "validation_cluster_uid": "VAL_7ca21f99eb9bae853c03d6f199887ec3",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:291:cond_wait"
+        ],
+        "code_hash": "842a919ba0bef7bed472fe982e519971e5f23d271a46ebecde0a9c36dd72c299",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"condition predicate\",\"file\":\"src/lifecycle.c\",\"line\":\"291\"}",
+        "cfg_nodes": [
+          "291"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_7b4958be008184c2835db0d0",
+      "validation_cluster_uid": "VAL_7cb40720571fb2139a7e9b9abaac9ff7",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_be984cbf395e3761727529b3",
+      "validation_cluster_uid": "VAL_7ff1c698bceccf36d36636badd706627",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_f5aa76abf0a1319dc706e507",
+      "validation_cluster_uid": "VAL_800514303c4593055786bb707c339f7e",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_143a61f182cd6dc38ca8ec51",
+      "validation_cluster_uid": "VAL_815b6be1df0fa265c154280ed44039ab",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "external_value_controls_unbounded_allocation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "external_value_controls_unbounded_allocation",
+        "producer_engine": "project_contract_allocation_v12",
+        "fact_ids": [
+          "ast_cfg:2643:unbounded_allocation",
+          "call_edge:_runtime_shutdown_local_session->_runtime_cleanup_tls_reserve:2967"
+        ],
+        "code_hash": "9976d4cd709db6b78c1c05eab2eac89e4f28fd16a196615de9a7c5102fb12479",
+        "assumptions": [],
+        "contradiction_or_obligation": "an externally controlled value reaches an allocation on a complete path without an upper-bound guard",
+        "scope": "complete entry-to-allocation caller contract",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "reserve_size?reserve_size:4096",
+        "cfg_nodes": [
+          "2643"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_7d8d3bcb498f84deb7cdb6c6",
+      "validation_cluster_uid": "VAL_82d56823cc47fb8547fe161af58b6d39",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "same_function_owned_member_cleanup_gap",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "same_function_owned_member_cleanup_gap",
+        "producer_engine": "graph_contract_prover",
+        "fact_ids": [
+          "graph_cfg:1258:wrapper_allocation",
+          "graph_cfg:1263:wrapper_release"
+        ],
+        "code_hash": "1a12560b232b7eb89b149bf0250bc3527948a0fd4931840e975a77b6d9db1e37",
+        "assumptions": [],
+        "contradiction_or_obligation": "the wrapper is released while its modeled owned member is not released",
+        "scope": "complete same-function helper allocation and cleanup path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v2",
+        "subject_identity": "_service_alloc_node->_runtime_remove_file_record",
+        "cfg_nodes": [
+          "1258",
+          "1263"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_bc3c7276f26719ea9550790a",
+      "validation_cluster_uid": "VAL_834d324a590eb2eeab6b04f06e7ad75f",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_84d960313f714a44a108bc98",
+      "validation_cluster_uid": "VAL_843f6c73bc775ea57ed29fb434817946",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_13eea226e6fe7b25590507f7",
+      "validation_cluster_uid": "VAL_8733bbef53a65e865e5e58ca337c5a8b",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:1473:state_snapshot",
+          "ast_cfg:1474:state_overwrite",
+          "ast_cfg:1476:error_return_without_restore"
+        ],
+        "code_hash": "76587493271670eeb45a53167bba711a2e61090819b14f81f5e4cf73b337b6ea",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"g_service_registry.state = fd;\",\"file\":\"src/lifecycle.c\",\"line\":\"1474\"}",
+        "cfg_nodes": [
+          "1473",
+          "1474",
+          "1476"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_debeb7efd6b68ca4c976595d",
+      "validation_cluster_uid": "VAL_87d00997ae4177b789d0509f412cce41",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_6842602cffc0bd3d7d7e81b7",
+      "validation_cluster_uid": "VAL_87dd190f6075d822c7c535c25d01b06e",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_bd389bbf5fa690b3e3cdfc3b",
+      "validation_cluster_uid": "VAL_87f32ad4f2f94ae6325be7fdd99d5bdd",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_eb3b631be3d6ec368ce33602",
+      "validation_cluster_uid": "VAL_88943454436870813c4c1dd9b452d295",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_4f38ae809d76e7f5c48ba83f",
+      "validation_cluster_uid": "VAL_8cea89de491811f6704fdba18a42ddc2",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_87dacd59eb9047d228f67921",
+      "validation_cluster_uid": "VAL_8ced67af1ca18dd92a124b36752e23b6",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:3272:pointer_derivation",
+          "ast_cfg:3273:invalid_free_alias"
+        ],
+        "code_hash": "41c6307f81c96a35be73c4ad0af3da9899cc98efb673ded59f72855ecdea4bc8",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"char* expired_snapshot = job->snapshot;\",\"file\":\"src/lifecycle.c\",\"line\":\"3273\"}",
+        "cfg_nodes": [
+          "3272",
+          "3273"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_a63a5fa8144249bcf30e7e91",
+      "validation_cluster_uid": "VAL_8dd4bfb57ecd60c6a27d6f22aaa0976e",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_c5da9407c1efa7ef8bdc20bb",
+      "validation_cluster_uid": "VAL_8f241afcc5ca03124037b2a6a7c43ba1",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_ba6143239296ad4225f03a1e",
+      "validation_cluster_uid": "VAL_8f8eded3faf54c59a07410dfa70231b6",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "balanced_lock_return_paths",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "balanced_lock_return_paths",
+        "producer_engine": "clang_ast_cfg_lock_protocol",
+        "fact_ids": [
+          "source_cfg:10",
+          "source_cfg:8"
+        ],
+        "code_hash": "0c5bfdd2d9c97b571512a194b2482ce78dc78771c729bf0921558518ff1077df",
+        "assumptions": [],
+        "contradiction_or_obligation": "every reachable return in the complete local lock protocol is preceded by matching unlocks",
+        "scope": "complete branch-free local lock protocol",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"lock(g_runtime_wheel_timer) at line 2752\",\"file\":\"src/lifecycle.c\",\"line\":\"2752\"}",
+        "cfg_nodes": [
+          "10",
+          "8"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_ef28714f72ceaba34aa0c315",
+      "validation_cluster_uid": "VAL_8f9828dc3f15efbef9c1555fbe43db31",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_055dcbd5c5418c72b4d2dade",
+      "validation_cluster_uid": "VAL_9059b868261d53243377e4d920e5c1c9",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_ae72588ae9f2f344bda0ad7d",
+      "validation_cluster_uid": "VAL_917d26825e680f2e826d82e7009179d7",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_23f1a905ccfb6fba0eb8fbfb",
+      "validation_cluster_uid": "VAL_91c36862b3cbf87f33987fea831b3cd8",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_dc5e8d3f53a0fb0f0c82a639",
+      "validation_cluster_uid": "VAL_9469d3aab9c3932aea39ae1e3fb3e761",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_d90f9135e69a605cf1bfbe1d",
+      "validation_cluster_uid": "VAL_9760d82969dc7458e1c72fed193a38cc",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_c19154cdf906966dd88b7c8c",
+      "validation_cluster_uid": "VAL_977bc29a6474a0967bb0bed66e67174a",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:1452:probe_status",
+          "ast_cfg:1453:probe_error_condition",
+          "ast_cfg:1455:success_possible_return"
+        ],
+        "code_hash": "d2b3a6ab601d97333e316faacb39f91b6a86f31f7d2064ded0ee86666b68936c",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"ret = _net_recv_data(fd, &is_rpc_msg, sizeof(is_rpc_msg));\",\"file\":\"src/lifecycle.c\",\"line\":\"1453\"}",
+        "cfg_nodes": [
+          "1452",
+          "1453",
+          "1455"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_f433af2d6117a7f1697bbfe5",
+      "validation_cluster_uid": "VAL_9901ea1ebf60bc4467ccf0b30391e10f",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_977a8fe89e7a37af83e4b31c",
+      "validation_cluster_uid": "VAL_990e36ccc29b954a8a4858ba70b81839",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "allocation_arithmetic_overflow_reaches_sink",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "allocation_arithmetic_overflow_reaches_sink",
+        "producer_engine": "clang_value_range_v12",
+        "fact_ids": [
+          "ast_cfg:1531:integer_size_arithmetic"
+        ],
+        "code_hash": "8ad4dd35c135bdaf39b28f242ae48a5db37717122d61e7156f3a9c5f3421e7ef",
+        "assumptions": [],
+        "contradiction_or_obligation": "unchecked allocation-size arithmetic is evaluated before any overflow guard and reaches the allocator",
+        "scope": "complete intraprocedural allocation expression",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "g_service_metrics=(size_t*)_safe_realloc(g_service_metrics,count*sizeof(size_t));",
+        "cfg_nodes": [
+          "1531"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_e8a8c5be3606aad26239ecc3",
+      "validation_cluster_uid": "VAL_9959cdde3e149ed781bfc675be7181f0",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_b2af465be556cd3035e36fe4",
+      "validation_cluster_uid": "VAL_9a32a0a344a57f2f072d6321c4d4000c",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_92adab91dbc5974c3dc8105d",
+      "validation_cluster_uid": "VAL_9aa0bee86ed057382d683993274b1df8",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "balanced_lock_return_paths",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "balanced_lock_return_paths",
+        "producer_engine": "clang_ast_cfg_lock_protocol",
+        "fact_ids": [
+          "source_cfg:6",
+          "source_cfg:8"
+        ],
+        "code_hash": "57e39948c601959488003f162ef4d86157a59dfe32be54659c491fea8aff6ab7",
+        "assumptions": [],
+        "contradiction_or_obligation": "every reachable return in the complete local lock protocol is preceded by matching unlocks",
+        "scope": "complete branch-free local lock protocol",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"lock(g_runtime_signal_sem) at line 2774\",\"file\":\"src/lifecycle.c\",\"line\":\"2774\"}",
+        "cfg_nodes": [
+          "6",
+          "8"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_b871a6cdc92d452fcc52ee28",
+      "validation_cluster_uid": "VAL_9af41cd1d4475deb8b3de00b25eec7e5",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_3b506e270fdb8a63c3b908c8",
+      "validation_cluster_uid": "VAL_9c1cd885d0f096fd19d954d415e2657b",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_958144a7bb787fb2ca6274c2",
+      "validation_cluster_uid": "VAL_9ca4d72f53ca6db74faead44cc0adb91",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_54828ef724f0135a81f78ef0",
+      "validation_cluster_uid": "VAL_9d369032154e4b579ecb2b1ee393e692",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:1380:wide_count_read",
+          "ast_cfg:1383:wide_count_sink"
+        ],
+        "code_hash": "31dac261ce40198a63162b4fe9cc55c932837b7c8c840014344667b318ceaeed",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"memcpy(&count, blob + 8, sizeof(count));\",\"file\":\"src/lifecycle.c\",\"line\":\"1383\"}",
+        "cfg_nodes": [
+          "1380",
+          "1383"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_f88aedd400b2e33370b13475",
+      "validation_cluster_uid": "VAL_9e55dcc516ee78fba9dd8ffcb3745a0d",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_0f74058a60aedade8abef232",
+      "validation_cluster_uid": "VAL_9f20ec33f7c1f1f0799b24b58b2cc26d",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_7143a0174e5bc0135ff2ccaa",
+      "validation_cluster_uid": "VAL_a2522867640872906e5f537ade5083e3",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_ae0e27e617c062d63d0d36d0",
+      "validation_cluster_uid": "VAL_a2cd67e0b02921d0b9d3c596092a8cc8",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "balanced_lock_return_paths",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "balanced_lock_return_paths",
+        "producer_engine": "clang_ast_cfg_lock_protocol",
+        "fact_ids": [
+          "source_cfg:12",
+          "source_cfg:8"
+        ],
+        "code_hash": "1549a50ff19883d73968b23f162bcdfad89df21d5a1b5d22a7808d958266ca3f",
+        "assumptions": [],
+        "contradiction_or_obligation": "every reachable return in the complete local lock protocol is preceded by matching unlocks",
+        "scope": "complete branch-free local lock protocol",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"lock(pipe) at line 742\",\"file\":\"src/lifecycle.c\",\"line\":\"742\"}",
+        "cfg_nodes": [
+          "12",
+          "8"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_e14df92dedf8ec571b668238",
+      "validation_cluster_uid": "VAL_a2fd32db158f79efe8b614aa9c03cf48",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_e11fa703fff469084b69f547",
+      "validation_cluster_uid": "VAL_a34dee7f67d3b7a0c46df8c69ba01b18",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_c4a5ea53c42c59b5269bb4a2",
+      "validation_cluster_uid": "VAL_a4a1d1899b65c2f07ebf3d3fe9ad876f",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_cc0de758789b97fb28c28c19",
+      "validation_cluster_uid": "VAL_a4ebb386e6e90d9eaf16236773d03784",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_300c1541a96df68e5f032a08",
+      "validation_cluster_uid": "VAL_a4fa692d9bfea1a0ed8a9b9cd5a75fb9",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_ce8b81c5188425ad1af0149f",
+      "validation_cluster_uid": "VAL_a7063cd22404a772e2386ad8dd9779bb",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_e034c7ddd3451ae802a4bb5f",
+      "validation_cluster_uid": "VAL_a85e1742e69aa74f6024d37f6dafe814",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:1761:uninitialized_pointer_decl",
+          "ast_cfg:1767:uninitialized_pointer_use"
+        ],
+        "code_hash": "ca3dc1e12768806bdabfd154f6754875215bd0ba634c7acb14c9432e8c473b02",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"char* tag;\",\"file\":\"src/lifecycle.c\",\"line\":\"1767\"}",
+        "cfg_nodes": [
+          "1761",
+          "1767"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_109c37d552de64e9e8e7de46",
+      "validation_cluster_uid": "VAL_a8e9d54782e59326fa28e54ae35ee963",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:1813:protocol_version_parse",
+          "ast_cfg:1815:protocol_version_ignored"
+        ],
+        "code_hash": "94de57b927950f0c3f6769c88b0b8f0ac0e622111ec09266b527d831f44b2005",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"uint8_t version = report[0];\",\"file\":\"src/lifecycle.c\",\"line\":\"1813\"}",
+        "cfg_nodes": [
+          "1813",
+          "1815"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_3bb442f6f1974a3b8a464c2c",
+      "validation_cluster_uid": "VAL_a9e9e595becab69fb3a328a76835dc49",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_2a5a0efc2a69dacaa8f3742f",
+      "validation_cluster_uid": "VAL_aa0a31903f50f21aa84f09cec4fe3d8e",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "output_parameter_ownership_transfer",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "output_parameter_ownership_transfer",
+        "producer_engine": "clang_ast_cfg_ownership",
+        "fact_ids": [
+          "ast_cfg:224:acquire"
+        ],
+        "code_hash": "2dca1345a8bdd65b759608da669dd790ace212c6894c05fd14d731bc304af687",
+        "assumptions": [],
+        "contradiction_or_obligation": "the resource is returned through an output ownership parameter",
+        "scope": "resource ownership transfer",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "*buffer",
+        "cfg_nodes": [
+          "224"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_4cc109f46f7de48021ff6ed1",
+      "validation_cluster_uid": "VAL_aa245501fe2342864930309c834efb17",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_62fc771ded648cfcbf5a5a30",
+      "validation_cluster_uid": "VAL_ac93dac9cd9d7cf16cc84fd53118233d",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_1e3d90a815c993cd7e24518b",
+      "validation_cluster_uid": "VAL_ad666e404c0f3c671d5b610f79c646f4",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_b069bc4555565000627ae375",
+      "validation_cluster_uid": "VAL_ae3bf378a38745c4af037fbfc6f64d0f",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "async_stack_address_escape",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "async_stack_address_escape",
+        "producer_engine": "clang_ast_cfg_async_lifetime",
+        "fact_ids": [
+          "ast_cfg:1518:stack_object",
+          "ast_cfg:1523:thread_arg_escape"
+        ],
+        "code_hash": "e583a5923d68ac7bc2146c6577688ee93fcbdcc7fd3c007f607bb6ab85978082",
+        "assumptions": [],
+        "contradiction_or_obligation": "a local stack object is passed to a detached worker without a completing join",
+        "scope": "complete local asynchronous thread handoff",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "job",
+        "cfg_nodes": [
+          "1518",
+          "1523"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_2c7f9d3bdea838d2404e35c3",
+      "validation_cluster_uid": "VAL_afaa4c7f1aecb39de2c1dfb430637d00",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "dynamic_array_not_fixed_storage",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "dynamic_array_not_fixed_storage",
+        "producer_engine": "clang_ast_cfg_bounds",
+        "fact_ids": [
+          "ast_cfg:3306:fixed_array",
+          "ast_cfg:3308:array_write"
+        ],
+        "code_hash": "7dac1eaeb36201b442e0e6d9341ad79daca4610462b110c207def082bd855bec",
+        "assumptions": [],
+        "contradiction_or_obligation": "the indexed object is declared as dynamic pointer storage, not a fixed array",
+        "scope": "complete intraprocedural array access path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "fd_table",
+        "cfg_nodes": [
+          "3306",
+          "3308"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_e779ec6ae829fbbe7036f60c",
+      "validation_cluster_uid": "VAL_aff20e4860c392d789be739dab99d1d6",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_b7e4654a28587211bcae5978",
+      "validation_cluster_uid": "VAL_b18d149fcf691b1abaa9f932bfb1f91a",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_6052c437a0c4704f1a154a6b",
+      "validation_cluster_uid": "VAL_b31d2cec70b8725e46fc705462744313",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:3148:pointer_backtrack",
+          "ast_cfg:3149:backtracked_pointer_sink"
+        ],
+        "code_hash": "4b9a5112298267d7614c34d05562a9611099c5f35f33b664fb2136c61749ff73",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"footer -= header.footer_backtrack;\",\"file\":\"src/lifecycle.c\",\"line\":\"3149\"}",
+        "cfg_nodes": [
+          "3148",
+          "3149"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_88d44882a2423ead5a471be4",
+      "validation_cluster_uid": "VAL_b46c6437e4530c849117cebcc92098ba",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_6629f57152682d4d2e01c254",
+      "validation_cluster_uid": "VAL_b4b689b44feb3ca1145e1cb0cfa20544",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_787656a4ddf823de1939c8ca",
+      "validation_cluster_uid": "VAL_b5c5b3a183739f70269c58b98be659f2",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "failed_acquisition_exit",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "failed_acquisition_exit",
+        "producer_engine": "clang_ast_cfg_fd_ownership",
+        "fact_ids": [
+          "ast_cfg:400:fd_open",
+          "ast_cfg:401:fd_failure_guard",
+          "ast_cfg:402:return_without_fd_close"
+        ],
+        "code_hash": "44acd2454dbf029a59a837a94d5d5e6b8d800f5ab119605fb79be1b612ae8112",
+        "assumptions": [],
+        "contradiction_or_obligation": "the reported return is guarded by a failed descriptor acquisition",
+        "scope": "failed descriptor acquisition branch",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "fd",
+        "cfg_nodes": [
+          "400",
+          "401",
+          "402"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_1f0cde84a1961358fdf24b95",
+      "validation_cluster_uid": "VAL_b96bea5e1abad84f6477005d4215bf65",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "incomplete_owner_cleanup",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "incomplete_owner_cleanup",
+        "producer_engine": "clang_ast_cfg_ownership",
+        "fact_ids": [
+          "source_cfg:8"
+        ],
+        "code_hash": "d269f3aeb2a1b8b70f3d70990847e5e1d7e2a82e66245b80e797e2adb46867bf",
+        "assumptions": [],
+        "contradiction_or_obligation": "a cleanup/reset path releases an owner while initialized owned members remain uncleaned",
+        "scope": "complete field-sensitive owner cleanup path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "node",
+        "cfg_nodes": [
+          "8"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_c34663f532c41087de664538",
+      "validation_cluster_uid": "VAL_b9fc56a8e600ee6fb52a28ae69695746",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:359:runtime_stack_array"
+        ],
+        "code_hash": "b60f76afb9b20808ce80377d5d63a2c0e51ed4ef46cc85e652491a23cd8803ac",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"field_count * 128\",\"file\":\"src/lifecycle.c\",\"line\":\"359\"}",
+        "cfg_nodes": [
+          "359"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_1f174307f831ae9715c51df8",
+      "validation_cluster_uid": "VAL_ba10e7f4bfc877735e735c598d773dac",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_7dd3332159b07b206b862e9c",
+      "validation_cluster_uid": "VAL_babc35d9430476ca858ab91f94ebd038",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_252edeebdc85541b9f735090",
+      "validation_cluster_uid": "VAL_baf161184c84ac1ebe60ee08995bd507",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_9e22595645add70d118c5459",
+      "validation_cluster_uid": "VAL_bb60f20620a6f2ce38a1274f30593080",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "reachable_self_link_without_cycle_guard",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "reachable_self_link_without_cycle_guard",
+        "producer_engine": "clang_container_protocol_v12",
+        "fact_ids": [
+          "source_cfg:732"
+        ],
+        "code_hash": "781ed16298bc2b3a9bb97f4f3d50e970ed0172a94575733a338b9b7dc28e8ca9",
+        "assumptions": [],
+        "contradiction_or_obligation": "a reachable container node is self-linked while the traversal has no cycle guard",
+        "scope": "complete container mutation and traversal snapshot",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "pipe",
+        "cfg_nodes": [
+          "732"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_471d3855513c96b6f9145076",
+      "validation_cluster_uid": "VAL_bc758de94fdfdb5c6b68065ffe9bd197",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_1dcf65cebadf6fc6d854fff4",
+      "validation_cluster_uid": "VAL_bd804c360c68feabec571157fd21ac83",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_70e4ca00bf17c9332b5a4090",
+      "validation_cluster_uid": "VAL_bedcc0b8dc32b3eeaad25aeeff5a9cac",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_747bb0caf296b8a0bf001b5d",
+      "validation_cluster_uid": "VAL_bf424ae6881f8e160f93e72726f92b57",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_80c092ea7ac4ba29be4b1aeb",
+      "validation_cluster_uid": "VAL_c1eae9f64f1f67408de6c347c5c9672b",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:192:format_sink"
+        ],
+        "code_hash": "5457b8466ce07efae351d96cd35b341e17b8a568751fc74ca414cf836e71ec1f",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"g_log_buffer\",\"file\":\"src/executor.c\",\"line\":\"192\"}",
+        "cfg_nodes": [
+          "192"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_022f57a9619f37d40c672d36",
+      "validation_cluster_uid": "VAL_c2759207bb6bba512abff8671b3aef24",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_cc9618e36f03eaf470612924",
+      "validation_cluster_uid": "VAL_c2a8ebeb6b1aefd4790f80ce34cb7f93",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_a01aac8e2f37fc2182eecf97",
+      "validation_cluster_uid": "VAL_c2e6b6286cebb7314654871d2dfbd4a1",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_e25f3520ffbf889d324a41f3",
+      "validation_cluster_uid": "VAL_c3ee55f8a0e5ba8c5aabbda55637386e",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_abf7d6b308eb5689694f5474",
+      "validation_cluster_uid": "VAL_c440f24be4734495d253a58df9683fc6",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:1832:refcount_state",
+          "ast_cfg:1840:free_without_refcount"
+        ],
+        "code_hash": "b03b209c47a2e1e11c11f58a82e9c062dcf3ff1b1ed7ce692837eb2cb81a36f1",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"ref_count evidence at line 1832\",\"file\":\"src/lifecycle.c\",\"line\":\"1832\"}",
+        "cfg_nodes": [
+          "1832",
+          "1840"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_f61576fd8cecaf515fe9daf7",
+      "validation_cluster_uid": "VAL_c55c16011fcf2b7dc0ceace62c54df5e",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_67cbc0136f1606c2f64aae81",
+      "validation_cluster_uid": "VAL_c57ed50a2087603addf97f9c6a1ead39",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_2760cb9407e02bc2045f3524",
+      "validation_cluster_uid": "VAL_c6cfa450225e8eef509eb401ec715330",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "balanced_lock_return_paths",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "balanced_lock_return_paths",
+        "producer_engine": "clang_ast_cfg_lock_protocol",
+        "fact_ids": [
+          "source_cfg:17",
+          "source_cfg:19",
+          "source_cfg:4"
+        ],
+        "code_hash": "02d7941f146eeaef2ef6a374bc7b5fac6c8957690083d7d0af35fc877e8d5a01",
+        "assumptions": [],
+        "contradiction_or_obligation": "every reachable return in the complete local lock protocol is preceded by matching unlocks",
+        "scope": "complete branch-free local lock protocol",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"lock(g_service_registry) at line 1279\",\"file\":\"src/lifecycle.c\",\"line\":\"1279\"}",
+        "cfg_nodes": [
+          "17",
+          "19",
+          "4"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_50fc53b9cfecd02f44fb6b31",
+      "validation_cluster_uid": "VAL_c726a45a2667882123ec2ebe1c38f599",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:1863:raw_fd_derive",
+          "ast_cfg:1864:encoded_fd_validate"
+        ],
+        "code_hash": "a0747baac0f52dafeb4f2c312003d4adcf14f8b59702ca069c4c1f6e6518d03d",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "{\"expression\":\"int raw_work_fd = work_fd + i;\",\"file\":\"src/lifecycle.c\",\"line\":\"1863\"}",
+        "cfg_nodes": [
+          "1863",
+          "1864"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_eeaabe7e78f04e9553ff6e1c",
+      "validation_cluster_uid": "VAL_c912ac2deb5dc89a5c4e1116b4a1ca2a",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "guard_dominates_sink",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "guard_dominates_sink",
+        "producer_engine": "clang_ast_cfg_guard_dominance",
+        "fact_ids": [
+          "ast_cfg:224:allocation_result",
+          "ast_cfg:225:null_guard",
+          "ast_cfg:240:unchecked_allocation_use"
+        ],
+        "code_hash": "f369f32d4b9a209033a1640d057624031677ddb726ba95fa4f0482a419d020a3",
+        "assumptions": [],
+        "contradiction_or_obligation": "a terminating null guard dominates the reported allocation use",
+        "scope": "complete intraprocedural allocation-to-use path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "buffer",
+        "cfg_nodes": [
+          "224",
+          "225",
+          "240"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_807454ae77810050a044bb7e",
+      "validation_cluster_uid": "VAL_c9342e069e7cba9ee57ebe84100a891e",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_d6f6934bdbf394e517a4daeb",
+      "validation_cluster_uid": "VAL_c94006e4e20c902baccd9b01cf951c9c",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "external_value_controls_unbounded_allocation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "external_value_controls_unbounded_allocation",
+        "producer_engine": "project_contract_allocation_v12",
+        "fact_ids": [
+          "ast_cfg:23:unbounded_allocation",
+          "call_edge:_runtime_stream_open_segment_handles->_safe_calloc:3300"
+        ],
+        "code_hash": "1f8c87d8229e074273a6030f9cb8edb017e32ef236e1e11f66a33dfe8ed47fa3",
+        "assumptions": [],
+        "contradiction_or_obligation": "an externally controlled value reaches an allocation on a complete path without an upper-bound guard",
+        "scope": "complete entry-to-allocation caller contract",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "nmemb*size",
+        "cfg_nodes": [
+          "23"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_ccc16dda0c03025be9b2aa2d",
+      "validation_cluster_uid": "VAL_ca2b5337fc5454b2787d16198f57185f",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_c3a7c6775a60e7c28c6b1f76",
+      "validation_cluster_uid": "VAL_cac6a360a7cd3538578da7097ae86081",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "matching_lock_dominates_unlock",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "matching_lock_dominates_unlock",
+        "producer_engine": "clang_ast_cfg_lock_protocol",
+        "fact_ids": [
+          "source_cfg:7",
+          "source_cfg:9"
+        ],
+        "code_hash": "92e67fe5c821d9c00d896464ad31332c859b7a9f3ec583160b45652c9dc5d472",
+        "assumptions": [],
+        "contradiction_or_obligation": "a matching local lock acquisition precedes the reported unlock on the same complete path",
+        "scope": "complete lexical lock protocol segment",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "g_runtime_lock_cache.lock",
+        "cfg_nodes": [
+          "7",
+          "9"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_006ffd799bec1edbc272f34f",
+      "validation_cluster_uid": "VAL_cc1f336b3c6a417b412b6ee5da05b8de",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_be198a9f000816fe838ec9ee",
+      "validation_cluster_uid": "VAL_cc44382ac2d48cffdc9e93337d975a5e",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_658fbf98df47a6f47c1d877c",
+      "validation_cluster_uid": "VAL_cdfc216c1711d2e494fd113fa6594eb0",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "external_value_controls_unbounded_allocation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "external_value_controls_unbounded_allocation",
+        "producer_engine": "project_contract_allocation_v12",
+        "fact_ids": [
+          "ast_cfg:175:unbounded_allocation",
+          "call_edge:td_receive_string->_net_recv_string:314"
+        ],
+        "code_hash": "799eea962a0af68e05139062c587b7d271d78745fa908886f8010d571a79eeb0",
+        "assumptions": [],
+        "contradiction_or_obligation": "an externally controlled value reaches an allocation on a complete path without an upper-bound guard",
+        "scope": "complete entry-to-allocation caller contract",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "max_len+1",
+        "cfg_nodes": [
+          "175"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_9c0a9c46bab251baa4f85f34",
+      "validation_cluster_uid": "VAL_ce818663fa64c84a36b9650b2ec2c8b3",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:1294:role_check",
+          "ast_cfg:1295:role_release"
+        ],
+        "code_hash": "e09f868f142ae696ecd058c22ae8ac01558984e0f845a99106f246523ae8c156",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"if (node->role == 1) {\",\"file\":\"src/lifecycle.c\",\"line\":\"1295\"}",
+        "cfg_nodes": [
+          "1294",
+          "1295"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_7b1384ec88853948959bea49",
+      "validation_cluster_uid": "VAL_ce9f11cbc1daff7b3e6b6a34742871eb",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_10d2a5d29c7f40ff6df0ef91",
+      "validation_cluster_uid": "VAL_d1eaa3849acc72dd3910fd74d24d241f",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_5b63eaf403f74eda9b6804d2",
+      "validation_cluster_uid": "VAL_d286943428592398936e7dada0d41acc",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_bb0a3630ccd13fb25389f65b",
+      "validation_cluster_uid": "VAL_d28b4f778562fae4d497175acae213b4",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_79a6c9d9402ff2a7bbbfff1b",
+      "validation_cluster_uid": "VAL_d2a8bb7d64f570994ff5e25324e89e1b",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_ef5c4df1dbc0ada27e0f1ea3",
+      "validation_cluster_uid": "VAL_d39483732c99e6b4ce1210ff95f6dc23",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_63d39f2016323fa304d03ad0",
+      "validation_cluster_uid": "VAL_d425130c804d99dc70ec55c89a692f3b",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_27895de7e1d222f9c5e28efe",
+      "validation_cluster_uid": "VAL_d440738e6b4a4afc847a9f97c5a94d3f",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_702cd845440b15021fc5b831",
+      "validation_cluster_uid": "VAL_d457dfa3efd2234d13e0b2ae4e7fbb66",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "balanced_lock_return_paths",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "balanced_lock_return_paths",
+        "producer_engine": "clang_ast_cfg_lock_protocol",
+        "fact_ids": [
+          "source_cfg:13",
+          "source_cfg:7"
+        ],
+        "code_hash": "33e7153f48e40060f2d0b0cc6251db9bebba77ac41efe8577954d65b7501d23e",
+        "assumptions": [],
+        "contradiction_or_obligation": "every reachable return in the complete local lock protocol is preceded by matching unlocks",
+        "scope": "complete branch-free local lock protocol",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"lock(g_runtime_stream_lock) at line 3336\",\"file\":\"src/lifecycle.c\",\"line\":\"3336\"}",
+        "cfg_nodes": [
+          "13",
+          "7"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_4a6f636aed6aad4ec5c7d81a",
+      "validation_cluster_uid": "VAL_d474dd67998e853c0c5e9daf55b6501a",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_154e9d67531081745a03f6ac",
+      "validation_cluster_uid": "VAL_d50b1a92d13c38bec0c7a0842d257d4e",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:3163:pointer_backtrack",
+          "ast_cfg:3164:backtracked_pointer_sink"
+        ],
+        "code_hash": "e2e05bde352b188d822da20adc3802ca91299ff96edade9e439643d1443c4d09",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"unsigned char* target = window - prefix_len;\",\"file\":\"src/lifecycle.c\",\"line\":\"3164\"}",
+        "cfg_nodes": [
+          "3163",
+          "3164"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_5e135f874196561fbe06dd2f",
+      "validation_cluster_uid": "VAL_d7fa0dace36aef0bb07d535e2e36baaf",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "pointer_offset_not_data_pointer",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "pointer_offset_not_data_pointer",
+        "producer_engine": "clang_ast_cfg_pointer_provenance",
+        "fact_ids": [
+          "source_cfg:5"
+        ],
+        "code_hash": "952bff2c6b8845033cad24db01772425deb1adeeea782e792ded793f0034e172",
+        "assumptions": [],
+        "contradiction_or_obligation": "the reported cast is derived from a pointer parameter plus an offset, not from serialized integer data",
+        "scope": "complete local pointer provenance",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "packet",
+        "cfg_nodes": [
+          "5"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_d85da0e43ef1dc08f246304f",
+      "validation_cluster_uid": "VAL_d862de2bb6f17328dc8d0048b86ea5e2",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_f8a22f5c86ff3e748ef10d84",
+      "validation_cluster_uid": "VAL_d9896c9670201c9342693b712eaf50e2",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_7d8d3bcb498f84deb7cdb6c6",
+      "validation_cluster_uid": "VAL_db52a5fb06236c9343a41ede238e0ce3",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_5300fbc24e5580e9c0f47e71",
+      "validation_cluster_uid": "VAL_ddb792f072aed46de89c1e5f838e19b2",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "guard_dominates_sink",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "guard_dominates_sink",
+        "producer_engine": "clang_ast_cfg_guard_dominance",
+        "fact_ids": [
+          "ast_cfg:224:acquire",
+          "ast_cfg:225:deref",
+          "ast_cfg:225:null_guard"
+        ],
+        "code_hash": "7ca20d650489597de652556cc716f6debb1e2189cef586cf12454baefc67ceae",
+        "assumptions": [],
+        "contradiction_or_obligation": "a terminating null guard dominates the reported allocation use",
+        "scope": "complete intraprocedural allocation-to-use path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "buffer",
+        "cfg_nodes": [
+          "224",
+          "225",
+          "225"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_5499b75a896b52905e0f592d",
+      "validation_cluster_uid": "VAL_de1ef83a1e78a4c065ef5ff069614441",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_0eefd10ce6603e85b9670621",
+      "validation_cluster_uid": "VAL_df54b0347b292a7c95f675f24eaa3a5a",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_a723840cf041a970f0297200",
+      "validation_cluster_uid": "VAL_df6f6fb6d9b4c5bc5b363db01f4a3d2e",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_dc64cc90fd6381c827052d16",
+      "validation_cluster_uid": "VAL_df7c250687026f9d587d07bb03adb92a",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "failed_acquisition_exit",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "failed_acquisition_exit",
+        "producer_engine": "clang_ast_cfg_fd_ownership",
+        "fact_ids": [
+          "ast_cfg:19:fd_open",
+          "ast_cfg:20:fd_failure_guard",
+          "ast_cfg:22:return_without_fd_close"
+        ],
+        "code_hash": "71d1f6420cd91dd3f2d279e74688310c478d4c126da3e5ca111173636ab83401",
+        "assumptions": [],
+        "contradiction_or_obligation": "the reported return is guarded by a failed descriptor acquisition",
+        "scope": "failed descriptor acquisition branch",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "fd",
+        "cfg_nodes": [
+          "19",
+          "20",
+          "22"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_aad7160a3e16e00e452f7ee8",
+      "validation_cluster_uid": "VAL_dffb15a91528be433e9e39f61564f06f",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_53b76de3847cd1074eea2bc6",
+      "validation_cluster_uid": "VAL_e09356cf299b0dad57c405209204c298",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:1785:dynamic_array_resize_guard",
+          "ast_cfg:1797:dynamic_array_publish"
+        ],
+        "code_hash": "e5b14b254a97328086c2c79503e34e7cced871686fd8de2773bbc5948679758b",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"if (task_index >= g_peer_task_array_cap) {\",\"file\":\"src/lifecycle.c\",\"line\":\"1785\"}",
+        "cfg_nodes": [
+          "1785",
+          "1797"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_1fb21ef220d52c37770222f6",
+      "validation_cluster_uid": "VAL_e113ddcfa7e3154d7fabd56393434391",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_266001ae35da7fba24b2f0d1",
+      "validation_cluster_uid": "VAL_e4a5454504a52d9e0fc468ea26ea9a12",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_153a615e152d268e506b7395",
+      "validation_cluster_uid": "VAL_e636bf25f86515aaf1090899da2e27f7",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_fc666e22861b9fd9fe825729",
+      "validation_cluster_uid": "VAL_e681e57490a859696384ff37e84620a8",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:3176:pointer_derivation",
+          "ast_cfg:3178:invalid_free_alias"
+        ],
+        "code_hash": "8ac3b19b0335694db28df96c8b7c9bea535db798ea67fda69b7c652136bf9d76",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"cursor += 16;\",\"file\":\"src/lifecycle.c\",\"line\":\"3178\"}",
+        "cfg_nodes": [
+          "3176",
+          "3178"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_648b66d7a5d073d9bd17aec3",
+      "validation_cluster_uid": "VAL_e74449e8192fee3a2db348fcf06c9312",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_fbc7cf9c5e9e715fd6b4ca24",
+      "validation_cluster_uid": "VAL_e826c2f15cf0fc0b33b9eca0e6844185",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_a78c3b30ade12e143e48af07",
+      "validation_cluster_uid": "VAL_e84e75a90b3c1b24e12df426c339169f",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_1297a706c13a4f6a17eb0a10",
+      "validation_cluster_uid": "VAL_ec0c2d21bd0f127898c2348d3a0eb83a",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_a1c5409008c52fe1ac3ea3d1",
+      "validation_cluster_uid": "VAL_ec41fb1405af545f50a20dcf51b6ea85",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_b3218516dfd9d835ffbc4cf6",
+      "validation_cluster_uid": "VAL_ed65d855b6606bf92e884d6083beaf67",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_4872c3ed87fc672b821ba3b1",
+      "validation_cluster_uid": "VAL_f0c5c2cc84264cbb1fcbb95efd076884",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:1688:spec_byte_limit_mismatch"
+        ],
+        "code_hash": "e519de45c3203135fb33bd0d79f1e95fca27397cc199cb093252e0de25e042d3",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"size_t label_len = (size_t)element_count * peer_element_info_size;\",\"file\":\"src/lifecycle.c\",\"line\":\"1688\"}",
+        "cfg_nodes": [
+          "1688"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_83b6d2adc07fc74edcd9954c",
+      "validation_cluster_uid": "VAL_f14e58c40e68f5c26ca79d45ba58af6d",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_31a924de3174ba1a94c74e47",
+      "validation_cluster_uid": "VAL_f1de37784b53377783d6e1a4058fc157",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "registered_signal_path_calls_unsafe_operation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "registered_signal_path_calls_unsafe_operation",
+        "producer_engine": "project_call_contract_signal_v12",
+        "fact_ids": [
+          "source_cfg:2765"
+        ],
+        "code_hash": "49eb6992ceee716579633e68c0508832e6bd4ce1c1f29fb515aa6abde7c7bb51",
+        "assumptions": [],
+        "contradiction_or_obligation": "a signal-context entry reaches an operation outside the async-signal-safe subset",
+        "scope": "signal-root reachability and target function snapshot",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "{\"expression\":\"if(pthread_mutex_trylock(&g_runtime_signal_sem)==0){\",\"file\":\"src/lifecycle.c\",\"line\":\"2765\"}",
+        "cfg_nodes": [
+          "2765"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_2aaabe75a60f559135f99d97",
+      "validation_cluster_uid": "VAL_f22420eff0b41b3fbdf175af32054cda",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "incomplete_owner_cleanup",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "incomplete_owner_cleanup",
+        "producer_engine": "clang_ast_cfg_ownership",
+        "fact_ids": [
+          "source_cfg:11"
+        ],
+        "code_hash": "2d81a07193f3966d5f68a698c1cdd9aaf2c113af59da471eccd150c576306d96",
+        "assumptions": [],
+        "contradiction_or_obligation": "a cleanup/reset path releases an owner while initialized owned members remain uncleaned",
+        "scope": "complete field-sensitive owner cleanup path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "g_runtime_lock_cache",
+        "cfg_nodes": [
+          "11"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_37a98679fc52ff0488126bf3",
+      "validation_cluster_uid": "VAL_f3065ad446697e4ec388f249d9d687c1",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_a59761249f16dfe16ed45411",
+      "validation_cluster_uid": "VAL_f31e9b6fd25fcbd7ef34e34d2102225a",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_fcff86898b6216ed72c6913e",
+      "validation_cluster_uid": "VAL_f3700701c6e392900f99ae12d8161199",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "allocation_arithmetic_overflow_reaches_sink",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "allocation_arithmetic_overflow_reaches_sink",
+        "producer_engine": "clang_value_range_v12",
+        "fact_ids": [
+          "ast_cfg:1425:integer_size_arithmetic"
+        ],
+        "code_hash": "7d555f1b0d91a651d62bf278472f3e9dbc4f7920f7e473e96d25bb307b581f34",
+        "assumptions": [],
+        "contradiction_or_obligation": "unchecked allocation-size arithmetic is evaluated before any overflow guard and reaches the allocator",
+        "scope": "complete intraprocedural allocation expression",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "uint32_t*pid_list=(uint32_t*)_safe_calloc(area+1,sizeof(uint32_t));",
+        "cfg_nodes": [
+          "1425"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_2b2a3d36a2f70b8a40e03185",
+      "validation_cluster_uid": "VAL_f481d9e2114bce402c73e441bb714cca",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_efcba7162015edaeb58909bc",
+      "validation_cluster_uid": "VAL_f9b25253deeffed83d44012c562bd405",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_88aa5078be8fa725064b11d2",
+      "validation_cluster_uid": "VAL_f9ee4dbaa5f23c53d6fb1594f73f5b5c",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_6036181a44bf905767c3cfab",
+      "validation_cluster_uid": "VAL_f9f89009af0a06d4c7b1c5ff40b719d4",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_b569512be24100d2aa29d92b",
+      "validation_cluster_uid": "VAL_fa0b245671ba28df72fc1f523540eb48",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_053634a23a7e17d51065b3b7",
+      "validation_cluster_uid": "VAL_fa310bfcfd63e378e2e490e59bf349ad",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_22f4b74e212988c23973cb9d",
+      "validation_cluster_uid": "VAL_fa3f3fbe3eb23cfd00d322508632de46",
+      "old_disposition": "needs_review",
+      "new_disposition": "needs_review",
+      "transitioned": false,
+      "reason": "no_new_complete_proof",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_6cb98d3e1c549b54fdfec5b6",
+      "validation_cluster_uid": "VAL_fb847ae5e60946b035be392d531abe03",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "out_of_range_value_reaches_sink",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "out_of_range_value_reaches_sink",
+        "producer_engine": "decision_fact_graph_v1",
+        "fact_ids": [
+          "FACT_04f86c39017016de90d211be4dca2abc",
+          "FACT_2b71e7ef027ca6aa19c278d77161e013"
+        ],
+        "code_hash": "SNAP_4f2696bc13df59d3462e215611a8c95c63338b2a9956d2aafea054b185f3b649",
+        "assumptions": [],
+        "contradiction_or_obligation": "a signed result reaches an unsigned length sink without a terminating range check",
+        "scope": "complete deterministic decision-fact slice",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"receivedatline317\",\"file\":\"src/lifecycle.c\",\"line\":\"317\"}",
+        "cfg_nodes": [
+          "FACT_04f86c39017016de90d211be4dca2abc",
+          "FACT_2b71e7ef027ca6aa19c278d77161e013"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_79a6c9d9402ff2a7bbbfff1b",
+      "validation_cluster_uid": "VAL_fc217bf87de4ef9403a5d11eba8e2af4",
+      "old_disposition": "confirmed",
+      "new_disposition": "confirmed",
+      "transitioned": false,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:2361:global_array_index"
+        ],
+        "code_hash": "1ce078dc0e1c230ce31dec7b508214b6da17a79d23f12a6d595d59184270c2fb",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "{\"expression\":\"lcore_id\",\"file\":\"src/lifecycle.c\",\"line\":\"2361\"}",
+        "cfg_nodes": [
+          "2361"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_529853084e7b8fbd9ebdba1b",
+      "validation_cluster_uid": "VAL_fe2c7e3f06e74bec71dae3f4bcb7e464",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "rejected_with_proof",
+      "transitioned": false,
+      "reason": "pointer_offset_not_data_pointer",
+      "proof": {
+        "outcome": "reject",
+        "proof_kind": "pointer_offset_not_data_pointer",
+        "producer_engine": "clang_ast_cfg_pointer_provenance",
+        "fact_ids": [
+          "source_cfg:6"
+        ],
+        "code_hash": "8ae9d2bd048d21edc947a534791f2fa9c4119a7c0806bf4b3990dbb7b73a1cd8",
+        "assumptions": [],
+        "contradiction_or_obligation": "the reported cast is derived from a pointer parameter plus an offset, not from serialized integer data",
+        "scope": "complete local pointer provenance",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v3",
+        "subject_identity": "packet",
+        "cfg_nodes": [
+          "6"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_df441bb2a663395778f0c926",
+      "validation_cluster_uid": "VAL_fe5c3b379b4edc0d6d8fafc4007e9de1",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "owned_member_left_live_when_parent_released",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "owned_member_left_live_when_parent_released",
+        "producer_engine": "clang_ast_cfg_protocol_v11",
+        "fact_ids": [
+          "ast_cfg:1394:owned_member_leak"
+        ],
+        "code_hash": "1b2fe193597dbf86069152f271854b78672e8ca5585ecad6edff1e22343805fa",
+        "assumptions": [],
+        "contradiction_or_obligation": "a field identified as owned remains live when its parent is released",
+        "scope": "complete intraprocedural ownership/concurrency protocol path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "table.children",
+        "cfg_nodes": [
+          "1394"
+        ]
+      }
+    }
+  ],
+  "changed_transitions": [
+    {
+      "candidate_uid": "CAND_ab09591c9daa2a726f667691",
+      "validation_cluster_uid": "VAL_039bb17f98a5d143d9af21f76416ad5d",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "external_value_controls_unbounded_allocation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "external_value_controls_unbounded_allocation",
+        "producer_engine": "project_contract_allocation_v12",
+        "fact_ids": [
+          "ast_cfg:43:unbounded_allocation",
+          "call_edge:_control_session_add_to_global->_str_dup:488",
+          "call_edge:_lifecycle_add_entry->_str_dup:125",
+          "call_edge:_lifecycle_attach_proc_node->_str_dup:805",
+          "call_edge:_parse_config_string->_str_dup:111"
+        ],
+        "code_hash": "324d9a5a8ebf5922a1498530ee538d560ad086519b337dc393913d5902d69d56",
+        "assumptions": [],
+        "contradiction_or_obligation": "an externally controlled value reaches an allocation on a complete path without an upper-bound guard",
+        "scope": "complete entry-to-allocation caller contract",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "len",
+        "cfg_nodes": [
+          "43"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_69bdd312f9f1dd45698965c1",
+      "validation_cluster_uid": "VAL_0bc6ab41c6dce9e2b68ab0e430c6a7cf",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "allocation_arithmetic_overflow_reaches_sink",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "allocation_arithmetic_overflow_reaches_sink",
+        "producer_engine": "clang_value_range_v12",
+        "fact_ids": [
+          "ast_cfg:2681:integer_size_arithmetic"
+        ],
+        "code_hash": "14ef71537ad9f611f2d15e64d081959020cd948c98dbd535ae59132071089adb",
+        "assumptions": [],
+        "contradiction_or_obligation": "unchecked allocation-size arithmetic is evaluated before any overflow guard and reaches the allocator",
+        "scope": "complete intraprocedural allocation expression",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "char*raw=(char*)_safe_malloc(size+8u);",
+        "cfg_nodes": [
+          "2681"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_3055bc26dafe251efe09c784",
+      "validation_cluster_uid": "VAL_0f45735b35558db84715e619cd5bc0b9",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "allocation_arithmetic_overflow_reaches_sink",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "allocation_arithmetic_overflow_reaches_sink",
+        "producer_engine": "clang_value_range_v12",
+        "fact_ids": [
+          "ast_cfg:140:integer_size_arithmetic"
+        ],
+        "code_hash": "bc5d75671878b377fffd6cc2d2aeb025639830df246809e6d55cd7ca82251f81",
+        "assumptions": [],
+        "contradiction_or_obligation": "unchecked allocation-size arithmetic is evaluated before any overflow guard and reaches the allocator",
+        "scope": "complete intraprocedural allocation expression",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "void*response_buffer=_safe_malloc(task->payload.binary.size*2);",
+        "cfg_nodes": [
+          "140"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_d41b2a54fed62ada8fe1d9cd",
+      "validation_cluster_uid": "VAL_1a87ac27e88857697d83e7cc71105f25",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "external_value_controls_unbounded_allocation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "external_value_controls_unbounded_allocation",
+        "producer_engine": "project_contract_allocation_v12",
+        "fact_ids": [
+          "ast_cfg:2286:unbounded_allocation",
+          "call_edge:_runtime_refresh_worker_context->_runtime_close_thread_cache:2889"
+        ],
+        "code_hash": "36cc99d285e7e599ee79c501a3e903dbc710330a586e3167fd0d56017bfd228a",
+        "assumptions": [],
+        "contradiction_or_obligation": "an externally controlled value reaches an allocation on a complete path without an upper-bound guard",
+        "scope": "complete entry-to-allocation caller contract",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "block_size?block_size:64",
+        "cfg_nodes": [
+          "2286"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_bffac81f1fb81748feeca43d",
+      "validation_cluster_uid": "VAL_2c71db518006f289287479a25817908c",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "registered_signal_path_calls_unsafe_operation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "registered_signal_path_calls_unsafe_operation",
+        "producer_engine": "project_call_contract_signal_v12",
+        "fact_ids": [
+          "source_cfg:2577"
+        ],
+        "code_hash": "e4337bff782cdf7ca5f70f3a2ba968ffcc51963b15ec70585401f8cc7a11fc92",
+        "assumptions": [],
+        "contradiction_or_obligation": "a signal-context entry reaches an operation outside the async-signal-safe subset",
+        "scope": "signal-root reachability and target function snapshot",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "{\"expression\":\"signal/exceptionhandlerpath\",\"file\":\"src/lifecycle.c\",\"line\":\"2577\"}",
+        "cfg_nodes": [
+          "2577"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_04fee6ef5b454a0866bf2fd9",
+      "validation_cluster_uid": "VAL_31f9d46557e266706cfa716f6b97bfe8",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "external_value_controls_unbounded_allocation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "external_value_controls_unbounded_allocation",
+        "producer_engine": "project_contract_allocation_v12",
+        "fact_ids": [
+          "ast_cfg:93:unbounded_allocation",
+          "call_edge:td_submit_task->_parse_task_buffer:222"
+        ],
+        "code_hash": "d16a1a06db696c065763140ef87ce0d690a1b982703ec4046b63090e72b9bd70",
+        "assumptions": [],
+        "contradiction_or_obligation": "an externally controlled value reaches an allocation on a complete path without an upper-bound guard",
+        "scope": "complete entry-to-allocation caller contract",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "payload_len",
+        "cfg_nodes": [
+          "93"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_72f401e3ec41cc02655cb51b",
+      "validation_cluster_uid": "VAL_3bb585cb585c5243bc36ade5dd83561b",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "allocation_arithmetic_overflow_reaches_sink",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "allocation_arithmetic_overflow_reaches_sink",
+        "producer_engine": "clang_value_range_v12",
+        "fact_ids": [
+          "ast_cfg:97:integer_size_arithmetic"
+        ],
+        "code_hash": "4a69a4df6da6f51c53a2169bb877c52a8e85c9cc2a4dca9df55fb8fc856c4a12",
+        "assumptions": [],
+        "contradiction_or_obligation": "unchecked allocation-size arithmetic is evaluated before any overflow guard and reaches the allocator",
+        "scope": "complete intraprocedural allocation expression",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "char*key=(char*)_safe_malloc(key_len+1);",
+        "cfg_nodes": [
+          "97"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_256ddc380cf820b2f126c271",
+      "validation_cluster_uid": "VAL_46c3f24a9b45374a2f108a5d37d4ae71",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "allocation_arithmetic_overflow_reaches_sink",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "allocation_arithmetic_overflow_reaches_sink",
+        "producer_engine": "clang_value_range_v12",
+        "fact_ids": [
+          "ast_cfg:300:integer_size_arithmetic"
+        ],
+        "code_hash": "6a2e8eb18819ace8c3e0f7d9523108e83ec389d9e68478bc91a0af577bed417c",
+        "assumptions": [],
+        "contradiction_or_obligation": "unchecked allocation-size arithmetic is evaluated before any overflow guard and reaches the allocator",
+        "scope": "complete intraprocedural allocation expression",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "g_metrics=(size_t*)_safe_realloc(g_metrics,count*sizeof(size_t));",
+        "cfg_nodes": [
+          "300"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_bb73d77a480c9cafca3d47fd",
+      "validation_cluster_uid": "VAL_4764e2c7454d25f723290df9efee98da",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "needs_review",
+      "transitioned": true,
+      "reason": "evidence_conflict",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_18f9a427ac2c21fbeec9c259",
+      "validation_cluster_uid": "VAL_4beac67beee823298cf2e6d1b7cd1c31",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "external_value_controls_unbounded_allocation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "external_value_controls_unbounded_allocation",
+        "producer_engine": "project_contract_allocation_v12",
+        "fact_ids": [
+          "ast_cfg:224:unbounded_allocation",
+          "call_edge:td_serialize_task_message->_serialize_task:330"
+        ],
+        "code_hash": "82098513fe3d61a7ea9acc9ce8874300c0a28cc24910080e7ae4a965c19d1631",
+        "assumptions": [],
+        "contradiction_or_obligation": "an externally controlled value reaches an allocation on a complete path without an upper-bound guard",
+        "scope": "complete entry-to-allocation caller contract",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "total_len",
+        "cfg_nodes": [
+          "224"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_07fb1bc2be694bbd477f9c3e",
+      "validation_cluster_uid": "VAL_606b2df722e7e1e723f0b21134e4ba39",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "external_value_controls_unbounded_allocation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "external_value_controls_unbounded_allocation",
+        "producer_engine": "project_contract_allocation_v12",
+        "fact_ids": [
+          "ast_cfg:3103:unbounded_allocation",
+          "call_edge:_runtime_process_stream_batch->_runtime_stream_copy_fragment:3389"
+        ],
+        "code_hash": "1dc91f9955a7162a9a090c083e30f53d634debfc8108f2cb7aaf104874ae2a4a",
+        "assumptions": [],
+        "contradiction_or_obligation": "an externally controlled value reaches an allocation on a complete path without an upper-bound guard",
+        "scope": "complete entry-to-allocation caller contract",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "alloc_len+1",
+        "cfg_nodes": [
+          "3103"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_b8e210601030bed0f865e44e",
+      "validation_cluster_uid": "VAL_76be33b65f790c603b53ef620f386880",
+      "old_disposition": "rejected_with_proof",
+      "new_disposition": "needs_review",
+      "transitioned": true,
+      "reason": "evidence_conflict",
+      "proof": null
+    },
+    {
+      "candidate_uid": "CAND_143a61f182cd6dc38ca8ec51",
+      "validation_cluster_uid": "VAL_815b6be1df0fa265c154280ed44039ab",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "external_value_controls_unbounded_allocation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "external_value_controls_unbounded_allocation",
+        "producer_engine": "project_contract_allocation_v12",
+        "fact_ids": [
+          "ast_cfg:2643:unbounded_allocation",
+          "call_edge:_runtime_shutdown_local_session->_runtime_cleanup_tls_reserve:2967"
+        ],
+        "code_hash": "9976d4cd709db6b78c1c05eab2eac89e4f28fd16a196615de9a7c5102fb12479",
+        "assumptions": [],
+        "contradiction_or_obligation": "an externally controlled value reaches an allocation on a complete path without an upper-bound guard",
+        "scope": "complete entry-to-allocation caller contract",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "reserve_size?reserve_size:4096",
+        "cfg_nodes": [
+          "2643"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_977a8fe89e7a37af83e4b31c",
+      "validation_cluster_uid": "VAL_990e36ccc29b954a8a4858ba70b81839",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "allocation_arithmetic_overflow_reaches_sink",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "allocation_arithmetic_overflow_reaches_sink",
+        "producer_engine": "clang_value_range_v12",
+        "fact_ids": [
+          "ast_cfg:1531:integer_size_arithmetic"
+        ],
+        "code_hash": "8ad4dd35c135bdaf39b28f242ae48a5db37717122d61e7156f3a9c5f3421e7ef",
+        "assumptions": [],
+        "contradiction_or_obligation": "unchecked allocation-size arithmetic is evaluated before any overflow guard and reaches the allocator",
+        "scope": "complete intraprocedural allocation expression",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "g_service_metrics=(size_t*)_safe_realloc(g_service_metrics,count*sizeof(size_t));",
+        "cfg_nodes": [
+          "1531"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_9e22595645add70d118c5459",
+      "validation_cluster_uid": "VAL_bb60f20620a6f2ce38a1274f30593080",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "reachable_self_link_without_cycle_guard",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "reachable_self_link_without_cycle_guard",
+        "producer_engine": "clang_container_protocol_v12",
+        "fact_ids": [
+          "source_cfg:732"
+        ],
+        "code_hash": "781ed16298bc2b3a9bb97f4f3d50e970ed0172a94575733a338b9b7dc28e8ca9",
+        "assumptions": [],
+        "contradiction_or_obligation": "a reachable container node is self-linked while the traversal has no cycle guard",
+        "scope": "complete container mutation and traversal snapshot",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "pipe",
+        "cfg_nodes": [
+          "732"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_50fc53b9cfecd02f44fb6b31",
+      "validation_cluster_uid": "VAL_c726a45a2667882123ec2ebe1c38f599",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "deterministic_cfg_obligation_path",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "deterministic_cfg_obligation_path",
+        "producer_engine": "clang_ast_cfg_obligation_prover",
+        "fact_ids": [
+          "ast_cfg:1863:raw_fd_derive",
+          "ast_cfg:1864:encoded_fd_validate"
+        ],
+        "code_hash": "a0747baac0f52dafeb4f2c312003d4adcf14f8b59702ca069c4c1f6e6518d03d",
+        "assumptions": [],
+        "contradiction_or_obligation": "deterministic AST/CFG events establish the reported safety obligation",
+        "scope": "complete intraprocedural AST/CFG source-to-sink path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "{\"expression\":\"int raw_work_fd = work_fd + i;\",\"file\":\"src/lifecycle.c\",\"line\":\"1863\"}",
+        "cfg_nodes": [
+          "1863",
+          "1864"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_d6f6934bdbf394e517a4daeb",
+      "validation_cluster_uid": "VAL_c94006e4e20c902baccd9b01cf951c9c",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "external_value_controls_unbounded_allocation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "external_value_controls_unbounded_allocation",
+        "producer_engine": "project_contract_allocation_v12",
+        "fact_ids": [
+          "ast_cfg:23:unbounded_allocation",
+          "call_edge:_runtime_stream_open_segment_handles->_safe_calloc:3300"
+        ],
+        "code_hash": "1f8c87d8229e074273a6030f9cb8edb017e32ef236e1e11f66a33dfe8ed47fa3",
+        "assumptions": [],
+        "contradiction_or_obligation": "an externally controlled value reaches an allocation on a complete path without an upper-bound guard",
+        "scope": "complete entry-to-allocation caller contract",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "nmemb*size",
+        "cfg_nodes": [
+          "23"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_658fbf98df47a6f47c1d877c",
+      "validation_cluster_uid": "VAL_cdfc216c1711d2e494fd113fa6594eb0",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "external_value_controls_unbounded_allocation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "external_value_controls_unbounded_allocation",
+        "producer_engine": "project_contract_allocation_v12",
+        "fact_ids": [
+          "ast_cfg:175:unbounded_allocation",
+          "call_edge:td_receive_string->_net_recv_string:314"
+        ],
+        "code_hash": "799eea962a0af68e05139062c587b7d271d78745fa908886f8010d571a79eeb0",
+        "assumptions": [],
+        "contradiction_or_obligation": "an externally controlled value reaches an allocation on a complete path without an upper-bound guard",
+        "scope": "complete entry-to-allocation caller contract",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "max_len+1",
+        "cfg_nodes": [
+          "175"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_31a924de3174ba1a94c74e47",
+      "validation_cluster_uid": "VAL_f1de37784b53377783d6e1a4058fc157",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "registered_signal_path_calls_unsafe_operation",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "registered_signal_path_calls_unsafe_operation",
+        "producer_engine": "project_call_contract_signal_v12",
+        "fact_ids": [
+          "source_cfg:2765"
+        ],
+        "code_hash": "49eb6992ceee716579633e68c0508832e6bd4ce1c1f29fb515aa6abde7c7bb51",
+        "assumptions": [],
+        "contradiction_or_obligation": "a signal-context entry reaches an operation outside the async-signal-safe subset",
+        "scope": "signal-root reachability and target function snapshot",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "{\"expression\":\"if(pthread_mutex_trylock(&g_runtime_signal_sem)==0){\",\"file\":\"src/lifecycle.c\",\"line\":\"2765\"}",
+        "cfg_nodes": [
+          "2765"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_fcff86898b6216ed72c6913e",
+      "validation_cluster_uid": "VAL_f3700701c6e392900f99ae12d8161199",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "allocation_arithmetic_overflow_reaches_sink",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "allocation_arithmetic_overflow_reaches_sink",
+        "producer_engine": "clang_value_range_v12",
+        "fact_ids": [
+          "ast_cfg:1425:integer_size_arithmetic"
+        ],
+        "code_hash": "7d555f1b0d91a651d62bf278472f3e9dbc4f7920f7e473e96d25bb307b581f34",
+        "assumptions": [],
+        "contradiction_or_obligation": "unchecked allocation-size arithmetic is evaluated before any overflow guard and reaches the allocator",
+        "scope": "complete intraprocedural allocation expression",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "uint32_t*pid_list=(uint32_t*)_safe_calloc(area+1,sizeof(uint32_t));",
+        "cfg_nodes": [
+          "1425"
+        ]
+      }
+    },
+    {
+      "candidate_uid": "CAND_df441bb2a663395778f0c926",
+      "validation_cluster_uid": "VAL_fe5c3b379b4edc0d6d8fafc4007e9de1",
+      "old_disposition": "needs_review",
+      "new_disposition": "confirmed",
+      "transitioned": true,
+      "reason": "owned_member_left_live_when_parent_released",
+      "proof": {
+        "outcome": "confirm",
+        "proof_kind": "owned_member_left_live_when_parent_released",
+        "producer_engine": "clang_ast_cfg_protocol_v11",
+        "fact_ids": [
+          "ast_cfg:1394:owned_member_leak"
+        ],
+        "code_hash": "1b2fe193597dbf86069152f271854b78672e8ca5585ecad6edff1e22343805fa",
+        "assumptions": [],
+        "contradiction_or_obligation": "a field identified as owned remains live when its parent is released",
+        "scope": "complete intraprocedural ownership/concurrency protocol path",
+        "completeness": "complete",
+        "proof_version": "zscope.decision-proof.v4",
+        "subject_identity": "table.children",
+        "cfg_nodes": [
+          "1394"
+        ]
+      }
+    }
+  ],
+  "proof_providers_v12": true,
+  "finding_root_v1": true,
+  "finding_root_count": 237,
+  "finding_root_alias_count": 10,
+  "projected_disposition_counts": {
+    "confirmed": 99,
+    "needs_review": 138,
+    "rejected_with_proof": 25,
+    "deduplicated_alias": 10
+  },
+  "input_fingerprints": {
+    "report": "81de44a198fdd2590e48becb11ce542b829dac2448f5fc9715f8911ab285a896"
+  },
+  "shadow": true,
+  "input_report_unchanged": true
+}
