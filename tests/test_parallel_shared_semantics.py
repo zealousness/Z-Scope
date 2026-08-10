@@ -42,6 +42,15 @@ def _config(tmp_path: Path) -> ZScopeConfig:
     )
 
 
+def test_analyzer_initializes_java_project_file_rule_cache(tmp_path: Path) -> None:
+    analyzer = analyzer_module.Analyzer(_config(tmp_path), code_index=FakeCodeIndex())
+
+    assert analyzer._java_project_file_rule_cache is None
+    assert analyzer._java_project_file_rule_emitted is False
+    with analyzer._java_project_file_rule_cache_lock:
+        assert analyzer._java_project_file_rule_cache is None
+
+
 def test_parallel_analyzer_builds_shared_semantics_once_per_batch(monkeypatch, tmp_path) -> None:
     counts = {"build": 0, "compile": 0}
     seen_semantics = []

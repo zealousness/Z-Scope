@@ -203,6 +203,12 @@ class Analyzer:
         # Scope this bounded cache to one scan.  It is never a class-level
         # cache, so facts cannot leak across revisions or projects.
         self.decision_fact_cache = decision_fact_cache or DecisionFactGraphCache()
+        # Java project-file rules can be reached concurrently by entry
+        # workers. Keep their scan-local cache and synchronization primitive
+        # on every Analyzer instance before the candidate pipeline runs.
+        self._java_project_file_rule_cache: Optional[List[Dict[str, Any]]] = None
+        self._java_project_file_rule_cache_lock = threading.RLock()
+        self._java_project_file_rule_emitted = False
         self.write_root_reports = write_root_reports
         # Parallel batch execution owns validation at scan scope.  A standalone
         # Analyzer still validates locally, preserving the existing public
