@@ -30,6 +30,7 @@ from ..reporting.schema import (
     unresolved_obligation_count as count_unresolved_obligations,
 )
 from .entry_discovery import EntryDiscovery
+from .java_entry_discovery import JavaEntryDiscovery
 from .diff_impact import DiffImpactPlanner
 from .specs import SpecRegistry, WorkflowStep
 from .workflow_executor import WorkflowExecutor, WorkflowStepHandler
@@ -176,13 +177,19 @@ class ScanSessionRunner:
             return False
 
         logger.info("Entry discovery activated.")
-        self.emit(
-            "Discovering scan entries from headers, communication APIs, "
-            "thread creation, and input sources..."
-        )
+        if self.config.project.language == "java":
+            self.emit("Discovering Java web, CLI, message, scheduled, servlet, and library entries...")
+        else:
+            self.emit(
+                "Discovering scan entries from headers, communication APIs, "
+                "thread creation, and input sources..."
+            )
         code_index = self._ensure_code_index(state, defer_svf=True)
         discovery_cfg = self.config.project.entry_discovery
-        discovery = EntryDiscovery(
+        discovery_type = (
+            JavaEntryDiscovery if self.config.project.language == "java" else EntryDiscovery
+        )
+        discovery = discovery_type(
             code_index,
             max_functions=discovery_cfg.max_functions,
             header_files=discovery_cfg.header_files or None,

@@ -103,6 +103,107 @@ class RuleEngine:
                 matches.extend(self._check_source_to_sink_flow(source, sink))
         return matches
 
+    def run_java_framework_data_flow_checks(self) -> List[RuleMatch]:
+        """Collect bounded Java entry-to-sink evidence.
+
+        The normal Java pipeline consumes SootUp/WALA/Joern provider signals.
+        This source fallback keeps the compatibility rule-engine useful when a
+        Joern data-flow query is unavailable, while marking every result as an
+        approximate candidate that still requires Validator confirmation.
+        """
+
+        source_root = Path(str(getattr(self.joern, "source_path", "") or ""))
+        if not source_root.is_dir():
+            return []
+
+        java_files = sorted(source_root.rglob("*.java"))
+        source_markers = re.compile(
+            r"@(?:RequestParam|RequestBody|RequestHeader|PathVariable)\b|"
+            r"\b(?:args|System\.getenv|System\.getProperty|readLine)\b"
+        )
+        if not any(source_markers.search(path.read_text(encoding="utf-8", errors="ignore")) for path in java_files):
+            return []
+
+        sink_specs = (
+            (
+                "command_injection",
+                re.compile(r"Runtime\.getRuntime\(\)\.exec\s*\(|new\s+ProcessBuilder\s*\("),
+                8.2,
+            ),
+            (
+                "path_traversal",
+                re.compile(
+                    r"\b(?:Paths\.get|Path\.of|Files\.(?:readString|readAllBytes|write|copy|move)|"
+                    r"new\s+File)\s*\("
+                ),
+                7.4,
+            ),
+            (
+                "unsafe_deserialization",
+                re.compile(
+                    r"\b(?:ObjectInputStream|XMLDecoder|XStream|Yaml|SAXReader)\b|"
+                    r"\.readObject\s*\("
+                ),
+                8.0,
+            ),
+        )
+
+        matches: List[RuleMatch] = []
+        for path in java_files:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            lines = text.splitlines()
+            relative = self._java_relative_path(path, source_root)
+            for category, pattern, score in sink_specs:
+                for match in pattern.finditer(text):
+                    line_number = text.count("\n", 0, match.start()) + 1
+                    snippet = lines[line_number - 1].strip() if line_number <= len(lines) else match.group(0)
+                    matches.append(
+                        RuleMatch(
+                            rule_id=f"java_source_entry_cross_layer_flow_{category}",
+                            rule_name=f"Approximate Java entry flow to {category} sink",
+                            category=category,
+                            score=score,
+                            func_name=path.stem,
+                            file_path=relative,
+                            line_number=line_number,
+                            code_snippet=snippet,
+                            evidence=[
+                                {
+                                    "query_family": "java_source_entry_cross_layer_flow",
+                                    "source_kind": "java_framework_or_process_input",
+                                    "sink_category": category,
+                                    "sink": match.group(0),
+                                    "approximate": True,
+                                    "validation_required": True,
+                                    "limitation": (
+                                        "Source fallback found project entry markers and a Java sink; "
+                                        "Validator must prove the interprocedural taint path and guards."
+                                    ),
+                                }
+                            ],
+                        )
+                    )
+        return self._dedupe_java_matches(matches)
+
+    @staticmethod
+    def _java_relative_path(path: Path, source_root: Path) -> str:
+        try:
+            return path.resolve().relative_to(source_root.resolve()).as_posix()
+        except ValueError:
+            return path.as_posix()
+
+    @staticmethod
+    def _dedupe_java_matches(matches: List[RuleMatch]) -> List[RuleMatch]:
+        deduped: List[RuleMatch] = []
+        seen = set()
+        for match in matches:
+            key = (match.rule_id, match.file_path, match.line_number, match.code_snippet)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(match)
+        return deduped
+
     def run_semantic_cpg_rule_library(self) -> List[RuleMatch]:
         """Run bounded CPG sink rules that become Validator-reviewed evidence."""
         matches = self._check_semantic_sink_calls(self._configured_sink_functions()[:80])

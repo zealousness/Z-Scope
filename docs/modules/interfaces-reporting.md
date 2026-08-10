@@ -1,0 +1,69 @@
+---
+doc_contract: zscope-module-v1
+covers:
+  - zscope/reporting
+  - zscope/web
+  - zscope/mcp
+sources:
+  - zscope/reporting/assembler.py
+  - zscope/reporting/schema.py
+  - zscope/reporting/sarif_exporter.py
+  - zscope/web/server.py
+  - zscope/web/services.py
+  - zscope/mcp/server.py
+  - zscope/mcp/http_server.py
+  - zscope/mcp/security.py
+tests:
+  - tests/test_report_assembler.py
+  - tests/test_report_schema_v2.py
+  - tests/test_sarif_exporter.py
+  - tests/test_web_dashboard_server.py
+  - tests/test_mcp_security.py
+---
+
+# 接口与报告
+
+## 职责与非职责
+
+本子系统负责将分析结果装配成稳定报告 schema、视图、Markdown、JSON 和 SARIF，并通过 Dashboard 与 MCP 提供受控访问。它是内部分析状态与人类、CI 或外部客户端之间的接口边界。
+
+它不负责生成底层候选、运行 Validator 或重新解释后端原始输出。
+
+## 主入口和数据流
+
+- `ReportAssembler` 接收已验证/待复核 finding、元数据和去重结果，构建默认与 `with_needs_review` 视图并持久化。
+- schema 层维护结构化报告兼容性，finding roots/identity 信息用于低噪声投影。
+- SARIF exporter 将完成后的报告转换为 SARIF v2.1.0，并保留稳定 fingerprint 和证据位置。
+- Web server 负责路由，services 负责配置、报告、反馈和索引状态等业务操作。
+- MCP stdio/HTTP server 复用工具与资源 provider；远程 HTTP 额外经过 token、allowlist 和绑定地址校验。
+
+## 必须保持的不变量
+
+- `report_views.default` 与 `report_views.with_needs_review` 的语义和计数必须一致且可复算。
+- 报告 schema 变更必须保持明确版本、向后兼容策略和对应测试。
+- SARIF location、rule、level、code flow 和 partial fingerprint 必须来自结构化 finding，不能从展示文本猜测。
+- Web 保存反馈必须通过统一 config/review store，不能创建第二套状态语义。
+- MCP 工具必须经过 ToolPolicy；远程非 loopback 绑定必须要求认证 token 和客户端 allowlist。
+- API 和日志不得泄露 LLM key、Bearer token、敏感源码范围或用户配置秘密。
+
+## 常见变更应落到哪里
+
+- 报告字段、视图和元数据：`zscope/reporting/schema.py`、`assembler.py`、`views.py`。
+- 根因投影或导出：`finding_roots.py`、`sarif_exporter.py`。
+- Dashboard 路由与静态资源：`zscope/web/server.py`、`dashboard_server.py`、`static/`。
+- Web 业务规则：`zscope/web/services.py`，优先复用 config/reporting 层。
+- MCP provider、传输或安全：`zscope/mcp/`，同时验证 stdio 与 HTTP 边界。
+
+## 对应测试与验证命令
+
+```bash
+python -m pytest -q tests/test_report_assembler.py tests/test_report_schema_v2.py tests/test_report_views.py
+python -m pytest -q tests/test_sarif_exporter.py tests/test_web_dashboard_server.py
+python -m pytest -q tests/test_mcp_policy.py tests/test_mcp_http_server.py tests/test_mcp_security.py
+```
+
+## 权威源码和关联文档
+
+- 稳定入口见本文 frontmatter 的 `sources`。
+- 用户可见输出、WebUI 和 MCP 命令见 `README.md`。
+- 接口与持久化关系见 `docs/architecture.md` 的“对外接口”和“持久化与反馈平面”。

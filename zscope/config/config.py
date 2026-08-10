@@ -2,6 +2,8 @@
 Configuration management for Z-SCOPE.
 """
 
+from __future__ import annotations
+
 import os
 import re
 from dataclasses import dataclass, field
@@ -18,6 +20,51 @@ except ImportError:
 yaml: Any = _yaml
 
 logger = logging.getLogger(__name__)
+
+
+SUPPORTED_PROJECT_LANGUAGES = {"auto", "c_cpp", "java"}
+
+
+def normalize_project_language(value: Any, default: str = "auto") -> str:
+    """Normalize public language aliases and reject ambiguous values."""
+
+    text = str(value or default).strip().lower().replace("-", "_")
+    aliases = {
+        "c": "c_cpp",
+        "cc": "c_cpp",
+        "cpp": "c_cpp",
+        "c++": "c_cpp",
+        "javasrc": "java",
+        "java_src": "java",
+    }
+    normalized = aliases.get(text, text)
+    if normalized not in SUPPORTED_PROJECT_LANGUAGES:
+        raise ValueError(
+            f"Invalid project.language {value!r}; expected auto, c_cpp, or java"
+        )
+    return normalized
+
+
+def detect_project_language(source_root: Path) -> str:
+    """Detect Java before C/C++, while preferring C/C++ for mixed repositories."""
+
+    root = Path(source_root)
+    java_markers = ("pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle")
+    c_markers = ("compile_commands.json", "CMakeLists.txt", "Makefile", "meson.build")
+    has_java_marker = any((root / marker).exists() for marker in java_markers)
+    has_c_marker = any((root / marker).exists() for marker in c_markers)
+    if has_c_marker:
+        return "c_cpp"
+    if has_java_marker:
+        return "java"
+    try:
+        if next(root.rglob("*.c"), None) or next(root.rglob("*.cpp"), None):
+            return "c_cpp"
+        if next(root.rglob("*.java"), None):
+            return "java"
+    except OSError:
+        pass
+    return "c_cpp"
 
 
 def _normalize_llm_base_urls(value: Any, default: str = "https://api.openai.com/v1") -> List[str]:
@@ -223,6 +270,7 @@ class EntryDiscoveryConfig:
     max_functions: int = 10000
     header_files: List[str] = field(default_factory=list)
     search_root: Optional[Path] = None
+    scan_after_discovery: bool = True
 
 
 @dataclass
@@ -256,7 +304,8 @@ class DiffImpactConfig:
 class IndexingConfig:
     """Configuration for code indexing."""
 
-    backend: str = "joern"  # joern | clang | unified | regex
+    backend: str = "auto"  # auto | clang | unified | regex | java_source | java_unified | joern (deprecated for C)
+    joern_language: str = "auto"
     # Joern 配置
     joern_path: str = "joern"
     joern_server_host: str = "127.0.0.1"
@@ -284,9 +333,43 @@ class IndexingConfig:
     svf_symbol_closure: bool = True
     svf_exclusive_pools: List[Dict[str, Any]] = field(default_factory=list)
     svf_shared_pools: List[Dict[str, Any]] = field(default_factory=list)
+    # Java source structure plus optional graph/flow signal providers.
+    java_structure_frontend: str = "auto"  # auto | spoon | javaparser | builtin
+    java_structure_backends: List[str] = field(default_factory=lambda: ["sootup", "wala"])
+    java_structure_extractor_command: List[str] = field(default_factory=list)
+    java_structure_db_path: str = ""
+    java_signal_backends: List[str] = field(default_factory=lambda: ["sootup", "wala", "joern"])
+    java_signal_provider_commands: Dict[str, List[str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        self.backend = str(self.backend or "auto").strip().lower().replace("-", "_")
+        self.joern_language = normalize_project_language(self.joern_language, "auto")
+        self.java_structure_frontend = (
+            str(self.java_structure_frontend or "auto").strip().lower().replace("-", "_")
+        )
+        if self.java_structure_frontend not in {"auto", "spoon", "javaparser", "builtin"}:
+            raise ValueError(
+                "indexing.java.structure_frontend must be auto, spoon, javaparser, or builtin"
+            )
+        self.java_structure_backends = _normalized_name_list(self.java_structure_backends)
+        self.java_signal_backends = _normalized_name_list(self.java_signal_backends)
+        self.java_signal_provider_commands = {
+            str(key).strip().lower().replace("-", "_"): [
+                str(part) for part in value if str(part).strip()
+            ]
+            for key, value in self.java_signal_provider_commands.items()
+            if str(key).strip() and isinstance(value, list)
+        }
         self.svf_timeout = _optional_positive_seconds(self.svf_timeout, 1800.0)
+
+
+def _normalized_name_list(values: Any) -> List[str]:
+    result: List[str] = []
+    for value in values or []:
+        name = str(value).strip().lower().replace("-", "_")
+        if name and name not in result:
+            result.append(name)
+    return result
 
 
 @dataclass
@@ -434,12 +517,23 @@ class ReportingConfig:
 
 
 @dataclass
+class RulesConfig:
+    """Versioned external rule-pack configuration."""
+
+    packs: List[str] = field(default_factory=list)
+    providers: List[str] = field(default_factory=list)
+    disabled_ids: List[str] = field(default_factory=list)
+
+
+@dataclass
 class ProjectConfig:
-    """Configuration for the C project being analyzed."""
+    """Configuration for the C/C++ or Java project being analyzed."""
 
     project_root: Path
     source_root: Path
     project_id: str = ""
+    language: str = "auto"
+    java_profile: str = "auto"
     entry_function: Optional[str] = None
     entry_file_path: Optional[str] = None
     entry_signature: Optional[str] = None
@@ -465,6 +559,11 @@ class ProjectConfig:
                 self.source_root = (self.project_root / self.source_root).resolve()
             else:
                 self.source_root = self.source_root.resolve()
+
+        self.language = normalize_project_language(self.language)
+        if self.language == "auto":
+            self.language = detect_project_language(self.source_root)
+        self.java_profile = str(self.java_profile or "auto").strip().lower().replace("-", "_")
 
         # Resolve include/exclude paths relative to source_root
         resolved_includes = []
@@ -535,6 +634,7 @@ class ZScopeConfig:
     analysis: AnalysisConfig
     project: ProjectConfig
     reporting: ReportingConfig = field(default_factory=ReportingConfig)
+    rules: RulesConfig = field(default_factory=RulesConfig)
 
 
 class ConfigLoader:
@@ -577,6 +677,18 @@ class ConfigLoader:
         if not isinstance(value, dict):
             return {}
         return {str(key): str(val) for key, val in value.items() if str(key).strip() and str(val).strip()}
+
+    @staticmethod
+    def _string_list_dict(value: Any) -> Dict[str, List[str]]:
+        if not isinstance(value, dict):
+            return {}
+        result: Dict[str, List[str]] = {}
+        for key, item in value.items():
+            name = str(key).strip()
+            if not name:
+                continue
+            result[name] = ConfigLoader._string_list(item)
+        return result
 
     @staticmethod
     def _int_dict(value: Any, default: Optional[Dict[str, int]] = None) -> Dict[str, int]:
@@ -746,8 +858,30 @@ class ConfigLoader:
 
             # Indexing config
             indexing_data = raw_config.get("indexing", {})
+            java_data = indexing_data.get("java", {}) or {}
+            nested_structure = java_data.get("structure", ["sootup", "wala"])
+            nested_signals = java_data.get("signals", ["joern"])
+            structure_backends = (
+                ConfigLoader._string_list(nested_structure)
+                if not isinstance(nested_structure, dict)
+                else ConfigLoader._string_list(nested_structure.get("backends"), ["sootup", "wala"])
+            )
+            structure_frontend = (
+                nested_structure.get("frontend", "auto")
+                if isinstance(nested_structure, dict)
+                else java_data.get("structure_frontend", "auto")
+            )
+            explicit_signal_backends = indexing_data.get("java_signal_backends")
+            java_signal_backends = (
+                ConfigLoader._string_list(explicit_signal_backends)
+                if explicit_signal_backends is not None
+                else _normalized_name_list(
+                    structure_backends + ConfigLoader._string_list(nested_signals, ["joern"])
+                )
+            )
             indexing_config = IndexingConfig(
-                backend=indexing_data.get("backend", "joern"),
+                backend=indexing_data.get("backend", "auto"),
+                joern_language=indexing_data.get("joern_language", "auto"),
                 joern_path=indexing_data.get("joern_path", "joern"),
                 joern_server_host=indexing_data.get("joern_server_host", "127.0.0.1"),
                 joern_server_port=indexing_data.get("joern_server_port", 8080),
@@ -776,6 +910,24 @@ class ConfigLoader:
                 svf_symbol_closure=indexing_data.get("svf_symbol_closure", True),
                 svf_exclusive_pools=indexing_data.get("svf_exclusive_pools", []) or [],
                 svf_shared_pools=indexing_data.get("svf_shared_pools", []) or [],
+                java_structure_frontend=indexing_data.get(
+                    "java_structure_frontend", structure_frontend
+                ),
+                java_structure_backends=indexing_data.get(
+                    "java_structure_backends", structure_backends
+                ),
+                java_structure_extractor_command=ConfigLoader._string_list(
+                    indexing_data.get("java_structure_extractor_command")
+                    or java_data.get("extractor_command")
+                ),
+                java_structure_db_path=indexing_data.get(
+                    "java_structure_db_path", java_data.get("structure_db_path", "")
+                ),
+                java_signal_backends=java_signal_backends,
+                java_signal_provider_commands=ConfigLoader._string_list_dict(
+                    indexing_data.get("java_signal_provider_commands")
+                    or java_data.get("provider_commands")
+                ),
             )
 
             # Analysis config
@@ -934,6 +1086,7 @@ class ConfigLoader:
                     or entry_discovery_data.get("root")
                     or entry_discovery_data.get("discovery_root")
                 ),
+                scan_after_discovery=entry_discovery_data.get("scan_after_discovery", True),
             )
             diff_impact_data = project_data.get("diff_impact") or {}
             diff_impact_defaults = DiffImpactConfig()
@@ -987,6 +1140,8 @@ class ConfigLoader:
                 project_root=Path(project_root),
                 source_root=Path(project_data.get("source_root", project_root)),
                 project_id=str(project_data.get("id") or project_data.get("project_id") or ""),
+                language=project_data.get("language", "auto"),
+                java_profile=project_data.get("java_profile", "auto"),
                 entry_function=entry_function,
                 entry_file_path=entry_file_path,
                 entry_signature=entry_signature,
@@ -999,6 +1154,28 @@ class ConfigLoader:
                 diff_impact=diff_impact_config,
             )
 
+            if indexing_config.joern_language == "auto":
+                indexing_config.joern_language = project_config.language
+            if indexing_config.backend in {"", "auto", "language_auto"}:
+                indexing_config.backend = (
+                    "java_unified" if project_config.language == "java" else "unified"
+                )
+            java_backends = {"java_source", "java_unified", "joern"}
+            c_backends = {"regex", "clang", "unified", "joern"}
+            allowed = java_backends if project_config.language == "java" else c_backends
+            if indexing_config.backend not in allowed:
+                raise ValueError(
+                    f"indexing.backend={indexing_config.backend!r} is not valid for "
+                    f"project.language={project_config.language!r}"
+                )
+
+            rules_data = raw_config.get("rules", {}) or {}
+            rules_config = RulesConfig(
+                packs=ConfigLoader._string_list(rules_data.get("packs")),
+                providers=ConfigLoader._string_list(rules_data.get("providers")),
+                disabled_ids=ConfigLoader._string_list(rules_data.get("disabled_ids")),
+            )
+
             return ZScopeConfig(
                 llm=default_llm_config,
                 llms=parsed_llms,
@@ -1006,6 +1183,7 @@ class ConfigLoader:
                 analysis=analysis_config,
                 project=project_config,
                 reporting=reporting_config,
+                rules=rules_config,
             )
 
         except KeyError as e:

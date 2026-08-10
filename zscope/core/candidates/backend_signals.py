@@ -105,6 +105,8 @@ def clang_pair_row_to_candidate(
 
 def joern_rule_match_to_candidate(match: Any, entry_func: str = "") -> Dict[str, Any]:
     data = match.to_dict() if hasattr(match, "to_dict") else dict(match)
+    if data.get("provider") and data.get("source") and data.get("sink"):
+        return java_provider_signal_to_candidate(data, entry_func=entry_func)
     rule_id = str(data.get("rule_id") or data.get("rule") or "joern_rule")
     func = str(data.get("function") or data.get("func_name") or entry_func)
     file_path = str(data.get("file_path") or data.get("filename") or "")
@@ -161,6 +163,109 @@ def joern_rule_match_to_candidate(match: Any, entry_func: str = "") -> Dict[str,
     }
 
 
+def java_provider_signal_to_candidate(
+    signal: Dict[str, Any], entry_func: str = ""
+) -> Dict[str, Any]:
+    """Normalize Java provider signals into evidence-only candidates."""
+
+    provider = str(signal.get("provider") or "java_signal")
+    rule_id = str(signal.get("rule_id") or signal.get("rule") or f"{provider}_signal")
+    defect_class = class_from_joern_category(
+        str(signal.get("category") or signal.get("defect_class") or rule_id)
+    )
+    source = signal.get("source") if isinstance(signal.get("source"), dict) else {}
+    sink = signal.get("sink") if isinstance(signal.get("sink"), dict) else {}
+    path = signal.get("path") if isinstance(signal.get("path"), list) else []
+    file_path = str(sink.get("file") or source.get("file") or "")
+    line = int(sink.get("line") or source.get("line") or 0)
+    func = str(
+        sink.get("function")
+        or source.get("function")
+        or (path[-1].get("method") if path and isinstance(path[-1], dict) else "")
+        or entry_func
+    )
+    precision = str(signal.get("precision") or "source_level_approx")
+    confidence = float(signal.get("confidence") or signal.get("score") or 6.0)
+    if confidence > 1.0:
+        confidence = max(0.0, min(1.0, confidence / 10.0))
+    candidate_id = (
+        f"JAVA_{provider.upper()}_{defect_class.upper()}_{func}_{line}_"
+        f"{uuid.uuid5(uuid.NAMESPACE_URL, rule_id + provider).hex[:8]}"
+    )
+    limitations = signal.get("limitations")
+    if not isinstance(limitations, list):
+        limitation_text = str(signal.get("limitation") or "")
+        limitations = [limitation_text] if limitation_text else []
+    evidence = {
+        "candidate_id": candidate_id,
+        "candidate_source": f"java_{provider}_signal",
+        "defect_class": defect_class,
+        "rule": rule_id,
+        "language": "java",
+        "provider": provider,
+        "precision": precision,
+        "source": source or {"expression": "java provider source", "kind": "java_provider_source"},
+        "sink": sink or {"operation": rule_id, "kind": "java_provider_sink"},
+        "path": {
+            "function": func,
+            "entry_function": entry_func,
+            "call_path": [
+                str(item.get("method") or item.get("function") or item.get("code") or "")
+                for item in path
+                if isinstance(item, dict)
+            ],
+            "provider_path": path,
+            "complete_in_function": precision == "exact_flow" and len(path) <= 1,
+            "complete_to_entry": bool(entry_func and path),
+            "guard_status": "unknown",
+        },
+        "guards": signal.get("guards") if isinstance(signal.get("guards"), list) else [],
+        "limitations": limitations,
+        "positive_evidence": [
+            f"Java provider `{provider}` emitted `{rule_id}` with precision `{precision}`."
+        ],
+        "negative_evidence": [],
+        "raw_signal": signal.get("raw_evidence") or signal,
+        "validation_notes": [
+            "Provider signals are evidence-only and must be verified by the Validator Agent."
+        ],
+    }
+    return {
+        "id": candidate_id,
+        "candidate_id": candidate_id,
+        "function": func,
+        "entry_function": entry_func,
+        "language": "java",
+        "location": f"{file_path}:{line}" if file_path and line else file_path or func,
+        "category": defect_class,
+        "subcategory": defect_class,
+        "defect_class": defect_class,
+        "finding_kind": "java_provider_signal_candidate",
+        "candidate_source": f"java_{provider}_signal",
+        "rule": rule_id,
+        "description": f"Java provider `{provider}` reported `{defect_class}` evidence for `{func}`.",
+        "root_cause": "A Java analysis provider reported source-to-sink evidence requiring validation.",
+        "suggested_fix": "Confirm exposure, guards, sanitizers, and sink exploitability before fixing.",
+        "confidence": confidence,
+        "rule_confidence": confidence,
+        "impact_level": (
+            "high"
+            if defect_class in {"command_injection", "unsafe_deserialization", "sql_injection"}
+            else "medium"
+        ),
+        "reasoning": "Java provider signal normalized into a Z-SCOPE evidence pack.",
+        "source": source.get("expression") or source.get("kind") or "java provider source",
+        "sink": sink.get("operation") or sink.get("kind") or rule_id,
+        "positive_evidence": evidence["positive_evidence"],
+        "negative_evidence": [],
+        "limitations": limitations,
+        "evidence_pack": evidence,
+        "validation_required": True,
+        "must_validate": True,
+        "candidate_role": "evidence_only",
+    }
+
+
 def class_from_backend_bug(bug_type: str) -> str:
     text = bug_type.replace("_", " ").replace("-", " ").lower()
     if any(word in text for word in ("double", "dfree")):
@@ -186,6 +291,35 @@ def class_from_joern_category(category: str) -> str:
         return "null_pointer_dereference"
     if any(word in text for word in ("path traversal", "directory traversal")):
         return "path_traversal"
+    java_categories = (
+        (("nosql", "mongo", "elasticsearch"), "nosql_injection"),
+        (("jpa", "jpql", "native query"), "jpa_injection"),
+        (("sql injection",), "sql_injection"),
+        (("ldap",), "ldap_injection"),
+        (("jndi",), "jndi_injection"),
+        (("file upload", "multipart"), "file_upload"),
+        (("template",), "template_injection"),
+        (("open redirect", "redirect"), "open_redirect"),
+        (("header injection", "response splitting"), "header_injection"),
+        (("cookie",), "insecure_cookie"),
+        (("cors",), "cors_misconfiguration"),
+        (("authz", "authorization", "csrf"), "authz_bypass"),
+        (("ssrf", "server side request forgery"), "ssrf"),
+        (("xxe", "xml external entity"), "xxe"),
+        (("deserialization", "read object"), "unsafe_deserialization"),
+        (("jwt",), "jwt_misuse"),
+        (("regex", "redos"), "regex_dos"),
+        (("reflection",), "reflection_injection"),
+        (("class loading", "classloader"), "dynamic_class_loading"),
+        (("resource exhaustion",), "resource_exhaustion"),
+        (("temp file", "temporary file"), "temp_file_risk"),
+        (("race", "concurrency"), "concurrency_race"),
+    )
+    for terms, normalized in java_categories:
+        if any(term in text for term in terms):
+            return normalized
+    if any(word in text for word in ("code injection", "expression", "script", "eval")):
+        return "code_injection"
     if any(word in text for word in ("integer", "divide", "division", "modulo", "shift", "wrap", "trunc")):
         return "integer_overflow"
     if any(word in text for word in ("leak", "resource", "alloc", "memory")):

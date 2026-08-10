@@ -1,0 +1,1133 @@
+{
+  "benchmark": "zscope-java-generic",
+  "suite": "java_range",
+  "language": "java",
+  "version": 5,
+  "structure_frontend": "spoon",
+  "required_backend": "java_unified",
+  "coverage": {
+    "build": "maven",
+    "structure_precision": "source_level_exact",
+    "components": [
+      "cli",
+      "controller",
+      "service",
+      "mapper",
+      "dto",
+      "filter",
+      "interceptor",
+      "config",
+      "persistence",
+      "parser",
+      "crypto",
+      "runtime",
+      "resource"
+    ],
+    "entry_kinds": [
+      "cli_main",
+      "public_api",
+      "message_listener",
+      "batch_env",
+      "stdin",
+      "file_permission",
+      "spring_controller",
+      "servlet_filter",
+      "spring_interceptor",
+      "spring_security_config"
+    ],
+    "security_categories": [
+      "sql_injection",
+      "jpa_injection",
+      "nosql_injection",
+      "command_injection",
+      "path_traversal",
+      "ssrf",
+      "file_upload",
+      "unsafe_deserialization",
+      "xxe",
+      "xss",
+      "template_injection",
+      "sensitive_log",
+      "header_injection",
+      "insecure_cookie",
+      "cors_misconfiguration",
+      "authz_bypass",
+      "weak_crypto",
+      "crypto_misuse",
+      "jwt_misuse",
+      "resource_leak",
+      "resource_exhaustion",
+      "regex_dos",
+      "reflection_injection",
+      "dynamic_class_loading",
+      "temp_file_risk",
+      "insecure_file_permission",
+      "concurrency_race",
+      "jndi_injection",
+      "ldap_injection",
+      "code_injection",
+      "open_redirect",
+      "weak_random",
+      "insecure_tls",
+      "secret_exposure",
+      "sensitive_info_exposure",
+      "xpath_injection"
+    ],
+    "rule_ids": [
+      "java_classpath_resource_traversal",
+      "java_command_execution",
+      "java_cors_wildcard",
+      "java_crypto_fixed_iv_or_salt",
+      "java_druid_monitor_exposure",
+      "java_dynamic_class_loading",
+      "java_expression_or_script_eval",
+      "java_file_upload_path",
+      "java_filter_unconditional_chain",
+      "java_hardcoded_secret",
+      "java_header_injection",
+      "java_insecure_cookie_flags",
+      "java_insecure_file_permissions",
+      "java_jdbc_concatenated_sql",
+      "java_jdbc_fake_prepared_statement",
+      "java_jndi_lookup",
+      "java_jpa_dynamic_query",
+      "java_jwt_verification_misuse",
+      "java_ldap_search_filter",
+      "java_manual_close_resource",
+      "java_missing_object_authorization",
+      "java_mybatis_dollar_substitution",
+      "java_nosql_query_injection",
+      "java_object_deserialization",
+      "java_open_redirect",
+      "java_path_traversal_file_api",
+      "java_reflected_xss_response_body",
+      "java_reflection_dynamic_call",
+      "java_regex_dos",
+      "java_resource_exhaustion_read_all",
+      "java_sensitive_logging",
+      "java_sensitive_state_change_missing_authz",
+      "java_shared_mutable_static_state",
+      "java_spring_security_permit_all",
+      "java_sql_statement_execute",
+      "java_ssrf_http_client",
+      "java_stored_xss_persistent_content",
+      "java_temp_file_risk",
+      "java_template_injection",
+      "java_template_utext_xss",
+      "java_third_party_deserialization",
+      "java_tls_verification_disabled",
+      "java_weak_crypto",
+      "java_weak_random_security",
+      "java_xmldecoder_readobject",
+      "java_xpath_expression_concat",
+      "java_xxe_factory",
+      "java_zip_entry_path_traversal"
+    ],
+    "custom_rule_ids": [
+      "java_handler_interceptor_missing_authz"
+    ],
+    "structure_checks": [
+      "maven_spoon_launcher",
+      "java_structure_db",
+      "class_index",
+      "method_index",
+      "source_call_edges",
+      "spring_annotations",
+      "spring_security_config",
+      "mybatis_annotations",
+      "servlet_filter",
+      "handler_interceptor"
+    ]
+  },
+  "total_vulnerabilities": 58,
+  "notes": "Canonical scorer truth for Maven/Spoon full Java category adaptation. Do not expose this file to Z-SCOPE analysis context.",
+  "vulnerabilities": [
+    {
+      "id": "JAVA-CLI-001",
+      "rule_id": "java_command_execution",
+      "cwe": "CWE-78",
+      "category": "command_injection",
+      "title": "CLI argument is passed to ProcessBuilder command execution",
+      "file": "src/main/java/com/zscope/cli/CliApp.java",
+      "function": "main",
+      "line": 5,
+      "end_line": 5,
+      "severity": "critical",
+      "keywords": [
+        "args",
+        "ProcessBuilder",
+        "start"
+      ]
+    },
+    {
+      "id": "JAVA-CLI-002",
+      "rule_id": "java_path_traversal_file_api",
+      "cwe": "CWE-22",
+      "category": "path_traversal",
+      "title": "Public library API parameter reaches file read path",
+      "file": "src/main/java/com/zscope/cli/Loader.java",
+      "function": "read",
+      "line": 8,
+      "end_line": 8,
+      "severity": "high",
+      "keywords": [
+        "Files.readString",
+        "Paths.get",
+        "path"
+      ]
+    },
+    {
+      "id": "JAVA-CLI-003",
+      "rule_id": "java_object_deserialization",
+      "cwe": "CWE-502",
+      "category": "unsafe_deserialization",
+      "title": "Message payload is deserialized with ObjectInputStream",
+      "file": "src/main/java/com/zscope/cli/MessageWorker.java",
+      "function": "onMessage",
+      "line": 11,
+      "end_line": 11,
+      "severity": "critical",
+      "keywords": [
+        "KafkaListener",
+        "ObjectInputStream",
+        "readObject"
+      ]
+    },
+    {
+      "id": "JAVA-CLI-004",
+      "rule_id": "java_command_execution",
+      "cwe": "CWE-78",
+      "category": "command_injection",
+      "title": "Environment variable controls Runtime.exec command",
+      "file": "src/main/java/com/zscope/cli/EnvBatchJob.java",
+      "function": "run",
+      "line": 6,
+      "end_line": 6,
+      "severity": "high",
+      "keywords": [
+        "System.getenv",
+        "Runtime.getRuntime",
+        "exec"
+      ]
+    },
+    {
+      "id": "JAVA-CLI-005",
+      "rule_id": "java_path_traversal_file_api",
+      "cwe": "CWE-22",
+      "category": "path_traversal",
+      "title": "stdin line controls file read path",
+      "file": "src/main/java/com/zscope/cli/StdinTool.java",
+      "function": "readFromStdin",
+      "line": 10,
+      "end_line": 10,
+      "severity": "high",
+      "keywords": [
+        "Scanner",
+        "System.in",
+        "Files.readString"
+      ]
+    },
+    {
+      "id": "JAVA-CLI-006",
+      "rule_id": "java_insecure_file_permissions",
+      "cwe": "CWE-732",
+      "category": "insecure_file_permission",
+      "title": "Temporary file is made world readable, writable, and executable",
+      "file": "src/main/java/com/zscope/cli/PermissionTool.java",
+      "function": "makeShared",
+      "line": 10,
+      "end_line": 10,
+      "severity": "medium",
+      "keywords": [
+        "Files.setPosixFilePermissions",
+        "PosixFilePermissions",
+        "rwxrwxrwx"
+      ]
+    },
+    {
+      "id": "JAVA-WEB-001",
+      "rule_id": "java_mybatis_dollar_substitution",
+      "cwe": "CWE-89",
+      "category": "sql_injection",
+      "title": "MyBatis mapper uses ${} text substitution with request-controlled name",
+      "file": "src/main/java/com/zscope/web/mapper/UserMapper.java",
+      "function": "findByNameUnsafe",
+      "line": 13,
+      "end_line": 14,
+      "severity": "critical",
+      "keywords": [
+        "@Select",
+        "${name}",
+        "findByNameUnsafe"
+      ]
+    },
+    {
+      "id": "JAVA-WEB-002",
+      "rule_id": "java_ssrf_http_client",
+      "cwe": "CWE-918",
+      "category": "ssrf",
+      "title": "Request parameter controls outbound URI fetch",
+      "file": "src/main/java/com/zscope/web/service/UserService.java",
+      "function": "fetchRemote",
+      "line": 37,
+      "end_line": 37,
+      "severity": "high",
+      "keywords": [
+        "URI.create",
+        "openStream",
+        "target"
+      ]
+    },
+    {
+      "id": "JAVA-WEB-003",
+      "rule_id": "java_file_upload_path",
+      "cwe": "CWE-434",
+      "category": "file_upload",
+      "title": "Uploaded original filename controls filesystem write target",
+      "file": "src/main/java/com/zscope/web/service/UserService.java",
+      "function": "storeUpload",
+      "line": 45,
+      "end_line": 46,
+      "severity": "high",
+      "keywords": [
+        "MultipartFile",
+        "getOriginalFilename",
+        "transferTo"
+      ]
+    },
+    {
+      "id": "JAVA-WEB-004",
+      "rule_id": "java_path_traversal_file_api",
+      "cwe": "CWE-22",
+      "category": "path_traversal",
+      "title": "Download path parameter reaches Files.readString",
+      "file": "src/main/java/com/zscope/web/service/UserService.java",
+      "function": "readFile",
+      "line": 41,
+      "end_line": 41,
+      "severity": "high",
+      "keywords": [
+        "Files.readString",
+        "Paths.get",
+        "path"
+      ]
+    },
+    {
+      "id": "JAVA-WEB-005",
+      "rule_id": "java_sensitive_state_change_missing_authz",
+      "cwe": "CWE-862",
+      "category": "authz_bypass",
+      "title": "Delete endpoint performs state change without authorization guard",
+      "file": "src/main/java/com/zscope/web/controller/UserController.java",
+      "function": "delete",
+      "line": 47,
+      "end_line": 49,
+      "severity": "high",
+      "keywords": [
+        "@DeleteMapping",
+        "deleteUser",
+        "PathVariable"
+      ]
+    },
+    {
+      "id": "JAVA-WEB-006",
+      "rule_id": "java_object_deserialization",
+      "cwe": "CWE-502",
+      "category": "unsafe_deserialization",
+      "title": "HTTP request body is deserialized with ObjectInputStream",
+      "file": "src/main/java/com/zscope/web/service/UserService.java",
+      "function": "deserialize",
+      "line": 54,
+      "end_line": 54,
+      "severity": "critical",
+      "keywords": [
+        "ObjectInputStream",
+        "ByteArrayInputStream",
+        "readObject"
+      ]
+    },
+    {
+      "id": "JAVA-WEB-007",
+      "rule_id": "java_xxe_factory",
+      "cwe": "CWE-611",
+      "category": "xxe",
+      "title": "XML parser is created without disabling external entities",
+      "file": "src/main/java/com/zscope/web/service/UserService.java",
+      "function": "parseXml",
+      "line": 58,
+      "end_line": 59,
+      "severity": "high",
+      "keywords": [
+        "DocumentBuilderFactory",
+        "newDocumentBuilder",
+        "parse"
+      ]
+    },
+    {
+      "id": "JAVA-WEB-008",
+      "rule_id": "java_open_redirect",
+      "cwe": "CWE-601",
+      "category": "open_redirect",
+      "title": "Redirect target is built from request parameter",
+      "file": "src/main/java/com/zscope/web/controller/UserController.java",
+      "function": "redirect",
+      "line": 64,
+      "end_line": 64,
+      "severity": "medium",
+      "keywords": [
+        "redirect:",
+        "next",
+        "RequestParam"
+      ]
+    },
+    {
+      "id": "JAVA-WEB-009",
+      "rule_id": "java_weak_crypto",
+      "cwe": "CWE-327",
+      "category": "weak_crypto",
+      "title": "AES ECB mode is used for request-controlled data",
+      "file": "src/main/java/com/zscope/web/service/UserService.java",
+      "function": "encryptLegacy",
+      "line": 63,
+      "end_line": 64,
+      "severity": "medium",
+      "keywords": [
+        "Cipher.getInstance",
+        "AES/ECB/PKCS5Padding",
+        "doFinal"
+      ]
+    },
+    {
+      "id": "JAVA-WEB-010",
+      "rule_id": "java_jwt_verification_misuse",
+      "cwe": "CWE-347",
+      "category": "jwt_misuse",
+      "title": "JWT filter decodes bearer token without signature verification",
+      "file": "src/main/java/com/zscope/web/service/JwtService.java",
+      "function": "decodeWithoutVerification",
+      "line": 15,
+      "end_line": 15,
+      "severity": "high",
+      "keywords": [
+        "JWT.decode",
+        "getSubject",
+        "without verification"
+      ]
+    },
+    {
+      "id": "JAVA-WEB-011",
+      "rule_id": "java_handler_interceptor_missing_authz",
+      "cwe": "CWE-862",
+      "category": "authz_bypass",
+      "title": "Admin interceptor trusts X-User and unconditionally allows requests",
+      "file": "src/main/java/com/zscope/web/interceptor/AdminInterceptor.java",
+      "function": "preHandle",
+      "line": 12,
+      "end_line": 14,
+      "severity": "high",
+      "keywords": [
+        "getHeader",
+        "X-User",
+        "return true"
+      ]
+    },
+    {
+      "id": "JAVA-WEB-012",
+      "rule_id": "java_filter_unconditional_chain",
+      "cwe": "CWE-862",
+      "category": "authz_bypass",
+      "title": "JWT filter forwards requests even when authentication is absent or invalid",
+      "file": "src/main/java/com/zscope/web/filter/JwtBypassFilter.java",
+      "function": "doFilter",
+      "line": 30,
+      "end_line": 30,
+      "severity": "high",
+      "keywords": [
+        "chain.doFilter",
+        "Authorization",
+        "decodeWithoutVerification"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-001",
+      "rule_id": "java_sql_statement_execute",
+      "cwe": "CWE-89",
+      "category": "sql_injection",
+      "title": "JDBC Statement executes a query built by string concatenation",
+      "file": "src/main/java/com/zscope/persistence/PersistenceEntry.java",
+      "function": "jdbcSearch",
+      "line": 18,
+      "end_line": 18,
+      "severity": "critical",
+      "keywords": [
+        "executeQuery",
+        "SELECT",
+        "name"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-002",
+      "rule_id": "java_jpa_dynamic_query",
+      "cwe": "CWE-89",
+      "category": "jpa_injection",
+      "title": "JPA query is built by concatenating caller-controlled input",
+      "file": "src/main/java/com/zscope/persistence/PersistenceEntry.java",
+      "function": "jpaSearch",
+      "line": 22,
+      "end_line": 22,
+      "severity": "high",
+      "keywords": [
+        "createQuery",
+        "from User",
+        "name"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-003",
+      "rule_id": "java_nosql_query_injection",
+      "cwe": "CWE-943",
+      "category": "nosql_injection",
+      "title": "Mongo Document.parse consumes raw JSON built from input",
+      "file": "src/main/java/com/zscope/persistence/PersistenceEntry.java",
+      "function": "nosqlSearch",
+      "line": 26,
+      "end_line": 26,
+      "severity": "high",
+      "keywords": [
+        "Document.parse",
+        "rawJson",
+        "name"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-004",
+      "rule_id": "java_jndi_lookup",
+      "cwe": "CWE-74",
+      "category": "jndi_injection",
+      "title": "JNDI lookup name is caller controlled",
+      "file": "src/main/java/com/zscope/persistence/PersistenceEntry.java",
+      "function": "jndiLookup",
+      "line": 31,
+      "end_line": 31,
+      "severity": "high",
+      "keywords": [
+        "InitialContext",
+        "lookup",
+        "lookupName"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-005",
+      "rule_id": "java_ldap_search_filter",
+      "cwe": "CWE-90",
+      "category": "ldap_injection",
+      "title": "LDAP filter concatenates caller-controlled uid",
+      "file": "src/main/java/com/zscope/persistence/PersistenceEntry.java",
+      "function": "ldapSearch",
+      "line": 36,
+      "end_line": 36,
+      "severity": "high",
+      "keywords": [
+        "dirContext.search",
+        "uid",
+        "SearchControls"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-006",
+      "rule_id": "java_third_party_deserialization",
+      "cwe": "CWE-502",
+      "category": "unsafe_deserialization",
+      "title": "Third-party deserializers parse caller-controlled payloads",
+      "file": "src/main/java/com/zscope/parser/ParserEntry.java",
+      "function": "thirdPartyDeserialize",
+      "line": 32,
+      "end_line": 34,
+      "severity": "critical",
+      "keywords": [
+        "JSON.parseObject",
+        "Yaml",
+        "XStream"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-007",
+      "rule_id": "java_template_injection",
+      "cwe": "CWE-94",
+      "category": "template_injection",
+      "title": "Freemarker template source is built from caller-controlled text",
+      "file": "src/main/java/com/zscope/parser/ParserEntry.java",
+      "function": "renderTemplate",
+      "line": 44,
+      "end_line": 50,
+      "severity": "high",
+      "keywords": [
+        "Template",
+        "templateSource",
+        "process"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-008",
+      "rule_id": "java_expression_or_script_eval",
+      "cwe": "CWE-94",
+      "category": "code_injection",
+      "title": "MVEL evaluates caller-controlled expression text",
+      "file": "src/main/java/com/zscope/parser/ParserEntry.java",
+      "function": "evaluateExpression",
+      "line": 55,
+      "end_line": 55,
+      "severity": "critical",
+      "keywords": [
+        "MVEL.eval",
+        "expression",
+        "eval"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-009",
+      "rule_id": "java_regex_dos",
+      "cwe": "CWE-1333",
+      "category": "regex_dos",
+      "title": "Regular expression is compiled from caller-controlled input",
+      "file": "src/main/java/com/zscope/parser/ParserEntry.java",
+      "function": "regexMatch",
+      "line": 59,
+      "end_line": 59,
+      "severity": "medium",
+      "keywords": [
+        "Pattern.compile",
+        "expression",
+        "matches"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-010",
+      "rule_id": "java_zip_entry_path_traversal",
+      "cwe": "CWE-22",
+      "category": "path_traversal",
+      "title": "Zip entry name controls extraction target path",
+      "file": "src/main/java/com/zscope/parser/ParserEntry.java",
+      "function": "unzip",
+      "line": 63,
+      "end_line": 66,
+      "severity": "high",
+      "keywords": [
+        "ZipInputStream",
+        "getNextEntry",
+        "entry.getName"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-011",
+      "rule_id": "java_crypto_fixed_iv_or_salt",
+      "cwe": "CWE-329",
+      "category": "crypto_misuse",
+      "title": "Cipher IV is hardcoded",
+      "file": "src/main/java/com/zscope/crypto/CryptoEntry.java",
+      "function": "fixedIv",
+      "line": 20,
+      "end_line": 20,
+      "severity": "medium",
+      "keywords": [
+        "IvParameterSpec",
+        "1234567890123456",
+        "getBytes"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-012",
+      "rule_id": "java_weak_random_security",
+      "cwe": "CWE-338",
+      "category": "weak_random",
+      "title": "Security-sensitive token uses java.util.Random",
+      "file": "src/main/java/com/zscope/crypto/CryptoEntry.java",
+      "function": "weakRandomToken",
+      "line": 24,
+      "end_line": 24,
+      "severity": "medium",
+      "keywords": [
+        "new Random",
+        "nextLong",
+        "token"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-013",
+      "rule_id": "java_tls_verification_disabled",
+      "cwe": "CWE-295",
+      "category": "insecure_tls",
+      "title": "Hostname verification is replaced with a trust-all verifier",
+      "file": "src/main/java/com/zscope/crypto/CryptoEntry.java",
+      "function": "trustAllHostname",
+      "line": 29,
+      "end_line": 29,
+      "severity": "high",
+      "keywords": [
+        "HostnameVerifier",
+        "true",
+        "setHostnameVerifier"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-014",
+      "rule_id": "java_hardcoded_secret",
+      "cwe": "CWE-798",
+      "category": "secret_exposure",
+      "title": "API key is hardcoded in source",
+      "file": "src/main/java/com/zscope/crypto/CryptoEntry.java",
+      "function": "hardcodedSecret",
+      "line": 13,
+      "end_line": 13,
+      "severity": "medium",
+      "keywords": [
+        "apiKey",
+        "1234567890abcdef",
+        "hardcoded"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-015",
+      "rule_id": "java_reflection_dynamic_call",
+      "cwe": "CWE-470",
+      "category": "reflection_injection",
+      "title": "Class and method names control reflection invocation",
+      "file": "src/main/java/com/zscope/runtime/RuntimeEntry.java",
+      "function": "reflect",
+      "line": 10,
+      "end_line": 12,
+      "severity": "high",
+      "keywords": [
+        "Class.forName",
+        "getMethod",
+        "invoke"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-016",
+      "rule_id": "java_dynamic_class_loading",
+      "cwe": "CWE-470",
+      "category": "dynamic_class_loading",
+      "title": "URLClassLoader loads caller-selected plugin class",
+      "file": "src/main/java/com/zscope/runtime/RuntimeEntry.java",
+      "function": "loadPlugin",
+      "line": 17,
+      "end_line": 18,
+      "severity": "high",
+      "keywords": [
+        "URLClassLoader",
+        "loadClass",
+        "className"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-017",
+      "rule_id": "java_classpath_resource_traversal",
+      "cwe": "CWE-22",
+      "category": "path_traversal",
+      "title": "Classpath resource path is caller controlled",
+      "file": "src/main/java/com/zscope/runtime/RuntimeEntry.java",
+      "function": "resource",
+      "line": 21,
+      "end_line": 21,
+      "severity": "medium",
+      "keywords": [
+        "getResourceAsStream",
+        "name",
+        "resource"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-018",
+      "rule_id": "java_manual_close_resource",
+      "cwe": "CWE-772",
+      "category": "resource_leak",
+      "title": "FileInputStream is opened without close or try-with-resources",
+      "file": "src/main/java/com/zscope/resource/ResourceEntry.java",
+      "function": "leakFile",
+      "line": 16,
+      "end_line": 17,
+      "severity": "medium",
+      "keywords": [
+        "FileInputStream",
+        "read",
+        "close"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-019",
+      "rule_id": "java_resource_exhaustion_read_all",
+      "cwe": "CWE-400",
+      "category": "resource_exhaustion",
+      "title": "Input stream is read into memory without a size limit",
+      "file": "src/main/java/com/zscope/resource/ResourceEntry.java",
+      "function": "readAll",
+      "line": 23,
+      "end_line": 23,
+      "severity": "medium",
+      "keywords": [
+        "MultipartFile",
+        "getInputStream",
+        "readAllBytes"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-020",
+      "rule_id": "java_temp_file_risk",
+      "cwe": "CWE-377",
+      "category": "temp_file_risk",
+      "title": "Caller-controlled name is used for a predictable temporary path",
+      "file": "src/main/java/com/zscope/resource/ResourceEntry.java",
+      "function": "tempFile",
+      "line": 27,
+      "end_line": 28,
+      "severity": "medium",
+      "keywords": [
+        "new File",
+        "/tmp/",
+        "createNewFile"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-021",
+      "rule_id": "java_shared_mutable_static_state",
+      "cwe": "CWE-362",
+      "category": "concurrency_race",
+      "title": "Static HashMap is shared mutable state",
+      "file": "src/main/java/com/zscope/resource/ResourceEntry.java",
+      "function": "cache",
+      "line": 14,
+      "end_line": 14,
+      "severity": "medium",
+      "keywords": [
+        "static HashMap",
+        "sharedCache",
+        "put"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-022",
+      "rule_id": "java_header_injection",
+      "cwe": "CWE-113",
+      "category": "header_injection",
+      "title": "Response header value is controlled by request parameter",
+      "file": "src/main/java/com/zscope/web/controller/SecuritySurfaceController.java",
+      "function": "writeHeader",
+      "line": 21,
+      "end_line": 21,
+      "severity": "medium",
+      "keywords": [
+        "setHeader",
+        "value",
+        "RequestParam"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-023",
+      "rule_id": "java_insecure_cookie_flags",
+      "cwe": "CWE-614",
+      "category": "insecure_cookie",
+      "title": "Cookie is added without security attributes",
+      "file": "src/main/java/com/zscope/web/controller/SecuritySurfaceController.java",
+      "function": "cookie",
+      "line": 26,
+      "end_line": 26,
+      "severity": "medium",
+      "keywords": [
+        "new Cookie",
+        "addCookie",
+        "sid"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-024",
+      "rule_id": "java_cors_wildcard",
+      "cwe": "CWE-942",
+      "category": "cors_misconfiguration",
+      "title": "CORS allows every origin",
+      "file": "src/main/java/com/zscope/web/controller/SecuritySurfaceController.java",
+      "function": "cors",
+      "line": 29,
+      "end_line": 29,
+      "severity": "medium",
+      "keywords": [
+        "CrossOrigin",
+        "*",
+        "cors"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-025",
+      "rule_id": "java_sensitive_logging",
+      "cwe": "CWE-532",
+      "category": "sensitive_log",
+      "title": "Authorization header is logged",
+      "file": "src/main/java/com/zscope/web/controller/SecuritySurfaceController.java",
+      "function": "logToken",
+      "line": 37,
+      "end_line": 37,
+      "severity": "medium",
+      "keywords": [
+        "logger.info",
+        "authorization",
+        "RequestHeader"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-026",
+      "rule_id": "java_spring_security_permit_all",
+      "cwe": "CWE-862",
+      "category": "authz_bypass",
+      "title": "Spring Security disables CSRF and permits every route",
+      "file": "src/main/java/com/zscope/web/config/InsecureSecurityConfig.java",
+      "function": "securityFilterChain",
+      "line": 12,
+      "end_line": 13,
+      "severity": "high",
+      "keywords": [
+        "csrf",
+        "disable",
+        "permitAll"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-027",
+      "rule_id": "java_insecure_file_permissions",
+      "cwe": "CWE-732",
+      "category": "insecure_file_permission",
+      "title": "Public API grants world readable, writable, and executable file permissions",
+      "file": "src/main/java/com/zscope/resource/ResourceEntry.java",
+      "function": "makeShared",
+      "line": 33,
+      "end_line": 33,
+      "severity": "medium",
+      "keywords": [
+        "Files.setPosixFilePermissions",
+        "PosixFilePermissions",
+        "rwxrwxrwx"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-028",
+      "rule_id": "java_weak_crypto",
+      "cwe": "CWE-327",
+      "category": "weak_crypto",
+      "title": "DES ECB cipher is exposed through a public crypto API",
+      "file": "src/main/java/com/zscope/crypto/CryptoEntry.java",
+      "function": "weakCipher",
+      "line": 16,
+      "end_line": 16,
+      "severity": "high",
+      "keywords": [
+        "Cipher.getInstance",
+        "DES/ECB/PKCS5Padding",
+        "weakCipher"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-029",
+      "rule_id": "java_object_deserialization",
+      "cwe": "CWE-502",
+      "category": "unsafe_deserialization",
+      "title": "Public parser API deserializes caller-controlled bytes with ObjectInputStream",
+      "file": "src/main/java/com/zscope/parser/ParserEntry.java",
+      "function": "nativeDeserialize",
+      "line": 28,
+      "end_line": 28,
+      "severity": "critical",
+      "keywords": [
+        "ObjectInputStream",
+        "ByteArrayInputStream",
+        "readObject"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-030",
+      "rule_id": "java_hardcoded_secret",
+      "cwe": "CWE-798",
+      "category": "secret_exposure",
+      "title": "JWT HMAC signing secret is hardcoded in source",
+      "file": "src/main/java/com/zscope/web/service/JwtService.java",
+      "function": "issueToken",
+      "line": 10,
+      "end_line": 10,
+      "severity": "high",
+      "keywords": [
+        "Algorithm.HMAC256",
+        "hardcoded-benchmark-secret",
+        "issueToken"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-031",
+      "rule_id": "java_xxe_factory",
+      "cwe": "CWE-611",
+      "category": "xxe",
+      "title": "Public parser API creates XML parser without disabling external entities",
+      "file": "src/main/java/com/zscope/parser/ParserEntry.java",
+      "function": "parseXml",
+      "line": 39,
+      "end_line": 40,
+      "severity": "high",
+      "keywords": [
+        "DocumentBuilderFactory",
+        "newDocumentBuilder",
+        "parseXml"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-032",
+      "rule_id": "java_jdbc_concatenated_sql",
+      "cwe": "CWE-89",
+      "category": "sql_injection",
+      "title": "JDBC query is assembled with string concatenation",
+      "file": "src/main/java/com/zscope/persistence/PersistenceEntry.java",
+      "function": "jdbcConcatenatedSql",
+      "line": 24,
+      "end_line": 25,
+      "severity": "high",
+      "keywords": [
+        "String sql",
+        "SELECT * FROM users",
+        "executeQuery"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-033",
+      "rule_id": "java_jdbc_fake_prepared_statement",
+      "cwe": "CWE-89",
+      "category": "sql_injection",
+      "title": "PreparedStatement is created from an already concatenated SQL string",
+      "file": "src/main/java/com/zscope/persistence/PersistenceEntry.java",
+      "function": "jdbcFakePrepared",
+      "line": 29,
+      "end_line": 30,
+      "severity": "high",
+      "keywords": [
+        "String sql",
+        "prepareStatement",
+        "name"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-034",
+      "rule_id": "java_xmldecoder_readobject",
+      "cwe": "CWE-502",
+      "category": "unsafe_deserialization",
+      "title": "Public parser API deserializes caller-controlled XMLDecoder payloads",
+      "file": "src/main/java/com/zscope/parser/ParserEntry.java",
+      "function": "xmlDecoderDeserialize",
+      "line": 40,
+      "end_line": 41,
+      "severity": "critical",
+      "keywords": [
+        "XMLDecoder",
+        "ByteArrayInputStream",
+        "readObject"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-035",
+      "rule_id": "java_reflected_xss_response_body",
+      "cwe": "CWE-79",
+      "category": "xss",
+      "title": "Controller returns request payload directly in the HTTP response",
+      "file": "src/main/java/com/zscope/web/controller/SecuritySurfaceController.java",
+      "function": "reflectedXss",
+      "line": 45,
+      "end_line": 45,
+      "severity": "medium",
+      "keywords": [
+        "return payload",
+        "RequestParam",
+        "reflectedXss"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-036",
+      "rule_id": "java_stored_xss_persistent_content",
+      "cwe": "CWE-79",
+      "category": "xss",
+      "title": "Controller stores untrusted payload and User-Agent content",
+      "file": "src/main/java/com/zscope/web/controller/SecuritySurfaceController.java",
+      "function": "storedXss",
+      "line": 54,
+      "end_line": 54,
+      "severity": "medium",
+      "keywords": [
+        "insertOne",
+        "payload",
+        "User-Agent"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-037",
+      "rule_id": "java_template_utext_xss",
+      "cwe": "CWE-79",
+      "category": "xss",
+      "title": "Controller places untrusted HTML into a template model",
+      "file": "src/main/java/com/zscope/web/controller/SecuritySurfaceController.java",
+      "function": "templateXss",
+      "line": 60,
+      "end_line": 60,
+      "severity": "medium",
+      "keywords": [
+        "model.addAttribute",
+        "html",
+        "payload"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-038",
+      "rule_id": "java_missing_object_authorization",
+      "cwe": "CWE-639",
+      "category": "authz_bypass",
+      "title": "Controller deletes a user object by path id without an owner or tenant check",
+      "file": "src/main/java/com/zscope/web/controller/UserController.java",
+      "function": "delete",
+      "line": 48,
+      "end_line": 49,
+      "severity": "high",
+      "keywords": [
+        "deleteUser",
+        "PathVariable",
+        "object authorization"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-039",
+      "rule_id": "java_xpath_expression_concat",
+      "cwe": "CWE-643",
+      "category": "xpath_injection",
+      "title": "XPath expression concatenates user-controlled input before evaluation",
+      "file": "src/main/java/com/zscope/parser/ParserEntry.java",
+      "function": "evaluateXPath",
+      "line": 50,
+      "end_line": 53,
+      "severity": "medium",
+      "keywords": [
+        "XPathFactory",
+        "evaluate",
+        "username"
+      ]
+    },
+    {
+      "id": "JAVA-FULL-040",
+      "rule_id": "java_druid_monitor_exposure",
+      "cwe": "CWE-200",
+      "category": "sensitive_info_exposure",
+      "title": "Druid monitor mapping is exposed through a permit-all security chain",
+      "file": "src/main/java/com/zscope/web/config/InsecureSecurityConfig.java",
+      "function": "securityFilterChain",
+      "line": 14,
+      "end_line": 18,
+      "severity": "medium",
+      "keywords": [
+        "StatViewServlet",
+        "/druid/*",
+        "permitAll"
+      ]
+    }
+  ],
+  "safe_entries": []
+}

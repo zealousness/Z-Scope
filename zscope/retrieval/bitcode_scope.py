@@ -21,6 +21,17 @@ logger = logging.getLogger(__name__)
 ENTRY_CLUSTER_STRATEGY_VERSION = "cost_agglomerative_v1"
 
 
+def _bit_count(value: int) -> int:
+    """Count set bits on Python 3.9 while using the native API when available."""
+
+    native = getattr(value, "bit_count", None)
+    if callable(native):
+        return int(native())
+    if value < 0:
+        raise ValueError("bitset values must be non-negative")
+    return bin(value).count("1")
+
+
 @dataclass
 class BitcodeScopeConfig:
     """Controls how aggressively SVF narrows linked bitcode."""
@@ -1014,7 +1025,7 @@ class EntryBitcodeSelector:
             "seed_pools": set(seed.get("seed_pools", set())),
             "selected_bits": selected_bits,
             "allowed_bits": allowed_bits,
-            "selected_size": selected_bits.bit_count(),
+            "selected_size": _bit_count(selected_bits),
         }
 
     def _merge_seed_cluster_records(
@@ -1048,7 +1059,7 @@ class EntryBitcodeSelector:
             "seed_pools": set(left["seed_pools"]) | set(right["seed_pools"]),
             "selected_bits": selected_bits,
             "allowed_bits": allowed_bits,
-            "selected_size": selected_bits.bit_count(),
+            "selected_size": _bit_count(selected_bits),
         }
 
     def _score_seed_cluster_merge(
@@ -1063,14 +1074,14 @@ class EntryBitcodeSelector:
             return None, "pool"
         left_bits = int(left["selected_bits"])
         right_bits = int(right["selected_bits"])
-        intersection_size = (left_bits & right_bits).bit_count()
+        intersection_size = _bit_count(left_bits & right_bits)
         if intersection_size <= 0:
             return None, "no_shared_bc"
         left_size = int(left["selected_size"])
         right_size = int(right["selected_size"])
         if left_size <= 0 or right_size <= 0:
             return None, "empty"
-        union_size = (left_bits | right_bits).bit_count()
+        union_size = _bit_count(left_bits | right_bits)
         max_tus = self.config.max_selected_tus
         if max_tus > 0 and union_size > max_tus:
             return None, "max_tus"

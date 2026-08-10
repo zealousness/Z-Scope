@@ -24,11 +24,17 @@ class JoernBackend(CodeBackend):
         host: str = "127.0.0.1",
         port: int = 8080,
         heap_size: str = "8g",
+        language: str = "c",
         joern_client: Optional[JoernClient] = None,
     ):
         self._joern = joern_client or JoernClient(
-            joern_path=joern_path, host=host, port=port, heap_size=heap_size
+            joern_path=joern_path,
+            host=host,
+            port=port,
+            heap_size=heap_size,
+            language=language,
         )
+        self.language = JoernClient._normalize_language(language)
         self._status = "idle"
 
     @property
@@ -42,6 +48,7 @@ class JoernBackend(CodeBackend):
         project_root = kwargs.get("project_root")
         compile_commands_path = kwargs.get("compile_commands_path")
         wait = kwargs.get("wait", True)
+        language = kwargs.get("language") or self.language
 
         if not self._joern.start_server():
             self._status = "error"
@@ -51,11 +58,11 @@ class JoernBackend(CodeBackend):
         pr_path = str(project_root) if project_root else None
 
         if wait:
-            ok = self._joern.import_cpg(source_path, pr_path, cc_path)
+            ok = self._joern.import_cpg(source_path, pr_path, cc_path, language=language)
             self._status = "ready" if ok else "error"
             return ok
         else:
-            self._joern.import_cpg_async(source_path, pr_path, cc_path)
+            self._joern.import_cpg_async(source_path, pr_path, cc_path, language=language)
             self._status = "building"
             return True
 

@@ -18,7 +18,14 @@ if TYPE_CHECKING:
     from ...config.user_config_store import UserConfigStore
 
 
-SUPPORTED_BACKEND_PROFILES = {"regex", "clang", "joern", "unified"}
+SUPPORTED_BACKEND_PROFILES = {
+    "regex",
+    "clang",
+    "joern",
+    "unified",
+    "java_source",
+    "java_unified",
+}
 
 _RESOURCE_KINDS = {
     "allocator",
@@ -50,6 +57,10 @@ def backend_profile_for_code_index(code_index: Any) -> str:
             backend = None
     backend_obj = backend or getattr(code_index, "_backend", None)
     backend_class = type(backend_obj).__name__.lower() if backend_obj is not None else ""
+    if "javaunified" in backend_class or "java_unified" in backend_class:
+        return "java_unified"
+    if "javasource" in backend_class or "java_source" in backend_class:
+        return "java_source"
     if "unified" in backend_class:
         return "unified"
     if "joern" in backend_class:
@@ -82,6 +93,14 @@ def evidence_engines_for_profile(profile: str) -> List[str]:
         return ["clang_ast_cfg_checker", "clang_knowledgedb_callgraph_checker"]
     if profile == "joern":
         return ["joern_cpg_query_checker"]
+    if profile == "java_unified":
+        return [
+            "java_source_structure_checker",
+            "java_framework_ir_checker",
+            "java_signal_provider_adapter",
+        ]
+    if profile == "java_source":
+        return ["java_source_structure_checker", "java_framework_ir_checker"]
     return ["regex_fallback_checker"]
 
 

@@ -110,6 +110,18 @@ test/range/report.md
 test/range/zscope_run.log
 test/range/zscope.local.yaml
 test/range/zscope.local.env
+test/range/current_eval.json
+test/range/metrics.json
+
+# Java Preview generated data
+tools/java-*/target/
+test/java_range/target/
+test/java_range/.zscope*
+test/java_range/benchmark_runs/
+test/java_range/zscope_batch_report.json
+test/java_range/zscope_batch_report.md
+test/java_range/evaluation.json
+test/java_range/zscope_run.log
 
 # External benchmark generated data
 benchmarks/external/workspace/
