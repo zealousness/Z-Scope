@@ -257,3 +257,165 @@ analysis:
 5. 为类型上下文增加 completeness/source 元数据，至少区分 project resolved、project unresolved、builtin/standard ignored、external/system opaque 和候选提取失败。
 6. 在 Semantic Modeler policy 或 tool runtime 中使用上述分类阻止对 builtin/standard/system opaque 类型调用 `get_type_info`，并给出结构化原因，而不是统一落入 `Type not found`。
 7. 增加端到端测试：`uint32_t`、`size_t`、`pthread_t`、`struct stat`、大写外部 opaque 类型、小写项目 struct tag、缺失项目 typedef，以及同一类型在项目头和系统头中的可见性冲突。
+
+## KI-008 batch 模式按入口独立去重，无法聚合跨入口候选路径
+
+### 问题描述
+
+`CandidateLedger` 的数据结构支持为同一个规范化候选累计多个 `sources` 和 `call_paths`，但 batch 模式会为每个入口函数单独创建一个 `Analyzer`，并显式传入新的 `CandidateLedger()`。因此候选去重和 Deep Worker Ticket 规划只发生在单个入口的分析状态内；不同入口到达同一个内部 sink 或根因时，会分别生成候选和 Ticket，无法在派发前聚合为一张包含多条入口路径的 Ticket。
+
+当前路径记录还存在第二层限制：source rule、local rule、graph rule 和 backend signal Ticket 写入 Ledger 时，传入的 `call_path` 均为 `[state["entry_func"]]`，没有采用候选 `evidence_pack.path.call_path`、`source_path.call_path` 等已有完整路径。Semantic snapshot 候选会传递入口到被访问函数的路径，但遍历使用 `visited` 集合，每个函数只保留首次发现的路径，同一入口内的替代调用路径也不会完整累计。
+
+2026-07-21 的 `run_20260721_145040_359477` 共派发 1,173 个 Deep Worker session，所有 Ticket 的 `Call paths` 都只有一个元素。2026-07-27 的两次运行结果相同，均没有多 `Call paths` Ticket。这不是样本恰好未触发，而是当前 batch 生命周期和路径投影方式导致的结果。
+
+### 影响
+
+- 同一个内部缺陷从多个公开入口可达时会重复派发 Deep Worker，增加模型调用、工具调用和 token 成本。
+- Worker 每次只能看到当前入口视角，无法同时比较不同入口的参数约束、调用边、线程上下文和保护条件。
+- `Call paths: List[List[str]]` 在实际 batch Ticket 中不能兑现跨入口多路径语义，数据结构能力与运行时行为不一致。
+- 同一根因的 worker report 分散在多个入口报告中，后续只能在最终报告阶段再次做 issue 去重；此时已经无法节省前面的分析成本。
+- 不同入口下生成的 Candidate ID 可能重复或分别生成，不能作为 batch 范围内稳定、全局唯一的候选身份。
+- 仅将各入口的 Ledger 替换为并发共享实例仍不充分：先完成规划的入口可能在其他入口提交候选路径前将 Ticket 标记为 planned 并启动 Worker，导致聚合时序不确定。
+
+### 当前结论
+
+当前 CandidateLedger 实际承担的是“入口内候选去重”，不是 batch 级候选去重。batch combined report 在所有入口分析完成后才生成，只合并结果，不会重新聚合 Ticket 或补发统一 Worker。
+
+可靠修复需要将候选收集和 Worker 派发拆分为两个阶段，并在两者之间建立 batch 级同步屏障，不能只共享现有 `CandidateLedger` 对象。
+
+### 后续建议
+
+1. 在 batch orchestration 层建立全局 CandidateLedger；所有入口先只生成候选，不立即规划或派发 Deep Worker。
+2. 候选收集完成后设置同步屏障，再按规范化 root cause、source、sink、资源和缺陷类型执行全局去重。
+3. 将候选 evidence 中的完整 `call_path` 投影到 Ledger，而不是统一写入 `[entry_func]`；同一函数有多条可达路径时保留有界、去重后的路径集合。
+4. 将入口、完整调用路径、call edge、参数映射、guard 和线程上下文作为一组路径证据保存，避免只有函数名数组而缺少路径约束。
+5. 全局规划阶段只为一个规范化候选派发一次 Worker，并将 worker report 关联回所有受影响入口。
+6. 明确 batch 级 Candidate ID 的稳定性和唯一性；不要让不同入口的独立 Ledger 生成相同但无全局身份语义的 ID。
+7. 重新定义 ticket budget：区分每入口候选采集预算和 batch 级 Worker 派发预算，避免全局聚合后仍按每入口上限重复消耗。
+8. 增加端到端测试：两个入口到达同一内部 sink、同一入口存在两条内部路径、并行入口完成顺序变化、路径晚到、全局只派发一次 Worker，以及 report 向多个入口回填。
+
+## KI-009 多来源 Ticket 聚合只保留主 Ticket evidence
+
+### 问题描述
+
+`CandidateLedger.add()` 按 canonical dedup key 聚合重复 Ticket 时，会分别去重追加 `sources` 和 `call_paths`，但不会合并两张 Ticket 的 `evidence`。Ledger 只保存一个主 `ticket`：如果后加入 Ticket 的 `priority_score` 更高，就整体替换原主 Ticket；优先级相同或更低时保留先加入的 Ticket。最终 `Structured evidence` 因此只来自获胜 Ticket，其他来源的完整 candidate ID、checker、rule、source/sink、path、positive/negative evidence、semantic overlay evidence 和后端原始事实不会保留。
+
+2026-07-21 的运行中有三张 `Sources` 包含两个元素的实际聚合 Ticket：
+
+- `_runtime_detach_component_record`：`local_rule` + `graph_rule`；
+- `_runtime_remove_module_record`：`local_rule` + `graph_rule`；
+- `_runtime_remove_file_record`：`local_rule` + `graph_rule`。
+
+三张 Ticket 最终均因 graph Ticket 优先级更高而保留 graph evidence。Prompt 中只能通过 `Sources` 看出 local rule 也发现过该候选，没有 `duplicate_sources`、`secondary_evidence` 或 `merged_backend_evidence` 可用于恢复 local evidence。2026-07-27 的两次运行也各有三张相同模式的多来源 Ticket。
+
+项目内另有两套局部合并逻辑，但不能解决 CandidateLedger 的证据丢失：`merge_rule_candidate_duplicate()` 只选择性合并 positive/negative evidence、evidence refs、call paths 和重复来源摘要，不保留完整 duplicate evidence pack；Clang + SVF 的 unified evidence merge 会将 secondary evidence 放入 `merged_backend_evidence`，但该策略没有统一应用到 local、graph、snapshot 和 backend Ticket 的 Ledger 聚合。
+
+### 影响
+
+- `Sources` 表明多个检测器支持同一候选，但 Worker 无法查看非主检测器提供的独立证据，来源列表与可验证证据不对称。
+- 优先级选择会静默丢弃可能互补或矛盾的 path、guard、alias、ownership、锁状态及后端事实。
+- 主 Ticket 选择受加入顺序和 priority score 影响；同分时保留先加入者，可能导致最终 prompt 对调度顺序敏感。
+- Validator 无法判断不同检测器是否真正发现同一根因，还是 dedup key 过宽造成误聚合。
+- 非主 evidence 丢失后，无法审计为什么候选被合并，也无法在主 evidence 不完整或错误时回退到另一来源。
+- `candidate_record` 只保存规范化 defect class、source、sink 和 root cause key，不是被丢弃 evidence 的副本，不能承担 provenance 恢复。
+
+### 当前结论
+
+当前多来源 Ticket 聚合采用“sources/call paths 取并集，Structured evidence 按优先级选主”的策略，而不是完整证据聚合。该策略可控制 prompt 体积，但缺少明确的 primary/secondary evidence schema、冲突处理和压缩规则，造成不可恢复的信息丢失。
+
+### 后续建议
+
+1. 为聚合 Ticket 定义显式 evidence schema，例如 `primary_evidence`、`secondary_evidence[]` 和 `merged_evidence_summary`，不要继续让单个 `evidence` 字段隐式代表所有来源。
+2. 每个 secondary evidence 至少保留 candidate ID、candidate source、checker、rule、confidence、source、sink、path、positive/negative evidence、evidence refs 和原始 evidence pack 的可审计引用。
+3. 主 evidence 选择应记录 `selection_reason`、候选优先级和加入顺序；同分处理规则必须显式且可测试。
+4. 对 sources、paths、guards、aliases、semantic overlays 和 evidence refs 定义字段级合并策略；出现互相矛盾的事实时保留冲突，不得静默覆盖。
+5. 将现有 Clang + SVF `merged_backend_evidence` 机制推广为统一的跨 detector evidence envelope，覆盖 source rule、semantic snapshot、local rule、graph rule 和 backend signal。
+6. 为控制 prompt 大小，可在 Worker prompt 中提供 primary evidence 和 secondary evidence 摘要，但完整原文必须持久化并可通过 evidence ID 按需读取。
+7. CandidateLedger 的聚合应避免直接修改或替换原始 Ticket 对象；保存不可变候选记录，再由规划阶段生成派发视图。
+8. 增加回归测试：高优先级替换、同分先到、互补证据、冲突证据、多来源多路径、secondary evidence 压缩与恢复，以及 Worker/Validator 对所有来源的可见性。
+
+## KI-010 `svf_value_flow` 丢失后端路径并混淆报告位置、函数和端点符号
+
+### 问题描述
+
+当前 `svf_value_flow` Candidate 使用 Saber 的内存错误信号生成 Ticket，但从 Saber 执行结果到 Deep Worker `Structured evidence` 的链路只稳定保留 bug type、文件和报告行，没有保留节点级 value-flow path、真实 source/sink endpoint、LLVM value、points-to、alias 或 object identity。
+
+路径信息在进入 Candidate 生成器之前已经缺失：
+
+1. `SvfRunner._parse_saber_output()` 的 SVF 2.x/3.x 正则只提取 `type`、`file` 和 `line`。
+2. `.zscope_svf_saber_default/saber_results.json` 的 `bugs[]` 也只包含上述三个字段；当前没有持久化完整 Saber stdout/stderr 的原始 artifact。
+3. `SvfParser.import_saber_bugs()` 将 `source_func` 和 `sink_func` 固定写为空字符串。
+4. KnowledgeDB `taint_signatures` 只存储 source/sink function、bug type、file、line、tool 和 group，没有 backend path、node 或 edge 的存储结构。
+5. `SvfValueFlowCandidateGenerator._normalize_backend_path()` 虽支持读取 `backend_path`、`flow_path`、`path_elements`、`path` 或 `trace`，但从 KnowledgeDB 取回的 row 不含这些字段，因此只能返回空数组。
+
+Candidate 生成阶段随后使用 fallback 补齐缺失端点：
+
+```python
+func = bug.get("func_name") or bug.get("source_func") or entry_func
+source_func = bug.get("source_func") or func or "svf_source"
+sink_func = bug.get("sink_func") or bug_type or "svf_sink"
+```
+
+这会把“报告位置所在函数”写成 `source_func`，并把 `Memory Leak` 或 `Partial Memory Leak` 这样的 bug type 写成 `sink_func`。顶层 `source.file/line` 和 `sink.file/line` 又都使用同一个 reported location。随后 `interprocedural` 仅根据两个 fallback 字符串是否不同计算，因此即使没有任何跨函数 value-flow path，也会得到 `true`。
+
+源码重建存在相同的层级混淆。`_svf_source_level_flow_events()` 将 `source_func` 作为 `source_symbol` fallback，并将 `bug_type` 作为 `sink_symbol` 的最终 fallback。函数名、源码变量/对象符号和缺陷类型由此被放入同一条选择链。`Memory Leak` 不可能在 C 源码中匹配为真实 sink symbol；从 reported snippet 推断出的 `object_symbols` 也没有 source/sink role，不会反向补齐端点。
+
+`source_path.call_path` 是 CodeIndex 重建的 entry-to-target 函数调用链，不是 SVF value-flow path。当前结构同时携带非空调用链和空 `backend_path`，但字段命名及正向 evidence 文本容易让模型误以为已经存在 source-to-sink 证明。例如固定生成的 `SVF source <source_func> flows to sink <sink_func>` 语句，在当前数据中实际可能表达“报告位置所在函数流向 Memory Leak”，并没有后端路径支持。
+
+### 实际证据
+
+2026-07-21 的 `run_20260721_145040_359477` 中共有 21 个 `svf_value_flow` Deep Worker Ticket；对应 Saber artifact 包含 13 个按位置记录的 bug signal。Ticket 统计如下：
+
+```text
+value_flow.backend_path 非空：0/21
+raw_backend_row 含任一路径字段：0/21
+source.file == sink.file 且 source.line == sink.line：21/21
+source_path.source_function 非空：0/21
+source_path.sink_function 非空：0/21
+source_level_flow.source_symbol 非空：0/21
+source_level_flow.sink_symbol = "Memory Leak"：12/21
+source_level_flow.sink_symbol = "Partial Memory Leak"：9/21
+source event：0/21
+sink event：0/21
+expression edge：0/21
+complete_source_to_sink=true：0/21
+```
+
+每个 Ticket 的 `source_level_flow.events` 只有一个 `reported_location` event。该 event 能证明 Saber 在某个源码位置报告了内存问题，但不能证明 allocation、ownership transfer、escape、free 或 leaking exit 之间的关系。
+
+21 个 Ticket 中，`path.function` 与 `path.entry_function` 有 9 个相同、12 个不同。这个差异本身是合理的：前者表示报告所在目标函数，后者表示当前分析入口；当二者不同时，`source_path.call_path` 描述 entry-to-target 可达性。问题在于这条调用链没有携带或替代 backend value-flow 的能力，却容易与 `interprocedural=true` 一起被解释为跨函数数据流证据。
+
+当前测试中没有直接覆盖 `_svf_source_level_flow_events()` 的 source/sink symbol 重建，也没有覆盖“bug type 不得作为 sink symbol”“function 不得冒充 value/object symbol”“空 backend path 不得生成 flow 结论”等约束。
+
+### 影响
+
+- Deep Worker 可能把 reported location 当作真实 source/sink 共同位置，把包含函数当作 source endpoint，把 bug type 当作 sink endpoint。
+- `interprocedural=true` 和正向 `flows to sink` 文本会制造不存在的跨函数 value-flow 证据，增加确认偏差。
+- 非空 `source_path.call_path` 只能证明静态 entry-to-target 函数可达性，不能弥补 allocation-to-leak、source-to-sink 或 object-flow 证据缺失。
+- `source_symbol` 为空、`sink_symbol` 错误以及 endpoint context 为空，使源码重建无法产生 source/sink event 和 expression edge。
+- 相同的 reported location、固定 Validator 模板、空路径和错误 fallback 被重复发送给多个入口 Ticket，增加 token 消耗而不增加证据。
+- 原始 Saber stdout/stderr 未持久化，后续无法判断是 Saber 本身没有输出节点路径，还是 Z-Scope 解析器丢弃了可用信息，降低可审计性。
+- 当前字段形式允许后续消费者在没有检查 completeness/provenance 的情况下使用错误端点，可能影响 Candidate 排序、Worker 结论和 Validator 判断。
+
+### 当前结论
+
+当前 `svf_value_flow` evidence 只能可靠表达“指定工具在指定源码位置报告了某类内存信号”。它不能表达已确认的 source、sink、跨函数 value flow 或完整泄漏路径。
+
+`backend_path=[]` 的直接原因是进入 Candidate 生成器的 row 没有任何路径字段。由于完整 Saber stdout/stderr 没有作为 artifact 保存，目前不能进一步断言 Saber 二进制当时绝对没有输出更详细的节点信息；可以确定的是，现有 runner、artifact schema、KnowledgeDB 和 Candidate 投影均没有保留这些信息。
+
+在节点级路径和端点映射实现之前，应将 source/sink function、source/sink symbol、cross-function proof 和 source-to-sink completeness 明确标记为 unknown，而不是使用 containing function 或 bug type 填充。
+
+### 后续建议
+
+1. 将每次 Saber 执行的原始 stdout、stderr、命令、工具版本、bitcode fingerprint 和返回码持久化为不可变 artifact，保留审计和重新解析能力。
+2. 扩展 Saber parser 和 `saber_results.json` schema，保存后端实际提供的 node、edge、LLVM value、object ID、points-to、alias、call/return edge 及路径完整性；无法解析时保留原始片段和 parse status。
+3. 扩展 KnowledgeDB：使用路径 JSON 或规范化 node/edge 表保存 backend flow，不要继续把路径压缩进只有七个摘要列的 `taint_signatures`。
+4. 移除 `source_func = containing_function` 和 `sink_func = bug_type` fallback。缺失端点时使用 `null`，并分别保留 `reported_function`、`backend_bug_type` 和 `reported_location`。
+5. 将 endpoint function、source/sink symbol、object symbol、LLVM value 和 bug type 定义为独立字段，禁止函数名、对象名和缺陷类型在同一 fallback 链中互相替代。
+6. 将 `interprocedural` 替换为可审计状态，例如 `backend_path_available` 和 `cross_function_path_proven`。只有后端节点跨越至少两个函数且相邻边有证据时，后者才能为 true。
+7. 明确分离 `backend_flow.nodes/edges`、`entry_call_chain` 和 `source_reconstruction.events/edges`。CodeIndex 调用链不得填入或暗示 SVF value-flow path。
+8. 重构正向 evidence 文本：没有真实端点和路径时只写“工具在 reported location 报告 bug type”，不得生成 `source flows to sink`。
+9. 源码重建应优先消费 backend node/LLVM value 到源码表达式的映射；文本推断得到的 `object_symbols` 必须携带 `evidence_kind=source_text_inference` 和 `role=unknown`，不能自动提升为 source/sink。
+10. 将 completeness 拆分为独立状态：后端路径是否存在、entry 调用链是否找到、source endpoint 是否映射、sink endpoint 是否映射、源码边是否连续、运行时可行性是否证明。
+11. 在 Prompt 中删除固定 checker/schema/profile、空 backend path、空 function context、重复 reported location 和通用 Validator 模板；完整原始记录保留在审计元数据中。
+12. 增加单元和端到端测试：Saber 2.x/3.x 路径解析、原始输出持久化、数据库 round-trip、空路径、真实多节点路径、bug type 不作为 symbol、function/value 分离、调用链与 value-flow 分离、错误 fallback 禁止，以及 complete/proven 状态计算。

@@ -8,6 +8,8 @@ from typing import Any, Dict, Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
 
+_HEADER_LIKE_SUFFIXES = (".h", ".hh", ".hpp", ".hxx", ".ph", ".inc", ".inl")
+
 
 class SemanticModelInputError(RuntimeError):
     """Stable failure raised before an LLM snapshot build can start."""
@@ -21,12 +23,51 @@ def _normalized_path(value: Any) -> str:
     return str(value or "").replace("\\", "/").strip().lstrip("./")
 
 
+def is_header_like_path(value: Any) -> bool:
+    """Return whether a path identifies a header or header-like declaration file."""
+    return _normalized_path(value).lower().endswith(_HEADER_LIKE_SUFFIXES)
+
+
 def _candidate_index_names(matches: Iterable[Dict[str, Any]]) -> List[str]:
     return [
         str(match.get("index_name") or "")
         for match in matches
         if str(match.get("index_name") or "")
     ]
+
+
+def _select_indexed_header_implementation(
+    code_index: Any,
+    query: str,
+    matches: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Use the index's canonical implementation only when it selects one candidate."""
+    if len(matches) <= 1:
+        return matches
+    try:
+        impl = code_index.get_function_impl(
+            query,
+            max_lines=None,
+            warn_missing=False,
+            include_context=False,
+            file_path="",
+        )
+    except TypeError:
+        try:
+            impl = code_index.get_function_impl(query)
+        except Exception:
+            return matches
+    except Exception:
+        return matches
+    selected_index = str((impl or {}).get("index_name") or "").strip()
+    if not selected_index:
+        return matches
+    selected = [
+        item
+        for item in matches
+        if str(item.get("index_name") or "").strip() == selected_index
+    ]
+    return selected if len(selected) == 1 else matches
 
 
 def _select_unique_match(
@@ -85,6 +126,18 @@ def resolve_function_info(
     matches = list(code_index.find_function_infos(query, file_path=file_hint) or [])
     if not matches and index_hint and index_hint != raw_func_name:
         matches = list(code_index.find_function_infos(raw_func_name, file_path=file_hint) or [])
+    if not matches and file_hint and is_header_like_path(file_hint):
+        logger.debug(
+            "[snapshot-resolve] retrying header declaration without file constraint "
+            "query_func=%s file_hint=%s index_hint=%s",
+            raw_func_name,
+            file_hint,
+            index_hint,
+        )
+        matches = list(code_index.find_function_infos(query, file_path="") or [])
+        if not matches and index_hint and index_hint != raw_func_name:
+            matches = list(code_index.find_function_infos(raw_func_name, file_path="") or [])
+        matches = _select_indexed_header_implementation(code_index, query, matches)
     if not matches:
         logger.warning(
             "[snapshot-resolve] function info not found query_func=%s file_hint=%s "

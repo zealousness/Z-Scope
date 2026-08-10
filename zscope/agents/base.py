@@ -277,6 +277,23 @@ class JsonToolAgent(ToolCallingAgent):
             conversation = result.get("conversation", [])
             ctx_tokens = int(result.get("context_tokens", 0) or 0)
 
+            if result.get("terminal_loop_guard_triggered"):
+                metadata = self._json_result_metadata(result, json_output_spec)
+                metadata["reason"] = "terminal_tool_loop_guard"
+                metadata["terminal_loop_guard_triggered"] = True
+                metadata["terminal_loop_guard_reason"] = str(
+                    result.get("terminal_loop_guard_reason") or ""
+                )
+                repeated_terminal = result.get("repeated_terminal_tool_call")
+                if isinstance(repeated_terminal, dict):
+                    metadata["repeated_terminal_tool_call"] = repeated_terminal
+                return AgentResponse(
+                    success=False,
+                    data={},
+                    error="Stopped after repeated invalid terminal tool calls.",
+                    metadata=metadata,
+                )
+
             if (
                 require_structured_finalization
                 and json_output_spec
@@ -1156,11 +1173,26 @@ class JsonToolAgent(ToolCallingAgent):
         json_output_spec: Optional[JsonOutputSpec] = None,
     ) -> Dict[str, Any]:
         metadata = JsonToolAgent._conversation_token_metadata(result)
-        for key in ("iterations", "tool_call_count", "api_call_count"):
+        for key in (
+            "iterations",
+            "tool_call_count",
+            "api_call_count",
+            "terminal_tool_call_count",
+            "terminal_invalid_call_count",
+        ):
             try:
                 metadata[key] = int(result.get(key, 0) or 0)
             except (TypeError, ValueError):
                 metadata[key] = 0
+        for key in ("terminal_tool_name", "terminal_loop_guard_reason"):
+            if key in result:
+                metadata[key] = result.get(key)
+        for key in ("terminal_tool_valid", "terminal_loop_guard_triggered"):
+            if key in result:
+                metadata[key] = bool(result.get(key))
+        repeated_terminal = result.get("repeated_terminal_tool_call")
+        if isinstance(repeated_terminal, dict):
+            metadata["repeated_terminal_tool_call"] = repeated_terminal
         if json_output_spec:
             final_tool_count = int(result.get("final_tool_call_count", 0) or 0)
             if final_tool_count:

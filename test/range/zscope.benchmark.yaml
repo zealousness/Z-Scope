@@ -108,6 +108,7 @@ analysis:
   enable_snapshot_cache: true
   user_config_db: ""
   parallel_workers: 12
+  enable_global_model: true
   max_premodel_depth: 5
   max_premodel_callees: 20
   trivial_function_max_lines: 10
