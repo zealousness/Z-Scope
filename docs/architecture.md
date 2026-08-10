@@ -1,4 +1,4 @@
-# Z-SCOPE 架构文档（v1.2）
+# Z-SCOPE 架构文档（v1.3）
 
 ## 1. 架构定位
 
@@ -114,7 +114,9 @@ flowchart TB
 
 总体架构由四个主平面组成。事实平面负责代码索引和程序事实沉淀；证据平面负责候选生成、去重、合并、diff impact 入口选择和风险预算输入；智能体平面负责语义建模、漏洞挖掘、聚焦深挖、问题调和和三态验证；反馈平面通过 SnapshotStore、UserConfigStore 与 ReviewMemory 保留语义快照、最终报告、人工抑制、baseline 和 Validator 记忆。UserConfigStore 当前既能读取历史 SQLite 配置，也能以 `user_config.xlsx` 作为人工可审阅的主配置界面，并用同名旁路 state DB 保存反馈状态。LLM Agent 通过受 ToolPolicy 约束的 ToolsRuntime 访问被索引、被切片、被缓存、被配置增强过的事实；LLMClient 还可以在同一 profile 的多个 endpoint 间做容量选择和 cooldown；实际可见工具会经过 `AGENT.md` 白名单和后端能力 gate，分析过程与底层代码库保持可追踪边界。
 
-v1.2 没有替换 v1.1 的主平面；本次架构增量集中在性能、精度和可审计性：diff impact 从反向入口枚举收敛为语义义务与覆盖计划；Unified/SVF 增加入口聚类、互斥/共享 bitcode pool 与缓存 manifest；Clang/KnowledgeDB 强化增量缓存、macro 和删除文件处理；Validator、alert-verify 与 LLM 客户端增加并行、fast-path、endpoint 容量控制和成本统计。v1.0 已经把原来集中在 `Analyzer` 和 `zscope/core/*.py` 的职责拆成可测试模块：
+v1.3 在 v1.2 主平面上收敛候选与验证生命周期：项目级 `DecisionFact` 只构建一次，入口只登记 occurrence 与调用约束；全局 validation group 共享确定性 proof、一次 Validator session 和 canonical outcome；`FindingRoot v1` 负责结构化报告投影；`ValidatorEvidenceSlice v2` 与类型化补证限制重复上下文和开放式多轮推理。预算只观测超限，不得把服务可用时的候选提前终止。
+
+v1.2 没有替换 v1.1 的主平面；该版本的架构增量集中在性能、精度和可审计性：diff impact 从反向入口枚举收敛为语义义务与覆盖计划；Unified/SVF 增加入口聚类、互斥/共享 bitcode pool 与缓存 manifest；Clang/KnowledgeDB 强化增量缓存、macro 和删除文件处理；Validator、alert-verify 与 LLM 客户端增加并行、fast-path、endpoint 容量控制和成本统计。v1.0 已经把原来集中在 `Analyzer` 和 `zscope/core/*.py` 的职责拆成可测试模块：
 
 | 模块 | 主要文件 | 职责 |
 |------|----------|------|
