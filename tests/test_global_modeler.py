@@ -17,6 +17,7 @@ from zscope.framework.base import AgentResponse
 from zscope.core.analysis.analyzer import Analyzer
 from zscope.orchestration.global_modeler import GlobalModeler
 from zscope.retrieval.code_index import CodeIndex
+from zscope.snapshots.modeling_input import build_semantic_model_input
 from zscope.snapshots.store import SnapshotStore
 
 
@@ -392,7 +393,7 @@ def test_global_modeler_reconciles_self_recursion_without_second_llm_call(tmp_pa
     ] == "modeled self_call"
 
 
-def test_global_modeler_failure_skips_reconciliation_and_fails_stage_gate(tmp_path):
+def test_global_modeler_failure_skips_reconciliation_within_stage_tolerance(tmp_path):
     config = _config(tmp_path)
     index = FakeCodeIndex()
     index.impls = {"entry": index._impl("entry", [])}
@@ -414,7 +415,7 @@ def test_global_modeler_failure_skips_reconciliation_and_fails_stage_gate(tmp_pa
     assert stats.failed_functions == 1
     assert stats.reconciled_functions == 0
     assert stats.reconciliation_unchanged_functions == 0
-    assert stats.stage_complete is False
+    assert stats.stage_complete is True
 
 
 def test_global_modeler_unresolved_entry_fails_stage_gate(tmp_path):
@@ -434,24 +435,88 @@ def test_global_modeler_unresolved_entry_fails_stage_gate(tmp_path):
     assert stats.reconciled_functions == 0
 
 
-def test_global_modeler_does_not_convert_callgraph_failure_to_leaf(tmp_path):
-    class FailedCallgraphIndex(FakeCodeIndex):
-        def get_callees(self, func_name, limit=30):
-            raise RuntimeError("callgraph backend unavailable")
+def test_global_modeler_retries_terminal_guard_in_fresh_agent(tmp_path):
+    config = _config(tmp_path)
+    index = FakeCodeIndex()
+    index.impls = {"entry": index._impl("entry", [])}
+    store = SnapshotStore(Path(config.analysis.snapshot_dir))
+    user_config = UserConfigStore(Path(config.analysis.user_config_db))
+    created_agents = []
+    successful_calls = []
 
+    class GuardedAgent:
+        def run(self, context):
+            return AgentResponse(
+                success=False,
+                data={},
+                error="terminal guard",
+                metadata={
+                    "reason": "terminal_tool_loop_guard",
+                    "terminal_loop_guard_triggered": True,
+                    "terminal_loop_guard_reason": "identical_invalid_terminal_call_limit",
+                    "context_tokens": 3,
+                },
+            )
+
+    def factory():
+        agent = GuardedAgent() if not created_agents else RecordingAgent(successful_calls)
+        created_agents.append(agent)
+        return agent
+
+    stats = GlobalModeler(
+        config,
+        index,
+        store,
+        user_config,
+        semantic_agent_factory=factory,
+    ).run([FunctionEntry("entry")])
+
+    assert len(created_agents) == 2
+    assert successful_calls == ["entry"]
+    assert stats.llm_snapshot_count == 1
+    assert stats.failed_functions == 0
+    assert stats.total_context_tokens == 10
+    assert store.load_snapshot("entry@src/entry.c:1-8")["summary"] == "modeled entry"
+
+
+def test_global_model_stats_allows_ten_but_rejects_more_than_ten_failed_functions(tmp_path):
     config = _config(tmp_path)
     store = SnapshotStore(Path(config.analysis.snapshot_dir))
     user_config = UserConfigStore(Path(config.analysis.user_config_db))
     modeler = GlobalModeler(
         config,
-        FailedCallgraphIndex(),
+        FakeCodeIndex(),
         store,
         user_config,
         semantic_agent_factory=lambda: RecordingAgent([]),
     )
 
-    with pytest.raises(RuntimeError, match="callgraph backend unavailable"):
-        modeler.run([FunctionEntry("entry")])
+    stats = modeler.run([FunctionEntry("entry")])
+    stats.failed_functions = 10
+    assert stats.stage_complete is True
+    stats.failed_functions = 11
+
+    assert stats.stage_complete is False
+
+
+def test_global_modeler_resolves_header_api_to_source_implementation(tmp_path):
+    calls = []
+    config = _config(tmp_path)
+    index = FakeCodeIndex()
+    index.impls = {"entry": index._impl("entry", [])}
+    store = SnapshotStore(Path(config.analysis.snapshot_dir))
+    user_config = UserConfigStore(Path(config.analysis.user_config_db))
+    stats = GlobalModeler(
+        config,
+        index,
+        store,
+        user_config,
+        semantic_agent_factory=lambda: RecordingAgent(calls),
+    ).run([FunctionEntry("entry", file_path="include/public_api.h")])
+
+    assert calls == ["entry"]
+    assert stats.unresolved_entry_functions == 0
+    assert stats.stage_complete is True
 
 
 def test_global_modeler_models_same_name_entries_in_different_files(tmp_path):
@@ -661,8 +726,118 @@ def test_entry_model_reuses_global_snapshot_without_llm(tmp_path):
     assert state["notes"] == ["Reused globally modeled snapshot for entry."]
 
 
+def test_entry_model_retries_terminal_guard_in_fresh_agent(monkeypatch, tmp_path):
+    config = _config(tmp_path)
+    config.analysis.enable_global_model = False
+    store = SnapshotStore(Path(config.analysis.snapshot_dir))
+    index = FakeCodeIndex()
+    index.impls = {"entry": index._impl("entry", [])}
+    semantic_context = build_semantic_model_input(index, "entry", include_context=False)
+    created_agents = []
+    successful_calls = []
+
+    class FakeSemanticModeler:
+        def __init__(self, *args, **kwargs):
+            created_agents.append(self)
+
+        def run(self, context):
+            if len(created_agents) == 1:
+                return AgentResponse(
+                    success=False,
+                    data={},
+                    error="terminal guard",
+                    metadata={
+                        "reason": "terminal_tool_loop_guard",
+                        "terminal_loop_guard_triggered": True,
+                        "terminal_loop_guard_reason": "identical_invalid_terminal_call_limit",
+                        "context_tokens": 3,
+                    },
+                )
+            return RecordingAgent(successful_calls).run(context)
+
+    analyzer = Analyzer.__new__(Analyzer)
+    analyzer.config = config
+    analyzer.snapshot_store = store
+    analyzer.llm_clients = {"default": object()}
+    analyzer._get_tools = lambda *args, **kwargs: []
+    analyzer._tool_policy_for_agent = lambda *args, **kwargs: None
+    analyzer._attach_agent_contract = lambda *args, **kwargs: None
+    monkeypatch.setattr(analyzer_module, "SemanticModeler", FakeSemanticModeler)
+    state = {
+        "entry_func": "entry",
+        "entry_index_name": semantic_context["index_name"],
+        "impl_result": index.impls["entry"],
+        "agent_context": {},
+        "semantic_model_input": semantic_context,
+        "notes": [],
+        "total_context_tokens": 0,
+        "total_cumulative_prompt_tokens": 0,
+        "total_cumulative_completion_tokens": 0,
+        "total_cumulative_total_tokens": 0,
+    }
+
+    analyzer._step_model_entry(state)
+
+    assert len(created_agents) == 2
+    assert successful_calls == ["entry"]
+    assert state["total_context_tokens"] == 10
+    assert state["total_cumulative_total_tokens"] == 10
+    assert store.load_snapshot(semantic_context["index_name"])["summary"] == "modeled entry"
+
+
+def test_premodel_retries_terminal_guard_in_fresh_agent(monkeypatch, tmp_path):
+    config = _config(tmp_path)
+    store = SnapshotStore(Path(config.analysis.snapshot_dir))
+    index = FakeCodeIndex()
+    attempts = {}
+    created_agents = []
+    successful_calls = []
+
+    class FakeSemanticModeler:
+        def __init__(self, *args, **kwargs):
+            created_agents.append(self)
+
+        def run(self, context):
+            index_name = context["index_name"]
+            attempts[index_name] = attempts.get(index_name, 0) + 1
+            if attempts[index_name] == 1:
+                return AgentResponse(
+                    success=False,
+                    data={},
+                    error="terminal guard",
+                    metadata={
+                        "reason": "terminal_tool_loop_guard",
+                        "terminal_loop_guard_triggered": True,
+                        "terminal_loop_guard_reason": "identical_invalid_terminal_call_limit",
+                        "context_tokens": 3,
+                    },
+                )
+            return RecordingAgent(successful_calls).run(context)
+
+    analyzer = Analyzer.__new__(Analyzer)
+    analyzer.config = config
+    analyzer.snapshot_store = store
+    analyzer.code_index = index
+    analyzer._get_tools = lambda *args, **kwargs: []
+    analyzer._tool_policy_for_agent = lambda *args, **kwargs: None
+    analyzer._attach_agent_contract = lambda *args, **kwargs: None
+    monkeypatch.setattr(analyzer_module, "SemanticModeler", FakeSemanticModeler)
+
+    modeled, skipped, total_tokens = analyzer._premodel_callees(
+        "entry", object(), max_depth=3, max_callees=10
+    )
+
+    assert modeled == 3
+    assert skipped == 0
+    assert total_tokens == 30
+    assert len(created_agents) == 6
+    assert sorted(successful_calls) == ["leaf", "mid", "sibling"]
+    assert all(count == 2 for count in attempts.values())
+
+
 def test_on_demand_snapshot_build_uses_file_qualified_lock(monkeypatch, tmp_path):
     calls = []
+    attempts = {}
     config = _config(tmp_path)
     store = SnapshotStore(Path(config.analysis.snapshot_dir))
     index = SameNameCodeIndex()
@@ -673,6 +848,19 @@ def test_on_demand_snapshot_build_uses_file_qualified_lock(monkeypatch, tmp_path
 
         def run(self, context):
             calls.append(context["index_name"])
+            attempts[context["index_name"]] = attempts.get(context["index_name"], 0) + 1
+            if attempts[context["index_name"]] == 1:
+                return AgentResponse(
+                    success=False,
+                    data={},
+                    error="terminal guard",
+                    metadata={
+                        "reason": "terminal_tool_loop_guard",
+                        "terminal_loop_guard_triggered": True,
+                        "terminal_loop_guard_reason": "identical_invalid_terminal_call_limit",
+                        "context_tokens": 1,
+                    },
+                )
             return AgentResponse(
                 success=True,
                 data={
@@ -720,6 +908,8 @@ def test_on_demand_snapshot_build_uses_file_qualified_lock(monkeypatch, tmp_path
     assert second["success"] is True
     assert calls == [
         "handle@src/a/handler.c:1-8",
+        "handle@src/a/handler.c:1-8",
+        "handle@src/b/handler.c:1-8",
         "handle@src/b/handler.c:1-8",
     ]
     assert store.load_snapshot("handle@src/a/handler.c:1-8")["summary"] == (

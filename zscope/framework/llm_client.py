@@ -1559,6 +1559,8 @@ class LLMClient:
         terminal_tool_handler: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
         terminal_tool_validator: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
         terminal_tool_required: bool = False,
+        max_identical_invalid_terminal_calls: int = 3,
+        max_invalid_terminal_calls: int = 5,
     ) -> Dict[str, Any]:
         """
         Run a conversation loop with tool calling support.
@@ -1577,6 +1579,8 @@ class LLMClient:
         terminal_payload: Optional[Dict[str, Any]] = None
         terminal_tool_valid = False
         terminal_tool_call_count = 0
+        terminal_invalid_call_count = 0
+        terminal_failure_history: Dict[str, List[Dict[str, Any]]] = {}
         if terminal_tool_handler is None and terminal_tool_validator is not None:
             terminal_tool_handler = terminal_tool_validator
         recorder = get_conversation_recorder()
@@ -1720,6 +1724,7 @@ class LLMClient:
                     "terminal_tool_name": terminal_tool_name,
                     "terminal_tool_valid": terminal_tool_valid,
                     "terminal_tool_call_count": terminal_tool_call_count,
+                    "terminal_invalid_call_count": terminal_invalid_call_count,
                 }
                 if loop_guard_recovery:
                     result_payload.update(
@@ -1783,6 +1788,7 @@ class LLMClient:
                     "terminal_tool_name": terminal_tool_name,
                     "terminal_tool_valid": terminal_tool_valid,
                     "terminal_tool_call_count": terminal_tool_call_count,
+                    "terminal_invalid_call_count": terminal_invalid_call_count,
                     "last_assistant_preview": self._assistant_preview(message),
                 }
                 if loop_guard_recovery:
@@ -1859,6 +1865,7 @@ class LLMClient:
                     "terminal_tool_name": terminal_tool_name,
                     "terminal_tool_valid": terminal_tool_valid,
                     "terminal_tool_call_count": terminal_tool_call_count,
+                    "terminal_invalid_call_count": terminal_invalid_call_count,
                 }
                 if loop_guard_recovery:
                     result_payload.update(
@@ -1885,8 +1892,9 @@ class LLMClient:
                 for terminal_call in terminal_calls:
                     terminal_id = terminal_call.get("id")
                     terminal_function = terminal_call.get("function", {})
+                    raw_terminal_args = terminal_function.get("arguments", "{}")
                     try:
-                        terminal_args = self._parse_tool_args(terminal_function.get("arguments", "{}"))
+                        terminal_args = self._parse_tool_args(raw_terminal_args)
                         terminal_function["arguments"] = json.dumps(terminal_args, ensure_ascii=False)
                     except Exception as exc:
                         terminal_args = {}
@@ -1942,6 +1950,7 @@ class LLMClient:
                             "terminal_tool_name": terminal_tool_name,
                             "terminal_tool_valid": True,
                             "terminal_tool_call_count": terminal_tool_call_count,
+                            "terminal_invalid_call_count": terminal_invalid_call_count,
                             "iterations": iterations,
                             "context_tokens": final_tokens,
                             "api_call_count": iterations,
@@ -1976,6 +1985,94 @@ class LLMClient:
                             False,
                             error_result["error"],
                         )
+                    terminal_invalid_call_count += 1
+                    failure_signature = self._terminal_failure_signature(
+                        terminal_tool_name,
+                        terminal_args,
+                        raw_arguments=raw_terminal_args,
+                        parse_failed=bool(exc_text),
+                        error=error_result["error"],
+                    )
+                    failure_record = {
+                        "iteration": iterations,
+                        "tool_call_id": terminal_id,
+                        "arguments": raw_terminal_args if exc_text else terminal_args,
+                        "error": error_result["error"],
+                    }
+                    identical_failures = terminal_failure_history.setdefault(
+                        failure_signature,
+                        [],
+                    )
+                    identical_failures.append(failure_record)
+
+                    guard_reason: Optional[str] = None
+                    if (
+                        max_identical_invalid_terminal_calls > 0
+                        and len(identical_failures) >= max_identical_invalid_terminal_calls
+                    ):
+                        guard_reason = "identical_invalid_terminal_call_limit"
+                    elif (
+                        max_invalid_terminal_calls > 0
+                        and terminal_invalid_call_count >= max_invalid_terminal_calls
+                    ):
+                        guard_reason = "invalid_terminal_call_limit"
+
+                    if guard_reason:
+                        repeated_terminal_tool_call = None
+                        if guard_reason == "identical_invalid_terminal_call_limit":
+                            repeated_terminal_tool_call = {
+                                "tool": terminal_tool_name,
+                                "arguments": failure_record["arguments"],
+                                "error": error_result["error"],
+                                "repeat_count": len(identical_failures),
+                                "first_seen": identical_failures[0],
+                                "latest_seen": identical_failures[-1],
+                            }
+                        final_tokens = self.estimate_tokens(
+                            self._prepare_messages_for_model(conversation)
+                        )
+                        logger.warning(
+                            "Terminal tool loop guard triggered tool=%s reason=%s "
+                            "invalid_calls=%d identical_failures=%d",
+                            terminal_tool_name,
+                            guard_reason,
+                            terminal_invalid_call_count,
+                            len(identical_failures),
+                        )
+                        if recorder and trace_session:
+                            recorder.record_session_end(
+                                trace_session,
+                                iterations,
+                                final_tokens,
+                                truncated=False,
+                            )
+                        result_payload = {
+                            "content": str(message.get("content") or ""),
+                            "conversation": conversation,
+                            "message": message,
+                            "iterations": iterations,
+                            "truncated": False,
+                            "context_tokens": final_tokens,
+                            "api_call_count": iterations,
+                            "cumulative_prompt_tokens": cumulative_prompt_tokens,
+                            "cumulative_completion_tokens": cumulative_completion_tokens,
+                            "cumulative_total_tokens": cumulative_prompt_tokens + cumulative_completion_tokens,
+                            "tool_call_count": self._count_tool_result_messages(conversation),
+                            "finish_reason": finish_reason,
+                            "provider_model": provider_model,
+                            "final_tool_call_count": terminal_tool_call_count,
+                            "last_assistant_preview": self._assistant_preview(message),
+                            "terminal_tool_payload": terminal_payload,
+                            "terminal_tool_name": terminal_tool_name,
+                            "terminal_tool_valid": False,
+                            "terminal_tool_call_count": terminal_tool_call_count,
+                            "terminal_invalid_call_count": terminal_invalid_call_count,
+                            "terminal_loop_guard_triggered": True,
+                            "terminal_loop_guard_reason": guard_reason,
+                        }
+                        if repeated_terminal_tool_call is not None:
+                            result_payload["repeated_terminal_tool_call"] = repeated_terminal_tool_call
+                        return result_payload
                 tool_calls = [
                     call for call in tool_calls
                     if call not in terminal_calls
@@ -2220,6 +2317,7 @@ class LLMClient:
             "terminal_tool_name": terminal_tool_name,
             "terminal_tool_valid": terminal_tool_valid,
             "terminal_tool_call_count": terminal_tool_call_count,
+            "terminal_invalid_call_count": terminal_invalid_call_count,
         }
         if loop_guard_recovery:
             result_payload.update(
@@ -2230,6 +2328,31 @@ class LLMClient:
                 }
             )
         return result_payload
+
+    @classmethod
+    def _terminal_failure_signature(
+        cls,
+        tool_name: Any,
+        arguments: Dict[str, Any],
+        *,
+        raw_arguments: Any,
+        parse_failed: bool,
+        error: str,
+    ) -> str:
+        if parse_failed:
+            normalized_arguments: Any = str(raw_arguments)
+        else:
+            normalized_arguments = cls._normalize_tool_args(str(tool_name or ""), arguments)
+        return json.dumps(
+            {
+                "tool": str(tool_name or ""),
+                "arguments": normalized_arguments,
+                "error": str(error or ""),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
 
     @staticmethod
     def _count_tool_result_messages(conversation: List[Dict[str, Any]]) -> int:

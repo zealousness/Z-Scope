@@ -1403,3 +1403,162 @@
 - 数据库内部保留旧宏字段用于查询和迁移，但所有公开上下文只使用 canonical 新 shape。
 - 内部 batch insert 暂时接受旧五字段宏行并立即规范化，不形成旧数据库记录或旧 LLM payload。
 - 未运行外部 LLM 或 global-model benchmark，因此只确认上下文去重和契约收敛，不宣称 token/API/wall-time 改善。
+
+## 2026-08-04 自动发现入口解析失败修复
+
+### 问题现象
+
+- 自动入口发现从公开头文件生成 `FunctionEntry`，因此 entry 的 `file_path` 是声明文件，例如 `include/task_dispatcher.h` 或 `include/common.h`。
+- global model 构图和 Semantic Model 输入解析原先都会携带该 header file constraint 查询实现；真实函数实现位于 `.c` 文件时，索引查询返回空结果。
+- 入口随后进入 `graph.unresolved`，`unresolved_entry_functions` 增加，global-model stage gate 在 entry fan-out 前终止。该问题不是源码缺少实现，而是将声明路径错误地当成实现路径约束。
+
+### 根因定位
+
+- `resolve_function_info()` 首次查询失败后没有区分“普通源文件路径不匹配”和“头文件声明需要映射到实现”两种情况。
+- `GlobalModeler._get_impl()` 同样直接把 entry 的 header `file_path` 传给 `CodeIndex.get_function_impl()`，导致 global graph 在进入统一 Semantic Model 输入解析前就可能把入口标记为 unresolved。
+- 不能简单删除所有 file constraint：同名函数存在于多个 `.c` 文件时，必须继续保持歧义保护，不能静默选择排序第一项。
+
+### 修复实现
+
+- 在 `zscope/snapshots/modeling_input.py` 增加 `is_header_like_path()`，识别 `.h/.hh/.hpp/.hxx/.ph/.inc/.inl` 声明文件。
+- `resolve_function_info()` 仅在“带 file hint 查询无结果且 hint 为 header-like path”时，使用空 `file_path` 重试函数查询。
+- header fallback 得到多个候选时，新增 `_select_indexed_header_implementation()`：调用 `CodeIndex.get_function_impl(query, file_path="")` 获取索引选定的 canonical `index_name`，并且只有该 index 在候选中唯一匹配时才接受。
+- 如果索引无法唯一选定实现，继续抛出 `function_info_ambiguous`；没有通过猜测放宽同名函数的 identity 约束。
+- `GlobalModeler._get_impl()` 增加相同的 header fallback。首次按声明文件查询失败后，才去除 file constraint 重试，确保构图阶段和后续 Semantic Model 输入阶段行为一致。
+- 新增 debug 日志 `[snapshot-resolve] retrying header declaration without file constraint` 和 `[global-model] retrying header declaration without file constraint`，用于区分正常 header-to-implementation fallback 与真正的入口缺失。
+
+### 验证
+
+- 新增 Semantic Model 输入测试，覆盖 header 声明映射到唯一 `.c` 实现。
+- 新增多实现歧义测试，确认 header fallback 不会任意选择同名实现。
+- 新增索引可唯一选定 canonical 实现的测试。
+- 新增 global model 测试，确认 `FunctionEntry("entry", file_path="include/public_api.h")` 能进入实际实现建模，且 `unresolved_entry_functions==0`、`stage_complete==true`。
+- 修复后的 WSL 自动入口 benchmark 成功解析 88 个入口，global-model 日志为 `unresolved_entries=0`，确认入口解析问题已消除。
+
+## 2026-08-05 Global Model Stage Gate 容忍度扩大
+
+### 问题现象
+
+- 入口解析修复后，`auto_unified_wsl_20260804_170202` 已完成全局可达图构建：88 个入口、314 个可达函数。
+- 其中 313 个函数成功生成 snapshot，只有 `_runtime_get_thread_cache@src/lifecycle.c:2246-2255` 建模失败。
+- 该函数不是 entry，而是可达 callee；失败原因是 Semantic Modeler 在 50 次 terminal tool call 后仍未生成合法的 `emit_function_snapshot` JSON。
+- 原 gate 要求 `failed_functions==0`。因此单个 callee 的 LLM 输出失败会丢弃其余 313 个成功 snapshot 的阶段结果，并阻止全部 88 个入口进入漏洞分析。
+
+### 修复决策
+
+- `failed_functions` 的统计范围包括 entry 和 callee，不能把少量非入口 callee 的偶发 LLM 格式失败等同于入口不可分析。
+- `unresolved_entry_functions` 和 `reconciliation_failures` 仍代表入口身份或全局依赖一致性问题，继续保持零容忍。
+- 新增 `MAX_FAILED_FUNCTIONS_FOR_STAGE = 10`，将 gate 条件从 `failed_functions==0` 调整为 `failed_functions<=10`。
+- 最终 `stage_complete` 条件为：
+  - `failed_functions <= 10`
+  - `unresolved_entry_functions == 0`
+  - `reconciliation_failures == 0`
+- 该修改只放宽少量函数 snapshot 失败，不改变 unresolved entry 和 reconcile failure 的硬性阻断语义。
+
+### Reconciliation 行为
+
+- project-callee summary reconciliation 仍只在 `failed_functions==0` 且 `unresolved_entry_functions==0` 时执行。
+- 当失败函数数量为 1 到 10 时，reconciliation 会被跳过，但只要没有 unresolved entry 和已记录的 reconciliation failure，stage gate 允许 entry fan-out。
+- 因此本次修改的目标是允许扫描在少量 callee snapshot 缺失时继续，而不是把缺失 summary 伪装成已完成 reconcile。
+
+### 测试调整
+
+- 将单函数建模失败测试从“stage gate 必须失败”改为“在容忍范围内跳过 reconciliation，但 stage 可继续”。
+- 新增阈值边界测试：`failed_functions=10` 时 `stage_complete==true`，`failed_functions=11` 时为 `false`。
+- 保留 unresolved entry 回归测试，确认 `unresolved_entry_functions=1` 时即使失败函数未超阈值，stage gate 仍失败。
+- `python -m pytest -q tests/test_semantic_model_input.py tests/test_global_modeler.py` 通过：26 个测试。
+
+### Benchmark 依据
+
+- 触发修复的 run 统计为：`reachable=314`、`modeled=313`、`failed=1`、`unresolved_entries=0`、`reconciled=0`、`reconcile_failed=0`。
+- 该 run 证明入口解析修复已经生效，剩余阻断来自旧 gate 对单个 callee LLM 失败的零容忍，而不是 entry identity 解析失败。
+
+## 2026-08-05 Semantic Model Terminal Loop Guard 与 Fresh Session 重试
+
+### 问题现象
+
+- `_runtime_get_thread_cache@src/lifecycle.c:2246-2255` 的 Semantic Modeler 连续调用 `emit_function_snapshot`，但 payload 始终未通过 snapshot schema 校验。
+- 对话最终运行到 `max_iterations=50` 才结束，浪费了大量 LLM 调用和上下文 token，并导致该函数 snapshot 建模失败。
+- 现有普通 tool loop guard 未被触发。日志中 terminal tool call 存在重复 payload，但系统仍允许模型在同一 session 中继续提交。
+
+### 根因定位
+
+- `LLMClient.run_conversation_with_tools()` 会先从模型返回的 `tool_calls` 中提取 terminal tool，并执行参数解析和 terminal handler 校验。
+- terminal calls 处理完成后会从普通 `tool_calls` 列表中移除。
+- 普通工具的 `tool_call_history`、重复签名检测和 `loop_guard_triggered` 逻辑位于该移除操作之后。
+- 因此 `emit_function_snapshot` 从未进入普通工具历史，无法触发原有 identical tool call guard；无效 terminal payload 只能依赖模型自行修复或等待迭代上限。
+
+### 重试边界决策
+
+- 保留现有 API 级重试，继续负责单次 HTTP 请求的超时、连接异常、`429`、`5xx`、base URL cooldown 和模型 fallback。
+- API 级重试复用同一份 messages，属于同一个 conversation session；全部耗尽后直接失败，不启动新的语义建模 session。
+- terminal loop guard 属于成功完成多次 API 请求后的语义协议失败，不能放进 `chat_completion()` 的 API 重试循环。
+- terminal guard 触发后，由 Semantic Model 层从原始函数 context 重新执行完整建模；每次创建新的 `SemanticModeler`，从而创建新的 recorder conversation session。
+- 初始 session 后最多重试两次，即单个函数最多运行三个完整语义建模 session。
+
+### Terminal Loop Guard 实现
+
+- 为 terminal tool 增加独立的 session 级状态，不与普通工具的 `loop_guard_triggered` 混用。
+- 同一 session 内满足任一条件时立即触发 guard：
+  - 相同 terminal 失败第 3 次。
+  - 任意 terminal 失败累计第 5 次。
+- 相同失败签名包含 terminal tool 名、规范化参数和校验错误类型。
+- 参数解析失败时使用原始 arguments 文本生成签名，避免不同坏格式全部折叠为 `{}`。
+- mixed 或 duplicate terminal calls 中的每个无效调用分别计数；两个阈值同时满足时优先记录 identical failure limit。
+- 每次失败先写入 terminal tool result 和 conversation recorder，再检查阈值。guard 触发后立即结束 session，不再请求下一轮 LLM，并显式返回 `truncated=false`。
+
+新增或透传的 terminal metadata 包括：
+
+- `terminal_loop_guard_triggered`
+- `terminal_loop_guard_reason`
+- `terminal_invalid_call_count`
+- `terminal_tool_call_count`
+- `repeated_terminal_tool_call`
+
+`terminal_loop_guard_reason` 当前取值为：
+
+- `identical_invalid_terminal_call_limit`
+- `invalid_terminal_call_limit`
+
+### Agent 层失败短路
+
+- `JsonToolAgent` 在结构化 payload 提取和 JSON repair 前优先检查 terminal guard。
+- 该顺序可以防止 schema 本身合法、但因 mixed/duplicate terminal call 被协议层拒绝的历史 payload 被重新提取并误判为成功。
+- terminal guard 转换为失败 `AgentResponse`，使用 `reason=terminal_tool_loop_guard`，并完整保留 terminal、token、iteration 和调用计数。
+- 普通 tool loop guard 的行为和 metadata 保持不变。
+
+### Fresh Session Retry Runner
+
+- 在 semantic modeler 包中新增共享 retry runner，输入为 agent factory 和 canonical semantic context。
+- 每次尝试都深拷贝原始 context，并通过 factory 创建新的 `SemanticModeler`；失败 conversation history 和 agent 内部状态不会复用。
+- 仅当响应失败且 `terminal_loop_guard_triggered=true` 时启动下一 session。
+- 成功、普通语义失败、输入错误、API 重试耗尽异常、snapshot 保存异常和 lock 异常均不会消耗 terminal guard session 重试预算。
+- 全局建模、入口建模、callee 预建模和按需 snapshot 四条路径统一接入该 runner。
+- global、premodel 和 on-demand 已获取的 snapshot lock 在完整重试序列结束后才释放；snapshot 只在最终成功后保存。
+
+聚合 metadata 包括：
+
+- `semantic_model_attempt_count`
+- `semantic_model_retry_count`
+- `semantic_model_attempts`
+- 跨 session 求和后的 context/cumulative token、iteration、API、普通 tool、terminal tool 和 terminal invalid call 计数
+
+`semantic_model_attempts` 逐次记录成功状态、失败原因、terminal guard 原因和各项资源计数。顶层 terminal guard 字段表示最终一次尝试，历史 guard 信息保存在 attempts 数组中。
+
+### 接口与配置边界
+
+- `run_conversation_with_tools()` 新增默认参数：
+  - `max_identical_invalid_terminal_calls=3`
+  - `max_invalid_terminal_calls=5`
+- 本次未增加 CLI 或 YAML 配置项，现有 LLM `timeout`、`max_retries`、base URL 和模型 fallback 配置不变。
+
+### 测试与验证
+
+- 新增测试覆盖相同无效 payload 第 3 次触发 guard、5 个不同无效 payload 第 5 次触发 guard，以及两次无效后第 3 次成功仍在原 session 内正常完成。
+- 新增 duplicate terminal payload 回归，确认被协议层拒绝的 schema 合法 payload 不会绕过 guard。
+- 新增 fresh-agent retry runner 测试，覆盖 context 深拷贝、新 agent 创建、最多两个重试、非 guard 失败不重试和跨 session metadata 聚合。
+- 新增四条实际建模路径的集成覆盖，确认 global、entry、premodel 和 on-demand 均在首个 session guard 后使用新 agent 成功建模，并且只保存成功 snapshot。
+- 聚焦测试：`64 passed`。
+- 完整测试：`python -m pytest -q`，`838 passed in 160.00s`。
+- `python -m compileall -q zscope tests/test_semantic_model_retry.py` 通过。
+- `git diff --check` 通过。
