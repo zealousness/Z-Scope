@@ -2,12 +2,34 @@
 
 from __future__ import annotations
 
+import hashlib
 from copy import deepcopy
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from ...common.issue_identity import canonical_issue_key, flatten_issue_text, parse_issue_location
 from ..candidates.evidence_models import build_evidence_models
 from ...snapshots.modeling_input import SemanticModelInputError, resolve_function_info
+
+
+VALIDATOR_EVIDENCE_SLICE_VERSION = "zscope.validator-evidence-slice.v2"
+VALIDATOR_PROTOCOL_VERSION = "zscope.validator-protocol.v2"
+VALIDATOR_MISSING_FACT_KINDS = frozenset(
+    {
+        "guard_dominance",
+        "caller_contract",
+        "source_controllability",
+        "ownership_transfer",
+        "cleanup_coverage",
+        "lockset",
+        "happens_before",
+        "object_identity",
+        "value_range",
+        "source_sink_reachability",
+        "signal_context",
+        "container_reachability",
+        "type_layout",
+    }
+)
 
 
 def validation_verdict(val_data: Dict[str, Any]) -> str:
@@ -205,6 +227,199 @@ def build_validation_evidence_pack(
         },
         "validation_requirements": validation_requirements,
     }
+
+
+def build_validator_evidence_slice_v2(
+    issue: Mapping[str, Any],
+    evidence_pack: Mapping[str, Any],
+    issue_code: str,
+) -> Dict[str, Any]:
+    """Build one decision-complete, occurrence-compact Validator payload.
+
+    A validation cluster may contain hundreds of entry occurrences.  Those
+    paths are audit provenance, not independent decision facts, so the model
+    receives one canonical path and stable references to the remaining data.
+    The full issue/report objects remain untouched and available outside the
+    prompt.
+    """
+
+    pack = dict(evidence_pack or {})
+    finding = pack.get("finding_summary")
+    if not isinstance(finding, Mapping):
+        finding = {}
+    function_context = pack.get("function_context")
+    if not isinstance(function_context, Mapping):
+        function_context = {}
+    entry_context = pack.get("entry_context")
+    if not isinstance(entry_context, Mapping):
+        entry_context = {}
+
+    def first_path(*values: Any) -> List[str]:
+        for raw in values:
+            if not isinstance(raw, list) or not raw:
+                continue
+            candidate = raw[0] if isinstance(raw[0], list) else raw
+            if isinstance(candidate, list):
+                return [str(item) for item in candidate[:16] if str(item)]
+        return []
+
+    occurrence_uids = issue.get("occurrence_uids")
+    if not isinstance(occurrence_uids, list):
+        occurrence_uids = []
+    primary_occurrence = str(
+        issue.get("primary_occurrence_uid")
+        or issue.get("occurrence_uid")
+        or (occurrence_uids[0] if occurrence_uids else "")
+    )
+    occurrence_count = max(
+        1,
+        int(issue.get("occurrence_count") or len(occurrence_uids) or 1),
+    )
+    aliases = issue.get("alias_occurrence_uids")
+    if not isinstance(aliases, list):
+        aliases = occurrence_uids[1:]
+
+    fact_slice = issue.get("decision_fact_slice")
+    if not isinstance(fact_slice, Mapping):
+        fact_slice = {}
+    security_obligation = issue.get("security_obligation")
+    if not isinstance(security_obligation, Mapping):
+        security_obligation = {}
+    deterministic_proofs = issue.get("deterministic_proofs")
+    if not isinstance(deterministic_proofs, list):
+        deterministic_proofs = []
+
+    missing_fact_kinds = _normalized_missing_fact_kinds(
+        issue.get("missing_fact_kinds") or fact_slice.get("missing_fact_kinds")
+    )
+    representative_path = first_path(
+        issue.get("entry_paths"),
+        issue.get("call_paths"),
+        issue.get("call_path"),
+        entry_context.get("call_path"),
+    )
+    code = trim_code(
+        str(function_context.get("code") or issue_code or ""),
+        max_lines=110,
+    )
+    location_snippet = pack.get("primary_location_snippet")
+    if isinstance(location_snippet, Mapping):
+        location_snippet = {
+            key: _compact_validation_value(value, max_string_chars=1400)
+            for key, value in location_snippet.items()
+            if key in {"file", "start_line", "end_line", "code", "content", "text"}
+        }
+    elif location_snippet not in (None, ""):
+        location_snippet = _trim_text(str(location_snippet), 1800)
+
+    return {
+        "schema_version": VALIDATOR_EVIDENCE_SLICE_VERSION,
+        "protocol_version": VALIDATOR_PROTOCOL_VERSION,
+        "obligation": {
+            "candidate_uid": issue.get("candidate_uid"),
+            "validation_cluster_uid": issue.get("validation_cluster_uid"),
+            "obligation_uid": issue.get("obligation_uid"),
+            "defect_family": issue.get("defect_class") or issue.get("category"),
+            "obligation_shape": issue.get("obligation_shape"),
+            "subject_uid": issue.get("resource_identity")
+            or security_obligation.get("subject_uid"),
+            "source_uid": issue.get("source_identity")
+            or security_obligation.get("source_uid"),
+            "sink_uid": issue.get("sink_identity")
+            or security_obligation.get("sink_uid"),
+            "function": issue.get("function") or finding.get("function"),
+            "location": issue.get("location") or finding.get("location"),
+            "category": issue.get("category") or finding.get("category"),
+            "subcategory": issue.get("subcategory") or finding.get("subcategory"),
+            "cwe": issue.get("cwe") or finding.get("cwe"),
+        },
+        "canonical_occurrence": {
+            "occurrence_uid": primary_occurrence,
+            "entry_identity": issue.get("entry_identity")
+            or entry_context.get("current_analysis_entry"),
+            "reachable_from_entry": bool(
+                issue.get("reachable_from_entry")
+                or entry_context.get("reachable_from_entry")
+            ),
+            "representative_call_path": representative_path,
+        },
+        "decision_facts": {
+            "version": issue.get("decision_fact_version"),
+            "coverage": issue.get("decision_fact_coverage")
+            or fact_slice.get("coverage"),
+            "fact_uids": list(fact_slice.get("fact_uids") or [])[:32],
+            "edge_uids": list(fact_slice.get("edge_uids") or [])[:32],
+            "dependency_code_hashes": list(
+                fact_slice.get("dependency_code_hashes") or []
+            )[:8],
+            "missing_fact_kinds": missing_fact_kinds,
+            "deterministic_proofs": [
+                _compact_validation_value(item, max_string_chars=1200)
+                for item in deterministic_proofs[:8]
+                if isinstance(item, Mapping)
+            ],
+        },
+        "evidence": {
+            "source": issue.get("source") or finding.get("source"),
+            "sink": issue.get("sink") or finding.get("sink"),
+            "positive": _compact_validation_value(
+                issue.get("positive_evidence") or pack.get("positive_evidence") or [],
+                max_list_items=8,
+                max_string_chars=1200,
+            ),
+            "negative": _compact_validation_value(
+                issue.get("negative_evidence") or pack.get("negative_evidence") or [],
+                max_list_items=8,
+                max_string_chars=1200,
+            ),
+            "path_constraints": _compact_validation_value(
+                issue.get("path_constraints") or [],
+                max_list_items=8,
+                max_string_chars=1000,
+            ),
+        },
+        "code": {
+            "function_context": code,
+            "location_snippet": location_snippet,
+        },
+        "alias_summary": {
+            "occurrence_count": occurrence_count,
+            "alias_count": max(0, occurrence_count - 1),
+            # Alias identities remain in the canonical report/ledger.  The
+            # Validator only needs a fixed-size audit commitment; embedding
+            # N UIDs would make prompt cost grow with entry fan-out.
+            "alias_uid_set_hash": hashlib.sha256(
+                "\n".join(sorted(str(value) for value in aliases if str(value))).encode("utf-8")
+            ).hexdigest(),
+        },
+        "validation_requirements": _compact_validation_value(
+            pack.get("validation_requirements") or [],
+            max_list_items=10,
+            max_string_chars=1000,
+        ),
+    }
+
+
+def _normalized_missing_fact_kinds(value: Any) -> List[str]:
+    raw_values = value if isinstance(value, list) else [value]
+    result: List[str] = []
+    aliases = {
+        "event:shared_state_access": "lockset",
+        "event:acquire": "ownership_transfer",
+        "event:exit": "cleanup_coverage",
+        "reachability": "source_sink_reachability",
+        "contract": "caller_contract",
+    }
+    for raw in raw_values:
+        text = str(raw or "").strip().lower()
+        if not text:
+            continue
+        normalized = aliases.get(text, text)
+        if normalized not in VALIDATOR_MISSING_FACT_KINDS:
+            continue
+        if normalized not in result:
+            result.append(normalized)
+    return result
 
 
 def category_validation_requirements(issue: Dict[str, Any]) -> List[str]:

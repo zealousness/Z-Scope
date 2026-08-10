@@ -251,6 +251,17 @@ def test_wsl_runner_separates_process_report_and_valid_scan_states() -> None:
     assert "model_trace_valid" in runner
     assert '"scan_completed": scan_completed' in runner
     assert '"benchmark_valid": benchmark_valid' in runner
+    assert '"confirmed_tp_gte_85": confirmed_tp >= 85' in runner
+    assert '"confirmed_raw_precision_gte_0_95": confirmed_raw_precision >= 0.95' in runner
+    assert '"with_review_tp_gte_134": review_tp >= 134' in runner
+    assert '"with_review_raw_fp_lte_100": review_raw_fp <= 100' in runner
+    assert '"needs_review_lte_150": needs_review_count <= 150' in runner
+    assert '"tokens_lte_6m": total_tokens <= 6_000_000' in runner
+    assert '"wall_seconds_lte_3600": measured_wall_seconds <= 3_600' in runner
+    assert '"deferred_budget_zero": deferred_budget_count == 0' in runner
+    assert '"budget_policy_observe_only": budget_policy == "observe"' in runner
+    assert 'manifest["release_gate_status"] = release_gate_status' in runner
+    assert 'print("release_failed")' in runner
     assert '--knowledge-db "${knowledge_db_path}"' in runner
 
 
@@ -286,3 +297,7 @@ def test_range_benchmark_uses_zhipu_glm51_endpoint() -> None:
     assert "proof_providers_v11: true" in config
     assert "decision_context_v32: true" in config
     assert "structured_candidate_promotion_v1: true" in config
+    assert "proof_providers_v12: true" in config
+    assert "decision_context_v33: true" in config
+    assert "finding_root_v1: true" in config
+    assert "validator_evidence_slice_v2: true" in config

@@ -359,7 +359,7 @@ def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path) 
             "completeness": "complete",
                 "run_manifest": {
                     "valid": True,
-                    "candidate_schema_version": "zscope.candidate.v3.2",
+                    "candidate_schema_version": "zscope.candidate.v3.3",
                 },
             "issues": [{"source": "a"}],
         },
@@ -370,7 +370,7 @@ def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path) 
             "completeness": "complete",
                 "run_manifest": {
                     "valid": True,
-                    "candidate_schema_version": "zscope.candidate.v3.2",
+                    "candidate_schema_version": "zscope.candidate.v3.3",
                 },
             "issues": [{"source": "b"}],
         },

@@ -481,6 +481,11 @@ class ParallelAnalyzer:
                 "issues": [],
                 "observations": [],
                 "notes": ["Scan-level validation queue had no open obligations."],
+                "validation_queue_drained": True,
+                "budget_exhaustion_policy": str(
+                    getattr(self.base_config.analysis, "budget_exhaustion_policy", "observe")
+                    or "observe"
+                ),
             }
             return
 
@@ -514,7 +519,7 @@ class ParallelAnalyzer:
         eligible_records = [
             record
             for record in ledger_records
-            if str(record.decision_context_version or "").endswith(("v3.1", "v3.2"))
+            if str(record.decision_context_version or "").endswith(("v3.1", "v3.2", "v3.3"))
             and record.record_role == "validation_obligation"
         ]
         eligible_occurrence_count = sum(
@@ -543,6 +548,19 @@ class ParallelAnalyzer:
             "eligible_duplicate_request_count": eligible_duplicate_request_count,
             "coalesced_duplicate_request_count": eligible_duplicate_request_count,
             "cluster_fragmentation_by_reason": {},
+            "budget_exhaustion_policy": str(
+                getattr(self.base_config.analysis, "budget_exhaustion_policy", "observe")
+                or "observe"
+            ),
+            "validation_queue_drained": False,
+            "validator_session_count": 0,
+            "validator_api_call_count": 0,
+            "validator_turn_distribution": {},
+            "validator_prompt_tokens_by_stage": {},
+            "evidence_slice_token_count": 0,
+            "multi_turn_outlier_count": 0,
+            "snapshot_model_call_count": 0,
+            "fact_query_cache_hit_count": 0,
         }
         started = time.monotonic()
         logger.info(
@@ -1594,10 +1612,16 @@ class ParallelAnalyzer:
             for item in final_records
             if item.get("validation_cluster_uid")
         }
-        canonical_outcomes = ReportAssembler._canonical_outcome_items(
-            {"candidate_lifecycle_snapshot": ledger_snapshot}
-        )
         analysis_config = getattr(base_config, "analysis", None)
+        canonical_projection_state = {
+            "candidate_lifecycle_snapshot": ledger_snapshot,
+            "finding_root_v1_enabled": bool(
+                getattr(analysis_config, "finding_root_v1", False)
+            ),
+        }
+        canonical_outcomes = ReportAssembler._canonical_outcome_items(
+            canonical_projection_state
+        )
         canonical_projection = bool(
             getattr(analysis_config, "candidate_lifecycle_v3", True)
         ) and bool(
@@ -1844,6 +1868,13 @@ class ParallelAnalyzer:
                     "raw_occurrence_count": int(
                         global_validation_state.get("scan_level_raw_occurrence_count", 0) or 0
                     ),
+                    "drained": bool(global_validation_state.get("validation_queue_drained", False)),
+                    "validator_session_count": int(global_validation_state.get("validator_session_count", 0) or 0),
+                    "validator_api_call_count": int(global_validation_state.get("validator_api_call_count", 0) or 0),
+                    "validator_turn_distribution": dict(global_validation_state.get("validator_turn_distribution") or {}),
+                    "validator_prompt_tokens_by_stage": dict(global_validation_state.get("validator_prompt_tokens_by_stage") or {}),
+                    "evidence_slice_token_count": int(global_validation_state.get("evidence_slice_token_count", 0) or 0),
+                    "multi_turn_outlier_count": int(global_validation_state.get("multi_turn_outlier_count", 0) or 0),
                 },
                 "project_deterministic_fact_pass": project_fact_state,
                 "va_candidate_coverage": va_candidate_coverage_summary,
@@ -1903,6 +1934,13 @@ class ParallelAnalyzer:
                     "raw_occurrence_count": int(
                         global_validation_state.get("scan_level_raw_occurrence_count", 0) or 0
                     ),
+                    "drained": bool(global_validation_state.get("validation_queue_drained", False)),
+                    "validator_session_count": int(global_validation_state.get("validator_session_count", 0) or 0),
+                    "validator_api_call_count": int(global_validation_state.get("validator_api_call_count", 0) or 0),
+                    "validator_turn_distribution": dict(global_validation_state.get("validator_turn_distribution") or {}),
+                    "validator_prompt_tokens_by_stage": dict(global_validation_state.get("validator_prompt_tokens_by_stage") or {}),
+                    "evidence_slice_token_count": int(global_validation_state.get("evidence_slice_token_count", 0) or 0),
+                    "multi_turn_outlier_count": int(global_validation_state.get("multi_turn_outlier_count", 0) or 0),
                 },
                 "project_deterministic_fact_pass": project_fact_state,
                 "va_candidate_coverage_summary": va_candidate_coverage_summary,
@@ -1923,6 +1961,29 @@ class ParallelAnalyzer:
                 "engine_capabilities": engine_capabilities,
                 "canonical_outcome_projection": canonical_projection,
                 "candidate_ledger_summary": ledger_snapshot.get("summary", {}),
+                "finding_root_v1_enabled": bool(
+                    getattr(analysis_config, "finding_root_v1", False)
+                ),
+                "finding_root_count": int(
+                    canonical_projection_state.get("finding_root_count", 0) or 0
+                ),
+                "finding_root_alias_count": int(
+                    canonical_projection_state.get("finding_root_alias_count", 0) or 0
+                ),
+                "budget_exhaustion_policy": str(
+                    global_validation_state.get("budget_exhaustion_policy") or "observe"
+                ),
+                "validation_queue_drained": bool(
+                    global_validation_state.get("validation_queue_drained", False)
+                ),
+                "validator_session_count": int(global_validation_state.get("validator_session_count", 0) or 0),
+                "validator_api_call_count": int(global_validation_state.get("validator_api_call_count", 0) or 0),
+                "validator_turn_distribution": dict(global_validation_state.get("validator_turn_distribution") or {}),
+                "validator_prompt_tokens_by_stage": dict(global_validation_state.get("validator_prompt_tokens_by_stage") or {}),
+                "evidence_slice_token_count": int(global_validation_state.get("evidence_slice_token_count", 0) or 0),
+                "multi_turn_outlier_count": int(global_validation_state.get("multi_turn_outlier_count", 0) or 0),
+                "snapshot_model_call_count": int(global_validation_state.get("snapshot_model_call_count", 0) or 0),
+                "fact_query_cache_hit_count": int(global_validation_state.get("fact_query_cache_hit_count", 0) or 0),
             },
             issues=unique_issues,
             observations=unique_observations,

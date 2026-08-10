@@ -171,6 +171,84 @@ def test_llm_client_closes_error_response_before_retry(monkeypatch) -> None:
     assert [response.closed for response in responses] == [True, True]
 
 
+def test_llm_client_retries_one_isolated_401_after_prior_success(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://auth.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+    )
+    responses = [
+        _FakeResponse(),
+        _FakeResponse(status_code=401, text="transient auth failure"),
+        _FakeResponse(),
+    ]
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append(url)
+        return responses[len(calls) - 1]
+
+    monkeypatch.setattr(client.session, "post", fake_post)
+    monkeypatch.setattr(llm_client_module.time, "sleep", lambda _seconds: None)
+
+    first = client.chat_completion([{"role": "user", "content": "first"}])
+    recovered = client.chat_completion([{"role": "user", "content": "second"}])
+
+    assert first["choices"][0]["message"]["content"] == "ok"
+    assert recovered["choices"][0]["message"]["content"] == "ok"
+    assert len(calls) == 3
+    assert all(response.closed for response in responses)
+
+
+def test_llm_client_does_not_retry_first_401_without_prior_success(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="bad",
+        base_url="http://auth.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+    )
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append(url)
+        return _FakeResponse(status_code=401, text="invalid credential")
+
+    monkeypatch.setattr(client.session, "post", fake_post)
+
+    with pytest.raises(Exception, match="HTTP 401"):
+        client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert len(calls) == 1
+
+
+def test_llm_client_retries_repeated_401_only_once(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://auth.example/v1",
+        models=["unit-model"],
+        max_retries=0,
+    )
+    statuses = [200, 401, 401, 200]
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append(url)
+        return _FakeResponse(
+            status_code=statuses[len(calls) - 1],
+            text="auth failure",
+        )
+
+    monkeypatch.setattr(client.session, "post", fake_post)
+    monkeypatch.setattr(llm_client_module.time, "sleep", lambda _seconds: None)
+
+    client.chat_completion([{"role": "user", "content": "seed success"}])
+    with pytest.raises(Exception, match="HTTP 401"):
+        client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert len(calls) == 3
+
+
 def test_llm_client_closes_current_thread_session(monkeypatch) -> None:
     client = LLMClient(
         api_key="test",

@@ -106,3 +106,22 @@ def test_config_loader_reads_independent_v32_evidence_closure_flags(tmp_path) ->
     assert cfg.analysis.proof_providers_v11 is True
     assert cfg.analysis.decision_context_v32 is True
     assert cfg.analysis.structured_candidate_promotion_v1 is True
+
+
+def test_config_loader_reads_independent_v33_release_flags(tmp_path) -> None:
+    data = _base_config(tmp_path)
+    data["analysis"] = {
+        "proof_providers_v12": True,
+        "decision_context_v33": True,
+        "finding_root_v1": True,
+        "validator_evidence_slice_v2": True,
+    }
+    path = tmp_path / "zscope.yaml"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    cfg = ConfigLoader.load(str(path))
+
+    assert cfg.analysis.proof_providers_v12 is True
+    assert cfg.analysis.decision_context_v33 is True
+    assert cfg.analysis.finding_root_v1 is True
+    assert cfg.analysis.validator_evidence_slice_v2 is True

@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterable, Mapping
 
 from zscope.core.validation.evidence_completion import EvidenceCompletionQueue
 from zscope.core.validation.proofs import deterministic_decision_proof
+from zscope.reporting.finding_roots import project_finding_roots
 
 
 def _sha256(path: Path) -> str:
@@ -77,7 +78,11 @@ def _canonical_groups(report: Mapping[str, Any]) -> Iterable[Dict[str, Any]]:
         yield raw
 
 
-def _deterministic_replay(issue: Mapping[str, Any]) -> Dict[str, Any]:
+def _deterministic_replay(
+    issue: Mapping[str, Any],
+    *,
+    enable_v12: bool = False,
+) -> Dict[str, Any]:
     replay = copy.deepcopy(dict(issue))
     old = str(
         replay.get("terminal_disposition")
@@ -89,7 +94,7 @@ def _deterministic_replay(issue: Mapping[str, Any]) -> Dict[str, Any]:
             "code": str(replay.get("code_snippet") or ""),
         }
     }
-    EvidenceCompletionQueue().complete_prevalidation(
+    EvidenceCompletionQueue(enable_v12_providers=enable_v12).complete_prevalidation(
         replay,
         validation_evidence=evidence,
     )
@@ -128,6 +133,8 @@ def replay_report(
     report: Mapping[str, Any],
     *,
     source_revision: str = "",
+    enable_v12: bool = False,
+    finding_root_v1: bool = False,
 ) -> Dict[str, Any]:
     manifest = report.get("run_manifest") if isinstance(report.get("run_manifest"), dict) else {}
     recorded_revision = str(manifest.get("source_revision") or report.get("metadata", {}).get("commit_sha") or "")
@@ -135,16 +142,54 @@ def replay_report(
         raise ValueError(
             f"source revision mismatch: report={recorded_revision}, requested={source_revision}"
         )
-    transitions = [_deterministic_replay(item) for item in _canonical_groups(report)]
+    groups = list(_canonical_groups(report))
+    transitions = [
+        _deterministic_replay(item, enable_v12=enable_v12)
+        for item in groups
+    ]
     changed = [item for item in transitions if item["transitioned"]]
-    return {
+    result = {
         "schema_version": "zscope.candidate-replay.v1",
         "source_revision": recorded_revision,
         "canonical_group_count": len(transitions),
         "transition_count": len(changed),
         "transitions": transitions,
         "changed_transitions": changed,
+        "proof_providers_v12": bool(enable_v12),
+        "finding_root_v1": bool(finding_root_v1),
     }
+    if finding_root_v1:
+        by_cluster = {
+            str(item.get("validation_cluster_uid") or ""): item
+            for item in transitions
+        }
+        replayed_groups = []
+        for raw in groups:
+            item = copy.deepcopy(raw)
+            transition = by_cluster.get(str(item.get("validation_cluster_uid") or ""))
+            if transition:
+                item["candidate_disposition"] = transition["new_disposition"]
+                item["status"] = transition["new_disposition"]
+                if transition.get("proof"):
+                    item["decision_proof"] = transition["proof"]
+            replayed_groups.append(item)
+        projection = project_finding_roots(replayed_groups)
+        result["finding_root_count"] = projection.finding_root_count
+        result["finding_root_alias_count"] = projection.finding_root_alias_count
+        result["projected_disposition_counts"] = {
+            disposition: sum(
+                1
+                for item in projection.outcomes
+                if str(item.get("candidate_disposition") or "") == disposition
+            )
+            for disposition in (
+                "confirmed",
+                "needs_review",
+                "rejected_with_proof",
+                "deduplicated_alias",
+            )
+        }
+    return result
 
 
 def main() -> int:
@@ -157,6 +202,8 @@ def main() -> int:
     parser.add_argument("--log", type=Path)
     parser.add_argument("--baseline-manifest", type=Path)
     parser.add_argument("--source-revision", default="")
+    parser.add_argument("--proof-providers-v12", action="store_true")
+    parser.add_argument("--finding-root-v1", action="store_true")
     parser.add_argument(
         "--shadow",
         action="store_true",
@@ -176,7 +223,12 @@ def main() -> int:
     fingerprints = _input_fingerprints(input_paths)
     try:
         _verify_baseline(fingerprints, args.baseline_manifest)
-        result = replay_report(_load_json(args.report), source_revision=args.source_revision)
+        result = replay_report(
+            _load_json(args.report),
+            source_revision=args.source_revision,
+            enable_v12=bool(args.proof_providers_v12),
+            finding_root_v1=bool(args.finding_root_v1),
+        )
     except ValueError as exc:
         raise SystemExit(f"replay refused: {exc}") from exc
     result["input_fingerprints"] = fingerprints

@@ -29,6 +29,9 @@ from ...orchestration.candidate_envelope import (
     DECISION_CONTEXT_VERSION,
 )
 from .evidence import (
+    VALIDATOR_EVIDENCE_SLICE_VERSION,
+    VALIDATOR_MISSING_FACT_KINDS,
+    build_validator_evidence_slice_v2,
     build_validation_evidence_pack,
     compact_validation_evidence_pack,
     compact_validation_finding,
@@ -148,7 +151,7 @@ class ValidationRunner:
 
     # v5 invalidates v4 entries after source-centric validation groups stopped
     # carrying occurrence-only reachability projections.
-    _VALIDATION_CACHE_PROTOCOL = "zscope.validator-cache.v5"
+    _VALIDATION_CACHE_PROTOCOL = "zscope.validator-cache.v6"
     _DEFAULT_VALIDATION_CACHE_SIZE = 4096
     _EXTERNAL_API_NAMES = {
         "calloc",
@@ -221,11 +224,15 @@ class ValidationRunner:
             enable_v11_providers=bool(
                 getattr(analysis_cfg, "proof_providers_v11", False)
             ),
+            enable_v12_providers=bool(
+                getattr(analysis_cfg, "proof_providers_v12", False)
+            ),
         )
 
     def run(self, state: Dict[str, Any]) -> None:
         new_issues = state.get("pending_new_issues", [])
         if not new_issues:
+            state["validation_queue_drained"] = True
             return
 
         deduped_issues = self._coalesce_validation_groups(new_issues)
@@ -244,6 +251,7 @@ class ValidationRunner:
         if not self._validator_enabled():
             self._mark_unvalidated(state, new_issues)
             state["pending_new_issues"] = []
+            state["validation_queue_drained"] = True
             return
 
         prepared = []
@@ -358,6 +366,7 @@ class ValidationRunner:
                 self._apply_validation_worker_result(state, results[item.index])
 
         state["pending_new_issues"] = []
+        state["validation_queue_drained"] = True
 
     def _coalesce_validation_groups(
         self,
@@ -990,6 +999,7 @@ class ValidationRunner:
             return
 
         val_data = result.val_data
+        self._attach_validator_missing_fact_request(raw_issue, val_data)
         verdict = validation_verdict(val_data)
         score_data = self.validation_pipeline.score_components(raw_issue, val_data)
         outcome = self.validation_pipeline.apply_validator_result(
@@ -1030,6 +1040,32 @@ class ValidationRunner:
         self._log_validation_outcome(raw_issue, val_data, verdict, outcome.final_score)
 
     @staticmethod
+    def _attach_validator_missing_fact_request(
+        issue: Dict[str, Any],
+        val_data: Dict[str, Any],
+    ) -> None:
+        request = val_data.get("missing_fact_request")
+        if not isinstance(request, dict):
+            return
+        fact_kind = str(request.get("fact_kind") or "").strip().lower()
+        if fact_kind not in VALIDATOR_MISSING_FACT_KINDS:
+            issue["validator_missing_fact_request_rejected"] = (
+                "unsupported_fact_kind"
+            )
+            return
+        existing = issue.get("missing_fact_kinds")
+        values = [str(value) for value in existing] if isinstance(existing, list) else []
+        if fact_kind not in values:
+            values.append(fact_kind)
+        issue["missing_fact_kinds"] = values
+        issue["validator_missing_fact_request"] = {
+            "fact_kind": fact_kind,
+            "subject_uid": str(request.get("subject_uid") or ""),
+            "function_uid": str(request.get("function_uid") or ""),
+            "reason": str(request.get("reason") or ""),
+        }
+
+    @staticmethod
     def _update_candidate_ledger(
         state: Dict[str, Any],
         issue: Dict[str, Any],
@@ -1055,7 +1091,10 @@ class ValidationRunner:
         val_data: Dict[str, Any],
         token_metadata: Dict[str, Any],
     ) -> Dict[str, Any]:
-        if is_entry_root_dead_code_rejection(val_data, item.evidence_pack):
+        if (
+            is_entry_root_dead_code_rejection(val_data, item.evidence_pack)
+            and not self._validator_evidence_slice_enabled()
+        ):
             val_data = self._retry_entry_root_rejection_for_worker(
                 item,
                 validator_agent,
@@ -1063,6 +1102,12 @@ class ValidationRunner:
                 token_metadata,
             )
         return val_data
+
+    def _validator_evidence_slice_enabled(self) -> bool:
+        analysis_cfg = getattr(self.config, "analysis", None)
+        return bool(
+            getattr(analysis_cfg, "validator_evidence_slice_v2", False)
+        )
 
     def _retry_entry_root_rejection_for_worker(
         self,
@@ -1139,6 +1184,11 @@ class ValidationRunner:
             "validator_repair_attempted",
             "validator_repair_accepted",
             "validator_final_tool_call_count",
+            "validator_session_count",
+            "validator_api_call_count",
+            "multi_turn_outlier_count",
+            "evidence_slice_token_count",
+            "validator_turn_count",
         ):
             target[key] = int(target.get(key, 0) or 0) + token_value(key)
 
@@ -1180,6 +1230,10 @@ class ValidationRunner:
             ("validator_final_tool_call_count", "validator_final_tool_call_count"),
             ("validator_cache_hit", "validator_cache_hit"),
             ("validator_inflight_coalesced", "validator_inflight_coalesced"),
+            ("validator_session_count", "validator_session_count"),
+            ("validator_api_call_count", "validator_api_call_count"),
+            ("multi_turn_outlier_count", "multi_turn_outlier_count"),
+            ("evidence_slice_token_count", "evidence_slice_token_count"),
             (
                 "validation_soft_budget_overrun",
                 "validation_soft_budget_overrun_count",
@@ -1191,6 +1245,21 @@ class ValidationRunner:
                 value = 0
             if value:
                 state[state_key] = int(state.get(state_key, 0) or 0) + value
+
+        turn_count = token_value("validator_turn_count")
+        if turn_count:
+            distribution = state.setdefault("validator_turn_distribution", {})
+            key = str(turn_count)
+            distribution[key] = int(distribution.get(key, 0) or 0) + 1
+        session_count = token_value("validator_session_count")
+        if session_count:
+            stage = (
+                "evidence_slice_v2"
+                if token_value("evidence_slice_token_count")
+                else "legacy_validator"
+            )
+            by_stage = state.setdefault("validator_prompt_tokens_by_stage", {})
+            by_stage[stage] = int(by_stage.get(stage, 0) or 0) + cumulative_prompt
 
         try:
             overrun_seconds = float(
@@ -1277,7 +1346,11 @@ class ValidationRunner:
         val_client = self.llm_clients.get(val_llm_ref, self.llm_clients["default"])
         return self.validator_agent_factory(
             val_client,
-            self.get_tools("validator_agent"),
+            (
+                []
+                if self._validator_evidence_slice_enabled()
+                else self.get_tools("validator_agent")
+            ),
             tool_policy=self.tool_policy_for_agent("validator_agent"),
         )
 
@@ -1377,6 +1450,39 @@ class ValidationRunner:
         issue_code: str,
         evidence_pack: Dict[str, Any],
     ) -> Dict[str, Any]:
+        if self._validator_evidence_slice_enabled():
+            evidence_slice = build_validator_evidence_slice_v2(
+                raw_issue,
+                evidence_pack,
+                issue_code,
+            )
+            serialized = json.dumps(
+                evidence_slice,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            estimated_tokens = LLMClient.estimate_tokens(
+                [{"role": "user", "content": serialized}]
+            )
+            raw_issue["validator_evidence_slice_version"] = (
+                VALIDATOR_EVIDENCE_SLICE_VERSION
+            )
+            raw_issue["evidence_slice_token_count"] = int(estimated_tokens)
+            val_input = {
+                "validator_protocol": "zscope.validator-protocol.v2",
+                "finding_uid": str(
+                    raw_issue.get("candidate_uid")
+                    or raw_issue.get("candidate_id")
+                    or raw_issue.get("id")
+                    or "unknown"
+                ),
+                "evidence_slice": evidence_slice,
+                "evidence_slice_token_count": int(estimated_tokens),
+            }
+            self.attach_agent_contract(val_input, "validator_agent")
+            return val_input
+
         val_input = {
             "finding": json.dumps(
                 compact_validation_finding(raw_issue),

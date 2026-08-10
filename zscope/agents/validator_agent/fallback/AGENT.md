@@ -28,6 +28,10 @@ Use a three-state verdict:
   after targeted retrieval. Keep this for audit, not the default vulnerability
   report.
 
+For `ValidatorEvidenceSlice v2`, use only the supplied slice. Return one
+structured verdict or one typed `missing_fact_request`; do not start general
+repository browsing.
+
 Validation bar:
 - A verified issue needs source, sink, source controllability, feasible
   caller/API path to sink, and guard analysis.
