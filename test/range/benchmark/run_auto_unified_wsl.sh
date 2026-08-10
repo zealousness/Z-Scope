@@ -22,6 +22,10 @@ if [[ -z "${Z_SCOPE_API_KEY:-}" ]]; then
   exit 2
 fi
 
+benchmark_venv="${Z_SCOPE_BENCHMARK_VENV:-$HOME/.local/share/zscope-benchmark/venv}"
+if [[ -x "$benchmark_venv/bin/python3" ]]; then
+  export PATH="$benchmark_venv/bin:$PATH"
+fi
 export PATH="$HOME/go/bin:/usr/lib/llvm-18/bin:$HOME/.local/svf/SVF-linux-x86_64/bin:$PATH"
 export LD_LIBRARY_PATH="$HOME/.local/svf/SVF-linux-x86_64/lib:$HOME/.local/svf/llvm-18.1.0.obj/lib:${LD_LIBRARY_PATH:-}"
 export LLVM_COMPILER=clang

@@ -30,7 +30,6 @@ class JoernClient:
         port: int = 8080,
         heap_size: str = "8g",
         language: str = "c",
-
     ):
         self.joern_path = joern_path
         self.host = host
@@ -47,6 +46,9 @@ class JoernClient:
         self._cpg_lock = threading.Lock()
         self._cpg_build_thread: Optional[threading.Thread] = None
         self._cleanup_registered = False
+        self._query_loop_local = threading.local()
+        self._query_event_loops: List[Any] = []
+        self._query_event_loops_lock = threading.Lock()
 
     def start_server(self) -> bool:
         """Start joern-server subprocess, falling back to CLI project mode."""
@@ -62,8 +64,10 @@ class JoernClient:
             cmd = [
                 self.joern_path,
                 "--server",
-                "--server-host", self.host,
-                "--server-port", str(self.port),
+                "--server-host",
+                self.host,
+                "--server-port",
+                str(self.port),
                 f"-J-Xmx{self.heap_size}",
             ]
             logger.info("Starting Joern server: %s", " ".join(cmd))
@@ -114,6 +118,7 @@ class JoernClient:
     def _wait_for_server(self, timeout: int = 120) -> bool:
         """Wait for Joern server to accept connections."""
         import socket
+
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self._server_process and self._server_process.poll() is not None:
@@ -134,18 +139,40 @@ class JoernClient:
             except subprocess.TimeoutExpired:
                 self._server_process.kill()
             self._server_process = None
+        with self._query_event_loops_lock:
+            loops = list(self._query_event_loops)
+            self._query_event_loops.clear()
+        for loop in loops:
+            if not loop.is_running() and not loop.is_closed():
+                loop.close()
         self._cpg_loaded = False
+
+    def _get_query_event_loop(self) -> Any:
+        import asyncio
+
+        loop = getattr(self._query_loop_local, "loop", None)
+        if loop is None or loop.is_closed():
+            loop = asyncio.new_event_loop()
+            self._query_loop_local.loop = loop
+            with self._query_event_loops_lock:
+                self._query_event_loops.append(loop)
+        return loop
 
     def _wait_for_cpg_ready(self, timeout: int = 7200, poll_interval: int = 10) -> bool:
         """轮询验证 CPG 是否真正加载完成。importCode 可能异步返回，需要确认 CPG 可查询。"""
         import time
+
         deadline = time.time() + timeout
         print("  [Joern] Waiting for CPG build to complete...", flush=True)
         while time.time() < deadline:
             try:
                 result = self.query("cpg.method.size")
                 if isinstance(result, (int, str)):
-                    count = int(result) if isinstance(result, str) and result.strip().isdigit() else result
+                    count = (
+                        int(result)
+                        if isinstance(result, str) and result.strip().isdigit()
+                        else result
+                    )
                     if isinstance(count, int) and count > 0:
                         print(f"  [Joern] CPG ready, {count} methods indexed.", flush=True)
                         return True
@@ -208,6 +235,7 @@ class JoernClient:
             )
 
         import os
+
         logger.info("Importing CPG for source: %s", source_path)
 
         cpg_bin = os.path.join(source_path, "cpg.bin")
@@ -265,7 +293,11 @@ class JoernClient:
 
         logger.info("Importing CPG via Joern CLI for source: %s", source_path)
         source = Path(source_path).resolve()
-        root = (Path(project_root).resolve() if project_root else (source if source.is_dir() else source.parent))
+        root = (
+            Path(project_root).resolve()
+            if project_root
+            else (source if source.is_dir() else source.parent)
+        )
 
         candidates = [
             source / "cpg.bin",
@@ -292,11 +324,13 @@ class JoernClient:
         ]
         parse_cmd.extend(["--language", normalized_language])
         if compile_commands_path and normalized_language == "c":
-            parse_cmd.extend([
-                "--frontend-args",
-                "--compilation-database",
-                str(compile_commands_path),
-            ])
+            parse_cmd.extend(
+                [
+                    "--frontend-args",
+                    "--compilation-database",
+                    str(compile_commands_path),
+                ]
+            )
         try:
             proc = subprocess.run(
                 parse_cmd,
@@ -354,6 +388,7 @@ class JoernClient:
                     )
                     return
                 import os
+
                 cpg_bin = os.path.join(source_path, "cpg.bin")
                 if project_root and not os.path.exists(cpg_bin):
                     alt_cpg_bin = os.path.join(project_root, "cpg.bin")
@@ -395,6 +430,63 @@ class JoernClient:
             self._cpg_build_thread.join(timeout=timeout)
         return self.cpg_status == "ready"
 
+    @staticmethod
+    def _parse_server_stdout(stdout: str) -> Any:
+        """Normalize values printed by the Joern server REPL."""
+        import ast
+        import re
+
+        ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+        clean_stdout = ansi_escape.sub("", str(stdout or "")).strip()
+
+        string_match = re.search(
+            r"val\s+res\d+\s*:\s*String\s*=\s*(.*)",
+            clean_stdout,
+            re.DOTALL,
+        )
+        if string_match:
+            scala_literal = string_match.group(1).strip()
+            try:
+                if scala_literal.startswith('"""') and scala_literal.endswith('"""'):
+                    json_text = scala_literal[3:-3]
+                else:
+                    json_text = ast.literal_eval(scala_literal)
+                return json.loads(json_text)
+            except (SyntaxError, ValueError, json.JSONDecodeError):
+                pass
+
+        scalar_match = re.search(
+            r"val\s+res\d+\s*:\s*(Int|Long|Double|Float|Boolean)\s*=\s*([^\r\n]+)",
+            clean_stdout,
+        )
+        if scalar_match:
+            scalar_type, raw_value = scalar_match.groups()
+            raw_value = raw_value.strip()
+            if scalar_type == "Boolean":
+                if raw_value == "true":
+                    return True
+                if raw_value == "false":
+                    return False
+            elif scalar_type in {"Int", "Long"}:
+                try:
+                    return int(raw_value.rstrip("Ll"))
+                except ValueError:
+                    pass
+            else:
+                try:
+                    return float(raw_value.rstrip("FfDd"))
+                except ValueError:
+                    pass
+
+        json_match = re.search(r"([\[\{].*[\]\}])", clean_stdout, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group(1))
+            except json.JSONDecodeError:
+                pass
+
+        return clean_stdout
+
     @property
     def cpg_status(self) -> str:
         with self._cpg_lock:
@@ -411,12 +503,14 @@ class JoernClient:
             return self._query_via_cli(cpgql)
         try:
             from cpgqls_client import CPGQLSClient  # type: ignore[import-untyped]
-            
+
             # Workaround for cpgqls-client concurrent UUID broadcast bug
-            if not hasattr(CPGQLSClient, '_zscope_patched'):
+            if not hasattr(CPGQLSClient, "_zscope_patched"):
                 import asyncio
-                original_send_query = getattr(CPGQLSClient, '_send_query', None)
+
+                original_send_query = getattr(CPGQLSClient, "_send_query", None)
                 if original_send_query:
+
                     async def patched_send_query(self, query_str):
                         endpoint = self.connect_endpoint()
                         async with self._transport.connect(endpoint) as ws_conn:
@@ -424,27 +518,29 @@ class JoernClient:
                             if connected_msg != self.CPGQLS_MSG_CONNECTED:
                                 raise Exception("Received unexpected first message")
                             endpoint = self.post_query_endpoint()
-                            post_res = self._transport.post(endpoint, json={"query": query_str}, auth=self._auth_creds)
+                            post_res = self._transport.post(
+                                endpoint, json={"query": query_str}, auth=self._auth_creds
+                            )
                             if post_res.status_code != 200:
                                 raise Exception(f"HTTP Post failed: {post_res.status_code}")
-                                
+
                             target_uuid = post_res.json()["uuid"]
                             while True:
                                 msg = await asyncio.wait_for(ws_conn.recv(), timeout=3600)
                                 if msg == target_uuid:
                                     break
-                                    
+
                             endpoint = self.get_result_endpoint(target_uuid)
                             get_res = self._transport.get(endpoint, auth=self._auth_creds)
                             if get_res.status_code != 200:
                                 raise Exception(f"HTTP Get failed: {get_res.status_code}")
                             return get_res.json()
-                            
+
                     CPGQLSClient._send_query = patched_send_query
                     CPGQLSClient._zscope_patched = True
-            
+
             import os
-            
+
             for attempt in range(30):
                 try:
                     # Temporarily bypass any global proxies that might hijack local WS connections
@@ -452,64 +548,41 @@ class JoernClient:
                     old_https = os.environ.get("HTTPS_PROXY")
                     old_no = os.environ.get("NO_PROXY")
                     os.environ["NO_PROXY"] = "127.0.0.1,localhost,::1"
-                    
+
                     try:
-                        import asyncio
-                        try:
-                            loop = asyncio.get_event_loop()
-                        except RuntimeError:
-                            loop = asyncio.new_event_loop()
-                            asyncio.set_event_loop(loop)
-                            
                         # cpgqls_client adds "ws://" internally. Do not pass it here or it creates ws://ws://...
-                        client = CPGQLSClient(f"{self.host}:{self.port}", event_loop=loop)
+                        client = CPGQLSClient(
+                            f"{self.host}:{self.port}",
+                            event_loop=self._get_query_event_loop(),
+                        )
                         result = client.execute(cpgql)
                     finally:
-                        if old_http is not None: os.environ["HTTP_PROXY"] = old_http
-                        if old_https is not None: os.environ["HTTPS_PROXY"] = old_https
-                        if old_no is not None: os.environ["NO_PROXY"] = old_no
-                        elif "NO_PROXY" in os.environ: del os.environ["NO_PROXY"]
-                        
-                    if isinstance(result, dict) and "stdout" in result:
-                        stdout = result["stdout"]
-                        import re
-                        import ast
-                        # Strip ANSI color codes Joern might output
-                        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-                        clean_stdout = ansi_escape.sub('', stdout).strip()
+                        if old_http is not None:
+                            os.environ["HTTP_PROXY"] = old_http
+                        if old_https is not None:
+                            os.environ["HTTPS_PROXY"] = old_https
+                        if old_no is not None:
+                            os.environ["NO_PROXY"] = old_no
+                        elif "NO_PROXY" in os.environ:
+                            del os.environ["NO_PROXY"]
 
-                        # Check if it's a Scala string assignment (e.g. val res1: String = "[...]")
-                        match = re.search(r'val\s+res\d+\s*:\s*String\s*=\s*(.*)', clean_stdout, re.DOTALL)
-                        if match:
-                            scala_literal = match.group(1).strip()
-                            try:
-                                # ast.literal_eval handles both quotes "" and triple quotes """""" escaping
-                                if scala_literal.startswith('"""') and scala_literal.endswith('"""'):
-                                    json_str = scala_literal[3:-3]
-                                else:
-                                    json_str = ast.literal_eval(scala_literal)
-                                return json.loads(json_str)
-                            except (SyntaxError, ValueError, json.JSONDecodeError):
-                                pass
-                                
-                        # Fallback for plain unquoted JSON array/object inside stdout
-                        match_json = re.search(r'([\[\{].*[\]\}])', clean_stdout, re.DOTALL)
-                        if match_json:
-                            try:
-                                return json.loads(match_json.group(1))
-                            except json.JSONDecodeError:
-                                pass
-                                
-                        return clean_stdout
+                    if isinstance(result, dict) and "stdout" in result:
+                        return self._parse_server_stdout(result["stdout"])
                     return result
                 except Exception as e:
-                    if "handshake" in str(e) or "timeout" in str(e).lower() or isinstance(e, ConnectionError):
+                    if (
+                        "handshake" in str(e)
+                        or "timeout" in str(e).lower()
+                        or isinstance(e, ConnectionError)
+                    ):
                         if attempt < 29:
-                            logger.warning(f"Joern query attempt {attempt+1} failed: {e}. Retrying...")
+                            logger.warning(
+                                f"Joern query attempt {attempt+1} failed: {e}. Retrying..."
+                            )
                             time.sleep(5)
                             continue
                     raise e
-                    
+
         except ImportError:
             return self._query_via_cli(cpgql)
         except Exception as e:
@@ -543,9 +616,9 @@ class JoernClient:
         raw = str(self.joern_path)
         lower = raw.lower()
         if lower.endswith("joern.bat"):
-            return raw[:-len("joern.bat")] + "joern-parse.bat"
+            return raw[: -len("joern.bat")] + "joern-parse.bat"
         if lower.endswith("joern"):
-            prefix = raw[:-len("joern")]
+            prefix = raw[: -len("joern")]
             return prefix + "joern-parse" if prefix else "joern-parse"
         return "joern-parse"
 
@@ -558,9 +631,9 @@ class JoernClient:
             "val __zscope_result = {\n"
             f"{cpgql}\n"
             "}\n"
-            "println(\"__ZSCOPE_JSON_BEGIN__\")\n"
+            'println("__ZSCOPE_JSON_BEGIN__")\n'
             "println(__zscope_result)\n"
-            "println(\"__ZSCOPE_JSON_END__\")\n"
+            'println("__ZSCOPE_JSON_END__")\n'
         )
         handle = tempfile.NamedTemporaryFile(
             "w", suffix=".sc", prefix="zscope_joern_", delete=False, encoding="utf-8"
@@ -600,7 +673,7 @@ class JoernClient:
             f'"lineNumber" -> m.lineNumber.getOrElse(-1), '
             f'"lineNumberEnd" -> m.lineNumberEnd.getOrElse(-1), '
             f'"signature" -> m.signature'
-            f')).l.toJson'
+            f")).l.toJson"
         )
         rows = self._require_list_result(result, "get_method")
         if rows:
@@ -624,10 +697,10 @@ class JoernClient:
                 f'"{escaped_file}".endsWith("/" + m.filename))'
             )
         result = self.query(
-            f'{method_query}.callIn.method.distinct'
+            f"{method_query}.callIn.method.distinct"
             f'.map(m => Map("name" -> m.name, "filename" -> m.filename, '
             f'"lineNumber" -> m.lineNumber.getOrElse(-1)))'
-            f'.take({limit}).l.toJson'
+            f".take({limit}).l.toJson"
         )
         return self._require_list_result(result, "get_method_callers")
 
@@ -637,7 +710,7 @@ class JoernClient:
             f'cpg.method.name("{name}").callee.distinct'
             f'.map(m => Map("name" -> m.name, "filename" -> m.filename, '
             f'"lineNumber" -> m.lineNumber.getOrElse(-1)))'
-            f'.take({limit}).l.toJson'
+            f".take({limit}).l.toJson"
         )
         return self._require_list_result(result, "get_method_callees")
 
@@ -647,7 +720,7 @@ class JoernClient:
             f'cpg.typeDecl.name("{name}").map(t => Map('
             f'"name" -> t.name, "filename" -> t.filename, '
             f'"lineNumber" -> t.lineNumber.getOrElse(-1)'
-            f')).l.toJson'
+            f")).l.toJson"
         )
         rows = self._require_list_result(result, "get_type_decl")
         if rows:
@@ -663,7 +736,7 @@ class JoernClient:
             f'"lineNumber" -> t.lineNumber.getOrElse(-1), '
             f'"lineNumberEnd" -> t.lineNumberEnd.getOrElse(-1), '
             f'"full_definition" -> t.code'
-            f')).l.toJson'
+            f")).l.toJson"
         )
         return self._require_list_result(result, "get_type_decls")
 
@@ -672,7 +745,7 @@ class JoernClient:
         result = self.query(
             f'cpg.typeDecl.name("{name}").member'
             f'.map(m => Map("name" -> m.name, "typeFullName" -> m.typeFullName))'
-            f'.l.toJson'
+            f".l.toJson"
         )
         return self._require_list_result(result, "get_type_members")
 
@@ -686,12 +759,10 @@ class JoernClient:
         escaped_file = str(file_path or "").replace("\\", "/").replace('"', '\\"')
         method = f'cpg.method.nameExact("{escaped_name}")'
         if escaped_file:
-            method += (
-                f'.filter(m => m.filename.replace("\\\\", "/").endsWith("{escaped_file}"))'
-            )
+            method += f'.filter(m => m.filename.replace("\\\\", "/").endsWith("{escaped_file}"))'
         result = self.query(
             method
-            + '.flatMap(m => '
+            + ".flatMap(m => "
             + 'm.methodReturn.map(v => Map("typeFullName" -> v.typeFullName, '
             + '"lineNumber" -> v.lineNumber.getOrElse(m.lineNumber.getOrElse(-1)), '
             + '"referenceKind" -> "return")) ++ '
@@ -701,15 +772,13 @@ class JoernClient:
             + 'm.local.map(v => Map("typeFullName" -> v.typeFullName, '
             + '"lineNumber" -> v.lineNumber.getOrElse(m.lineNumber.getOrElse(-1)), '
             + '"referenceKind" -> "local"))'
-            + ').l.toJson'
+            + ").l.toJson"
         )
         return self._require_list_result(result, "get_function_type_references")
 
     def find_methods(self, pattern: str, limit: int = 50) -> List[str]:
         """Find method names matching a regex pattern."""
-        result = self.query(
-            f'cpg.method.name("{pattern}").name.distinct.take({limit}).l.toJson'
-        )
+        result = self.query(f'cpg.method.name("{pattern}").name.distinct.take({limit}).l.toJson')
         rows = self._require_list_result(result, "find_methods")
         return [str(item) for item in rows]
 
@@ -720,11 +789,11 @@ class JoernClient:
         result = self.query(
             f'def src = cpg.method.name("{source_func}").parameter.name("{source_param}")\n'
             f'def snk = cpg.call.name("{sink_pattern}").argument\n'
-            f'sink(snk).reachableByFlows(source(src))'
+            f"sink(snk).reachableByFlows(source(src))"
             f'.map(f => Map("path" -> f.elements.map(e => '
             f'Map("code" -> e.code, "lineNumber" -> e.lineNumber.getOrElse(-1), '
             f'"filename" -> e.file.name.headOption.getOrElse(""))).l'
-            f')).l.toJson'
+            f")).l.toJson"
         )
         return self._require_list_result(result, "get_data_flow_to_sink")
 
@@ -735,7 +804,7 @@ class JoernClient:
             f'.map(a => Map("code" -> a.code, '
             f'"filename" -> a.file.name.headOption.getOrElse(""), '
             f'"lineNumber" -> a.lineNumber.getOrElse(-1)))'
-            f'.l.toJson'
+            f".l.toJson"
         )
         return self._require_list_result(result, "find_function_pointers")
 
@@ -746,6 +815,4 @@ class JoernClient:
         if isinstance(result, list):
             return result
         result_type = type(result).__name__
-        raise JoernQueryError(
-            f"Joern {operation} query returned {result_type}, expected list"
-        )
+        raise JoernQueryError(f"Joern {operation} query returned {result_type}, expected list")

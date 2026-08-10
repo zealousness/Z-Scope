@@ -221,7 +221,6 @@ class JavaSourceBackend(CodeBackend):
                 "java",
                 "-jar",
                 jar,
-                "--force-refresh",
                 "--project-root",
                 str(maven_root),
                 "{source_root}",

@@ -43,6 +43,7 @@ tests:
 
 - 后端能力不足必须返回明确的空结果、告警或降级状态，不能伪造完整能力。
 - Java provider 信号只能进入 Java 分析路径；CodeQL 为 BYO，不得进入官方依赖包。
+- Java Spoon 默认复用已准备的本地 Maven 缓存，不隐式强制联网刷新；显式刷新只允许发生在联网准备阶段，sidecar 不得在目标项目遗留 `spoon.classpath.tmp`。
 - 增量索引以文件/TU 变化为依据；删除文件必须清理旧函数、类型、调用边和缓存。
 - KnowledgeDB 写入新事实后必须使相关查询缓存失效。
 - Unified 的 Clang 与 SVF 结果必须通过稳定的文件、函数和位置坐标缝合。
