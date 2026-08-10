@@ -48,7 +48,10 @@ Commons JEXL.
 Java signal providers are enabled by this benchmark config, but they are not
 auto-installed at runtime:
 
-- Spoon/JavaParser structure frontends use Temurin/JDK 21 and Maven.
+- Spoon/JavaParser structure frontends use Temurin/JDK 21 and Maven. The
+  default Spoon invocation reuses the prepared local Maven cache so it can run
+  offline. Use the sidecar's explicit `--force-refresh` option only while
+  intentionally refreshing dependencies on a connected preparation host.
 - SootUp uses JDK 21 and the repo runner jar built with `mvn -q -f tools/java-signal-sootup/pom.xml -DskipTests package`.
 - WALA uses JDK 21 and the repo runner jar built with `mvn -q -f tools/java-signal-wala/pom.xml -DskipTests package`.
 - CodeQL needs the user-installed CodeQL CLI in `PATH`, or an absolute path in `indexing.java_signal_provider_commands.codeql`.
@@ -146,7 +149,11 @@ C/C++ malloc/copy/lock trigger set.
 
 ## Known Limits
 
-- The benchmark config enables SootUp/WALA/CodeQL/Joern signal providers. Missing runner jars, a missing CodeQL CLI, or an unavailable Joern server are reported as degraded providers; Z-SCOPE does not download or install them during analysis.
+- The benchmark config enables SootUp/WALA/Joern signal providers. CodeQL is
+  user-supplied and must be enabled explicitly. Missing runner jars, an
+  unavailable Joern server, or an explicitly configured but missing CodeQL CLI
+  are reported as degraded providers; Z-SCOPE does not download or install
+  them during analysis.
 - SootUp/WALA runner output is first-version typed static callgraph/source-sink evidence, not a replacement for full points-to/taint. CodeQL SARIF path-problem evidence is normalized to exact-flow candidates, but still goes through Validator.
 - Some fixture findings are intentionally syntactic and must be validated by the LLM before they are reportable.
 - Field-level cases such as hardcoded secrets and shared static state are represented through nearby public API entries for benchmark consistency. The analyzer attaches `java_shared_mutable_static_state` only to entries that actually touch the static field, with the declaration line as the primary coordinate and method access as sink evidence.
@@ -225,7 +232,7 @@ reported with a degraded reason instead of being auto-installed.
 Run the full benchmark scan and score it:
 
 ```bash
-export DASHSCOPE_API_KEY=...
+export Z_SCOPE_API_KEY=...
 rm -rf test/java_range/.zscope_knowledge test/java_range/.zscope_snapshots \
        test/java_range/.zscope_conversations test/java_range/zscope_batch_report.json \
        test/java_range/zscope_batch_report.md test/java_range/evaluation.json

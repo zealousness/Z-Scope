@@ -1,10 +1,59 @@
 from pathlib import Path
 from subprocess import CompletedProcess
+import threading
 
 import pytest
 
 from zscope.common.joern_client import JoernClient, JoernQueryError
 from zscope.retrieval.joern_backend import JoernBackend
+
+
+@pytest.mark.parametrize(
+    ("stdout", "expected"),
+    [
+        ("val res7: Int = 81", 81),
+        ("val res8: Long = 81L", 81),
+        ("val res9: Double = 1.25", 1.25),
+        ("val res10: Boolean = true", True),
+    ],
+)
+def test_joern_server_stdout_parses_scala_scalars(stdout, expected) -> None:
+    assert JoernClient._parse_server_stdout(stdout) == expected
+
+
+def test_joern_cpg_ready_accepts_parsed_method_count(monkeypatch) -> None:
+    client = JoernClient()
+    monkeypatch.setattr(client, "query", lambda _text: 81)
+
+    assert client._wait_for_cpg_ready(timeout=1, poll_interval=0)
+
+
+def test_joern_query_event_loop_is_explicitly_reused_and_closed() -> None:
+    client = JoernClient()
+
+    first = client._get_query_event_loop()
+    second = client._get_query_event_loop()
+
+    assert first is second
+    assert not first.is_closed()
+    client.stop_server()
+    assert first.is_closed()
+    assert client._query_event_loops == []
+
+
+def test_joern_query_event_loops_are_isolated_by_thread() -> None:
+    client = JoernClient()
+    main_loop = client._get_query_event_loop()
+    worker_loops = []
+
+    worker = threading.Thread(target=lambda: worker_loops.append(client._get_query_event_loop()))
+    worker.start()
+    worker.join()
+
+    assert worker_loops[0] is not main_loop
+    client.stop_server()
+    assert main_loop.is_closed()
+    assert worker_loops[0].is_closed()
 
 
 def test_joern_cli_query_uses_loaded_cpg_and_marker_json(monkeypatch, tmp_path) -> None:
@@ -57,8 +106,10 @@ def test_joern_windows_batch_launcher_prefers_cli_mode() -> None:
 
 def test_joern_parse_path_follows_joern_binary_location() -> None:
     assert JoernClient(joern_path="joern")._joern_parse_path() == "joern-parse"
-    assert JoernClient(joern_path=r"C:\tmp\joern\joern-cli\joern.bat")._joern_parse_path().endswith(
-        "joern-parse.bat"
+    assert (
+        JoernClient(joern_path=r"C:\tmp\joern\joern-cli\joern.bat")
+        ._joern_parse_path()
+        .endswith("joern-parse.bat")
     )
     assert JoernClient(joern_path="/opt/joern/joern-cli/joern")._joern_parse_path() == (
         "/opt/joern/joern-cli/joern-parse"
@@ -141,9 +192,7 @@ def test_joern_backend_builds_resolved_and_optional_unresolved_type_context() ->
 
     backend = JoernBackend(joern_client=FakeJoern())
 
-    context = backend.get_function_type_context(
-        "_plugin_register", "src/plugin.c", 32
-    )
+    context = backend.get_function_type_context("_plugin_register", "src/plugin.c", 32)
 
     assert context["referenced_types"][0]["type_index_name"] == (
         "PluginRegistry@include/types.h:110-115"

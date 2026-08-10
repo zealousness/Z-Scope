@@ -21,7 +21,7 @@ def test_java_range_benchmark_config_uses_unified_java_auto_detection(monkeypatc
     config_path = BENCHMARK_ROOT / "zscope.benchmark.yaml"
     raw_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "benchmark-test-key")
+    monkeypatch.setenv("Z_SCOPE_API_KEY", "benchmark-test-key")
     monkeypatch.chdir(BENCHMARK_ROOT.parents[1])
     config = ConfigLoader.load(str(config_path))
 
@@ -32,7 +32,12 @@ def test_java_range_benchmark_config_uses_unified_java_auto_detection(monkeypatc
     assert config.project.source_root == BENCHMARK_ROOT.resolve()
     assert config.indexing.backend == "java_unified"
     assert config.indexing.java_structure_frontend == "auto"
-    assert config.indexing.java_signal_backends == ["sootup", "wala", "codeql", "joern"]
+    assert config.indexing.java_signal_backends == ["sootup", "wala", "joern"]
+    assert raw_config["llms"]["default"]["models"] == ["glm-5.1"]
+    assert raw_config["llms"]["default"]["base_url"].rstrip("/") == (
+        "https://open.bigmodel.cn/api/paas/v4"
+    )
+    assert raw_config["indexing"]["java"]["signals"] == ["joern"]
     assert not (BENCHMARK_ROOT / "zscope.signals.yaml").exists()
     assert config.indexing.java_structure_db_path == ".zscope_knowledge/java_structure.db"
     assert config.analysis.snapshot_dir == "test/java_range/.zscope_snapshots"
@@ -187,7 +192,7 @@ def test_java_range_benchmark_exercises_generic_entry_to_sink_flows() -> None:
 def test_java_range_benchmark_indexes_with_maven_spoon_structure(monkeypatch) -> None:
     config_path = BENCHMARK_ROOT / "zscope.benchmark.yaml"
 
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "benchmark-test-key")
+    monkeypatch.setenv("Z_SCOPE_API_KEY", "benchmark-test-key")
     monkeypatch.chdir(BENCHMARK_ROOT.parents[1])
     config = ConfigLoader.load(str(config_path))
 

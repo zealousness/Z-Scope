@@ -25,6 +25,7 @@ import spoon.support.compiler.jdt.JDTBasedSpoonCompiler;
 import java.io.File;
 import java.io.IOException;
 import java.net.URL;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.CodeSource;
@@ -64,8 +65,10 @@ public final class SpoonStructureExporter {
     }
 
     public static void main(String[] rawArgs) {
+        Args args = null;
+        int exitCode = 0;
         try {
-            Args args = Args.parse(rawArgs);
+            args = Args.parse(rawArgs);
             MavenLauncher launcher = createLauncher(args);
             launcher.getEnvironment().setComplianceLevel(args.compliance);
             launcher.getEnvironment().setNoClasspath(args.noClasspath);
@@ -81,7 +84,23 @@ public final class SpoonStructureExporter {
         } catch (Exception exc) {
             System.err.println("Spoon structure export failed: " + exc.getMessage());
             exc.printStackTrace(System.err);
-            System.exit(2);
+            exitCode = 2;
+        } finally {
+            cleanupMavenClasspathTemp(args);
+        }
+        if (exitCode != 0) {
+            System.exit(exitCode);
+        }
+    }
+
+    private static void cleanupMavenClasspathTemp(Args args) {
+        if (args == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(args.projectRoot.resolve("spoon.classpath.tmp"));
+        } catch (IOException exc) {
+            System.err.println("Unable to remove Spoon Maven classpath temp file: " + exc.getMessage());
         }
     }
 

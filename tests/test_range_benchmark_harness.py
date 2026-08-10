@@ -152,9 +152,7 @@ def test_reachability_does_not_collapse_same_name_different_file(
 
     assert valid is False
     assert len(result["missing_truth_reachability"]) == 1
-    assert result["missing_truth_reachability"][0]["required_functions"] == [
-        "src/vuln.c::target"
-    ]
+    assert result["missing_truth_reachability"][0]["required_functions"] == ["src/vuln.c::target"]
 
 
 def test_entry_duplicates_use_file_and_full_signature_identity(
@@ -193,9 +191,7 @@ def test_entry_duplicates_use_file_and_full_signature_identity(
     assert distinct_result["duplicate_entry_identities"] == []
     assert distinct_result["entries"] == 2
     assert duplicate_valid is False
-    assert duplicate_result["duplicate_entry_identities"] == [
-        "src/a.c::void start(void)"
-    ]
+    assert duplicate_result["duplicate_entry_identities"] == ["src/a.c::void start(void)"]
 
 
 def test_no_database_fallback_is_honest_direct_identity_check(
@@ -229,6 +225,8 @@ def test_no_database_fallback_is_honest_direct_identity_check(
 
 def test_wsl_runner_separates_process_report_and_valid_scan_states() -> None:
     runner = RUNNER_PATH.read_text(encoding="utf-8")
+    assert "Z_SCOPE_BENCHMARK_VENV" in runner
+    assert "$benchmark_venv/bin/python3" in runner
     python_blocks = re.findall(r"<<'PY'\n(.*?)\nPY", runner, flags=re.DOTALL)
 
     assert python_blocks
@@ -236,7 +234,7 @@ def test_wsl_runner_separates_process_report_and_valid_scan_states() -> None:
         compile(block, f"{RUNNER_PATH.name}:heredoc-{index}", "exec")
     assert "report_emitted = bool(report)" in runner
     assert '"process_ended": True' in runner
-    assert "report_completeness == \"complete\"" in runner
+    assert 'report_completeness == "complete"' in runner
     assert "manifest_valid" in runner
     assert "valid_scan_exit" in runner
     assert "and entry_coverage_rc == 0" in runner
@@ -245,7 +243,7 @@ def test_wsl_runner_separates_process_report_and_valid_scan_states() -> None:
     assert "ConfigLoader.load(str(path))" in runner
     assert "did not resolve in the benchmark configuration" in runner
     assert "bash test/range/benchmark/preflight_zhipu_glm51_wsl.sh" in runner
-    assert 'preexisting_entry_functions_list.json' in runner
+    assert "preexisting_entry_functions_list.json" in runner
     assert '"candidate_lifecycle_v3"' in runner
     assert '"canonical_outcome_projection"' in runner
     assert "model_trace_valid" in runner
@@ -274,10 +272,10 @@ def test_wsl_runner_is_forced_to_lf_line_endings() -> None:
 def test_zhipu_auth_preflight_never_prints_key_or_response_body() -> None:
     script = ZHIPU_PREFLIGHT_PATH.read_text(encoding="utf-8")
 
-    assert 'Authorization: Bearer ${Z_SCOPE_API_KEY}' in script
+    assert "Authorization: Bearer ${Z_SCOPE_API_KEY}" in script
     assert '--output "${response_file}"' in script
     assert "response_file" in script
-    assert "cat \"${response_file}\"" not in script
+    assert 'cat "${response_file}"' not in script
     assert "authentication: ok (HTTP" in script
 
 

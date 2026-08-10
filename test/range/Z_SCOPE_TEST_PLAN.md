@@ -58,6 +58,10 @@ For automatic entry discovery under WSL, use the WSL-only runner:
 test/range/benchmark/run_auto_unified_wsl.sh
 ```
 
+The runner uses `$HOME/.local/share/zscope-benchmark/venv` when present. Set
+`Z_SCOPE_BENCHMARK_VENV` to an alternative Linux virtual environment; never
+point it at a Windows virtual environment under `/mnt/c`.
+
 The runner intentionally hard-fails outside WSL. Do not call it on native
 Linux; use the equivalent commands in "Baseline Commands" instead. Both paths
 must fail closed when `gclang`, `get-bc`, `wpa`, or `saber` are unavailable. A

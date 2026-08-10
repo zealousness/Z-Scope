@@ -317,6 +317,25 @@ def test_java_structure_spoon_attempt_requires_pom_even_with_custom_command(tmp_
     assert "pom.xml" in reason
 
 
+def test_java_structure_default_spoon_command_is_offline_safe(monkeypatch, tmp_path: Path) -> None:
+    _simple_java_project(tmp_path)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/mvn")
+    monkeypatch.setattr(
+        JavaSourceBackend,
+        "_ensure_default_spoon_jar",
+        classmethod(lambda _cls, _source, _project: ("/opt/zscope/spoon.jar", "")),
+    )
+
+    command, reason = JavaSourceBackend(frontend="auto")._command_for_frontend(
+        "spoon", tmp_path, tmp_path
+    )
+
+    assert reason == ""
+    assert command[:3] == ["java", "-jar", "/opt/zscope/spoon.jar"]
+    assert "--force-refresh" not in command
+    assert command[-1] == "{source_root}"
+
+
 def test_spoon_structure_frontend_maven_project_is_wired() -> None:
     root = Path(__file__).resolve().parents[1]
     pom = root / "tools" / "java-structure-spoon" / "pom.xml"
@@ -342,6 +361,7 @@ def test_spoon_structure_frontend_maven_project_is_wired() -> None:
     assert "<lombok.version>1.18.46</lombok.version>" in pom_text
     assert "<mainClass>com.zscope.tools.SpoonStructureExporter</mainClass>" in pom_text
     assert "new MavenLauncher(" in exporter_text
+    assert 'Files.deleteIfExists(args.projectRoot.resolve("spoon.classpath.tmp"))' in exporter_text
     assert "--lombok-processor" in exporter_text
     assert "lombok.launch.AnnotationProcessorHider$AnnotationProcessor" in exporter_text
     assert "lombok_ecj_agent_incompatible" in exporter_text
