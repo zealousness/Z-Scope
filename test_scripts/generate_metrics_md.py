@@ -8,13 +8,19 @@ import json
 import re
 import tempfile
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from extract_efficiency_metrics import extract
 from render_metrics_markdown import render
 
 
-RUN_ID_RE = re.compile(r"(?:unified|global_model)_(?P<date>\d{8})_(?P<time>\d{6})")
+RUN_ID_RE = re.compile(
+    r"(?:unified|global_model|auto_unified(?:_wsl)?)_(?P<date>\d{8})_(?P<time>\d{6})"
+)
+
+
+def _read_json(path: Path) -> Dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _existing_file(run_dir: Path, names: Iterable[str]) -> Path:
@@ -24,6 +30,40 @@ def _existing_file(run_dir: Path, names: Iterable[str]) -> Path:
             return path
     expected = ", ".join(names)
     raise FileNotFoundError(f"none of {expected} found under {run_dir}")
+
+
+def _build_metrics_from_auto_run(run_dir: Path) -> Dict[str, Any]:
+    summary = _read_json(run_dir / "run_summary.json")
+    default_eval = _read_json(run_dir / "evaluation.json")
+    needs_review_path = run_dir / "evaluation.with_needs_review.json"
+    needs_eval = _read_json(needs_review_path) if needs_review_path.exists() else {}
+    report_summary = summary.get("report_summary") or {}
+    entry_discovery = summary.get("entry_discovery") or {}
+    benchmark_views = {
+        "default": default_eval,
+        "with_needs_review": needs_eval or default_eval,
+    }
+    return {
+        "entry_count": int(
+            report_summary.get("functions_analyzed")
+            or entry_discovery.get("entries_discovered")
+            or 0
+        ),
+        "scan_return_code": int(summary.get("scan_return_code") or 0),
+        "scan_wall_seconds": int(summary.get("scan_wall_seconds") or 0),
+        "evaluation": {
+            **default_eval,
+            "evaluation_views": benchmark_views,
+        },
+        "benchmark_views": benchmark_views,
+        "source_files": {
+            "summary": "run_summary.json",
+            "default_evaluation": "evaluation.json",
+            "with_needs_review_evaluation": (
+                "evaluation.with_needs_review.json" if needs_review_path.exists() else None
+            ),
+        },
+    }
 
 
 def infer_conversation_dir(run_dir: Path) -> Path:
@@ -61,8 +101,18 @@ def infer_conversation_dir(run_dir: Path) -> Path:
 
 
 def link_required_inputs(source_run_dir: Path, temp_run_dir: Path) -> None:
-    metric_file = _existing_file(source_run_dir, ("metrics.json", "global_model_metrics.json"))
-    (temp_run_dir / metric_file.name).symlink_to(metric_file)
+    try:
+        metric_file = _existing_file(source_run_dir, ("metrics.json", "global_model_metrics.json"))
+    except FileNotFoundError:
+        if not (source_run_dir / "run_summary.json").exists():
+            raise
+        (temp_run_dir / "metrics.json").write_text(
+            json.dumps(_build_metrics_from_auto_run(source_run_dir), ensure_ascii=False, indent=2)
+            + "\n",
+            encoding="utf-8",
+        )
+    else:
+        (temp_run_dir / metric_file.name).symlink_to(metric_file)
     for name in ("zscope_batch_report.json", "zscope_run.log", "build_cpg.log"):
         source = source_run_dir / name
         if source.exists():

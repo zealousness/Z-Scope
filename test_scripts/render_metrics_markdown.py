@@ -322,6 +322,45 @@ def render(run_dir: Path, model: str = "GLM-5") -> str:
     lines.append(f"- 用时口径：`Total` 用时来自 `{metrics_path.name}.scan_wall_seconds`；workflow step 用时来自日志 step start/completed 的累计工作时长；`deep_worker` 与 `issue_reconciler_agent` 使用 conversation session 累计时长。")
     lines.append(f"- 报告归档口径 token：Prompt {fmt_int(efficiency['total'].get('total_prompt_tokens'))}，Completion {fmt_int(efficiency['total'].get('total_completion_tokens'))}，Total {fmt_int(efficiency['total'].get('total_tokens'))}。")
 
+    lines.append("")
+    lines.append("### 1.3 Agent 会话统计")
+    lines.append("")
+    lines.append("| Agent | Session 数 | API Calls | Session 平均 API Calls | Session 平均 Total Tokens | Session 平均 Prompt Tokens | Session 平均 Completion Tokens |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|")
+    for agent in AGENTS:
+        conv_bucket = conversation.get(agent) or {}
+        trace_bucket = trace_by_agent.get(agent) or {}
+        sessions = int(conv_bucket.get("sessions") or 0)
+        calls = int(trace_bucket.get("calls") or 0)
+        total_tokens = int(trace_bucket.get("total_tokens") or 0)
+        prompt_tokens = int(trace_bucket.get("prompt_tokens") or 0)
+        completion_tokens = int(trace_bucket.get("completion_tokens") or 0)
+        if sessions:
+            avg_calls = fmt_float(calls / sessions)
+            avg_total = fmt_float(total_tokens / sessions)
+            avg_prompt = fmt_float(prompt_tokens / sessions)
+            avg_completion = fmt_float(completion_tokens / sessions)
+        else:
+            avg_calls = avg_total = avg_prompt = avg_completion = "-"
+        lines.append(
+            row_line(
+                [
+                    agent,
+                    fmt_int(sessions),
+                    fmt_int(calls),
+                    avg_calls,
+                    avg_total,
+                    avg_prompt,
+                    avg_completion,
+                ]
+            )
+        )
+
+    lines.append("")
+    lines.append("说明：")
+    lines.append("- `Session 数` 来自 `.zscope_conversations`；`API Calls` 和 token 来自 `zscope_run.log` 的 `[LLM API Trace]`。")
+    lines.append("- 如果某个 Agent 有 session 但 API Calls 为 0，表示该 session 没有对应的 LLM API Trace，不能把 conversation exchange 直接等同为 API 调用。")
+
     by_tool = tool_calls["by_tool"]
     by_agent_tool = tool_calls["by_agent_tool"]
     lines.append("")
