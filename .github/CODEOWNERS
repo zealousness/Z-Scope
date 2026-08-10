@@ -1,0 +1,14 @@
+* @zealousness
+
+# Release supply chain and repository policy
+/.github/ @zealousness
+/install.sh @zealousness
+/scripts/build_release_assets.sh @zealousness
+/requirements/ @zealousness
+
+# Runtime rules, prompts, and benchmark answer keys
+/zscope/rules/ @zealousness
+/zscope/agents/ @zealousness
+/zscope/skills/ @zealousness
+/test/range/benchmark/ground_truth.json @zealousness
+/test/java_range/benchmark/ground_truth.json @zealousness

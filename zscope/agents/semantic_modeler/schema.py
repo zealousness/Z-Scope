@@ -613,6 +613,79 @@ DEFAULT_FUNCTION_SNAPSHOT_SCHEMA: Dict[str, Any] = {
 }
 
 
+def _build_java_method_snapshot_schema() -> Dict[str, Any]:
+    schema = deepcopy(DEFAULT_FUNCTION_SNAPSHOT_SCHEMA)
+    required = list(schema.get("required") or [])
+    for field in (
+        "language",
+        "class_context",
+        "annotations",
+        "framework_entry",
+        "security_checks",
+        "sinks",
+    ):
+        if field not in required:
+            required.append(field)
+    schema["required"] = required
+    properties = schema.setdefault("properties", {})
+    properties.update(
+        {
+            "language": {"const": "java"},
+            "class_context": {
+                "type": "object",
+                "properties": {
+                    "package": {"type": "string"},
+                    "class_name": {"type": "string"},
+                    "extends": {"type": "array", "items": {"type": "string"}},
+                    "implements": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+            "annotations": {"type": "array", "items": {"type": "object"}},
+            "framework_entry": {
+                "type": "object",
+                "properties": {
+                    "is_entry": {"type": "boolean"},
+                    "frameworks": {"type": "array", "items": {"type": "string"}},
+                    "routes": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+            "security_checks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {"type": "string"},
+                        "location": {"type": "string"},
+                        "description": {"type": "string"},
+                    },
+                },
+            },
+            "sinks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {"type": "string"},
+                        "location": {"type": "string"},
+                        "expression": {"type": "string"},
+                    },
+                },
+            },
+        }
+    )
+    return schema
+
+
+DEFAULT_JAVA_METHOD_SNAPSHOT_SCHEMA: Dict[str, Any] = _build_java_method_snapshot_schema()
+
+
+def snapshot_schema_for_language(language: object) -> Dict[str, Any]:
+    text = str(language or "").strip().lower().replace("-", "_")
+    if text in {"java", "javasrc", "java_src"}:
+        return DEFAULT_JAVA_METHOD_SNAPSHOT_SCHEMA
+    return DEFAULT_FUNCTION_SNAPSHOT_SCHEMA
+
+
 def llm_function_snapshot_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
     """Return the semantic-only schema exposed to the LLM finalizer."""
 

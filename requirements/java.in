@@ -1,0 +1,2 @@
+-r base.in
+cpgqls-client>=0.0.5

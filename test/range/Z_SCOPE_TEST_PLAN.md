@@ -33,31 +33,36 @@ The `ISSUE42-*` tier should be exercised through the shared-memory/runtime path
 fallback, shared-memory names, runtime opcode dispatch, callback execution,
 signal paths, timer/work self-destruction, and allocator/process-table helpers.
 
-## Mandatory Execution Rule
+## Mandatory Linux Execution Rule
 
-Run Z-SCOPE from WSL. Do not run the benchmark through native Windows Python or
-native Windows build tools. The C project uses pthreads, Unix headers, and path
-assumptions that are most stable under Linux.
+Run the formal unified benchmark in a Linux userspace. Native Linux can execute
+the build, preflight, scan, and scoring commands directly. When the host is
+Windows, enter WSL first; do not use native Windows Python or native Windows
+build tools to produce a formal result. The fixture uses pthreads, Unix headers,
+and a Linux LLVM/SVF toolchain.
 
-Recommended working directory:
+On Windows, a typical WSL working directory is:
 
 ```bash
 cd /mnt/c/Users/10273/home/work/Z-Scope
 ```
 
-If clangd, gcc, make, or Python dependencies are missing inside WSL, install or
-fix them in WSL, then rerun. Do not paper over WSL failures by switching to a
-Windows-only run.
+On native Linux, work from the actual repository checkout. If clangd, gcc,
+cmake, gllvm, LLVM, SVF/Saber, or Python dependencies are missing, install or
+fix them in the same Linux environment and rerun. Do not paper over a failed
+Linux/WSL preflight by switching to a Windows-only run.
 
-For automatic entry discovery, use the WSL-only runner:
+For automatic entry discovery under WSL, use the WSL-only runner:
 
 ```bash
 test/range/benchmark/run_auto_unified_wsl.sh
 ```
 
-The runner hard-fails outside WSL and hard-fails when `gclang`, `get-bc`,
-`wpa`, or `saber` are unavailable. A benchmark run that logs SVF/Saber as
-unavailable is not a valid unified range benchmark.
+The runner intentionally hard-fails outside WSL. Do not call it on native
+Linux; use the equivalent commands in "Baseline Commands" instead. Both paths
+must fail closed when `gclang`, `get-bc`, `wpa`, or `saber` are unavailable. A
+benchmark run that logs SVF/Saber as unavailable is not a valid unified range
+benchmark.
 
 ## One-Time Configuration
 
@@ -91,27 +96,26 @@ ignored copy such as `test/range/zscope.local.yaml`.
   duplicate hits on already matched ground-truth items are listed separately
   from effective false positives.
 - `entry_functions_list.json`: latest generated automatic entry-discovery list.
-- `zscope_batch_report.json` and `zscope_batch_report.md`: latest generated
-  batch report preserved locally for comparison.
-- `current_eval.json`: current `external_benchmark.py evaluate` output for the
-  preserved batch report.
+- `zscope_batch_report.json`、`zscope_batch_report.md`、`metrics.json` 和
+  `current_eval.json` 是本地/Release 原始生成物，不提交到 Git。
+- `docs/range_reports/v1.3.1-cpp-baseline.json`：当前稳定版的冻结摘要；
+  `docs/range_reports/v33_release_final2_glm51_20260810/` 保留五轮紧凑摘要、
+  Git/tree、参数、哈希和门禁，完整原始报告作为 Release 资产。
 
 Do not include `GROUND_TRUTH.md` or `benchmark/ground_truth.json` in the
 analysis prompt/context given to Z-SCOPE. They are answer keys, not
 target-project documentation. The intended public project context is source
 code, headers, `README.md`, build files, and `benchmark/entries.json`.
+Ground truth may be read by the isolated entry-coverage preflight and by the
+scorer only; it must not flow from either step into the scan or LLM context.
 
 ## Latest Preserved Result
 
-The latest preserved batch report is from 2026-06-09:
-
-- Report files: `zscope_batch_report.json` and `zscope_batch_report.md`.
-- Generated entry list: `entry_functions_list.json`.
-- Current scorer output: `current_eval.json`.
-- Default view: TP 92, raw FP 52, duplicate-of-matched 44, effective FP 8,
-  FN 29, precision 0.9200, recall 0.7603, F1 0.8326.
-- With `needs_review`: TP 113, raw FP 107, duplicate-of-matched 92,
-  effective FP 15, FN 8, precision 0.8828, recall 0.9339, F1 0.9076.
+v1.3.1 冻结结果来自 2026-08-10 的五轮正式冷启动：confirmed TP 中位数
+89、raw FP 2、precision 97.80%；with-review TP 134、raw FP 92、
+needs-review 135；tokens 1,324,485、wall time 2,105.97 秒。权威摘要为
+`docs/range_reports/v1.3.1-cpp-baseline.json`，紧凑单轮证据和哈希位于
+`docs/range_reports/v33_release_final2_glm51_20260810/`。
 
 For reporting comparisons, use effective FP and `false_positive_rate`. Keep raw
 FP and duplicate-of-matched counts visible so repeated reports against the same
@@ -126,6 +130,31 @@ cd /mnt/c/Users/10273/home/work/Z-Scope
 test/range/benchmark/run_auto_unified_wsl.sh
 ```
 
+On native Linux, do not invoke the WSL-named runner. After exporting the model
+credentials required by `test/range/zscope.auto_unified.yaml`, run the same
+cold-scan stages directly and preserve their logs/run directory:
+
+```bash
+python3 -m pip install -e .
+cmake -S test/range -B test/range/build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+python3 -m zscope.cli.cli -c test/range/zscope.auto_unified.yaml --build-index
+python3 -m zscope.cli.cli -c test/range/zscope.auto_unified.yaml --verbose
+python3 test/range/benchmark/check_entry_coverage.py \
+  --root test/range \
+  --entries test/range/entry_functions_list.json \
+  --truth test/range/benchmark/ground_truth.json \
+  --knowledge-db test/range/.zscope_knowledge_auto_unified_wsl/code_knowledge.db
+python3 scripts/external_benchmark.py evaluate \
+  --report test/range/zscope_batch_report.json \
+  --truth test/range/benchmark/ground_truth.json \
+  --output benchmark_runs/current/evaluation.json
+```
+
+The `*_wsl` directory names in the current auto-unified config are historical
+artifact names; they do not imply that native Linux must launch WSL. For a
+formal comparison, record the resolved config, tool versions, entry manifest,
+logs, report, evaluation, and whether the run used native Linux or WSL.
+
 For the older fixed-entry protocol, use:
 
 ```bash
@@ -137,16 +166,16 @@ cmake -S test/range -B test/range/build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 python test/range/benchmark/check_entry_coverage.py \
   --config test/range/zscope.benchmark.yaml \
   --truth test/range/benchmark/ground_truth.json
-python -m zscope.cli.cli -c test/range/zscope.benchmark.yaml --build-cpg
+python -m zscope.cli.cli -c test/range/zscope.benchmark.yaml --build-index
 python -m zscope.cli.cli -c test/range/zscope.benchmark.yaml --verbose
 python scripts/external_benchmark.py evaluate \
   --report test/range/zscope_batch_report.json \
   --truth test/range/benchmark/ground_truth.json \
-  --output test/range/current_eval.json
+  --output benchmark_runs/current/evaluation.json
 ```
 
-`--build-cpg` is the cheap preflight. It should index functions without calling
-the LLM. The full scan requires valid model settings. If `cmake` is unavailable,
+`--build-index` is the canonical cheap preflight and does not call the LLM.
+`--build-cpg` is only a deprecated 1.x alias. The full scan requires valid model settings. If `cmake` is unavailable,
 use `bear -- make -C test/range` and adjust `project.compile_commands_path` only
 if the resulting file is not `test/range/build/compile_commands.json`.
 
@@ -183,12 +212,13 @@ miss as a real Z-SCOPE false negative.
 
 ## Known Pitfalls
 
-- The repository README and some project Markdown contain mojibake. Prefer source
-  code and structured benchmark assets over those corrupted comments.
-- On 2026-05-12, WSL preflight reached `--build-cpg` successfully but logged
+- PowerShell may display UTF-8 Markdown as mojibake when its default decoding is
+  used. Re-read with `Get-Content -Encoding utf8` or validate the original bytes
+  before treating a file as corrupted; never blindly transcode benchmark docs.
+- On 2026-05-12, a WSL preflight reached `--build-cpg` successfully but logged
   `Failed to start clangd: No such file or directory: 'clangd'`, then fell back
-  to regex indexing. Install `clangd` in WSL before treating a run as a full
-  unified-backend benchmark result.
+  to regex indexing. Install `clangd` in the active Linux environment before
+  treating a run as a full unified-backend benchmark result.
 - Do not run `make -C test/range clean` in parallel with CMake generation. Both
   touch `test/range/build/`, and the clean step can fail with
   `rm: cannot remove 'build/CMakeFiles': Directory not empty`.

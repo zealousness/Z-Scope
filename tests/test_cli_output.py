@@ -7,7 +7,7 @@ from zscope.orchestration.scan_session import ScanSessionResult
 
 
 def test_cli_version_reports_package_version() -> None:
-    assert __version__ == "1.3"
+    assert __version__ == "1.3.1"
 
     result = CliRunner().invoke(main, ["--version"])
 

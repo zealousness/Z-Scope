@@ -15,14 +15,15 @@ from .schema import (
     PROGRAM_OPTIONAL_PASSTHROUGH_SNAPSHOT_FIELDS,
     PROGRAM_PASSTHROUGH_SNAPSHOT_FIELDS,
     llm_function_snapshot_schema,
+    snapshot_schema_for_language,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def _effective_schema(schema: Any) -> Dict[str, Any]:
+def _effective_schema(schema: Any, language: object = "") -> Dict[str, Any]:
     if schema in (None, "", "{}") or schema == {}:
-        return DEFAULT_FUNCTION_SNAPSHOT_SCHEMA
+        return snapshot_schema_for_language(language)
     if isinstance(schema, dict):
         return schema
     if isinstance(schema, str):
@@ -30,6 +31,11 @@ def _effective_schema(schema: Any) -> Dict[str, Any]:
         if isinstance(parsed, dict):
             return parsed
     raise ValueError("semantic_modeler schema must be a JSON object")
+
+
+def _schema_json(schema: Any, language: object = "") -> str:
+    effective = _effective_schema(schema, language)
+    return json.dumps(effective, indent=2, ensure_ascii=False)
 
 
 def _program_snapshot_fields(input_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -126,6 +132,8 @@ def _program_snapshot_fields(input_data: Dict[str, Any]) -> Dict[str, Any]:
         "referenced_macros": deepcopy(input_data["referenced_macros"]),
         "referenced_types": deepcopy(input_data["referenced_types"]),
     }
+    if str(input_data.get("language") or "").strip():
+        fields["language"] = str(input_data["language"])
     if "unresolved_callees" in input_data:
         fields["unresolved_callees"] = deepcopy(input_data["unresolved_callees"])
     for field in PROGRAM_OPTIONAL_PASSTHROUGH_SNAPSHOT_FIELDS:
@@ -157,6 +165,7 @@ def _prompt_metadata(input_data: Dict[str, Any]) -> Dict[str, Any]:
         "referenced_macros_truncation",
         "unresolved_referenced_types",
         "referenced_types_truncation",
+        "language",
     )
     return {key: input_data[key] for key in keys if key in input_data}
 
@@ -224,8 +233,11 @@ class SemanticModeler(JsonToolAgent):
         func_code = str(input_data.get("code") or "")
         user_context = input_data.get("user_config_context")
 
+        language = str(
+            input_data.get("language") or input_data.get("code_language") or "c_cpp"
+        ).strip().lower().replace("-", "_")
         effective_schema = llm_function_snapshot_schema(
-            _effective_schema(input_data.get("schema"))
+            _effective_schema(input_data.get("schema"), language)
         )
         metadata_json = json.dumps(
             _prompt_metadata(input_data),
@@ -233,9 +245,10 @@ class SemanticModeler(JsonToolAgent):
             ensure_ascii=False,
         )
         prompt = (
-            f"Please model the following function: {func_name}\n"
+            f"Please model the following {'Java method' if language == 'java' else 'function'}: {func_name}\n"
+            f"Language: {language}\n"
             f"Target function metadata:\n```json\n{metadata_json}\n```\n"
-            f"Code:\n```c\n{func_code}\n```\n\n"
+            f"Code:\n```{'java' if language == 'java' else 'c'}\n{func_code}\n```\n\n"
             "Workflow: use the available retrieval tools only while additional evidence is "
             "needed. Do not write a complete snapshot in prose or a JSON code block during "
             "exploration. When the evidence is sufficient, submit exactly one final payload "

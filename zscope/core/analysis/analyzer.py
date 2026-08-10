@@ -15,11 +15,12 @@ import uuid
 from collections import deque
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set, cast
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, cast
 
 from ...config.config import ZScopeConfig, minimum_optional_positive_seconds
 from ...config.function_entry import FunctionEntry
 from ...config.user_config_store import UserConfigStore
+from ...common.utils import normalize_path
 from ...retrieval.code_index import CodeIndex
 from ...snapshots.store import SnapshotStore
 from ...snapshots.modeling_input import (
@@ -54,9 +55,11 @@ from ..candidates.adapters import (
 )
 from ..candidates.backend_signals import (
     clang_pair_row_to_candidate,
+    java_provider_signal_to_candidate,
     joern_rule_match_to_candidate,
     resource_release_pairs_from_overlay,
 )
+from ..candidates.java_evidence import merge_java_evidence_candidates
 from ...orchestration.agent_policy import (
     agent_system_prompt,
     attach_agent_contract,
@@ -69,10 +72,13 @@ from ...orchestration.agent_policy import (
     tool_policy_for_agent,
 )
 from ..candidates.pipeline import CandidatePipeline
+from ..candidates.java_active_audit import JavaActiveAuditNormalizer
 from ..candidates.decision_facts import DecisionFactGraphCache
 from ..candidates.clang_ast_cfg import ClangAstCfgCandidateGenerator
 from ...retrieval.clang_tooling_evidence import ClangToolingEvidenceProvider
 from ..candidates.regex import RegexCandidateGenerator
+from ..candidates.java_rules import JavaRuleCandidateGenerator
+from ...rules.extensions import RuleContext, RuleRegistry
 from ...semantics.models import LocalPatternSemantics
 from ..candidates.graph import GraphCandidateGenerator
 from ...orchestration.history_reconciler import HistoryReconciler
@@ -149,6 +155,16 @@ DEFAULT_SCAN_STEP_IDS = (
     "validate_findings",
     "persist_report",
 )
+
+JAVA_VULNERABILITY_SKILLS = {
+    "java_injection",
+    "java_web_security",
+    "java_deserialization",
+    "java_authz",
+    "java_crypto",
+    "java_resource_lifecycle",
+    "java_concurrency",
+}
 
 class Analyzer:
     """
@@ -1637,7 +1653,34 @@ class Analyzer:
         profile = self._candidate_backend_profile()
         callee_scan = self._direct_callee_rule_scan_budget(state)
         issues: List[Dict[str, Any]] = []
-        if profile == "regex":
+        if self._project_language() == "java":
+            generator = JavaRuleCandidateGenerator()
+            issues.extend(
+                generator.generate_issues(
+                    entry_func,
+                    code,
+                    file_path,
+                    annotations=self._java_annotation_context(impl),
+                )
+            )
+            issues.extend(
+                self._detect_java_entry_field_rule_candidates(
+                    generator,
+                    entry_func=entry_func,
+                    impl=impl,
+                )
+            )
+            issues.extend(
+                self._detect_direct_callee_rule_candidates(
+                    impl,
+                    generator,
+                    state=state,
+                    entry_func=entry_func,
+                    **callee_scan,
+                )
+            )
+            issues.extend(self._detect_java_project_file_rule_candidates(generator))
+        elif profile == "regex":
             generator = RegexCandidateGenerator(self._get_local_pattern_semantics())
             issues.extend(generator.generate_issues(entry_func, code, file_path))
             issues.extend(
@@ -1649,7 +1692,7 @@ class Analyzer:
                     **callee_scan,
                 )
             )
-        if profile in {"clang", "unified"}:
+        if self._project_language() != "java" and profile in {"clang", "unified"}:
             clang_generator = ClangAstCfgCandidateGenerator(
                 self._get_local_pattern_semantics(),
                 semantic_overlay=self._get_semantic_overlay(),
@@ -1677,6 +1720,18 @@ class Analyzer:
                     **callee_scan,
                 )
             )
+        issues.extend(self._detect_extension_rule_candidates(state))
+        rules_config = getattr(getattr(self, "config", None), "rules", None)
+        disabled_rule_ids = {
+            str(rule_id) for rule_id in (getattr(rules_config, "disabled_ids", []) or [])
+        }
+        if disabled_rule_ids:
+            issues = [
+                issue
+                for issue in issues
+                if str(issue.get("rule_id") or issue.get("rule") or "")
+                not in disabled_rule_ids
+            ]
         issues = dedupe_rule_candidates(issues)
         issues = self._apply_candidate_validation_budget(issues)
         self._record_engine_capability(
@@ -1685,7 +1740,7 @@ class Analyzer:
             active=True,
             candidate_count=len(issues),
         )
-        if profile in {"clang", "unified"}:
+        if self._project_language() != "java" and profile in {"clang", "unified"}:
             self._record_engine_capability(
                 "clang_ast_cfg",
                 status="complete",
@@ -1700,8 +1755,46 @@ class Analyzer:
         return self._annotate_candidate_issues(
             issues,
             checker=self._local_candidate_checker(),
-            path_kind="local_memory_concurrency",
+            path_kind=(
+                "local_java_security"
+                if self._project_language() == "java"
+                else "local_memory_concurrency"
+            ),
         )
+
+    def _detect_extension_rule_candidates(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Evaluate explicitly configured YAML packs and Python providers."""
+
+        rules_config = getattr(getattr(self, "config", None), "rules", None)
+        packs = list(getattr(rules_config, "packs", []) or [])
+        providers = list(getattr(rules_config, "providers", []) or [])
+        if not packs and not providers:
+            return []
+        registry = getattr(self, "_extension_rule_registry", None)
+        if registry is None:
+            registry = RuleRegistry(
+                disabled_ids=list(getattr(rules_config, "disabled_ids", []) or [])
+            )
+            known_skills = sorted(self.spec_registry.skills)
+            for configured in packs:
+                path = Path(str(configured)).expanduser()
+                if not path.is_absolute():
+                    path = Path(self.config.project.project_root) / path
+                registry.load_pack(path, known_skills=known_skills)
+            registry.load_providers(providers)
+            self._extension_rule_registry = registry
+
+        impl = state.get("impl_result") if isinstance(state.get("impl_result"), dict) else {}
+        context = RuleContext(
+            language=self._project_language(),
+            project_root=Path(self.config.project.project_root),
+            function=str(state.get("entry_func") or impl.get("function") or ""),
+            file_path=str(impl.get("file") or ""),
+            code=str(impl.get("code") or ""),
+            annotations=tuple(self._java_annotation_context(impl)) if self._project_language() == "java" else (),
+            metadata={"backend_profile": self._candidate_backend_profile()},
+        )
+        return [candidate.to_issue() for candidate in registry.evaluate(context)]
 
     def _detect_graph_rule_candidates(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Seed cross-function graph/protocol candidates before LLM validation."""
@@ -1826,10 +1919,13 @@ class Analyzer:
         """Create tickets from the same deterministic batch used by mining."""
         profile = self._candidate_backend_profile()
         generator: Optional[RegexCandidateGenerator] = None
+        java_generator: Optional[JavaRuleCandidateGenerator] = None
         clang_generator: Optional[ClangAstCfgCandidateGenerator] = None
-        if profile == "regex":
+        if self._project_language() == "java":
+            java_generator = JavaRuleCandidateGenerator()
+        elif profile == "regex":
             generator = RegexCandidateGenerator(self._get_local_pattern_semantics())
-        if profile in {"clang", "unified"}:
+        if self._project_language() != "java" and profile in {"clang", "unified"}:
             clang_generator = ClangAstCfgCandidateGenerator(
                 self._get_local_pattern_semantics(),
                 semantic_overlay=self._get_semantic_overlay(),
@@ -1840,9 +1936,16 @@ class Analyzer:
         if not issues:
             return []
         tickets = [
-            clang_generator.issue_to_ticket(issue)
-            if issue.get("candidate_source") == "clang_ast_cfg" and clang_generator is not None
-            else (generator or RegexCandidateGenerator(self._get_local_pattern_semantics())).issue_to_ticket(issue)
+            java_generator.issue_to_ticket(issue)
+            if java_generator is not None
+            else (
+                clang_generator.issue_to_ticket(issue)
+                if issue.get("candidate_source") == "clang_ast_cfg"
+                and clang_generator is not None
+                else (
+                    generator or RegexCandidateGenerator(self._get_local_pattern_semantics())
+                ).issue_to_ticket(issue)
+            )
             for issue in issues
             if issue.get("validation_required") is not False
             and str(issue.get("finding_kind") or "").lower() != "audit_observation"
@@ -2945,6 +3048,8 @@ class Analyzer:
         ).hexdigest()
 
     def _merge_unified_evidence_candidates(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if self._project_language() == "java":
+            return merge_java_evidence_candidates(candidates)
         return merge_unified_evidence_candidates(
             candidates,
             enabled=self._candidate_backend_profile() == "unified",
@@ -3158,10 +3263,42 @@ class Analyzer:
         *,
         reachable_funcs: Optional[Set[str]] = None,
     ) -> List[Dict[str, Any]]:
-        if self._candidate_backend_profile() != "joern":
+        if self._candidate_backend_profile() not in {"joern", "java_unified"}:
             return []
         backend_attr = getattr(self.code_index, "backend", None)
         backend = backend_attr() if callable(backend_attr) else backend_attr
+        collect_java_signals = getattr(backend, "collect_java_signal_matches", None)
+        if callable(collect_java_signals):
+            entry_func = str(state.get("entry_func") or "")
+            try:
+                matches = collect_java_signals(entry_func=entry_func)
+            except Exception as exc:
+                logger.warning("Unable to collect Java provider signals: %s", exc)
+                self._record_engine_capability(
+                    "java_signal_providers",
+                    status="failed",
+                    active=False,
+                    reason=f"{type(exc).__name__}: {exc}",
+                )
+                return []
+            if reachable_funcs is None:
+                reachable_funcs = self._reachable_function_names_from_entry(entry_func)
+            candidates = []
+            for match in matches:
+                if not isinstance(match, dict):
+                    candidates.append(self._joern_rule_match_to_candidate(match, entry_func))
+                    continue
+                target = self._java_provider_signal_target_function(match, entry_func)
+                if target and not self._target_in_reachable_functions(target, reachable_funcs):
+                    continue
+                candidates.append(java_provider_signal_to_candidate(match, entry_func=entry_func))
+            self._record_engine_capability(
+                "java_signal_providers",
+                status="complete",
+                active=True,
+                candidate_count=len(candidates),
+            )
+            return candidates
         joern_client = getattr(backend, "joern_client", None)
         if joern_client is None:
             self._record_engine_capability(
@@ -3210,6 +3347,28 @@ class Analyzer:
             candidate_count=len(candidates),
         )
         return candidates
+
+    @staticmethod
+    def _java_provider_signal_target_function(
+        signal: Dict[str, Any], entry_func: str = ""
+    ) -> str:
+        sink = signal.get("sink") if isinstance(signal.get("sink"), dict) else {}
+        source = signal.get("source") if isinstance(signal.get("source"), dict) else {}
+        path = signal.get("path") if isinstance(signal.get("path"), list) else []
+        for value in (
+            sink.get("function"),
+            sink.get("method"),
+            source.get("function"),
+            source.get("method"),
+        ):
+            if str(value or "").strip():
+                return str(value)
+        for item in reversed(path):
+            if isinstance(item, dict):
+                value = item.get("method") or item.get("function")
+                if str(value or "").strip():
+                    return str(value)
+        return entry_func
 
     def _match_reachable_from_entry(
         self,
@@ -3786,6 +3945,16 @@ class Analyzer:
 
     def _candidate_backend_profile(self) -> str:
         return backend_profile_for_code_index(self.code_index)
+
+    def _project_language(self) -> str:
+        config = getattr(self, "config", None)
+        project = getattr(config, "project", None)
+        language = str(
+            getattr(project, "language", "")
+            or getattr(getattr(self, "code_index", None), "language", "")
+            or "c_cpp"
+        ).strip().lower().replace("-", "_")
+        return "java" if language in {"java", "java_src", "javasrc"} else "c_cpp"
 
     def _get_semantic_overlay(self) -> Dict[str, Any]:
         if self._semantic_overlay is None:
@@ -5479,6 +5648,7 @@ class Analyzer:
                 extra=getattr(agent_cfg, "skills", None),
             )
         ]
+        available = self._language_filtered_vulnerability_skills(available)
         task = getattr(agent_cfg, "task", None)
         semantic_router = None
         if llm_client is not None:
@@ -6701,3 +6871,1048 @@ class Analyzer:
             if end_line is not None:
                 if not issue.get("end_line"):
                     issue["end_line"] = end_line
+
+
+    def _build_java_active_audit_context(
+        self,
+        state: Dict[str, Any],
+        *,
+        active_skills: Sequence[str],
+        candidate_signal_summary: Dict[str, Any],
+        candidate_signals: Sequence[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        impl = state.get("impl_result") if isinstance(state.get("impl_result"), dict) else {}
+        framework = impl.get("framework_semantics") if isinstance(impl.get("framework_semantics"), dict) else {}
+        entry_func = str(state.get("entry_func") or impl.get("qualified_name") or impl.get("function") or "")
+        annotations = self._compact_java_annotations(self._java_annotation_context(impl), limit=12)
+        sources = self._compact_java_framework_values(framework, ("sources", "request_sources", "input_sources"), limit=12)
+        guards = self._compact_java_framework_values(framework, ("guards", "security_guards", "authz_guards"), limit=12)
+        policies = self._compact_java_framework_values(
+            framework,
+            ("security_policies", "runtime_configs", "policies"),
+            limit=12,
+        )
+        return {
+            "language": "java",
+            "structure_frontend_actual": impl.get("structure_frontend_actual") or impl.get("structure_frontend"),
+            "structure_precision": impl.get("structure_precision") or impl.get("precision"),
+            "entry_function": entry_func,
+            "entry_kind": self._java_entry_kind(impl, framework),
+            "component": self._java_component(impl),
+            "file": impl.get("file"),
+            "annotations": annotations,
+            "route": self._java_route_context(framework, annotations),
+            "framework_sources": sources,
+            "known_guards": guards,
+            "runtime_security_policies": policies,
+            "reachable_callees": self._java_reachable_callee_context(impl, limit=16),
+            "candidate_signal_summary": candidate_signal_summary,
+            "candidate_signal_candidates": self._compact_candidate_signal_items(list(candidate_signals), limit=24),
+            "candidate_ledger_summary": state.get("candidate_ledger_summary") or {},
+            "subagent_unassigned_candidates": self._compact_subagent_items(
+                state.get("subagent_unassigned_candidates") or [],
+                limit=24,
+            ),
+            "active_skills": list(active_skills),
+            "review_policy": (
+                "LLM-only Java active findings must use candidate_source=java_llm_active_audit "
+                "and are needs_review by default unless merged with a proof-carrying local/backend candidate."
+            ),
+        }
+
+    @staticmethod
+    def _compact_java_annotations(values: Sequence[Any], *, limit: int) -> List[Dict[str, Any]]:
+        compact: List[Dict[str, Any]] = []
+        for value in list(values)[:limit]:
+            if isinstance(value, dict):
+                compact.append(
+                    {
+                        "name": value.get("name") or value.get("simpleName"),
+                        "fullName": value.get("fullName") or value.get("qualifiedName"),
+                        "line": value.get("line") or value.get("lineNumber"),
+                        "code": value.get("code"),
+                    }
+                )
+            else:
+                compact.append({"name": str(value)})
+        return compact
+
+    @staticmethod
+    def _compact_java_framework_values(
+        framework: Dict[str, Any],
+        keys: Sequence[str],
+        *,
+        limit: int,
+    ) -> List[Any]:
+        values: List[Any] = []
+        for key in keys:
+            value = framework.get(key)
+            if isinstance(value, list):
+                values.extend(value[:limit])
+            elif value not in (None, "", {}):
+                values.append(value)
+        return values[:limit]
+
+    @staticmethod
+    def _java_entry_kind(impl: Dict[str, Any], framework: Dict[str, Any]) -> str:
+        for key in ("entry_kind", "kind", "framework_entry_kind"):
+            value = impl.get(key) or framework.get(key)
+            if value:
+                return str(value)
+        text = " ".join(
+            str(item.get("name") or item.get("code") or item)
+            for item in (
+                (impl.get("annotations") if isinstance(impl.get("annotations"), list) else [])
+                + (impl.get("class_annotations") if isinstance(impl.get("class_annotations"), list) else [])
+            )
+        ).lower()
+        name = str(impl.get("qualified_name") or impl.get("function") or impl.get("name") or "").lower()
+        if any(token in text for token in ("requestmapping", "getmapping", "postmapping", "restcontroller", "controller")):
+            return "controller"
+        if "filter" in name or "dofilter" in name:
+            return "filter"
+        if "interceptor" in name or "prehandle" in name:
+            return "interceptor"
+        if "mapper" in name or "repository" in name:
+            return "mapper_or_repository"
+        if "main:" in name or name.endswith(".main"):
+            return "cli"
+        return "java_public_or_framework_entry"
+
+    @staticmethod
+    def _java_component(impl: Dict[str, Any]) -> str:
+        text = " ".join(
+            str(impl.get(key) or "")
+            for key in ("class_name", "qualified_name", "function", "file")
+        ).lower()
+        for component in ("controller", "service", "mapper", "repository", "filter", "interceptor", "dto", "config", "listener"):
+            if component in text:
+                return component
+        return "java_component"
+
+    @staticmethod
+    def _java_route_context(framework: Dict[str, Any], annotations: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+        route = framework.get("route") if isinstance(framework.get("route"), dict) else {}
+        mappings = [
+            item
+            for item in annotations
+            if any(token in str(item.get("name") or item.get("code") or "").lower() for token in ("mapping", "route"))
+        ]
+        return {"route": route, "mappings": mappings[:8]}
+
+    @staticmethod
+    def _java_reachable_callee_context(impl: Dict[str, Any], *, limit: int) -> List[Dict[str, Any]]:
+        callees = impl.get("callees") if isinstance(impl.get("callees"), list) else []
+        preferred: List[Dict[str, Any]] = []
+        fallback: List[Dict[str, Any]] = []
+        for callee in callees:
+            if isinstance(callee, dict):
+                name = str(callee.get("name") or callee.get("callee") or callee.get("method") or "")
+                item = {
+                    "name": name,
+                    "file": callee.get("file") or callee.get("file_path"),
+                    "line": callee.get("line") or callee.get("lineNumber"),
+                }
+            else:
+                name = str(callee)
+                item = {"name": name}
+            lowered = name.lower()
+            if any(token in lowered for token in ("service", "mapper", "repository", "filter", "interceptor", "controller", "helper")):
+                preferred.append(item)
+            else:
+                fallback.append(item)
+        return (preferred + fallback)[:limit]
+
+    def _normalize_java_active_audit_issues(
+        self,
+        raw_issues: Any,
+        state: Dict[str, Any],
+        candidate_signals: Sequence[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if not isinstance(raw_issues, list):
+            return []
+        candidate_ids = set()
+        for item in candidate_signals:
+            if not isinstance(item, dict):
+                continue
+            pack = item.get("evidence_pack") if isinstance(item.get("evidence_pack"), dict) else {}
+            candidate_id = str(item.get("candidate_id") or item.get("id") or pack.get("candidate_id") or "")
+            if candidate_id:
+                candidate_ids.add(candidate_id)
+        entry_func = str(state.get("entry_func") or "")
+        impl = state.get("impl_result") if isinstance(state.get("impl_result"), dict) else {}
+        entry_file = str(impl.get("file") or "")
+        normalized: List[Dict[str, Any]] = []
+        proof_sources = {
+            "java_local_rule",
+            "java_framework_flow",
+            "java_project_file_rule",
+            "java_mybatis_xml",
+            "mybatis_xml",
+            "joern_cpg",
+        }
+        for issue in raw_issues:
+            if not isinstance(issue, dict):
+                continue
+            issue = dict(issue)
+            pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+            candidate_id = str(issue.get("candidate_id") or issue.get("id") or pack.get("candidate_id") or "")
+            source_name = str(issue.get("candidate_source") or pack.get("candidate_source") or "")
+            is_candidate_backed = bool(candidate_id and candidate_id in candidate_ids) or source_name in proof_sources
+            issue.setdefault("language", "java")
+            issue.setdefault("entry_function", entry_func)
+            issue.setdefault("entry_path", [entry_func] if entry_func else [])
+            if entry_file and not (issue.get("file") or issue.get("file_path") or issue.get("location")):
+                issue["file"] = entry_file
+            if not is_candidate_backed:
+                issue["candidate_source"] = "java_llm_active_audit"
+                issue["finding_kind"] = "java_active_audit_observation"
+                issue["active_audit_review_only"] = True
+                issue.setdefault("rule", "java_llm_active_audit")
+                issue.setdefault("evidence_refs", [])
+                pack["candidate_source"] = "java_llm_active_audit"
+                pack["language"] = "java"
+                pack["active_audit_review_only"] = True
+                pack.setdefault("path", {})
+                if isinstance(pack["path"], dict):
+                    pack["path"].setdefault("entry_function", entry_func)
+                    pack["path"].setdefault("entry_path", [entry_func] if entry_func else [])
+                self._normalize_java_active_audit_observation(issue, pack, entry_file, entry_func)
+            if pack:
+                issue["evidence_pack"] = pack
+            preserve_issue_location(issue)
+            normalized.append(issue)
+        return normalized
+
+    def _normalize_java_active_audit_observation(
+        self,
+        issue: Dict[str, Any],
+        pack: Dict[str, Any],
+        entry_file: str,
+        entry_func: str = "",
+    ) -> None:
+        JavaActiveAuditNormalizer.normalize(
+            issue,
+            pack,
+            entry_func=entry_func,
+            entry_file=entry_file,
+            code_index=getattr(self, "code_index", None),
+        )
+
+    def _language_filtered_vulnerability_skills(
+        self,
+        skill_names: Sequence[str],
+    ) -> List[str]:
+        """Keep vulnerability skills aligned with the configured project language."""
+        names = list(dict.fromkeys(skill_names))
+        if self._project_language() == "java":
+            java_names = [name for name in names if name in JAVA_VULNERABILITY_SKILLS]
+            return java_names or names
+        return [name for name in names if name not in JAVA_VULNERABILITY_SKILLS]
+
+    @staticmethod
+    def _java_annotation_context(impl: Dict[str, Any]) -> List[Any]:
+        context: List[Any] = []
+        for key in ("annotations", "parameter_annotations", "class_annotations"):
+            value = impl.get(key)
+            if isinstance(value, list):
+                context.extend(value)
+            elif value:
+                context.append(value)
+        context.extend(Analyzer._java_annotation_context_from_code(impl))
+        context.extend(Analyzer._java_annotation_context_from_framework(impl))
+        return context
+
+    @staticmethod
+    def _java_annotation_context_from_code(impl: Dict[str, Any]) -> List[Dict[str, Any]]:
+        code = str(impl.get("code") or "")
+        if not code:
+            return []
+        annotations: List[Dict[str, Any]] = []
+        for raw_line in code.splitlines()[:80]:
+            match = re.match(
+                r"\s*(?:(\d+)\s*\|\s*)?(@[A-Za-z_][\w.]*\s*(?:\([^)]*\))?)",
+                raw_line.strip(),
+            )
+            if not match:
+                continue
+            code_text = match.group(2).strip()
+            if "CrossOrigin" not in code_text and "Mapping" not in code_text:
+                continue
+            try:
+                line_no = int(match.group(1) or impl.get("start_line") or 1)
+            except (TypeError, ValueError):
+                line_no = 1
+            annotations.append(
+                {
+                    "name": code_text.split("(", 1)[0].lstrip("@").rsplit(".", 1)[-1],
+                    "code": code_text,
+                    "lineNumber": line_no,
+                    "source": "java_source_context",
+                }
+            )
+        return annotations
+
+    @staticmethod
+    def _java_annotation_context_from_framework(impl: Dict[str, Any]) -> List[Dict[str, Any]]:
+        framework = impl.get("framework_semantics") if isinstance(impl.get("framework_semantics"), dict) else {}
+        if not framework:
+            return []
+        text = json.dumps(framework, ensure_ascii=False, default=str)
+        lowered = text.lower()
+        compact = re.sub(r"[^a-z0-9*]+", "", lowered)
+        if not ("cors" in compact or "crossorigin" in compact or "allowedorigins" in compact):
+            return []
+        if "*" not in text and "wildcard" not in lowered and "allow all" not in lowered:
+            return []
+        try:
+            fallback_line = int(impl.get("start_line") or 1)
+        except (TypeError, ValueError):
+            fallback_line = 1
+        line = Analyzer._java_framework_semantic_line(framework) or fallback_line
+        return [
+            {
+                "name": "CrossOrigin",
+                "code": '@CrossOrigin("*")',
+                "lineNumber": line,
+                "source": "framework_semantics",
+            }
+        ]
+
+    @staticmethod
+    def _java_framework_semantic_line(value: Any) -> int:
+        if isinstance(value, dict):
+            for key in ("line", "lineNumber", "start_line", "startLine"):
+                try:
+                    line = int(value.get(key) or 0)
+                except (TypeError, ValueError):
+                    line = 0
+                if line > 0:
+                    return line
+            for nested in value.values():
+                line = Analyzer._java_framework_semantic_line(nested)
+                if line > 0:
+                    return line
+        elif isinstance(value, list):
+            for item in value:
+                line = Analyzer._java_framework_semantic_line(item)
+                if line > 0:
+                    return line
+        return 0
+
+    def _detect_java_entry_field_rule_candidates(
+        self,
+        generator: JavaRuleCandidateGenerator,
+        *,
+        entry_func: str,
+        impl: Dict[str, Any],
+        allowed_skills: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Attach field-level Java evidence only to entries that touch the field."""
+        if allowed_skills is not None and "java_concurrency" not in set(allowed_skills):
+            return []
+        file_path = str(impl.get("file") or "")
+        if not file_path.lower().endswith(".java"):
+            return []
+        source_path = self._resolve_java_source_file(file_path)
+        if source_path is None:
+            return []
+        try:
+            text = source_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return []
+
+        numbered = "\n".join(
+            f"{idx} | {line}"
+            for idx, line in enumerate(text.splitlines()[:2000], start=1)
+        )
+        issues = generator.generate_issues(
+            entry_func,
+            numbered,
+            file_path,
+            allowed_skills=["java_concurrency"],
+        )
+        issues = [
+            issue
+            for issue in issues
+            if issue.get("rule") == "java_shared_mutable_static_state"
+        ]
+        if not issues:
+            return []
+
+        code = str(impl.get("code") or "")
+        enriched: List[Dict[str, Any]] = []
+        for issue in issues:
+            variable = self._java_static_field_variable(issue, text)
+            if variable and not re.search(rf"\b{re.escape(variable)}\b", code):
+                continue
+            enriched_issue = dict(issue)
+            enriched_issue["function"] = entry_func
+            enriched_issue["entry_function"] = entry_func
+            enriched_issue["analyzed_from"] = entry_func
+            pack = dict(enriched_issue.get("evidence_pack") or {})
+            sink_line = self._java_numbered_code_line_for_symbol(code, variable) if variable else 0
+            if sink_line:
+                pack["sink"] = {
+                    "operation": f"shared mutable static field `{variable}` is accessed by entry method",
+                    "line": sink_line,
+                    "file": file_path,
+                    "kind": "java_shared_static_state_access",
+                }
+            path = dict(pack.get("path") or {})
+            path.update(
+                {
+                    "function": entry_func,
+                    "entry_function": entry_func,
+                    "complete_in_function": True,
+                    "field_level_evidence": True,
+                }
+            )
+            pack["path"] = path
+            enriched_issue["evidence_pack"] = pack
+            positive = list(enriched_issue.get("positive_evidence") or [])
+            if variable:
+                message = (
+                    f"Entry `{entry_func}` accesses shared static mutable field "
+                    f"`{variable}` declared at `{enriched_issue.get('location')}`."
+                )
+                if message not in positive:
+                    positive.append(message)
+            enriched_issue["positive_evidence"] = positive
+            enriched.append(enriched_issue)
+        return enriched
+
+    def _resolve_java_source_file(self, file_path: str) -> Optional[Path]:
+        normalized = file_path.replace("\\", "/")
+        candidates: List[Path] = []
+        raw = Path(normalized)
+        if raw.is_absolute():
+            candidates.append(raw)
+        for root_value in (
+            getattr(self.config.project, "source_root", ""),
+            getattr(self.config.project, "project_root", ""),
+            ".",
+        ):
+            root = Path(str(root_value or "."))
+            candidates.append(root / normalized)
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        return None
+
+    @staticmethod
+    def _java_static_field_variable(issue: Dict[str, Any], file_text: str) -> str:
+        _file, line = parse_location_file_line(str(issue.get("location") or ""))
+        if line <= 0:
+            return ""
+        lines = str(file_text or "").splitlines()
+        if line > len(lines):
+            return ""
+        source = lines[line - 1].strip()
+        match = re.search(
+            r"\bstatic\s+(?:final\s+)?[A-Za-z_$][\w$]*(?:\s*<[^;=()]+>)?\s+([A-Za-z_$][\w$]*)\b",
+            source,
+        )
+        return match.group(1) if match else ""
+
+    @staticmethod
+    def _java_numbered_code_line_for_symbol(code: str, symbol: str) -> int:
+        if not symbol:
+            return 0
+        match = re.search(rf"^\s*(\d+)\s*\|\s*.*\b{re.escape(symbol)}\b", str(code or ""), re.M)
+        if not match:
+            return 0
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return 0
+
+    def _detect_java_project_file_rule_candidates(
+        self,
+        generator: JavaRuleCandidateGenerator,
+        allowed_skills: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        if allowed_skills is None:
+            with self._java_project_file_rule_cache_lock:
+                if self._java_project_file_rule_cache is not None:
+                    if self._java_project_file_rule_emitted:
+                        return []
+                    self._java_project_file_rule_emitted = True
+                    return [dict(issue) for issue in self._java_project_file_rule_cache]
+        source_root = Path(getattr(self.config.project, "source_root", "") or getattr(self.config.project, "project_root", "."))
+        if not source_root.exists():
+            return []
+
+        mapper_interfaces = self._java_mapper_interface_index(source_root)
+        candidates: List[Dict[str, Any]] = []
+        for path in self._iter_java_auxiliary_rule_files(source_root):
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            if path.suffix.lower() == ".java" and not self._java_file_may_contain_mybatis_annotation_substitution(text):
+                continue
+            if not self._java_auxiliary_file_may_contain_rule_signal(text):
+                continue
+            numbered = "\n".join(
+                f"{idx} | {line}"
+                for idx, line in enumerate(text.splitlines()[:2000], start=1)
+            )
+            rel_path = normalize_path(path, source_root)
+            file_candidates = generator.generate_issues(
+                f"<project-file>:{rel_path}",
+                numbered,
+                rel_path,
+                allowed_skills=allowed_skills,
+            )
+            if path.suffix.lower() == ".xml":
+                bindings = self._mybatis_xml_bindings(text, rel_path, mapper_interfaces)
+                file_candidates = [
+                    self._enrich_mybatis_xml_candidate(issue, bindings)
+                    for issue in file_candidates
+                ]
+                file_candidates.extend(
+                    self._mybatis_xml_project_file_candidates(rel_path, bindings)
+                )
+            elif path.suffix.lower() == ".java":
+                file_candidates = [
+                    self._enrich_mybatis_annotation_candidate(issue, rel_path, mapper_interfaces)
+                    for issue in file_candidates
+                ]
+            candidates.extend(self._mark_java_project_file_candidates(file_candidates))
+        candidates = dedupe_rule_candidates(candidates)
+        if allowed_skills is None:
+            with self._java_project_file_rule_cache_lock:
+                self._java_project_file_rule_cache = [dict(issue) for issue in candidates]
+                self._java_project_file_rule_emitted = True
+        return candidates
+
+    @staticmethod
+    def _mark_java_project_file_candidates(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        marked: List[Dict[str, Any]] = []
+        for issue in issues:
+            item = dict(issue)
+            item["entry_agnostic"] = True
+            item["project_file_scope"] = True
+            pack = item.get("evidence_pack") if isinstance(item.get("evidence_pack"), dict) else {}
+            if pack:
+                pack = dict(pack)
+                pack["entry_agnostic"] = True
+                pack["project_file_scope"] = True
+                path = pack.get("path") if isinstance(pack.get("path"), dict) else {}
+                if path:
+                    path = dict(path)
+                    path["entry_agnostic"] = True
+                    path["project_file_scope"] = True
+                    pack["path"] = path
+                item["evidence_pack"] = pack
+            marked.append(item)
+        return marked
+
+    @staticmethod
+    def _java_mapper_interface_index(source_root: Path) -> Dict[str, Dict[str, Any]]:
+        """Index Java mapper/interface methods by class name for XML binding evidence."""
+        index: Dict[str, Dict[str, Any]] = {}
+        java_root = source_root / "src" / "main" / "java"
+        roots = [java_root] if java_root.exists() else [source_root]
+        for root in roots:
+            for path in root.rglob("*.java"):
+                if any(part in {".git", "target", "build", "out", ".gradle"} for part in path.parts):
+                    continue
+                try:
+                    text = path.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    continue
+                package_match = re.search(r"(?m)^\s*package\s+([\w.]+)\s*;", text)
+                package = package_match.group(1) if package_match else ""
+                type_match = re.search(r"\b(?:interface|class)\s+([A-Za-z_$][\w$]*)\b", text)
+                if not type_match:
+                    continue
+                class_name = type_match.group(1)
+                full_name = f"{package}.{class_name}" if package else class_name
+                methods: Dict[str, Dict[str, Any]] = {}
+                pending_annotations: List[Dict[str, Any]] = []
+                for line_no, line in enumerate(text.splitlines(), start=1):
+                    stripped = line.strip()
+                    if stripped.startswith("@"):
+                        if re.match(r"@(Select|Insert|Update|Delete)\b", stripped):
+                            pending_annotations.append({"line": line_no, "code": stripped})
+                        continue
+                    if re.search(r"\b(?:interface|class)\s+", stripped):
+                        pending_annotations = []
+                    if "(" not in stripped or ")" not in stripped or stripped.startswith("@"):
+                        continue
+                    method_match = re.search(
+                        r"(?:public\s+|private\s+|protected\s+|default\s+|static\s+|final\s+|abstract\s+)*"
+                        r"[\w$<>\[\].?,\s]+\s+([A-Za-z_$][\w$]*)\s*\(([^)]*)\)",
+                        stripped,
+                    )
+                    if not method_match:
+                        continue
+                    method_name = method_match.group(1)
+                    params = Analyzer._java_method_parameter_names(method_match.group(2))
+                    methods[method_name] = {
+                        "method": method_name,
+                        "parameters": params,
+                        "line": line_no,
+                        "signature": stripped,
+                        "annotations": list(pending_annotations),
+                    }
+                    pending_annotations = []
+                entry = {
+                    "package": package,
+                    "class_name": class_name,
+                    "full_name": full_name,
+                    "file": normalize_path(path, source_root),
+                    "methods": methods,
+                }
+                index[full_name] = entry
+                index[class_name] = entry
+        return index
+
+    @staticmethod
+    def _java_method_parameter_names(parameter_text: str) -> List[str]:
+        names: List[str] = []
+        for raw_param in str(parameter_text or "").split(","):
+            param = raw_param.strip()
+            if not param:
+                continue
+            param_name = ""
+            param_annotation = re.search(r"@Param\s*\(\s*['\"]([^'\"]+)['\"]\s*\)", param)
+            if param_annotation:
+                param_name = param_annotation.group(1)
+            cleaned = re.sub(r"@\w+(?:\([^)]*\))?\s*", "", param)
+            cleaned = re.sub(r"\bfinal\s+", "", cleaned).strip()
+            parts = cleaned.split()
+            if parts:
+                param_name = param_name or parts[-1].replace("...", "").replace("[]", "")
+            if param_name:
+                names.append(param_name)
+        return names
+
+    @staticmethod
+    def _mybatis_xml_bindings(
+        text: str,
+        rel_path: str,
+        mapper_interfaces: Dict[str, Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        namespace_match = re.search(r"<mapper\b[^>]*\bnamespace\s*=\s*['\"]([^'\"]+)['\"]", text)
+        namespace = namespace_match.group(1).strip() if namespace_match else ""
+        mapper = mapper_interfaces.get(namespace) or mapper_interfaces.get(namespace.rsplit(".", 1)[-1])
+        lines = text.splitlines()
+        bindings: List[Dict[str, Any]] = []
+        statement_re = re.compile(
+            r"<(select|insert|update|delete)\b[^>]*\bid\s*=\s*['\"]([^'\"]+)['\"][^>]*>",
+            re.I,
+        )
+        for idx, line in enumerate(lines, start=1):
+            match = statement_re.search(line)
+            if not match:
+                continue
+            tag = match.group(1).lower()
+            statement_id = match.group(2).strip()
+            body_lines = [line]
+            end_line = idx
+            end_re = re.compile(rf"</{tag}\s*>", re.I)
+            if not end_re.search(line):
+                for inner_idx in range(idx + 1, len(lines) + 1):
+                    body_lines.append(lines[inner_idx - 1])
+                    end_line = inner_idx
+                    if end_re.search(lines[inner_idx - 1]):
+                        break
+            body = "\n".join(body_lines)
+            variables = re.findall(r"\$\{\s*([^}\s]+)\s*}", body)
+            variable_lines: Dict[str, int] = {}
+            for offset, body_line in enumerate(body_lines):
+                for variable in re.findall(r"\$\{\s*([^}\s]+)\s*}", body_line):
+                    variable_lines.setdefault(variable, idx + offset)
+            method = (mapper or {}).get("methods", {}).get(statement_id) if mapper else None
+            parameters = method.get("parameters", []) if isinstance(method, dict) else []
+            bound_variables = [
+                variable
+                for variable in variables
+                if not parameters or variable.split(".", 1)[0] in parameters
+            ]
+            binding = {
+                "namespace": namespace,
+                "statement_id": statement_id,
+                "statement_kind": tag,
+                "file": rel_path,
+                "start_line": idx,
+                "end_line": end_line,
+                "statement_text": body.strip(),
+                "text_substitution_variables": variables,
+                "variable_lines": variable_lines,
+                "interface": mapper.get("full_name") if mapper else "",
+                "interface_file": mapper.get("file") if mapper else "",
+                "method": statement_id,
+                "method_line": method.get("line", -1) if isinstance(method, dict) else -1,
+                "method_signature": method.get("signature", "") if isinstance(method, dict) else "",
+                "parameters": parameters,
+                "bound_variables": bound_variables,
+                "binding_precision": (
+                    "xml_namespace_id_parameter_match"
+                    if mapper and method and bound_variables
+                    else ("xml_namespace_id_match" if mapper and method else "xml_statement_only")
+                ),
+            }
+            bindings.append(binding)
+        return bindings
+
+    @staticmethod
+    def _enrich_mybatis_xml_candidate(
+        issue: Dict[str, Any],
+        bindings: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        if issue.get("rule") != "java_mybatis_dollar_substitution" or not bindings:
+            return issue
+        _file, line = parse_location_file_line(str(issue.get("location") or ""))
+        binding = next(
+            (
+                item
+                for item in bindings
+                if int(item.get("start_line") or 0) <= line <= int(item.get("end_line") or 0)
+            ),
+            None,
+        )
+        if not binding:
+            return issue
+        enriched = dict(issue)
+        binding_copy = deepcopy(binding)
+        interface_name = str(binding_copy.get("interface") or "")
+        method_name = str(binding_copy.get("method") or "")
+        if interface_name and method_name:
+            enriched["function"] = f"{interface_name}.{method_name}"
+            enriched["secondary_function"] = f"<project-file>:{binding_copy.get('file')}"
+        evidence = dict(enriched.get("evidence_pack") or {})
+        evidence["mybatis_xml_binding"] = binding_copy
+        evidence.setdefault("source", {})
+        if isinstance(evidence["source"], dict):
+            evidence["source"].update(
+                {
+                    "expression": ", ".join(binding_copy.get("bound_variables") or binding_copy.get("text_substitution_variables") or []),
+                    "kind": "mybatis_xml_mapper_parameter",
+                    "mapper_interface": interface_name,
+                    "mapper_method": method_name,
+                    "mapper_parameters": binding_copy.get("parameters") or [],
+                }
+            )
+        evidence.setdefault("path", {})
+        if isinstance(evidence["path"], dict):
+            evidence["path"].update(
+                {
+                    "complete_in_function": False,
+                    "framework_binding": binding_copy.get("binding_precision"),
+                    "path_constraints": [
+                        "MyBatis XML statement uses textual ${...} substitution",
+                        "XML namespace/id is matched to mapper interface method when available",
+                        "validator must confirm caller-controlled values and allowlist constraints",
+                    ],
+                }
+            )
+        enriched["evidence_pack"] = evidence
+        positive = list(enriched.get("positive_evidence") or [])
+        positive.append(
+            "MyBatis XML binding: "
+            f"{binding_copy.get('namespace')}.{method_name} "
+            f"variables={binding_copy.get('text_substitution_variables')} "
+            f"parameters={binding_copy.get('parameters')} "
+            f"precision={binding_copy.get('binding_precision')}."
+        )
+        enriched["positive_evidence"] = positive
+        enriched["source"] = (
+            "MyBatis XML mapper parameter(s): "
+            + ", ".join(binding_copy.get("bound_variables") or binding_copy.get("text_substitution_variables") or [])
+        )
+        enriched["mybatis_xml_binding"] = binding_copy
+        return enriched
+
+    @staticmethod
+    def _enrich_mybatis_annotation_candidate(
+        issue: Dict[str, Any],
+        rel_path: str,
+        mapper_interfaces: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        if issue.get("rule") != "java_mybatis_dollar_substitution":
+            return issue
+        _file, line = parse_location_file_line(str(issue.get("location") or ""))
+        mapper = next(
+            (
+                item
+                for item in mapper_interfaces.values()
+                if isinstance(item, dict) and str(item.get("file") or "") == rel_path
+            ),
+            None,
+        )
+        if not mapper or line <= 0:
+            return issue
+        binding: Optional[Dict[str, Any]] = None
+        for method in (mapper.get("methods") or {}).values():
+            if not isinstance(method, dict):
+                continue
+            annotations = method.get("annotations") if isinstance(method.get("annotations"), list) else []
+            matched = next(
+                (
+                    annotation
+                    for annotation in annotations
+                    if isinstance(annotation, dict) and int(annotation.get("line") or 0) == line
+                ),
+                None,
+            )
+            if not matched:
+                continue
+            annotation_code = str(matched.get("code") or "")
+            variables = re.findall(r"\$\{\s*([^}\s]+)\s*}", annotation_code)
+            parameters = method.get("parameters") or []
+            binding = {
+                "interface": mapper.get("full_name") or "",
+                "interface_file": rel_path,
+                "method": method.get("method") or "",
+                "method_line": method.get("line") or 0,
+                "method_signature": method.get("signature") or "",
+                "parameters": parameters,
+                "annotation_line": line,
+                "annotation_code": annotation_code,
+                "text_substitution_variables": variables,
+                "bound_variables": [
+                    variable
+                    for variable in variables
+                    if not parameters or variable.split(".", 1)[0] in parameters
+                ],
+                "binding_precision": "annotation_method_parameter_match",
+            }
+            break
+        if not binding:
+            return issue
+        enriched = dict(issue)
+        binding_copy = deepcopy(binding)
+        interface_name = str(binding_copy.get("interface") or "")
+        method_name = str(binding_copy.get("method") or "")
+        if interface_name and method_name:
+            enriched["function"] = f"{interface_name}.{method_name}"
+            enriched["secondary_function"] = f"<project-file>:{rel_path}"
+        enriched["file"] = rel_path
+        enriched["file_path"] = rel_path
+        enriched["line"] = line
+        enriched["start_line"] = line
+        enriched["location"] = f"{rel_path}:{line}"
+        evidence = dict(enriched.get("evidence_pack") or {})
+        evidence["mybatis_annotation_binding"] = binding_copy
+        variables = binding_copy.get("bound_variables") or binding_copy.get("text_substitution_variables") or []
+        evidence["source"] = {
+            "expression": ", ".join(variables),
+            "kind": "mybatis_annotation_mapper_parameter",
+            "mapper_interface": interface_name,
+            "mapper_method": method_name,
+            "mapper_parameters": binding_copy.get("parameters") or [],
+            "line": line,
+            "file": rel_path,
+        }
+        evidence["sink"] = {
+            "operation": "MyBatis annotation ${} text substitution",
+            "line": line,
+            "file": rel_path,
+            "kind": "mybatis_annotation_sql_text_substitution",
+        }
+        evidence.setdefault("path", {})
+        if isinstance(evidence["path"], dict):
+            evidence["path"].update(
+                {
+                    "complete_in_function": True,
+                    "framework_binding": binding_copy.get("binding_precision"),
+                    "path_constraints": [
+                        "MyBatis annotation statement uses textual ${...} substitution",
+                        "Mapper annotation line is the primary report coordinate",
+                        "dynamic SQL identifiers require allowlist validation",
+                    ],
+                }
+            )
+        enriched["evidence_pack"] = evidence
+        enriched["source"] = "MyBatis mapper annotation parameter(s): " + ", ".join(variables)
+        enriched["sink"] = "MyBatis annotation ${} text substitution"
+        enriched["mybatis_annotation_binding"] = binding_copy
+        positive = list(enriched.get("positive_evidence") or [])
+        positive.append(
+            "MyBatis annotation binding: "
+            f"{interface_name}.{method_name} variables={binding_copy.get('text_substitution_variables')} "
+            f"parameters={binding_copy.get('parameters')} precision={binding_copy.get('binding_precision')}."
+        )
+        enriched["positive_evidence"] = positive
+        return enriched
+
+    @staticmethod
+    def _mybatis_xml_project_file_candidates(
+        rel_path: str,
+        bindings: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Emit project-file level MyBatis XML SQLi candidates.
+
+        Mapper-method candidates are useful for call-chain validation, while
+        regression suites and real audits also need a file-scoped finding that
+        points at the XML statement itself.
+        """
+        candidates: List[Dict[str, Any]] = []
+        for binding in bindings:
+            if not isinstance(binding, dict):
+                continue
+            variables = [
+                str(item)
+                for item in (binding.get("text_substitution_variables") or [])
+                if str(item)
+            ]
+            if not variables:
+                continue
+            variable_lines = binding.get("variable_lines") if isinstance(binding.get("variable_lines"), dict) else {}
+            line = int(variable_lines.get(variables[0]) or binding.get("start_line") or -1)
+            statement_text = str(binding.get("statement_text") or "")
+            sink = f"MyBatis XML ${variables[0]} text substitution"
+            candidate_id = "JAVA_RULE_SQL_INJECTION_XML_" + hashlib.sha1(
+                f"java:mybatis-xml:{rel_path}:{binding.get('statement_id')}:{line}:{','.join(variables)}".encode("utf-8")
+            ).hexdigest()[:10]
+            function = f"<project-file>:{rel_path}"
+            mapper_function = ".".join(
+                part
+                for part in [
+                    str(binding.get("interface") or ""),
+                    str(binding.get("method") or ""),
+                ]
+                if part
+            )
+            binding_copy = deepcopy(binding)
+            evidence_pack = {
+                "candidate_id": candidate_id,
+                "candidate_source": "java_local_rule",
+                "defect_class": "sql_injection",
+                "rule": "java_mybatis_xml_project_text_substitution",
+                "rule_confidence": 0.86,
+                "language": "java",
+                "source": {
+                    "expression": ", ".join(binding.get("bound_variables") or variables),
+                    "kind": "mybatis_xml_mapper_parameter",
+                    "mapper_interface": binding.get("interface") or "",
+                    "mapper_method": binding.get("method") or "",
+                    "mapper_parameters": binding.get("parameters") or [],
+                    "line": line,
+                    "file": rel_path,
+                },
+                "sink": {
+                    "operation": sink,
+                    "statement": binding.get("statement_id"),
+                    "statement_kind": binding.get("statement_kind"),
+                    "line": line,
+                    "file": rel_path,
+                },
+                "path": {
+                    "function": function,
+                    "complete_in_function": True,
+                    "framework_binding": binding.get("binding_precision"),
+                    "guard_status": "insufficient_or_absent",
+                    "path_constraints": [
+                        "MyBatis XML statement uses textual ${...} substitution",
+                        "XML namespace/id is matched to mapper interface method when available",
+                        "dynamic SQL identifiers require allowlist validation",
+                    ],
+                },
+                "positive_evidence": [
+                    f"MyBatis XML statement `{binding.get('statement_id')}` in `{rel_path}` uses textual substitution variables {variables}.",
+                    f"Statement text: {statement_text}",
+                    f"Binding precision: {binding.get('binding_precision')}.",
+                ],
+                "negative_evidence": [],
+                "mybatis_xml_binding": binding_copy,
+                "evidence_refs": [],
+            }
+            description = (
+                "MyBatis XML mapper uses ${...} text substitution, which directly "
+                "concatenates mapper parameters into SQL."
+            )
+            candidates.append(
+                {
+                    "id": candidate_id,
+                    "candidate_id": candidate_id,
+                    "function": function,
+                    "secondary_function": mapper_function,
+                    "location": f"{rel_path}:{line}",
+                    "file": rel_path,
+                    "file_path": rel_path,
+                    "line": line,
+                    "start_line": line,
+                    "category": "sql_injection",
+                    "subcategory": "sql_injection",
+                    "defect_class": "sql_injection",
+                    "finding_kind": "java_rule_candidate",
+                    "candidate_source": "java_local_rule",
+                    "evidence_checker": "java_local_rule_checker",
+                    "rule": "java_mybatis_xml_project_text_substitution",
+                    "cwe": "CWE-89",
+                    "description": description,
+                    "root_cause": "MyBatis `${}` performs raw SQL text substitution instead of parameter binding.",
+                    "suggested_fix": "Use `#{}` for values. For ORDER BY or identifiers, map request values through an explicit allowlist or enum.",
+                    "confidence": 0.86,
+                    "rule_confidence": 0.86,
+                    "impact_level": "high",
+                    "reasoning": (
+                        f"Java project-file rule `java_mybatis_xml_project_text_substitution` matched "
+                        f"`{sink}` in `{rel_path}:{line}`. {description}"
+                    ),
+                    "code_snippet": statement_text,
+                    "source": "MyBatis XML mapper parameter(s): " + ", ".join(binding.get("bound_variables") or variables),
+                    "sink": sink,
+                    "dedup_key": "|".join(
+                        [
+                            "sql_injection",
+                            rel_path.replace("\\", "/").lower(),
+                            str(line),
+                            str(binding.get("statement_id") or ""),
+                            ",".join(variables),
+                        ]
+                    ),
+                    "positive_evidence": list(evidence_pack["positive_evidence"]),
+                    "negative_evidence": [],
+                    "evidence_pack": evidence_pack,
+                    "evidence_refs": [],
+                    "mybatis_xml_binding": binding_copy,
+                }
+            )
+        return candidates
+
+    @staticmethod
+    def _iter_java_auxiliary_rule_files(source_root: Path) -> Iterable[Path]:
+        suffixes = {".java", ".xml", ".properties", ".yml", ".yaml"}
+        blocked_parts = {".git", "target", "build", "out", ".gradle", ".idea", "__pycache__"}
+        for path in source_root.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in suffixes:
+                continue
+            if any(part in blocked_parts for part in path.parts):
+                continue
+            yield path
+
+    @staticmethod
+    def _java_file_may_contain_mybatis_annotation_substitution(text: str) -> bool:
+        return "${" in str(text or "") and bool(
+            re.search(r"@(Select|Insert|Update|Delete)\b", str(text or ""))
+        )
+
+    @staticmethod
+    def _java_auxiliary_file_may_contain_rule_signal(text: str) -> bool:
+        lowered = str(text or "").lower()
+        return any(
+            marker in lowered
+            for marker in (
+                "${",
+                "password",
+                "secret",
+                "apikey",
+                "api-key",
+                "accesskey",
+                "token",
+                "allowed-origins",
+                "allowedorigins",
+                "cors",
+                "mapper",
+                "<select",
+                "<insert",
+                "<update",
+                "<delete",
+            )
+        )

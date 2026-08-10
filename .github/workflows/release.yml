@@ -1,0 +1,53 @@
+name: Draft Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact v{package_version} tag
+        required: true
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: [self-hosted, linux, x64, zscope-release]
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - name: Verify protected tag and package version
+        run: |
+          python3 scripts/verify_release_version.py --tag '${{ inputs.tag }}'
+          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+      - name: Build wheelhouse from locked Python 3.13 dependencies
+        run: |
+          rm -rf dist/release dist/wheelhouse
+          mkdir -p dist/wheelhouse
+          python3 -m build --wheel
+          python3 -m pip download --require-hashes -r requirements/release/py313.txt -d dist/wheelhouse
+          cp dist/zscope-*.whl dist/wheelhouse/
+      - name: Build signed split assets and SBOMs
+        env:
+          Z_SCOPE_RELEASE_PRIVATE_KEY: ${{ secrets.Z_SCOPE_RELEASE_PRIVATE_KEY }}
+        run: |
+          umask 077
+          key_file="$(mktemp)"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s' "$Z_SCOPE_RELEASE_PRIVATE_KEY" > "$key_file"
+          bash scripts/build_release_assets.sh \
+            --runtime "$Z_SCOPE_CPYTHON_313_RUNTIME" \
+            --wheelhouse dist/wheelhouse \
+            --pip-pyz "$Z_SCOPE_PIP_PYZ" \
+            --cpp-deps "$Z_SCOPE_CPP_TOOLSET" \
+            --java-deps "$Z_SCOPE_JAVA_TOOLSET" \
+            --licenses "$Z_SCOPE_THIRD_PARTY_LICENSES" \
+            --private-key "$key_file"
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create '${{ inputs.tag }}' dist/release/* --draft --verify-tag --generate-notes

@@ -91,7 +91,12 @@ class CodeIndex:
         self.compile_commands_path = compile_commands_path
         self.include_paths = [Path(p).absolute() for p in (include_paths or [])]
         self.exclude_paths = [Path(p).absolute() for p in (exclude_paths or [])]
-        self.backend_name = indexing_config.backend if indexing_config else "joern"
+        self.backend_name = indexing_config.backend if indexing_config else "regex"
+        self.language = self._normalize_project_language(
+            getattr(indexing_config, "joern_language", None)
+            or getattr(indexing_config, "language", None)
+            or "c_cpp"
+        )
         self._capability_lock = threading.RLock()
         self._engine_capabilities: Dict[str, Dict[str, Any]] = {
             "index": {
@@ -146,32 +151,91 @@ class CodeIndex:
         # 根据配置自动创建后端
         if self._backend is None:
             self._backend = self._create_backend(indexing_config, wait_for_cpg)
+        elif "java" in type(self._backend).__name__.lower():
+            self.language = "java"
+            self.backend_name = (
+                "java_unified"
+                if "unified" in type(self._backend).__name__.lower()
+                else "java_source"
+            )
+        elif indexing_config is None:
+            # Historical callers inject the C/C++ Joern-compatible backend directly.
+            # Preserve that configured identity so fallback health remains truthful.
+            self.backend_name = "joern"
         self._refresh_capability_status(initial=True)
 
         if wait_for_cpg:
+            self._initialize_supplied_backend_if_needed()
             self._build_index()
             self._index_ready = True
             self._refresh_capability_status()
 
+    def _initialize_supplied_backend_if_needed(self) -> None:
+        """Initialize externally supplied real backends while leaving test stubs alone."""
+
+        if not self._backend:
+            return
+        initialize = getattr(self._backend, "initialize", None)
+        status = getattr(self._backend, "status", None)
+        if not callable(initialize) or not callable(status):
+            return
+        try:
+            if status() != "idle":
+                return
+            initialize(
+                str(self.source_root),
+                project_root=self.project_root,
+                compile_commands_path=(
+                    str(self.compile_commands_path) if self.compile_commands_path else None
+                ),
+                wait=True,
+                include_paths=self.include_paths,
+                exclude_paths=self.exclude_paths,
+            )
+        except Exception as exc:
+            logger.debug("Externally supplied backend initialization failed: %s", exc)
+
     def _create_backend(self, indexing_config, wait_for_cpg: bool) -> Optional[CodeBackend]:
         """根据 indexing_config 创建对应的后端实例。"""
-        backend_name = indexing_config.backend if indexing_config else "joern"
+        backend_name = indexing_config.backend if indexing_config else "regex"
+        if backend_name in {"", "auto", "language_auto"}:
+            backend_name = "java_unified" if self.language == "java" else "unified"
 
         if backend_name == "joern":
-            from .joern_backend import JoernBackend
             cfg = indexing_config
-            jb = JoernBackend(
-                joern_path=cfg.joern_path if cfg else "joern",
-                host=cfg.joern_server_host if cfg else "127.0.0.1",
-                port=cfg.joern_server_port if cfg else 8080,
-                heap_size=cfg.joern_heap_size if cfg else "8g",
+            language = self._normalize_project_language(
+                getattr(cfg, "joern_language", "c_cpp") if cfg else "c_cpp"
             )
+            if language == "java":
+                from .java_joern_backend import JavaJoernBackend
+
+                jb = JavaJoernBackend(
+                    joern_path=cfg.joern_path if cfg else "joern",
+                    host=cfg.joern_server_host if cfg else "127.0.0.1",
+                    port=cfg.joern_server_port if cfg else 8080,
+                    heap_size=cfg.joern_heap_size if cfg else "8g",
+                )
+            else:
+                from .joern_backend import JoernBackend
+
+                logger.warning(
+                    "C/C++ Joern backend is deprecated in Z-SCOPE 1.x and will be removed in 2.0; "
+                    "use indexing.backend=unified, clang, or regex"
+                )
+                jb = JoernBackend(
+                    joern_path=cfg.joern_path if cfg else "joern",
+                    host=cfg.joern_server_host if cfg else "127.0.0.1",
+                    port=cfg.joern_server_port if cfg else 8080,
+                    heap_size=cfg.joern_heap_size if cfg else "8g",
+                    language="c",
+                )
             cc_path = str(self.compile_commands_path) if self.compile_commands_path else None
             ok = jb.initialize(
                 str(self.source_root),
                 project_root=self.project_root,
                 compile_commands_path=cc_path,
                 wait=wait_for_cpg,
+                language=language,
                 include_paths=self.include_paths,
                 exclude_paths=self.exclude_paths,
             )
@@ -179,6 +243,68 @@ class CodeIndex:
                 logger.warning("Backend initialization failed, falling back to regex")
                 return None
             return jb
+
+        if backend_name == "java_source":
+            from .java_source_backend import JavaSourceBackend
+
+            cfg = indexing_config
+            java_backend = JavaSourceBackend(
+                frontend=getattr(cfg, "java_structure_frontend", "auto") if cfg else "auto",
+                extractor_command=(
+                    getattr(cfg, "java_structure_extractor_command", []) if cfg else []
+                ),
+                structure_db_path=self._java_structure_db_path(cfg),
+            )
+            ok = java_backend.initialize(
+                str(self.source_root),
+                project_root=self.project_root,
+                wait=wait_for_cpg,
+                include_paths=self.include_paths,
+                exclude_paths=self.exclude_paths,
+            )
+            if not ok and wait_for_cpg:
+                logger.warning("Java source backend init failed, falling back to regex")
+                return None
+            self.language = "java"
+            return java_backend
+
+        if backend_name == "java_unified":
+            from .java_unified_backend import JavaUnifiedBackend
+
+            cfg = indexing_config
+            java_backend = JavaUnifiedBackend(
+                structure_frontend=(
+                    getattr(cfg, "java_structure_frontend", "auto") if cfg else "auto"
+                ),
+                structure_extractor_command=(
+                    getattr(cfg, "java_structure_extractor_command", []) if cfg else []
+                ),
+                structure_db_path=self._java_structure_db_path(cfg),
+                signal_backends=getattr(cfg, "java_signal_backends", []) if cfg else [],
+                signal_provider_commands=(
+                    getattr(cfg, "java_signal_provider_commands", {}) if cfg else {}
+                ),
+                joern_path=getattr(cfg, "joern_path", "joern") if cfg else "joern",
+                joern_host=(
+                    getattr(cfg, "joern_server_host", "127.0.0.1")
+                    if cfg
+                    else "127.0.0.1"
+                ),
+                joern_port=getattr(cfg, "joern_server_port", 8080) if cfg else 8080,
+                joern_heap_size=getattr(cfg, "joern_heap_size", "8g") if cfg else "8g",
+            )
+            ok = java_backend.initialize(
+                str(self.source_root),
+                project_root=self.project_root,
+                wait=wait_for_cpg,
+                include_paths=self.include_paths,
+                exclude_paths=self.exclude_paths,
+            )
+            if not ok and wait_for_cpg:
+                logger.warning("Java unified backend init failed, falling back to regex")
+                return None
+            self.language = "java"
+            return java_backend
 
         if backend_name == "clang":
             from .clang_backend import ClangBackend
@@ -246,6 +372,21 @@ class CodeIndex:
 
         # regex 模式不需要后端
         return None
+
+    def _java_structure_db_path(self, indexing_config: Any) -> str:
+        configured = str(
+            getattr(indexing_config, "java_structure_db_path", "") or ""
+        ).strip()
+        if configured:
+            path = Path(configured)
+            return str(path if path.is_absolute() else (self.project_root / path).resolve())
+        knowledge_db = str(getattr(indexing_config, "knowledge_db_path", "") or "")
+        if knowledge_db:
+            path = Path(knowledge_db)
+            if not path.is_absolute():
+                path = self.project_root / path
+            return str(path.resolve().with_name("java_structure.db"))
+        return str((self.project_root / ".zscope_knowledge" / "java_structure.db").resolve())
 
     def ensure_index_ready(self, timeout: Optional[int] = None) -> bool:
         """Wait for backend and build index. For non-blocking mode."""
@@ -389,7 +530,9 @@ class CodeIndex:
             if backend_index:
                 self._backend_index_fallback = False
                 for raw_name, raw_info in backend_index.items():
-                    self._add_function_index_entry(str(raw_name), dict(raw_info or {}))
+                    info = dict(raw_info or {})
+                    aliases = info.get("aliases") if isinstance(info.get("aliases"), list) else None
+                    self._add_function_index_entry(str(raw_name), info, aliases=aliases)
             else:
                 logger.warning("Backend index returned empty, falling back to regex")
                 self._backend_index_fallback = True
@@ -413,7 +556,11 @@ class CodeIndex:
     ) -> str:
         """Store one function record under a stable canonical key plus safe aliases."""
         raw_name = str(info.get("name") or name or "").strip()
-        canonical_name = self._normalize_cpp_function_name(raw_name)
+        if info.get("language") == "java" and info.get("qualified_name"):
+            canonical_name = str(info.get("qualified_name") or "").strip()
+            self.language = "java"
+        else:
+            canonical_name = self._normalize_cpp_function_name(raw_name)
         if not canonical_name:
             return ""
 
@@ -604,17 +751,42 @@ class CodeIndex:
             method_file = str(method.get("filename") or "")
             if file_path and not self._paths_match_hint(method_file, file_path):
                 continue
+            method_full_name = str(
+                method.get("qualified_name")
+                or method.get("method_full_name")
+                or method.get("fullName")
+                or method.get("name")
+                or candidate
+            )
             method_record = {
+                "name": method.get("name") or candidate,
+                "qualified_name": method_full_name,
+                "method_full_name": method_full_name,
                 "file": method_file,
                 "start_line": method.get("lineNumber", -1),
                 "end_line": method.get("lineNumberEnd", -1),
                 "signature": method.get("signature", f"{candidate}(...)"),
+                "declaration_code": method.get("declaration_code", method.get("code", "")),
+                "annotations": method.get("annotations", []),
+                "parameter_annotations": method.get(
+                    "parameter_annotations", method.get("parameterAnnotations", [])
+                ),
+                "class_annotations": method.get(
+                    "class_annotations", method.get("classAnnotations", [])
+                ),
+                "framework_semantics": method.get("framework_semantics", {}),
+                "class_name": method.get("class_name", ""),
+                "package": method.get("package", ""),
+                "language": method.get("language") or self.language,
             }
             if "is_static" in method:
                 method_record["is_static"] = method.get("is_static")
             self._add_function_index_entry(
-                str(method.get("name") or candidate),
+                method_full_name
+                if method_record["language"] == "java"
+                else str(method.get("name") or candidate),
                 method_record,
+                aliases=[str(method.get("name") or ""), method_full_name.split(":", 1)[0]],
             )
             return True
         return False
@@ -794,6 +966,13 @@ class CodeIndex:
         normalized = re.sub(r"\s+", "", normalized)
         return normalized
 
+    @staticmethod
+    def _normalize_project_language(language: object) -> str:
+        text = str(language or "c_cpp").strip().lower().replace("-", "_")
+        if text in {"java", "javasrc", "java_src"}:
+            return "java"
+        return "c_cpp"
+
     def _normalize_function_query(self, name: str) -> str:
         query = str(name or "").strip()
         if not query:
@@ -878,6 +1057,8 @@ class CodeIndex:
         """Find all relevant source files using ripgrep or fallback to glob."""
         files = []
         extensions = {".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".ph", ".inc", ".inl"}
+        if self.language == "java":
+            extensions = {".java"}
         seen = set()
 
         bases_to_search = self.include_paths if self.include_paths else [self.source_root]
@@ -1599,12 +1780,32 @@ class CodeIndex:
             return cached_result
         try:
             lines = self._read_file_lines(file_path)
-            start = func_info["start_line"] - 1
-            end = func_info["end_line"]
+            is_java_method = func_info.get("language") == "java" or self.language == "java"
+            total_lines = len(lines)
+            raw_start_line = int(func_info.get("start_line") or 0)
+            raw_end_line = int(func_info.get("end_line") or 0)
+            synthetic_or_generated = False
+            if raw_start_line < 1 or raw_start_line > total_lines:
+                synthetic_or_generated = is_java_method
+                raw_start_line = min(max(raw_start_line, 1), max(total_lines, 1))
+            if raw_end_line < raw_start_line or raw_end_line > total_lines:
+                synthetic_or_generated = synthetic_or_generated or is_java_method
+                raw_end_line = min(
+                    max(raw_end_line, raw_start_line), max(total_lines, raw_start_line)
+                )
+            start = max(0, raw_start_line - 1)
+            end = raw_end_line
             if max_lines is not None and end - start > max_lines:
                 end = start + max_lines
             code_lines = lines[start:end]
-            if not self._code_range_has_function_body(code_lines):
+            if is_java_method and (synthetic_or_generated or not code_lines):
+                declaration = str(
+                    func_info.get("declaration_code") or func_info.get("signature") or ""
+                )
+                if declaration:
+                    code_lines = [declaration if declaration.endswith("\n") else declaration + "\n"]
+            has_function_body = self._code_range_has_function_body(code_lines)
+            if not has_function_body and not is_java_method:
                 if warn_missing:
                     logger.warning(
                         "Function '%s' matched a declaration without a body at %s",
@@ -1613,12 +1814,12 @@ class CodeIndex:
                     )
                 return None
             comment_blocks: List[Dict[str, Any]] = []
-            if include_context:
+            if include_context and not is_java_method:
                 comment_blocks = self._find_function_declaration_comments(
                     lookup_name,
                     file_path,
                 )
-                impl_comment = self._find_leading_c_comment_block(lines, func_info["start_line"])
+                impl_comment = self._find_leading_c_comment_block(lines, raw_start_line)
                 if impl_comment:
                     comment_blocks.append(
                         self._comment_block_payload(
@@ -1657,11 +1858,12 @@ class CodeIndex:
                 ),
                 "file": self._normalize_path(file_path),
                 "index_name": lookup_name,
-                "start_line": func_info["start_line"],
+                "language": func_info.get("language") or self.language,
+                "start_line": raw_start_line,
                 "end_line": (
-                    func_info["end_line"]
+                    raw_end_line
                     if max_lines is None
-                    else min(func_info["end_line"], start + max_lines + 1)
+                    else min(raw_end_line, start + max_lines + 1)
                 ),
                 "code": code,
                 "callees": callees,
@@ -1669,11 +1871,32 @@ class CodeIndex:
                 "is_static": self._function_record_is_static(func_info),
                 "truncated": (
                     max_lines is not None
-                    and (func_info["end_line"] - func_info["start_line"] + 1)
-                    > max_lines
+                    and (raw_end_line - raw_start_line + 1) > max_lines
                 ),
                 "comment_blocks": comment_blocks,
+                "declaration_only": not has_function_body,
+                "is_synthetic_or_generated": synthetic_or_generated,
             }
+            for key in (
+                "qualified_name",
+                "method_full_name",
+                "class_name",
+                "package",
+                "declaration_code",
+                "annotations",
+                "parameter_annotations",
+                "class_annotations",
+                "framework_semantics",
+            ):
+                if func_info.get(key):
+                    result[key] = func_info[key]
+            if result.get("language") == "java" and not result.get("framework_semantics"):
+                try:
+                    from ..semantics.java_frameworks import build_java_framework_semantics
+
+                    result["framework_semantics"] = build_java_framework_semantics(result)
+                except Exception:
+                    logger.debug("Failed to derive Java framework semantics", exc_info=True)
             return self._store_function_impl_cache(cache_key, result)
         except Exception as e:
             logger.exception("Failed to read function '%s': %s", raw_query, e)
@@ -1764,6 +1987,67 @@ class CodeIndex:
         if parsed_limit <= 0:
             return ordered[start:]
         return ordered[start : start + parsed_limit]
+
+    def find_java_methods_by_tokens(
+        self,
+        tokens: Sequence[str],
+        limit: int = 8,
+    ) -> List[Dict[str, Any]]:
+        """Return copies of Java method records ranked by normalized metadata tokens."""
+
+        normalized_tokens = [
+            self._normalize_java_method_search_token(token)
+            for token in tokens
+            if self._normalize_java_method_search_token(token)
+        ]
+        if not normalized_tokens:
+            return []
+        unique_tokens = list(dict.fromkeys(normalized_tokens))[:24]
+        matches: List[Tuple[int, int, str, Dict[str, Any]]] = []
+        with self._cache_lock:
+            records = [(key, dict(info)) for key, info in self._function_index.items()]
+        for key, info in records:
+            if str(info.get("language") or self.language).lower() != "java":
+                continue
+            haystack = self._normalize_java_method_search_token(
+                " ".join(
+                    str(value or "")
+                    for value in (
+                        key,
+                        info.get("name"),
+                        info.get("qualified_name"),
+                        info.get("method_full_name"),
+                        info.get("class_name"),
+                        info.get("package"),
+                        info.get("file"),
+                        info.get("filename"),
+                        info.get("signature"),
+                        info.get("declaration_code"),
+                    )
+                )
+            )
+            score = sum(1 for token in unique_tokens if token and token in haystack)
+            if score <= 0:
+                continue
+            file_path = str(info.get("file") or info.get("filename") or "")
+            java_path_bonus = int(file_path.replace("\\", "/").endswith(".java"))
+            copied = dict(info)
+            copied.setdefault("index_name", key)
+            matches.append((score, java_path_bonus, key, copied))
+        matches.sort(
+            key=lambda item: (
+                -item[0],
+                -item[1],
+                str(item[3].get("file") or item[3].get("filename") or ""),
+                int(item[3].get("start_line") or item[3].get("lineNumber") or 0),
+                item[2],
+            )
+        )
+        return [item[3] for item in matches[: max(1, int(limit or 8))]]
+
+    @staticmethod
+    def _normalize_java_method_search_token(value: Any) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
 
     def find_function_identities(
         self,

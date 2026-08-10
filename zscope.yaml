@@ -1,4 +1,4 @@
-# Z-SCOPE v1.2 配置文件
+# Z-SCOPE v1.3.1 C/C++ 配置示例
 #
 # 说明：
 # - 本文件字段来自 zscope/config/config.py 的 ConfigLoader.load()。
@@ -43,6 +43,7 @@ llms:                                      # 多模型配置；Agent 通过 llm_
     max_retries: 2                         # LLM 请求失败后的最大重试次数
 
 project:                                  # 被分析项目配置
+  language: c_cpp                         # auto | c_cpp | java
   root: .                                  # 项目根目录；相对路径基于当前工作目录解析
   source_root: .                           # 源码根目录；相对路径基于 project.root 解析
   entry_function: main                     # 单入口扫描的入口函数名；批量模式或自动发现时可留空
@@ -132,12 +133,7 @@ project:                                  # 被分析项目配置
       mcp_servers: []                      # 可选 MCP server 名称列表；兼容字段 mcpServers 也可被读取
 
 indexing:                                  # 代码索引和确定性后端配置
-  backend: unified                         # 后端类型：joern | clang | unified | regex
-
-  joern_path: joern                        # Joern 可执行文件路径；backend=joern 时使用
-  joern_server_host: 127.0.0.1             # Joern server 监听地址；backend=joern 时使用
-  joern_server_port: 8080                  # Joern server 监听端口；backend=joern 时使用
-  joern_heap_size: 8g                      # Joern JVM 堆大小；backend=joern 时使用
+  backend: unified                         # C/C++：auto | clang | unified | regex；Joern 仅 1.x 弃用兼容
 
   clangd_path: clangd                      # clangd 可执行文件路径；backend=clang/unified 时使用
   knowledge_db_path: .zscope_knowledge/code_knowledge.db # KnowledgeDB SQLite 文件路径
@@ -167,6 +163,11 @@ indexing:                                  # 代码索引和确定性后端配�
   #   - name: generic
   #     paths: ["src/pool/generic/**"]
   #     conflicts_with: ["liteos"]          # 可选：声明该共享池不能被哪些互斥池拉入
+
+rules:                                    # 显式规则扩展；用户 pack 不能覆盖同名规则
+  packs: []                               # 相对路径按 project.root 解析
+  providers: []                           # zscope.rule_providers entry point 名称
+  disabled_ids: []                        # 可关闭内置/扩展规则 ID
 
 analysis:                                  # 分析流程和缓存行为配置
   max_recursion_depth: 3                   # 函数调用递归分析最大深度，0表示禁用，-1表示无限制

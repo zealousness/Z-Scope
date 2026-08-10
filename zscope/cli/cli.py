@@ -28,7 +28,12 @@ from ..reporting.schema import apply_report_schema_v2, exit_code_for_report
 @click.option("--dashboard", "-d", is_flag=True, help="Launch the web dashboard to view results.")
 @click.option("--dashboard-host", default="0.0.0.0", show_default=True, help="Host/IP to bind for --dashboard.")
 @click.option("--dashboard-port", default=8000, show_default=True, type=int, help="Port to bind for --dashboard.")
-@click.option("--build-cpg", is_flag=True, help="Only build CPG and index, then exit.")
+@click.option("--build-index", is_flag=True, help="Build the configured language index, then exit.")
+@click.option(
+    "--build-cpg",
+    is_flag=True,
+    help="Deprecated 1.x alias for --build-index; removed in 2.0.",
+)
 @click.option("--mode", type=click.Choice(["default", "ruledriven", "alert-verify"]), default="default", help="Analysis mode.")
 @click.option("--sarif", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None, help="SARIF file for alert-verify mode.")
 @click.option("--resume", is_flag=True, default=False, help="Resume interrupted batch scan from last checkpoint.")
@@ -69,6 +74,7 @@ def main(
     dashboard: bool,
     dashboard_host: str,
     dashboard_port: int,
+    build_index: bool,
     build_cpg: bool,
     mode: str,
     sarif: Path,
@@ -91,7 +97,7 @@ def main(
     exit_policy: str,
 ):
     """
-    Z-SCOPE: AI-powered defect detection for C projects.
+    Z-SCOPE: AI-powered defect detection for C/C++ and Java projects.
     """
     setup_logging(verbose)
     logger = logging.getLogger("zscope.cli")
@@ -283,7 +289,14 @@ def main(
             sys.exit(0)
 
         if build_cpg:
-            click.echo("Building CPG and index...")
+            logger.warning(
+                "--build-cpg is deprecated in Z-SCOPE 1.x; use --build-index. "
+                "The compatibility alias is removed in 2.0."
+            )
+            build_index = True
+
+        if build_index:
+            click.echo("Building configured language index...")
             code_index = CodeIndex(
                 zscope_config.project.project_root,
                 zscope_config.project.compile_commands_path,
@@ -295,12 +308,17 @@ def main(
                 svf_parallel_workers=zscope_config.analysis.parallel_workers,
             )
             func_count = len(code_index.list_functions())
-            click.echo(f"CPG build complete. Indexed {func_count} functions.")
+            click.echo(f"Index build complete. Indexed {func_count} functions.")
             sys.exit(0)
 
         # ── Mode-specific analysis ──
 
         if mode == "ruledriven":
+            if zscope_config.project.language != "java":
+                logger.warning(
+                    "C/C++ --mode ruledriven is deprecated in Z-SCOPE 1.x and is removed in 2.0; "
+                    "ordinary C/C++ rules now enter the default candidate pipeline."
+                )
             logger.info("Rule-driven mode: running Joern rules + validation")
             from ..rules.analyzer import RuleDrivenAnalyzer
             code_index = CodeIndex(

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "zscope"
 dynamic = ["version"]
-description = "Z-SCOPE: AI-powered defect detection for C projects"
+description = "Z-SCOPE: AI-powered defect detection for C/C++ and Java projects"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
@@ -15,24 +15,30 @@ authors = [
 dependencies = [
     "openai>=1.0.0",
     "requests>=2.31.0",
-    "cpgqls-client>=0.0.5",
     "click>=8.1.0",
     "tqdm>=4.66.0",
     "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
+java = [
+    "cpgqls-client>=0.0.5",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
-    "black>=23.0.0",
-    "mypy>=1.5.0,<2.0",
+    "black==25.11.0",
+    "mypy==1.19.1",
     "types-PyYAML>=6.0.0",
     "types-requests>=2.31.0",
 ]
 
 [project.scripts]
 zscope = "zscope.cli.cli:main"
+zscope-init = "zscope.cli.init:main"
+zscope-doctor = "zscope.cli.doctor:main"
+zscope-rules = "zscope.cli.rules:main"
+zscope-maven-cache = "zscope.cli.maven_cache:main"
 
 [tool.setuptools.packages.find]
 include = ["zscope*"]

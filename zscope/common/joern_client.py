@@ -29,12 +29,14 @@ class JoernClient:
         host: str = "127.0.0.1",
         port: int = 8080,
         heap_size: str = "8g",
+        language: str = "c",
 
     ):
         self.joern_path = joern_path
         self.host = host
         self.port = port
         self.heap_size = heap_size
+        self.language = self._normalize_language(language)
 
         self._server_process: Optional[subprocess.Popen] = None
         self._cli_mode = False
@@ -153,8 +155,32 @@ class JoernClient:
         logger.error("CPG build verification timed out after %ds", timeout)
         return False
 
-    def _build_import_code_query(self, source_path_escaped: str, compile_commands_path: Optional[str] = None) -> str:
+    @staticmethod
+    def _normalize_language(language: Optional[str]) -> str:
+        text = str(language or "c").strip().lower().replace("-", "_")
+        aliases = {
+            "auto": "c",
+            "c_cpp": "c",
+            "cpp": "c",
+            "c++": "c",
+            "java_src": "java",
+            "javasrc": "java",
+        }
+        normalized = aliases.get(text, text or "c")
+        if normalized not in {"c", "java"}:
+            raise ValueError(f"Unsupported Joern language: {language!r}")
+        return normalized
+
+    def _build_import_code_query(
+        self,
+        source_path_escaped: str,
+        compile_commands_path: Optional[str] = None,
+        language: Optional[str] = None,
+    ) -> str:
         """Build importCode CPGQL query, optionally with compile_commands.json."""
+        normalized_language = self._normalize_language(language or self.language)
+        if normalized_language == "java":
+            return f'importCode.java(inputPath="{source_path_escaped}")'
         if compile_commands_path:
             cc_escaped = compile_commands_path.replace("\\", "\\\\")
             return (
@@ -169,10 +195,17 @@ class JoernClient:
         source_path: str,
         project_root: Optional[str] = None,
         compile_commands_path: Optional[str] = None,
+        language: Optional[str] = None,
     ) -> bool:
         """Build CPG from source directory or load existing cpg.bin."""
+        normalized_language = self._normalize_language(language or self.language)
         if self._cli_mode:
-            return self._import_cpg_via_cli(source_path, project_root, compile_commands_path)
+            return self._import_cpg_via_cli(
+                source_path,
+                project_root,
+                compile_commands_path,
+                language=normalized_language,
+            )
 
         import os
         logger.info("Importing CPG for source: %s", source_path)
@@ -190,7 +223,13 @@ class JoernClient:
         else:
             source_path_escaped = source_path.replace("\\", "\\\\")
             print(f"  [Joern] Building CPG for {source_path}...", flush=True)
-            result = self.query(self._build_import_code_query(source_path_escaped, compile_commands_path))
+            result = self.query(
+                self._build_import_code_query(
+                    source_path_escaped,
+                    compile_commands_path,
+                    language=normalized_language,
+                )
+            )
             if result is not None:
                 # importCode 可能异步返回项目引用，需要轮询确认 CPG 真正加载完成
                 if not self._wait_for_cpg_ready():
@@ -217,9 +256,12 @@ class JoernClient:
         source_path: str,
         project_root: Optional[str] = None,
         compile_commands_path: Optional[str] = None,
+        language: Optional[str] = None,
     ) -> bool:
         """Build or reuse a CPG for Joern CLI script execution."""
         import os
+
+        normalized_language = self._normalize_language(language or self.language)
 
         logger.info("Importing CPG via Joern CLI for source: %s", source_path)
         source = Path(source_path).resolve()
@@ -248,7 +290,8 @@ class JoernClient:
             "-o",
             str(cpg_path),
         ]
-        if compile_commands_path:
+        parse_cmd.extend(["--language", normalized_language])
+        if compile_commands_path and normalized_language == "c":
             parse_cmd.extend([
                 "--frontend-args",
                 "--compilation-database",
@@ -289,8 +332,10 @@ class JoernClient:
         source_path: str,
         project_root: Optional[str] = None,
         compile_commands_path: Optional[str] = None,
+        language: Optional[str] = None,
     ) -> None:
         """Start CPG build in background thread."""
+        normalized_language = self._normalize_language(language or self.language)
         with self._cpg_lock:
             if self._cpg_build_status == "building":
                 logger.warning("CPG build already in progress")
@@ -301,7 +346,12 @@ class JoernClient:
         def _build():
             try:
                 if self._cli_mode:
-                    self._import_cpg_via_cli(source_path, project_root, compile_commands_path)
+                    self._import_cpg_via_cli(
+                        source_path,
+                        project_root,
+                        compile_commands_path,
+                        language=normalized_language,
+                    )
                     return
                 import os
                 cpg_bin = os.path.join(source_path, "cpg.bin")
@@ -315,7 +365,13 @@ class JoernClient:
                     result = self.query(f'importCpg("{cpg_bin_escaped}")')
                 else:
                     source_path_escaped = source_path.replace("\\", "\\\\")
-                    result = self.query(self._build_import_code_query(source_path_escaped, compile_commands_path))
+                    result = self.query(
+                        self._build_import_code_query(
+                            source_path_escaped,
+                            compile_commands_path,
+                            language=normalized_language,
+                        )
+                    )
                     if result is not None and not self._wait_for_cpg_ready():
                         result = None
                 with self._cpg_lock:

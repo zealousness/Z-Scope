@@ -129,6 +129,67 @@ class SubAgentOrchestrator:
         ),
     ]
 
+    JAVA_RULES = [
+        (
+            "java_injection",
+            re.compile(
+                r"\b(Statement|createQuery|executeQuery|executeUpdate|execute|ProcessBuilder|Runtime\.getRuntime\(\)\.exec|"
+                r"InitialContext|lookup|DirContext|search|parseExpression|Template|ScriptEngine|eval)\b"
+            ),
+            "Actively audit Java injection: trace request/message/CLI/DTO input into SQL/JPA/NoSQL/LDAP/JNDI/command/template/expression/script sinks.",
+        ),
+        (
+            "java_web_security",
+            re.compile(
+                r"\b(RestTemplate|WebClient|HttpClient|URL|URI|Files\.|Paths\.|File\(|sendRedirect|setHeader|addHeader|"
+                r"MultipartFile|HttpServletRequest|ServletRequest|getHeader|getParameter|ZipInputStream|ZipFile|"
+                r"getResourceAsStream|setAllowedOrigins|CrossOrigin)\b"
+            ),
+            "Actively audit Java web boundary risks: SSRF, path traversal, upload/download, redirects, headers, cookies, CORS, and classpath resource traversal.",
+        ),
+        (
+            "java_deserialization",
+            re.compile(
+                r"\b(ObjectInputStream|readObject|enableDefaultTyping|activateDefaultTyping|parseObject|YAML|Yaml|XStream|"
+                r"DocumentBuilderFactory|SAXParserFactory|SAXReader|XMLInputFactory|ZipInputStream|ZipFile)\b"
+            ),
+            "Actively audit Java parser/deserialization/XML/archive materialization and required allowlists or XXE/Zip Slip guards.",
+        ),
+        (
+            "java_authz",
+            re.compile(
+                r"\b(deleteById|delete|save|update|setStatus|transfer|download|admin|permitAll|doFilter|preHandle|"
+                r"getHeader\(\"Authorization\"|@PreAuthorize|@Secured|RolesAllowed)\b",
+                flags=re.IGNORECASE,
+            ),
+            "Actively audit Java authn/authz boundaries, object/tenant checks, state-changing methods, filters, interceptors, and security config.",
+        ),
+        (
+            "java_crypto",
+            re.compile(
+                r"\b(Cipher\.getInstance|MessageDigest\.getInstance|Mac\.getInstance|Algorithm\.HMAC|JWT\.decode|JWT\.require|"
+                r"new Random|SecureRandom|HostnameVerifier|TrustManager|setHostnameVerifier|setSSLSocketFactory)\b"
+            ),
+            "Actively audit Java crypto/JWT/TLS/random/key handling and whether usage is security-sensitive.",
+        ),
+        (
+            "java_resource_lifecycle",
+            re.compile(
+                r"\b(new FileInputStream|new FileOutputStream|new FileReader|new FileWriter|Socket\(|Connection|Statement|"
+                r"PreparedStatement|ResultSet|readAllBytes|readString|File\.createTempFile|Files\.createTempFile|ZipInputStream|close\(\))\b"
+            ),
+            "Actively audit Java Closeable/JDBC/stream/archive/temp-file/resource-exhaustion lifecycle across normal and exceptional paths.",
+        ),
+        (
+            "java_concurrency",
+            re.compile(
+                r"\b(static\s+(?!final)|HashMap|ArrayList|SimpleDateFormat|Executor|CompletableFuture|@Async|Scheduled|"
+                r"synchronized|volatile|Atomic|ConcurrentHashMap|Thread\(|Timer)\b"
+            ),
+            "Actively audit Java singleton/shared mutable state, async/listener/scheduler races, unsafe publication, and compound operations.",
+        ),
+    ]
+
     def __init__(
         self,
         spec_registry: SpecRegistry,
@@ -156,6 +217,8 @@ class SubAgentOrchestrator:
         code: str,
         allowed_skills: Optional[List[str]] = None,
     ) -> List[SubAgentTicket]:
+        rules = self.JAVA_RULES if self._java_skill_scope(allowed_skills) else self.RULES
+        source_name = "java_active_source_rule" if rules is self.JAVA_RULES else "source_rule"
         lines = code.splitlines()
         tickets: List[SubAgentTicket] = []
         seen = set()
@@ -163,7 +226,7 @@ class SubAgentOrchestrator:
         for idx, line in enumerate(lines):
             clean = re.sub(r"^\s*(\d+)\s*\|\s*", "", line)
             line_no = self._extract_line_number(line, idx + 1)
-            for skill, pattern, task in self.RULES:
+            for skill, pattern, task in rules:
                 if allowed is not None and skill not in allowed:
                     continue
                 match = pattern.search(clean)
@@ -189,11 +252,12 @@ class SubAgentOrchestrator:
                     origin=f"{func_name}:{line_no}:{match.group(0)}",
                     sink=f"{func_name}:{line_no}:{match.group(0)}",
                     resource_kind=self._resource_kind_for_trigger(skill, match.group(0)),
-                    source="source_rule",
+                    source=source_name,
                     evidence={
                         "function": func_name,
                         "line": line_no,
                         "matched_text": clean.strip(),
+                        "language": "java" if source_name == "java_active_source_rule" else "",
                     },
                 )
                 tickets.append(ticket)
@@ -821,9 +885,29 @@ class SubAgentOrchestrator:
             return "stack_escape"
         if any(word in text for word in ("string", "format", "strcmp", "strlen", "termination")):
             return "string_and_format"
+        if any(word in text for word in ("sql", "jdbc", "jpa", "mybatis", "command", "processbuilder", "template", "expression", "ldap", "jndi")):
+            return "java_injection"
+        if any(word in text for word in ("ssrf", "path traversal", "upload", "download", "redirect", "cors", "servlet", "controller")):
+            return "java_web_security"
+        if any(word in text for word in ("deserialization", "readobject", "xxe", "xml", "xstream", "yaml", "zip slip")):
+            return "java_deserialization"
+        if any(word in text for word in ("authz", "authorization", "tenant", "idor", "permission", "role", "filter", "interceptor")):
+            return "java_authz"
+        if any(word in text for word in ("crypto", "cipher", "jwt", "random", "secret", "trustmanager", "hostnameverifier")):
+            return "java_crypto"
+        if any(word in text for word in ("closeable", "jdbc", "resultset", "stream", "readallbytes", "temp file")):
+            return "java_resource_lifecycle"
+        if any(word in text for word in ("java race", "unsafe publication", "executor", "completablefuture", "static mutable")):
+            return "java_concurrency"
         if any(word in text for word in ("ownership", "contract", "logic", "caller", "callee")):
             return "ownership_contract"
         return "ownership_contract"
+
+    @staticmethod
+    def _java_skill_scope(allowed_skills: Optional[List[str]]) -> bool:
+        if allowed_skills is None:
+            return False
+        return any(str(skill).startswith("java_") for skill in allowed_skills)
 
     @staticmethod
     def _extract_snapshot_line(point: Dict[str, Any], fallback: int) -> int:
@@ -860,6 +944,12 @@ class SubAgentOrchestrator:
             return "lock"
         if any(word in text for word in ("string", "strcmp", "strncmp", "strlen", "format")):
             return "string"
+        if any(word in text for word in ("jdbc", "connection", "resultset", "stream", "closeable", "temp")):
+            return "java_resource"
+        if any(word in text for word in ("url", "uri", "http", "file", "path", "upload", "download")):
+            return "java_boundary"
+        if any(word in text for word in ("jwt", "cipher", "secret", "random", "tls")):
+            return "java_crypto"
         return "unknown"
 
     @staticmethod

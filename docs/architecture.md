@@ -1,16 +1,16 @@
-# Z-SCOPE 架构文档（v1.3）
+# Z-SCOPE 架构文档（v1.3.1）
 
 ## 1. 架构定位
 
-Z-SCOPE 是面向大型 C 项目的证据优先静态分析平台。系统以结构化代码事实、程序分析后端信号、项目语义快照和多智能体验证为基础，构建可审计、可恢复、可扩展的缺陷发现流水线。
+Z-SCOPE 是面向大型 C/C++ 项目的证据优先静态分析平台，并提供 Java Preview。系统以结构化代码事实、程序分析后端信号、项目语义快照和多智能体验证为基础，构建可审计、可恢复、可扩展的缺陷发现流水线。
 
-平台采用“静态事实先行、语义推理收敛”的架构原则。C 语言内存、资源生命周期和并发问题首先由索引、规则、SVF/Saber、Joern 等确定性或半确定性机制产生可复核证据；LLM Agent 负责在受控上下文中补全跨模块意图、判断业务约束、验证可利用性，并将结果收敛为可追踪报告。
+平台采用“静态事实先行、语义推理收敛”的架构原则。C/C++ 内存、资源生命周期和并发问题首先由 Regex、Clang、SVF/Saber 与规则产生证据；Java 由 source/java_unified 结构索引、SootUp/WALA/Joern 信号和 Java 规则产生证据。LLM Agent 负责在受控上下文中补全跨模块意图、判断业务约束、验证可利用性，并将结果收敛为可追踪报告。C/C++ Joern 在 1.x 中仅保留弃用兼容入口。
 
 Z-SCOPE 的定位可以归纳为三个层面：
 
 | 层面 | 定位 |
 |------|------|
-| 工具属性 | 面向 C/C++ 安全审计的本地化 SAST 与 AI 验证平台 |
+| 工具属性 | 面向 C/C++ 安全审计、提供 Java Preview 的本地化 SAST 与 AI 验证平台 |
 | 架构属性 | 事实平面、证据平面、智能体平面、反馈平面分层解耦 |
 | 使用属性 | 支持批量扫描、diff impact 变更审计、增量维护、断点续扫、SARIF 告警复核与导出、WebUI 与 MCP 接入 |
 
@@ -27,7 +27,7 @@ Z-SCOPE 的定位可以归纳为三个层面：
 
 Z-SCOPE 的架构目标可以概括为四句话：
 
-1. **高检出**：多个来源并行产生候选，包括 Clang/Joern/SVF 后端事实、通用 C 规则、跨函数图候选、入口发现、diff impact 受影响入口、语义快照和 LLM 挖掘。
+1. **高检出**：多个来源并行产生候选，包括 Clang/SVF、Java 结构与信号提供器、通用规则、跨函数图候选、入口发现、diff impact 受影响入口、语义快照和 LLM 挖掘。
 2. **低误报**：每个候选必须携带 source/sink、路径、对象或锁、正反证据、稳定去重键，并经过 Validator、评分、用户反馈和报告分层。
 3. **可恢复**：所有关键中间产物和最终报告落地到 SQLite/JSON，支持断点续扫、增量维护和失败后的继续分析。
 4. **可演进**：后端、Agent、Skill、Workflow、MCP 工具和 Web 反馈均是边界清晰的可插拔模块。
@@ -52,7 +52,8 @@ flowchart TB
         Index["CodeIndex<br/>统一查询接口"]
         Regex["Regex"]
         Clang["Clang / clangd"]
-        Joern["Joern / CPG"]
+        JavaSource["Java source structure"]
+        JavaUnified["Java unified<br/>SootUp + WALA + Joern signals"]
         Unified["Unified<br/>Clang + SVF<br/>entry clusters"]
         KDB["KnowledgeDB v7<br/>代码事实 + macro + IR"]
     end
@@ -84,7 +85,8 @@ flowchart TB
     Workflow --> Index
     Index --> Regex --> KDB
     Index --> Clang --> KDB
-    Index --> Joern --> KDB
+    Index --> JavaSource --> KDB
+    Index --> JavaUnified --> KDB
     Index --> Unified --> KDB
     Workflow --> Snapshot
     Workflow --> UserCfg
@@ -114,14 +116,14 @@ flowchart TB
 
 总体架构由四个主平面组成。事实平面负责代码索引和程序事实沉淀；证据平面负责候选生成、去重、合并、diff impact 入口选择和风险预算输入；智能体平面负责语义建模、漏洞挖掘、聚焦深挖、问题调和和三态验证；反馈平面通过 SnapshotStore、UserConfigStore 与 ReviewMemory 保留语义快照、最终报告、人工抑制、baseline 和 Validator 记忆。UserConfigStore 当前既能读取历史 SQLite 配置，也能以 `user_config.xlsx` 作为人工可审阅的主配置界面，并用同名旁路 state DB 保存反馈状态。LLM Agent 通过受 ToolPolicy 约束的 ToolsRuntime 访问被索引、被切片、被缓存、被配置增强过的事实；LLMClient 还可以在同一 profile 的多个 endpoint 间做容量选择和 cooldown；实际可见工具会经过 `AGENT.md` 白名单和后端能力 gate，分析过程与底层代码库保持可追踪边界。
 
-v1.3 在 v1.2 主平面上收敛候选与验证生命周期：项目级 `DecisionFact` 只构建一次，入口只登记 occurrence 与调用约束；全局 validation group 共享确定性 proof、一次 Validator session 和 canonical outcome；`FindingRoot v1` 负责结构化报告投影；`ValidatorEvidenceSlice v2` 与类型化补证限制重复上下文和开放式多轮推理。预算只观测超限，不得把服务可用时的候选提前终止。
+v1.3.1 在既有候选生命周期上增加语言隔离：`project.language` 决定 C/C++ 与 Java 后端、规则、Skill 和语义 schema；公共 `RuleRegistry` 只加载显式配置的 YAML pack 和指定 entry point，重复 ID、未知字段、语言错配与缺失 Skill 直接失败。Python 3.9–3.14、离线资产、签名/SBOM 和发布门禁构成新的交付平面。`zscope.candidate.v3.3` 是内部候选协议，不是产品版本号。
 
 v1.2 没有替换 v1.1 的主平面；该版本的架构增量集中在性能、精度和可审计性：diff impact 从反向入口枚举收敛为语义义务与覆盖计划；Unified/SVF 增加入口聚类、互斥/共享 bitcode pool 与缓存 manifest；Clang/KnowledgeDB 强化增量缓存、macro 和删除文件处理；Validator、alert-verify 与 LLM 客户端增加并行、fast-path、endpoint 容量控制和成本统计。v1.0 已经把原来集中在 `Analyzer` 和 `zscope/core/*.py` 的职责拆成可测试模块：
 
 | 模块 | 主要文件 | 职责 |
 |------|----------|------|
 | Analysis | `zscope/core/analysis/analyzer.py` | 顶层协调器，装配 pipelines、agents、tools、workflow、budget、snapshot 与 agent policy |
-| Candidates | `zscope/core/candidates/` | regex、Clang AST/CFG、SVF/Saber、Graph、Joern/KnowledgeDB 后端信号和 candidate evidence |
+| Candidates | `zscope/core/candidates/` | regex、Clang AST/CFG、SVF/Saber、Java rules/signals、Graph、KnowledgeDB 后端信号和 candidate evidence |
 | Validation | `zscope/core/validation/` | Validator evidence pack、验证运行、suppression、baseline、score、`needs_review` 分流 |
 | Reporting | `zscope/reporting/` | `FinalReport`、JSON/Markdown、report views、semantic dedup metadata、SARIF v2.1.0 |
 | Identity | `zscope/common/issue_identity.py` | `canonical_issue_key`、`stable_issue_fingerprint`、source context fingerprint、根因级去重 |
@@ -185,8 +187,10 @@ diff impact 模式由 CLI 的 `--diff-base` 启用，不能与 `--resume` 或 `-
 |------|----------|----------|
 | `regex` | 轻量函数提取和源码片段读取 | 无外部依赖的回退模式 |
 | `clang` | clangd LSP 批量提取函数、类型、调用、宏、全局变量 | 常规结构化 C 索引路径 |
-| `joern` | CPGQL 查询与 Joern 规则扫描 | 规则驱动模式和 CPG 查询 |
+| `joern` | Java CPG 信号；C/C++ 仅 1.x 弃用兼容 | Java Preview 或旧配置迁移 |
 | `unified` | ClangBackend + SVF/Saber，共享 KnowledgeDB | 需要间接调用、指针分析、内存缺陷后端信号的深度模式 |
+| `java_source` | Java 源码结构、框架注解与方法索引 | 最小 Java Preview |
+| `java_unified` | Java structure + SootUp/WALA/Joern provider evidence | Java Preview 默认深度模式 |
 
 `KnowledgeDB` 当前 schema v7 不只保存传统代码事实，也保存 macro 与 Inspection IR：
 
