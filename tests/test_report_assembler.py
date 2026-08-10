@@ -65,7 +65,7 @@ def test_report_assembler_builds_views_and_persists(tmp_path: Path) -> None:
     assert report.overall_verdict == "issues_found"
     assert report.metadata["run_id"] == "RUN1"
     assert [item["id"] for item in state["observations"]] == ["OBS_1"]
-    assert state["observations"][0]["candidate_schema_version"] == "zscope.candidate.v3.2"
+    assert state["observations"][0]["candidate_schema_version"] == "zscope.candidate.v3.3"
     assert state["observations"][0]["run_issue_uid"].startswith("RUNISSUE_")
     assert saved["schema_version"] == 2
     assert saved["finding_status"] == "confirmed"
@@ -281,5 +281,37 @@ def test_report_assembler_does_not_read_mutable_shared_ledger(tmp_path: Path) ->
     }
 
     assembler.build(state)
-
     assert state["observations"] == []
+
+
+def test_report_assembler_marks_undrained_validation_queue_incomplete(
+    tmp_path: Path,
+) -> None:
+    assembler = ReportAssembler(
+        ReportGenerator(tmp_path),
+        None,
+        resolve_issue_locations=lambda items: None,
+        deduplicate_observations=lambda items: items,
+        metadata_factory=lambda state: {"run_id": state["run_id"]},
+    )
+    state = {
+        "run_id": "UNDRAINED",
+        "entry_func": "entry",
+        "agent_context": {"location": "src/demo.c:1"},
+        "issues": [],
+        "verified_hist_issues": [],
+        "observations": [],
+        "notes": [],
+        "any_failure": False,
+        "validation_queue_drained": False,
+        "budget_exhaustion_policy": "observe",
+    }
+
+    assembler.build(state)
+    saved = assembler.persist(state, write_root_reports=False)
+
+    assert saved["completeness"] == "degraded"
+    assert saved["run_manifest"]["valid"] is False
+    assert saved["run_manifest"]["validation_queue_drained"] is False
+    assert saved["run_manifest"]["release_gate_status"]["runtime_valid"] is False
+    assert "validation_queue_not_drained" in saved["run_manifest"]["release_gate_status"]["blockers"]

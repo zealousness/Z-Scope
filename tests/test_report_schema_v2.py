@@ -433,7 +433,7 @@ def test_report_reuse_requires_complete_compatible_manifest_without_pending_work
         "candidate_terminal_states": [],
         "run_manifest": {
             "valid": True,
-                "candidate_schema_version": "zscope.candidate.v3.2",
+            "candidate_schema_version": "zscope.candidate.v3.3",
             "config_hash": "CONFIG",
             "model_manifest_hash": "MODEL",
             "source_revision": "REV",
@@ -476,3 +476,15 @@ def test_report_reuse_requires_complete_compatible_manifest_without_pending_work
     assert "candidate_schema_mismatch" in report_reuse_blockers(
         legacy_candidate_schema
     )
+
+    v32_candidate_schema = {
+        **reusable,
+        "run_manifest": {
+            **reusable["run_manifest"],
+            "candidate_schema_version": "zscope.candidate.v3.2",
+        },
+    }
+    assert "candidate_schema_mismatch" in report_reuse_blockers(
+        v32_candidate_schema
+    )
+    assert not report_is_reusable(v32_candidate_schema)

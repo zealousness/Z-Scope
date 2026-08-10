@@ -476,6 +476,22 @@ class Analyzer:
             "canonical_outcome_projection_enabled": bool(
                 getattr(self.config.analysis, "canonical_outcome_projection", True)
             ),
+            "finding_root_v1_enabled": bool(
+                getattr(self.config.analysis, "finding_root_v1", False)
+            ),
+            "budget_exhaustion_policy": str(
+                getattr(self.config.analysis, "budget_exhaustion_policy", "observe")
+                or "observe"
+            ),
+            "validation_queue_drained": False,
+            "validator_session_count": 0,
+            "validator_api_call_count": 0,
+            "validator_turn_distribution": {},
+            "validator_prompt_tokens_by_stage": {},
+            "evidence_slice_token_count": 0,
+            "multi_turn_outlier_count": 0,
+            "snapshot_model_call_count": 0,
+            "fact_query_cache_hit_count": 0,
             "deferred_deterministic_work": [],
             "engine_capabilities": self._engine_capabilities(),
             "total_context_tokens": 0,
@@ -3815,6 +3831,9 @@ class Analyzer:
         enable_context_v32 = bool(
             getattr(analysis_cfg, "decision_context_v32", False)
         )
+        enable_context_v33 = bool(
+            getattr(analysis_cfg, "decision_context_v33", False)
+        )
         for issue in issues:
             evidence_pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
             issue_checker = str(issue.get("evidence_checker") or evidence_pack.get("checker") or checker)
@@ -3842,6 +3861,8 @@ class Analyzer:
                 issue["decision_context_v31"] = True
             if enable_context_v32:
                 issue["decision_context_v32"] = True
+            if enable_context_v33:
+                issue["decision_context_v33"] = True
             envelope = annotate_issue_identity(
                 issue,
                 project_id=project_id,
@@ -3902,6 +3923,9 @@ class Analyzer:
         enable_context_v32 = bool(
             getattr(analysis_cfg, "decision_context_v32", False)
         )
+        enable_context_v33 = bool(
+            getattr(analysis_cfg, "decision_context_v33", False)
+        )
         for issue in issues:
             if not isinstance(issue, dict):
                 continue
@@ -3915,6 +3939,8 @@ class Analyzer:
                 issue["decision_context_v31"] = True
             if enable_context_v32:
                 issue["decision_context_v32"] = True
+            if enable_context_v33:
+                issue["decision_context_v33"] = True
             envelope = annotate_issue_identity(
                 issue,
                 project_id=str(

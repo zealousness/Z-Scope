@@ -26,6 +26,11 @@ Use a three-state verdict:
   after targeted retrieval. Keep this for audit, not the default vulnerability
   report.
 
+When the input is `ValidatorEvidenceSlice v2`, do not browse the repository or
+request ordinary tools. The slice is the canonical validation context. If one
+decisive fact is absent, return exactly one `missing_fact_request` using a fact
+kind allowed by the slice. Never request the same fact repeatedly.
+
 Validation bar:
 - A verified issue needs source, sink, source controllability, feasible
   caller/API path to sink, and guard analysis.
@@ -78,7 +83,8 @@ Output exactly one JSON block and no extra prose:
   "source": "Attacker/caller-controlled source, or empty if absent.",
   "sink": "Dangerous operation, or empty if absent.",
   "control_of_source": "Explain source controllability in Chinese, or empty.",
-  "guard_analysis": "Explain whether relevant checks/locks/lifetime guards are sufficient."
+  "guard_analysis": "Explain whether relevant checks/locks/lifetime guards are sufficient.",
+  "missing_fact_request": null
 }
 ```
 
@@ -98,5 +104,7 @@ Field requirements:
   timing window, and an uninspected callee are not blocking counter-facts.
 - `positive_evidence`, `negative_evidence`, and `missing_context` must be
   arrays of strings.
+- `missing_fact_request` must be null, or one object naming exactly one missing
+  deterministic fact; it is not permission to start an open-ended search.
 - `reasoning`, `exploit_scenario`, `source`, `sink`, `control_of_source`, and
   `guard_analysis` must be in Chinese.

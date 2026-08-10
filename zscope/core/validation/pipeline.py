@@ -651,6 +651,7 @@ class ValidationPipeline:
         if str(issue.get("decision_context_version") or "") not in {
             "zscope.decision-context.v3.1",
             "zscope.decision-context.v3.2",
+            "zscope.decision-context.v3.3",
         }:
             return False
         fact_slice = issue.get("decision_fact_slice")

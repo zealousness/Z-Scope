@@ -29,6 +29,9 @@ class ValidatorAgent(JsonToolAgent):
         )
 
     def run(self, input_data: Dict[str, Any], max_retries: int = 2) -> AgentResponse:
+        if isinstance(input_data.get("evidence_slice"), dict):
+            return self._run_evidence_slice_protocol(input_data)
+
         finding = input_data.get("finding")
         context_code = input_data.get("context_code")
         evidence_pack = input_data.get("evidence_pack")
@@ -149,6 +152,122 @@ class ValidatorAgent(JsonToolAgent):
             error=f"Failed after {max_retries} validation attempt(s): {last_error}",
             metadata=dict(token_metadata, validator_last_error_type=last_error),
         )
+
+    def _run_evidence_slice_protocol(
+        self,
+        input_data: Dict[str, Any],
+    ) -> AgentResponse:
+        """Close one Validator session in at most two no-browsing responses."""
+
+        evidence_slice = input_data["evidence_slice"]
+        finding_uid = str(input_data.get("finding_uid") or "unknown")
+        prompt = (
+            "ValidatorEvidenceSlice v2:\n"
+            + json.dumps(evidence_slice, ensure_ascii=False, separators=(",", ":"))
+            + "\n\nReturn exactly one validation_result JSON object. Do not request "
+            "code-browsing tools. If one decisive deterministic fact is absent, "
+            "return verdict=uncertain and one missing_fact_request whose fact_kind "
+            "is chosen from the slice contract."
+        )
+        messages = self._messages(input_data, prompt)
+        token_metadata: Dict[str, Any] = {
+            "context_tokens": 0,
+            "cumulative_prompt_tokens": 0,
+            "cumulative_completion_tokens": 0,
+            "cumulative_total_tokens": 0,
+            "iterations": 0,
+            "tool_call_count": 0,
+            "validator_fast_path_attempted": 1,
+            "validator_fast_path_accepted": 0,
+            "validator_repair_attempted": 0,
+            "validator_repair_accepted": 0,
+            "validator_final_tool_call_count": 0,
+            "validator_session_count": 1,
+            "validator_api_call_count": 0,
+            "multi_turn_outlier_count": 0,
+            "evidence_slice_token_count": int(
+                input_data.get("evidence_slice_token_count") or 0
+            ),
+        }
+        try:
+            result = self._run_tool_conversation(
+                messages,
+                max_iterations=1,
+                trace_label=f"evidence_slice_v2; finding={finding_uid[:120]}",
+            )
+            self._merge_result_metadata(token_metadata, result)
+            parsed = self._extract_validation_payload(
+                str(result.get("content") or ""),
+                result,
+                result.get("conversation", []),
+            )
+            if parsed:
+                token_metadata["validator_fast_path_accepted"] = 1
+                self._finalize_slice_metadata(token_metadata)
+                return AgentResponse(
+                    success=True,
+                    data=parsed,
+                    metadata=dict(token_metadata),
+                )
+
+            error_type, _json_blocks = self._classify_invalid_result(
+                str(result.get("content") or ""),
+                result,
+                result.get("conversation", []),
+            )
+            repaired = self._run_json_repair(
+                messages,
+                result,
+                error_type=error_type,
+                attempt=1,
+                finding={"id": finding_uid},
+                token_metadata=token_metadata,
+            )
+            if repaired:
+                self._finalize_slice_metadata(token_metadata)
+                return AgentResponse(
+                    success=True,
+                    data=repaired,
+                    metadata=dict(token_metadata),
+                )
+
+            self._finalize_slice_metadata(token_metadata)
+            return AgentResponse(
+                success=True,
+                data={
+                    "type": "validation_result",
+                    "issue_id": finding_uid,
+                    "verdict": "uncertain",
+                    "finding_kind": "audit_observation",
+                    "is_valid": False,
+                    "confidence_score": 0.0,
+                    "reasoning": (
+                        "Validator output did not satisfy the structured v2 contract; "
+                        "the candidate remains reviewable and was not discarded."
+                    ),
+                    "positive_evidence": [],
+                    "negative_evidence": [],
+                    "blocking_negative_evidence": False,
+                    "missing_context": ["validator_protocol_output"],
+                    "protocol_exhausted": True,
+                },
+                metadata=dict(token_metadata),
+            )
+        except Exception as exc:
+            self._finalize_slice_metadata(token_metadata)
+            return AgentResponse(
+                success=False,
+                data={},
+                error=str(exc),
+                metadata=dict(token_metadata),
+            )
+
+    @staticmethod
+    def _finalize_slice_metadata(metadata: Dict[str, Any]) -> None:
+        turns = int(metadata.get("iterations", 0) or 0)
+        metadata["validator_api_call_count"] = turns
+        metadata["multi_turn_outlier_count"] = 1 if turns > 2 else 0
+        metadata["validator_turn_count"] = turns
 
     def _run_fast_path(
         self,
@@ -279,6 +398,34 @@ class ValidatorAgent(JsonToolAgent):
                 "sink": {"type": "string"},
                 "control_of_source": {"type": "string"},
                 "guard_analysis": {"type": "string"},
+                "missing_fact_request": {
+                    "type": ["object", "null"],
+                    "properties": {
+                        "fact_kind": {
+                            "type": "string",
+                            "enum": [
+                                "guard_dominance",
+                                "caller_contract",
+                                "source_controllability",
+                                "ownership_transfer",
+                                "cleanup_coverage",
+                                "lockset",
+                                "happens_before",
+                                "object_identity",
+                                "value_range",
+                                "source_sink_reachability",
+                                "signal_context",
+                                "container_reachability",
+                                "type_layout"
+                            ]
+                        },
+                        "subject_uid": {"type": "string"},
+                        "function_uid": {"type": "string"},
+                        "reason": {"type": "string"}
+                    },
+                    "required": ["fact_kind", "reason"],
+                    "additionalProperties": False
+                },
             },
             "required": ["type", "verdict", "reasoning", "blocking_negative_evidence"],
             "additionalProperties": True,
@@ -469,8 +616,19 @@ class ValidatorAgent(JsonToolAgent):
         content: str,
         result: Dict[str, Any],
         conversation: Iterable[Dict[str, Any]],
+        *,
+        json_output_spec: Optional[JsonOutputSpec] = None,
     ) -> int:
-        count = len(list(self._validation_result_tool_payloads(result, conversation)))
+        # ``JsonToolAgent._run_json_final_repair`` classifies its final response
+        # through the base keyword-aware interface.  Keep this Validator
+        # override substitutable so a malformed/truncated response becomes a
+        # bounded protocol outcome rather than an operational TypeError.
+        if json_output_spec is not None:
+            count = len(
+                list(self._final_tool_payloads(result, conversation, json_output_spec))
+            )
+        else:
+            count = len(list(self._validation_result_tool_payloads(result, conversation)))
         for text in self._text_sources(content, result, conversation):
             count += len(extract_json_blocks(text))
         return count
