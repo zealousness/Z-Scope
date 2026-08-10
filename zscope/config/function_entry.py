@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class FunctionEntry:
     """
     Single function entry for batch analysis.
-    
+
     Attributes:
         function_name: Name of the function to analyze
         custom_prompt: Optional custom prompt to append to agent's base task
@@ -25,6 +25,7 @@ class FunctionEntry:
             same-name declarations within one translation unit
         diff_focus: Optional diff-impact metadata used by diff mode
     """
+
     function_name: str
     custom_prompt: Optional[str] = None
     file_path: Optional[str] = None
@@ -32,7 +33,7 @@ class FunctionEntry:
     diff_focus: Optional[Dict[str, Any]] = None
     exposure: Optional[str] = None
     reasons: List[str] = field(default_factory=list)
-    
+
     def __post_init__(self):
         self.function_name = str(self.function_name).strip()
         if not self.function_name:
@@ -79,15 +80,21 @@ class FunctionEntry:
     def identity_key(self, project_root: Optional[Path] = None) -> str:
         """Return the canonical entry identity.
 
-        New entries use implementation file plus complete signature.  The
-        name-only form is retained for one compatibility cycle when legacy
-        entry lists do not yet carry either field.
+        New entries use implementation file plus a complete callable
+        identity. Some frontends (notably Java) store a return-and-parameter
+        descriptor that omits the qualified method name, so retain the name
+        alongside such a descriptor. The name-only form is retained for one
+        compatibility cycle when legacy entry lists do not yet carry either
+        field.
         """
         file_path = self.normalized_file_path(project_root)
         signature = self.normalize_signature(self.signature)
         if not file_path and not signature:
             return self.function_name
-        return f"{file_path or '<unknown>'}::{signature or self.function_name}"
+        callable_identity = signature or self.function_name
+        if signature and self.function_name not in signature:
+            callable_identity = f"{self.function_name}::{signature}"
+        return f"{file_path or '<unknown>'}::{callable_identity}"
 
     def lookup_query(self) -> str:
         """Prefer the complete signature for overload-safe index lookup."""
@@ -196,18 +203,18 @@ class FunctionListLoader:
         focus.setdefault("affected_paths", [])
         focus.setdefault("fallback_reasons", [])
         return focus
-    
+
     @staticmethod
     def load(json_path: Path) -> List[FunctionEntry]:
         """
         Load function entries from JSON file.
-        
+
         Args:
             json_path: Path to JSON file containing function entries
-            
+
         Returns:
             List of FunctionEntry objects
-            
+
         Raises:
             FileNotFoundError: If JSON file doesn't exist
             ValueError: If JSON format is invalid
@@ -215,9 +222,9 @@ class FunctionListLoader:
         json_path = Path(json_path)
         if not json_path.exists():
             raise FileNotFoundError(f"Function list file not found: {json_path}")
-        
+
         try:
-            raw_json = json_path.read_text(encoding='utf-8')
+            raw_json = json_path.read_text(encoding="utf-8")
             data = json.loads(raw_json)
         except json.JSONDecodeError as e:
             if logger.isEnabledFor(logging.DEBUG):
@@ -227,54 +234,52 @@ class FunctionListLoader:
                     raw_json,
                 )
             raise ValueError(f"Invalid JSON in {json_path}: {e}")
-        
+
         if not isinstance(data, dict):
             raise ValueError(f"JSON root must be an object, got {type(data).__name__}")
-        
-        diff_impact = data.get('diff_impact') if isinstance(data.get('diff_impact'), dict) else {}
+
+        diff_impact = data.get("diff_impact") if isinstance(data.get("diff_impact"), dict) else {}
         is_diff_impact = FunctionListLoader._is_diff_impact_payload(data)
 
-        if 'functions' not in data:
+        if "functions" not in data:
             raise ValueError("JSON must contain 'functions' array")
-        
-        functions_data = data['functions']
+
+        functions_data = data["functions"]
         if not isinstance(functions_data, list):
             raise ValueError(f"'functions' must be an array, got {type(functions_data).__name__}")
-        
+
         entries = []
         for idx, func_data in enumerate(functions_data):
             if not isinstance(func_data, dict):
                 logger.warning(f"Skipping invalid entry at index {idx}: not an object")
                 continue
-            
+
             try:
-                function_name = func_data.get('function_name', '')
-                file_path = func_data.get('file_path')
+                function_name = func_data.get("function_name", "")
+                file_path = func_data.get("file_path")
                 diff_focus = FunctionListLoader._normalize_diff_focus(
-                    func_data.get('diff_focus'),
+                    func_data.get("diff_focus"),
                     diff_impact,
                     is_diff_impact=is_diff_impact,
                     function_name=str(function_name or ""),
                     file_path=file_path,
                 )
-                reasons_source = func_data.get('reasons')
+                reasons_source = func_data.get("reasons")
                 if reasons_source is None and isinstance(diff_focus, dict):
-                    reasons_source = diff_focus.get('entry_reasons')
-                exposure = func_data.get('exposure')
+                    reasons_source = diff_focus.get("entry_reasons")
+                exposure = func_data.get("exposure")
                 if exposure is None and isinstance(diff_focus, dict):
-                    exposure = diff_focus.get('entry_exposure')
+                    exposure = diff_focus.get("entry_exposure")
 
                 entry = FunctionEntry(
                     function_name=function_name,
-                    custom_prompt=func_data.get('custom_prompt'),
+                    custom_prompt=func_data.get("custom_prompt"),
                     file_path=file_path,
-                    signature=func_data.get('signature'),
+                    signature=func_data.get("signature"),
                     diff_focus=diff_focus,
                     exposure=exposure,
                     reasons=[
-                        str(reason)
-                        for reason in (reasons_source or [])
-                        if str(reason).strip()
+                        str(reason) for reason in (reasons_source or []) if str(reason).strip()
                     ],
                 )
                 entries.append(entry)
@@ -282,9 +287,9 @@ class FunctionListLoader:
             except ValueError as e:
                 logger.warning(f"Skipping invalid entry at index {idx}: {e}")
                 continue
-        
+
         if not entries:
             raise ValueError("No valid function entries found in JSON file")
-        
+
         logger.info(f"Loaded {len(entries)} function entries from {json_path}")
         return entries

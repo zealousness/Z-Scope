@@ -33,9 +33,7 @@ def _config(tmp_path: Path) -> ZScopeConfig:
 def test_review_counts_separate_visible_findings_from_manifest_obligations() -> None:
     report = {
         "summary": {"needs_review_issues": 30},
-        "report_views": {
-            "with_needs_review": {"included_needs_review_count": 29}
-        },
+        "report_views": {"with_needs_review": {"included_needs_review_count": 29}},
         "run_manifest": {"needs_review_count": 951},
     }
 
@@ -45,9 +43,7 @@ def test_review_counts_separate_visible_findings_from_manifest_obligations() -> 
 
 def test_unresolved_obligations_fall_back_to_terminal_candidate_ledger() -> None:
     report = {
-        "report_views": {
-            "with_needs_review": {"included_needs_review_count": 1}
-        },
+        "report_views": {"with_needs_review": {"included_needs_review_count": 1}},
         "candidate_terminal_states": [
             {
                 "candidate_uid": "candidate-visible",
@@ -189,7 +185,9 @@ def test_diff_paths_are_passed_to_diff_impact_planner(tmp_path: Path, monkeypatc
     assert state["discovered_entry_functions_list"] == str(captured["entry_list_path"])
 
 
-def test_empty_diff_path_result_stops_before_single_entry_fallback(tmp_path: Path, monkeypatch) -> None:
+def test_empty_diff_path_result_stops_before_single_entry_fallback(
+    tmp_path: Path, monkeypatch
+) -> None:
     captured = {}
 
     class FakeCodeIndex:
@@ -286,6 +284,90 @@ def test_interrupted_entry_names_are_missing_result_entries(tmp_path: Path) -> N
     assert missing == ["api_b", "api_c"]
 
 
+def test_interrupted_entry_names_accept_materialized_java_entry(tmp_path: Path) -> None:
+    runner = ScanSessionRunner(_config(tmp_path), resume=False)
+    entry = FunctionEntry(
+        "demo.Controller.load:java.lang.String(java.lang.String)",
+        file_path="src/main/java/demo/Controller.java",
+        signature="java.lang.String(java.lang.String)",
+    )
+
+    missing = runner._interrupted_entry_names(
+        [entry],
+        {ParallelAnalyzer._entry_result_key(entry): object()},
+    )
+
+    assert missing == []
+
+
+def test_batch_completeness_uses_materialized_entry_identities(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    raw_entry = FunctionEntry("demo.Controller.load:java.lang.String(java.lang.String)")
+    materialized_entry = FunctionEntry(
+        raw_entry.function_name,
+        file_path="src/main/java/demo/Controller.java",
+        signature="java.lang.String(java.lang.String)",
+    )
+    result_key = ParallelAnalyzer._entry_result_key(materialized_entry)
+
+    class FakeCodeIndex:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def close(self):
+            pass
+
+    class FakeParallelAnalyzer:
+        _entry_result_key = staticmethod(ParallelAnalyzer._entry_result_key)
+
+        def __init__(self, *args, **kwargs):
+            self._interrupted = False
+            self._last_materialized_entries = [materialized_entry]
+
+        def analyze_function_entries(self, entries):
+            assert entries == [raw_entry]
+            return {result_key: object()}
+
+        def generate_combined_report(self, results, output_path=None):
+            if output_path:
+                output_path.write_text("{}", encoding="utf-8")
+            return {
+                "summary": {
+                    "total_issues": 0,
+                    "functions_analyzed": len(results),
+                    "needs_review_issues": 0,
+                }
+            }
+
+        def generate_combined_markdown_report(self, results, output_path):
+            output_path.write_text("# report\n", encoding="utf-8")
+            return "# report\n"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(scan_session_module, "CodeIndex", FakeCodeIndex)
+    monkeypatch.setattr(scan_session_module, "ParallelAnalyzer", FakeParallelAnalyzer)
+
+    runner = ScanSessionRunner(_config(tmp_path), resume=False)
+    runner.batch_executor = type(
+        "NoopBatchExecutor",
+        (),
+        {"execute": lambda self, state, steps: None},
+    )()
+    state = runner._create_state()
+    state["batch_mode"] = True
+    state["entries"] = [raw_entry]
+    state["all_entries"] = [raw_entry]
+
+    result = runner._run_batch(state, [])
+
+    assert result.interrupted is False
+    assert result.interrupted_entries == []
+
+
 def test_resume_does_not_skip_entry_when_only_other_path_has_final_report(
     tmp_path: Path,
 ) -> None:
@@ -357,10 +439,10 @@ def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path) 
             "overall_verdict": "issues_found",
             "finding_status": "confirmed",
             "completeness": "complete",
-                "run_manifest": {
-                    "valid": True,
-                    "candidate_schema_version": "zscope.candidate.v3.3",
-                },
+            "run_manifest": {
+                "valid": True,
+                "candidate_schema_version": "zscope.candidate.v3.3",
+            },
             "issues": [{"source": "a"}],
         },
         "src/b.c": {
@@ -368,10 +450,10 @@ def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path) 
             "overall_verdict": "no_issue_found",
             "finding_status": "clean",
             "completeness": "complete",
-                "run_manifest": {
-                    "valid": True,
-                    "candidate_schema_version": "zscope.candidate.v3.3",
-                },
+            "run_manifest": {
+                "valid": True,
+                "candidate_schema_version": "zscope.candidate.v3.3",
+            },
             "issues": [{"source": "b"}],
         },
     }
