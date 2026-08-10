@@ -166,27 +166,32 @@ JAVA_VULNERABILITY_SKILLS = {
     "java_concurrency",
 }
 
+
 class Analyzer:
     """
     Main analyzer class.
     """
 
-    def __init__(self, config: ZScopeConfig, code_index: Optional[CodeIndex] = None,
-                 snapshot_store: Optional[SnapshotStore] = None,
-                 user_config: Optional[UserConfigStore] = None,
-                 force_ignore_history: bool = False,
-                 maintain_mode: bool = False,
-                 candidate_ledger: Optional[CandidateLedger] = None,
-                 shared_local_pattern_semantics: Optional[LocalPatternSemantics] = None,
-                 shared_semantic_overlay: Optional[Dict[str, Any]] = None,
-                 llm_clients: Optional[Dict[str, LLMClient]] = None,
-                 validation_result_cache: Optional[ValidationResultCache] = None,
-                 cancellation_token: Optional[CancellationToken] = None,
-                 scheduler: Optional[ScanScheduler] = None,
-                 candidate_ir_persistence_lock: Optional[Any] = None,
-                 decision_fact_cache: Optional[DecisionFactGraphCache] = None,
-                 write_root_reports: bool = True,
-                 defer_validation_to_scan: bool = False):
+    def __init__(
+        self,
+        config: ZScopeConfig,
+        code_index: Optional[CodeIndex] = None,
+        snapshot_store: Optional[SnapshotStore] = None,
+        user_config: Optional[UserConfigStore] = None,
+        force_ignore_history: bool = False,
+        maintain_mode: bool = False,
+        candidate_ledger: Optional[CandidateLedger] = None,
+        shared_local_pattern_semantics: Optional[LocalPatternSemantics] = None,
+        shared_semantic_overlay: Optional[Dict[str, Any]] = None,
+        llm_clients: Optional[Dict[str, LLMClient]] = None,
+        validation_result_cache: Optional[ValidationResultCache] = None,
+        cancellation_token: Optional[CancellationToken] = None,
+        scheduler: Optional[ScanScheduler] = None,
+        candidate_ir_persistence_lock: Optional[Any] = None,
+        decision_fact_cache: Optional[DecisionFactGraphCache] = None,
+        write_root_reports: bool = True,
+        defer_validation_to_scan: bool = False,
+    ):
         self.config = config
         self.cancellation_token = cancellation_token
         self.scheduler = scheduler
@@ -208,10 +213,14 @@ class Analyzer:
             config.project.compile_commands_path,
             source_root=config.project.source_root,
             indexing_config=config.indexing,
-            priority_functions=[config.project.entry_function] if config.project.entry_function else None,
+            priority_functions=(
+                [config.project.entry_function] if config.project.entry_function else None
+            ),
             include_paths=config.project.include_paths,
             exclude_paths=config.project.exclude_paths,
-            svf_entry_functions=[config.project.entry_function] if config.project.entry_function else None,
+            svf_entry_functions=(
+                [config.project.entry_function] if config.project.entry_function else None
+            ),
             svf_parallel_workers=config.analysis.parallel_workers,
         )
         self.snapshot_store = snapshot_store or SnapshotStore(Path(config.analysis.snapshot_dir))
@@ -221,7 +230,11 @@ class Analyzer:
             self.snapshot_store,
             force_ignore_history=self.force_ignore_history,
         )
-        db_dir = Path(config.analysis.user_config_db) if config.analysis.user_config_db else Path(config.analysis.snapshot_dir)
+        db_dir = (
+            Path(config.analysis.user_config_db)
+            if config.analysis.user_config_db
+            else Path(config.analysis.snapshot_dir)
+        )
         self.user_config = user_config or UserConfigStore(db_dir)
         self.validation_pipeline = ValidationPipeline(
             self.user_config,
@@ -257,9 +270,7 @@ class Analyzer:
                         ),
                     ),
                     max_retries=llm_cfg.max_retries,
-                    retry_until_available=getattr(
-                        llm_cfg, "retry_until_available", False
-                    ),
+                    retry_until_available=getattr(llm_cfg, "retry_until_available", False),
                     max_tokens=llm_cfg.max_tokens,
                     base_url_rate_limit_per_minute=getattr(
                         llm_cfg, "base_url_rate_limit_per_minute", 0
@@ -267,9 +278,7 @@ class Analyzer:
                     base_url_max_concurrent_requests=getattr(
                         llm_cfg, "base_url_max_concurrent_requests", 0
                     ),
-                    global_max_concurrent_requests=getattr(
-                        config.analysis, "llm_max_inflight", 8
-                    ),
+                    global_max_concurrent_requests=getattr(config.analysis, "llm_max_inflight", 8),
                     supports_structured_output=getattr(
                         llm_cfg, "supports_structured_output", False
                     ),
@@ -297,8 +306,7 @@ class Analyzer:
         self.workflow_spec = self.spec_registry.get_workflow(config.analysis.workflow_name)
         self.candidate_ledger = candidate_ledger or CandidateLedger(
             project_id=str(
-                getattr(config.project, "project_id", "")
-                or config.project.project_root.name
+                getattr(config.project, "project_id", "") or config.project.project_root.name
             ),
             project_root=str(config.project.project_root),
             revision=self._git_commit_sha(config.project.project_root),
@@ -311,9 +319,7 @@ class Analyzer:
             else None
         )
         self._semantic_overlay: Optional[Dict[str, Any]] = (
-            deepcopy(shared_semantic_overlay)
-            if shared_semantic_overlay is not None
-            else None
+            deepcopy(shared_semantic_overlay) if shared_semantic_overlay is not None else None
         )
         self._clang_tooling_provider: Optional[ClangToolingEvidenceProvider] = None
         self._clang_tooling_evidence_cache: Dict[tuple[str, str, int, int], Dict[str, Any]] = {}
@@ -328,7 +334,9 @@ class Analyzer:
             self._build_workflow_step_handlers()
         )
         self.workflow_executor = WorkflowExecutor(
-            workflow_name=self.workflow_spec.name if self.workflow_spec else config.analysis.workflow_name,
+            workflow_name=(
+                self.workflow_spec.name if self.workflow_spec else config.analysis.workflow_name
+            ),
             scope="entry",
             handlers=self.workflow_step_handlers,
             progress=self.workflow_progress,
@@ -336,7 +344,9 @@ class Analyzer:
         )
         self.workflow_executor.validate(self._selected_workflow_steps())
         self.workflow_runner = WorkflowRunner(
-            workflow_name=self.workflow_spec.name if self.workflow_spec else config.analysis.workflow_name,
+            workflow_name=(
+                self.workflow_spec.name if self.workflow_spec else config.analysis.workflow_name
+            ),
             state_factory=self._create_workflow_state,
             step_selector=self._selected_workflow_steps,
             executor=self.workflow_executor,
@@ -345,7 +355,7 @@ class Analyzer:
             finalize_returned_report=self._finalize_returned_report,
             current_step_sink=self._set_current_workflow_step,
         )
-        
+
         self.analyzed_functions: Set[str] = set()
         self.issues: List[Issue] = []
 
@@ -372,6 +382,24 @@ class Analyzer:
     def _set_current_workflow_step(self, step_id: Optional[str]) -> None:
         self.current_workflow_step = step_id
 
+    @staticmethod
+    def _entry_lookup_query(
+        entry_function: str,
+        entry_signature: str,
+        language: str,
+    ) -> str:
+        """Choose the index lookup identifier for a configured entry.
+
+        C/C++ signatures conventionally contain the callable name and remain
+        the most precise lookup key. Java structure indexes instead use the
+        fully-qualified ``Class.method:return(parameters)`` form while their
+        stored signature is only ``return(parameters)``; using the latter
+        loses the method identity.
+        """
+        if str(language or "").strip().lower() == "java":
+            return entry_function
+        return entry_signature or entry_function
+
     def _create_workflow_state(self) -> Dict[str, Any]:
         """Create mutable execution state shared by workflow steps."""
         entry_func = self.config.project.entry_function
@@ -383,7 +411,11 @@ class Analyzer:
             }
         entry_file_path = str(getattr(self.config.project, "entry_file_path", "") or "")
         entry_signature = str(getattr(self.config.project, "entry_signature", "") or "")
-        entry_lookup_query = entry_signature or entry_func
+        entry_lookup_query = self._entry_lookup_query(
+            entry_func,
+            entry_signature,
+            str(getattr(self.config.project, "language", "") or ""),
+        )
         self.user_config.clear_config_warnings()
 
         lookup_started = time.monotonic()
@@ -449,9 +481,7 @@ class Analyzer:
 
         state = {
             "entry_func": entry_func,
-            "entry_signature": entry_signature or str(
-                semantic_model_input.get("signature") or ""
-            ),
+            "entry_signature": entry_signature or str(semantic_model_input.get("signature") or ""),
             "entry_file_path": str(semantic_model_input.get("file_path") or entry_file_path),
             "entry_identity": FunctionEntry(
                 function_name=entry_func,
@@ -497,8 +527,7 @@ class Analyzer:
                 getattr(self.config.analysis, "finding_root_v1", False)
             ),
             "budget_exhaustion_policy": str(
-                getattr(self.config.analysis, "budget_exhaustion_policy", "observe")
-                or "observe"
+                getattr(self.config.analysis, "budget_exhaustion_policy", "observe") or "observe"
             ),
             "validation_queue_drained": False,
             "validator_session_count": 0,
@@ -601,9 +630,7 @@ class Analyzer:
         state["budget_stage"] = stage
         state["budget_hard_caps"] = dict(budget.hard_caps)
         state["budget_scores"] = dict(budget.risk_scores)
-        state["budget_reasons"] = {
-            key: list(value) for key, value in budget.risk_reasons.items()
-        }
+        state["budget_reasons"] = {key: list(value) for key, value in budget.risk_reasons.items()}
 
         agent_context = state.get("agent_context")
         if isinstance(agent_context, dict):
@@ -643,32 +670,22 @@ class Analyzer:
             "persist_report": self._handle_persist_report,
         }
 
-    def _handle_load_history_state(
-        self, state: Dict[str, Any], step: WorkflowStep
-    ) -> bool:
+    def _handle_load_history_state(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
         self._load_history_state(state)
         return False
 
-    def _handle_reuse_unchanged_report(
-        self, state: Dict[str, Any], step: WorkflowStep
-    ) -> bool:
+    def _handle_reuse_unchanged_report(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
         return self._reuse_unchanged_report(state)
 
-    def _handle_reconcile_changed_issues(
-        self, state: Dict[str, Any], step: WorkflowStep
-    ) -> bool:
+    def _handle_reconcile_changed_issues(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
         self._reconcile_changed_issues(state)
         return False
 
-    def _handle_default_scan_subworkflow(
-        self, state: Dict[str, Any], step: WorkflowStep
-    ) -> bool:
+    def _handle_default_scan_subworkflow(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
         self._execute_default_scan_subworkflow(state)
         return True
 
-    def _handle_premodel_reachable_callees(
-        self, state: Dict[str, Any], step: WorkflowStep
-    ) -> bool:
+    def _handle_premodel_reachable_callees(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
         self._step_premodel_reachable_callees(state)
         return False
 
@@ -676,21 +693,15 @@ class Analyzer:
         self._step_model_entry(state)
         return False
 
-    def _handle_focused_subagent_planning(
-        self, state: Dict[str, Any], step: WorkflowStep
-    ) -> bool:
+    def _handle_focused_subagent_planning(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
         self._step_focused_subagent_planning(state)
         return False
 
-    def _handle_vulnerability_mining(
-        self, state: Dict[str, Any], step: WorkflowStep
-    ) -> bool:
+    def _handle_vulnerability_mining(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
         self._step_vulnerability_mining(state)
         return False
 
-    def _handle_validate_findings(
-        self, state: Dict[str, Any], step: WorkflowStep
-    ) -> bool:
+    def _handle_validate_findings(self, state: Dict[str, Any], step: WorkflowStep) -> bool:
         self._step_validate_findings(state)
         return False
 
@@ -727,9 +738,7 @@ class Analyzer:
             blockers = report_reuse_blockers(
                 historical_report,
                 expected_manifest={
-                    "source_revision": self._git_commit_sha(
-                        self.config.project.project_root
-                    ),
+                    "source_revision": self._git_commit_sha(self.config.project.project_root),
                     "config_hash": self._config_hash(),
                     "model_manifest_hash": self._model_manifest_hash(),
                     "knowledge_db_version": self._knowledge_db_version(),
@@ -738,8 +747,7 @@ class Analyzer:
             if blockers:
                 state["notes"].append(
                     "Historical report was not reused because it is incomplete "
-                    "or incompatible: "
-                    + ", ".join(blockers)
+                    "or incompatible: " + ", ".join(blockers)
                 )
                 logger.info(
                     "[maintain] '%s' report reuse blocked: %s",
@@ -773,7 +781,11 @@ class Analyzer:
                 (a for a in self.config.project.agents if a.name == "issue_reconciler_agent"),
                 None,
             )
-            recon_llm_ref = recon_agent_cfg.llm_ref if recon_agent_cfg and recon_agent_cfg.llm_ref else "default"
+            recon_llm_ref = (
+                recon_agent_cfg.llm_ref
+                if recon_agent_cfg and recon_agent_cfg.llm_ref
+                else "default"
+            )
             recon_client = self.llm_clients.get(recon_llm_ref, self.llm_clients.get("default"))
             if recon_client is None:
                 raise RuntimeError("No LLM client configured for issue reconciliation")
@@ -807,7 +819,9 @@ class Analyzer:
                         hist_issue.get("id"),
                     )
                 elif not reconciled.keep:
-                    logger.info("Historical issue %s fixed in new code. Dropping.", hist_issue.get("id"))
+                    logger.info(
+                        "Historical issue %s fixed in new code. Dropping.", hist_issue.get("id")
+                    )
             state["verified_hist_issues"] = verified_hist_issues
         else:
             state["verified_hist_issues"] = list(valid_hist_issues)
@@ -821,7 +835,9 @@ class Analyzer:
             )
             return
 
-        sm_agent_cfg = next((a for a in self.config.project.agents if a.name == "semantic_modeler"), None)
+        sm_agent_cfg = next(
+            (a for a in self.config.project.agents if a.name == "semantic_modeler"), None
+        )
         sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
         sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients["default"])
         budget = self._refresh_effective_budget(state, "premodel")
@@ -850,8 +866,7 @@ class Analyzer:
                 state["entry_func"],
             )
             state["notes"].append(
-                "Premodel reachable callees skipped after retrieval error: "
-                f"{exc}"
+                "Premodel reachable callees skipped after retrieval error: " f"{exc}"
             )
             self._record_engine_failed_work(
                 state,
@@ -874,7 +889,9 @@ class Analyzer:
 
     def _step_model_entry(self, state: Dict[str, Any]) -> None:
         if self.config.analysis.enable_global_model:
-            impl_result = state.get("impl_result") if isinstance(state.get("impl_result"), dict) else {}
+            impl_result = (
+                state.get("impl_result") if isinstance(state.get("impl_result"), dict) else {}
+            )
             entry_func = str(state.get("entry_func") or "")
             entry_index_name = str(state.get("entry_index_name") or "")
             snapshot = self.snapshot_store.load_snapshot(entry_index_name)
@@ -894,9 +911,7 @@ class Analyzer:
                         active=True,
                         reason="reused_global_snapshot",
                     )
-                    state["notes"].append(
-                        f"Reused globally modeled snapshot for {entry_func}."
-                    )
+                    state["notes"].append(f"Reused globally modeled snapshot for {entry_func}.")
                     logger.info(
                         "[global-model] Reusing entry snapshot for '%s' (%s).",
                         entry_func,
@@ -914,15 +929,19 @@ class Analyzer:
                     entry_func,
                 )
 
-        sm_agent_cfg = next((a for a in self.config.project.agents if a.name == "semantic_modeler"), None)
+        sm_agent_cfg = next(
+            (a for a in self.config.project.agents if a.name == "semantic_modeler"), None
+        )
         sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
         sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients["default"])
+
         def make_semantic_agent() -> SemanticModeler:
             return SemanticModeler(
                 sm_client,
                 self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
                 tool_policy=self._tool_policy_for_agent("semantic_modeler"),
             )
+
         agent_context = state["agent_context"]
         semantic_context = deepcopy(state["semantic_model_input"])
 
@@ -936,7 +955,9 @@ class Analyzer:
         )
         sm_tokens = response.metadata.get("context_tokens", 0) if response.metadata else 0
         state["total_context_tokens"] += sm_tokens
-        self._accumulate_cumulative_token_metadata(state, response.metadata if response.metadata else {})
+        self._accumulate_cumulative_token_metadata(
+            state, response.metadata if response.metadata else {}
+        )
 
         if response.success:
             self.snapshot_store.save_snapshot(
@@ -959,9 +980,7 @@ class Analyzer:
                 candidate_count=0,
             )
         else:
-            failure_reason = str(
-                (response.metadata or {}).get("reason") or "semantic_model_failed"
-            )
+            failure_reason = str((response.metadata or {}).get("reason") or "semantic_model_failed")
             logger.warning(
                 "[snapshot-llm] completed context=entry index_name=%s "
                 "success=false context_tokens=%d reason=%s error=%s",
@@ -1013,7 +1032,11 @@ class Analyzer:
             return
 
         va_agent_cfg = next(
-            (a for a in self.config.project.agents if a.enabled and a.name == "vulnerability_analyzer"),
+            (
+                a
+                for a in self.config.project.agents
+                if a.enabled and a.name == "vulnerability_analyzer"
+            ),
             None,
         )
         if not va_agent_cfg:
@@ -1111,9 +1134,7 @@ class Analyzer:
             subagent_candidates=candidates,
         )
         investigator_candidates = [
-            ticket
-            for ticket in candidates
-            if self._is_high_risk_conflicting_ticket(ticket)
+            ticket for ticket in candidates if self._is_high_risk_conflicting_ticket(ticket)
         ]
         proposed_tickets = orchestrator.select_tickets(
             investigator_candidates,
@@ -1179,7 +1200,9 @@ class Analyzer:
         va_llm_ref = va_agent_cfg.llm_ref if va_agent_cfg.llm_ref else "default"
         va_client = self.llm_clients.get(va_llm_ref, self.llm_clients["default"])
         va_agent_spec = self.spec_registry.get_agent("vulnerability_analyzer")
-        max_worker_cap = int(va_agent_spec.max_subagents or len(tickets)) if va_agent_spec else len(tickets)
+        max_worker_cap = (
+            int(va_agent_spec.max_subagents or len(tickets)) if va_agent_spec else len(tickets)
+        )
         max_workers = max(
             1,
             min(
@@ -1210,9 +1233,7 @@ class Analyzer:
                 "llm_ref": ref,
                 "model": str(models[0]) if models else "",
                 "reasoning_effort": str(
-                    skill_efforts.get(getattr(ticket, "skill", ""))
-                    or skill_efforts.get("*")
-                    or ""
+                    skill_efforts.get(getattr(ticket, "skill", "")) or skill_efforts.get("*") or ""
                 ),
             }
 
@@ -1225,7 +1246,9 @@ class Analyzer:
                 active_skill_names=selection.skills,
             ),
             max_workers=max_workers,
-            ticket_timeout=float(getattr(self.config.analysis, "subagent_ticket_timeout", 0.0) or 0.0),
+            ticket_timeout=float(
+                getattr(self.config.analysis, "subagent_ticket_timeout", 0.0) or 0.0
+            ),
             budget_exhaustion_policy=str(
                 getattr(
                     self.config.analysis,
@@ -1235,7 +1258,10 @@ class Analyzer:
                 or "observe"
             ),
             agent_type="deep_worker",
-            spawn_allowlist=list(getattr(self.config.analysis, "subagent_spawn_allowlist", ["deep_worker"]) or ["deep_worker"]),
+            spawn_allowlist=list(
+                getattr(self.config.analysis, "subagent_spawn_allowlist", ["deep_worker"])
+                or ["deep_worker"]
+            ),
             nested_spawn_allowed=False,
             llm_client_resolver=llm_client_for_ticket,
             execution_policy_resolver=execution_policy_for_ticket,
@@ -1252,8 +1278,7 @@ class Analyzer:
         state["candidate_ledger_summary"] = ledger.summary()
         state["agent_context"]["candidate_ledger_summary"] = state["candidate_ledger_summary"]
         state["total_context_tokens"] += sum(
-            int(report.get("metadata", {}).get("context_tokens", 0) or 0)
-            for report in reports
+            int(report.get("metadata", {}).get("context_tokens", 0) or 0) for report in reports
         )
         for report in reports:
             self._accumulate_cumulative_token_metadata(
@@ -1279,9 +1304,7 @@ class Analyzer:
         """Add semantic-snapshot suspicious points from reachable functions to the ledger."""
         added = 0
         visited: Set[str] = set()
-        queue: List[tuple[str, List[str], int]] = [
-            (entry_index_name, [entry_index_name], 0)
-        ]
+        queue: List[tuple[str, List[str], int]] = [(entry_index_name, [entry_index_name], 0)]
 
         while queue:
             func, path, depth = queue.pop(0)
@@ -1440,7 +1463,9 @@ class Analyzer:
                     response.data.get("candidate_coverage")
                 )
                 if coverage:
-                    state["va_candidate_coverage_summary"] = self._candidate_coverage_summary(coverage)
+                    state["va_candidate_coverage_summary"] = self._candidate_coverage_summary(
+                        coverage
+                    )
                 if candidate_signals:
                     self._mark_va_unreviewed_candidates(candidate_signals, coverage)
                     raw_new_issues = list(raw_new_issues) + candidate_signals
@@ -1450,9 +1475,13 @@ class Analyzer:
                     raw_new_issues,
                     source="vulnerability_mining",
                 )
-                va_ctx_tokens = response.metadata.get("context_tokens", 0) if response.metadata else 0
+                va_ctx_tokens = (
+                    response.metadata.get("context_tokens", 0) if response.metadata else 0
+                )
                 state["total_context_tokens"] += va_ctx_tokens
-                self._accumulate_cumulative_token_metadata(state, response.metadata if response.metadata else {})
+                self._accumulate_cumulative_token_metadata(
+                    state, response.metadata if response.metadata else {}
+                )
                 logger.info(
                     "Vulnerability Analyzer found %d issue(s) for task: %s (ctx ≈%s tokens)",
                     len(raw_new_issues),
@@ -1519,11 +1548,7 @@ class Analyzer:
     ) -> bool:
         """Record a reached LLM turn budget without making it a hard failure."""
 
-        metadata = (
-            dict(getattr(response, "metadata", {}) or {})
-            if response is not None
-            else {}
-        )
+        metadata = dict(getattr(response, "metadata", {}) or {}) if response is not None else {}
         error = str(getattr(response, "error", "") or "")
         normalized_error = error.lower()
         reached = bool(metadata.get("truncated")) or any(
@@ -1573,9 +1598,8 @@ class Analyzer:
         raw_new_issues: List[Dict[str, Any]],
         state: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
-        dedup_reference_issues = (
-            state.get("verified_hist_issues", [])
-            + state.get("user_rejected_hist_issues", [])
+        dedup_reference_issues = state.get("verified_hist_issues", []) + state.get(
+            "user_rejected_hist_issues", []
         )
         if not raw_new_issues or not dedup_reference_issues:
             return raw_new_issues
@@ -1600,7 +1624,9 @@ class Analyzer:
             (a for a in self.config.project.agents if a.name == "issue_reconciler_agent"),
             None,
         )
-        recon_llm_ref = recon_agent_cfg.llm_ref if recon_agent_cfg and recon_agent_cfg.llm_ref else "default"
+        recon_llm_ref = (
+            recon_agent_cfg.llm_ref if recon_agent_cfg and recon_agent_cfg.llm_ref else "default"
+        )
         recon_client = self.llm_clients.get(recon_llm_ref, self.llm_clients.get("default"))
         if recon_client is None:
             raise RuntimeError("No LLM client configured for issue reconciliation")
@@ -1729,8 +1755,7 @@ class Analyzer:
             issues = [
                 issue
                 for issue in issues
-                if str(issue.get("rule_id") or issue.get("rule") or "")
-                not in disabled_rule_ids
+                if str(issue.get("rule_id") or issue.get("rule") or "") not in disabled_rule_ids
             ]
         issues = dedupe_rule_candidates(issues)
         issues = self._apply_candidate_validation_budget(issues)
@@ -1791,7 +1816,11 @@ class Analyzer:
             function=str(state.get("entry_func") or impl.get("function") or ""),
             file_path=str(impl.get("file") or ""),
             code=str(impl.get("code") or ""),
-            annotations=tuple(self._java_annotation_context(impl)) if self._project_language() == "java" else (),
+            annotations=(
+                tuple(self._java_annotation_context(impl))
+                if self._project_language() == "java"
+                else ()
+            ),
             metadata={"backend_profile": self._candidate_backend_profile()},
         )
         return [candidate.to_issue() for candidate in registry.evaluate(context)]
@@ -1887,7 +1916,9 @@ class Analyzer:
         try:
             functions = list_functions(limit=None)
         except Exception:
-            logger.debug("Unable to enumerate indexed functions for deterministic facts.", exc_info=True)
+            logger.debug(
+                "Unable to enumerate indexed functions for deterministic facts.", exc_info=True
+            )
             return 0
         if not isinstance(functions, (list, tuple, set)):
             return 0
@@ -1936,15 +1967,17 @@ class Analyzer:
         if not issues:
             return []
         tickets = [
-            java_generator.issue_to_ticket(issue)
-            if java_generator is not None
-            else (
-                clang_generator.issue_to_ticket(issue)
-                if issue.get("candidate_source") == "clang_ast_cfg"
-                and clang_generator is not None
+            (
+                java_generator.issue_to_ticket(issue)
+                if java_generator is not None
                 else (
-                    generator or RegexCandidateGenerator(self._get_local_pattern_semantics())
-                ).issue_to_ticket(issue)
+                    clang_generator.issue_to_ticket(issue)
+                    if issue.get("candidate_source") == "clang_ast_cfg"
+                    and clang_generator is not None
+                    else (
+                        generator or RegexCandidateGenerator(self._get_local_pattern_semantics())
+                    ).issue_to_ticket(issue)
+                )
             )
             for issue in issues
             if issue.get("validation_required") is not False
@@ -1976,9 +2009,16 @@ class Analyzer:
         counters: Dict[tuple[str, str], int] = {}
         ordered = sorted(issues, key=Analyzer._candidate_validation_sort_key)
         for issue in ordered:
-            category = str(
-                issue.get("defect_class") or issue.get("category") or issue.get("subcategory") or ""
-            ).replace("-", "_").lower()
+            category = (
+                str(
+                    issue.get("defect_class")
+                    or issue.get("category")
+                    or issue.get("subcategory")
+                    or ""
+                )
+                .replace("-", "_")
+                .lower()
+            )
             budget_class = str(issue.get("validation_budget_class") or "").lower()
             if category not in generic_categories and budget_class != "generic":
                 continue
@@ -2009,9 +2049,13 @@ class Analyzer:
 
     @staticmethod
     def _is_tp_sensitive_generic_candidate(issue: Dict[str, Any]) -> bool:
-        category = str(
-            issue.get("defect_class") or issue.get("category") or issue.get("subcategory") or ""
-        ).replace("-", "_").lower()
+        category = (
+            str(
+                issue.get("defect_class") or issue.get("category") or issue.get("subcategory") or ""
+            )
+            .replace("-", "_")
+            .lower()
+        )
         if category != "resource_allocation_without_limits":
             return False
         text = Analyzer._flatten_candidate_text(issue).lower()
@@ -2058,7 +2102,12 @@ class Analyzer:
             confidence = float(issue.get("rule_confidence") or issue.get("confidence") or 0.0)
         except (TypeError, ValueError):
             confidence = 0.0
-        return (group_order, generic_penalty, -confidence, str(issue.get("candidate_id") or issue.get("id") or ""))
+        return (
+            group_order,
+            generic_penalty,
+            -confidence,
+            str(issue.get("candidate_id") or issue.get("id") or ""),
+        )
 
     def _direct_callee_rule_scan_budget(self, state: Dict[str, Any]) -> Dict[str, int]:
         budget = self._current_effective_budget(state)
@@ -2177,12 +2226,9 @@ class Analyzer:
                 )
                 for issue in callee_issues
             )
-            expand_dispatcher_siblings = (
-                depth >= max_depth
-                and (
-                    self._looks_like_dispatcher_function(callee, callee_impl)
-                    or self._looks_like_boundary_fanout_function(callee, callee_impl)
-                )
+            expand_dispatcher_siblings = depth >= max_depth and (
+                self._looks_like_dispatcher_function(callee, callee_impl)
+                or self._looks_like_boundary_fanout_function(callee, callee_impl)
             )
             if depth >= max_depth and not expand_dispatcher_siblings:
                 for nested in callee_impl.get("callees", []):
@@ -2253,15 +2299,21 @@ class Analyzer:
         selected = list(queue[:original_quota])
         selected_names = {item[0] for item in selected}
         remaining = [item for item in queue[original_quota:] if item[0] not in selected_names]
-        selected.extend(Analyzer._prioritize_callee_queue(remaining)[: max(0, limit - len(selected))])
+        selected.extend(
+            Analyzer._prioritize_callee_queue(remaining)[: max(0, limit - len(selected))]
+        )
         return selected
 
     @staticmethod
-    def _order_callee_work_queue(queue: List[tuple[str, int, List[str]]]) -> List[tuple[str, int, List[str]]]:
+    def _order_callee_work_queue(
+        queue: List[tuple[str, int, List[str]]],
+    ) -> List[tuple[str, int, List[str]]]:
         return sorted(queue, key=lambda item: item[1])
 
     @staticmethod
-    def _prioritize_callee_queue(queue: List[tuple[str, int, List[str]]]) -> List[tuple[str, int, List[str]]]:
+    def _prioritize_callee_queue(
+        queue: List[tuple[str, int, List[str]]],
+    ) -> List[tuple[str, int, List[str]]]:
         """Prefer callees whose names hint at memory, descriptor, lock, parser, or quota primitives."""
         return sorted(
             queue,
@@ -2294,7 +2346,9 @@ class Analyzer:
     @staticmethod
     def _callee_item_name(item: Any) -> str:
         if isinstance(item, dict):
-            return str(item.get("name") or item.get("callee_name") or item.get("function") or "").strip()
+            return str(
+                item.get("name") or item.get("callee_name") or item.get("function") or ""
+            ).strip()
         return str(item or "").strip()
 
     @staticmethod
@@ -2304,7 +2358,9 @@ class Analyzer:
         callees = impl.get("callees") or []
         if len(callees) < 3:
             return False
-        name_hint = re.search(r"(?:dispatch|handle|process|message|protocol|router|route)", func_name, re.I)
+        name_hint = re.search(
+            r"(?:dispatch|handle|process|message|protocol|router|route)", func_name, re.I
+        )
         switch_hint = "switch" in code or len(re.findall(r"\bcase\b|\bdefault\s*:", code)) >= 2
         branch_hint = len(re.findall(r"\b(?:if|else\s+if)\s*\(", code)) >= 3
         return bool(switch_hint or (name_hint and branch_hint))
@@ -2402,10 +2458,9 @@ class Analyzer:
             callee_impl = impl_cache.get(callee) or {}
             caller_params = self._function_param_names(str(caller_impl.get("code") or ""), caller)
             callee_params = self._function_param_names(str(callee_impl.get("code") or ""), callee)
-            callsite = (
-                self._clang_callsite_argument_refs(caller, callee, caller_impl)
-                or self._source_callsite_argument_refs(str(caller_impl.get("code") or ""), callee)
-            )
+            callsite = self._clang_callsite_argument_refs(
+                caller, callee, caller_impl
+            ) or self._source_callsite_argument_refs(str(caller_impl.get("code") or ""), callee)
             actuals = [str(item) for item in callsite.get("arguments") or [] if str(item)]
             mappings = []
             for idx, actual in enumerate(actuals):
@@ -2480,7 +2535,11 @@ class Analyzer:
             ]
             if not scoped:
                 call_index = next(
-                    (idx for idx, row in enumerate(records) if int(row.get("line") or 0) == before_line),
+                    (
+                        idx
+                        for idx, row in enumerate(records)
+                        if int(row.get("line") or 0) == before_line
+                    ),
                     len(records),
                 )
                 scoped = records[max(0, call_index - window) : call_index + 1]
@@ -2528,7 +2587,9 @@ class Analyzer:
         lowered = str(text or "").lower()
         if re.search(r"\b(?:if|while|assert|static_assert)\s*\(", lowered):
             return True
-        if re.search(r"\b(?:bug_on|warn_on|check|validate|verify|bound|range|limit|max|min)\w*\s*\(", lowered):
+        if re.search(
+            r"\b(?:bug_on|warn_on|check|validate|verify|bound|range|limit|max|min)\w*\s*\(", lowered
+        ):
             return True
         return bool(re.search(r"(?:<=|>=|==|!=|<|>|\bnull\b|\bsize_max\b|\bsizeof\b)", lowered))
 
@@ -2709,9 +2770,7 @@ class Analyzer:
                 evidence.get("status") if isinstance(evidence, dict) else ""
             ).lower()
             execution_enabled = bool(
-                evidence.get("execution_enabled")
-                if isinstance(evidence, dict)
-                else False
+                evidence.get("execution_enabled") if isinstance(evidence, dict) else False
             )
             if tooling_status == "executed":
                 ast_dump = evidence.get("ast_dump") or {}
@@ -2845,21 +2904,15 @@ class Analyzer:
                     "svf_taint_query",
                     status="degraded" if legacy_query else "complete",
                     active=True,
-                    reason=(
-                        "legacy_non_paginated_query"
-                        if legacy_query
-                        else ""
-                    ),
+                    reason=("legacy_non_paginated_query" if legacy_query else ""),
                     candidate_count=len(bugs),
                 )
 
-            svf_candidates = (
-                SvfValueFlowCandidateGenerator(
-                    source_path_resolver=self._reconstruct_svf_source_path,
-                ).generate_issues(
-                    bugs,
-                    entry_func=entry_func,
-                )
+            svf_candidates = SvfValueFlowCandidateGenerator(
+                source_path_resolver=self._reconstruct_svf_source_path,
+            ).generate_issues(
+                bugs,
+                entry_func=entry_func,
             )
             if bugs or svf_candidates:
                 logger.info(
@@ -2924,11 +2977,14 @@ class Analyzer:
         getter = db.get_enriched_taint_bugs
         supports_offset = Analyzer._callable_accepts_keyword(getter, "offset")
         if supports_offset is False:
-            return Analyzer._collect_legacy_enriched_taint_bugs(
-                getter,
-                reachable_funcs=reachable_funcs,
-                entry_func=entry_func,
-            ), True
+            return (
+                Analyzer._collect_legacy_enriched_taint_bugs(
+                    getter,
+                    reachable_funcs=reachable_funcs,
+                    entry_func=entry_func,
+                ),
+                True,
+            )
         results: List[Dict[str, Any]] = []
         offset = 0
         seen_pages: Set[str] = set()
@@ -2941,9 +2997,7 @@ class Analyzer:
                     offset=offset,
                 )
                 raw_page = list(page or [])
-                results.extend(
-                    item for item in raw_page if isinstance(item, dict)
-                )
+                results.extend(item for item in raw_page if isinstance(item, dict))
                 if len(raw_page) < page_size:
                     return results, False
                 page_count += 1
@@ -2954,9 +3008,7 @@ class Analyzer:
                     )
                 seen_pages.add(fingerprint)
                 if page_count >= 10_000:
-                    raise RuntimeError(
-                        "Taint pagination exceeded the 5,000,000-row safety bound"
-                    )
+                    raise RuntimeError("Taint pagination exceeded the 5,000,000-row safety bound")
                 offset += len(raw_page)
         except TypeError as exc:
             if supports_offset is not None or not Analyzer._is_unexpected_keyword_error(
@@ -2964,11 +3016,14 @@ class Analyzer:
                 "offset",
             ):
                 raise
-            return Analyzer._collect_legacy_enriched_taint_bugs(
-                getter,
-                reachable_funcs=reachable_funcs,
-                entry_func=entry_func,
-            ), True
+            return (
+                Analyzer._collect_legacy_enriched_taint_bugs(
+                    getter,
+                    reachable_funcs=reachable_funcs,
+                    entry_func=entry_func,
+                ),
+                True,
+            )
 
     @staticmethod
     def _collect_legacy_enriched_taint_bugs(
@@ -2989,9 +3044,7 @@ class Analyzer:
                     func_names=sorted(reachable_funcs),
                     limit=1_000_000,
                 )
-                return [
-                    item for item in (rows or []) if isinstance(item, dict)
-                ]
+                return [item for item in (rows or []) if isinstance(item, dict)]
             except TypeError as exc:
                 if supports_func_names is not None or not Analyzer._is_unexpected_keyword_error(
                     exc,
@@ -2999,9 +3052,7 @@ class Analyzer:
                 ):
                     raise
         rows = getter(func_name=entry_func, limit=1_000_000)
-        return [
-            item for item in (rows or []) if isinstance(item, dict)
-        ]
+        return [item for item in (rows or []) if isinstance(item, dict)]
 
     @staticmethod
     def _callable_accepts_keyword(callable_obj: Any, keyword: str) -> Optional[bool]:
@@ -3047,7 +3098,9 @@ class Analyzer:
             ).encode("utf-8")
         ).hexdigest()
 
-    def _merge_unified_evidence_candidates(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _merge_unified_evidence_candidates(
+        self, candidates: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         if self._project_language() == "java":
             return merge_java_evidence_candidates(candidates)
         return merge_unified_evidence_candidates(
@@ -3088,7 +3141,9 @@ class Analyzer:
         return candidate_symbols(issue)
 
     @staticmethod
-    def _attach_unified_secondary_evidence(primary: Dict[str, Any], secondary: Dict[str, Any]) -> None:
+    def _attach_unified_secondary_evidence(
+        primary: Dict[str, Any], secondary: Dict[str, Any]
+    ) -> None:
         attach_unified_secondary_evidence(primary, secondary)
 
     def _detect_clang_knowledgedb_candidates(
@@ -3193,9 +3248,7 @@ class Analyzer:
                 release,
                 limit=1_000_000,
             )
-            return [
-                item for item in (legacy_rows or []) if isinstance(item, dict)
-            ], True
+            return [item for item in (legacy_rows or []) if isinstance(item, dict)], True
         rows: List[Dict[str, Any]] = []
         offset = 0
         seen_pages: Set[str] = set()
@@ -3209,9 +3262,7 @@ class Analyzer:
                     offset=offset,
                 )
                 raw_page = list(page or [])
-                rows.extend(
-                    item for item in raw_page if isinstance(item, dict)
-                )
+                rows.extend(item for item in raw_page if isinstance(item, dict))
                 if len(raw_page) < page_size:
                     return rows, False
                 page_count += 1
@@ -3237,9 +3288,7 @@ class Analyzer:
                 release,
                 limit=1_000_000,
             )
-            return [
-                item for item in (legacy_rows or []) if isinstance(item, dict)
-            ], True
+            return [item for item in (legacy_rows or []) if isinstance(item, dict)], True
 
     def _resource_release_pairs_from_overlay(self) -> List[tuple[str, str, str]]:
         return resource_release_pairs_from_overlay(self._get_semantic_overlay())
@@ -3334,12 +3383,11 @@ class Analyzer:
         scoped = [
             match
             for match in matches
-            if self._target_in_reachable_functions(str(getattr(match, "func_name", "")), reachable_funcs)
+            if self._target_in_reachable_functions(
+                str(getattr(match, "func_name", "")), reachable_funcs
+            )
         ]
-        candidates = [
-            self._joern_rule_match_to_candidate(match, entry_func)
-            for match in scoped
-        ]
+        candidates = [self._joern_rule_match_to_candidate(match, entry_func) for match in scoped]
         self._record_engine_capability(
             "joern_candidate_rules",
             status="complete",
@@ -3349,9 +3397,7 @@ class Analyzer:
         return candidates
 
     @staticmethod
-    def _java_provider_signal_target_function(
-        signal: Dict[str, Any], entry_func: str = ""
-    ) -> str:
+    def _java_provider_signal_target_function(signal: Dict[str, Any], entry_func: str = "") -> str:
         sink = signal.get("sink") if isinstance(signal.get("sink"), dict) else {}
         source = signal.get("source") if isinstance(signal.get("source"), dict) else {}
         path = signal.get("path") if isinstance(signal.get("path"), list) else []
@@ -3390,7 +3436,9 @@ class Analyzer:
         )
         return self._target_in_reachable_functions(target_func, reachable_funcs)
 
-    def _reachable_cache_state(self) -> tuple[Dict[tuple[str, int, int, int], Set[str]], threading.RLock]:
+    def _reachable_cache_state(
+        self,
+    ) -> tuple[Dict[tuple[str, int, int, int], Set[str]], threading.RLock]:
         cache = getattr(self, "_reachable_function_cache", None)
         lock = getattr(self, "_reachable_function_cache_lock", None)
         if cache is None:
@@ -3404,10 +3452,7 @@ class Analyzer:
     def _target_in_reachable_functions(self, target_func: str, reachable_funcs: Set[str]) -> bool:
         if not target_func:
             return False
-        return any(
-            self._function_names_may_match(name, target_func)
-            for name in reachable_funcs
-        )
+        return any(self._function_names_may_match(name, target_func) for name in reachable_funcs)
 
     def _find_call_path_from_entry(
         self,
@@ -3474,11 +3519,7 @@ class Analyzer:
             "call_path_query",
             status=("degraded" if queue or len(seen) >= max_nodes else "complete"),
             active=True,
-            reason=(
-                "call_path_search_budget_exhausted"
-                if queue or len(seen) >= max_nodes
-                else ""
-            ),
+            reason=("call_path_search_budget_exhausted" if queue or len(seen) >= max_nodes else ""),
             visited_count=len(seen),
         )
         return []
@@ -3494,16 +3535,8 @@ class Analyzer:
     ) -> Set[str]:
         if not entry_func:
             return set()
-        depth_limit = (
-            int(max_depth)
-            if max_depth is not None and int(max_depth) > 0
-            else None
-        )
-        node_limit = (
-            int(max_nodes)
-            if max_nodes is not None and int(max_nodes) > 0
-            else None
-        )
+        depth_limit = int(max_depth) if max_depth is not None and int(max_depth) > 0 else None
+        node_limit = int(max_nodes) if max_nodes is not None and int(max_nodes) > 0 else None
         query_limit = max(1, int(callee_limit or 1_000_000))
         cache_key = (
             entry_func,
@@ -3585,18 +3618,14 @@ class Analyzer:
                     function_name=deferred_name,
                     reason="reachable_scope_max_nodes",
                 )
-        budget_exhausted = bool(queue) or (
-            node_limit is not None and len(reachable) >= node_limit
-        ) or depth_capped
+        budget_exhausted = (
+            bool(queue) or (node_limit is not None and len(reachable) >= node_limit) or depth_capped
+        )
         self._record_engine_capability(
             "reachable_scope_query",
             status="degraded" if budget_exhausted else "complete",
             active=True,
-            reason=(
-                "reachable_scope_budget_exhausted"
-                if budget_exhausted
-                else ""
-            ),
+            reason=("reachable_scope_budget_exhausted" if budget_exhausted else ""),
             reachable_count=len(reachable),
             max_depth=depth_limit,
             max_nodes=node_limit,
@@ -3613,8 +3642,16 @@ class Analyzer:
         call_path = self._find_call_path_from_entry(entry_func, target_func)
         reported_snippet = self._source_snippet(file_path, line, radius=4)
         target_impl = self._compact_function_impl(target_func)
-        source_impl = self._compact_function_impl(source_func) if source_func and source_func != target_func else {}
-        sink_impl = self._compact_function_impl(sink_func) if sink_func and sink_func not in {target_func, source_func} else {}
+        source_impl = (
+            self._compact_function_impl(source_func)
+            if source_func and source_func != target_func
+            else {}
+        )
+        sink_impl = (
+            self._compact_function_impl(sink_func)
+            if sink_func and sink_func not in {target_func, source_func}
+            else {}
+        )
         source_level_flow = self._svf_source_level_flow_events(
             bug,
             target_impl=target_impl,
@@ -3629,7 +3666,9 @@ class Analyzer:
             "SVF/Saber source and sink names may be LLVM-level summaries and still require Validator confirmation.",
         ]
         if not call_path:
-            notes.append("Entry-to-target call path was not proven by CodeIndex within the bounded search.")
+            notes.append(
+                "Entry-to-target call path was not proven by CodeIndex within the bounded search."
+            )
         if not reported_snippet:
             notes.append("No source snippet could be read for the reported SVF location.")
         return {
@@ -3660,10 +3699,7 @@ class Analyzer:
         reported_snippet: str,
     ) -> Dict[str, Any]:
         source_symbol = str(
-            bug.get("source_symbol")
-            or bug.get("source_func")
-            or bug.get("source")
-            or ""
+            bug.get("source_symbol") or bug.get("source_func") or bug.get("source") or ""
         )
         sink_symbol = str(
             bug.get("sink_symbol")
@@ -3700,13 +3736,13 @@ class Analyzer:
         for event in events:
             code = str(event.get("code") or "")
             event["object_mentions"] = [
-                symbol
-                for symbol in object_symbols
-                if re.search(rf"\b{re.escape(symbol)}\b", code)
+                symbol for symbol in object_symbols if re.search(rf"\b{re.escape(symbol)}\b", code)
             ][:8]
         notes = []
         if source_symbol and not source_event:
-            notes.append(f"Source symbol `{source_symbol}` was not found in compact source contexts.")
+            notes.append(
+                f"Source symbol `{source_symbol}` was not found in compact source contexts."
+            )
         if sink_symbol and not sink_event:
             notes.append(f"Sink symbol `{sink_symbol}` was not found in compact source contexts.")
         return {
@@ -3949,11 +3985,16 @@ class Analyzer:
     def _project_language(self) -> str:
         config = getattr(self, "config", None)
         project = getattr(config, "project", None)
-        language = str(
-            getattr(project, "language", "")
-            or getattr(getattr(self, "code_index", None), "language", "")
-            or "c_cpp"
-        ).strip().lower().replace("-", "_")
+        language = (
+            str(
+                getattr(project, "language", "")
+                or getattr(getattr(self, "code_index", None), "language", "")
+                or "c_cpp"
+            )
+            .strip()
+            .lower()
+            .replace("-", "_")
+        )
         return "java" if language in {"java", "java_src", "javasrc"} else "c_cpp"
 
     def _get_semantic_overlay(self) -> Dict[str, Any]:
@@ -3979,11 +4020,7 @@ class Analyzer:
                 or "."
             )
         )
-        project_id = str(
-            getattr(project, "project_id", "")
-            or project_root.name
-            or "project"
-        )
+        project_id = str(getattr(project, "project_id", "") or project_root.name or "project")
         configured_entry_identity = ""
         if project is not None:
             configured_entry_identity = FunctionEntry(
@@ -3991,28 +4028,24 @@ class Analyzer:
                 file_path=str(getattr(project, "entry_file_path", "") or "") or None,
                 signature=str(getattr(project, "entry_signature", "") or "") or None,
             ).identity_key(project_root)
-        revision = str(
-            getattr(getattr(self, "candidate_ledger", None), "revision", "")
-            or ""
-        )
+        revision = str(getattr(getattr(self, "candidate_ledger", None), "revision", "") or "")
         analysis_cfg = getattr(config, "analysis", None)
         enable_decision_facts = bool(
             getattr(analysis_cfg, "decision_fact_graph_v1", False)
             or getattr(analysis_cfg, "security_obligation_v1", False)
         )
         enable_context_v31 = bool(
-            getattr(analysis_cfg, "decision_context_v31", False)
-            or enable_decision_facts
+            getattr(analysis_cfg, "decision_context_v31", False) or enable_decision_facts
         )
-        enable_context_v32 = bool(
-            getattr(analysis_cfg, "decision_context_v32", False)
-        )
-        enable_context_v33 = bool(
-            getattr(analysis_cfg, "decision_context_v33", False)
-        )
+        enable_context_v32 = bool(getattr(analysis_cfg, "decision_context_v32", False))
+        enable_context_v33 = bool(getattr(analysis_cfg, "decision_context_v33", False))
         for issue in issues:
-            evidence_pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
-            issue_checker = str(issue.get("evidence_checker") or evidence_pack.get("checker") or checker)
+            evidence_pack = (
+                issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+            )
+            issue_checker = str(
+                issue.get("evidence_checker") or evidence_pack.get("checker") or checker
+            )
             annotate_candidate_evidence(
                 issue,
                 backend_profile=profile,
@@ -4093,15 +4126,10 @@ class Analyzer:
             or getattr(analysis_cfg, "security_obligation_v1", False)
         )
         enable_context_v31 = bool(
-            getattr(analysis_cfg, "decision_context_v31", False)
-            or enable_decision_facts
+            getattr(analysis_cfg, "decision_context_v31", False) or enable_decision_facts
         )
-        enable_context_v32 = bool(
-            getattr(analysis_cfg, "decision_context_v32", False)
-        )
-        enable_context_v33 = bool(
-            getattr(analysis_cfg, "decision_context_v33", False)
-        )
+        enable_context_v32 = bool(getattr(analysis_cfg, "decision_context_v32", False))
+        enable_context_v33 = bool(getattr(analysis_cfg, "decision_context_v33", False))
         for issue in issues:
             if not isinstance(issue, dict):
                 continue
@@ -4119,10 +4147,7 @@ class Analyzer:
                 issue["decision_context_v33"] = True
             envelope = annotate_issue_identity(
                 issue,
-                project_id=str(
-                    getattr(project, "project_id", "")
-                    or project.project_root.name
-                ),
+                project_id=str(getattr(project, "project_id", "") or project.project_root.name),
                 project_root=str(project.project_root),
                 revision=str(getattr(ledger, "revision", "") or ""),
                 entry_function=entry_identity,
@@ -4133,9 +4158,7 @@ class Analyzer:
             evidence = dict(issue.get("evidence_pack") or {})
             evidence.update(
                 {
-                    "candidate_id": str(
-                        issue.get("candidate_id") or issue.get("id") or ""
-                    ),
+                    "candidate_id": str(issue.get("candidate_id") or issue.get("id") or ""),
                     "candidate_schema_version": envelope.schema_version,
                     "candidate_uid": envelope.candidate_uid,
                     "occurrence_uid": envelope.occurrence_uid,
@@ -4143,27 +4166,14 @@ class Analyzer:
                     "obligation_uid": envelope.obligation_uid,
                     "obligation_shape": envelope.obligation_shape,
                     "decision_context_version": envelope.decision_context_version,
-                    "decision_fact_version": issue.get(
-                        "decision_fact_version"
-                    ) or envelope.decision_fact_version,
-                    "decision_fact_coverage": issue.get(
-                        "decision_fact_coverage"
-                    ),
-                    "decision_fact_slice": deepcopy(
-                        issue.get("decision_fact_slice") or {}
-                    ),
-                    "missing_fact_kinds": list(
-                        issue.get("missing_fact_kinds") or []
-                    ),
-                    "security_obligation": deepcopy(
-                        issue.get("security_obligation") or {}
-                    ),
-                    "candidate_promotion_eligible": issue.get(
-                        "candidate_promotion_eligible"
-                    ),
-                    "candidate_promotion_reason": issue.get(
-                        "candidate_promotion_reason"
-                    ),
+                    "decision_fact_version": issue.get("decision_fact_version")
+                    or envelope.decision_fact_version,
+                    "decision_fact_coverage": issue.get("decision_fact_coverage"),
+                    "decision_fact_slice": deepcopy(issue.get("decision_fact_slice") or {}),
+                    "missing_fact_kinds": list(issue.get("missing_fact_kinds") or []),
+                    "security_obligation": deepcopy(issue.get("security_obligation") or {}),
+                    "candidate_promotion_eligible": issue.get("candidate_promotion_eligible"),
+                    "candidate_promotion_reason": issue.get("candidate_promotion_reason"),
                     "candidate_promotion_terminal_status": issue.get(
                         "candidate_promotion_terminal_status"
                     ),
@@ -4206,11 +4216,7 @@ class Analyzer:
                 }
             )
             raw_paths = issue.get("call_paths")
-            if (
-                isinstance(raw_paths, list)
-                and raw_paths
-                and isinstance(raw_paths[0], list)
-            ):
+            if isinstance(raw_paths, list) and raw_paths and isinstance(raw_paths[0], list):
                 call_paths = raw_paths
             else:
                 raw_path = issue.get("call_path")
@@ -4219,11 +4225,7 @@ class Analyzer:
                 call_paths = [[entry_identity]]
             for call_path in call_paths:
                 ticket = SubAgentTicket(
-                    id=str(
-                        issue.get("candidate_id")
-                        or issue.get("id")
-                        or envelope.run_issue_uid
-                    ),
+                    id=str(issue.get("candidate_id") or issue.get("id") or envelope.run_issue_uid),
                     skill=str(
                         issue.get("defect_class")
                         or issue.get("subcategory")
@@ -4231,15 +4233,10 @@ class Analyzer:
                         or "security_review"
                     ),
                     task=str(
-                        issue.get("description")
-                        or issue.get("root_cause")
-                        or "Validate candidate"
+                        issue.get("description") or issue.get("root_cause") or "Validate candidate"
                     ),
                     trigger=str(
-                        issue.get("rule")
-                        or issue.get("sink")
-                        or issue.get("category")
-                        or ""
+                        issue.get("rule") or issue.get("sink") or issue.get("category") or ""
                     ),
                     line=int(
                         issue.get("line")
@@ -4252,9 +4249,7 @@ class Analyzer:
                     origin=str(issue.get("source") or issue.get("location") or ""),
                     sink=str(issue.get("sink") or issue.get("location") or ""),
                     resource_kind=str(
-                        issue.get("resource_signature")
-                        or issue.get("resource")
-                        or "unknown"
+                        issue.get("resource_signature") or issue.get("resource") or "unknown"
                     ),
                     source=str(issue.get("candidate_source") or source),
                     evidence=dict(evidence),
@@ -4283,9 +4278,7 @@ class Analyzer:
             60,
         )
         try:
-            confidence = float(
-                issue.get("rule_confidence") or issue.get("confidence") or 0.0
-            )
+            confidence = float(issue.get("rule_confidence") or issue.get("confidence") or 0.0)
         except (TypeError, ValueError):
             confidence = 0.0
         return max(base, min(100, int(round(confidence * 100))))
@@ -4364,7 +4357,9 @@ class Analyzer:
         return {str(key): int(value) for key, value in raw.items() if isinstance(value, int)}
 
     @staticmethod
-    def _callgraph_cache_stat_delta(before: Dict[str, int], after: Dict[str, int]) -> Dict[str, int]:
+    def _callgraph_cache_stat_delta(
+        before: Dict[str, int], after: Dict[str, int]
+    ) -> Dict[str, int]:
         keys = set(before) | set(after)
         return {
             key: int(after.get(key, 0)) - int(before.get(key, 0))
@@ -4433,7 +4428,9 @@ class Analyzer:
                         ensure_ascii=False,
                     ),
                     guards=json.dumps(issue.get("negative_evidence") or [], ensure_ascii=False),
-                    contradictions=json.dumps(issue.get("negative_evidence") or [], ensure_ascii=False),
+                    contradictions=json.dumps(
+                        issue.get("negative_evidence") or [], ensure_ascii=False
+                    ),
                     score_components=json.dumps(score_components, ensure_ascii=False),
                 )
                 refs = [f"ir_path_slices:{path_id}"] if path_id else []
@@ -4609,11 +4606,14 @@ class Analyzer:
         except Exception as exc:
             logger.debug("Failed to persist validation memory for %s: %s", issue.get("id"), exc)
 
-    def _score_components(self, issue: Dict[str, Any], val_data: Dict[str, Any]) -> Dict[str, float]:
+    def _score_components(
+        self, issue: Dict[str, Any], val_data: Dict[str, Any]
+    ) -> Dict[str, float]:
         pipeline = getattr(self, "validation_pipeline", None)
         if pipeline is None:
             user_config = getattr(self, "user_config", None)
             if user_config is None:
+
                 class EmptyUserConfig:
                     def get_finding_baseline(self, _dedup_key: str) -> None:
                         return None
@@ -4654,9 +4654,7 @@ class Analyzer:
     ) -> bool:
         return is_entry_root_dead_code_rejection(val_data, evidence_pack)
 
-    def _deduplicate_candidate_issues(
-        self, issues: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+    def _deduplicate_candidate_issues(self, issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Merge candidate findings that point at the same root-cause sink."""
         deduped, _summary = deduplicate_semantic_issues_programmatic(issues)
         return deduped
@@ -4756,7 +4754,8 @@ class Analyzer:
             active_cluster = [
                 issue
                 for issue in cluster
-                if self._semantic_dedup_issue_id(issue, issue_indices.get(id(issue), 0)) not in removed
+                if self._semantic_dedup_issue_id(issue, issue_indices.get(id(issue), 0))
+                not in removed
             ]
             if len(active_cluster) < 2:
                 continue
@@ -4800,27 +4799,55 @@ class Analyzer:
     def _semantic_dedup_pair_needs_llm(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
         left_file, _ = parse_issue_location(str(left.get("location") or left.get("file") or ""))
         right_file, _ = parse_issue_location(str(right.get("location") or right.get("file") or ""))
-        same_file = bool(left_file and right_file and normalize_issue_key_part(left_file) == normalize_issue_key_part(right_file))
+        same_file = bool(
+            left_file
+            and right_file
+            and normalize_issue_key_part(left_file) == normalize_issue_key_part(right_file)
+        )
         left_funcs = {
             normalize_issue_key_part(str(value or ""))
-            for value in (left.get("function"), left.get("sink_function"), left.get("entry_function"))
+            for value in (
+                left.get("function"),
+                left.get("sink_function"),
+                left.get("entry_function"),
+            )
             if value
         }
         right_funcs = {
             normalize_issue_key_part(str(value or ""))
-            for value in (right.get("function"), right.get("sink_function"), right.get("entry_function"))
+            for value in (
+                right.get("function"),
+                right.get("sink_function"),
+                right.get("entry_function"),
+            )
             if value
         }
         same_function = bool(left_funcs & right_funcs)
         same_family = semantic_category_family(
-            normalize_issue_category(str(left.get("category") or left.get("defect_class") or left.get("subcategory") or ""))
+            normalize_issue_category(
+                str(
+                    left.get("category")
+                    or left.get("defect_class")
+                    or left.get("subcategory")
+                    or ""
+                )
+            )
         ) == semantic_category_family(
-            normalize_issue_category(str(right.get("category") or right.get("defect_class") or right.get("subcategory") or ""))
+            normalize_issue_category(
+                str(
+                    right.get("category")
+                    or right.get("defect_class")
+                    or right.get("subcategory")
+                    or ""
+                )
+            )
         )
         shared_resource_or_sink = bool(
             issue_resource_signature(left)
             and issue_resource_signature(left) == issue_resource_signature(right)
-        ) or bool(issue_sink_signature(left) and issue_sink_signature(left) == issue_sink_signature(right))
+        ) or bool(
+            issue_sink_signature(left) and issue_sink_signature(left) == issue_sink_signature(right)
+        )
         return bool(same_family and ((same_file and same_function) or shared_resource_or_sink))
 
     @staticmethod
@@ -4855,10 +4882,14 @@ class Analyzer:
             (a for a in self.config.project.agents if a.name == "issue_reconciler_agent"),
             None,
         )
-        recon_llm_ref = recon_agent_cfg.llm_ref if recon_agent_cfg and recon_agent_cfg.llm_ref else "default"
+        recon_llm_ref = (
+            recon_agent_cfg.llm_ref if recon_agent_cfg and recon_agent_cfg.llm_ref else "default"
+        )
         recon_client = self.llm_clients.get(recon_llm_ref, self.llm_clients.get("default"))
         if recon_client is None:
-            logger.warning("Semantic LLM dedup requested but no issue_reconciler_agent LLM client is configured.")
+            logger.warning(
+                "Semantic LLM dedup requested but no issue_reconciler_agent LLM client is configured."
+            )
             return None
         from ...agents.issue_reconciler.agent import IssueReconcilerAgent
 
@@ -4897,9 +4928,12 @@ class Analyzer:
                     "evidence_hash": issue.get("evidence_hash"),
                     "index": index,
                 }
-                internal = "SEM_" + hashlib.sha256(
-                    json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
-                ).hexdigest()[:24]
+                internal = (
+                    "SEM_"
+                    + hashlib.sha256(
+                        json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+                    ).hexdigest()[:24]
+                )
             bases.append(str(internal))
         counts = {base: bases.count(base) for base in set(bases)}
         for index, (issue, base) in enumerate(zip(issues, bases)):
@@ -4907,9 +4941,7 @@ class Analyzer:
                 issue["_semantic_dedup_uid"] = base
                 continue
             issue["_semantic_dedup_uid"] = str(
-                issue.get("run_issue_uid")
-                or issue.get("occurrence_uid")
-                or f"{base}::{index}"
+                issue.get("run_issue_uid") or issue.get("occurrence_uid") or f"{base}::{index}"
             )
 
     def _semantic_dedup_cluster_payload(
@@ -5031,7 +5063,9 @@ class Analyzer:
                 ):
                     rejected += 1
                     continue
-                root_key = str(group.get("root_cause_key") or "") or semantic_root_cause_key(primary)
+                root_key = str(group.get("root_cause_key") or "") or semantic_root_cause_key(
+                    primary
+                )
                 suggestion = {
                     "method": "issue_reconciler_agent_suggestion",
                     "root_cause_key": root_key,
@@ -5105,9 +5139,7 @@ class Analyzer:
         snapshot = getattr(ledger, "lifecycle_snapshot", None)
         if callable(snapshot):
             state["candidate_lifecycle_snapshot"] = snapshot(
-                entry_identity=str(
-                    state.get("entry_identity") or state.get("entry_func") or ""
-                )
+                entry_identity=str(state.get("entry_identity") or state.get("entry_func") or "")
             )
         self.report_assembler.build(state)
 
@@ -5148,13 +5180,20 @@ class Analyzer:
             "report_tail_seconds": round(
                 max(
                     0.0,
-                    time.monotonic()
-                    - float(state.get("_report_tail_started") or time.monotonic()),
+                    time.monotonic() - float(state.get("_report_tail_started") or time.monotonic()),
                 ),
                 4,
             ),
-            "workflow": self.workflow_spec.name if self.workflow_spec else self.config.analysis.workflow_name,
-            "workflow_mode": self.workflow_spec.mode if self.workflow_spec else self.config.analysis.workflow_name,
+            "workflow": (
+                self.workflow_spec.name
+                if self.workflow_spec
+                else self.config.analysis.workflow_name
+            ),
+            "workflow_mode": (
+                self.workflow_spec.mode
+                if self.workflow_spec
+                else self.config.analysis.workflow_name
+            ),
             "workflow_progress": list(self.workflow_progress),
             "current_workflow_step": self.workflow_executor.current_step,
             "subagent_candidate_count": len(state.get("subagent_candidates", [])),
@@ -5162,38 +5201,44 @@ class Analyzer:
             "subagent_unassigned_count": len(state.get("subagent_unassigned_candidates", [])),
             "subagent_reports_count": len(state.get("subagent_reports", [])),
             "subagent_report_summary": dict(state.get("subagent_report_summary", {})),
-            "subagent_ticket_plan": self._compact_subagent_items(state.get("subagent_ticket_plan", [])),
+            "subagent_ticket_plan": self._compact_subagent_items(
+                state.get("subagent_ticket_plan", [])
+            ),
             "subagent_unassigned_candidates": self._compact_subagent_items(
                 state.get("subagent_unassigned_candidates", [])
             ),
             "subagent_reports": self._compact_subagent_reports(state.get("subagent_reports", [])),
             "candidate_ledger_summary": dict(ledger_summary),
             "candidate_signal_summary": dict(state.get("candidate_signal_summary", {})),
-            "deferred_deterministic_work_count": len(
-                state.get("deferred_deterministic_work", [])
-            ),
-            "deferred_deterministic_work": list(
-                state.get("deferred_deterministic_work", [])
-            ),
+            "deferred_deterministic_work_count": len(state.get("deferred_deterministic_work", [])),
+            "deferred_deterministic_work": list(state.get("deferred_deterministic_work", [])),
             "va_candidate_coverage_summary": dict(state.get("va_candidate_coverage_summary", {})),
             "validation_performance": {
                 "iterations": int(state.get("validation_iterations", 0) or 0),
                 "tool_call_count": int(state.get("validation_tool_call_count", 0) or 0),
-                "validator_fast_path_attempted": int(state.get("validator_fast_path_attempted", 0) or 0),
-                "validator_fast_path_accepted": int(state.get("validator_fast_path_accepted", 0) or 0),
+                "validator_fast_path_attempted": int(
+                    state.get("validator_fast_path_attempted", 0) or 0
+                ),
+                "validator_fast_path_accepted": int(
+                    state.get("validator_fast_path_accepted", 0) or 0
+                ),
                 "validator_cache_hit": int(state.get("validator_cache_hit", 0) or 0),
                 "validator_inflight_coalesced": int(
                     state.get("validator_inflight_coalesced", 0) or 0
                 ),
-                "validation_group_count": int(
-                    state.get("validation_group_count", 0) or 0
-                ),
+                "validation_group_count": int(state.get("validation_group_count", 0) or 0),
                 "validation_group_merged_count": int(
                     state.get("validation_group_merged_count", 0) or 0
                 ),
-                "prevalidation_decision_count": int(state.get("prevalidation_decision_count", 0) or 0),
-                "clang_prevalidation_decision_count": int(state.get("clang_prevalidation_decision_count", 0) or 0),
-                "static_audit_observation_count": int(state.get("static_audit_observation_count", 0) or 0),
+                "prevalidation_decision_count": int(
+                    state.get("prevalidation_decision_count", 0) or 0
+                ),
+                "clang_prevalidation_decision_count": int(
+                    state.get("clang_prevalidation_decision_count", 0) or 0
+                ),
+                "static_audit_observation_count": int(
+                    state.get("static_audit_observation_count", 0) or 0
+                ),
                 "static_suppressed_count": int(state.get("static_suppressed_count", 0) or 0),
             },
             "semantic_dedup_summary": dict(state.get("semantic_dedup_summary", {})),
@@ -5233,9 +5278,7 @@ class Analyzer:
                 logger.debug("Unable to read code-index capability status: %s", exc)
 
         if "index" not in capabilities:
-            configured = str(
-                getattr(self.code_index, "backend_name", "") or "regex"
-            ).lower()
+            configured = str(getattr(self.code_index, "backend_name", "") or "regex").lower()
             backend = getattr(self.code_index, "backend", None)
             backend_status = str(getattr(backend, "_status", "") or "").lower()
             fallback = backend is None and configured != "regex"
@@ -5243,11 +5286,7 @@ class Analyzer:
                 "configured": configured,
                 "active": type(backend).__name__ if backend is not None else "regex",
                 "status": "degraded" if fallback else "complete",
-                "reason": (
-                    "configured_backend_unavailable_regex_fallback"
-                    if fallback
-                    else ""
-                ),
+                "reason": ("configured_backend_unavailable_regex_fallback" if fallback else ""),
                 "ready": bool(getattr(self.code_index, "_index_ready", False)),
             }
             if backend_status in {"failed", "error", "timeout"}:
@@ -5263,9 +5302,7 @@ class Analyzer:
                 }
         semantic_overlay = getattr(self, "_semantic_overlay", None)
         if isinstance(semantic_overlay, dict):
-            overlay_status = str(
-                semantic_overlay.get("engine_status") or "complete"
-            ).lower()
+            overlay_status = str(semantic_overlay.get("engine_status") or "complete").lower()
             if overlay_status not in {
                 "complete",
                 "degraded",
@@ -5280,11 +5317,7 @@ class Analyzer:
                 "configured": True,
                 "active": overlay_status != "failed",
                 "status": overlay_status,
-                "reason": (
-                    "user_config_query_failure"
-                    if overlay_errors
-                    else ""
-                ),
+                "reason": ("user_config_query_failure" if overlay_errors else ""),
                 "errors": overlay_errors,
             }
         runtime_capabilities = getattr(self, "_runtime_engine_capabilities", {})
@@ -5395,11 +5428,7 @@ class Analyzer:
         project_id = str(getattr(ledger, "project_id", "") or "project")
         revision = str(getattr(ledger, "revision", "") or "")
         entry = str(state.get("entry_identity") or state.get("entry_func") or "")
-        normalized_path = [
-            str(item)
-            for item in (call_path or [entry, function_name])
-            if str(item)
-        ]
+        normalized_path = [str(item) for item in (call_path or [entry, function_name]) if str(item)]
         root_payload = {
             "project_id": project_id,
             "revision": revision,
@@ -5652,10 +5681,12 @@ class Analyzer:
         task = getattr(agent_cfg, "task", None)
         semantic_router = None
         if llm_client is not None:
-            semantic_router = lambda task_text, skill_names: self._route_vulnerability_skills_with_llm(
-                task_text,
-                skill_names,
-                llm_client,
+            semantic_router = (
+                lambda task_text, skill_names: self._route_vulnerability_skills_with_llm(
+                    task_text,
+                    skill_names,
+                    llm_client,
+                )
             )
         selection = select_vulnerability_skills(task, available, semantic_router=semantic_router)
         if selection.restricted:
@@ -5727,9 +5758,7 @@ class Analyzer:
         negative = evidence.get("negative_evidence") or []
         if not positive or not negative:
             return False
-        negative_text = " ".join(
-            str(item) for item in negative if str(item).strip()
-        ).lower()
+        negative_text = " ".join(str(item) for item in negative if str(item).strip()).lower()
         return any(
             marker in negative_text
             for marker in (
@@ -5766,21 +5795,38 @@ class Analyzer:
         for item in items[:limit]:
             if not isinstance(item, dict):
                 continue
-            evidence_pack = item.get("evidence_pack") if isinstance(item.get("evidence_pack"), dict) else {}
+            evidence_pack = (
+                item.get("evidence_pack") if isinstance(item.get("evidence_pack"), dict) else {}
+            )
             compact.append(
                 {
-                    "candidate_id": item.get("candidate_id") or item.get("id") or evidence_pack.get("candidate_id"),
+                    "candidate_id": item.get("candidate_id")
+                    or item.get("id")
+                    or evidence_pack.get("candidate_id"),
                     "function": item.get("function"),
                     "location": item.get("location"),
-                    "defect_class": item.get("defect_class") or item.get("subcategory") or item.get("category"),
+                    "defect_class": item.get("defect_class")
+                    or item.get("subcategory")
+                    or item.get("category"),
                     "rule": item.get("rule") or evidence_pack.get("rule"),
-                    "candidate_source": item.get("candidate_source") or evidence_pack.get("candidate_source"),
+                    "candidate_source": item.get("candidate_source")
+                    or evidence_pack.get("candidate_source"),
                     "confidence": item.get("confidence") or item.get("rule_confidence"),
                     "source": item.get("source") or evidence_pack.get("source"),
                     "sink": item.get("sink") or evidence_pack.get("sink"),
-                    "validation_required": item.get("validation_required", evidence_pack.get("validation_required", True)),
-                    "positive_evidence": (item.get("positive_evidence") or evidence_pack.get("positive_evidence") or [])[:4],
-                    "negative_evidence": (item.get("negative_evidence") or evidence_pack.get("negative_evidence") or [])[:4],
+                    "validation_required": item.get(
+                        "validation_required", evidence_pack.get("validation_required", True)
+                    ),
+                    "positive_evidence": (
+                        item.get("positive_evidence")
+                        or evidence_pack.get("positive_evidence")
+                        or []
+                    )[:4],
+                    "negative_evidence": (
+                        item.get("negative_evidence")
+                        or evidence_pack.get("negative_evidence")
+                        or []
+                    )[:4],
                 }
             )
         if len(items) > limit:
@@ -5822,8 +5868,17 @@ class Analyzer:
         for candidate in candidates:
             if not isinstance(candidate, dict):
                 continue
-            evidence_pack = candidate.get("evidence_pack") if isinstance(candidate.get("evidence_pack"), dict) else {}
-            candidate_id = str(candidate.get("candidate_id") or candidate.get("id") or evidence_pack.get("candidate_id") or "")
+            evidence_pack = (
+                candidate.get("evidence_pack")
+                if isinstance(candidate.get("evidence_pack"), dict)
+                else {}
+            )
+            candidate_id = str(
+                candidate.get("candidate_id")
+                or candidate.get("id")
+                or evidence_pack.get("candidate_id")
+                or ""
+            )
             status = str((coverage.get(candidate_id) or {}).get("status") or "")
             if status not in covered_ok:
                 candidate["va_unreviewed"] = True
@@ -5849,9 +5904,7 @@ class Analyzer:
         """Initialize and return the set of tools."""
         from ...tools.registry import build_tool_registry
 
-        snapshot_resolver = (
-            self._get_or_build_snapshot if enable_on_demand_snapshots else None
-        )
+        snapshot_resolver = self._get_or_build_snapshot if enable_on_demand_snapshots else None
         include_advanced = getattr(self.code_index, "backend_name", "") in {
             "joern",
             "svf",
@@ -5926,7 +5979,9 @@ class Analyzer:
                 return {
                     "success": True,
                     "data": existing,
-                    "message": f"Snapshot is current ({reason})." if reason else "Snapshot is current.",
+                    "message": (
+                        f"Snapshot is current ({reason})." if reason else "Snapshot is current."
+                    ),
                 }
             self.snapshot_store.lock_manager.invalidate(index_name)
 
@@ -5970,7 +6025,9 @@ class Analyzer:
                     return {
                         "success": True,
                         "data": existing,
-                        "message": f"Snapshot is current ({reason})." if reason else "Snapshot is current.",
+                        "message": (
+                            f"Snapshot is current ({reason})." if reason else "Snapshot is current."
+                        ),
                     }
 
             if self._is_lightweight_snapshot_candidate(context["func_name"], context):
@@ -6000,7 +6057,9 @@ class Analyzer:
                 (a for a in self.config.project.agents if a.name == "semantic_modeler"),
                 None,
             )
-            sm_llm_ref = sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
+            sm_llm_ref = (
+                sm_agent_cfg.llm_ref if sm_agent_cfg and sm_agent_cfg.llm_ref else "default"
+            )
             sm_client = self.llm_clients.get(sm_llm_ref, self.llm_clients.get("default"))
             if sm_client is None:
                 return {
@@ -6015,6 +6074,7 @@ class Analyzer:
                     self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
                     tool_policy=self._tool_policy_for_agent("semantic_modeler"),
                 )
+
             self._attach_agent_contract(context, "semantic_modeler")
             logger.info("[snapshot] On-demand modeling index_name=%s", index_name)
             response = run_semantic_model_with_retries(
@@ -6030,9 +6090,7 @@ class Analyzer:
                 or 0
             )
             if not response.success:
-                failure_reason = str(
-                    response_metadata.get("reason") or "semantic_model_failed"
-                )
+                failure_reason = str(response_metadata.get("reason") or "semantic_model_failed")
                 logger.warning(
                     "[snapshot-llm] completed context=on_demand index_name=%s "
                     "success=false context_tokens=%d reason=%s error=%s",
@@ -6081,9 +6139,7 @@ class Analyzer:
             self.snapshot_store.lock_manager.release(index_name, success=success)
 
     @staticmethod
-    def _build_trivial_snapshot(
-        func_name: str, impl: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def _build_trivial_snapshot(func_name: str, impl: Dict[str, Any]) -> Dict[str, Any]:
         return build_trivial_snapshot(func_name, impl)
 
     @staticmethod
@@ -6098,9 +6154,7 @@ class Analyzer:
         return is_lightweight_snapshot_candidate(func_name, impl)
 
     @staticmethod
-    def _build_lightweight_snapshot(
-        func_name: str, impl: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def _build_lightweight_snapshot(func_name: str, impl: Dict[str, Any]) -> Dict[str, Any]:
         return build_lightweight_snapshot(func_name, impl)
 
     def _premodel_callees(
@@ -6155,11 +6209,7 @@ class Analyzer:
                     )
                     capped_callees = []
                 for item in capped_callees or []:
-                    callee_name = (
-                        str(item.get("name") or "")
-                        if isinstance(item, dict)
-                        else ""
-                    )
+                    callee_name = str(item.get("name") or "") if isinstance(item, dict) else ""
                     if callee_name:
                         self._record_deferred_deterministic_work(
                             state,
@@ -6279,19 +6329,13 @@ class Analyzer:
             self._record_engine_capability(
                 "semantic_premodel",
                 status=(
-                    "failed"
-                    if failed_count
-                    else ("degraded" if deferred_count else "complete")
+                    "failed" if failed_count else ("degraded" if deferred_count else "complete")
                 ),
                 active=True,
                 reason=(
                     "semantic_premodel_failed"
                     if failed_count
-                    else (
-                        "semantic_premodel_budget_deferred"
-                        if deferred_count
-                        else ""
-                    )
+                    else ("semantic_premodel_budget_deferred" if deferred_count else "")
                 ),
                 modeled_count=0,
                 cache_hit_count=0,
@@ -6309,6 +6353,7 @@ class Analyzer:
                 self._get_tools("semantic_modeler", enable_on_demand_snapshots=False),
                 tool_policy=self._tool_policy_for_agent("semantic_modeler"),
             )
+
         modeled = 0
         skipped = 0
         total_tokens = 0
@@ -6416,7 +6461,9 @@ class Analyzer:
                     continue
 
                 # 高效拦截：平凡函数不需要让大模型看
-                if self._is_trivial_function(context["code"], self.config.analysis.trivial_function_max_lines):
+                if self._is_trivial_function(
+                    context["code"], self.config.analysis.trivial_function_max_lines
+                ):
                     logger.info(f"[premodel] Auto-summarizing trivial function '{func}'")
                     snapshot = self._build_trivial_snapshot(context["func_name"], context)
                     self.snapshot_store.save_snapshot(index_name, snapshot, context["code"])
@@ -6501,20 +6548,12 @@ class Analyzer:
         )
         self._record_engine_capability(
             "semantic_premodel",
-            status=(
-                "failed"
-                if failed_count
-                else ("degraded" if deferred_count else "complete")
-            ),
+            status=("failed" if failed_count else ("degraded" if deferred_count else "complete")),
             active=True,
             reason=(
                 "semantic_premodel_failed"
                 if failed_count
-                else (
-                    "semantic_premodel_budget_deferred"
-                    if deferred_count
-                    else ""
-                )
+                else ("semantic_premodel_budget_deferred" if deferred_count else "")
             ),
             modeled_count=modeled,
             cache_hit_count=skipped,
@@ -6522,7 +6561,9 @@ class Analyzer:
             failed_count=failed_count,
         )
 
-        logger.info(f"[premodel] Done: {modeled} modeled, {skipped} reused from cache (ctx ≈{total_tokens:,} tokens)")
+        logger.info(
+            f"[premodel] Done: {modeled} modeled, {skipped} reused from cache (ctx ≈{total_tokens:,} tokens)"
+        )
         return modeled, skipped, total_tokens
 
     @staticmethod
@@ -6548,7 +6589,7 @@ class Analyzer:
 
     def _tool_executor_wrapper(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Wrapper to intercept tool execution for snapshot logic."""
-        
+
         # Intercept get_function_impl to check for snapshot refresh
         if tool_name == "get_function_impl" and self.config.analysis.enable_snapshot_cache:
             func_name = str(args.get("func_name") or "")
@@ -6568,7 +6609,7 @@ class Analyzer:
         impl_result = self.tools_runtime.execute_tool("get_function_impl", args)
         if not impl_result.get("success"):
             return impl_result
-        
+
         current_code = impl_result["data"]["code"]
         index_name = str(impl_result["data"].get("index_name") or "")
         if not index_name:
@@ -6596,7 +6637,7 @@ class Analyzer:
             current_code,
             symbol_context,
         )
-        
+
         if not needs_refresh and reason != "no_snapshot":
             # Snapshot is valid and up to date (or only cosmetic changes)
             logger.info(
@@ -6606,10 +6647,10 @@ class Analyzer:
             )
             snapshot = self.snapshot_store.load_snapshot(index_name)
             return {
-                "success": True, 
-                "data": impl_result["data"], 
-                "snapshot": snapshot, 
-                "note": "Snapshot allows skipping deep analysis if irrelevant."
+                "success": True,
+                "data": impl_result["data"],
+                "snapshot": snapshot,
+                "note": "Snapshot allows skipping deep analysis if irrelevant.",
             }
 
         if reason == "code_changed":
@@ -6621,16 +6662,16 @@ class Analyzer:
             )
             snapshot = self.snapshot_store.load_snapshot(index_name)
             decision = self._ask_refresh_decision(func_name, snapshot or {}, current_code)
-            
+
             if not decision.get("refresh_needed"):
                 logger.info(f"LLM decided refresh NOT needed for '{func_name}'")
                 return {
                     "success": True,
                     "data": impl_result["data"],
                     "snapshot": snapshot,
-                    "note": "Code changed but LLM deemed snapshot still valid."
+                    "note": "Code changed but LLM deemed snapshot still valid.",
                 }
-            
+
             logger.info(f"Refresh needed for '{func_name}': {decision.get('reason')}")
 
         # If we are here, we return the code and expect the LLM to analyze it and produce a new snapshot
@@ -6645,7 +6686,9 @@ class Analyzer:
                 raise RuntimeError("No LLM clients configured") from exc
         return client
 
-    def _ask_refresh_decision(self, func_name: str, old_snapshot: Dict[str, Any], new_code: str) -> Dict[str, Any]:
+    def _ask_refresh_decision(
+        self, func_name: str, old_snapshot: Dict[str, Any], new_code: str
+    ) -> Dict[str, Any]:
         """Ask LLM if snapshot needs refresh."""
         prompt = (
             f"Function '{func_name}' has changed.\n"
@@ -6664,9 +6707,9 @@ class Analyzer:
                 "role": "system",
                 "content": self._snapshot_refresh_decision_system_prompt(),
             },
-            {"role": "user", "content": prompt}
+            {"role": "user", "content": prompt},
         ]
-        
+
         # Use a separate simpler call (no tools)
         try:
             response = self._default_llm_client().chat_completion(
@@ -6711,40 +6754,51 @@ class Analyzer:
         data = self._extract_json_block(text, "final_report")
         if not data:
             return None
-            
+
         try:
-            issues = [Issue.from_dict(i, context_function=data.get("entry_function", "unknown"), issue_index=idx+1) for idx, i in enumerate(data.get("issues", []))]
+            issues = [
+                Issue.from_dict(
+                    i, context_function=data.get("entry_function", "unknown"), issue_index=idx + 1
+                )
+                for idx, i in enumerate(data.get("issues", []))
+            ]
             return FinalReport(
                 entry_function=data.get("entry_function", ""),
                 overall_verdict=data.get("overall_verdict", "insufficient_info"),
                 issues=issues,
-                notes=data.get("notes", [])
+                notes=data.get("notes", []),
             )
         except Exception as e:
             logger.error(f"Failed to parse FinalReport object: {e}")
             return None
 
-    def _extract_json_block(self, text: str, type_hint: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def _extract_json_block(
+        self, text: str, type_hint: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         """
         Extract JSON block from text using robust utility.
         """
         from ...common.utils import extract_json_blocks
-        
+
         candidates = extract_json_blocks(text)
-        
+
         for data in candidates:
             if type_hint:
                 if data.get("type") == type_hint:
                     return data
                 # Handle nested wrap
-                if type_hint in data and isinstance(data[type_hint], dict) and data[type_hint].get("type") == type_hint:
+                if (
+                    type_hint in data
+                    and isinstance(data[type_hint], dict)
+                    and data[type_hint].get("type") == type_hint
+                ):
                     return cast(Dict[str, Any], data[type_hint])
             else:
                 # If no hint, return the first dictionary found
                 return data
-                
+
         return None
-            
+
         return None
 
     def _save_snapshot_from_llm(self, snapshot_data: Dict[str, Any]) -> None:
@@ -6830,7 +6884,7 @@ class Analyzer:
             except Exception as exc:
                 logger.debug("Failed to resolve issue location for %s: %s", func_name, exc)
                 func_info = None
-            
+
             # Extract line number/range from LLM output (e.g., "142" or "142-145" or "cache_get:142")
             nums = re.findall(r"\d+", raw_location)
             line_suffix = "unknown"
@@ -6872,7 +6926,6 @@ class Analyzer:
                 if not issue.get("end_line"):
                     issue["end_line"] = end_line
 
-
     def _build_java_active_audit_context(
         self,
         state: Dict[str, Any],
@@ -6882,11 +6935,21 @@ class Analyzer:
         candidate_signals: Sequence[Dict[str, Any]],
     ) -> Dict[str, Any]:
         impl = state.get("impl_result") if isinstance(state.get("impl_result"), dict) else {}
-        framework = impl.get("framework_semantics") if isinstance(impl.get("framework_semantics"), dict) else {}
-        entry_func = str(state.get("entry_func") or impl.get("qualified_name") or impl.get("function") or "")
+        framework = (
+            impl.get("framework_semantics")
+            if isinstance(impl.get("framework_semantics"), dict)
+            else {}
+        )
+        entry_func = str(
+            state.get("entry_func") or impl.get("qualified_name") or impl.get("function") or ""
+        )
         annotations = self._compact_java_annotations(self._java_annotation_context(impl), limit=12)
-        sources = self._compact_java_framework_values(framework, ("sources", "request_sources", "input_sources"), limit=12)
-        guards = self._compact_java_framework_values(framework, ("guards", "security_guards", "authz_guards"), limit=12)
+        sources = self._compact_java_framework_values(
+            framework, ("sources", "request_sources", "input_sources"), limit=12
+        )
+        guards = self._compact_java_framework_values(
+            framework, ("guards", "security_guards", "authz_guards"), limit=12
+        )
         policies = self._compact_java_framework_values(
             framework,
             ("security_policies", "runtime_configs", "policies"),
@@ -6894,7 +6957,8 @@ class Analyzer:
         )
         return {
             "language": "java",
-            "structure_frontend_actual": impl.get("structure_frontend_actual") or impl.get("structure_frontend"),
+            "structure_frontend_actual": impl.get("structure_frontend_actual")
+            or impl.get("structure_frontend"),
             "structure_precision": impl.get("structure_precision") or impl.get("precision"),
             "entry_function": entry_func,
             "entry_kind": self._java_entry_kind(impl, framework),
@@ -6907,7 +6971,9 @@ class Analyzer:
             "runtime_security_policies": policies,
             "reachable_callees": self._java_reachable_callee_context(impl, limit=16),
             "candidate_signal_summary": candidate_signal_summary,
-            "candidate_signal_candidates": self._compact_candidate_signal_items(list(candidate_signals), limit=24),
+            "candidate_signal_candidates": self._compact_candidate_signal_items(
+                list(candidate_signals), limit=24
+            ),
             "candidate_ledger_summary": state.get("candidate_ledger_summary") or {},
             "subagent_unassigned_candidates": self._compact_subagent_items(
                 state.get("subagent_unassigned_candidates") or [],
@@ -6963,11 +7029,26 @@ class Analyzer:
             str(item.get("name") or item.get("code") or item)
             for item in (
                 (impl.get("annotations") if isinstance(impl.get("annotations"), list) else [])
-                + (impl.get("class_annotations") if isinstance(impl.get("class_annotations"), list) else [])
+                + (
+                    impl.get("class_annotations")
+                    if isinstance(impl.get("class_annotations"), list)
+                    else []
+                )
             )
         ).lower()
-        name = str(impl.get("qualified_name") or impl.get("function") or impl.get("name") or "").lower()
-        if any(token in text for token in ("requestmapping", "getmapping", "postmapping", "restcontroller", "controller")):
+        name = str(
+            impl.get("qualified_name") or impl.get("function") or impl.get("name") or ""
+        ).lower()
+        if any(
+            token in text
+            for token in (
+                "requestmapping",
+                "getmapping",
+                "postmapping",
+                "restcontroller",
+                "controller",
+            )
+        ):
             return "controller"
         if "filter" in name or "dofilter" in name:
             return "filter"
@@ -6982,21 +7063,35 @@ class Analyzer:
     @staticmethod
     def _java_component(impl: Dict[str, Any]) -> str:
         text = " ".join(
-            str(impl.get(key) or "")
-            for key in ("class_name", "qualified_name", "function", "file")
+            str(impl.get(key) or "") for key in ("class_name", "qualified_name", "function", "file")
         ).lower()
-        for component in ("controller", "service", "mapper", "repository", "filter", "interceptor", "dto", "config", "listener"):
+        for component in (
+            "controller",
+            "service",
+            "mapper",
+            "repository",
+            "filter",
+            "interceptor",
+            "dto",
+            "config",
+            "listener",
+        ):
             if component in text:
                 return component
         return "java_component"
 
     @staticmethod
-    def _java_route_context(framework: Dict[str, Any], annotations: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    def _java_route_context(
+        framework: Dict[str, Any], annotations: Sequence[Dict[str, Any]]
+    ) -> Dict[str, Any]:
         route = framework.get("route") if isinstance(framework.get("route"), dict) else {}
         mappings = [
             item
             for item in annotations
-            if any(token in str(item.get("name") or item.get("code") or "").lower() for token in ("mapping", "route"))
+            if any(
+                token in str(item.get("name") or item.get("code") or "").lower()
+                for token in ("mapping", "route")
+            )
         ]
         return {"route": route, "mappings": mappings[:8]}
 
@@ -7017,7 +7112,18 @@ class Analyzer:
                 name = str(callee)
                 item = {"name": name}
             lowered = name.lower()
-            if any(token in lowered for token in ("service", "mapper", "repository", "filter", "interceptor", "controller", "helper")):
+            if any(
+                token in lowered
+                for token in (
+                    "service",
+                    "mapper",
+                    "repository",
+                    "filter",
+                    "interceptor",
+                    "controller",
+                    "helper",
+                )
+            ):
                 preferred.append(item)
             else:
                 fallback.append(item)
@@ -7036,7 +7142,9 @@ class Analyzer:
             if not isinstance(item, dict):
                 continue
             pack = item.get("evidence_pack") if isinstance(item.get("evidence_pack"), dict) else {}
-            candidate_id = str(item.get("candidate_id") or item.get("id") or pack.get("candidate_id") or "")
+            candidate_id = str(
+                item.get("candidate_id") or item.get("id") or pack.get("candidate_id") or ""
+            )
             if candidate_id:
                 candidate_ids.add(candidate_id)
         entry_func = str(state.get("entry_func") or "")
@@ -7055,14 +7163,22 @@ class Analyzer:
             if not isinstance(issue, dict):
                 continue
             issue = dict(issue)
-            pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
-            candidate_id = str(issue.get("candidate_id") or issue.get("id") or pack.get("candidate_id") or "")
+            pack = (
+                issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+            )
+            candidate_id = str(
+                issue.get("candidate_id") or issue.get("id") or pack.get("candidate_id") or ""
+            )
             source_name = str(issue.get("candidate_source") or pack.get("candidate_source") or "")
-            is_candidate_backed = bool(candidate_id and candidate_id in candidate_ids) or source_name in proof_sources
+            is_candidate_backed = (
+                bool(candidate_id and candidate_id in candidate_ids) or source_name in proof_sources
+            )
             issue.setdefault("language", "java")
             issue.setdefault("entry_function", entry_func)
             issue.setdefault("entry_path", [entry_func] if entry_func else [])
-            if entry_file and not (issue.get("file") or issue.get("file_path") or issue.get("location")):
+            if entry_file and not (
+                issue.get("file") or issue.get("file_path") or issue.get("location")
+            ):
                 issue["file"] = entry_file
             if not is_candidate_backed:
                 issue["candidate_source"] = "java_llm_active_audit"
@@ -7155,7 +7271,11 @@ class Analyzer:
 
     @staticmethod
     def _java_annotation_context_from_framework(impl: Dict[str, Any]) -> List[Dict[str, Any]]:
-        framework = impl.get("framework_semantics") if isinstance(impl.get("framework_semantics"), dict) else {}
+        framework = (
+            impl.get("framework_semantics")
+            if isinstance(impl.get("framework_semantics"), dict)
+            else {}
+        )
         if not framework:
             return []
         text = json.dumps(framework, ensure_ascii=False, default=str)
@@ -7223,8 +7343,7 @@ class Analyzer:
             return []
 
         numbered = "\n".join(
-            f"{idx} | {line}"
-            for idx, line in enumerate(text.splitlines()[:2000], start=1)
+            f"{idx} | {line}" for idx, line in enumerate(text.splitlines()[:2000], start=1)
         )
         issues = generator.generate_issues(
             entry_func,
@@ -7233,9 +7352,7 @@ class Analyzer:
             allowed_skills=["java_concurrency"],
         )
         issues = [
-            issue
-            for issue in issues
-            if issue.get("rule") == "java_shared_mutable_static_state"
+            issue for issue in issues if issue.get("rule") == "java_shared_mutable_static_state"
         ]
         if not issues:
             return []
@@ -7339,7 +7456,10 @@ class Analyzer:
                         return []
                     self._java_project_file_rule_emitted = True
                     return [dict(issue) for issue in self._java_project_file_rule_cache]
-        source_root = Path(getattr(self.config.project, "source_root", "") or getattr(self.config.project, "project_root", "."))
+        source_root = Path(
+            getattr(self.config.project, "source_root", "")
+            or getattr(self.config.project, "project_root", ".")
+        )
         if not source_root.exists():
             return []
 
@@ -7350,13 +7470,15 @@ class Analyzer:
                 text = path.read_text(encoding="utf-8", errors="ignore")
             except Exception:
                 continue
-            if path.suffix.lower() == ".java" and not self._java_file_may_contain_mybatis_annotation_substitution(text):
+            if (
+                path.suffix.lower() == ".java"
+                and not self._java_file_may_contain_mybatis_annotation_substitution(text)
+            ):
                 continue
             if not self._java_auxiliary_file_may_contain_rule_signal(text):
                 continue
             numbered = "\n".join(
-                f"{idx} | {line}"
-                for idx, line in enumerate(text.splitlines()[:2000], start=1)
+                f"{idx} | {line}" for idx, line in enumerate(text.splitlines()[:2000], start=1)
             )
             rel_path = normalize_path(path, source_root)
             file_candidates = generator.generate_issues(
@@ -7368,8 +7490,7 @@ class Analyzer:
             if path.suffix.lower() == ".xml":
                 bindings = self._mybatis_xml_bindings(text, rel_path, mapper_interfaces)
                 file_candidates = [
-                    self._enrich_mybatis_xml_candidate(issue, bindings)
-                    for issue in file_candidates
+                    self._enrich_mybatis_xml_candidate(issue, bindings) for issue in file_candidates
                 ]
                 file_candidates.extend(
                     self._mybatis_xml_project_file_candidates(rel_path, bindings)
@@ -7417,7 +7538,9 @@ class Analyzer:
         roots = [java_root] if java_root.exists() else [source_root]
         for root in roots:
             for path in root.rglob("*.java"):
-                if any(part in {".git", "target", "build", "out", ".gradle"} for part in path.parts):
+                if any(
+                    part in {".git", "target", "build", "out", ".gradle"} for part in path.parts
+                ):
                     continue
                 try:
                     text = path.read_text(encoding="utf-8", errors="ignore")
@@ -7498,7 +7621,9 @@ class Analyzer:
     ) -> List[Dict[str, Any]]:
         namespace_match = re.search(r"<mapper\b[^>]*\bnamespace\s*=\s*['\"]([^'\"]+)['\"]", text)
         namespace = namespace_match.group(1).strip() if namespace_match else ""
-        mapper = mapper_interfaces.get(namespace) or mapper_interfaces.get(namespace.rsplit(".", 1)[-1])
+        mapper = mapper_interfaces.get(namespace) or mapper_interfaces.get(
+            namespace.rsplit(".", 1)[-1]
+        )
         lines = text.splitlines()
         bindings: List[Dict[str, Any]] = []
         statement_re = re.compile(
@@ -7590,7 +7715,11 @@ class Analyzer:
         if isinstance(evidence["source"], dict):
             evidence["source"].update(
                 {
-                    "expression": ", ".join(binding_copy.get("bound_variables") or binding_copy.get("text_substitution_variables") or []),
+                    "expression": ", ".join(
+                        binding_copy.get("bound_variables")
+                        or binding_copy.get("text_substitution_variables")
+                        or []
+                    ),
                     "kind": "mybatis_xml_mapper_parameter",
                     "mapper_interface": interface_name,
                     "mapper_method": method_name,
@@ -7620,9 +7749,10 @@ class Analyzer:
             f"precision={binding_copy.get('binding_precision')}."
         )
         enriched["positive_evidence"] = positive
-        enriched["source"] = (
-            "MyBatis XML mapper parameter(s): "
-            + ", ".join(binding_copy.get("bound_variables") or binding_copy.get("text_substitution_variables") or [])
+        enriched["source"] = "MyBatis XML mapper parameter(s): " + ", ".join(
+            binding_copy.get("bound_variables")
+            or binding_copy.get("text_substitution_variables")
+            or []
         )
         enriched["mybatis_xml_binding"] = binding_copy
         return enriched
@@ -7650,7 +7780,9 @@ class Analyzer:
         for method in (mapper.get("methods") or {}).values():
             if not isinstance(method, dict):
                 continue
-            annotations = method.get("annotations") if isinstance(method.get("annotations"), list) else []
+            annotations = (
+                method.get("annotations") if isinstance(method.get("annotations"), list) else []
+            )
             matched = next(
                 (
                     annotation
@@ -7698,7 +7830,11 @@ class Analyzer:
         enriched["location"] = f"{rel_path}:{line}"
         evidence = dict(enriched.get("evidence_pack") or {})
         evidence["mybatis_annotation_binding"] = binding_copy
-        variables = binding_copy.get("bound_variables") or binding_copy.get("text_substitution_variables") or []
+        variables = (
+            binding_copy.get("bound_variables")
+            or binding_copy.get("text_substitution_variables")
+            or []
+        )
         evidence["source"] = {
             "expression": ", ".join(variables),
             "kind": "mybatis_annotation_mapper_parameter",
@@ -7762,13 +7898,22 @@ class Analyzer:
             ]
             if not variables:
                 continue
-            variable_lines = binding.get("variable_lines") if isinstance(binding.get("variable_lines"), dict) else {}
+            variable_lines = (
+                binding.get("variable_lines")
+                if isinstance(binding.get("variable_lines"), dict)
+                else {}
+            )
             line = int(variable_lines.get(variables[0]) or binding.get("start_line") or -1)
             statement_text = str(binding.get("statement_text") or "")
             sink = f"MyBatis XML ${variables[0]} text substitution"
-            candidate_id = "JAVA_RULE_SQL_INJECTION_XML_" + hashlib.sha1(
-                f"java:mybatis-xml:{rel_path}:{binding.get('statement_id')}:{line}:{','.join(variables)}".encode("utf-8")
-            ).hexdigest()[:10]
+            candidate_id = (
+                "JAVA_RULE_SQL_INJECTION_XML_"
+                + hashlib.sha1(
+                    f"java:mybatis-xml:{rel_path}:{binding.get('statement_id')}:{line}:{','.join(variables)}".encode(
+                        "utf-8"
+                    )
+                ).hexdigest()[:10]
+            )
             function = f"<project-file>:{rel_path}"
             mapper_function = ".".join(
                 part
@@ -7856,7 +8001,8 @@ class Analyzer:
                         f"`{sink}` in `{rel_path}:{line}`. {description}"
                     ),
                     "code_snippet": statement_text,
-                    "source": "MyBatis XML mapper parameter(s): " + ", ".join(binding.get("bound_variables") or variables),
+                    "source": "MyBatis XML mapper parameter(s): "
+                    + ", ".join(binding.get("bound_variables") or variables),
                     "sink": sink,
                     "dedup_key": "|".join(
                         [

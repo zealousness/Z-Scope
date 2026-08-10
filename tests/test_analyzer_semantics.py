@@ -48,6 +48,16 @@ class NullCodeIndex:
         return None
 
 
+def test_java_entry_lookup_keeps_the_qualified_method_identifier() -> None:
+    entry_function = "demo.Controller.load:java.lang.String(java.lang.String)"
+    descriptor = "java.lang.String(java.lang.String)"
+
+    assert Analyzer._entry_lookup_query(entry_function, descriptor, "java") == entry_function
+    assert Analyzer._entry_lookup_query("load", "int load(int value)", "c_cpp") == (
+        "int load(int value)"
+    )
+
+
 def test_snapshot_semantic_text_does_not_reclassify_described_function_as_api() -> None:
     semantics = LocalPatternSemantics()
     analyzer = object.__new__(Analyzer)
@@ -73,9 +83,7 @@ def test_snapshot_semantic_text_does_not_reclassify_described_function_as_api() 
 
 def test_llm_iteration_budget_is_observed_without_hard_failure() -> None:
     analyzer = object.__new__(Analyzer)
-    analyzer.config = SimpleNamespace(
-        analysis=SimpleNamespace(max_tool_iterations=50)
-    )
+    analyzer.config = SimpleNamespace(analysis=SimpleNamespace(max_tool_iterations=50))
     state = {"budget_observations": [], "any_failure": False}
     response = SimpleNamespace(
         success=False,
@@ -107,13 +115,9 @@ def test_llm_iteration_budget_is_observed_without_hard_failure() -> None:
 
 def test_candidate_first_skips_entry_scoped_investigator_planning() -> None:
     analyzer = object.__new__(Analyzer)
-    analyzer.config = SimpleNamespace(
-        analysis=SimpleNamespace(candidate_first_validation=True)
-    )
+    analyzer.config = SimpleNamespace(analysis=SimpleNamespace(candidate_first_validation=True))
     recorded = []
-    analyzer._record_engine_capability = lambda *args, **kwargs: recorded.append(
-        (args, kwargs)
-    )
+    analyzer._record_engine_capability = lambda *args, **kwargs: recorded.append((args, kwargs))
     state = {"notes": []}
 
     analyzer._step_focused_subagent_planning(state)
@@ -185,9 +189,7 @@ def test_candidate_first_skill_selection_keeps_every_deterministic_skill() -> No
         ]
     )
 
-    selection = analyzer._candidate_first_skill_selection(
-        SimpleNamespace(skills=[])
-    )
+    selection = analyzer._candidate_first_skill_selection(SimpleNamespace(skills=[]))
 
     assert selection.skills == [
         "bounds_and_integer",
@@ -342,9 +344,7 @@ def test_direct_callee_fact_limit_is_reported_as_deferred_work() -> None:
     assert [item["function_name"] for item in deferred] == ["second"]
     assert deferred[0]["candidate_disposition"] == "deferred_budget"
     assert (
-        analyzer._runtime_engine_capabilities[
-            "deterministic_local_rules_callee_facts"
-        ]["status"]
+        analyzer._runtime_engine_capabilities["deterministic_local_rules_callee_facts"]["status"]
         == "degraded"
     )
 
@@ -423,7 +423,9 @@ def test_graph_candidates_detect_free_wrapper_omitted_dynamic_payload() -> None:
     )
 
     issues = generator.generate_for_views([creator, cleanup])
-    leak = next(issue for issue in issues if issue["rule"] == "paired_free_wrapper_omits_dynamic_member")
+    leak = next(
+        issue for issue in issues if issue["rule"] == "paired_free_wrapper_omits_dynamic_member"
+    )
 
     assert leak["category"] == "memory_leak"
     assert leak["function"] == "_real_model_free_node"
@@ -431,7 +433,9 @@ def test_graph_candidates_detect_free_wrapper_omitted_dynamic_payload() -> None:
     assert "node->payload" in "\n".join(leak["positive_evidence"])
 
 
-def test_graph_candidates_detect_helper_alloc_wrapper_member_leak_without_primitive_pair_fp() -> None:
+def test_graph_candidates_detect_helper_alloc_wrapper_member_leak_without_primitive_pair_fp() -> (
+    None
+):
     semantics = LocalPatternSemantics()
     semantics.add_api("deallocator", "SAFE_FREE", "user_config")
     generator = GraphCandidateGenerator(NullCodeIndex(), semantics)
@@ -502,12 +506,19 @@ def test_graph_candidates_detect_paired_key_truncation_before_generic_race_terms
     )
 
     issues = generator.generate_for_views([lookup, insert])
-    truncation = next(issue for issue in issues if issue["rule"] == "paired_full_key_lookup_truncated_insert")
+    truncation = next(
+        issue for issue in issues if issue["rule"] == "paired_full_key_lookup_truncated_insert"
+    )
 
     assert truncation["category"] == "key_truncation"
     assert truncation["function"] == "_real_model_insert_key"
-    assert normalize_issue_category("race in rules map caused by key truncation") == "key_truncation"
-    drifted = {"category": "race", "description": "full key lookup uses a truncated key after strncpy"}
+    assert (
+        normalize_issue_category("race in rules map caused by key truncation") == "key_truncation"
+    )
+    drifted = {
+        "category": "race",
+        "description": "full key lookup uses a truncated key after strncpy",
+    }
     normalize_issue_fields(drifted)
     assert drifted["normalized_category"] == "key_truncation"
 
@@ -548,9 +559,15 @@ def test_graph_candidates_detect_self_referential_pipe_log_amplification() -> No
     assert amplification["category"] == "log_amplification"
     assert amplification["function"] == "_lifecycle_dump_pipe_chain"
     assert amplification["location"] == "src/lifecycle.c:62"
-    assert normalize_issue_category("busy loop from log amplification resource exhaustion") == "log_amplification"
+    assert (
+        normalize_issue_category("busy loop from log amplification resource exhaustion")
+        == "log_amplification"
+    )
     assert normalize_issue_category("CWE-479 signal handler shared state race") == "signal_race"
-    drifted = {"category": "busy_loop", "description": "self-referential traversal causes log amplification"}
+    drifted = {
+        "category": "busy_loop",
+        "description": "self-referential traversal causes log amplification",
+    }
     normalize_issue_fields(drifted)
     assert drifted["normalized_category"] == "log_amplification"
 
@@ -593,8 +610,16 @@ def test_graph_candidates_expand_thin_runtime_fanout_at_depth_cap() -> None:
 """,
                     "callees": [],
                 },
-                "cancel_timer": {"file": "src/lifecycle.c", "code": "30 | int cancel_timer(void) { return 0; }", "callees": []},
-                "finish_event": {"file": "src/lifecycle.c", "code": "40 | int finish_event(void) { return 0; }", "callees": []},
+                "cancel_timer": {
+                    "file": "src/lifecycle.c",
+                    "code": "30 | int cancel_timer(void) { return 0; }",
+                    "callees": [],
+                },
+                "finish_event": {
+                    "file": "src/lifecycle.c",
+                    "code": "40 | int finish_event(void) { return 0; }",
+                    "callees": [],
+                },
             }
             return impls.get(name)
 
@@ -606,7 +631,10 @@ def test_graph_candidates_expand_thin_runtime_fanout_at_depth_cap() -> None:
         max_functions=16,
     )
 
-    assert any(issue["category"] == "lost_wakeup" and issue["function"] == "queue_flush" for issue in issues)
+    assert any(
+        issue["category"] == "lost_wakeup" and issue["function"] == "queue_flush"
+        for issue in issues
+    )
 
 
 def test_graph_candidates_detect_protocol_contract_variants() -> None:
@@ -833,10 +861,10 @@ def test_premodel_callee_collection_uses_per_level_cap_and_light_impls() -> None
                     "signature": f"int {simple_name}(void)",
                     "is_static": False,
                     "callees": [],
-                        "referenced_globals": [],
-                        "referenced_macros": [],
-                        "referenced_types": [],
-                    }
+                    "referenced_globals": [],
+                    "referenced_macros": [],
+                    "referenced_types": [],
+                }
             ]
 
     class SnapshotStore:
@@ -850,9 +878,7 @@ def test_premodel_callee_collection_uses_per_level_cap_and_light_impls() -> None
     analyzer = object.__new__(Analyzer)
     analyzer.code_index = FanoutIndex()
     analyzer.snapshot_store = SnapshotStore()
-    analyzer.config = SimpleNamespace(
-        analysis=SimpleNamespace(max_function_lines=500)
-    )
+    analyzer.config = SimpleNamespace(analysis=SimpleNamespace(max_function_lines=500))
     analyzer._get_tools = lambda *args, **kwargs: []
     analyzer._tool_policy_for_agent = lambda *args, **kwargs: None
 
@@ -994,9 +1020,7 @@ def test_trivial_snapshot_does_not_infer_contracts_from_fixture_names() -> None:
             },
         )
 
-        assert forbidden_types.isdisjoint(
-            point["type"] for point in snapshot["suspicious_points"]
-        )
+        assert forbidden_types.isdisjoint(point["type"] for point in snapshot["suspicious_points"])
 
 
 def test_trivial_snapshot_marks_facade_forwarding_as_auditable() -> None:
@@ -1017,9 +1041,9 @@ def test_trivial_snapshot_marks_facade_forwarding_as_auditable() -> None:
 """,
             "project_callees": [
                 {
-                "callee_index_name": "_runtime_accept_session_frame",
-                "callsite_lines": [],
-                "call_type": ["direct"],
+                    "callee_index_name": "_runtime_accept_session_frame",
+                    "callsite_lines": [],
+                    "call_type": ["direct"],
                     "is_static": False,
                 }
             ],
@@ -1041,7 +1065,7 @@ def test_trivial_snapshot_marks_facade_forwarding_as_auditable() -> None:
             "callee_index_name": "_runtime_accept_session_frame",
             "callee_signature": "",
             "is_static": False,
-                "callee_summary": "unknown",
+            "callee_summary": "unknown",
             "direct_callsite_lines": [],
             "indirect_callsites": [],
         }
@@ -1203,7 +1227,7 @@ def test_deterministic_snapshot_preserves_context_truncation_and_isolation() -> 
                     "callsite_lines": [2],
                     "call_type": ["direct", "indirect"],
                     "is_static": False,
-                }
+                },
             ],
             "external_callees": [],
             "project_callees_truncation": project_callees_truncation,
@@ -1393,20 +1417,14 @@ def test_validation_snapshot_type_evidence_preserves_identity_under_byte_budget(
     compact = compact_snapshot(snapshot)
 
     assert compact is not None
-    assert compact["referenced_types"][0]["type_index_name"] == (
-        "Large@include/types.h:1-10"
-    )
+    assert compact["referenced_types"][0]["type_index_name"] == ("Large@include/types.h:1-10")
     assert "full_definition" not in compact["referenced_types"][0]
     assert compact["referenced_types"][0]["definition_omitted"] == (
         "validation_evidence_byte_budget"
     )
     assert compact["referenced_types"][1]["full_definition"] == "20 | typedef int Small;\n"
-    assert compact["unresolved_referenced_types"] == snapshot[
-        "unresolved_referenced_types"
-    ]
-    assert compact["referenced_types_truncation"] == snapshot[
-        "referenced_types_truncation"
-    ]
+    assert compact["unresolved_referenced_types"] == snapshot["unresolved_referenced_types"]
+    assert compact["referenced_types_truncation"] == snapshot["referenced_types_truncation"]
 
 
 def test_entry_root_dead_code_rejection_is_detected() -> None:
@@ -1747,14 +1765,17 @@ def test_reachable_precompute_respects_cycles_depth_and_node_limits() -> None:
     ) == {"entry", "a", "b", "c"}
     assert not analyzer._match_reachable_from_entry("entry", "leaf", max_depth=2)
     assert analyzer._match_reachable_from_entry("entry", "leaf", max_depth=3)
-    assert len(
-        analyzer._reachable_function_names_from_entry(
-            "entry",
-            max_depth=5,
-            max_nodes=3,
-            callee_limit=80,
+    assert (
+        len(
+            analyzer._reachable_function_names_from_entry(
+                "entry",
+                max_depth=5,
+                max_nodes=3,
+                callee_limit=80,
+            )
         )
-    ) == 3
+        == 3
+    )
 
 
 def test_clang_knowledge_candidates_reuse_precomputed_reachable_set() -> None:
@@ -1782,9 +1803,10 @@ def test_clang_knowledge_candidates_reuse_precomputed_reachable_set() -> None:
     analyzer.code_index = index
     analyzer._candidate_backend_profile = lambda: "clang"
     analyzer._resource_release_pairs_from_overlay = lambda: [("open", "close", "test")]
-    analyzer._clang_pair_row_to_candidate = (
-        lambda row, **kwargs: {"function": row["function"], "entry": kwargs["entry_func"]}
-    )
+    analyzer._clang_pair_row_to_candidate = lambda row, **kwargs: {
+        "function": row["function"],
+        "entry": kwargs["entry_func"],
+    }
     reachable = analyzer._reachable_function_names_from_entry(
         "entry",
         max_depth=4,
@@ -1965,4 +1987,3 @@ def test_candidate_ir_database_failure_marks_engine_incomplete() -> None:
     assert capability["persisted_count"] == 0
     assert capability["failure_count"] == 2
     assert writer_lock.entries == 1
- 

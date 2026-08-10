@@ -169,9 +169,7 @@ def test_function_entry_identity_is_cross_platform_and_signature_complete(
         signature="int handle( const char * value )",
     )
 
-    assert absolute_entry.identity_key(tmp_path) == relative_entry.identity_key(
-        tmp_path
-    )
+    assert absolute_entry.identity_key(tmp_path) == relative_entry.identity_key(tmp_path)
     assert relative_entry.identity_key(tmp_path) == (
         "src/net/handler.c::int handle( const char * value )"
     )
@@ -197,8 +195,27 @@ def test_function_list_loader_preserves_entry_signature(tmp_path) -> None:
     entry = FunctionListLoader.load(path)[0]
 
     assert entry.lookup_query() == "int handle(const char *value)"
-    assert entry.identity_key() == (
-        "src/handler.c::int handle(const char *value)"
+    assert entry.identity_key() == ("src/handler.c::int handle(const char *value)")
+
+
+def test_function_entry_identity_keeps_java_qualified_method_name(tmp_path) -> None:
+    file_path = "src/main/java/demo/Controller.java"
+    first = FunctionEntry(
+        "demo.Controller.first:java.lang.String(java.lang.String)",
+        file_path=file_path,
+        signature="java.lang.String(java.lang.String)",
+    )
+    second = FunctionEntry(
+        "demo.Controller.second:java.lang.String(java.lang.String)",
+        file_path=file_path,
+        signature="java.lang.String(java.lang.String)",
+    )
+
+    assert first.identity_key(tmp_path) != second.identity_key(tmp_path)
+    assert first.identity_key(tmp_path) == (
+        "src/main/java/demo/Controller.java::"
+        "demo.Controller.first:java.lang.String(java.lang.String)::"
+        "java.lang.String(java.lang.String)"
     )
 
 
@@ -252,6 +269,31 @@ def test_parallel_materializes_ambiguous_legacy_entry_as_distinct_identities(
         "src/alpha/handler.c::static int handle(int value)",
         "src/beta/handler.c::static int handle(const char *value)",
     ]
+
+
+def test_parallel_materializes_java_entries_with_same_descriptor(tmp_path) -> None:
+    first = "demo.Controller.first:java.lang.String(java.lang.String)"
+    second = "demo.Controller.second:java.lang.String(java.lang.String)"
+
+    class JavaIndex:
+        def find_function_identities(self, func_name, file_path=""):
+            assert file_path == ""
+            return [
+                {
+                    "function_name": func_name,
+                    "file_path": "src/main/java/demo/Controller.java",
+                    "signature": "java.lang.String(java.lang.String)",
+                }
+            ]
+
+    analyzer = object.__new__(ParallelAnalyzer)
+    analyzer.base_config = _config_with_task("general security audit")
+    analyzer.base_config.project.project_root = tmp_path
+    analyzer.code_index = JavaIndex()
+
+    entries = analyzer._materialize_entry_identities([FunctionEntry(first), FunctionEntry(second)])
+
+    assert [entry.function_name for entry in entries] == [first, second]
 
 
 def test_function_list_loader_restores_diff_focus_from_file_metadata(tmp_path) -> None:

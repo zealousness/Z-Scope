@@ -85,6 +85,7 @@ _ENTRY_EXPOSURE_WEIGHTS = {
 @dataclass
 class ParallelAnalysisResult:
     """Result of parallel analysis across multiple functions."""
+
     function_name: str
     verdict: str
     entry_identity: str = ""
@@ -110,16 +111,20 @@ class ParallelAnalysisResult:
 class ParallelAnalyzer:
     """
     Parallel analyzer that can analyze multiple functions concurrently.
-    
+
     Uses a thread pool to run up to max_workers LLM analysis sessions
     simultaneously, significantly reducing total analysis time.
     """
-    
-    def __init__(self, config: ZScopeConfig, code_index: Optional[CodeIndex] = None,
-                 user_config: Optional[UserConfigStore] = None,
-                 force_ignore_history: bool = False,
-                 maintain_mode: bool = False,
-                 cancellation_token: Optional[CancellationToken] = None):
+
+    def __init__(
+        self,
+        config: ZScopeConfig,
+        code_index: Optional[CodeIndex] = None,
+        user_config: Optional[UserConfigStore] = None,
+        force_ignore_history: bool = False,
+        maintain_mode: bool = False,
+        cancellation_token: Optional[CancellationToken] = None,
+    ):
         self.base_config = config
         self.max_workers = max(
             1,
@@ -138,8 +143,7 @@ class ParallelAnalyzer:
         self._decision_fact_cache = DecisionFactGraphCache()
         self._candidate_ledger = CandidateLedger(
             project_id=str(
-                getattr(config.project, "project_id", "")
-                or config.project.project_root.name
+                getattr(config.project, "project_id", "") or config.project.project_root.name
             ),
             project_root=str(config.project.project_root),
             revision=Analyzer._git_commit_sha(config.project.project_root),
@@ -159,7 +163,11 @@ class ParallelAnalyzer:
                 svf_parallel_workers=config.analysis.parallel_workers,
             )
         self.snapshot_store = SnapshotStore(Path(config.analysis.snapshot_dir))
-        db_dir = Path(config.analysis.user_config_db) if config.analysis.user_config_db else Path(config.analysis.snapshot_dir)
+        db_dir = (
+            Path(config.analysis.user_config_db)
+            if config.analysis.user_config_db
+            else Path(config.analysis.snapshot_dir)
+        )
         self.user_config = user_config or UserConfigStore(db_dir)
         self._interrupted = False
         self._deadline_exceeded = False
@@ -171,6 +179,7 @@ class ParallelAnalyzer:
         # Candidate IR writes use the shared CodeIndex KnowledgeDB.  Serialize
         # the multi-statement write + commit transaction across entry workers.
         self._candidate_ir_persistence_lock = threading.Lock()
+        self._last_materialized_entries: List[FunctionEntry] = []
         self._last_batch_wall_seconds = 0.0
         self._last_scan_budget_metadata: Dict[str, Any] = {}
         self._last_global_model_stats: Optional[Dict[str, Any]] = None
@@ -188,23 +197,24 @@ class ParallelAnalyzer:
             return ""
         text = str(value)
         return text.replace("\\n", "\n")
-        
+
     def analyze_function_entries(
         self,
         entries: List[FunctionEntry],
-        progress_callback: Optional[Callable[[int, int, str], None]] = None
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> Dict[str, ParallelAnalysisResult]:
         """
         Analyze multiple function entries with custom prompts.
-        
+
         Args:
             entries: List of FunctionEntry objects with function names and custom prompts
             progress_callback: Optional callback(completed, total, func_name) for progress
-            
+
         Returns:
             Dict mapping function name to analysis result
         """
         entries = self._materialize_entry_identities(entries)
+        self._last_materialized_entries = list(entries)
         results = {}
         total = len(entries)
         completed = 0
@@ -227,9 +237,7 @@ class ParallelAnalyzer:
                 or self.base_config.project.project_root.name
             ),
             project_root=str(self.base_config.project.project_root),
-            revision=Analyzer._git_commit_sha(
-                self.base_config.project.project_root
-            ),
+            revision=Analyzer._git_commit_sha(self.base_config.project.project_root),
         )
         self._decision_fact_cache = DecisionFactGraphCache()
         self._global_validation_state = {}
@@ -238,16 +246,16 @@ class ParallelAnalyzer:
         self._cancellation_token.raise_if_cancelled()
         scheduler = ScanScheduler(
             entry_workers=self.max_workers,
-            validator_workers=(
-                getattr(self.base_config.analysis, "validator_workers", 0) or 4
-            ),
+            validator_workers=(getattr(self.base_config.analysis, "validator_workers", 0) or 4),
             investigator_workers=(
                 getattr(self.base_config.analysis, "investigator_workers", 0) or 2
             ),
         )
         self._scheduler = scheduler
 
-        logger.info(f"Starting parallel analysis of {total} function entries with {self.max_workers} workers")
+        logger.info(
+            f"Starting parallel analysis of {total} function entries with {self.max_workers} workers"
+        )
         try:
             if total and not self.maintain_mode:
                 semantics_started = time.time()
@@ -289,7 +297,7 @@ class ParallelAnalyzer:
                 ): entry
                 for entry in scheduled_entries
             }
-            
+
             # Collect results as they complete
             try:
                 for future in concurrent.futures.as_completed(
@@ -298,13 +306,17 @@ class ParallelAnalyzer:
                 ):
                     entry = future_to_entry[future]
                     completed += 1
-                    
+
                     try:
                         result = future.result()
                         results[self._entry_result_key(entry)] = result
-                        logger.info(f"[{completed}/{total}] {entry.function_name}: {result.verdict} ({len(result.issues)} issues, ctx ≈ {result.context_tokens:,} tokens)")
+                        logger.info(
+                            f"[{completed}/{total}] {entry.function_name}: {result.verdict} ({len(result.issues)} issues, ctx ≈ {result.context_tokens:,} tokens)"
+                        )
                     except concurrent.futures.CancelledError:
-                        logger.warning(f"[{completed}/{total}] {entry.function_name}: Cancelled due to interrupt")
+                        logger.warning(
+                            f"[{completed}/{total}] {entry.function_name}: Cancelled due to interrupt"
+                        )
                     except Exception as e:
                         logger.error(f"[{completed}/{total}] {entry.function_name}: ERROR - {e}")
                         results[self._entry_result_key(entry)] = ParallelAnalysisResult(
@@ -313,10 +325,10 @@ class ParallelAnalyzer:
                             error=str(e),
                             diff_focus=entry.diff_focus,
                         )
-                    
+
                     if progress_callback:
                         progress_callback(completed, total, entry.function_name)
-            
+
             except KeyboardInterrupt:
                 self._interrupted = True
                 self._cancellation_token.cancel("scan_interrupted")
@@ -325,11 +337,11 @@ class ParallelAnalyzer:
                     "and returning completed results. Running Python worker threads "
                     "cannot be force-killed safely."
                 )
-                
+
                 # cancel_futures only affects queued work; already-running threads may
                 # continue until the CLI takes the interrupted fast-exit path.
                 scheduler.shutdown(wait=False, cancel_futures=True)
-                
+
                 logger.info(f"Returning {len(results)} completed results out of {total} total.")
                 return results
             except concurrent.futures.TimeoutError:
@@ -366,27 +378,21 @@ class ParallelAnalyzer:
             )
             if self._last_scan_budget_metadata["scan_budget_exceeded"]:
                 logger.warning(
-                    "Scan budget exceeded: budget=%.2fs overrun=%.2fs "
-                    "policy=%s outcome=%s",
+                    "Scan budget exceeded: budget=%.2fs overrun=%.2fs " "policy=%s outcome=%s",
                     float(scan_budget_seconds),
-                    self._last_scan_budget_metadata[
-                        "scan_budget_overrun_seconds"
-                    ],
+                    self._last_scan_budget_metadata["scan_budget_overrun_seconds"],
                     budget_exhaustion_policy,
-                    (
-                        "completed"
-                    ),
+                    ("completed"),
                 )
             # Under normal successful execution, properly wait and clean up resources
             if scheduler and not (
-                getattr(self, "_interrupted", False)
-                or getattr(self, "_deadline_exceeded", False)
+                getattr(self, "_interrupted", False) or getattr(self, "_deadline_exceeded", False)
             ):
                 try:
                     scheduler.shutdown(wait=True)
                 except Exception:
                     pass
-                    
+
         return results
 
     def _uses_scan_validation_queue(self) -> bool:
@@ -413,15 +419,10 @@ class ParallelAnalyzer:
 
         pending: List[Dict[str, Any]] = []
         for record in self._candidate_ledger.records():
-            if (
-                record.record_role != "validation_obligation"
-                or record.disposition
-            ):
+            if record.record_role != "validation_obligation" or record.disposition:
                 continue
             evidence = deepcopy(
-                record.ticket.evidence
-                if isinstance(record.ticket.evidence, dict)
-                else {}
+                record.ticket.evidence if isinstance(record.ticket.evidence, dict) else {}
             )
             issue = deepcopy(evidence.pop("candidate_payload", {}) or {})
             if not issue:
@@ -449,11 +450,7 @@ class ParallelAnalyzer:
                     "decision_evidence_hash": record.decision_evidence_hash,
                     "validation_cluster_uid": record.validation_cluster_uid,
                     "context_signature": record.context_signature,
-                    "occurrence_uid": (
-                        record.occurrence_uids[0]
-                        if record.occurrence_uids
-                        else ""
-                    ),
+                    "occurrence_uid": (record.occurrence_uids[0] if record.occurrence_uids else ""),
                     "occurrence_uids": list(record.occurrence_uids),
                     "call_paths": [list(path) for path in record.call_paths],
                     "entry_paths": [list(path) for path in record.call_paths],
@@ -512,22 +509,16 @@ class ParallelAnalyzer:
             defer_validation_to_scan=False,
         )
         ledger_records = list(self._candidate_ledger.records())
-        raw_occurrence_count = sum(
-            len(record.occurrence_uids)
-            for record in ledger_records
-        )
+        raw_occurrence_count = sum(len(record.occurrence_uids) for record in ledger_records)
         eligible_records = [
             record
             for record in ledger_records
             if str(record.decision_context_version or "").endswith(("v3.1", "v3.2", "v3.3"))
             and record.record_role == "validation_obligation"
         ]
-        eligible_occurrence_count = sum(
-            len(record.occurrence_uids) for record in eligible_records
-        )
+        eligible_occurrence_count = sum(len(record.occurrence_uids) for record in eligible_records)
         eligible_duplicate_request_count = sum(
-            max(0, len(record.occurrence_uids) - 1)
-            for record in eligible_records
+            max(0, len(record.occurrence_uids) - 1) for record in eligible_records
         )
         state: Dict[str, Any] = {
             "entry_func": "__batch__",
@@ -569,9 +560,7 @@ class ParallelAnalyzer:
             raw_occurrence_count,
         )
         helper.validation_runner.run(state)
-        self._global_validation_duration_seconds = max(
-            0.0, time.monotonic() - started
-        )
+        self._global_validation_duration_seconds = max(0.0, time.monotonic() - started)
         self._global_validation_state = state
         logger.info(
             "[validation-queue] end unique_groups=%d confirmed=%d review=%d duration=%.2fs",
@@ -589,22 +578,14 @@ class ParallelAnalyzer:
         policy: str,
     ) -> Dict[str, Any]:
         try:
-            normalized_budget = (
-                float(budget_seconds) if budget_seconds is not None else None
-            )
+            normalized_budget = float(budget_seconds) if budget_seconds is not None else None
         except (TypeError, ValueError):
             normalized_budget = None
         if normalized_budget is not None and normalized_budget <= 0:
             normalized_budget = None
         duration = max(0.0, float(duration_seconds or 0.0))
-        exceeded = (
-            normalized_budget is not None and duration > normalized_budget
-        )
-        overrun = (
-            max(0.0, duration - normalized_budget)
-            if normalized_budget is not None
-            else 0.0
-        )
+        exceeded = normalized_budget is not None and duration > normalized_budget
+        overrun = max(0.0, duration - normalized_budget) if normalized_budget is not None else 0.0
         return {
             "scan_budget_seconds": normalized_budget,
             "scan_budget_exceeded": exceeded,
@@ -798,10 +779,7 @@ class ParallelAnalyzer:
                 if not isinstance(callee, dict):
                     continue
                 callee_name = str(
-                    callee.get("name")
-                    or callee.get("function")
-                    or callee.get("callee")
-                    or ""
+                    callee.get("name") or callee.get("function") or callee.get("callee") or ""
                 ).strip()
                 if not callee_name or callee_name in call_path:
                     continue
@@ -906,9 +884,7 @@ class ParallelAnalyzer:
                 models=llm_cfg.models,
                 timeout=effective_timeout,
                 max_retries=llm_cfg.max_retries,
-                retry_until_available=getattr(
-                    llm_cfg, "retry_until_available", False
-                ),
+                retry_until_available=getattr(llm_cfg, "retry_until_available", False),
                 max_tokens=llm_cfg.max_tokens,
                 base_url_rate_limit_per_minute=getattr(
                     llm_cfg, "base_url_rate_limit_per_minute", 0
@@ -916,16 +892,14 @@ class ParallelAnalyzer:
                 base_url_max_concurrent_requests=getattr(
                     llm_cfg, "base_url_max_concurrent_requests", 0
                 ),
-                global_max_concurrent_requests=getattr(
-                    config.analysis, "llm_max_inflight", 8
-                ),
-                supports_structured_output=getattr(
-                    llm_cfg, "supports_structured_output", False
-                ),
+                global_max_concurrent_requests=getattr(config.analysis, "llm_max_inflight", 8),
+                supports_structured_output=getattr(llm_cfg, "supports_structured_output", False),
             )
         return clients
 
-    def _prioritize_entries_for_execution(self, entries: List[FunctionEntry]) -> List[FunctionEntry]:
+    def _prioritize_entries_for_execution(
+        self, entries: List[FunctionEntry]
+    ) -> List[FunctionEntry]:
         """Schedule likely long-running entries first to reduce batch tail idle time."""
         if len(entries) <= 1:
             return list(entries)
@@ -936,7 +910,9 @@ class ParallelAnalyzer:
         ]
         scored.sort(key=lambda item: (-item[0], item[1]))
         prioritized = [entry for _score, _index, entry in scored]
-        if [entry.function_name for entry in prioritized] != [entry.function_name for entry in entries]:
+        if [entry.function_name for entry in prioritized] != [
+            entry.function_name for entry in entries
+        ]:
             preview = ", ".join(
                 f"{entry.function_name}:{score}"
                 for score, _index, entry in scored[: min(8, len(scored))]
@@ -989,9 +965,7 @@ class ParallelAnalyzer:
             call_names = {
                 name
                 for name in _ENTRY_CALL_RE.findall(code_without_entry_name)
-                if name
-                and name
-                not in {"if", "for", "while", "switch", "return", "sizeof"}
+                if name and name not in {"if", "for", "while", "switch", "return", "sizeof"}
             }
             score += min(360, len(call_names) * 18)
             score += min(220, len(_ENTRY_CONTROL_RE.findall(code_without_entry_name)) * 12)
@@ -1042,10 +1016,11 @@ class ParallelAnalyzer:
                         exc,
                     )
                     matches = []
-                identity_matches = [
-                    match for match in matches
-                    if isinstance(match, dict)
-                ] if isinstance(matches, list) else []
+                identity_matches = (
+                    [match for match in matches if isinstance(match, dict)]
+                    if isinstance(matches, list)
+                    else []
+                )
                 if identity_matches:
                     for match in identity_matches:
                         matched_entry = self._entry_from_identity_record(
@@ -1109,28 +1084,23 @@ class ParallelAnalyzer:
         ).normalized_file_path(project_root)
         return replace(
             entry,
-            function_name=str(
-                record.get("function_name") or entry.function_name
-            ),
+            function_name=str(record.get("function_name") or entry.function_name),
             file_path=file_path or None,
-            signature=str(
-                record.get("signature") or entry.signature or ""
-            )
-            or None,
+            signature=str(record.get("signature") or entry.signature or "") or None,
         )
-    
+
     def analyze_functions(
-        self, 
+        self,
         function_names: List[str],
-        progress_callback: Optional[Callable[[int, int, str], None]] = None
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> Dict[str, ParallelAnalysisResult]:
         """
         Analyze multiple functions in parallel.
-        
+
         Args:
             function_names: List of function names to analyze
             progress_callback: Optional callback(completed, total, func_name) for progress
-            
+
         Returns:
             Dict mapping function name to analysis result
         """
@@ -1138,7 +1108,6 @@ class ParallelAnalyzer:
         entries = [FunctionEntry(function_name=name) for name in function_names]
         return self.analyze_function_entries(entries, progress_callback)
 
-    
     def _analyze_single_entry(self, entry: FunctionEntry) -> ParallelAnalysisResult:
         """Analyze a single function entry with optional custom prompt."""
         start_time = time.monotonic()
@@ -1155,10 +1124,8 @@ class ParallelAnalyzer:
             entry_key,
             entry.file_path or "",
         )
-        entry_token = self._cancellation_token.child(
-            timeout_seconds=None
-        )
-        
+        entry_token = self._cancellation_token.child(timeout_seconds=None)
+
         try:
             # Create a config copy with this function as entry point and custom prompt
             phase_started = time.time()
@@ -1169,31 +1136,31 @@ class ParallelAnalyzer:
                 entry_key,
                 time.time() - phase_started,
             )
-            
+
             # Create analyzer and run with shared components
             phase_started = time.time()
             analyzer = Analyzer(
-                 config_copy,
-                 code_index=self.code_index,
-                 snapshot_store=self.snapshot_store,
-                 user_config=self.user_config,
-                 force_ignore_history=self.force_ignore_history,
-                 maintain_mode=self.maintain_mode,
-                 candidate_ledger=self._candidate_ledger,
-                 shared_local_pattern_semantics=(
-                     None if self.maintain_mode else self._get_shared_local_pattern_semantics()
-                 ),
-                 shared_semantic_overlay=(
-                     None if self.maintain_mode else self._get_shared_semantic_overlay()
-                 ),
-                 llm_clients=self._shared_llm_clients,
-                 validation_result_cache=self._validation_result_cache,
-                 cancellation_token=entry_token,
-                 scheduler=self._scheduler,
+                config_copy,
+                code_index=self.code_index,
+                snapshot_store=self.snapshot_store,
+                user_config=self.user_config,
+                force_ignore_history=self.force_ignore_history,
+                maintain_mode=self.maintain_mode,
+                candidate_ledger=self._candidate_ledger,
+                shared_local_pattern_semantics=(
+                    None if self.maintain_mode else self._get_shared_local_pattern_semantics()
+                ),
+                shared_semantic_overlay=(
+                    None if self.maintain_mode else self._get_shared_semantic_overlay()
+                ),
+                llm_clients=self._shared_llm_clients,
+                validation_result_cache=self._validation_result_cache,
+                cancellation_token=entry_token,
+                scheduler=self._scheduler,
                 candidate_ir_persistence_lock=self._candidate_ir_persistence_lock,
                 decision_fact_cache=self._decision_fact_cache,
                 write_root_reports=False,
-                 defer_validation_to_scan=self._uses_scan_validation_queue(),
+                defer_validation_to_scan=self._uses_scan_validation_queue(),
             )
             logger.info(
                 "[entry-worker] analyzer-ready entry=%s key=%s duration=%.2fs",
@@ -1219,7 +1186,7 @@ class ParallelAnalyzer:
                 entry_key,
                 time.time() - run_started,
             )
-            
+
             duration = time.monotonic() - start_time
             budget_metadata = self._entry_budget_metadata(
                 duration_seconds=duration,
@@ -1245,33 +1212,21 @@ class ParallelAnalyzer:
                 len(report_dict.get("issues", [])),
                 duration,
             )
-            
+
             return ParallelAnalysisResult(
                 function_name=entry.function_name,
                 verdict=report_dict.get("overall_verdict", "unknown"),
-                entry_identity=entry.identity_key(
-                    self.base_config.project.project_root
-                ),
-                entry_file_path=entry.normalized_file_path(
-                    self.base_config.project.project_root
-                ),
+                entry_identity=entry.identity_key(self.base_config.project.project_root),
+                entry_file_path=entry.normalized_file_path(self.base_config.project.project_root),
                 entry_signature=FunctionEntry.normalize_signature(entry.signature),
                 issues=report_dict.get("issues", []),
                 audit_observations=report_metadata.get("audit_observations", []),
-                candidate_terminal_states=report_dict.get(
-                    "candidate_terminal_states", []
-                ),
-                error=(
-                    str(report_dict.get("error"))
-                    if report_dict.get("error")
-                    else None
-                ),
+                candidate_terminal_states=report_dict.get("candidate_terminal_states", []),
+                error=(str(report_dict.get("error")) if report_dict.get("error") else None),
                 duration_seconds=duration,
                 entry_budget_seconds=budget_metadata["entry_budget_seconds"],
                 entry_budget_exceeded=budget_metadata["entry_budget_exceeded"],
-                entry_budget_overrun_seconds=budget_metadata[
-                    "entry_budget_overrun_seconds"
-                ],
+                entry_budget_overrun_seconds=budget_metadata["entry_budget_overrun_seconds"],
                 budget_exhaustion_policy=budget_exhaustion_policy,
                 context_tokens=report_metadata.get("context_tokens", 0),
                 cumulative_prompt_tokens=report_metadata.get("cumulative_prompt_tokens", 0),
@@ -1280,7 +1235,7 @@ class ParallelAnalyzer:
                 diff_focus=entry.diff_focus,
                 metadata=report_metadata,
             )
-            
+
         except CancellationError as e:
             duration = time.monotonic() - start_time
             reason = entry_token.reason or str(e) or "entry_cancelled"
@@ -1301,20 +1256,14 @@ class ParallelAnalyzer:
             return ParallelAnalysisResult(
                 function_name=entry.function_name,
                 verdict="error",
-                entry_identity=entry.identity_key(
-                    self.base_config.project.project_root
-                ),
-                entry_file_path=entry.normalized_file_path(
-                    self.base_config.project.project_root
-                ),
+                entry_identity=entry.identity_key(self.base_config.project.project_root),
+                entry_file_path=entry.normalized_file_path(self.base_config.project.project_root),
                 entry_signature=FunctionEntry.normalize_signature(entry.signature),
                 error=reason,
                 duration_seconds=duration,
                 entry_budget_seconds=budget_metadata["entry_budget_seconds"],
                 entry_budget_exceeded=budget_metadata["entry_budget_exceeded"],
-                entry_budget_overrun_seconds=budget_metadata[
-                    "entry_budget_overrun_seconds"
-                ],
+                entry_budget_overrun_seconds=budget_metadata["entry_budget_overrun_seconds"],
                 budget_exhaustion_policy=budget_exhaustion_policy,
                 diff_focus=entry.diff_focus,
                 metadata=budget_metadata,
@@ -1335,20 +1284,14 @@ class ParallelAnalyzer:
             return ParallelAnalysisResult(
                 function_name=entry.function_name,
                 verdict="error",
-                entry_identity=entry.identity_key(
-                    self.base_config.project.project_root
-                ),
-                entry_file_path=entry.normalized_file_path(
-                    self.base_config.project.project_root
-                ),
+                entry_identity=entry.identity_key(self.base_config.project.project_root),
+                entry_file_path=entry.normalized_file_path(self.base_config.project.project_root),
                 entry_signature=FunctionEntry.normalize_signature(entry.signature),
                 error=str(e),
                 duration_seconds=duration,
                 entry_budget_seconds=budget_metadata["entry_budget_seconds"],
                 entry_budget_exceeded=budget_metadata["entry_budget_exceeded"],
-                entry_budget_overrun_seconds=budget_metadata[
-                    "entry_budget_overrun_seconds"
-                ],
+                entry_budget_overrun_seconds=budget_metadata["entry_budget_overrun_seconds"],
                 budget_exhaustion_policy=budget_exhaustion_policy,
                 diff_focus=entry.diff_focus,
                 metadata=budget_metadata,
@@ -1374,10 +1317,7 @@ class ParallelAnalyzer:
             if normalized_budget is not None
             else 0.0
         )
-        exceeded = bool(
-            normalized_budget is not None
-            and (force_exceeded or overrun_seconds > 0.0)
-        )
+        exceeded = bool(normalized_budget is not None and (force_exceeded or overrun_seconds > 0.0))
         return {
             "entry_budget_seconds": normalized_budget,
             "entry_budget_exceeded": exceeded,
@@ -1390,7 +1330,7 @@ class ParallelAnalyzer:
                 "policy": str(policy or "observe"),
             },
         }
-    
+
     def _close_thread_llm_sessions(self) -> None:
         seen: Set[int] = set()
         for client in self._shared_llm_clients.values():
@@ -1437,7 +1377,9 @@ class ParallelAnalyzer:
         if self._shared_semantic_overlay is None:
             with self._shared_semantics_lock:
                 if self._shared_semantic_overlay is None:
-                    self._shared_semantic_overlay = SemanticOverlayCompiler(self.user_config).compile()
+                    self._shared_semantic_overlay = SemanticOverlayCompiler(
+                        self.user_config
+                    ).compile()
         return self._shared_semantic_overlay
 
     def _create_config_for_entry(self, entry: FunctionEntry) -> ZScopeConfig:
@@ -1464,20 +1406,17 @@ class ParallelAnalyzer:
         # Keep entry-specific focus separate from the configured task so skill
         # routing remains driven by the global vulnerability scope.
         return config
-    
 
     def generate_combined_report(
-        self, 
-        results: Dict[str, ParallelAnalysisResult],
-        output_path: Optional[Path] = None
+        self, results: Dict[str, ParallelAnalysisResult], output_path: Optional[Path] = None
     ) -> Dict[str, Any]:
         """
         Generate a combined report from all parallel analysis results.
-        
+
         Args:
             results: Dict of function name to analysis result
             output_path: Optional path to save combined report
-            
+
         Returns:
             Combined report dict
         """
@@ -1490,53 +1429,47 @@ class ParallelAnalyzer:
         project_config = getattr(base_config, "project", None)
         project_root = str(getattr(project_config, "project_root", "") or "")
         project_id = str(
-            getattr(project_config, "project_id", "")
-            or Path(project_root).name
-            or "project"
+            getattr(project_config, "project_id", "") or Path(project_root).name or "project"
         )
         source_root = str(getattr(project_config, "source_root", "") or "")
         batch_run_id = str(getattr(self, "run_id", "") or "")
-        all_terminal_states.extend(
-            self._deferred_entry_terminal_states(project_id, project_root)
-        )
-        
+        all_terminal_states.extend(self._deferred_entry_terminal_states(project_id, project_root))
+
         for entry_key, result in results.items():
             total_duration += result.duration_seconds
             all_terminal_states.extend(
-                item
-                for item in result.candidate_terminal_states
-                if isinstance(item, dict)
+                item for item in result.candidate_terminal_states if isinstance(item, dict)
             )
             validation_performance = (
                 result.metadata.get("validation_performance", {})
                 if isinstance(result.metadata, dict)
                 else {}
             )
-            
-            function_summaries.append({
-                "function": result.function_name,
-                "entry_key": entry_key,
-                "entry_identity": result.entry_identity or entry_key,
-                "entry_file_path": result.entry_file_path,
-                "entry_signature": result.entry_signature,
-                "verdict": result.verdict,
-                "issue_count": len(result.issues),
-                "audit_observation_count": len(result.audit_observations),
-                "duration_seconds": round(result.duration_seconds, 2),
-                "entry_budget_seconds": result.entry_budget_seconds,
-                "entry_budget_exceeded": result.entry_budget_exceeded,
-                "entry_budget_overrun_seconds": round(
-                    result.entry_budget_overrun_seconds, 3
-                ),
-                "budget_exhaustion_policy": result.budget_exhaustion_policy,
-                "context_tokens": result.context_tokens,
-                "cumulative_prompt_tokens": result.cumulative_prompt_tokens,
-                "cumulative_completion_tokens": result.cumulative_completion_tokens,
-                "cumulative_total_tokens": result.cumulative_total_tokens,
-                "validation_performance": validation_performance,
-                "error": result.error
-            })
-            
+
+            function_summaries.append(
+                {
+                    "function": result.function_name,
+                    "entry_key": entry_key,
+                    "entry_identity": result.entry_identity or entry_key,
+                    "entry_file_path": result.entry_file_path,
+                    "entry_signature": result.entry_signature,
+                    "verdict": result.verdict,
+                    "issue_count": len(result.issues),
+                    "audit_observation_count": len(result.audit_observations),
+                    "duration_seconds": round(result.duration_seconds, 2),
+                    "entry_budget_seconds": result.entry_budget_seconds,
+                    "entry_budget_exceeded": result.entry_budget_exceeded,
+                    "entry_budget_overrun_seconds": round(result.entry_budget_overrun_seconds, 3),
+                    "budget_exhaustion_policy": result.budget_exhaustion_policy,
+                    "context_tokens": result.context_tokens,
+                    "cumulative_prompt_tokens": result.cumulative_prompt_tokens,
+                    "cumulative_completion_tokens": result.cumulative_completion_tokens,
+                    "cumulative_total_tokens": result.cumulative_total_tokens,
+                    "validation_performance": validation_performance,
+                    "error": result.error,
+                }
+            )
+
             # Add function context to each issue
             for issue in result.issues:
                 issue_copy = issue.copy()
@@ -1590,7 +1523,7 @@ class ParallelAnalyzer:
                     default_disposition="needs_review",
                 )
                 all_observations.append(observation_copy)
-        
+
         # The scan-level ledger is the final lifecycle authority. Entry reports
         # can be assembled while a shared validation is still in flight, so
         # replace their v3 terminal projection with one final atomic snapshot.
@@ -1603,9 +1536,7 @@ class ParallelAnalyzer:
         if callable(snapshot):
             ledger_snapshot = snapshot()
         final_records = [
-            item
-            for item in ledger_snapshot.get("records", [])
-            if isinstance(item, dict)
+            item for item in ledger_snapshot.get("records", []) if isinstance(item, dict)
         ]
         final_by_cluster = {
             str(item.get("validation_cluster_uid") or ""): item
@@ -1615,21 +1546,19 @@ class ParallelAnalyzer:
         analysis_config = getattr(base_config, "analysis", None)
         canonical_projection_state = {
             "candidate_lifecycle_snapshot": ledger_snapshot,
-            "finding_root_v1_enabled": bool(
-                getattr(analysis_config, "finding_root_v1", False)
-            ),
+            "finding_root_v1_enabled": bool(getattr(analysis_config, "finding_root_v1", False)),
         }
-        canonical_outcomes = ReportAssembler._canonical_outcome_items(
-            canonical_projection_state
+        canonical_outcomes = ReportAssembler._canonical_outcome_items(canonical_projection_state)
+        canonical_projection = (
+            bool(getattr(analysis_config, "candidate_lifecycle_v3", True))
+            and bool(
+                getattr(analysis_config, "canonical_outcome_projection", True)
+                # A missing/empty ledger snapshot is not a canonical outcome set.
+                # This happens in compatibility callers and lightweight report-only
+                # flows; dropping their ordinary findings would be a false clean scan.
+            )
+            and bool(canonical_outcomes)
         )
-        canonical_projection = bool(
-            getattr(analysis_config, "candidate_lifecycle_v3", True)
-        ) and bool(
-            getattr(analysis_config, "canonical_outcome_projection", True)
-        # A missing/empty ledger snapshot is not a canonical outcome set.
-        # This happens in compatibility callers and lightweight report-only
-        # flows; dropping their ordinary findings would be a false clean scan.
-        ) and bool(canonical_outcomes)
         if canonical_projection:
             # A scan-level outcome is authoritative.  Per-entry reports may
             # have been assembled before another entry completed the shared
@@ -1637,14 +1566,12 @@ class ParallelAnalyzer:
             all_issues = [
                 item
                 for item in canonical_outcomes
-                if str(item.get("candidate_disposition") or "").lower()
-                == "confirmed"
+                if str(item.get("candidate_disposition") or "").lower() == "confirmed"
             ]
             all_observations = [
                 item
                 for item in canonical_outcomes
-                if str(item.get("candidate_disposition") or "").lower()
-                == "needs_review"
+                if str(item.get("candidate_disposition") or "").lower() == "needs_review"
             ]
             all_terminal_states = [
                 {
@@ -1671,9 +1598,7 @@ class ParallelAnalyzer:
                 )
             ]
             all_terminal_states = [
-                item
-                for item in all_terminal_states
-                if not item.get("validation_cluster_uid")
+                item for item in all_terminal_states if not item.get("validation_cluster_uid")
             ]
             all_terminal_states.extend(final_records)
             all_observations.extend(
@@ -1707,8 +1632,7 @@ class ParallelAnalyzer:
             else coalesce_review_observations(all_observations)
         )
         review_fingerprints = {
-            str(item.get("validation_cluster_uid") or "")
-            or str(item.get("candidate_uid") or "")
+            str(item.get("validation_cluster_uid") or "") or str(item.get("candidate_uid") or "")
             for item in review_observations
         }
         non_review_observations = [
@@ -1737,12 +1661,10 @@ class ParallelAnalyzer:
         )
         view_summary = report_view_summary({"report_views": report_views})
         with_review_view = report_views.get("with_needs_review", {})
-        
+
         diff_relevance_summary = self._diff_relevance_summary(unique_issues, unique_observations)
         diff_coverage = self._diff_coverage_metadata()
-        global_validation_state = dict(
-            getattr(self, "_global_validation_state", {}) or {}
-        )
+        global_validation_state = dict(getattr(self, "_global_validation_state", {}) or {})
         global_validation_duration = float(
             getattr(self, "_global_validation_duration_seconds", 0.0) or 0.0
         )
@@ -1758,19 +1680,11 @@ class ParallelAnalyzer:
         va_candidate_coverage_summary = self._va_candidate_coverage_summary(results)
         entry_budget_summary = self._entry_budget_summary(results)
         llm_iteration_budget_summary = self._llm_iteration_budget_summary(results)
-        scan_budget_summary = dict(
-            getattr(self, "_last_scan_budget_metadata", {}) or {}
-        )
+        scan_budget_summary = dict(getattr(self, "_last_scan_budget_metadata", {}) or {})
         llm_usage_summary = self._llm_usage_summary()
-        retained_prompt_tokens = sum(
-            r.cumulative_prompt_tokens for r in results.values()
-        )
-        retained_completion_tokens = sum(
-            r.cumulative_completion_tokens for r in results.values()
-        )
-        retained_total_tokens = sum(
-            r.cumulative_total_tokens for r in results.values()
-        )
+        retained_prompt_tokens = sum(r.cumulative_prompt_tokens for r in results.values())
+        retained_completion_tokens = sum(r.cumulative_completion_tokens for r in results.values())
+        retained_total_tokens = sum(r.cumulative_total_tokens for r in results.values())
         retained_prompt_tokens += int(
             global_validation_state.get("total_cumulative_prompt_tokens", 0) or 0
         )
@@ -1783,12 +1697,8 @@ class ParallelAnalyzer:
         total_context_tokens = sum(r.context_tokens for r in results.values()) + int(
             global_validation_state.get("total_context_tokens", 0) or 0
         )
-        response_prompt_tokens = int(
-            llm_usage_summary.get("prompt_tokens") or 0
-        )
-        response_completion_tokens = int(
-            llm_usage_summary.get("completion_tokens") or 0
-        )
+        response_prompt_tokens = int(llm_usage_summary.get("prompt_tokens") or 0)
+        response_completion_tokens = int(llm_usage_summary.get("completion_tokens") or 0)
         response_total_tokens = int(llm_usage_summary.get("total_tokens") or 0)
         engine_capabilities = {
             entry_key: (
@@ -1798,18 +1708,20 @@ class ParallelAnalyzer:
             )
             for entry_key, result in results.items()
         }
-        project_fact_state = dict(
-            getattr(self, "_project_fact_pass_state", {}) or {}
-        )
+        project_fact_state = dict(getattr(self, "_project_fact_pass_state", {}) or {})
         if project_fact_state:
             engine_capabilities["__project_deterministic_fact_pass__"] = {
                 "project_deterministic_fact_pass": {
                     "status": str(project_fact_state.get("status") or "complete"),
                     "active": bool(project_fact_state.get("enabled", False)),
                     "candidate_count": int(project_fact_state.get("candidate_count", 0) or 0),
-                    "reachable_functions": int(project_fact_state.get("reachable_functions", 0) or 0),
+                    "reachable_functions": int(
+                        project_fact_state.get("reachable_functions", 0) or 0
+                    ),
                     "analyzed_functions": int(project_fact_state.get("analyzed_functions", 0) or 0),
-                    "unresolved_internal_functions": int(project_fact_state.get("unresolved_internal_functions", 0) or 0),
+                    "unresolved_internal_functions": int(
+                        project_fact_state.get("unresolved_internal_functions", 0) or 0
+                    ),
                     "failures": list(project_fact_state.get("failures") or []),
                 }
             }
@@ -1829,9 +1741,7 @@ class ParallelAnalyzer:
                 "total_issues": len(unique_issues),
                 "unique_issues": len(unique_issues),
                 "audit_observations": len(unique_observations),
-                "deferred_entry_count": len(
-                    getattr(self, "deferred_entry_candidates", []) or []
-                ),
+                "deferred_entry_count": len(getattr(self, "deferred_entry_candidates", []) or []),
                 "needs_review_issues": int(
                     with_review_view.get("included_needs_review_count") or 0
                 ),
@@ -1847,9 +1757,7 @@ class ParallelAnalyzer:
                 "total_cumulative_completion_tokens": (
                     response_completion_tokens or retained_completion_tokens
                 ),
-                "total_cumulative_total_tokens": (
-                    response_total_tokens or retained_total_tokens
-                ),
+                "total_cumulative_total_tokens": (response_total_tokens or retained_total_tokens),
                 "retained_entry_prompt_tokens": retained_prompt_tokens,
                 "retained_entry_completion_tokens": retained_completion_tokens,
                 "retained_entry_total_tokens": retained_total_tokens,
@@ -1869,12 +1777,24 @@ class ParallelAnalyzer:
                         global_validation_state.get("scan_level_raw_occurrence_count", 0) or 0
                     ),
                     "drained": bool(global_validation_state.get("validation_queue_drained", False)),
-                    "validator_session_count": int(global_validation_state.get("validator_session_count", 0) or 0),
-                    "validator_api_call_count": int(global_validation_state.get("validator_api_call_count", 0) or 0),
-                    "validator_turn_distribution": dict(global_validation_state.get("validator_turn_distribution") or {}),
-                    "validator_prompt_tokens_by_stage": dict(global_validation_state.get("validator_prompt_tokens_by_stage") or {}),
-                    "evidence_slice_token_count": int(global_validation_state.get("evidence_slice_token_count", 0) or 0),
-                    "multi_turn_outlier_count": int(global_validation_state.get("multi_turn_outlier_count", 0) or 0),
+                    "validator_session_count": int(
+                        global_validation_state.get("validator_session_count", 0) or 0
+                    ),
+                    "validator_api_call_count": int(
+                        global_validation_state.get("validator_api_call_count", 0) or 0
+                    ),
+                    "validator_turn_distribution": dict(
+                        global_validation_state.get("validator_turn_distribution") or {}
+                    ),
+                    "validator_prompt_tokens_by_stage": dict(
+                        global_validation_state.get("validator_prompt_tokens_by_stage") or {}
+                    ),
+                    "evidence_slice_token_count": int(
+                        global_validation_state.get("evidence_slice_token_count", 0) or 0
+                    ),
+                    "multi_turn_outlier_count": int(
+                        global_validation_state.get("multi_turn_outlier_count", 0) or 0
+                    ),
                 },
                 "project_deterministic_fact_pass": project_fact_state,
                 "va_candidate_coverage": va_candidate_coverage_summary,
@@ -1900,8 +1820,7 @@ class ParallelAnalyzer:
                     (
                         str(result.metadata.get("commit_sha") or "")
                         for result in results.values()
-                        if isinstance(result.metadata, dict)
-                        and result.metadata.get("commit_sha")
+                        if isinstance(result.metadata, dict) and result.metadata.get("commit_sha")
                     ),
                     "",
                 ),
@@ -1911,15 +1830,11 @@ class ParallelAnalyzer:
                 "diff_relevance_summary": diff_relevance_summary,
                 "diff_impact_coverage": diff_coverage,
                 "context_tokens": total_context_tokens,
-                "cumulative_prompt_tokens": (
-                    response_prompt_tokens or retained_prompt_tokens
-                ),
+                "cumulative_prompt_tokens": (response_prompt_tokens or retained_prompt_tokens),
                 "cumulative_completion_tokens": (
                     response_completion_tokens or retained_completion_tokens
                 ),
-                "cumulative_total_tokens": (
-                    response_total_tokens or retained_total_tokens
-                ),
+                "cumulative_total_tokens": (response_total_tokens or retained_total_tokens),
                 "retained_entry_prompt_tokens": retained_prompt_tokens,
                 "retained_entry_completion_tokens": retained_completion_tokens,
                 "retained_entry_total_tokens": retained_total_tokens,
@@ -1935,12 +1850,24 @@ class ParallelAnalyzer:
                         global_validation_state.get("scan_level_raw_occurrence_count", 0) or 0
                     ),
                     "drained": bool(global_validation_state.get("validation_queue_drained", False)),
-                    "validator_session_count": int(global_validation_state.get("validator_session_count", 0) or 0),
-                    "validator_api_call_count": int(global_validation_state.get("validator_api_call_count", 0) or 0),
-                    "validator_turn_distribution": dict(global_validation_state.get("validator_turn_distribution") or {}),
-                    "validator_prompt_tokens_by_stage": dict(global_validation_state.get("validator_prompt_tokens_by_stage") or {}),
-                    "evidence_slice_token_count": int(global_validation_state.get("evidence_slice_token_count", 0) or 0),
-                    "multi_turn_outlier_count": int(global_validation_state.get("multi_turn_outlier_count", 0) or 0),
+                    "validator_session_count": int(
+                        global_validation_state.get("validator_session_count", 0) or 0
+                    ),
+                    "validator_api_call_count": int(
+                        global_validation_state.get("validator_api_call_count", 0) or 0
+                    ),
+                    "validator_turn_distribution": dict(
+                        global_validation_state.get("validator_turn_distribution") or {}
+                    ),
+                    "validator_prompt_tokens_by_stage": dict(
+                        global_validation_state.get("validator_prompt_tokens_by_stage") or {}
+                    ),
+                    "evidence_slice_token_count": int(
+                        global_validation_state.get("evidence_slice_token_count", 0) or 0
+                    ),
+                    "multi_turn_outlier_count": int(
+                        global_validation_state.get("multi_turn_outlier_count", 0) or 0
+                    ),
                 },
                 "project_deterministic_fact_pass": project_fact_state,
                 "va_candidate_coverage_summary": va_candidate_coverage_summary,
@@ -1961,9 +1888,7 @@ class ParallelAnalyzer:
                 "engine_capabilities": engine_capabilities,
                 "canonical_outcome_projection": canonical_projection,
                 "candidate_ledger_summary": ledger_snapshot.get("summary", {}),
-                "finding_root_v1_enabled": bool(
-                    getattr(analysis_config, "finding_root_v1", False)
-                ),
+                "finding_root_v1_enabled": bool(getattr(analysis_config, "finding_root_v1", False)),
                 "finding_root_count": int(
                     canonical_projection_state.get("finding_root_count", 0) or 0
                 ),
@@ -1976,26 +1901,42 @@ class ParallelAnalyzer:
                 "validation_queue_drained": bool(
                     global_validation_state.get("validation_queue_drained", False)
                 ),
-                "validator_session_count": int(global_validation_state.get("validator_session_count", 0) or 0),
-                "validator_api_call_count": int(global_validation_state.get("validator_api_call_count", 0) or 0),
-                "validator_turn_distribution": dict(global_validation_state.get("validator_turn_distribution") or {}),
-                "validator_prompt_tokens_by_stage": dict(global_validation_state.get("validator_prompt_tokens_by_stage") or {}),
-                "evidence_slice_token_count": int(global_validation_state.get("evidence_slice_token_count", 0) or 0),
-                "multi_turn_outlier_count": int(global_validation_state.get("multi_turn_outlier_count", 0) or 0),
-                "snapshot_model_call_count": int(global_validation_state.get("snapshot_model_call_count", 0) or 0),
-                "fact_query_cache_hit_count": int(global_validation_state.get("fact_query_cache_hit_count", 0) or 0),
+                "validator_session_count": int(
+                    global_validation_state.get("validator_session_count", 0) or 0
+                ),
+                "validator_api_call_count": int(
+                    global_validation_state.get("validator_api_call_count", 0) or 0
+                ),
+                "validator_turn_distribution": dict(
+                    global_validation_state.get("validator_turn_distribution") or {}
+                ),
+                "validator_prompt_tokens_by_stage": dict(
+                    global_validation_state.get("validator_prompt_tokens_by_stage") or {}
+                ),
+                "evidence_slice_token_count": int(
+                    global_validation_state.get("evidence_slice_token_count", 0) or 0
+                ),
+                "multi_turn_outlier_count": int(
+                    global_validation_state.get("multi_turn_outlier_count", 0) or 0
+                ),
+                "snapshot_model_call_count": int(
+                    global_validation_state.get("snapshot_model_call_count", 0) or 0
+                ),
+                "fact_query_cache_hit_count": int(
+                    global_validation_state.get("fact_query_cache_hit_count", 0) or 0
+                ),
             },
             issues=unique_issues,
             observations=unique_observations,
             metadata=combined_report["metadata"],
             entry_function="__batch__",
         )
-        
+
         if output_path:
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(combined_report, f, indent=2, ensure_ascii=False)
             logger.info(f"Combined report saved to: {output_path}")
-        
+
         return combined_report
 
     def _deferred_entry_terminal_states(
@@ -2030,8 +1971,7 @@ class ParallelAnalyzer:
                     "candidate_uid": f"ENTRY_{digest}",
                     "candidate_disposition": "deferred_budget",
                     "status": "deferred_budget",
-                    "deferred_reason": candidate.get("deferred_reason")
-                    or "entry_discovery_budget",
+                    "deferred_reason": candidate.get("deferred_reason") or "entry_discovery_budget",
                     "function": candidate.get("function_name"),
                     "file": candidate.get("file_path"),
                     "signature": candidate.get("signature"),
@@ -2066,7 +2006,11 @@ class ParallelAnalyzer:
         summary = {key: 0 for key in keys}
         for result in results.values():
             metadata = result.metadata if isinstance(result.metadata, dict) else {}
-            perf = metadata.get("validation_performance") if isinstance(metadata.get("validation_performance"), dict) else {}
+            perf = (
+                metadata.get("validation_performance")
+                if isinstance(metadata.get("validation_performance"), dict)
+                else {}
+            )
             for key in keys:
                 try:
                     summary[key] += int(perf.get(key, 0) or 0)
@@ -2090,25 +2034,17 @@ class ParallelAnalyzer:
         # without a structural identity remain visible but cannot be counted as
         # safely coalescible work.
         eligible_occurrences = int(
-            global_state.get("eligible_alias_occurrence_count", raw_occurrences)
-            or 0
+            global_state.get("eligible_alias_occurrence_count", raw_occurrences) or 0
         )
-        eligible_groups = int(
-            global_state.get("eligible_validation_group_count", scan_groups)
-            or 0
-        )
+        eligible_groups = int(global_state.get("eligible_validation_group_count", scan_groups) or 0)
         eligible_aliases = max(0, eligible_occurrences - eligible_groups)
         summary["eligible_alias_occurrence_count"] = eligible_occurrences
         summary["eligible_validation_group_count"] = eligible_groups
         summary["eligible_coalescing_rate"] = (
-            round(eligible_aliases / eligible_occurrences, 4)
-            if eligible_occurrences
-            else 1.0
+            round(eligible_aliases / eligible_occurrences, 4) if eligible_occurrences else 1.0
         )
         summary["all_occurrence_reduction_rate"] = (
-            round(grouped_aliases / raw_occurrences, 4)
-            if raw_occurrences
-            else 1.0
+            round(grouped_aliases / raw_occurrences, 4) if raw_occurrences else 1.0
         )
         eligible_duplicate_requests = int(
             global_state.get("eligible_duplicate_request_count", 0) or 0
@@ -2127,9 +2063,7 @@ class ParallelAnalyzer:
             global_state.get("cluster_fragmentation_by_reason") or {}
         )
         summary["structural_coalescing_rate"] = (
-            round(grouped_aliases / raw_occurrences, 4)
-            if raw_occurrences
-            else 1.0
+            round(grouped_aliases / raw_occurrences, 4) if raw_occurrences else 1.0
         )
         eligible = int(summary.get("validation_group_merged_count") or 0)
         reused = int(summary.get("validator_cache_hit") or 0)
@@ -2143,20 +2077,11 @@ class ParallelAnalyzer:
         results: Dict[str, ParallelAnalysisResult],
     ) -> Dict[str, Any]:
         budgeted = [
-            result
-            for result in results.values()
-            if result.entry_budget_seconds is not None
+            result for result in results.values() if result.entry_budget_seconds is not None
         ]
-        exceeded = [
-            result
-            for result in budgeted
-            if result.entry_budget_exceeded
-        ]
+        exceeded = [result for result in budgeted if result.entry_budget_exceeded]
         policies = sorted(
-            {
-                str(result.budget_exhaustion_policy or "observe")
-                for result in results.values()
-            }
+            {str(result.budget_exhaustion_policy or "observe") for result in results.values()}
         )
         return {
             "policy": policies[0] if len(policies) == 1 else "mixed",
@@ -2169,10 +2094,7 @@ class ParallelAnalyzer:
             ),
             "max_overrun_seconds": round(
                 max(
-                    (
-                        result.entry_budget_overrun_seconds
-                        for result in exceeded
-                    ),
+                    (result.entry_budget_overrun_seconds for result in exceeded),
                     default=0.0,
                 ),
                 3,
@@ -2201,9 +2123,7 @@ class ParallelAnalyzer:
         return {
             "budget_reached_count": len(observations),
             "affected_entry_count": len(exceeded_entries),
-            "hard_failure_count": sum(
-                1 for item in observations if item.get("hard_failure")
-            ),
+            "hard_failure_count": sum(1 for item in observations if item.get("hard_failure")),
             "observations": observations,
         }
 
@@ -2249,11 +2169,7 @@ class ParallelAnalyzer:
 
         successful_calls = totals["successful_calls"]
         totals["provider_usage_coverage"] = round(
-            (
-                totals["provider_reported_calls"] / successful_calls
-                if successful_calls
-                else 0.0
-            ),
+            (totals["provider_reported_calls"] / successful_calls if successful_calls else 0.0),
             4,
         )
         return {
@@ -2363,7 +2279,11 @@ class ParallelAnalyzer:
                 for name, file_path in affected_path_pairs
             ):
                 return "incremental"
-        elif issue_func and issue_func in affected_path_nodes and (not issue_file or not saw_path_refs):
+        elif (
+            issue_func
+            and issue_func in affected_path_nodes
+            and (not issue_file or not saw_path_refs)
+        ):
             return "incremental"
         if diff_focus.get("fallback_reasons"):
             return "unknown"
@@ -2376,7 +2296,11 @@ class ParallelAnalyzer:
         return bool(
             left_norm
             and right_norm
-            and (left_norm == right_norm or left_norm.endswith("/" + right_norm) or right_norm.endswith("/" + left_norm))
+            and (
+                left_norm == right_norm
+                or left_norm.endswith("/" + right_norm)
+                or right_norm.endswith("/" + left_norm)
+            )
         )
 
     @staticmethod
@@ -2405,7 +2329,11 @@ class ParallelAnalyzer:
             value = issue.get(key)
             if not isinstance(value, str) or not value.strip():
                 continue
-            if value.startswith("[增量]") or value.startswith("[存量]") or value.startswith("[影响待确认]"):
+            if (
+                value.startswith("[增量]")
+                or value.startswith("[存量]")
+                or value.startswith("[影响待确认]")
+            ):
                 return
             issue[key] = f"{label} {value}"
             return
@@ -2452,17 +2380,15 @@ class ParallelAnalyzer:
         }
 
     def generate_combined_markdown_report(
-        self, 
-        results: Dict[str, ParallelAnalysisResult], 
-        output_path: Path
+        self, results: Dict[str, ParallelAnalysisResult], output_path: Path
     ) -> str:
         """
         Generate a human-readable Markdown report for batch analysis.
-        
+
         Args:
             results: Dict of function name to analysis result
             output_path: Path to save combined report
-            
+
         Returns:
             Markdown report content
         """
@@ -2473,9 +2399,7 @@ class ParallelAnalyzer:
             "error": sum(1 for r in results.values() if r.verdict == "error"),
             "total_issues": sum(len(r.issues) for r in results.values()),
             "audit_observations": sum(len(r.audit_observations) for r in results.values()),
-            "deferred_entries": len(
-                getattr(self, "deferred_entry_candidates", []) or []
-            ),
+            "deferred_entries": len(getattr(self, "deferred_entry_candidates", []) or []),
         }
         incomplete = bool(summary["error"] or summary["deferred_entries"]) or any(
             str(item.get("candidate_disposition") or "").lower()
@@ -2484,7 +2408,7 @@ class ParallelAnalyzer:
             for item in result.candidate_terminal_states
             if isinstance(item, dict)
         )
-        
+
         md = [
             "# Z-SCOPE Batch Analysis Report",
             "",
@@ -2500,7 +2424,9 @@ class ParallelAnalyzer:
         ]
 
         diff_coverage = self._diff_coverage_metadata()
-        coverage_summary = diff_coverage.get("coverage_summary") if isinstance(diff_coverage, dict) else {}
+        coverage_summary = (
+            diff_coverage.get("coverage_summary") if isinstance(diff_coverage, dict) else {}
+        )
         if isinstance(coverage_summary, dict) and coverage_summary:
             md.extend(
                 [
@@ -2548,10 +2474,12 @@ class ParallelAnalyzer:
                 "| :--- | :--- | :--- | :--- | :--- |",
             ]
         )
-        
+
         for name, res in sorted(results.items()):
             duration_str = f"{res.duration_seconds:.1f}s" if res.duration_seconds else "N/A"
-            display_name = res.function_name if name == res.function_name else f"{res.function_name} ({name})"
+            display_name = (
+                res.function_name if name == res.function_name else f"{res.function_name} ({name})"
+            )
             needs_review_count = sum(
                 1
                 for issue in res.audit_observations
@@ -2561,11 +2489,11 @@ class ParallelAnalyzer:
                 f"| {display_name} | {res.verdict} | {len(res.issues)} | "
                 f"{needs_review_count} / {len(res.audit_observations)} | {duration_str} |"
             )
-        
+
         md.append("")
         md.append("## Detected Issues")
         md.append("")
-        
+
         # Group issues by analyzed_from (entry function)
         issues_by_entry = {}
         for entry_key, r in results.items():
@@ -2578,55 +2506,74 @@ class ParallelAnalyzer:
             for entry_func, issues in sorted(issues_by_entry.items()):
                 md.append(f"### Entry Function: `{entry_func}`")
                 md.append("")
-                
+
                 # Simple deduplication per entry if needed
                 seen_in_entry = set()
-                
+
                 for idx, issue in enumerate(issues, 1):
                     # Skip rejected issues in offline markdown report
                     if issue.get("validation_status") == "rejected":
                         continue
-                    
-                    issue_key = f"{issue.get('location', 'N/A')}:{issue.get('description', '')[:50]}"
+
+                    issue_key = (
+                        f"{issue.get('location', 'N/A')}:{issue.get('description', '')[:50]}"
+                    )
                     if issue_key in seen_in_entry:
                         continue
                     seen_in_entry.add(issue_key)
-                    
+
                     impact = str(issue.get("impact_level", "UNKNOWN")).upper()
                     conf = issue.get("confidence", "N/A")
                     if isinstance(conf, float):
                         conf = f"{conf:.2f}"
-                        
+
                     snippet = issue.get("code_snippet")
-                    md.extend([
-                        f"#### {idx}. [{impact}] {issue.get('id', f'ISSUE_{idx}')}: {issue.get('function', 'N/A')}",
-                        f"- **Location**: `{issue.get('location', 'N/A')}`",
-                        f"- **Confidence**: `{conf}`",
-                        f"- **Category**: {issue.get('category', 'N/A')} ({issue.get('subcategory', 'N/A')})",
-                    ])
+                    md.extend(
+                        [
+                            f"#### {idx}. [{impact}] {issue.get('id', f'ISSUE_{idx}')}: {issue.get('function', 'N/A')}",
+                            f"- **Location**: `{issue.get('location', 'N/A')}`",
+                            f"- **Confidence**: `{conf}`",
+                            f"- **Category**: {issue.get('category', 'N/A')} ({issue.get('subcategory', 'N/A')})",
+                        ]
+                    )
                     if snippet:
-                        md.append(f"- **Relevant Code**:\n```c\n{self._normalize_md_text(snippet)}\n```")
-                    
-                    md.append(f"- **Description**: {self._normalize_md_text(issue.get('description', 'N/A'))}")
-                    
+                        md.append(
+                            f"- **Relevant Code**:\n```c\n{self._normalize_md_text(snippet)}\n```"
+                        )
+
+                    md.append(
+                        f"- **Description**: {self._normalize_md_text(issue.get('description', 'N/A'))}"
+                    )
+
                     # Add reasoning if present
-                    reasoning = issue.get('reasoning')
+                    reasoning = issue.get("reasoning")
                     if reasoning:
                         md.append(f"- **Analysis Reasoning**: {self._normalize_md_text(reasoning)}")
-                    
-                    md.append(f"- **Root Cause**: {self._normalize_md_text(issue.get('root_cause', 'N/A'))}")
-                    md.append(f"- **Suggested Fix**: {self._normalize_md_text(issue.get('suggested_fix', 'N/A'))}")
-                    
+
+                    md.append(
+                        f"- **Root Cause**: {self._normalize_md_text(issue.get('root_cause', 'N/A'))}"
+                    )
+                    md.append(
+                        f"- **Suggested Fix**: {self._normalize_md_text(issue.get('suggested_fix', 'N/A'))}"
+                    )
+
                     # Add validation status and reasoning
-                    val_status = issue.get('validation_status')
+                    val_status = issue.get("validation_status")
                     if val_status:
-                        status_emoji = {"validated": "✅", "rejected": "❌", "pending": "⏳", "unvalidated": "⚠️"}.get(val_status, "")
+                        status_emoji = {
+                            "validated": "✅",
+                            "rejected": "❌",
+                            "pending": "⏳",
+                            "unvalidated": "⚠️",
+                        }.get(val_status, "")
                         md.append(f"- **Validation Status**: {status_emoji} {val_status}")
-                        
-                        val_reasoning = issue.get('validation_reasoning')
+
+                        val_reasoning = issue.get("validation_reasoning")
                         if val_reasoning:
-                            md.append(f"- **Validation Reasoning**: {self._normalize_md_text(val_reasoning)}")
-                    
+                            md.append(
+                                f"- **Validation Reasoning**: {self._normalize_md_text(val_reasoning)}"
+                            )
+
                     md.append("")
 
         needs_review_by_entry = {}
@@ -2653,31 +2600,36 @@ class ParallelAnalyzer:
                     conf = issue.get("confidence", "N/A")
                     if isinstance(conf, float):
                         conf = f"{conf:.2f}"
-                    md.extend([
-                        f"#### {idx}. [{impact}] {issue.get('id', f'REVIEW_{idx}')}: {issue.get('function', 'N/A')}",
-                        f"- **Location**: `{issue.get('location', 'N/A')}`",
-                        f"- **Confidence**: `{conf}`",
-                        f"- **Category**: {issue.get('category', 'N/A')} ({issue.get('subcategory', 'N/A')})",
-                        f"- **Description**: {self._normalize_md_text(issue.get('description', 'N/A'))}",
-                        f"- **Root Cause**: {self._normalize_md_text(issue.get('root_cause', 'N/A'))}",
-                        f"- **Suggested Fix**: {self._normalize_md_text(issue.get('suggested_fix', 'N/A'))}",
-                    ])
+                    md.extend(
+                        [
+                            f"#### {idx}. [{impact}] {issue.get('id', f'REVIEW_{idx}')}: {issue.get('function', 'N/A')}",
+                            f"- **Location**: `{issue.get('location', 'N/A')}`",
+                            f"- **Confidence**: `{conf}`",
+                            f"- **Category**: {issue.get('category', 'N/A')} ({issue.get('subcategory', 'N/A')})",
+                            f"- **Description**: {self._normalize_md_text(issue.get('description', 'N/A'))}",
+                            f"- **Root Cause**: {self._normalize_md_text(issue.get('root_cause', 'N/A'))}",
+                            f"- **Suggested Fix**: {self._normalize_md_text(issue.get('suggested_fix', 'N/A'))}",
+                        ]
+                    )
                     val_reasoning = issue.get("validation_reasoning")
                     if val_reasoning:
-                        md.append(f"- **Validation Reasoning**: {self._normalize_md_text(val_reasoning)}")
+                        md.append(
+                            f"- **Validation Reasoning**: {self._normalize_md_text(val_reasoning)}"
+                        )
                     md.append("")
-                
+
         content = "\n".join(md)
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(content)
-            
+
         logger.info(f"Markdown report saved to: {output_path}")
         return content
 
-    
     def _deduplicate_issues(self, issues: List[Dict]) -> List[Dict]:
         """Remove duplicate issues based on canonical sink/root-cause evidence."""
-        semantic_cfg = getattr(getattr(getattr(self, "base_config", None), "reporting", None), "semantic_dedup", None)
+        semantic_cfg = getattr(
+            getattr(getattr(self, "base_config", None), "reporting", None), "semantic_dedup", None
+        )
         if semantic_cfg is not None and getattr(semantic_cfg, "enabled", True):
             deduped, _summary = deduplicate_semantic_issues_programmatic(issues)
             return deduped
@@ -2690,7 +2642,9 @@ class ParallelAnalyzer:
         allow_llm: bool = True,
     ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """Apply batch final-report semantic dedup, including LLM dedup when enabled."""
-        semantic_cfg = getattr(getattr(getattr(self, "base_config", None), "reporting", None), "semantic_dedup", None)
+        semantic_cfg = getattr(
+            getattr(getattr(self, "base_config", None), "reporting", None), "semantic_dedup", None
+        )
         if semantic_cfg is None or not getattr(semantic_cfg, "enabled", True):
             deduped = deduplicate_issues(issues)
             return deduped, {
@@ -2788,7 +2742,8 @@ class ParallelAnalyzer:
             active_cluster = [
                 issue
                 for issue in cluster
-                if self._semantic_dedup_issue_id(issue, issue_indices.get(id(issue), 0)) not in removed
+                if self._semantic_dedup_issue_id(issue, issue_indices.get(id(issue), 0))
+                not in removed
             ]
             if len(active_cluster) < 2:
                 continue
@@ -2833,27 +2788,55 @@ class ParallelAnalyzer:
     def _semantic_dedup_pair_needs_llm(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
         left_file, _ = parse_issue_location(str(left.get("location") or left.get("file") or ""))
         right_file, _ = parse_issue_location(str(right.get("location") or right.get("file") or ""))
-        same_file = bool(left_file and right_file and normalize_issue_key_part(left_file) == normalize_issue_key_part(right_file))
+        same_file = bool(
+            left_file
+            and right_file
+            and normalize_issue_key_part(left_file) == normalize_issue_key_part(right_file)
+        )
         left_funcs = {
             normalize_issue_key_part(str(value or ""))
-            for value in (left.get("function"), left.get("sink_function"), left.get("entry_function"))
+            for value in (
+                left.get("function"),
+                left.get("sink_function"),
+                left.get("entry_function"),
+            )
             if value
         }
         right_funcs = {
             normalize_issue_key_part(str(value or ""))
-            for value in (right.get("function"), right.get("sink_function"), right.get("entry_function"))
+            for value in (
+                right.get("function"),
+                right.get("sink_function"),
+                right.get("entry_function"),
+            )
             if value
         }
         same_function = bool(left_funcs & right_funcs)
         same_family = semantic_category_family(
-            normalize_issue_category(str(left.get("category") or left.get("defect_class") or left.get("subcategory") or ""))
+            normalize_issue_category(
+                str(
+                    left.get("category")
+                    or left.get("defect_class")
+                    or left.get("subcategory")
+                    or ""
+                )
+            )
         ) == semantic_category_family(
-            normalize_issue_category(str(right.get("category") or right.get("defect_class") or right.get("subcategory") or ""))
+            normalize_issue_category(
+                str(
+                    right.get("category")
+                    or right.get("defect_class")
+                    or right.get("subcategory")
+                    or ""
+                )
+            )
         )
         shared_resource_or_sink = bool(
             issue_resource_signature(left)
             and issue_resource_signature(left) == issue_resource_signature(right)
-        ) or bool(issue_sink_signature(left) and issue_sink_signature(left) == issue_sink_signature(right))
+        ) or bool(
+            issue_sink_signature(left) and issue_sink_signature(left) == issue_sink_signature(right)
+        )
         return bool(same_family and ((same_file and same_function) or shared_resource_or_sink))
 
     @staticmethod
@@ -2885,7 +2868,9 @@ class ParallelAnalyzer:
 
     def _make_issue_reconciler_agent(self) -> Any:
         config = getattr(self, "base_config", None)
-        agents = getattr(getattr(config, "project", None), "agents", []) if config is not None else []
+        agents = (
+            getattr(getattr(config, "project", None), "agents", []) if config is not None else []
+        )
         recon_agent_cfg = next(
             (agent for agent in agents if getattr(agent, "name", "") == "issue_reconciler_agent"),
             None,
@@ -2895,7 +2880,9 @@ class ParallelAnalyzer:
         clients = getattr(self, "_shared_llm_clients", {}) or {}
         recon_client = clients.get(recon_llm_ref) or clients.get("default")
         if recon_client is None:
-            logger.warning("Batch semantic LLM dedup requested but no issue_reconciler_agent LLM client is configured.")
+            logger.warning(
+                "Batch semantic LLM dedup requested but no issue_reconciler_agent LLM client is configured."
+            )
             return None
 
         from ..agents.issue_reconciler.agent import IssueReconcilerAgent
@@ -2931,9 +2918,12 @@ class ParallelAnalyzer:
                     "evidence_hash": issue.get("evidence_hash"),
                     "index": index,
                 }
-                internal = "SEM_" + hashlib.sha256(
-                    json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
-                ).hexdigest()[:24]
+                internal = (
+                    "SEM_"
+                    + hashlib.sha256(
+                        json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+                    ).hexdigest()[:24]
+                )
             bases.append(str(internal))
         counts = {base: bases.count(base) for base in set(bases)}
         for index, (issue, base) in enumerate(zip(issues, bases)):
@@ -2941,9 +2931,7 @@ class ParallelAnalyzer:
                 issue["_semantic_dedup_uid"] = base
                 continue
             issue["_semantic_dedup_uid"] = str(
-                issue.get("run_issue_uid")
-                or issue.get("occurrence_uid")
-                or f"{base}::{index}"
+                issue.get("run_issue_uid") or issue.get("occurrence_uid") or f"{base}::{index}"
             )
 
     def _semantic_dedup_cluster_payload(
@@ -3066,14 +3054,14 @@ class ParallelAnalyzer:
                 primary_cluster = str(primary.get("validation_cluster_uid") or "")
                 duplicate_cluster = str(duplicate.get("validation_cluster_uid") or "")
                 structurally_blocked = bool(
-                    primary_cluster
-                    and duplicate_cluster
-                    and primary_cluster != duplicate_cluster
+                    primary_cluster and duplicate_cluster and primary_cluster != duplicate_cluster
                 )
                 if not structurally_equivalent and not structurally_blocked:
                     rejected += 1
                     continue
-                root_key = str(group.get("root_cause_key") or "") or semantic_root_cause_key(primary)
+                root_key = str(group.get("root_cause_key") or "") or semantic_root_cause_key(
+                    primary
+                )
                 suggestion = {
                     "method": "issue_reconciler_agent_suggestion",
                     "root_cause_key": root_key,
@@ -3117,16 +3105,21 @@ class ParallelAnalyzer:
     @staticmethod
     def _parse_issue_location(location: str) -> tuple[str, Optional[int]]:
         return parse_issue_location(location)
-    
+
     def _group_by_severity(self, issues: List[Dict]) -> Dict[str, List[Dict]]:
         """Group issues by impact level."""
-        groups: Dict[str, List[Dict[str, Any]]] = {"critical": [], "high": [], "medium": [], "low": []}
-        
+        groups: Dict[str, List[Dict[str, Any]]] = {
+            "critical": [],
+            "high": [],
+            "medium": [],
+            "low": [],
+        }
+
         for issue in issues:
             level = issue.get("impact_level", "medium").lower()
             if level in groups:
                 groups[level].append(issue)
             else:
                 groups["medium"].append(issue)
-        
+
         return groups

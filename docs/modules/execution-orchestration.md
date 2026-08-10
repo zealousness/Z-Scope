@@ -7,6 +7,7 @@ covers:
 sources:
   - zscope/cli/cli.py
   - zscope/orchestration/scan_session.py
+  - zscope/orchestration/parallel_analyzer.py
   - zscope/orchestration/workflow_runner.py
   - zscope/orchestration/workflow_executor.py
   - zscope/workflows/default.yaml
@@ -39,6 +40,7 @@ tests:
 - `analysis.workflow_name` 是运行时字段，不允许作为用户 YAML 配置项。
 - 没有匹配入口的 diff path 应明确停止，不能静默回退到 `main`。
 - 入口发现、断点续扫、历史报告备份和取消状态必须保持可审计。
+- 批量完整性检查必须以实际物化并调度的入口身份对齐结果，不能用签名不完整的原始入口把已完成任务误判为中断。
 - Workflow 文件和 handler 名称必须一一对应，未知 step 应明确失败。
 
 ## 常见变更应落到哪里

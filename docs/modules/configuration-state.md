@@ -8,6 +8,7 @@ covers:
   - zscope/common
 sources:
   - zscope/config/config.py
+  - zscope/config/function_entry.py
   - zscope/config/user_config_store.py
   - zscope/config/user_config_workbook.py
   - zscope/semantics/defaults.yaml
@@ -17,6 +18,7 @@ sources:
   - zscope/common/issue_identity.py
 tests:
   - tests/test_user_config_workbook.py
+  - tests/test_parallel_custom_prompt.py
   - tests/test_semantics_defaults.py
   - tests/test_snapshot_store.py
   - tests/test_review_memory.py
@@ -48,6 +50,7 @@ tests:
 - 用户配置只向当前函数/入口注入相关片段，不能把整个工作簿无差别放入 prompt。
 - 人工填写的配置不能被自动推断静默覆盖；推断行必须保留来源和置信度。
 - snapshot cache key 必须覆盖影响语义的代码、配置、Agent/Skill 和后端版本因素。
+- 入口 canonical identity 必须保留实现文件和可调用实体；当后端给出的 signature 不含方法名时（如 Java 的返回值/参数描述符），必须同时保留全限定函数名，不能因去重而丢失入口。
 - canonical key、stable fingerprint 和 source-context fingerprint 的用途不能互换；身份算法变更要考虑历史 baseline 兼容性。
 
 ## 常见变更应落到哪里

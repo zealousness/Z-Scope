@@ -82,9 +82,13 @@ class ScanSessionRunner:
         self.discover_entries = discover_entries
         self.diff_base = diff_base
         self.diff_head = diff_head or "HEAD"
-        self.diff_repo_root = Path(diff_repo_root).resolve() if diff_repo_root else config.project.source_root
+        self.diff_repo_root = (
+            Path(diff_repo_root).resolve() if diff_repo_root else config.project.source_root
+        )
         self.diff_paths = [str(path).strip() for path in (diff_paths or []) if str(path).strip()]
-        self.diff_scope_name = config.project.source_root.name or config.project.project_root.name or "default"
+        self.diff_scope_name = (
+            config.project.source_root.name or config.project.project_root.name or "default"
+        )
         self.emit = emit or (lambda message: None)
         normalized_exit_policy = str(exit_policy or "review").lower()
         if normalized_exit_policy not in EXIT_POLICIES:
@@ -178,7 +182,9 @@ class ScanSessionRunner:
 
         logger.info("Entry discovery activated.")
         if self.config.project.language == "java":
-            self.emit("Discovering Java web, CLI, message, scheduled, servlet, and library entries...")
+            self.emit(
+                "Discovering Java web, CLI, message, scheduled, servlet, and library entries..."
+            )
         else:
             self.emit(
                 "Discovering scan entries from headers, communication APIs, "
@@ -382,22 +388,14 @@ class ScanSessionRunner:
                 results[entry_key] = ParallelAnalysisResult(
                     function_name=fname,
                     verdict=saved_report.get("overall_verdict", "unknown"),
-                    entry_identity=entry.identity_key(
-                        self.config.project.project_root
-                    ),
-                    entry_file_path=entry.normalized_file_path(
-                        self.config.project.project_root
-                    ),
-                    entry_signature=FunctionEntry.normalize_signature(
-                        entry.signature
-                    ),
+                    entry_identity=entry.identity_key(self.config.project.project_root),
+                    entry_file_path=entry.normalized_file_path(self.config.project.project_root),
+                    entry_signature=FunctionEntry.normalize_signature(entry.signature),
                     issues=saved_report.get("issues", []),
-                    audit_observations=metadata.get("audit_observations", [])
-                    if isinstance(metadata, dict)
-                    else [],
-                    candidate_terminal_states=saved_report.get(
-                        "candidate_terminal_states", []
+                    audit_observations=(
+                        metadata.get("audit_observations", []) if isinstance(metadata, dict) else []
                     ),
+                    candidate_terminal_states=saved_report.get("candidate_terminal_states", []),
                     duration_seconds=0.0,
                     diff_focus=entry.diff_focus,
                     metadata=metadata if isinstance(metadata, dict) else {},
@@ -556,12 +554,8 @@ class ScanSessionRunner:
                 md_report_path,
             )
             report_tail_seconds = round(time.monotonic() - report_started, 4)
-            combined_report.setdefault("summary", {})[
-                "report_tail_seconds"
-            ] = report_tail_seconds
-            combined_report.setdefault("metadata", {})[
-                "report_tail_seconds"
-            ] = report_tail_seconds
+            combined_report.setdefault("summary", {})["report_tail_seconds"] = report_tail_seconds
+            combined_report.setdefault("metadata", {})["report_tail_seconds"] = report_tail_seconds
             json_report_path.write_text(
                 json.dumps(combined_report, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
@@ -569,7 +563,15 @@ class ScanSessionRunner:
 
             total_issues = combined_report["summary"]["total_issues"]
             functions_analyzed = combined_report["summary"]["functions_analyzed"]
-            interrupted_entries = self._interrupted_entry_names(entries, state["results"])
+            analyzed_entries = getattr(
+                parallel_analyzer,
+                "_last_materialized_entries",
+                entries,
+            )
+            interrupted_entries = self._interrupted_entry_names(
+                analyzed_entries,
+                state["results"],
+            )
             interrupted = bool(getattr(parallel_analyzer, "_interrupted", False)) or bool(
                 interrupted_entries
             )
@@ -609,12 +611,8 @@ class ScanSessionRunner:
         self._ensure_svf_for_entries(state, [FunctionEntry(entry_function)])
         scheduler = ScanScheduler(
             entry_workers=1,
-            validator_workers=(
-                getattr(self.config.analysis, "validator_workers", 0) or 4
-            ),
-            investigator_workers=(
-                getattr(self.config.analysis, "investigator_workers", 0) or 2
-            ),
+            validator_workers=(getattr(self.config.analysis, "validator_workers", 0) or 4),
+            investigator_workers=(getattr(self.config.analysis, "investigator_workers", 0) or 2),
         )
         analyzer: Optional[Analyzer] = None
         entry_started = time.monotonic()
@@ -629,9 +627,7 @@ class ScanSessionRunner:
                 code_index=state.get("code_index"),
                 force_ignore_history=not (self.resume or self.maintain),
                 maintain_mode=self.maintain,
-                cancellation_token=self._cancellation_token.child(
-                    None
-                ),
+                cancellation_token=self._cancellation_token.child(None),
                 scheduler=scheduler,
             )
             result = analyzer.run()
@@ -647,9 +643,7 @@ class ScanSessionRunner:
             policy=self._budget_exhaustion_policy,
         )
         metadata = (
-            dict(result.get("metadata") or {})
-            if isinstance(result.get("metadata"), dict)
-            else {}
+            dict(result.get("metadata") or {}) if isinstance(result.get("metadata"), dict) else {}
         )
         metadata.update(entry_budget)
         result["metadata"] = metadata
@@ -684,9 +678,7 @@ class ScanSessionRunner:
             ),
             issues_count=issues_count,
             needs_review_count=self._needs_review_count_from_report(result),
-            unresolved_obligations_count=(
-                self._unresolved_obligations_count_from_report(result)
-            ),
+            unresolved_obligations_count=(self._unresolved_obligations_count_from_report(result)),
             verdict=verdict,
             reports=report_paths,
             project_root=self.config.project.project_root,
@@ -722,9 +714,7 @@ class ScanSessionRunner:
         run_manifest = report.get("run_manifest")
         if isinstance(run_manifest, dict):
             if "unresolved_obligation_count" in run_manifest:
-                return int(
-                    run_manifest.get("unresolved_obligation_count") or 0
-                )
+                return int(run_manifest.get("unresolved_obligation_count") or 0)
             if "needs_review_count" in run_manifest:
                 return int(run_manifest.get("needs_review_count") or 0)
 
@@ -739,9 +729,7 @@ class ScanSessionRunner:
 
         metadata = report.get("metadata")
         ledger_summary = (
-            metadata.get("candidate_ledger_summary")
-            if isinstance(metadata, dict)
-            else None
+            metadata.get("candidate_ledger_summary") if isinstance(metadata, dict) else None
         )
         if isinstance(ledger_summary, dict):
             by_disposition = ledger_summary.get("by_disposition")
