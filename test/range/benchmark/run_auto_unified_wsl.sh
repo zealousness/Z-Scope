@@ -111,6 +111,10 @@ for key in (
     "proof_providers_v11",
     "decision_context_v32",
     "structured_candidate_promotion_v1",
+    "proof_providers_v12",
+    "decision_context_v33",
+    "finding_root_v1",
+    "validator_evidence_slice_v2",
 ):
     if analysis.get(key, True) is not True:
         raise SystemExit(f"[range] ERROR: analysis.{key} must be true for the v3 benchmark")
@@ -250,10 +254,91 @@ metric_keys = [
     "duplicate_of_matched_count",
     "false_negatives",
     "precision",
+    "actionable_precision",
     "false_positive_rate",
     "recall",
     "f1",
 ]
+report_summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+release_runtime = manifest.get("release_gate_status")
+release_runtime = release_runtime if isinstance(release_runtime, dict) else {}
+
+def number(value, default=0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+confirmed_tp = int(number(default_eval.get("true_positives")))
+confirmed_raw_fp = int(number(default_eval.get("false_positives_raw")))
+confirmed_raw_precision = number(
+    default_eval.get("actionable_precision"),
+    confirmed_tp / max(1, confirmed_tp + confirmed_raw_fp),
+)
+review_tp = int(number(review_eval.get("true_positives")))
+review_raw_fp = int(number(review_eval.get("false_positives_raw")))
+needs_review_count = int(number(manifest.get("needs_review_count")))
+total_tokens = int(
+    number(
+        report_summary.get("total_cumulative_total_tokens"),
+        (report_summary.get("llm_usage") or {}).get("total_tokens", 0)
+        if isinstance(report_summary.get("llm_usage"), dict)
+        else 0,
+    )
+)
+measured_wall_seconds = number(report_summary.get("batch_wall_seconds"), wall_seconds)
+terminal_states = report.get("candidate_terminal_states")
+terminal_states = terminal_states if isinstance(terminal_states, list) else []
+deferred_budget_count = sum(
+    1
+    for item in terminal_states
+    if isinstance(item, dict) and item.get("candidate_disposition") == "deferred_budget"
+)
+pending_validation_count = int(number(manifest.get("pending_validation_count")))
+validation_not_completed_count = int(number(manifest.get("validation_not_completed_count")))
+budget_policy = str(manifest.get("budget_exhaustion_policy") or "")
+queue_drained = manifest.get("validation_queue_drained") is True
+runtime_gate_valid = release_runtime.get("runtime_valid") is True
+
+release_checks = {
+    "benchmark_valid": benchmark_valid,
+    "confirmed_tp_gte_85": confirmed_tp >= 85,
+    "confirmed_raw_precision_gte_0_95": confirmed_raw_precision >= 0.95,
+    "with_review_tp_gte_134": review_tp >= 134,
+    "with_review_raw_fp_lte_100": review_raw_fp <= 100,
+    "needs_review_lte_150": needs_review_count <= 150,
+    "tokens_lte_6m": total_tokens <= 6_000_000,
+    "wall_seconds_lte_3600": measured_wall_seconds <= 3_600,
+    "validation_queue_drained": queue_drained,
+    "runtime_gate_valid": runtime_gate_valid,
+    "pending_validation_zero": pending_validation_count == 0,
+    "validation_not_completed_zero": validation_not_completed_count == 0,
+    "deferred_budget_zero": deferred_budget_count == 0,
+    "budget_policy_observe_only": budget_policy == "observe",
+}
+release_blockers = [name for name, passed in release_checks.items() if not passed]
+release_gate_status = {
+    "passed": not release_blockers,
+    "checks": release_checks,
+    "blockers": release_blockers,
+    "metrics": {
+        "confirmed_tp": confirmed_tp,
+        "confirmed_raw_fp": confirmed_raw_fp,
+        "confirmed_raw_precision": round(confirmed_raw_precision, 6),
+        "with_review_tp": review_tp,
+        "with_review_raw_fp": review_raw_fp,
+        "needs_review": needs_review_count,
+        "total_tokens": total_tokens,
+        "wall_seconds": round(measured_wall_seconds, 4),
+    },
+}
+if report_emitted:
+    manifest["release_gate_status"] = release_gate_status
+    report["run_manifest"] = manifest
+    report["release_gate_status"] = release_gate_status
+    (run_dir / "zscope_batch_report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 summary = {
     "run_id": run_dir.name,
     "scan_return_code": scan_rc,
@@ -293,7 +378,8 @@ summary = {
         "reachable_function_nodes": entry_coverage.get("reachable_function_nodes"),
         "missing_truth_reachability": entry_coverage.get("missing_truth_reachability", []),
     },
-    "report_summary": report.get("summary", {}),
+    "report_summary": report_summary,
+    "release_gate_status": release_gate_status,
     "benchmark_metrics": {
         "default": {k: default_eval.get(k) for k in metric_keys},
         "with_needs_review": {k: review_eval.get(k) for k in metric_keys},
@@ -320,8 +406,10 @@ import json
 import sys
 
 summary = json.loads(open(sys.argv[1], encoding="utf-8").read())
-if summary.get("benchmark_valid") is True:
+if summary.get("benchmark_valid") is True and (summary.get("release_gate_status") or {}).get("passed") is True:
     print("valid")
+elif summary.get("benchmark_valid") is True:
+    print("release_failed")
 elif int(summary.get("scan_return_code") or 0) in {130, 143}:
     print("interrupted")
 else:
@@ -334,6 +422,10 @@ if [[ "${run_validity}" == "interrupted" ]]; then
   exit "${scan_rc}"
 fi
 if [[ "${run_validity}" != "valid" ]]; then
+  if [[ "${run_validity}" == "release_failed" ]]; then
+    echo "[range] ERROR: benchmark completed but v3.3 release gates failed; see ${run_dir}/run_summary.json" >&2
+    exit 2
+  fi
   echo "[range] ERROR: benchmark is incomplete or invalid; see ${run_dir}/run_summary.json" >&2
   exit 2
 fi

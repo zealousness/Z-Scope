@@ -583,3 +583,928 @@ def test_evidence_completion_keeps_parent_release_as_review_without_member_acqui
     queue.complete(issue, validator_data={"verdict": "uncertain"}, validation_evidence=evidence)
 
     assert deterministic_decision_proof(issue, outcome="confirm") is None
+
+
+def test_v12_confirms_external_value_reaching_real_allocation_sink() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "function": "reserve",
+        "evidence_pack": {
+            "path": {
+                "function": "reserve",
+                "complete_in_function": True,
+                "complete_to_entry": True,
+                "call_edges": [
+                    {
+                        "caller": "entry",
+                        "callee": "reserve",
+                        "call_line": 7,
+                        "parameter_mapping": [
+                            {"formal": "length", "actual": "wire_len", "source_parameter": "wire_len"}
+                        ],
+                        "guard_summary": {"caller_side": {"checks": []}},
+                    }
+                ],
+            },
+            "ast_cfg": {
+                "events": [
+                    {
+                        "kind": "unbounded_allocation",
+                        "line": 11,
+                        "variable": "length",
+                        "expression": "return allocate(length);",
+                    }
+                ]
+            },
+        },
+    }
+
+    queue.complete_prevalidation(
+        issue,
+        validation_evidence={
+            "function_context": {
+                "code": "void *reserve(size_t length) { return allocate(length); }"
+            }
+        },
+    )
+
+    proof = deterministic_decision_proof(issue, outcome="confirm")
+    assert proof is not None
+    assert proof.proof_kind == "external_value_controls_unbounded_allocation"
+
+
+def test_v12_does_not_confirm_allocator_declaration_as_allocation_sink() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "function": "allocate",
+        "evidence_pack": {
+            "path": {
+                "function": "allocate",
+                "complete_in_function": True,
+                "complete_to_entry": True,
+                "call_edges": [
+                    {
+                        "caller": "entry",
+                        "callee": "allocate",
+                        "parameter_mapping": [
+                            {"formal": "length", "actual": "wire_len", "source_parameter": "wire_len"}
+                        ],
+                    }
+                ],
+            },
+            "ast_cfg": {
+                "events": [
+                    {
+                        "kind": "unbounded_allocation",
+                        "line": 10,
+                        "variable": "size_t length",
+                        "expression": "void *allocate(size_t length) {",
+                    }
+                ]
+            },
+        },
+    }
+
+    assert queue.complete_prevalidation(issue) is False
+    assert deterministic_decision_proof(issue, outcome="confirm") is None
+
+
+def test_v12_confirms_unchecked_allocation_arithmetic() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {
+                        "kind": "integer_size_arithmetic",
+                        "line": 20,
+                        "expression": "void *p = allocate(request->count * sizeof(Item));",
+                    }
+                ]
+            },
+        }
+    }
+
+    queue.complete_prevalidation(issue)
+
+    proof = deterministic_decision_proof(issue, outcome="confirm")
+    assert proof is not None
+    assert proof.proof_kind == "allocation_arithmetic_overflow_reaches_sink"
+
+
+def test_v12_confirms_scanned_entry_parameter_reaching_system_sink() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "function": "execute_task",
+        "entry_identity": "src/api.c::int execute_task(const char *command)",
+        "rule": "clang_cfg_system_with_nonliteral_command",
+        "evidence_pack": {
+            "path": {
+                "function": "execute_task",
+                "complete_in_function": True,
+                "complete_to_entry": True,
+            },
+            "ast_cfg": {
+                "condition_guards": [{"line": 5, "condition": "!command"}],
+                "events": [
+                    {
+                        "kind": "system_call",
+                        "line": 8,
+                        "variable": "command",
+                        "api": "system",
+                        "expression": "return system(command);",
+                    }
+                ],
+            },
+        },
+    }
+
+    assert queue.complete_prevalidation(
+        issue,
+        validation_evidence={
+            "function_context": {
+                "code": "int execute_task(const char *command) { return system(command); }"
+            }
+        },
+    )
+
+    proof = deterministic_decision_proof(issue, outcome="confirm")
+    assert proof is not None
+    assert proof.proof_kind == "entry_parameter_reaches_system_sink"
+
+
+def test_v12_does_not_confirm_local_command_buffer_as_external_source() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "function": "execute_task",
+        "entry_identity": "src/api.c::int execute_task(const char *name)",
+        "rule": "clang_cfg_system_with_nonliteral_command",
+        "evidence_pack": {
+            "path": {
+                "function": "execute_task",
+                "complete_in_function": True,
+                "complete_to_entry": True,
+            },
+            "ast_cfg": {
+                "events": [
+                    {
+                        "kind": "system_call",
+                        "line": 8,
+                        "variable": "command",
+                        "api": "system",
+                        "expression": "return system(command);",
+                    }
+                ]
+            },
+        },
+    }
+
+    assert not queue.complete_prevalidation(
+        issue,
+        validation_evidence={
+            "function_context": {
+                "code": "int execute_task(const char *name) { char command[32] = \"true\"; return system(command); }"
+            }
+        },
+    )
+    assert deterministic_decision_proof(issue, outcome="confirm") is None
+
+
+def test_v12_does_not_confirm_system_sink_with_structured_sanitizer() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "function": "execute_task",
+        "entry_identity": "src/api.c::int execute_task(const char *command)",
+        "rule": "clang_cfg_system_with_nonliteral_command",
+        "evidence_pack": {
+            "path": {
+                "function": "execute_task",
+                "complete_in_function": True,
+                "complete_to_entry": True,
+            },
+            "ast_cfg": {
+                "events": [
+                    {"kind": "command_sanitizer", "line": 7, "variable": "command"},
+                    {
+                        "kind": "system_call",
+                        "line": 8,
+                        "variable": "command",
+                        "api": "system",
+                        "expression": "return system(command);",
+                    },
+                ]
+            },
+        },
+    }
+
+    assert not queue.complete_prevalidation(
+        issue,
+        validation_evidence={
+            "function_context": {
+                "code": "int execute_task(const char *command) { return system(command); }"
+            }
+        },
+    )
+    assert deterministic_decision_proof(issue, outcome="confirm") is None
+
+
+def test_v12_confirms_entry_supplied_callback_invoked_under_lock() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "function": "notify_listener",
+        "rule": "clang_cfg_callback_while_lock_held",
+        "code_snippet": "\n".join(
+            [
+                "10 | LOCK(&registry.lock);",
+                "11 | callback_slot = cb;",
+                "12 | callback_slot(node);",
+                "13 | UNLOCK(&registry.lock);",
+            ]
+        ),
+        "evidence_pack": {
+            "path": {
+                "function": "notify_listener",
+                "complete_in_function": True,
+                "complete_to_entry": True,
+                "call_edges": [
+                    {
+                        "caller": "public_entry",
+                        "callee": "notify_listener",
+                        "call_line": 40,
+                        "parameter_mapping": [
+                            {
+                                "formal": "cb",
+                                "actual": "cb",
+                                "source_parameter": "cb",
+                            }
+                        ],
+                    }
+                ],
+            },
+            "ast_cfg": {
+                "events": [
+                    {
+                        "kind": "lock",
+                        "line": 10,
+                        "expression": "LOCK(&registry.lock);",
+                    },
+                    {
+                        "kind": "callback_call",
+                        "line": 12,
+                        "expression": "callback_slot(node);",
+                    },
+                ]
+            },
+        },
+    }
+
+    assert queue.complete_prevalidation(issue)
+
+    proof = deterministic_decision_proof(issue, outcome="confirm")
+    assert proof is not None
+    assert proof.proof_kind == "external_callback_invoked_under_lock"
+    assert "call_edge:public_entry->notify_listener:40" in proof.fact_ids
+
+
+def test_v12_does_not_confirm_stored_callback_without_entry_parameter_assignment() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "function": "notify_listener",
+        "rule": "clang_cfg_callback_while_lock_held",
+        "code_snippet": "\n".join(
+            [
+                "10 | LOCK(&registry.lock);",
+                "12 | callback_slot(node);",
+                "13 | UNLOCK(&registry.lock);",
+            ]
+        ),
+        "evidence_pack": {
+            "path": {
+                "function": "notify_listener",
+                "complete_in_function": True,
+                "complete_to_entry": True,
+                "call_edges": [
+                    {
+                        "caller": "public_entry",
+                        "callee": "notify_listener",
+                        "call_line": 40,
+                        "parameter_mapping": [],
+                    }
+                ],
+            },
+            "ast_cfg": {
+                "events": [
+                    {
+                        "kind": "lock",
+                        "line": 10,
+                        "expression": "LOCK(&registry.lock);",
+                    },
+                    {
+                        "kind": "callback_call",
+                        "line": 12,
+                        "expression": "callback_slot(node);",
+                    },
+                ]
+            },
+        },
+    }
+
+    assert not queue.complete_prevalidation(issue)
+    assert deterministic_decision_proof(issue, outcome="confirm") is None
+
+
+def test_v12_does_not_confirm_callback_when_matching_unlock_is_absent() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "function": "notify_listener",
+        "rule": "clang_cfg_callback_while_lock_held",
+        "code_snippet": "\n".join(
+            [
+                "10 | LOCK(&registry.lock);",
+                "11 | callback_slot = cb;",
+                "12 | callback_slot(node);",
+                "13 | UNLOCK(&other.lock);",
+            ]
+        ),
+        "evidence_pack": {
+            "path": {
+                "function": "notify_listener",
+                "complete_in_function": True,
+                "complete_to_entry": True,
+                "call_edges": [
+                    {
+                        "caller": "public_entry",
+                        "callee": "notify_listener",
+                        "call_line": 40,
+                        "parameter_mapping": [
+                            {
+                                "formal": "cb",
+                                "actual": "cb",
+                                "source_parameter": "cb",
+                            }
+                        ],
+                    }
+                ],
+            },
+            "ast_cfg": {
+                "events": [
+                    {
+                        "kind": "lock",
+                        "line": 10,
+                        "expression": "LOCK(&registry.lock);",
+                    },
+                    {
+                        "kind": "callback_call",
+                        "line": 12,
+                        "expression": "callback_slot(node);",
+                    },
+                ]
+            },
+        },
+    }
+
+    assert not queue.complete_prevalidation(issue)
+    assert deterministic_decision_proof(issue, outcome="confirm") is None
+
+
+def test_v12_signal_proof_requires_structured_signal_root_and_unsafe_call() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "line": 30,
+        "defect_class": "signal_deadlock",
+        "call_paths": [["src/main.c::void dispatch(int signal, void *ucontext)"]],
+        "security_obligation": {"subject_uid": "signal-state"},
+    }
+    evidence = {"function_context": {"code": "snprintf(buffer, sizeof(buffer), \"%d\", signal);"}}
+
+    queue.complete_prevalidation(issue, validation_evidence=evidence)
+
+    proof = deterministic_decision_proof(issue, outcome="confirm")
+    assert proof is not None
+    assert proof.proof_kind == "registered_signal_path_calls_unsafe_operation"
+
+
+def test_v12_signal_proof_recovers_traceable_line_from_location() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "location": "src/runtime.c:2765",
+        "defect_class": "signal_deadlock",
+        "call_paths": [["src/main.c::void dispatch(int signal, void *ucontext)"]],
+        "security_obligation": {"subject_uid": "signal-state"},
+    }
+    evidence = {
+        "function_context": {
+            "code": "snprintf(buffer, sizeof(buffer), \"%d\", signal);"
+        }
+    }
+
+    assert queue.complete_prevalidation(issue, validation_evidence=evidence)
+
+    proof = deterministic_decision_proof(issue, outcome="confirm")
+    assert proof is not None
+    assert proof.fact_ids == ("source_cfg:2765",)
+    assert proof.cfg_nodes == ("2765",)
+
+
+def test_v12_self_link_requires_traversal_without_cycle_guard() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {"line": 8, "defect_class": "infinite_loop"}
+    evidence = {
+        "function_context": {
+            "code": "while (node) { node = node->next; }\nnode->next = node;"
+        }
+    }
+
+    queue.complete_prevalidation(issue, validation_evidence=evidence)
+
+    proof = deterministic_decision_proof(issue, outcome="confirm")
+    assert proof is not None
+    assert proof.proof_kind == "reachable_self_link_without_cycle_guard"
+
+
+def test_v12_self_link_does_not_prove_unrelated_deadlock_candidate() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {"location": "src/list.c:8", "defect_class": "deadlock"}
+    evidence = {
+        "function_context": {
+            "code": "while (node) { node = node->next; }\nnode->next = node;"
+        }
+    }
+
+    assert queue.complete_prevalidation(issue, validation_evidence=evidence) is False
+    assert deterministic_decision_proof(issue, outcome="confirm") is None
+
+
+def test_untraceable_provider_record_does_not_close_completion_as_proved() -> None:
+    queue = EvidenceCompletionQueue()
+    issue = {
+        "evidence_completion_proofs": [
+            {
+                "outcome": "confirm",
+                "proof_kind": "registered_signal_path_calls_unsafe_operation",
+                "producer_engine": "project_call_contract_signal_v12",
+                "proof_version": "zscope.decision-proof.v4",
+                "fact_ids": [],
+                "cfg_nodes": [],
+                "code_hash": "body-v1",
+                "facts": [
+                    "signal_context_reachable",
+                    "async_signal_unsafe_operation",
+                ],
+                "completeness": "complete",
+            }
+        ]
+    }
+
+    assert queue.complete_prevalidation(issue) is False
+    assert issue["prevalidation_fact_completion"] == "not_applicable"
+    assert issue.get("evidence_completion_status") != "completed"
+
+
+def test_traceable_provider_replaces_same_kind_untraceable_replay_record() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "location": "src/runtime.c:2765",
+        "defect_class": "signal_deadlock",
+        "call_paths": [["src/main.c::void dispatch(int signal, void *ucontext)"]],
+        "security_obligation": {"subject_uid": "signal-state"},
+        "deterministic_proofs": [
+            {
+                "outcome": "confirm",
+                "proof_kind": "registered_signal_path_calls_unsafe_operation",
+                "producer_engine": "project_call_contract_signal_v12",
+                "proof_version": "zscope.decision-proof.v4",
+                "fact_ids": [],
+                "cfg_nodes": [],
+                "code_hash": "body-v1",
+                "facts": [
+                    "signal_context_reachable",
+                    "async_signal_unsafe_operation",
+                ],
+                "completeness": "complete",
+            }
+        ],
+    }
+    evidence = {
+        "function_context": {
+            "code": "snprintf(buffer, sizeof(buffer), \"%d\", signal);"
+        }
+    }
+
+    assert queue.complete_prevalidation(issue, validation_evidence=evidence)
+
+    proof = deterministic_decision_proof(issue, outcome="confirm")
+    assert proof is not None
+    assert proof.fact_ids == ("source_cfg:2765",)
+
+
+def test_v12_rejects_allocation_only_when_every_caller_is_bounded() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "function": "reserve",
+        "evidence_pack": {
+            "path": {
+                "function": "reserve",
+                "complete_in_function": True,
+                "complete_to_entry": True,
+                "call_edges": [
+                    {
+                        "caller": "entry",
+                        "callee": "reserve",
+                        "parameter_mapping": [{"formal": "length", "actual": "length"}],
+                        "guard_summary": {
+                            "caller_side": {
+                                "checks": [{"text": "if (length > MAX_LENGTH) return -1;"}]
+                            }
+                        },
+                    }
+                ],
+            },
+            "ast_cfg": {
+                "events": [
+                    {
+                        "kind": "unbounded_allocation",
+                        "line": 11,
+                        "variable": "length",
+                        "expression": "return allocate(length);",
+                    }
+                ]
+            },
+        },
+    }
+
+    queue.complete_prevalidation(issue)
+
+    assert deterministic_decision_proof(issue, outcome="confirm") is None
+    proof = deterministic_decision_proof(issue, outcome="reject")
+    assert proof is not None
+    assert proof.proof_kind == "all_reachable_callers_bound_allocation"
+
+
+def test_v12_single_access_needs_project_complete_access_set() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {"kind": "shared_state_access", "line": 5, "variable": "global_state"}
+                ]
+            },
+            "concurrency": {},
+        }
+    }
+
+    assert queue.complete_prevalidation(issue) is False
+    assert deterministic_decision_proof(issue, outcome="reject") is None
+
+
+def test_v12_rejects_copy_when_exact_allocation_length_matches() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "rule": "clang_cfg_narrowed_allocation_original_length_copy",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {
+                        "kind": "narrowed_heap_allocation",
+                        "line": 10,
+                        "variable": "buffer",
+                        "api": "payload_len",
+                        "expression": "void *buffer = allocate(payload_len);",
+                    },
+                    {
+                        "kind": "original_length_heap_copy",
+                        "line": 12,
+                        "variable": "buffer",
+                        "api": "payload_len",
+                        "expression": "memcpy(buffer, payload, payload_len);",
+                    },
+                ]
+            },
+        },
+    }
+
+    assert queue.complete_prevalidation(issue)
+    proof = deterministic_decision_proof(issue, outcome="reject")
+    assert proof is not None
+    assert proof.proof_kind == "exact_allocation_length_covers_copy"
+
+
+def test_v12_does_not_equate_different_allocation_and_copy_lengths() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "rule": "clang_cfg_narrowed_allocation_original_length_copy",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {
+                        "kind": "narrowed_heap_allocation",
+                        "line": 10,
+                        "variable": "buffer",
+                        "api": "payload_len - 1",
+                    },
+                    {
+                        "kind": "original_length_heap_copy",
+                        "line": 12,
+                        "variable": "buffer",
+                        "api": "payload_len",
+                    },
+                ]
+            },
+        },
+    }
+
+    assert queue.complete_prevalidation(issue) is False
+    assert deterministic_decision_proof(issue, outcome="reject") is None
+
+
+def test_v12_rejects_reported_leak_when_same_resource_is_released_before_exit() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "rule": "clang_cfg_acquire_without_release_on_exit",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {
+                        "kind": "acquire",
+                        "line": 20,
+                        "variable": "owner.items",
+                        "expression": "owner->items = allocate(count);",
+                    },
+                    {"kind": "exit", "line": 23, "expression": "return NULL;"},
+                ]
+            },
+        },
+    }
+    evidence = {
+        "function_context": {
+            "code": """void *build(Owner *owner) {
+owner->items = allocate(count);
+if (!initialize(owner->items)) {
+    SAFE_FREE(owner->items);
+    return NULL;
+}
+return owner;
+}"""
+        }
+    }
+
+    assert queue.complete_prevalidation(issue, validation_evidence=evidence)
+    proof = deterministic_decision_proof(issue, outcome="reject")
+    assert proof is not None
+    assert proof.proof_kind == "matching_release_precedes_reported_exit"
+
+
+def test_v12_does_not_apply_release_proof_to_different_field() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "rule": "clang_cfg_acquire_without_release_on_exit",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {
+                        "kind": "acquire",
+                        "line": 20,
+                        "expression": "owner->items = allocate(count);",
+                    },
+                    {"kind": "exit", "line": 22, "expression": "return NULL;"},
+                ]
+            },
+        },
+    }
+    evidence = {
+        "function_context": {
+            "code": "owner->items = allocate(count);\nSAFE_FREE(owner->backup);\nreturn NULL;"
+        }
+    }
+
+    assert queue.complete_prevalidation(issue, validation_evidence=evidence) is False
+
+
+def test_v12_release_after_reported_early_exit_is_not_a_rejection_proof() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "rule": "clang_cfg_acquire_without_release_on_exit",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {
+                        "kind": "acquire",
+                        "line": 100,
+                        "expression": "info->reserved = allocate(size);",
+                    },
+                    {"kind": "exit", "line": 102, "expression": "return 0;"},
+                ]
+            },
+        },
+    }
+    evidence = {
+        "function_context": {
+            "code": """info->reserved = allocate(size);
+if (!ready) {
+    return 0;
+}
+SAFE_FREE(info->reserved);
+return 0;"""
+        }
+    }
+
+    assert queue.complete_prevalidation(issue, validation_evidence=evidence) is False
+    assert deterministic_decision_proof(issue, outcome="reject") is None
+
+
+def test_v12_release_in_sibling_branch_does_not_prove_later_exit_safe() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "rule": "clang_cfg_acquire_without_release_on_exit",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {
+                        "kind": "acquire",
+                        "line": 40,
+                        "expression": "node = allocate();",
+                    },
+                    {"kind": "exit", "line": 46, "expression": "return 0;"},
+                ]
+            },
+        },
+    }
+    evidence = {
+        "function_context": {
+            "code": """node = allocate();
+if (failed) {
+    free(node);
+    return -1;
+}
+publish(node);
+return 0;"""
+        }
+    }
+
+    assert queue.complete_prevalidation(issue, validation_evidence=evidence) is False
+    assert deterministic_decision_proof(issue, outcome="reject") is None
+
+
+def test_v12_rejects_parent_cleanup_when_member_acquisition_failed() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "line": 8,
+        "rule": "clang_cfg_parent_release_without_owned_member_cleanup",
+        "sink": "free(task);",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {"events": [{"kind": "owned_member_leak", "line": 8}]},
+        },
+    }
+    evidence = {
+        "function_context": {
+            "code": """Task *task = calloc(1, sizeof(*task));
+task->payload.command = duplicate(text);
+if (!task->payload.command) {
+    free(task);
+    return NULL;
+}
+return task;"""
+        }
+    }
+
+    assert queue.complete_prevalidation(issue, validation_evidence=evidence)
+    proof = deterministic_decision_proof(issue, outcome="reject")
+    assert proof is not None
+    assert proof.proof_kind == "zero_initialized_member_failed_before_parent_release"
+
+
+def test_v12_rejects_leak_when_resource_moves_to_caller_owned_field() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "rule": "clang_cfg_acquire_without_release_on_exit",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {
+                        "kind": "acquire",
+                        "line": 17,
+                        "expression": "registry->plugins = allocate(capacity);",
+                    },
+                    {"kind": "exit", "line": 29, "expression": "return 0;"},
+                ]
+            },
+        },
+    }
+    evidence = {
+        "function_context": {
+            "code": "int init(Registry *registry, size_t capacity) {\n"
+            "registry->plugins = allocate(capacity);\nreturn 0;\n}"
+        }
+    }
+
+    assert queue.complete_prevalidation(issue, validation_evidence=evidence)
+    proof = deterministic_decision_proof(issue, outcome="reject")
+    assert proof is not None
+    assert proof.proof_kind == "caller_owned_field_transfer"
+
+
+def test_v12_does_not_treat_local_owner_field_as_caller_transfer() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "rule": "clang_cfg_acquire_without_release_on_exit",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {
+                "events": [
+                    {"kind": "acquire", "line": 2, "expression": "local.plugins = allocate(2);"},
+                    {"kind": "exit", "line": 3, "expression": "return 0;"},
+                ]
+            },
+        },
+    }
+    evidence = {"function_context": {"code": "int init(void) { local.plugins = allocate(2); return 0; }"}}
+
+    assert queue.complete_prevalidation(issue, validation_evidence=evidence) is False
+
+
+def test_v12_propagates_terminating_bound_to_derived_allocation_size() -> None:
+    queue = EvidenceCompletionQueue(enable_v12_providers=True)
+    issue = {
+        "rule": "clang_cfg_external_size_allocation_without_limit",
+        "evidence_pack": {
+            "path": {"complete_in_function": True},
+            "ast_cfg": {
+                "condition_guards": [
+                    {"line": 4, "condition": "cmd_len > MAX_COMMAND_LEN"}
+                ],
+                "scope_summary": {"return_lines": [5]},
+                "events": [
+                    {
+                        "kind": "unbounded_allocation",
+                        "line": 9,
+                        "variable": "total_len",
+                        "expression": "void *buffer = allocate(total_len);",
+                    }
+                ],
+            },
+        },
+    }
+    evidence = {
+        "function_context": {
+            "code": """size_t cmd_len = strlen(command);
+if (cmd_len > MAX_COMMAND_LEN) {
+    return -1;
+}
+size_t total_len = sizeof(Header) + cmd_len + 1;
+void *buffer = allocate(total_len);"""
+        }
+    }
+
+    assert queue.complete_prevalidation(issue, validation_evidence=evidence)
+    proof = deterministic_decision_proof(issue, outcome="reject")
+    assert proof is not None
+    assert proof.proof_kind == "terminating_allocation_upper_bound"
+
+
+def test_failed_fd_acquisition_guard_can_span_nested_diagnostic_branch() -> None:
+    queue = EvidenceCompletionQueue()
+    issue = {
+        "rule": "clang_cfg_fd_open_return_without_close",
+        "evidence_pack": {
+            "path": {
+                "complete_in_function": True,
+                "path_constraints": ["line 56: if (client_fd < 0) {"],
+            },
+            "ast_cfg": {
+                "condition_guards": [
+                    {"line": 56, "condition": "client_fd < 0"},
+                    {"line": 57, "condition": "errno != EAGAIN"},
+                ],
+                "events": [
+                    {
+                        "kind": "fd_open",
+                        "line": 55,
+                        "variable": "client_fd",
+                        "expression": "int client_fd = accept(server_fd, 0, 0);",
+                    },
+                    {
+                        "kind": "return_without_fd_close",
+                        "line": 60,
+                        "variable": "client_fd",
+                        "expression": "return -1;",
+                    },
+                ],
+            },
+        },
+    }
+
+    assert queue.complete_prevalidation(issue)
+    proof = deterministic_decision_proof(issue, outcome="reject")
+    assert proof is not None
+    assert proof.proof_kind == "failed_acquisition_exit"

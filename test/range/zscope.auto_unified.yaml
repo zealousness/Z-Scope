@@ -144,6 +144,12 @@ analysis:
   proof_providers_v11: true
   decision_context_v32: true
   structured_candidate_promotion_v1: true
+  # v3.3 release convergence: cache-isolated proof routing, structural root
+  # projection, and bounded Validator evidence slices.
+  proof_providers_v12: true
+  decision_context_v33: true
+  finding_root_v1: true
+  validator_evidence_slice_v2: true
   max_premodel_depth: 5
   max_premodel_callees: 20
   trivial_function_max_lines: 10

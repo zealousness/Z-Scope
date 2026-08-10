@@ -86,6 +86,8 @@ class LLMClient:
     DEFAULT_GLOBAL_MAX_INFLIGHT = 8
     AIMD_SUCCESS_THRESHOLD = 20
     AIMD_DECREASE_FACTOR = 0.5
+    TRANSIENT_AUTH_RETRY_LIMIT = 1
+    TRANSIENT_AUTH_RETRY_DELAY_SECONDS = 1.0
     _SUMMARY_PRIORITY_KEYS = (
         "success",
         "error",
@@ -328,6 +330,12 @@ class LLMClient:
                 telemetry.estimated_calls += 1
             else:
                 telemetry.provider_reported_calls += 1
+
+    def _has_successful_call(self) -> bool:
+        """Return whether this configured client has already authenticated successfully."""
+
+        with self._usage_lock:
+            return self._usage_telemetry.successful_calls > 0
 
     def _new_session(self) -> requests.Session:
         session = requests.Session()
@@ -774,10 +782,13 @@ class LLMClient:
             total_attempts = (self.max_retries + 1) * max(1, len(self._base_url_states))
             attempt = 0
             retry_transient = False
+            retry_transient_auth = False
+            transient_auth_retries_remaining = self.TRANSIENT_AUTH_RETRY_LIMIT
             while attempt < total_attempts or (
                 self.retry_until_available and retry_transient
-            ):
+            ) or retry_transient_auth:
                 retry_transient = False
+                retry_transient_auth = False
                 attempt += 1
                 token = current_cancellation_token()
                 if token is not None:
@@ -939,6 +950,28 @@ class LLMClient:
                             wait_time,
                         )
                         last_error = error_msg
+                        continue
+                    elif (
+                        response.status_code == 401
+                        and transient_auth_retries_remaining > 0
+                        and self._has_successful_call()
+                    ):
+                        # A provider can occasionally return an isolated 401 while
+                        # concurrent requests using the same credential continue to
+                        # succeed. Retry that condition once, but never turn a bad
+                        # credential into an unbounded retry loop.
+                        transient_auth_retries_remaining -= 1
+                        retry_transient_auth = True
+                        wait_time = self.TRANSIENT_AUTH_RETRY_DELAY_SECONDS
+                        self._mark_base_url_cooldown(endpoint, wait_time)
+                        post_attempt_delay = wait_time
+                        last_error = error_msg
+                        logger.warning(
+                            "Endpoint %s returned an isolated HTTP 401 after prior "
+                            "successful authentication; retrying once after %.1fs",
+                            endpoint.url,
+                            wait_time,
+                        )
                         continue
                     else:
                         last_error = error_msg

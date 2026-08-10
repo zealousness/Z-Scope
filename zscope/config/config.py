@@ -324,6 +324,12 @@ class AnalysisConfig:
     proof_providers_v11: bool = False
     decision_context_v32: bool = False
     structured_candidate_promotion_v1: bool = False
+    # v3.3 release convergence keeps its facts, proof outcomes, report roots,
+    # and Validator prompt/cache identity separate from v3.2.
+    proof_providers_v12: bool = False
+    decision_context_v33: bool = False
+    finding_root_v1: bool = False
+    validator_evidence_slice_v2: bool = False
     # Batch scans collect all deterministic candidates before one shared
     # validation queue.  Keeping this switch separate permits a one-release
     # rollback to entry-local validation for compatibility diagnostics.
@@ -831,6 +837,16 @@ class ConfigLoader:
                 ),
                 structured_candidate_promotion_v1=analysis_data.get(
                     "structured_candidate_promotion_v1", False
+                ),
+                proof_providers_v12=analysis_data.get(
+                    "proof_providers_v12", False
+                ),
+                decision_context_v33=analysis_data.get(
+                    "decision_context_v33", False
+                ),
+                finding_root_v1=analysis_data.get("finding_root_v1", False),
+                validator_evidence_slice_v2=analysis_data.get(
+                    "validator_evidence_slice_v2", False
                 ),
                 global_validation_group_queue=analysis_data.get(
                     "global_validation_group_queue", True

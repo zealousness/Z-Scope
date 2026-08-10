@@ -18,10 +18,11 @@ from threading import RLock
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
 
-DECISION_FACT_VERSION = "zscope.decision-facts.v1.1"
-SECURITY_OBLIGATION_VERSION = "zscope.security-obligation.v1.1"
+DECISION_FACT_VERSION = "zscope.decision-facts.v1.2"
+SECURITY_OBLIGATION_VERSION = "zscope.security-obligation.v1.2"
 DECISION_CONTEXT_V31 = "zscope.decision-context.v3.1"
 DECISION_CONTEXT_V32 = "zscope.decision-context.v3.2"
+DECISION_CONTEXT_V33 = "zscope.decision-context.v3.3"
 
 _SHAPES = {"source_centric", "sink_sensitive", "path_sensitive"}
 SUPPORTED_DECISION_FACT_RELATIONS = frozenset(
@@ -842,7 +843,7 @@ def deterministic_proofs_from_facts(
             "outcome": outcome,
             "proof_kind": kind,
             "producer_engine": "decision_fact_graph_v1",
-            "proof_version": "zscope.decision-proof.v3",
+            "proof_version": "zscope.decision-proof.v4",
             "fact_ids": fact_ids,
             "cfg_nodes": sorted({fact_id for fact_id in fact_ids}),
             "subject_identity": subject,

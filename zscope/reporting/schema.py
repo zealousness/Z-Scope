@@ -617,6 +617,13 @@ def apply_report_schema_v2(
         terminal_candidates,
         canonical_projection=canonical_projection,
     )
+    if "validation_queue_drained" in state and not bool(
+        state.get("validation_queue_drained")
+    ):
+        invariant["valid"] = False
+        invariant["validation_queue_drained"] = False
+    else:
+        invariant["validation_queue_drained"] = True
     if not invariant["valid"] and completeness == "complete":
         completeness = "degraded"
     report.update(
@@ -653,6 +660,45 @@ def apply_report_schema_v2(
         }
     )
     report["run_manifest"]["report_invariant_status"] = invariant
+    report["run_manifest"]["finding_root_count"] = int(
+        state.get("finding_root_count", 0) or 0
+    )
+    report["run_manifest"]["finding_root_alias_count"] = int(
+        state.get("finding_root_alias_count", 0) or 0
+    )
+    for key in (
+        "validator_session_count",
+        "validator_api_call_count",
+        "evidence_slice_token_count",
+        "multi_turn_outlier_count",
+        "snapshot_model_call_count",
+        "fact_query_cache_hit_count",
+    ):
+        report["run_manifest"][key] = int(state.get(key, 0) or 0)
+    report["run_manifest"]["validator_turn_distribution"] = dict(
+        state.get("validator_turn_distribution") or {}
+    )
+    report["run_manifest"]["validator_prompt_tokens_by_stage"] = dict(
+        state.get("validator_prompt_tokens_by_stage") or {}
+    )
+    report["run_manifest"]["budget_exhaustion_policy"] = str(
+        state.get("budget_exhaustion_policy") or "observe"
+    )
+    report["run_manifest"]["validation_queue_drained"] = bool(
+        state.get("validation_queue_drained", False)
+    )
+    release_blockers = []
+    if not report["run_manifest"]["validation_queue_drained"]:
+        release_blockers.append("validation_queue_not_drained")
+    if report["run_manifest"]["budget_exhaustion_policy"] != "observe":
+        release_blockers.append("budget_policy_not_observe_only")
+    if not invariant["valid"]:
+        release_blockers.append("report_invariant_failed")
+    report["run_manifest"]["release_gate_status"] = {
+        "runtime_valid": not release_blockers,
+        "quality_evaluation_pending": True,
+        "blockers": release_blockers,
+    }
     return report
 
 

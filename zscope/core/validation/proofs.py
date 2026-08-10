@@ -22,7 +22,7 @@ class DecisionProof:
     contradiction_or_obligation: str
     scope: str
     completeness: str
-    proof_version: str = "zscope.decision-proof.v3"
+    proof_version: str = "zscope.decision-proof.v4"
     subject_identity: str = ""
     cfg_nodes: tuple[str, ...] = ()
 
@@ -86,6 +86,41 @@ _REJECTION_REQUIREMENTS = {
     "cursor_progress_dominates_iteration": {"cursor_advances_before_iteration"},
     "not_signal_handler_reachable": {"ordinary_call_context"},
     "constant_contract_makes_sink_irrelevant": {"constant_contract_precondition"},
+    "all_reachable_callers_bound_allocation": {
+        "all_reachable_callers_bounded",
+        "guard_dominates_allocation",
+    },
+    "allocation_capacity_covers_sink": {
+        "allocation_capacity_covers_sink",
+        "signedness_safe",
+    },
+    "fixed_array_index_proved_in_range": {
+        "all_paths_index_in_range",
+        "fixed_array_capacity",
+    },
+    "ownership_transferred_on_all_exits": {
+        "same_field_sensitive_object",
+        "all_exits_release_or_transfer",
+    },
+    "single_shared_access_not_race": {"single_shared_access_event"},
+    "exact_allocation_length_covers_copy": {
+        "same_field_sensitive_object",
+        "allocation_length_equals_copy_length",
+    },
+    "matching_release_precedes_reported_exit": {
+        "same_field_sensitive_object",
+        "release_dominates_reported_exit",
+    },
+    "zero_initialized_member_failed_before_parent_release": {
+        "zero_initialized_parent",
+        "member_acquisition_failed",
+        "parent_cleanup_on_failure_only",
+    },
+    "caller_owned_field_transfer": {
+        "field_sensitive_object",
+        "caller_owned_parent",
+        "successful_return_transfers_responsibility",
+    },
 }
 
 _CONFIRMATION_REQUIREMENTS = {
@@ -128,6 +163,42 @@ _CONFIRMATION_REQUIREMENTS = {
         "field_sensitive_owned_member",
         "parent_release",
         "member_not_released",
+    },
+    "external_value_controls_unbounded_allocation": {
+        "external_source_to_allocation",
+        "allocation_path_complete",
+        "no_upper_bound_guard",
+    },
+    "allocation_arithmetic_overflow_reaches_sink": {
+        "overflow_value_reachable",
+        "arithmetic_precedes_guard",
+        "allocation_sink_reached",
+    },
+    "registered_signal_path_calls_unsafe_operation": {
+        "signal_context_reachable",
+        "async_signal_unsafe_operation",
+    },
+    "entry_parameter_reaches_system_sink": {
+        "scanned_entry_parameter_source",
+        "nonliteral_system_sink",
+        "entry_to_sink_path_complete",
+        "no_structured_command_sanitizer",
+    },
+    "external_callback_invoked_under_lock": {
+        "entry_parameter_callback_source",
+        "callback_assignment_under_lock",
+        "callback_invoked_before_matching_unlock",
+        "entry_to_callback_path_complete",
+    },
+    "reachable_self_link_without_cycle_guard": {
+        "self_link_assignment",
+        "container_traversal_reachable",
+        "cycle_guard_missing",
+    },
+    "exact_acquisition_exit_leak": {
+        "successful_acquisition",
+        "reachable_exit_without_release",
+        "ownership_not_transferred",
     },
 }
 
@@ -179,7 +250,7 @@ def deterministic_decision_proof(
             ),
             scope=str(proof.get("scope") or "candidate"),
             completeness="complete",
-            proof_version=str(proof.get("proof_version") or "zscope.decision-proof.v3"),
+            proof_version=str(proof.get("proof_version") or "zscope.decision-proof.v4"),
             subject_identity=str(
                 proof.get("subject_identity")
                 or issue.get("resource_identity")

@@ -71,6 +71,7 @@ def _runner(
     validator_agent_factory=None,
     result_cache=None,
     scheduler=None,
+    get_tools=None,
 ):
     memory = memory if memory is not None else []
     config = SimpleNamespace(
@@ -85,7 +86,7 @@ def _runner(
         validation_pipeline=ValidationPipeline(FakeUserConfig()),
         code_index=code_index or FakeCodeIndex(),
         snapshot_store=FakeSnapshotStore(),
-        get_tools=lambda agent_name: [],
+        get_tools=get_tools or (lambda agent_name: []),
         tool_policy_for_agent=lambda agent_name: None,
         attach_agent_contract=lambda context, agent_name: context.update({"agent_contract": agent_name}),
         remember_validation_result=lambda issue, status: memory.append((issue["id"], status)),
@@ -375,6 +376,25 @@ def test_validation_runner_skips_validator_for_prevalidation_proof() -> None:
     assert state["issues"] == [issue]
     assert state["validator_avoided_count"] == 1
     assert state["deterministic_prevalidation_confirmed_count"] == 1
+
+
+def test_validator_evidence_slice_v2_disables_open_ended_tools() -> None:
+    captured = {}
+
+    def factory(client, tools, **kwargs):
+        captured["tools"] = tools
+        return FakeValidatorAgent([])
+
+    runner = _runner(
+        FakeValidatorAgent([]),
+        analysis=SimpleNamespace(validator_evidence_slice_v2=True),
+        validator_agent_factory=factory,
+        get_tools=lambda _agent_name: ["broad_code_browser"],
+    )
+
+    runner._build_validator_agent()
+
+    assert captured["tools"] == []
 
 
 def test_validation_runner_logs_needs_review_without_validated_label(caplog) -> None:

@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, cast
 from ..core.validation.pipeline import preserve_issue_location
 from ..orchestration.candidate_envelope import annotate_issue_collection
 from ..reporting.report import FinalReport, Issue, ReportGenerator
+from ..reporting.finding_roots import project_finding_roots
 from ..reporting.schema import (
     REPORT_SCHEMA_VERSION,
     build_run_manifest,
@@ -204,9 +205,17 @@ class ReportAssembler:
             terminal_states,
             canonical_outcomes is not None,
         )
+        if "validation_queue_drained" in state and not bool(
+            state.get("validation_queue_drained")
+        ):
+            invariant_status["valid"] = False
+            invariant_status["validation_queue_drained"] = False
+        else:
+            invariant_status["validation_queue_drained"] = True
         state["report_invariant_status"] = invariant_status
         if not invariant_status["valid"]:
             state["completeness"] = "degraded"
+            completeness = "degraded"
             state["notes"].append(
                 "Report lifecycle invariants failed; scan is incomplete and diagnostic data was retained."
             )
@@ -247,6 +256,13 @@ class ReportAssembler:
             }
         )
         final_report.run_manifest["report_invariant_status"] = invariant_status
+        final_report.run_manifest["finding_root_count"] = int(
+            state.get("finding_root_count", 0) or 0
+        )
+        final_report.run_manifest["finding_root_alias_count"] = int(
+            state.get("finding_root_alias_count", 0) or 0
+        )
+        final_report.run_manifest.update(self._release_observability(state))
         self.refresh(final_report, state)
         state["final_report"] = final_report
         return final_report
@@ -341,6 +357,36 @@ class ReportAssembler:
             )
             return "error"
         return "issues_found" if all_issues else "no_issue_found"
+
+    @staticmethod
+    def _release_observability(state: Dict[str, Any]) -> Dict[str, Any]:
+        drained = bool(state.get("validation_queue_drained", False))
+        invariant = state.get("report_invariant_status")
+        invariant = invariant if isinstance(invariant, dict) else {}
+        blockers: List[str] = []
+        if not drained:
+            blockers.append("validation_queue_not_drained")
+        if invariant and not invariant.get("valid", False):
+            blockers.append("report_invariant_failed")
+        if str(state.get("budget_exhaustion_policy") or "observe") != "observe":
+            blockers.append("budget_policy_not_observe_only")
+        return {
+            "validator_session_count": int(state.get("validator_session_count", 0) or 0),
+            "validator_api_call_count": int(state.get("validator_api_call_count", 0) or 0),
+            "validator_turn_distribution": dict(state.get("validator_turn_distribution") or {}),
+            "validator_prompt_tokens_by_stage": dict(state.get("validator_prompt_tokens_by_stage") or {}),
+            "evidence_slice_token_count": int(state.get("evidence_slice_token_count", 0) or 0),
+            "multi_turn_outlier_count": int(state.get("multi_turn_outlier_count", 0) or 0),
+            "snapshot_model_call_count": int(state.get("snapshot_model_call_count", 0) or 0),
+            "fact_query_cache_hit_count": int(state.get("fact_query_cache_hit_count", 0) or 0),
+            "budget_exhaustion_policy": str(state.get("budget_exhaustion_policy") or "observe"),
+            "validation_queue_drained": drained,
+            "release_gate_status": {
+                "runtime_valid": not blockers,
+                "quality_evaluation_pending": True,
+                "blockers": blockers,
+            },
+        }
 
     @staticmethod
     def _issue_objects(all_issues: List[Any], entry_func: str) -> List[Issue]:
@@ -542,6 +588,11 @@ class ReportAssembler:
                 value["validation_status"] = "operational"
             result.append(value)
         result.sort(key=lambda item: str(item.get("validation_cluster_uid") or ""))
+        if bool(state.get("finding_root_v1_enabled", False)):
+            projection = project_finding_roots(result)
+            state["finding_root_count"] = projection.finding_root_count
+            state["finding_root_alias_count"] = projection.finding_root_alias_count
+            result = list(projection.outcomes)
         return result
 
     @staticmethod

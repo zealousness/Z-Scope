@@ -17,14 +17,15 @@ from ..core.candidates.evidence_models import build_evidence_models
 from ..core.candidates.decision_facts import (
     DECISION_CONTEXT_V31,
     DECISION_CONTEXT_V32,
+    DECISION_CONTEXT_V33,
     DECISION_FACT_VERSION,
     DecisionFactGraphCache,
     attach_decision_facts,
     security_obligation_for,
 )
 
-CANDIDATE_SCHEMA_VERSION = "zscope.candidate.v3.2"
-DECISION_CONTEXT_VERSION = "zscope.decision-context.v3.2"
+CANDIDATE_SCHEMA_VERSION = "zscope.candidate.v3.3"
+DECISION_CONTEXT_VERSION = DECISION_CONTEXT_V33
 CANDIDATE_DISPOSITIONS = {
     "confirmed",
     "rejected_with_proof",
@@ -401,7 +402,9 @@ class CandidateEnvelope:
         decision_fact_cache: Optional[DecisionFactGraphCache] = None,
     ) -> "CandidateEnvelope":
         requested_context_version = (
-            DECISION_CONTEXT_V32
+            DECISION_CONTEXT_V33
+            if bool(issue.get("decision_context_v33"))
+            else DECISION_CONTEXT_V32
             if bool(issue.get("decision_context_v32"))
             else DECISION_CONTEXT_V31
             if bool(
@@ -566,6 +569,7 @@ class CandidateEnvelope:
                     "obligation_shape": obligation_shape,
                     "decision_context_v31": True,
                     "decision_context_v32": requested_context_version == DECISION_CONTEXT_V32,
+                    "decision_context_v33": requested_context_version == DECISION_CONTEXT_V33,
                 }
             )
             fact_target = issue if isinstance(issue, dict) else dict(issue)
@@ -717,7 +721,11 @@ class CandidateEnvelope:
             or pack.get("code_hash")
             or pack.get("source_fingerprint"),
         }
-        if requested_context_version in {DECISION_CONTEXT_V31, DECISION_CONTEXT_V32}:
+        if requested_context_version in {
+            DECISION_CONTEXT_V31,
+            DECISION_CONTEXT_V32,
+            DECISION_CONTEXT_V33,
+        }:
             decision_evidence["decision_fact_slice"] = issue.get("decision_fact_slice") or {}
             decision_evidence["required_fact_kinds"] = list(obligation.required_fact_kinds)
         decision_evidence_hash = _digest(decision_evidence, length=64)
@@ -795,7 +803,11 @@ class CandidateEnvelope:
             obligation_shape=obligation_shape,
             decision_fact_version=(
                 DECISION_FACT_VERSION
-                if requested_context_version in {DECISION_CONTEXT_V31, DECISION_CONTEXT_V32}
+                if requested_context_version in {
+                    DECISION_CONTEXT_V31,
+                    DECISION_CONTEXT_V32,
+                    DECISION_CONTEXT_V33,
+                }
                 else ""
             ),
             decision_context_version=requested_context_version,
