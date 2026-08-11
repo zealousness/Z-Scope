@@ -193,7 +193,8 @@ def test_invalid_terminal_tool_repairs_in_same_conversation(monkeypatch) -> None
 
     second_messages = calls[1][0]
     terminal_errors = [
-        message for message in second_messages
+        message
+        for message in second_messages
         if message.get("role") == "tool" and message.get("terminal_tool_result")
     ]
     assert len(terminal_errors) == 1
@@ -385,7 +386,9 @@ def test_terminal_tool_required_reprompts_prose_until_budget(monkeypatch) -> Non
     def fake_chat_completion(messages, **kwargs):
         calls.append(list(messages))
         return {
-            "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "draft"}}],
+            "choices": [
+                {"finish_reason": "stop", "message": {"role": "assistant", "content": "draft"}}
+            ],
             "usage": {"prompt_tokens": 2, "completion_tokens": 1},
         }
 
@@ -410,13 +413,15 @@ def test_xml_terminal_invoke_uses_terminal_handler(monkeypatch) -> None:
 
     def fake_chat_completion(messages, **kwargs):
         return {
-            "choices": [{
-                "finish_reason": "stop",
-                "message": {
-                    "role": "assistant",
-                    "content": '<invoke name="emit_result"><parameter name="value">7</parameter></invoke>',
-                },
-            }],
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "role": "assistant",
+                        "content": '<invoke name="emit_result"><parameter name="value">7</parameter></invoke>',
+                    },
+                }
+            ],
             "usage": {"prompt_tokens": 2, "completion_tokens": 1},
         }
 
@@ -426,7 +431,10 @@ def test_xml_terminal_invoke_uses_terminal_handler(monkeypatch) -> None:
         tools_schema=[{"type": "function", "function": {"name": "emit_result", "parameters": {}}}],
         tool_executor=lambda name, args: (_ for _ in ()).throw(AssertionError("not normal")),
         terminal_tool_name="emit_result",
-        terminal_tool_handler=lambda payload: {"valid": payload == {"value": 7}, "payload": payload},
+        terminal_tool_handler=lambda payload: {
+            "valid": payload == {"value": 7},
+            "payload": payload,
+        },
         terminal_tool_required=True,
         max_iterations=3,
     )
@@ -445,13 +453,32 @@ def test_mixed_terminal_and_regular_calls_reject_terminal_then_continue(monkeypa
         calls.append(list(messages))
         if len(calls) == 1:
             tool_calls = [
-                {"id": "lookup", "type": "function", "function": {"name": "lookup", "arguments": "{}"}},
-                {"id": "emit", "type": "function", "function": {"name": "emit_result", "arguments": json.dumps({"value": 7})}},
+                {
+                    "id": "lookup",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                },
+                {
+                    "id": "emit",
+                    "type": "function",
+                    "function": {"name": "emit_result", "arguments": json.dumps({"value": 7})},
+                },
             ]
         else:
-            tool_calls = [{"id": "emit2", "type": "function", "function": {"name": "emit_result", "arguments": json.dumps({"value": 7})}}]
+            tool_calls = [
+                {
+                    "id": "emit2",
+                    "type": "function",
+                    "function": {"name": "emit_result", "arguments": json.dumps({"value": 7})},
+                }
+            ]
         return {
-            "choices": [{"finish_reason": "tool_calls", "message": {"role": "assistant", "content": "", "tool_calls": tool_calls}}],
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {"role": "assistant", "content": "", "tool_calls": tool_calls},
+                }
+            ],
             "usage": {"prompt_tokens": 2, "completion_tokens": 1},
         }
 
@@ -464,7 +491,10 @@ def test_mixed_terminal_and_regular_calls_reject_terminal_then_continue(monkeypa
         ],
         tool_executor=lambda name, args: executed.append(name) or {"success": True},
         terminal_tool_name="emit_result",
-        terminal_tool_handler=lambda payload: {"valid": payload == {"value": 7}, "payload": payload},
+        terminal_tool_handler=lambda payload: {
+            "valid": payload == {"value": 7},
+            "payload": payload,
+        },
         terminal_tool_required=True,
         max_iterations=3,
     )
@@ -472,7 +502,9 @@ def test_mixed_terminal_and_regular_calls_reject_terminal_then_continue(monkeypa
     assert executed == ["lookup"]
     assert result["terminal_tool_valid"] is True
     assert result["tool_call_count"] == 1
-    assert any(message.get("terminal_tool_result") for message in calls[1] if message.get("role") == "tool")
+    assert any(
+        message.get("terminal_tool_result") for message in calls[1] if message.get("role") == "tool"
+    )
 
 
 def test_duplicate_terminal_calls_are_rejected_before_single_retry(monkeypatch) -> None:
@@ -491,7 +523,12 @@ def test_duplicate_terminal_calls_are_rejected_before_single_retry(monkeypatch) 
             for index in range(count)
         ]
         return {
-            "choices": [{"finish_reason": "tool_calls", "message": {"role": "assistant", "content": "", "tool_calls": tool_calls}}],
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {"role": "assistant", "content": "", "tool_calls": tool_calls},
+                }
+            ],
             "usage": {"prompt_tokens": 2, "completion_tokens": 1},
         }
 
@@ -619,7 +656,9 @@ def test_run_conversation_with_tools_compacts_old_tool_results(monkeypatch) -> N
     assert huge_two in full_transcript
 
 
-def test_run_conversation_forces_final_answer_after_repeated_identical_tool_call(monkeypatch) -> None:
+def test_run_conversation_forces_final_answer_after_repeated_identical_tool_call(
+    monkeypatch,
+) -> None:
     client = LLMClient(
         api_key="test",
         base_url="http://example.invalid",
@@ -697,8 +736,7 @@ def test_run_conversation_forces_final_answer_after_repeated_identical_tool_call
     cached_tool_messages = [
         msg
         for msg in result["conversation"]
-        if msg.get("role") == "tool"
-        and "cached_tool_result" in str(msg.get("content", ""))
+        if msg.get("role") == "tool" and "cached_tool_result" in str(msg.get("content", ""))
     ]
     assert cached_tool_messages
 

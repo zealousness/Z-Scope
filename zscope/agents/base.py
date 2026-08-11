@@ -459,12 +459,14 @@ class JsonToolAgent(ToolCallingAgent):
                     retry_ctx_tokens = LLMClient.estimate_tokens(conversation)
                     retry_metadata = self._conversation_token_metadata(result)
                     retry_metadata["context_tokens"] = ctx_tokens + retry_ctx_tokens
-                    retry_metadata["cumulative_prompt_tokens"] = int(
-                        retry_metadata.get("cumulative_prompt_tokens", 0) or 0
-                    ) + retry_prompt_tokens
-                    retry_metadata["cumulative_completion_tokens"] = int(
-                        retry_metadata.get("cumulative_completion_tokens", 0) or 0
-                    ) + retry_completion_tokens
+                    retry_metadata["cumulative_prompt_tokens"] = (
+                        int(retry_metadata.get("cumulative_prompt_tokens", 0) or 0)
+                        + retry_prompt_tokens
+                    )
+                    retry_metadata["cumulative_completion_tokens"] = (
+                        int(retry_metadata.get("cumulative_completion_tokens", 0) or 0)
+                        + retry_completion_tokens
+                    )
                     retry_metadata["cumulative_total_tokens"] = int(
                         retry_metadata.get("cumulative_prompt_tokens", 0) or 0
                     ) + int(retry_metadata.get("cumulative_completion_tokens", 0) or 0)
@@ -827,7 +829,9 @@ class JsonToolAgent(ToolCallingAgent):
 
             choice = response.get("choices", [{}])[0]
             message = choice.get("message", {})
-            self._merge_chat_metadata(metadata, response, prompt_messages, message, json_output_spec)
+            self._merge_chat_metadata(
+                metadata, response, prompt_messages, message, json_output_spec
+            )
             repair_messages.append(message)
             tool_calls = message.get("tool_calls") or []
             if tool_calls:
@@ -863,7 +867,9 @@ class JsonToolAgent(ToolCallingAgent):
                 self._increment_metadata_counter(metadata, json_output_spec, "repair_accepted")
                 if isinstance(parsed, dict):
                     parsed.setdefault(f"{json_output_spec.metadata_prefix}_json_repaired", True)
-                    parsed.setdefault(f"{json_output_spec.metadata_prefix}_repair_error_type", error_type)
+                    parsed.setdefault(
+                        f"{json_output_spec.metadata_prefix}_repair_error_type", error_type
+                    )
                 return AgentResponse(success=True, data=parsed, metadata=metadata)
 
             last_error, json_blocks_found = self._classify_json_result_failure(
@@ -1115,7 +1121,8 @@ class JsonToolAgent(ToolCallingAgent):
             len(content or ""),
             result.get("tool_call_count", 0),
             json_blocks_found,
-            result.get("provider_model") or (getattr(self.llm_client, "models", []) or ["unknown"])[0],
+            result.get("provider_model")
+            or (getattr(self.llm_client, "models", []) or ["unknown"])[0],
         )
 
     @staticmethod
@@ -1154,14 +1161,16 @@ class JsonToolAgent(ToolCallingAgent):
             messages,
             assistant_message,
         )
-        metadata["context_tokens"] = int(metadata.get("context_tokens", 0) or 0) + LLMClient.estimate_tokens(messages)
+        metadata["context_tokens"] = int(
+            metadata.get("context_tokens", 0) or 0
+        ) + LLMClient.estimate_tokens(messages)
         metadata["api_call_count"] = int(metadata.get("api_call_count", 0) or 0) + 1
-        metadata["cumulative_prompt_tokens"] = int(
-            metadata.get("cumulative_prompt_tokens", 0) or 0
-        ) + prompt_tokens
-        metadata["cumulative_completion_tokens"] = int(
-            metadata.get("cumulative_completion_tokens", 0) or 0
-        ) + completion_tokens
+        metadata["cumulative_prompt_tokens"] = (
+            int(metadata.get("cumulative_prompt_tokens", 0) or 0) + prompt_tokens
+        )
+        metadata["cumulative_completion_tokens"] = (
+            int(metadata.get("cumulative_completion_tokens", 0) or 0) + completion_tokens
+        )
         metadata["cumulative_total_tokens"] = int(
             metadata.get("cumulative_prompt_tokens", 0) or 0
         ) + int(metadata.get("cumulative_completion_tokens", 0) or 0)

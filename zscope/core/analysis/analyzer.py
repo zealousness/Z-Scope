@@ -4046,8 +4046,9 @@ class Analyzer:
         enable_context_v32 = bool(getattr(analysis_cfg, "decision_context_v32", False))
         enable_context_v33 = bool(getattr(analysis_cfg, "decision_context_v33", False))
         for issue in issues:
-            evidence_pack = (
-                issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+            raw_evidence_pack = issue.get("evidence_pack")
+            evidence_pack: Dict[str, Any] = (
+                raw_evidence_pack if isinstance(raw_evidence_pack, dict) else {}
             )
             issue_checker = str(
                 issue.get("evidence_checker") or evidence_pack.get("checker") or checker
@@ -4087,9 +4088,9 @@ class Analyzer:
                 default_disposition="needs_review",
                 decision_fact_cache=getattr(self, "decision_fact_cache", None),
             )
-            evidence_pack = issue.get("evidence_pack")
-            if isinstance(evidence_pack, dict):
-                evidence_pack.update(
+            annotated_evidence_pack = issue.get("evidence_pack")
+            if isinstance(annotated_evidence_pack, dict):
+                annotated_evidence_pack.update(
                     {
                         "candidate_schema_version": envelope.schema_version,
                         "candidate_uid": envelope.candidate_uid,
@@ -6940,12 +6941,10 @@ class Analyzer:
         candidate_signal_summary: Dict[str, Any],
         candidate_signals: Sequence[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        impl = state.get("impl_result") if isinstance(state.get("impl_result"), dict) else {}
-        framework = (
-            impl.get("framework_semantics")
-            if isinstance(impl.get("framework_semantics"), dict)
-            else {}
-        )
+        raw_impl = state.get("impl_result")
+        impl: Dict[str, Any] = raw_impl if isinstance(raw_impl, dict) else {}
+        raw_framework = impl.get("framework_semantics")
+        framework: Dict[str, Any] = raw_framework if isinstance(raw_framework, dict) else {}
         entry_func = str(
             state.get("entry_func") or impl.get("qualified_name") or impl.get("function") or ""
         )

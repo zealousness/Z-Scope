@@ -63,9 +63,7 @@ def _select_indexed_header_implementation(
     if not selected_index:
         return matches
     selected = [
-        item
-        for item in matches
-        if str(item.get("index_name") or "").strip() == selected_index
+        item for item in matches if str(item.get("index_name") or "").strip() == selected_index
     ]
     return selected if len(selected) == 1 else matches
 
@@ -92,11 +90,7 @@ def _select_unique_match(
         if exact:
             candidates = exact
     if len(candidates) > 1 and start_line is not None:
-        exact = [
-            item
-            for item in candidates
-            if int(item.get("start_line") or 0) == int(start_line)
-        ]
+        exact = [item for item in candidates if int(item.get("start_line") or 0) == int(start_line)]
         if exact:
             candidates = exact
     return dict(candidates[0]) if len(candidates) == 1 else None

@@ -7,7 +7,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, cast
 
 from ..agents.semantic_modeler.agent import SemanticModeler
 from ..agents.semantic_modeler.retry import run_semantic_model_with_retries
@@ -193,8 +193,7 @@ class GlobalModeler:
             attach_contract=attach_contract,
             scheduler=scheduler,
             max_workers=(
-                getattr(config.analysis, "entry_workers", 0)
-                or config.analysis.parallel_workers
+                getattr(config.analysis, "entry_workers", 0) or config.analysis.parallel_workers
             ),
         )
 
@@ -235,10 +234,7 @@ class GlobalModeler:
             if len(component) > 1 or any(key in graph.children.get(key, set()) for key in component)
         )
 
-        pending_children = {
-            idx: len(component_children[idx])
-            for idx in range(len(components))
-        }
+        pending_children = {idx: len(component_children[idx]) for idx in range(len(components))}
         ready = [idx for idx, count in pending_children.items() if count == 0]
         done_components: Set[int] = set()
 
@@ -570,9 +566,7 @@ class GlobalModeler:
             terminal_valid = bool(metadata.get("terminal_tool_valid", False))
             terminal_calls = int(metadata.get("terminal_tool_call_count", 0) or 0)
             context_tokens = int(
-                metadata.get("context_tokens", 0)
-                or metadata.get("total_tokens", 0)
-                or 0
+                metadata.get("context_tokens", 0) or metadata.get("total_tokens", 0) or 0
             )
             if response.success:
                 self.snapshot_store.save_snapshot(
@@ -594,9 +588,7 @@ class GlobalModeler:
                 )
                 success = True
                 return "llm", context_tokens
-            failure_reason = str(
-                metadata.get("reason") or "semantic_model_failed"
-            )
+            failure_reason = str(metadata.get("reason") or "semantic_model_failed")
             logger.warning(
                 "[snapshot-llm] completed context=global index_name=%s "
                 "success=false context_tokens=%d finalization_mode=%s "
@@ -682,23 +674,32 @@ class GlobalModeler:
                 file_path=key.file_path,
             )
         except TypeError:
-            return self.code_index.get_function_impl(key.name)
+            return cast(
+                Optional[Dict[str, Any]],
+                self.code_index.get_function_impl(key.name),
+            )
         if impl or not key.file_path or not is_header_like_path(key.file_path):
-            return impl
+            return cast(Optional[Dict[str, Any]], impl)
         logger.debug(
             "[global-model] retrying header declaration without file constraint key=%s",
             self._format_key(key),
         )
         try:
-            return self.code_index.get_function_impl(
-                key.name,
-                max_lines=self.config.analysis.max_function_lines,
-                warn_missing=False,
-                include_context=include_context,
-                file_path="",
+            return cast(
+                Optional[Dict[str, Any]],
+                self.code_index.get_function_impl(
+                    key.name,
+                    max_lines=self.config.analysis.max_function_lines,
+                    warn_missing=False,
+                    include_context=include_context,
+                    file_path="",
+                ),
             )
         except TypeError:
-            return self.code_index.get_function_impl(key.name)
+            return cast(
+                Optional[Dict[str, Any]],
+                self.code_index.get_function_impl(key.name),
+            )
 
     def _get_callee_records(self, key: FunctionKey, limit: int) -> List[Any]:
         records = self.code_index.get_callees(
@@ -743,9 +744,7 @@ class GlobalModeler:
             or ""
         )
         signature = FunctionEntry.normalize_signature(
-            record.get("signature")
-            or record.get("callee_signature")
-            or ""
+            record.get("signature") or record.get("callee_signature") or ""
         )
         return FunctionKey(name, file_path, signature)
 
@@ -797,9 +796,5 @@ class GlobalModeler:
             if node not in indexes:
                 strongconnect(node)
 
-        component_for = {
-            key: idx
-            for idx, component in enumerate(components)
-            for key in component
-        }
+        component_for = {key: idx for idx, component in enumerate(components) for key in component}
         return component_for, components

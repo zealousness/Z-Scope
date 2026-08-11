@@ -66,16 +66,10 @@ def run_semantic_model_with_retries(
             "success": bool(response.success),
             "error": response.error,
             "reason": str(metadata.get("reason") or ""),
-            "terminal_loop_guard_triggered": bool(
-                metadata.get("terminal_loop_guard_triggered")
-            ),
-            "terminal_loop_guard_reason": str(
-                metadata.get("terminal_loop_guard_reason") or ""
-            ),
+            "terminal_loop_guard_triggered": bool(metadata.get("terminal_loop_guard_triggered")),
+            "terminal_loop_guard_reason": str(metadata.get("terminal_loop_guard_reason") or ""),
         }
-        attempt_record.update(
-            {key: _counter(metadata, key) for key in _AGGREGATED_COUNTERS}
-        )
+        attempt_record.update({key: _counter(metadata, key) for key in _AGGREGATED_COUNTERS})
         attempts.append(attempt_record)
         final_response = response
 

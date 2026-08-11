@@ -265,15 +265,9 @@ def test_semantic_modeler_finalizes_function_snapshot_in_one_tool_conversation()
 
     assert response.success is True
     assert response.data["type"] == "function_snapshot"
-    assert response.data["referenced_globals"] == _semantic_model_input()[
-        "referenced_globals"
-    ]
-    assert response.data["referenced_macros"] == _semantic_model_input()[
-        "referenced_macros"
-    ]
-    assert response.data["referenced_types"] == _semantic_model_input()[
-        "referenced_types"
-    ]
+    assert response.data["referenced_globals"] == _semantic_model_input()["referenced_globals"]
+    assert response.data["referenced_macros"] == _semantic_model_input()["referenced_macros"]
+    assert response.data["referenced_types"] == _semantic_model_input()["referenced_types"]
     assert response.data["referenced_macros_truncation"] == {
         "truncated": True,
         "returned": 1,
@@ -285,11 +279,12 @@ def test_semantic_modeler_finalizes_function_snapshot_in_one_tool_conversation()
     final_kwargs = llm.calls[0]
     assert final_kwargs["terminal_tool_required"] is True
     assert final_kwargs["terminal_tool_name"] == "emit_function_snapshot"
-    assert (
-        final_kwargs["tools_schema"][-1]["function"]["parameters"]
-        == llm_function_snapshot_schema(DEFAULT_FUNCTION_SNAPSHOT_SCHEMA)
+    assert final_kwargs["tools_schema"][-1]["function"][
+        "parameters"
+    ] == llm_function_snapshot_schema(DEFAULT_FUNCTION_SNAPSHOT_SCHEMA)
+    prompt_text = "\n".join(
+        str(message.get("content") or "") for message in final_kwargs["messages"]
     )
-    prompt_text = "\n".join(str(message.get("content") or "") for message in final_kwargs["messages"])
     assert "Target function metadata" in prompt_text
     assert "referenced_globals" in prompt_text
     assert "referenced_types" in prompt_text
@@ -340,8 +335,7 @@ def test_semantic_modeler_project_callees_are_program_owned() -> None:
     assert response.success is True
     assert response.data["project_callees"] == input_data["project_callees"]
     prompt_text = "\n".join(
-        str(message.get("content") or "")
-        for message in llm.calls[0]["messages"]
+        str(message.get("content") or "") for message in llm.calls[0]["messages"]
     )
     assert '"external_callees"' in prompt_text
     assert '"printf"' in prompt_text
@@ -410,7 +404,9 @@ def test_semantic_modeler_sparse_llm_callee_output_cannot_change_program_records
     assert response.data["project_callees"] == records
 
 
-def test_semantic_modeler_repairs_invalid_terminal_payload_in_same_conversation(monkeypatch) -> None:
+def test_semantic_modeler_repairs_invalid_terminal_payload_in_same_conversation(
+    monkeypatch,
+) -> None:
     from zscope.framework.llm_client import LLMClient
 
     llm = LLMClient(
@@ -522,15 +518,13 @@ def test_semantic_modeler_uses_effective_schema_for_initial_terminal_tool() -> N
     llm = SinglePassLLM(_snapshot_payload())
     agent = SemanticModeler(llm, [])
 
-    response = agent.run(
-        _semantic_model_input(schema=custom_schema)
-    )
+    response = agent.run(_semantic_model_input(schema=custom_schema))
 
     assert response.success is True
     final_kwargs = llm.calls[0]
-    assert final_kwargs["tools_schema"][-1]["function"]["parameters"] == llm_function_snapshot_schema(
-        custom_schema
-    )
+    assert final_kwargs["tools_schema"][-1]["function"][
+        "parameters"
+    ] == llm_function_snapshot_schema(custom_schema)
 
 
 def test_semantic_modeler_uses_terminal_tool_even_for_structured_output_models() -> None:
@@ -542,9 +536,9 @@ def test_semantic_modeler_uses_terminal_tool_even_for_structured_output_models()
     assert response.success is True
     final_kwargs = llm.calls[0]
     assert final_kwargs["terminal_tool_name"] == "emit_function_snapshot"
-    assert final_kwargs["tools_schema"][-1]["function"]["parameters"] == llm_function_snapshot_schema(
-        DEFAULT_FUNCTION_SNAPSHOT_SCHEMA
-    )
+    assert final_kwargs["tools_schema"][-1]["function"][
+        "parameters"
+    ] == llm_function_snapshot_schema(DEFAULT_FUNCTION_SNAPSHOT_SCHEMA)
 
 
 def test_semantic_modeler_program_fields_override_llm_identity() -> None:
@@ -563,9 +557,7 @@ def test_semantic_modeler_program_fields_override_llm_identity() -> None:
             "referenced_globals": [{"name": "wrong_global"}],
             "referenced_macros": [{"name": "WRONG_MACRO"}],
             "referenced_types": [{"name": "WrongType"}],
-            "unresolved_referenced_types": [
-                {"name": "WrongMissing", "reason": "wrong"}
-            ],
+            "unresolved_referenced_types": [{"name": "WrongMissing", "reason": "wrong"}],
             "referenced_globals_truncation": {
                 "truncated": True,
                 "returned": 1,
@@ -579,10 +571,7 @@ def test_semantic_modeler_program_fields_override_llm_identity() -> None:
     response = agent.run(_semantic_model_input())
 
     assert response.success is True
-    assert {
-        field: response.data[field]
-        for field in PROGRAM_GENERATED_SNAPSHOT_FIELDS
-    } == {
+    assert {field: response.data[field] for field in PROGRAM_GENERATED_SNAPSHOT_FIELDS} == {
         "func_name": "api_entry",
         "index_name": "api_entry@demo.c:1-1",
         "file_path": "demo.c",
@@ -593,15 +582,9 @@ def test_semantic_modeler_program_fields_override_llm_identity() -> None:
         "is_static": False,
         "is_macro": False,
     }
-    assert response.data["referenced_globals"] == _semantic_model_input()[
-        "referenced_globals"
-    ]
-    assert response.data["referenced_macros"] == _semantic_model_input()[
-        "referenced_macros"
-    ]
-    assert response.data["referenced_types"] == _semantic_model_input()[
-        "referenced_types"
-    ]
+    assert response.data["referenced_globals"] == _semantic_model_input()["referenced_globals"]
+    assert response.data["referenced_macros"] == _semantic_model_input()["referenced_macros"]
+    assert response.data["referenced_types"] == _semantic_model_input()["referenced_types"]
     assert "unresolved_referenced_types" not in response.data
     assert "referenced_globals_truncation" not in response.data
 
@@ -643,9 +626,7 @@ def test_semantic_modeler_rejects_invalid_or_empty_optional_type_context() -> No
     legacy_resolved_item = _semantic_model_input()
     legacy_resolved_item["referenced_types"][0]["start_line"] = 4
     legacy = agent.run(legacy_resolved_item)
-    empty_optional = agent.run(
-        _semantic_model_input(unresolved_referenced_types=[])
-    )
+    empty_optional = agent.run(_semantic_model_input(unresolved_referenced_types=[]))
 
     assert invalid.success is False
     assert legacy.success is False
@@ -684,9 +665,7 @@ def test_semantic_modeler_blocks_redundant_target_function_info_call(monkeypatch
 
     def run_exploration(*args, **kwargs):
         del args, kwargs
-        tool_results.append(
-            agent._tool_executor("get_function_info", {"func_name": "api_entry"})
-        )
+        tool_results.append(agent._tool_executor("get_function_info", {"func_name": "api_entry"}))
         return llm.run_conversation_with_tools(messages=[])
 
     monkeypatch.setattr(agent, "_run_tool_conversation", run_exploration)
@@ -814,7 +793,10 @@ def test_semantic_modeler_schema_uses_parameters_and_return_values() -> None:
     assert "caller_obligation" not in properties["parameters"]["items"]["properties"]
     assert "risk" not in properties["parameters"]["items"]["properties"]
     assert "constraints" in properties["parameters"]["items"]["properties"]
-    assert "Constraints, invariants" in properties["parameters"]["items"]["properties"]["constraints"]["description"]
+    assert (
+        "Constraints, invariants"
+        in properties["parameters"]["items"]["properties"]["constraints"]["description"]
+    )
 
     return_required = set(properties["return_values"]["required"])
     assert return_required == {"return_type"}
@@ -1018,7 +1000,9 @@ def test_vulnerability_analyzer_repairs_final_report(monkeypatch) -> None:
     )
     monkeypatch.setattr(agent, "_run_tool_conversation", lambda *args, **kwargs: _prose_result(""))
 
-    response = agent.run({"func_name": "api_entry", "code": "void api_entry(void) {}"}, max_iterations=1)
+    response = agent.run(
+        {"func_name": "api_entry", "code": "void api_entry(void) {}"}, max_iterations=1
+    )
 
     assert response.success is True
     assert response.data["type"] == "final_report"
@@ -1027,7 +1011,9 @@ def test_vulnerability_analyzer_repairs_final_report(monkeypatch) -> None:
 
 
 def test_entry_focus_rewrites_hidden_get_callers_requirement() -> None:
-    agent = VulnerabilityAnalyzer(RepairLLM("emit_final_report", {"type": "final_report", "issues": []}), [])
+    agent = VulnerabilityAnalyzer(
+        RepairLLM("emit_final_report", {"type": "final_report", "issues": []}), []
+    )
 
     focus = agent._entry_focus_for_available_tools(COMM_PROMPT)
 
