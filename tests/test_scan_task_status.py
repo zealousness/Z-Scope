@@ -38,6 +38,33 @@ def test_detect_scan_status_reports_failure_before_completion() -> None:
     assert result["done"] is True
 
 
+def test_completion_marker_wins_over_earlier_failure_text() -> None:
+    result = detect_scan_status(
+        """
+Task ID: release-42
+Analysis failed: one candidate probe failed but scan kept going
+more progress
+Batch Analysis Complete.
+Interrupted entries: none.
+""",
+        task_id="release-42",
+    )
+
+    assert result["status"] == "complete"
+    assert result["reason"] == "completion marker found"
+
+
+def test_failure_marker_outside_tail_keeps_task_running() -> None:
+    log = "\n".join(
+        ["Task ID: release-42", "Analysis failed: transient probe failure"]
+        + [f"progress line {index}" for index in range(220)]
+    )
+
+    result = detect_scan_status(log, task_id="release-42")
+
+    assert result["status"] == "running"
+
+
 def test_cli_prints_status_and_returns_zero_for_running_log(tmp_path: Path, capsys) -> None:
     log = tmp_path / "scan.log"
     log.write_text("Task ID: release-42\nstill scanning\n", encoding="utf-8")

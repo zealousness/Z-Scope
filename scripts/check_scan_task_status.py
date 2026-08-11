@@ -23,6 +23,7 @@ INTERRUPTED_MARKERS = (
     "Use --resume to continue from the last checkpoint.",
     "Interrupted entries: unknown",
 )
+FAILURE_TAIL_LINES = 200
 
 def detect_scan_status(log_text: str, *, task_id: str = "") -> dict[str, Any]:
     text = str(log_text or "")
@@ -35,15 +36,15 @@ def detect_scan_status(log_text: str, *, task_id: str = "") -> dict[str, Any]:
             "reason": "task_id marker not found in log",
         }
 
-    interrupted = any(marker in text for marker in INTERRUPTED_MARKERS)
+    if _has_marker(text, COMPLETE_MARKERS):
+        return _result("complete", True, task, "completion marker found")
+
+    interrupted = _has_marker(text, INTERRUPTED_MARKERS)
     if interrupted and "Interrupted entries: none." not in text:
         return _result("interrupted", True, task, "interrupted marker found")
 
-    if any(marker in text for marker in FAILED_MARKERS):
+    if _has_marker(_tail_text(text, FAILURE_TAIL_LINES), FAILED_MARKERS):
         return _result("failed", True, task, "failure marker found")
-
-    if any(marker in text for marker in COMPLETE_MARKERS):
-        return _result("complete", True, task, "completion marker found")
 
     return _result("running", False, task, "no terminal marker found")
 
@@ -55,6 +56,17 @@ def _result(status: str, done: bool, task_id: str, reason: str) -> dict[str, Any
         "task_id": task_id,
         "reason": reason,
     }
+
+
+def _has_marker(text: str, markers: Sequence[str]) -> bool:
+    return any(marker in text for marker in markers)
+
+
+def _tail_text(text: str, line_count: int) -> str:
+    lines = str(text or "").splitlines()
+    if len(lines) <= line_count:
+        return str(text or "")
+    return "\n".join(lines[-line_count:])
 
 
 def _read_log(path: Path) -> tuple[str, dict[str, Any] | None]:
