@@ -24,16 +24,6 @@ INTERRUPTED_MARKERS = (
     "Interrupted entries: unknown",
 )
 
-EXIT_CODES = {
-    "complete": 0,
-    "running": 1,
-    "failed": 2,
-    "interrupted": 3,
-    "not_found": 4,
-    "missing_log": 5,
-}
-
-
 def detect_scan_status(log_text: str, *, task_id: str = "") -> dict[str, Any]:
     text = str(log_text or "")
     task = str(task_id or "").strip()
@@ -118,8 +108,8 @@ def _emit(result: dict[str, Any], *, json_output: bool) -> int:
     if json_output:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
-        print(f"status={status} done={str(bool(result.get('done'))).lower()} reason={result.get('reason', '')}")
-    return EXIT_CODES.get(status, 1)
+        print(status)
+    return 0
 
 
 if __name__ == "__main__":
