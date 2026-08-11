@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from scripts.check_scan_task_status import detect_scan_status, main
+from scripts.check_scan_task_status import check_log_dir, detect_scan_status, main
 
 
 def test_detect_scan_status_reports_complete_for_batch_log() -> None:
@@ -53,3 +53,25 @@ def test_cli_json_returns_zero_for_missing_log(tmp_path: Path, capsys) -> None:
 
     assert exit_code == 0
     assert '"status": "missing_log"' in capsys.readouterr().out
+
+
+def test_check_log_dir_finds_matching_task_log(tmp_path: Path) -> None:
+    older = tmp_path / "scan-old.log"
+    newer = tmp_path / "scan-new.log"
+    older.write_text("Task ID: other\nBatch Analysis Complete.\n", encoding="utf-8")
+    newer.write_text("Task ID: release-42\nBatch Analysis Complete.\n", encoding="utf-8")
+
+    result = check_log_dir(tmp_path, task_id="release-42")
+
+    assert result["status"] == "complete"
+    assert result["log"] == str(newer)
+
+
+def test_cli_accepts_log_dir_and_task_id_without_log_file(tmp_path: Path, capsys) -> None:
+    log = tmp_path / "scan-release-42.log"
+    log.write_text("Task ID: release-42\nstill scanning\n", encoding="utf-8")
+
+    exit_code = main(["--log-dir", str(tmp_path), "--task-id", "release-42"])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out == "running\n"
