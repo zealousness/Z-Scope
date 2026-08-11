@@ -2,6 +2,8 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+export PIP_NO_INDEX=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
 version="$(python3 "${root}/scripts/verify_release_version.py")"
 scratch="$(mktemp -d)"
 trap 'rm -rf -- "${scratch}"' EXIT
@@ -69,6 +71,8 @@ for output in "${scratch}/release-one" "${scratch}/release-two"; do
   )
 done
 cmp "${scratch}/release-one/SHA256SUMS" "${scratch}/release-two/SHA256SUMS"
+python3 "${root}/scripts/verify_release_assets.py" \
+  --asset-dir "${scratch}/release-one" >/dev/null
 for directory in "${assets}" "${old_assets}"; do
   (cd "${directory}" && sha256sum *.tar.zst install.sh > SHA256SUMS)
   openssl pkey -in "${scratch}/private.pem" -pubout -out "${directory}/public-key.pem" >/dev/null 2>&1

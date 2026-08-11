@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -21,7 +22,7 @@ C_GATES = {
     "confirmed_tp": (">=", 85.0),
     "precision": (">=", 95.0),
     "with_review_tp": (">=", 134.0),
-    "raw_fp": ("<=", 100.0),
+    "with_review_raw_fp": ("<=", 100.0),
     "needs_review": ("<=", 150.0),
     "tokens": ("<=", 6_000_000.0),
     "wall_seconds": ("<=", 3600.0),
@@ -46,14 +47,17 @@ def _copy_scan_input(source: Path, destination: Path) -> None:
         raise RuntimeError(f"ground truth leaked into scan input: {leaked}")
 
 
-def _run(command: str, *, env: Dict[str, str], log_path: Path) -> None:
+def _run(command: str, *, env: Dict[str, str], log_path: Path) -> float:
     args = shlex.split(command)
     if not args:
         raise RuntimeError("empty benchmark command")
+    started = time.monotonic()
     with log_path.open("w", encoding="utf-8") as log:
         proc = subprocess.run(args, cwd=str(ROOT), env=env, stdout=log, stderr=subprocess.STDOUT)
+    elapsed = time.monotonic() - started
     if proc.returncode != 0:
         raise RuntimeError(f"command failed with exit code {proc.returncode}: {args[0]}")
+    return elapsed
 
 
 def _gate_c(score: Dict[str, Any]) -> List[str]:
@@ -69,6 +73,50 @@ def _gate_c(score: Dict[str, Any]) -> List[str]:
         if operator == "<=" and value > threshold:
             failures.append(f"{key}={value} > {threshold}")
     return failures
+
+
+def _performance_outliers(summaries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Flag gross wall/phase outliers without turning Preview variance into a gate."""
+
+    outliers: List[Dict[str, Any]] = []
+    series: Dict[str, List[float]] = {}
+    for summary in summaries:
+        wall = summary.get("metrics", {}).get("wall_seconds")
+        if isinstance(wall, (int, float)) and not isinstance(wall, bool):
+            series.setdefault("wall_seconds", []).append(float(wall))
+        for phase, value in summary.get("phase_seconds", {}).items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                series.setdefault(f"phase_seconds.{phase}", []).append(float(value))
+
+    thresholds = {
+        name: max(statistics.median(values) * 2.0, statistics.median(values) + 300.0)
+        for name, values in series.items()
+        if len(values) >= 3
+    }
+    for summary in summaries:
+        observed: Dict[str, float] = {}
+        wall = summary.get("metrics", {}).get("wall_seconds")
+        if isinstance(wall, (int, float)) and not isinstance(wall, bool):
+            observed["wall_seconds"] = float(wall)
+        observed.update(
+            {
+                f"phase_seconds.{phase}": float(value)
+                for phase, value in summary.get("phase_seconds", {}).items()
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            }
+        )
+        for name, value in observed.items():
+            threshold = thresholds.get(name)
+            if threshold is not None and value > threshold:
+                outliers.append(
+                    {
+                        "run": summary.get("run"),
+                        "metric": name,
+                        "value": round(value, 4),
+                        "threshold": round(threshold, 4),
+                    }
+                )
+    return outliers
 
 
 def main() -> None:
@@ -116,12 +164,15 @@ def main() -> None:
             "Z_SCOPE_BENCHMARK_SCORE": str(score),
         }
         started = time.monotonic()
-        _run(health_command, env=env, log_path=run_dir / "health.log")
-        _run(scan_command, env=env, log_path=run_dir / "scan.log")
+        phase_seconds = {
+            "health": _run(health_command, env=env, log_path=run_dir / "health.log"),
+            "scan": _run(scan_command, env=env, log_path=run_dir / "scan.log"),
+        }
         if not report.is_file():
             raise RuntimeError(f"scan did not produce {report}")
         score_env = {**env, "Z_SCOPE_BENCHMARK_TRUTH": str(truth.resolve())}
-        _run(score_command, env=score_env, log_path=run_dir / "score.log")
+        phase_seconds["score"] = _run(score_command, env=score_env, log_path=run_dir / "score.log")
+        phase_seconds["total"] = time.monotonic() - started
         if not score.is_file():
             raise RuntimeError(f"scorer did not produce {score}")
         payload = json.loads(score.read_text(encoding="utf-8"))
@@ -134,6 +185,7 @@ def main() -> None:
             "completed": True,
             "queue_empty": bool(payload.get("queue_empty", False)),
             "gate_failures": failures,
+            "phase_seconds": {phase: round(seconds, 4) for phase, seconds in phase_seconds.items()},
             "metrics": payload,
         }
         (run_dir / "summary.json").write_text(
@@ -155,15 +207,34 @@ def main() -> None:
         )
         for key in numeric_keys
     }
+    phase_names = sorted(
+        {phase for summary in summaries for phase in summary.get("phase_seconds", {})}
+    )
+    phase_medians = {
+        phase: statistics.median(
+            float(summary["phase_seconds"][phase])
+            for summary in summaries
+            if phase in summary.get("phase_seconds", {})
+        )
+        for phase in phase_names
+    }
     passed = all(summary["queue_empty"] and not summary["gate_failures"] for summary in summaries)
     aggregate = {
-        "schema_version": "zscope.formal-benchmark.v1",
+        "schema_version": "zscope.formal-benchmark.v2",
         "language": args.language,
         "git_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+        "git_tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
+        "command_sha256": {
+            "health": hashlib.sha256(health_command.encode("utf-8")).hexdigest(),
+            "scan": hashlib.sha256(scan_command.encode("utf-8")).hexdigest(),
+            "score": hashlib.sha256(score_command.encode("utf-8")).hexdigest(),
+        },
         "cold_runs": len(summaries),
         "all_completed": len(summaries) == args.runs,
         "passed": passed,
         "medians": medians,
+        "phase_medians": phase_medians,
+        "performance_outliers": _performance_outliers(summaries),
         "runs": summaries,
     }
     (output / "aggregate.json").write_text(json.dumps(aggregate, indent=2) + "\n", encoding="utf-8")

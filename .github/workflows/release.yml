@@ -47,6 +47,17 @@ jobs:
             --java-deps "$Z_SCOPE_JAVA_TOOLSET" \
             --licenses "$Z_SCOPE_THIRD_PARTY_LICENSES" \
             --private-key "$key_file"
+      - name: Verify release assets and release-candidate evidence
+        env:
+          Z_SCOPE_OFFLINE_SMOKE_EVIDENCE: ${{ vars.Z_SCOPE_OFFLINE_SMOKE_EVIDENCE }}
+        run: |
+          python3 scripts/verify_release_assets.py --asset-dir dist/release
+          python3 scripts/evaluate_release_candidate.py \
+            --release-sha "$(git rev-parse HEAD)" \
+            --tag '${{ inputs.tag }}' \
+            --asset-dir dist/release \
+            --offline-smoke-evidence "$Z_SCOPE_OFFLINE_SMOKE_EVIDENCE" \
+            --output dist/release-candidate-audit.json
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}

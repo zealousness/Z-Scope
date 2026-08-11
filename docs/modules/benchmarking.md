@@ -33,6 +33,7 @@ tests:
 - `check_entry_coverage.py` 在正式扫描前核对入口覆盖；它可以读取 truth，但不得把 truth 传入扫描 prompt。
 - 扫描报告生成后，独立 scorer 读取报告与 ground truth，输出 matched pairs、TP、FN、raw/effective FP、precision、recall 和 F1。
 - 发布聚合脚本消费多轮 run 产物并验证稳定性、完整性和门禁。
+- `scripts/run_formal_benchmark.py` v2 额外记录 health/scan/score/total 分阶段耗时、命令哈希、Git tree 和显著异常轮次；紧凑归档只保留指标、完整性和原始文件哈希。
 
 ## 必须保持的不变量
 

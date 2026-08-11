@@ -105,6 +105,9 @@ ignored copy such as `test/range/zscope.local.yaml`.
 - `docs/range_reports/v1.3.1-cpp-baseline.json`：当前稳定版的冻结摘要；
   `docs/range_reports/v33_release_final2_glm51_20260810/` 保留五轮紧凑摘要、
   Git/tree、参数、哈希和门禁，完整原始报告作为 Release 资产。
+- `docs/range_reports/v1.3.1-cpp-formal-fab8398.json`：`fab8398` 上重新执行的
+  五轮正式复核候选，保留每轮报告、评分、summary、健康和日志的哈希；它因
+  sealed-set 指标缺失而只能作为 RC 证据，不能覆盖已发布冻结基线。
 
 Do not include `GROUND_TRUTH.md` or `benchmark/ground_truth.json` in the
 analysis prompt/context given to Z-SCOPE. They are answer keys, not
@@ -120,6 +123,14 @@ v1.3.1 冻结结果来自 2026-08-10 的五轮正式冷启动：confirmed TP 中
 needs-review 135；tokens 1,324,485、wall time 2,105.97 秒。权威摘要为
 `docs/range_reports/v1.3.1-cpp-baseline.json`，紧凑单轮证据和哈希位于
 `docs/range_reports/v33_release_final2_glm51_20260810/`。
+
+2026-08-10 又在 `fab8398a3bac5ff4791b749fd86b0ae7347abeac` 执行五轮正式
+复核：confirmed TP 中位数 87、raw FP 1、precision 98.85%；with-review TP
+134、raw FP 82、needs-review 128；tokens 1,263,509、wall time 2,597.6813 秒。
+五轮报告、评分、队列、truth 隔离和 unified+SVF/Saber 健康证据完整，数值
+门禁通过；但两个 sealed-set delta 均不可用，因此该结果明确标记为 RC-only。
+权威紧凑归档为 `docs/range_reports/v1.3.1-cpp-formal-fab8398.json`。最终发布
+SHA 若不是 `fab8398`，必须在最终 SHA 重跑，不得把该结果直接绑定到后续提交。
 
 For reporting comparisons, use effective FP and `false_positive_rate`. Keep raw
 FP and duplicate-of-matched counts visible so repeated reports against the same

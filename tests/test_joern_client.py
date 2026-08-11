@@ -1,6 +1,9 @@
 from pathlib import Path
 from subprocess import CompletedProcess
+import asyncio
+import sys
 import threading
+import types
 
 import pytest
 
@@ -23,7 +26,7 @@ def test_joern_server_stdout_parses_scala_scalars(stdout, expected) -> None:
 
 def test_joern_cpg_ready_accepts_parsed_method_count(monkeypatch) -> None:
     client = JoernClient()
-    monkeypatch.setattr(client, "query", lambda _text: 81)
+    monkeypatch.setattr(client, "query", lambda _text, **_kwargs: 81)
 
     assert client._wait_for_cpg_ready(timeout=1, poll_interval=0)
 
@@ -54,6 +57,92 @@ def test_joern_query_event_loops_are_isolated_by_thread() -> None:
     client.stop_server()
     assert main_loop.is_closed()
     assert worker_loops[0].is_closed()
+
+
+def test_joern_websocket_query_has_bounded_wait(monkeypatch, caplog) -> None:
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"uuid": "query-id"}
+
+    class WebSocket:
+        def __init__(self):
+            self.calls = 0
+
+        async def recv(self):
+            self.calls += 1
+            if self.calls == 1:
+                return "connected"
+            await asyncio.sleep(60)
+            return "query-id"
+
+    class Connection:
+        async def __aenter__(self):
+            return WebSocket()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class Transport:
+        @staticmethod
+        def connect(_endpoint):
+            return Connection()
+
+        @staticmethod
+        def post(_endpoint, **_kwargs):
+            return Response()
+
+        @staticmethod
+        def get(_endpoint, **_kwargs):
+            return Response()
+
+    class FakeCPGQLSClient:
+        CPGQLS_MSG_CONNECTED = "connected"
+
+        def __init__(self, _endpoint, event_loop):
+            self._transport = Transport()
+            self._auth_creds = None
+            self._event_loop = event_loop
+
+        @staticmethod
+        def connect_endpoint():
+            return "connect"
+
+        @staticmethod
+        def post_query_endpoint():
+            return "post"
+
+        @staticmethod
+        def get_result_endpoint(_target_uuid):
+            return "get"
+
+        async def _send_query(self, _query):
+            raise AssertionError("Z-SCOPE timeout patch was not installed")
+
+        def execute(self, query):
+            return self._event_loop.run_until_complete(self._send_query(query))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "cpgqls_client",
+        types.SimpleNamespace(CPGQLSClient=FakeCPGQLSClient),
+    )
+    client = JoernClient(query_timeout_seconds=0.01, query_max_attempts=1)
+
+    assert client.query("cpg.method.size") is None
+    assert "Joern query failed" in caplog.text
+    client.stop_server()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    ({"query_timeout_seconds": 0}, {"query_max_attempts": 0}),
+)
+def test_joern_query_policy_rejects_non_positive_values(kwargs) -> None:
+    with pytest.raises(ValueError):
+        JoernClient(**kwargs)
 
 
 def test_joern_cli_query_uses_loaded_cpg_and_marker_json(monkeypatch, tmp_path) -> None:
