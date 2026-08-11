@@ -13,7 +13,7 @@ from ..retrieval.code_index import CodeIndex
 from ..common.utils import setup_logging
 from ..config.config import ConfigLoader
 from ..framework.conversation_recorder import enable_conversation_recording
-from ..orchestration.scan_session import ScanSessionResult, ScanSessionRunner
+from ..orchestration.scan_session import ScanSessionResult, ScanSessionRunner, _task_slug
 from ..reporting.schema import apply_report_schema_v2, exit_code_for_report
 
 @click.command()
@@ -68,6 +68,11 @@ from ..reporting.schema import apply_report_schema_v2, exit_code_for_report
     show_default=True,
     help="Exit 1 for reviewable findings, confirmed findings only, or legacy issue-count behavior.",
 )
+@click.option(
+    "--task-id",
+    default="",
+    help="Optional scan task identifier. When set, task-specific reports include this ID in their file name and JSON metadata.",
+)
 def main(
     config: Path,
     verbose: bool,
@@ -95,6 +100,7 @@ def main(
     mcp_client_allowlist: tuple[str, ...],
     export_sarif: Optional[Path],
     exit_policy: str,
+    task_id: str,
 ):
     """
     Z-SCOPE: AI-powered defect detection for C/C++ and Java projects.
@@ -152,6 +158,8 @@ def main(
     try:
         zscope_config = ConfigLoader.load(str(config))
         logger.info(f"Loaded configuration from: {config}")
+        if task_id:
+            click.echo(f"Task ID: {task_id}")
         if verbose:
             recorder = enable_conversation_recording(
                 zscope_config.project.project_root / ".zscope_conversations"
@@ -503,10 +511,26 @@ def main(
                 },
                 issues=confirmed_results,
                 observations=review_results,
-                metadata={"workflow": "alert-verify"},
+                metadata={
+                    "workflow": "alert-verify",
+                    **({"task_id": task_id, "task_slug": _task_slug(task_id)} if task_id else {}),
+                },
                 entry_function="alert-verification",
             )
-            report_path = zscope_config.project.project_root / "zscope_alert_verify_report.json"
+            if task_id:
+                verification_report["task_id"] = task_id
+                verification_report["task_slug"] = _task_slug(task_id)
+                for section_name in ("metadata", "run_manifest"):
+                    section = verification_report.get(section_name)
+                    if isinstance(section, dict):
+                        section["task_id"] = task_id
+                        section["task_slug"] = _task_slug(task_id)
+            report_name = (
+                f"zscope_alert_verify_report_{_task_slug(task_id)}.json"
+                if task_id
+                else "zscope_alert_verify_report.json"
+            )
+            report_path = zscope_config.project.project_root / report_name
             with open(report_path, "w", encoding="utf-8") as f:
                 json.dump(verification_report, f, ensure_ascii=False, indent=2)
 
@@ -537,6 +561,7 @@ def main(
             diff_paths=diff_path,
             emit=click.echo,
             exit_policy=exit_policy,
+            task_id=task_id,
         )
         session_result = session_runner.run()
         if export_sarif:
@@ -558,6 +583,8 @@ def main(
         if session_result.is_batch:
             reports = ", ".join(str(path) for path in session_result.reports)
             click.echo("\nBatch Analysis Complete.")
+            if session_result.task_id:
+                click.echo(f"Task ID: {session_result.task_id}")
             click.echo(f"Functions analyzed: {session_result.functions_analyzed}")
             click.echo(f"Total issues found: {session_result.issues_count}")
             for line in _review_count_lines(session_result):
@@ -575,6 +602,8 @@ def main(
                 f"\nAnalysis Complete. Verdict: {session_result.verdict}. "
                 f"Issues found: {session_result.issues_count}"
             )
+            if session_result.task_id:
+                click.echo(f"Task ID: {session_result.task_id}")
             for line in _review_count_lines(session_result):
                 click.echo(line)
             click.echo(f"Reports saved in: {session_result.project_root}")
@@ -637,4 +666,3 @@ def _review_count_lines(session_result: ScanSessionResult) -> list[str]:
 
 if __name__ == "__main__":
     main()
-

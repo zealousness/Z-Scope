@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import json
+import re
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -57,6 +58,8 @@ class ScanSessionResult:
     completeness: str = "complete"
     scan_outcome: str = "clean"
     unresolved_obligations_count: int = 0
+    task_id: str = ""
+    task_slug: str = ""
 
 
 class ScanSessionRunner:
@@ -75,8 +78,11 @@ class ScanSessionRunner:
         diff_paths: Optional[Sequence[str]] = None,
         emit: Optional[Callable[[str], None]] = None,
         exit_policy: str = "review",
+        task_id: str = "",
     ) -> None:
         self.config = config
+        self.task_id = str(task_id or "").strip()
+        self.task_slug = _task_slug(self.task_id)
         self.resume = resume
         self.maintain = maintain
         self.discover_entries = discover_entries
@@ -540,8 +546,8 @@ class ScanSessionRunner:
             state["results"] = parallel_analyzer.analyze_function_entries(entries)
             self.batch_executor.execute(state, steps)
 
-            json_report_path = self.config.project.project_root / "zscope_batch_report.json"
-            md_report_path = self.config.project.project_root / "zscope_batch_report.md"
+            json_report_path = self._report_path("zscope_batch_report", ".json")
+            md_report_path = self._report_path("zscope_batch_report", ".md")
             self._backup_existing_batch_report(json_report_path)
 
             report_started = time.monotonic()
@@ -554,6 +560,7 @@ class ScanSessionRunner:
                 md_report_path,
             )
             report_tail_seconds = round(time.monotonic() - report_started, 4)
+            self._annotate_task_report(combined_report)
             combined_report.setdefault("summary", {})["report_tail_seconds"] = report_tail_seconds
             combined_report.setdefault("metadata", {})["report_tail_seconds"] = report_tail_seconds
             json_report_path.write_text(
@@ -595,6 +602,8 @@ class ScanSessionRunner:
                 finding_status=str(combined_report.get("finding_status") or "clean"),
                 completeness=str(combined_report.get("completeness") or "complete"),
                 scan_outcome=str(combined_report.get("scan_outcome") or "clean"),
+                task_id=self.task_id,
+                task_slug=self.task_slug,
             )
         finally:
             if not getattr(parallel_analyzer, "_interrupted", False):
@@ -660,12 +669,20 @@ class ScanSessionRunner:
         # elapsed budget is known.  Rewrite the JSON projection so the
         # observable overrun is not lost on disk.
         persisted_report_path = self.config.project.project_root / "report.json"
+        self._annotate_task_report(result)
         persisted_report_path.write_text(
             json.dumps(result, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
         report_paths: List[Path] = [self.config.project.project_root]
-        if result.get("error"):
+        if self.task_slug:
+            persisted_report_path = self._report_path("report", ".json")
+            persisted_report_path.write_text(
+                json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            report_paths = [persisted_report_path]
+        elif result.get("error"):
             report_paths = [persisted_report_path]
         verdict = result.get("overall_verdict", "unknown")
         issues_count = len(result.get("issues", []))
@@ -685,7 +702,24 @@ class ScanSessionRunner:
             finding_status=str(result.get("finding_status") or "clean"),
             completeness=str(result.get("completeness") or "complete"),
             scan_outcome=str(result.get("scan_outcome") or "clean"),
+            task_id=self.task_id,
+            task_slug=self.task_slug,
         )
+
+    def _report_path(self, stem: str, suffix: str) -> Path:
+        filename = f"{stem}_{self.task_slug}{suffix}" if self.task_slug else f"{stem}{suffix}"
+        return self.config.project.project_root / filename
+
+    def _annotate_task_report(self, report: Dict[str, Any]) -> None:
+        if not self.task_id:
+            return
+        report["task_id"] = self.task_id
+        report["task_slug"] = self.task_slug
+        for section_name in ("summary", "metadata", "run_manifest"):
+            section = report.get(section_name)
+            if isinstance(section, dict):
+                section["task_id"] = self.task_id
+                section["task_slug"] = self.task_slug
 
     @staticmethod
     def _needs_review_count_from_report(report: Dict[str, Any]) -> int:
@@ -789,3 +823,14 @@ class ScanSessionRunner:
             )
         except Exception as exc:
             logger.warning("Failed to create backup of batch report: %s", exc)
+
+
+def _task_slug(task_id: str) -> str:
+    raw = str(task_id or "").strip()
+    if not raw:
+        return ""
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", raw)
+    slug = re.sub(r"_+", "_", slug).strip("._-")
+    if not slug:
+        raise ValueError("task_id must contain at least one file-safe character")
+    return slug[:120]
