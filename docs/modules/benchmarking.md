@@ -7,6 +7,8 @@ sources:
   - scripts/external_benchmark.py
   - scripts/evaluate_range_regression.py
   - scripts/aggregate_range_release_runs.py
+  - scripts/run_formal_benchmark.py
+  - scripts/evaluate_release_candidate.py
   - test/range/Z_SCOPE_TEST_PLAN.md
   - test/range/benchmark/check_entry_coverage.py
 tests:
@@ -15,6 +17,8 @@ tests:
   - tests/test_range_benchmark_harness.py
   - tests/test_range_benchmark_regression.py
   - tests/test_range_release_aggregate.py
+  - tests/test_formal_benchmark_runner.py
+  - tests/test_release_contract.py
 ---
 
 # Benchmark
@@ -33,7 +37,7 @@ tests:
 - `check_entry_coverage.py` 在正式扫描前核对入口覆盖；它可以读取 truth，但不得把 truth 传入扫描 prompt。
 - 扫描报告生成后，独立 scorer 读取报告与 ground truth，输出 matched pairs、TP、FN、raw/effective FP、precision、recall 和 F1。
 - 发布聚合脚本消费多轮 run 产物并验证稳定性、完整性和门禁。
-- `scripts/run_formal_benchmark.py` v2 额外记录 health/scan/score/total 分阶段耗时、命令哈希、Git tree 和显著异常轮次；紧凑归档只保留指标、完整性和原始文件哈希。
+- `scripts/run_formal_benchmark.py` v2 额外记录 health/scan/score/total 分阶段耗时、命令哈希、Git tree、逐轮完整性和显著异常轮次；正式 Release 按 workflow run ID 下载不可变 artifact，并由 `scripts/evaluate_release_candidate.py` 校验 artifact SHA 绑定、原始文件存在性、truth 隔离和门禁。仓库归档只用于历史基线，不作为待发布提交的内嵌证据。
 
 ## 必须保持的不变量
 
@@ -44,6 +48,7 @@ tests:
 - scorer 以结构化 file/function/category/location/evidence 匹配，并保留 `matched_pairs` 供人工审计。
 - raw FP、duplicate-of-matched 和 effective FP 必须分开保留，不能通过静默删除重复报告美化指标。
 - 不在通用规则、Agent prompt 或源码注释中嵌入 truth id、专用函数名或答案描述。
+- 正式 benchmark 结果不得通过提交到发布 SHA 自身来完成绑定；Release 必须消费受保护 Environment 产生、名称和内部 `git_sha` 均匹配发布 SHA 的不可变 workflow artifact。
 
 ## 常见变更应落到哪里
 

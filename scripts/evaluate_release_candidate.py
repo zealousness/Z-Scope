@@ -18,6 +18,27 @@ except ModuleNotFoundError:  # Direct execution sets sys.path[0] to scripts/.
     from verify_release_version import package_version
 
 ROOT = Path(__file__).resolve().parents[1]
+CPP_FORMAL_LIMITS = {
+    "confirmed_tp": (("confirmed_tp",), ">=", 85.0),
+    "confirmed_precision_percent": (
+        ("confirmed_precision_percent", "precision"),
+        ">=",
+        95.0,
+    ),
+    "with_review_tp": (("with_review_tp",), ">=", 134.0),
+    "with_review_raw_fp": (("with_review_raw_fp",), "<=", 100.0),
+    "needs_review": (("needs_review",), "<=", 150.0),
+    "total_tokens": (("total_tokens", "tokens"), "<=", 6_000_000.0),
+    "wall_seconds": (("wall_seconds",), "<=", 3600.0),
+}
+CPP_SEALED_LIMITS = {
+    "sealed_confirmed_recall_delta_pp": (
+        ("sealed_confirmed_recall_delta_pp",),
+        ">=",
+        -2.0,
+    ),
+    "sealed_precision_delta_pp": (("sealed_precision_delta_pp",), ">=", -2.0),
+}
 
 
 def _sha256(path: Path) -> str:
@@ -28,6 +49,162 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _metric_value(metrics: Dict[str, Any], aliases: tuple[str, ...]) -> Optional[float]:
+    for alias in aliases:
+        try:
+            return float(metrics[alias])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return None
+
+
+def _metric_gate_failures(
+    metrics: Dict[str, Any],
+    limits: Dict[str, tuple[tuple[str, ...], str, float]],
+    *,
+    prefix: str,
+) -> List[str]:
+    failures: List[str] = []
+    for name, (aliases, operator, threshold) in limits.items():
+        value = _metric_value(metrics, aliases)
+        if value is None:
+            failures.append(f"{prefix}_{name}_missing")
+            continue
+        failed = (operator == ">=" and value < threshold) or (
+            operator == "<=" and value > threshold
+        )
+        if failed:
+            failures.append(f"{prefix}_{name}_gate_failed")
+    return failures
+
+
+def _evaluate_formal_artifact(
+    directory: Path,
+    *,
+    language: str,
+    release_sha: str,
+    hard_blockers: List[str],
+    rc_blockers: List[str],
+    advisories: List[str],
+) -> Dict[str, Any]:
+    directory = directory.resolve()
+    aggregate_path = directory / "aggregate.json"
+    result: Dict[str, Any] = {
+        "language": language,
+        "required_for_release": True,
+        "source": "workflow_artifact",
+        "artifact_directory": str(directory),
+        "aggregate_sha256": None,
+        "benchmark_git_sha": None,
+        "cold_runs": 0,
+    }
+    if not aggregate_path.is_file():
+        hard_blockers.append(f"{language}:formal_artifact_aggregate_missing")
+        return result
+    try:
+        aggregate = json.loads(aggregate_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        hard_blockers.append(f"{language}:formal_artifact_aggregate_invalid")
+        return result
+    raw_runs = aggregate.get("runs", [])
+    runs = raw_runs if isinstance(raw_runs, list) else []
+    result.update(
+        {
+            "aggregate_sha256": _sha256(aggregate_path),
+            "benchmark_git_sha": aggregate.get("git_sha"),
+            "cold_runs": len(runs),
+        }
+    )
+    if aggregate.get("schema_version") != "zscope.formal-benchmark.v2":
+        hard_blockers.append(f"{language}:formal_artifact_schema_invalid")
+    if aggregate.get("language") != language:
+        hard_blockers.append(f"{language}:formal_artifact_language_mismatch")
+    if aggregate.get("git_sha") != release_sha:
+        hard_blockers.append(f"{language}:benchmark_sha_not_release_sha")
+    if not isinstance(raw_runs, list) or len(runs) != 5:
+        hard_blockers.append(f"{language}:formal_artifact_run_count_invalid")
+    if aggregate.get("cold_runs") != len(runs) or aggregate.get("all_completed") is not True:
+        hard_blockers.append(f"{language}:formal_artifact_incomplete")
+    if aggregate.get("passed") is not True:
+        hard_blockers.append(f"{language}:numeric_gate_failed")
+
+    seen_runs = set()
+    for run in runs:
+        run_number = run.get("run") if isinstance(run, dict) else None
+        if not isinstance(run_number, int) or run_number < 1 or run_number in seen_runs:
+            hard_blockers.append(f"{language}:formal_artifact_run_identity_invalid")
+            continue
+        seen_runs.add(run_number)
+        run_dir = directory / f"run-{run_number:02d}"
+        required_files = {
+            "report_present": run_dir / "report.json",
+            "score_present": run_dir / "score.json",
+            "summary_present": run_dir / "summary.json",
+            "backend_health_present": run_dir / "health.log",
+        }
+        completeness_value = run.get("completeness", {})
+        completeness = completeness_value if isinstance(completeness_value, dict) else {}
+        complete = run.get("completed") is True and all(
+            path.is_file() and completeness.get(key) is True for key, path in required_files.items()
+        )
+        complete = complete and all(
+            (run_dir / name).is_file() for name in ("scan.log", "score.log")
+        )
+        complete = complete and all(
+            completeness.get(key) is True
+            for key in ("queue_empty", "backend_valid", "source_truth_isolated")
+        )
+        scan_input = run_dir / "scan-input"
+        leaked_truth = (
+            any(
+                path.name in {"GROUND_TRUTH.md", "ground_truth.json"}
+                for path in scan_input.rglob("*")
+            )
+            if scan_input.is_dir()
+            else True
+        )
+        if not complete or leaked_truth:
+            hard_blockers.append(f"{language}:run_{run_number}_incomplete")
+        try:
+            archived_summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            archived_summary = None
+        if archived_summary != run:
+            hard_blockers.append(f"{language}:run_{run_number}_summary_mismatch")
+        if run.get("queue_empty") is not True or run.get("gate_failures"):
+            hard_blockers.append(f"{language}:run_{run_number}_numeric_gate_failed")
+        metrics = run.get("metrics", {})
+        if language == "cpp" and isinstance(metrics, dict):
+            hard_blockers.extend(
+                _metric_gate_failures(
+                    metrics,
+                    CPP_FORMAL_LIMITS,
+                    prefix=f"{language}:run_{run_number}",
+                )
+            )
+
+    if seen_runs != set(range(1, 6)):
+        hard_blockers.append(f"{language}:formal_artifact_run_identity_invalid")
+
+    if language == "cpp":
+        sealed_failures = []
+        for run in runs:
+            run_number = run.get("run") if isinstance(run, dict) else "unknown"
+            metrics = run.get("metrics", {}) if isinstance(run, dict) else {}
+            sealed_failures.extend(
+                _metric_gate_failures(
+                    metrics if isinstance(metrics, dict) else {},
+                    CPP_SEALED_LIMITS,
+                    prefix=f"{language}:run_{run_number}",
+                )
+            )
+        if aggregate.get("sealed_set_verified") is not True or sealed_failures:
+            rc_blockers.append(f"{language}:sealed_set_not_verified")
+    if aggregate.get("performance_outliers"):
+        advisories.append(f"{language}:performance_outlier_present")
+    return result
+
+
 def evaluate_candidate(
     provenance_path: Path,
     *,
@@ -36,6 +213,7 @@ def evaluate_candidate(
     tag: str = "",
     asset_dir: Optional[Path] = None,
     smoke_evidence: Optional[Path] = None,
+    formal_artifacts: Optional[Dict[str, Path]] = None,
 ) -> Dict[str, Any]:
     provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
     hard_blockers: List[str] = []
@@ -60,12 +238,25 @@ def evaluate_candidate(
         except subprocess.CalledProcessError:
             hard_blockers.append("release_tag_not_found")
 
+    formal_artifacts = formal_artifacts or {}
     benchmark_results = []
     for item in provenance.get("benchmarks", []):
-        archive_path = (ROOT / str(item["archive"])).resolve()
-        archive = json.loads(archive_path.read_text(encoding="utf-8"))
         required = bool(item.get("required_for_release", False))
         language = str(item.get("language"))
+        if required and language in formal_artifacts:
+            benchmark_results.append(
+                _evaluate_formal_artifact(
+                    formal_artifacts[language],
+                    language=language,
+                    release_sha=release_sha,
+                    hard_blockers=hard_blockers,
+                    rc_blockers=rc_blockers,
+                    advisories=advisories,
+                )
+            )
+            continue
+        archive_path = (ROOT / str(item["archive"])).resolve()
+        archive = json.loads(archive_path.read_text(encoding="utf-8"))
         result = {
             "language": language,
             "required_for_release": required,
@@ -130,6 +321,10 @@ def evaluate_candidate(
             advisories.append(f"{language}:performance_outlier_present")
         benchmark_results.append(result)
 
+    known_languages = {str(item.get("language")) for item in provenance.get("benchmarks", [])}
+    for language in formal_artifacts.keys() - known_languages:
+        hard_blockers.append(f"{language}:unexpected_formal_artifact")
+
     asset_result: Optional[Dict[str, Any]] = None
     if asset_dir is None:
         hard_blockers.append("release_assets_missing")
@@ -193,6 +388,13 @@ def main() -> None:
     parser.add_argument("--tag", default="")
     parser.add_argument("--asset-dir", type=Path)
     parser.add_argument("--offline-smoke-evidence", type=Path)
+    parser.add_argument(
+        "--formal-artifact",
+        action="append",
+        default=[],
+        metavar="LANGUAGE=DIR",
+        help="Verified formal workflow artifact directory; may be repeated",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument("--allow-incomplete", action="store_true")
     args = parser.parse_args()
@@ -200,6 +402,14 @@ def main() -> None:
         args.release_sha
         or subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(ROOT), text=True).strip()
     )
+    formal_artifacts: Dict[str, Path] = {}
+    for value in args.formal_artifact:
+        language, separator, path = value.partition("=")
+        if separator != "=" or language not in {"cpp", "java"} or not path:
+            raise SystemExit("--formal-artifact must be cpp=DIR or java=DIR")
+        if language in formal_artifacts:
+            raise SystemExit(f"duplicate --formal-artifact language: {language}")
+        formal_artifacts[language] = Path(path)
     report = evaluate_candidate(
         args.provenance,
         release_sha=release_sha,
@@ -207,6 +417,7 @@ def main() -> None:
         tag=args.tag,
         asset_dir=args.asset_dir,
         smoke_evidence=args.offline_smoke_evidence,
+        formal_artifacts=formal_artifacts,
     )
     rendered = json.dumps(report, indent=2) + "\n"
     if args.output:

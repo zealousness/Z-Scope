@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from scripts.run_formal_benchmark import _gate_c, _performance_outliers
+from scripts.run_formal_benchmark import _gate_c, _gate_c_sealed, _performance_outliers
 
 
 def _summary(run: int, wall: float, scan: float) -> dict:
@@ -56,3 +56,21 @@ def test_cpp_gate_applies_raw_fp_limit_to_with_review_view() -> None:
     }
 
     assert _gate_c(score) == ["with_review_raw_fp=101.0 > 100.0"]
+
+
+def test_cpp_sealed_gate_is_separate_from_numeric_release_gate() -> None:
+    score = {
+        "confirmed_tp": 90,
+        "precision": 98,
+        "with_review_tp": 134,
+        "with_review_raw_fp": 80,
+        "needs_review": 120,
+        "tokens": 1_000_000,
+        "wall_seconds": 2_000,
+    }
+
+    assert _gate_c(score) == []
+    assert _gate_c_sealed(score) == [
+        "missing numeric metric: sealed_confirmed_recall_delta_pp",
+        "missing numeric metric: sealed_precision_delta_pp",
+    ]
