@@ -111,7 +111,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: |
-          python scripts/scan_git_history_secrets.py
+          python scripts/scan_git_history_secrets.py --ref HEAD
           python scripts/scan_git_history_secrets.py --current-only
 
   dependency-review:
