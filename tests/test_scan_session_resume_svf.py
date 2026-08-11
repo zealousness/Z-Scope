@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import pytest
 
@@ -366,6 +367,77 @@ def test_batch_completeness_uses_materialized_entry_identities(
 
     assert result.interrupted is False
     assert result.interrupted_entries == []
+
+
+def test_batch_task_id_writes_task_identified_reports(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    entry = FunctionEntry("handle_request")
+
+    class FakeCodeIndex:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def close(self):
+            pass
+
+    class FakeParallelAnalyzer:
+        _entry_result_key = staticmethod(ParallelAnalyzer._entry_result_key)
+
+        def __init__(self, *args, **kwargs):
+            self._interrupted = False
+
+        def analyze_function_entries(self, entries):
+            return {"handle_request": object()}
+
+        def generate_combined_report(self, results, output_path=None):
+            if output_path:
+                output_path.write_text("{}", encoding="utf-8")
+            return {
+                "summary": {
+                    "total_issues": 0,
+                    "functions_analyzed": len(results),
+                    "needs_review_issues": 0,
+                },
+                "metadata": {},
+            }
+
+        def generate_combined_markdown_report(self, results, output_path):
+            output_path.write_text("# report\n", encoding="utf-8")
+            return "# report\n"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(scan_session_module, "CodeIndex", FakeCodeIndex)
+    monkeypatch.setattr(scan_session_module, "ParallelAnalyzer", FakeParallelAnalyzer)
+
+    runner = ScanSessionRunner(_config(tmp_path), task_id="release/scan 42")
+    runner.batch_executor = type(
+        "NoopBatchExecutor",
+        (),
+        {"execute": lambda self, state, steps: None},
+    )()
+    state = runner._create_state()
+    state["batch_mode"] = True
+    state["entries"] = [entry]
+    state["all_entries"] = [entry]
+
+    result = runner._run_batch(state, [])
+
+    json_report = tmp_path / "zscope_batch_report_release_scan_42.json"
+    md_report = tmp_path / "zscope_batch_report_release_scan_42.md"
+    assert result.task_id == "release/scan 42"
+    assert result.task_slug == "release_scan_42"
+    assert result.reports == [json_report, md_report]
+    assert json_report.exists()
+    assert md_report.exists()
+    payload = json.loads(json_report.read_text(encoding="utf-8"))
+    assert payload["task_id"] == "release/scan 42"
+    assert payload["task_slug"] == "release_scan_42"
+    assert payload["summary"]["task_id"] == "release/scan 42"
+    assert payload["metadata"]["task_slug"] == "release_scan_42"
 
 
 def test_resume_does_not_skip_entry_when_only_other_path_has_final_report(
