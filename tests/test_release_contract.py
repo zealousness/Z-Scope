@@ -58,6 +58,10 @@ def test_python_39_314_constraints_and_ci_are_declared() -> None:
     assert "zscope scripts test tests tools" not in workflow
     assert "scan_git_history_secrets.py --ref HEAD" in workflow
     assert "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in workflow
+    assert "actions/dependency-review-action" not in workflow
+    assert "dependency-policy:" in workflow
+    assert "pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266" in workflow
+    assert "scripts/check_dependency_licenses.py" in workflow
 
 
 def test_release_lock_contains_runtime_and_java_extra_but_not_dev_tools() -> None:
@@ -107,7 +111,7 @@ def test_release_and_ai_workflows_enforce_security_boundaries() -> None:
         "actions/github-script@v9",
         "actions/upload-artifact@v7",
         "actions/download-artifact@v8",
-        "actions/dependency-review-action@v5",
+        "pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266",
         "gitleaks/gitleaks-action@v3",
     ):
         assert action in workflows
