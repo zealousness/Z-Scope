@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   benchmark:
@@ -22,6 +23,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.git_sha }}
+      - name: Resolve canonical benchmark SHA
+        id: benchmark-source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Run five isolated cold starts
         env:
           Z_SCOPE_API_KEY: ${{ secrets.Z_SCOPE_BENCHMARK_API_KEY }}
@@ -39,7 +43,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: formal-${{ inputs.language }}-${{ inputs.git_sha }}
+          name: formal-${{ inputs.language }}-${{ steps.benchmark-source.outputs.sha }}
           path: benchmark-artifacts/
           if-no-files-found: error
           retention-days: 90

@@ -57,6 +57,11 @@ def test_python_39_314_constraints_and_ci_are_declared() -> None:
     assert "test/range/benchmark test/java_range/benchmark" in workflow
     assert "zscope scripts test tests tools" not in workflow
     assert "scan_git_history_secrets.py --ref HEAD" in workflow
+    assert "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in workflow
+    assert "actions/dependency-review-action" not in workflow
+    assert "dependency-policy:" in workflow
+    assert "pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266" in workflow
+    assert "scripts/check_dependency_licenses.py" in workflow
 
 
 def test_release_lock_contains_runtime_and_java_extra_but_not_dev_tools() -> None:
@@ -88,6 +93,11 @@ def test_release_and_ai_workflows_enforce_security_boundaries() -> None:
     assert "continue-on-error: true" in ai
     assert "environment: release" in release
     assert "--verify-tag" in release
+    assert "benchmark_run_id:" in release
+    assert "actions/download-artifact@v8" in release
+    assert "--formal-artifact" in release
+    assert ".github/workflows/formal-benchmark.yml" in release
+    assert "digest-mismatch: error" in release
     assert "Missing SHA256SUMS.sig" in installer
     assert "Refusing system-wide prefix" in installer
     assert 'install_requirement="zscope[java]"' in installer
@@ -100,7 +110,8 @@ def test_release_and_ai_workflows_enforce_security_boundaries() -> None:
         "actions/setup-java@v5",
         "actions/github-script@v9",
         "actions/upload-artifact@v7",
-        "actions/dependency-review-action@v5",
+        "actions/download-artifact@v8",
+        "pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266",
         "gitleaks/gitleaks-action@v3",
     ):
         assert action in workflows
@@ -219,3 +230,93 @@ def test_formal_archives_are_bound_to_exact_benchmark_commits() -> None:
     assert audit["status"] == "blocked"
     assert "cpp:benchmark_sha_not_release_sha" in audit["hard_blockers"]
     assert "cpp:sealed_set_not_verified" in audit["rc_blockers"]
+
+
+def _write_formal_cpp_artifact(directory: Path, git_sha: str) -> None:
+    runs = []
+    for run_number in range(1, 6):
+        run_dir = directory / f"run-{run_number:02d}"
+        scan_input = run_dir / "scan-input"
+        scan_input.mkdir(parents=True)
+        (scan_input / "fixture.c").write_text("int main(void) { return 0; }\n")
+        for name in ("report.json", "score.json"):
+            (run_dir / name).write_text("{}\n", encoding="utf-8")
+        (run_dir / "health.log").write_text("healthy\n", encoding="utf-8")
+        (run_dir / "scan.log").write_text("scan complete\n", encoding="utf-8")
+        (run_dir / "score.log").write_text("score complete\n", encoding="utf-8")
+        run = {
+            "run": run_number,
+            "completed": True,
+            "queue_empty": True,
+            "gate_failures": [],
+            "sealed_gate_failures": [],
+            "completeness": {
+                "report_present": True,
+                "score_present": True,
+                "summary_present": True,
+                "backend_health_present": True,
+                "queue_empty": True,
+                "backend_valid": True,
+                "source_truth_isolated": True,
+            },
+            "metrics": {
+                "confirmed_tp": 90,
+                "precision": 98.0,
+                "with_review_tp": 134,
+                "with_review_raw_fp": 80,
+                "needs_review": 120,
+                "tokens": 1_000_000,
+                "wall_seconds": 2_000,
+                "sealed_confirmed_recall_delta_pp": -1.0,
+                "sealed_precision_delta_pp": -1.0,
+            },
+        }
+        runs.append(run)
+        (run_dir / "summary.json").write_text(json.dumps(run, indent=2) + "\n", encoding="utf-8")
+    aggregate = {
+        "schema_version": "zscope.formal-benchmark.v2",
+        "language": "cpp",
+        "git_sha": git_sha,
+        "git_tree": "a" * 40,
+        "cold_runs": 5,
+        "all_completed": True,
+        "passed": True,
+        "sealed_set_verified": True,
+        "performance_outliers": [],
+        "runs": runs,
+    }
+    (directory / "aggregate.json").write_text(
+        json.dumps(aggregate, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def test_external_formal_artifact_breaks_release_sha_self_reference(tmp_path: Path) -> None:
+    release_sha = "f" * 40
+    artifact = tmp_path / "formal-cpp"
+    artifact.mkdir()
+    _write_formal_cpp_artifact(artifact, release_sha)
+
+    audit = evaluate_candidate(
+        ROOT / "docs/releases/benchmark-provenance.json",
+        release_sha=release_sha,
+        version=__version__,
+        formal_artifacts={"cpp": artifact},
+    )
+
+    assert "cpp:benchmark_sha_not_release_sha" not in audit["hard_blockers"]
+    assert "cpp:sealed_set_not_verified" not in audit["rc_blockers"]
+    cpp = next(item for item in audit["benchmarks"] if item["language"] == "cpp")
+    assert cpp["source"] == "workflow_artifact"
+    assert cpp["benchmark_git_sha"] == release_sha
+
+    aggregate_path = artifact / "aggregate.json"
+    aggregate = json.loads(aggregate_path.read_text(encoding="utf-8"))
+    aggregate["git_sha"] = "e" * 40
+    aggregate_path.write_text(json.dumps(aggregate, indent=2) + "\n", encoding="utf-8")
+    mismatched = evaluate_candidate(
+        ROOT / "docs/releases/benchmark-provenance.json",
+        release_sha=release_sha,
+        version=__version__,
+        formal_artifacts={"cpp": artifact},
+    )
+    assert "cpp:benchmark_sha_not_release_sha" in mismatched["hard_blockers"]

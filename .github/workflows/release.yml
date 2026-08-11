@@ -6,10 +6,14 @@ on:
       tag:
         description: Exact v{package_version} tag
         required: true
+      benchmark_run_id:
+        description: Successful Formal Benchmark workflow run ID for the release SHA
+        required: true
 
 permissions:
   contents: write
   id-token: write
+  actions: read
 
 jobs:
   release:
@@ -21,9 +25,30 @@ jobs:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
       - name: Verify protected tag and package version
+        id: release-source
         run: |
           python3 scripts/verify_release_version.py --tag '${{ inputs.tag }}'
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+      - name: Verify formal benchmark workflow run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BENCHMARK_RUN_ID: ${{ inputs.benchmark_run_id }}
+          RELEASE_SHA: ${{ steps.release-source.outputs.sha }}
+        run: |
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${BENCHMARK_RUN_ID}" --jq .head_sha)" = "$RELEASE_SHA"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${BENCHMARK_RUN_ID}" --jq .event)" = "workflow_dispatch"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${BENCHMARK_RUN_ID}" --jq .conclusion)" = "success"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${BENCHMARK_RUN_ID}" --jq .path)" = ".github/workflows/formal-benchmark.yml"
+      - name: Download immutable C formal benchmark evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: formal-cpp-${{ steps.release-source.outputs.sha }}
+          path: release-evidence/formal-cpp
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.benchmark_run_id }}
+          digest-mismatch: error
       - name: Build wheelhouse from locked Python 3.13 dependencies
         run: |
           rm -rf dist/release dist/wheelhouse
@@ -55,6 +80,7 @@ jobs:
           python3 scripts/evaluate_release_candidate.py \
             --release-sha "$(git rev-parse HEAD)" \
             --tag '${{ inputs.tag }}' \
+            --formal-artifact "cpp=$GITHUB_WORKSPACE/release-evidence/formal-cpp" \
             --asset-dir dist/release \
             --offline-smoke-evidence "$Z_SCOPE_OFFLINE_SMOKE_EVIDENCE" \
             --output dist/release-candidate-audit.json
