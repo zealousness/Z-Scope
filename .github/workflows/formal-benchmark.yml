@@ -19,7 +19,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, zscope-benchmark]
     environment: formal-benchmark
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.git_sha }}
       - name: Run five isolated cold starts
@@ -36,7 +36,7 @@ jobs:
           --language '${{ inputs.language }}'
           --runs 5
           --output benchmark-artifacts
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: formal-${{ inputs.language }}-${{ inputs.git_sha }}

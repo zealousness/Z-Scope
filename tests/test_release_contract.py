@@ -80,6 +80,8 @@ def test_joern_client_is_java_optional_not_base_dependency() -> None:
 def test_release_and_ai_workflows_enforce_security_boundaries() -> None:
     ai = (ROOT / ".github/workflows/ai-review.yml").read_text(encoding="utf-8")
     release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    benchmark = (ROOT / ".github/workflows/formal-benchmark.yml").read_text(encoding="utf-8")
     installer = (ROOT / "install.sh").read_text(encoding="utf-8")
     assert "pull_request_target" not in ai
     assert "head.repo.full_name == github.repository" in ai
@@ -91,6 +93,27 @@ def test_release_and_ai_workflows_enforce_security_boundaries() -> None:
     assert 'install_requirement="zscope[java]"' in installer
     assert "command -v zstd" in installer
     assert ">>/etc/profile" not in installer.replace(" ", "")
+    workflows = "\n".join((ai, release, ci, benchmark))
+    for action in (
+        "actions/checkout@v7",
+        "actions/setup-python@v7",
+        "actions/setup-java@v5",
+        "actions/github-script@v9",
+        "actions/upload-artifact@v7",
+        "actions/dependency-review-action@v5",
+        "gitleaks/gitleaks-action@v3",
+    ):
+        assert action in workflows
+    for deprecated in (
+        "actions/checkout@v4",
+        "actions/setup-python@v5",
+        "actions/setup-java@v4",
+        "actions/github-script@v7",
+        "actions/upload-artifact@v4",
+        "actions/dependency-review-action@v4",
+        "gitleaks/gitleaks-action@v2",
+    ):
+        assert deprecated not in workflows
 
 
 def test_spdx_generation_is_reproducible_and_uses_unique_package_name(tmp_path: Path) -> None:
