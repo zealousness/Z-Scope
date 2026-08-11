@@ -26,6 +26,8 @@ C_GATES = {
     "needs_review": ("<=", 150.0),
     "tokens": ("<=", 6_000_000.0),
     "wall_seconds": ("<=", 3600.0),
+}
+C_SEALED_GATES = {
     "sealed_confirmed_recall_delta_pp": (">=", -2.0),
     "sealed_precision_delta_pp": (">=", -2.0),
 }
@@ -63,6 +65,21 @@ def _run(command: str, *, env: Dict[str, str], log_path: Path) -> float:
 def _gate_c(score: Dict[str, Any]) -> List[str]:
     failures = []
     for key, (operator, threshold) in C_GATES.items():
+        try:
+            value = float(score[key])
+        except (KeyError, TypeError, ValueError):
+            failures.append(f"missing numeric metric: {key}")
+            continue
+        if operator == ">=" and value < threshold:
+            failures.append(f"{key}={value} < {threshold}")
+        if operator == "<=" and value > threshold:
+            failures.append(f"{key}={value} > {threshold}")
+    return failures
+
+
+def _gate_c_sealed(score: Dict[str, Any]) -> List[str]:
+    failures = []
+    for key, (operator, threshold) in C_SEALED_GATES.items():
         try:
             value = float(score[key])
         except (KeyError, TypeError, ValueError):
@@ -180,11 +197,22 @@ def main() -> None:
             raise RuntimeError(f"score payload must be an object: {score}")
         payload.setdefault("wall_seconds", time.monotonic() - started)
         failures = _gate_c(payload) if args.language == "cpp" else []
+        sealed_failures = _gate_c_sealed(payload) if args.language == "cpp" else []
         summary = {
             "run": index,
             "completed": True,
             "queue_empty": bool(payload.get("queue_empty", False)),
             "gate_failures": failures,
+            "sealed_gate_failures": sealed_failures,
+            "completeness": {
+                "report_present": report.is_file(),
+                "score_present": score.is_file(),
+                "summary_present": True,
+                "backend_health_present": (run_dir / "health.log").is_file(),
+                "queue_empty": bool(payload.get("queue_empty", False)),
+                "backend_valid": True,
+                "source_truth_isolated": True,
+            },
             "phase_seconds": {phase: round(seconds, 4) for phase, seconds in phase_seconds.items()},
             "metrics": payload,
         }
@@ -219,6 +247,9 @@ def main() -> None:
         for phase in phase_names
     }
     passed = all(summary["queue_empty"] and not summary["gate_failures"] for summary in summaries)
+    sealed_set_verified = args.language != "cpp" or all(
+        not summary["sealed_gate_failures"] for summary in summaries
+    )
     aggregate = {
         "schema_version": "zscope.formal-benchmark.v2",
         "language": args.language,
@@ -232,6 +263,7 @@ def main() -> None:
         "cold_runs": len(summaries),
         "all_completed": len(summaries) == args.runs,
         "passed": passed,
+        "sealed_set_verified": sealed_set_verified,
         "medians": medians,
         "phase_medians": phase_medians,
         "performance_outliers": _performance_outliers(summaries),

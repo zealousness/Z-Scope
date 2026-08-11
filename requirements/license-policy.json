@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "packages": {
+    "annotated-types": "MIT",
+    "anyio": "MIT",
+    "certifi": "MPL-2.0",
+    "charset-normalizer": "MIT",
+    "click": "BSD-3-Clause",
+    "cpgqls-client": "Apache-2.0",
+    "distro": "Apache-2.0",
+    "h11": "MIT",
+    "httpcore": "BSD-3-Clause",
+    "httpx": "BSD-3-Clause",
+    "idna": "BSD-3-Clause",
+    "jiter": "MIT",
+    "openai": "Apache-2.0",
+    "pydantic": "MIT",
+    "pydantic-core": "MIT",
+    "pyyaml": "MIT",
+    "requests": "Apache-2.0",
+    "sniffio": "MIT OR Apache-2.0",
+    "tqdm": "MPL-2.0 AND MIT",
+    "typing-extensions": "PSF-2.0",
+    "typing-inspection": "MIT",
+    "urllib3": "MIT",
+    "websockets": "BSD-3-Clause"
+  }
+}
