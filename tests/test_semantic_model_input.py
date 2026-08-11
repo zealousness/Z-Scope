@@ -20,7 +20,8 @@ class FakeCodeIndex:
         candidates = [
             item
             for item in self.matches
-            if func_name in {
+            if func_name
+            in {
                 item.get("function_name"),
                 item.get("index_name"),
             }
@@ -44,7 +45,9 @@ def _info(index_name="target@src/target.c:10-20", **overrides):
         "signature": "int target(void)",
         "is_static": True,
         "is_macro": False,
-        "project_callees": [{"callee_index_name": "child", "callsite_lines": [12], "is_static": False}],
+        "project_callees": [
+            {"callee_index_name": "child", "callsite_lines": [12], "is_static": False}
+        ],
         "external_callees": [{"callee_index_name": "printf", "callsite_lines": [13]}],
         "referenced_globals": [{"name": "global_state"}],
         "referenced_macros": [
@@ -96,7 +99,9 @@ def test_build_semantic_model_input_uses_unique_function_info_and_indexed_impl()
         "is_static": True,
         "is_macro": False,
         "code": "10 | int target(void) { return 0; }\n",
-        "project_callees": [{"callee_index_name": "child", "callsite_lines": [12], "is_static": False}],
+        "project_callees": [
+            {"callee_index_name": "child", "callsite_lines": [12], "is_static": False}
+        ],
         "external_callees": [{"callee_index_name": "printf", "callsite_lines": [13]}],
         "referenced_globals": [{"name": "global_state"}],
         "referenced_macros": info["referenced_macros"],
@@ -204,12 +209,8 @@ def test_build_semantic_model_input_copies_optional_type_context() -> None:
 
     result = build_semantic_model_input(index, "target")
 
-    assert result["unresolved_referenced_types"] == info[
-        "unresolved_referenced_types"
-    ]
-    assert result["referenced_types_truncation"] == info[
-        "referenced_types_truncation"
-    ]
+    assert result["unresolved_referenced_types"] == info["unresolved_referenced_types"]
+    assert result["referenced_types_truncation"] == info["referenced_types_truncation"]
     result["referenced_types"][0]["kind"] = "changed"
     assert info["referenced_types"][0]["kind"] == "struct"
 

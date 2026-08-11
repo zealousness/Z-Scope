@@ -361,12 +361,14 @@ def test_global_modeler_reconciles_mutual_recursion_without_extra_llm_calls(tmp_
     assert len(calls) == 2
     assert stats.stage_complete is True
     assert stats.reconciliation_failures == 0
-    assert store.load_snapshot("left@src/left.c:1-8")["project_callees"][0][
-        "callee_summary"
-    ] == "modeled right"
-    assert store.load_snapshot("right@src/right.c:1-8")["project_callees"][0][
-        "callee_summary"
-    ] == "modeled left"
+    assert (
+        store.load_snapshot("left@src/left.c:1-8")["project_callees"][0]["callee_summary"]
+        == "modeled right"
+    )
+    assert (
+        store.load_snapshot("right@src/right.c:1-8")["project_callees"][0]["callee_summary"]
+        == "modeled left"
+    )
 
 
 def test_global_modeler_reconciles_self_recursion_without_second_llm_call(tmp_path):
@@ -388,9 +390,10 @@ def test_global_modeler_reconciles_self_recursion_without_second_llm_call(tmp_pa
 
     assert calls == ["self_call"]
     assert stats.stage_complete is True
-    assert store.load_snapshot("self_call@src/self_call.c:1-8")["project_callees"][0][
-        "callee_summary"
-    ] == "modeled self_call"
+    assert (
+        store.load_snapshot("self_call@src/self_call.c:1-8")["project_callees"][0]["callee_summary"]
+        == "modeled self_call"
+    )
 
 
 def test_global_modeler_failure_skips_reconciliation_within_stage_tolerance(tmp_path):
@@ -623,31 +626,31 @@ def test_global_modeler_uses_deterministic_snapshot_for_trivial_function(tmp_pat
     config.analysis.trivial_function_max_lines = 5
     index = FakeCodeIndex()
     index.impls = {
-            "entry": {
-                "func_name": "entry",
-                "file": "src/entry.c",
-                "index_name": "entry@src/entry.c:1-4",
-                "start_line": 1,
-                "end_line": 4,
-                "signature": "int entry(void)",
-                "is_static": False,
-                "is_macro": False,
+        "entry": {
+            "func_name": "entry",
+            "file": "src/entry.c",
+            "index_name": "entry@src/entry.c:1-4",
+            "start_line": 1,
+            "end_line": 4,
+            "signature": "int entry(void)",
+            "is_static": False,
+            "is_macro": False,
             "code": "1 | int entry(void) {\n2 |     return tiny();\n3 | }\n",
             "callees": ["tiny"],
         },
-            "tiny": {
-                "func_name": "tiny",
-                "file": "src/tiny.c",
-                "index_name": "tiny@src/tiny.c:1-3",
-                "start_line": 1,
-                "end_line": 3,
-                "signature": "int tiny(void)",
-                "is_static": False,
-                "is_macro": False,
+        "tiny": {
+            "func_name": "tiny",
+            "file": "src/tiny.c",
+            "index_name": "tiny@src/tiny.c:1-3",
+            "start_line": 1,
+            "end_line": 3,
+            "signature": "int tiny(void)",
+            "is_static": False,
+            "is_macro": False,
             "code": "1 | int tiny(void) {\n2 |     return 0;\n3 | }\n",
             "project_callees": [],
             "external_callees": [],
-        }
+        },
     }
     store = SnapshotStore(Path(config.analysis.snapshot_dir))
     user_config = UserConfigStore(Path(config.analysis.user_config_db))
@@ -698,8 +701,8 @@ def test_entry_model_reuses_global_snapshot_without_llm(tmp_path):
             "concurrency": {},
             "key_semantics": ["global"],
             "suspicious_points": [],
-                "project_callees": [],
-                "external_callees": [],
+            "project_callees": [],
+            "external_callees": [],
         },
         code,
     )
@@ -711,9 +714,9 @@ def test_entry_model_reuses_global_snapshot_without_llm(tmp_path):
         "entry_func": "entry",
         "entry_index_name": "entry@src/entry.c:1-3",
         "impl_result": {"file": "src/entry.c", "code": code},
-            "semantic_model_input": {
-                "project_callees": [],
-                "external_callees": [],
+        "semantic_model_input": {
+            "project_callees": [],
+            "external_callees": [],
             "referenced_globals": [],
             "referenced_macros": [],
             "referenced_types": [],
@@ -872,12 +875,12 @@ def test_on_demand_snapshot_build_uses_file_qualified_lock(monkeypatch, tmp_path
                     "end_line": context["end_line"],
                     "signature": context["signature"],
                     "snapshot_kind": "LLM-modeled",
-                        "is_static": context["is_static"],
-                        "is_macro": context["is_macro"],
-                            "referenced_globals": context["referenced_globals"],
-                            "referenced_macros": context["referenced_macros"],
-                            "referenced_types": context["referenced_types"],
-                        "summary": context["index_name"],
+                    "is_static": context["is_static"],
+                    "is_macro": context["is_macro"],
+                    "referenced_globals": context["referenced_globals"],
+                    "referenced_macros": context["referenced_macros"],
+                    "referenced_types": context["referenced_types"],
+                    "summary": context["index_name"],
                     "inputs": [],
                     "outputs": [],
                     "resources": {},
