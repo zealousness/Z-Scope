@@ -57,6 +57,7 @@ def test_python_39_314_constraints_and_ci_are_declared() -> None:
     assert "test/range/benchmark test/java_range/benchmark" in workflow
     assert "zscope scripts test tests tools" not in workflow
     assert "scan_git_history_secrets.py --ref HEAD" in workflow
+    assert "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in workflow
 
 
 def test_release_lock_contains_runtime_and_java_extra_but_not_dev_tools() -> None:
