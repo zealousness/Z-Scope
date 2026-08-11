@@ -45,6 +45,10 @@ if find "${java_deps}" -iname '*codeql*' -print -quit | grep -q .; then
 fi
 
 output="$(mkdir -p "${output}" && cd "${output}" && pwd -P)"
+if find "${output}" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+  echo "Output directory must be empty: ${output}" >&2
+  exit 1
+fi
 stage="$(mktemp -d)"
 trap 'rm -rf -- "${stage}"' EXIT
 mkdir -p "${stage}/app/runtime" "${stage}/app/wheelhouse" "${stage}/app/bootstrap"
@@ -72,7 +76,12 @@ for asset in "${output}"/*.tar.zst; do
   size="$(stat -c %s "${asset}")"
   (( size < 2147483648 )) || { echo "Asset exceeds 2 GiB: ${asset}" >&2; exit 1; }
 done
-(cd "${output}" && sha256sum *.tar.zst install.sh *.spdx.json release-py313.txt > SHA256SUMS)
+python3 scripts/generate_release_manifest.py \
+  --directory "${output}" \
+  --version "${version}" \
+  --output "${output}/release-manifest.json"
+(cd "${output}" && sha256sum *.tar.zst install.sh *.spdx.json release-py313.txt release-manifest.json > SHA256SUMS)
 openssl dgst -sha256 -sign "${private_key}" -out "${output}/SHA256SUMS.sig" "${output}/SHA256SUMS"
 openssl pkey -in "${private_key}" -pubout -out "${output}/public-key.pem"
+python3 scripts/verify_release_assets.py --asset-dir "${output}" >/dev/null
 echo "Release assets written to ${output}"

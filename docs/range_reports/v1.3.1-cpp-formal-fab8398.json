@@ -1,0 +1,208 @@
+{
+  "schema_version": "zscope.formal-benchmark-archive.v1",
+  "target_version": "1.3.1",
+  "release_track": "cpp-stable-recertification",
+  "language": "c_cpp",
+  "model": "glm-5.1",
+  "artifact_name": "cpp-fab8398-20260810_204236",
+  "benchmark_git_sha": "fab8398a3bac5ff4791b749fd86b0ae7347abeac",
+  "benchmark_git_tree": "5221d8881303c275113429b70a43baa3df3031e0",
+  "aggregate_sha256": "bc8ec34fea94ec5523201c5ff745ec1554f5d1882dfbe3f32f97a34ef26560d4",
+  "aggregate": {
+    "schema_version": "zscope.formal-benchmark.v1",
+    "cold_runs": 5,
+    "all_completed": true,
+    "formal_runner_passed": false,
+    "medians": {
+      "confirmed_tp": 87,
+      "confirmed_raw_fp": 1,
+      "confirmed_precision_percent": 98.85,
+      "with_review_tp": 134,
+      "with_review_raw_fp": 82,
+      "needs_review": 128,
+      "total_tokens": 1263509,
+      "wall_seconds": 2597.6813
+    }
+  },
+  "gate": {
+    "numeric_gates_passed": true,
+    "all_five_complete": true,
+    "validation_queue_empty": true,
+    "backend_health_valid": true,
+    "source_truth_isolated": true,
+    "sealed_set_verified": false,
+    "release_class": "rc_only",
+    "blockers": [
+      "sealed_confirmed_recall_delta_pp is unavailable",
+      "sealed_precision_delta_pp is unavailable"
+    ]
+  },
+  "toolchain": {
+    "platform": "Ubuntu 24.04 / WSL2, Linux x86_64, glibc 2.39",
+    "python": "3.12.3",
+    "backend": "unified+SVF/Saber",
+    "adapter_sha256": "64aa21843001b0cc8a9536eb3cb4f7e9f8f37785f62c2d569b4285989637b9b2"
+  },
+  "runs": [
+    {
+      "run": 1,
+      "metrics": {
+        "confirmed_tp": 86,
+        "confirmed_raw_fp": 1,
+        "confirmed_precision_percent": 98.85,
+        "with_review_tp": 134,
+        "with_review_raw_fp": 82,
+        "needs_review": 129,
+        "total_tokens": 1263509,
+        "wall_seconds": 2660.6767
+      },
+      "completeness": {
+        "report_present": true,
+        "score_present": true,
+        "summary_present": true,
+        "backend_health_present": true,
+        "queue_empty": true,
+        "backend_valid": true,
+        "source_truth_isolated": true
+      },
+      "evidence_sha256": {
+        "report": "7dd369965c658026e669115a38f7430ef1bf561c882a1f97814446bf5631dd7f",
+        "score": "f000a92804f5c0127b30d895ad6cb00a9f89fcdf32406e77cdbfea6a7fd60eca",
+        "summary": "150afe0e02715579a2d0fbd87ff15ee7b78a2b62aeab544723370e134ee0d5d8",
+        "health": "2fa008d3352520bee0353cd40ddd438925da33a58db00175bcc2eb572f56fcdc",
+        "scan_metrics": "a71fda34b4a4aa9c161c55340a488ada419dcd8312c91a6be2e6310068aca32d",
+        "scan_log": "e5e095ce200aca6dcf06ca4059e02dbd1f237f3f959ff1d2b0a404c7463a4fc1",
+        "score_log": "d4222fa7ff975dd97a1d97e142a6f13d4fe7889410d2bf71137e42d324eee462"
+      }
+    },
+    {
+      "run": 2,
+      "metrics": {
+        "confirmed_tp": 91,
+        "confirmed_raw_fp": 2,
+        "confirmed_precision_percent": 97.85,
+        "with_review_tp": 134,
+        "with_review_raw_fp": 83,
+        "needs_review": 124,
+        "total_tokens": 1328388,
+        "wall_seconds": 2592.0803
+      },
+      "completeness": {
+        "report_present": true,
+        "score_present": true,
+        "summary_present": true,
+        "backend_health_present": true,
+        "queue_empty": true,
+        "backend_valid": true,
+        "source_truth_isolated": true
+      },
+      "evidence_sha256": {
+        "report": "1a93a008bcebb14e6c9c97e3398c504a76db04348a2d062df740a54e1404bb5e",
+        "score": "5218239c70b8735185c0f673001cdc92edc9aaa1329ddeaf26470b06eff1f45c",
+        "summary": "0bd4edfc4ebd7b3c07cd4e77b56f9eeabe7abdf80b764d40ede27b1b8f64b6b8",
+        "health": "95e61653b744e609d5be1855df45eb0c3b49e52d1ebb05c85470fe13ae024d66",
+        "scan_metrics": "742fc20d37a0a45949d291904e4db453101ff0ee96a3dd15baa3075c652aa0a9",
+        "scan_log": "4722fef3907a2c2d507ec0639da4f3297bab15c53c864f96e777d220ddca848e",
+        "score_log": "030560fc074dc607a39f9120334be19f8c46786962545f8d70d5cddb56afbecf"
+      }
+    },
+    {
+      "run": 3,
+      "metrics": {
+        "confirmed_tp": 86,
+        "confirmed_raw_fp": 1,
+        "confirmed_precision_percent": 98.85,
+        "with_review_tp": 134,
+        "with_review_raw_fp": 83,
+        "needs_review": 130,
+        "total_tokens": 1342523,
+        "wall_seconds": 2597.6813
+      },
+      "completeness": {
+        "report_present": true,
+        "score_present": true,
+        "summary_present": true,
+        "backend_health_present": true,
+        "queue_empty": true,
+        "backend_valid": true,
+        "source_truth_isolated": true
+      },
+      "evidence_sha256": {
+        "report": "f9f234d47f89c0bddc65bc277f54f03301983d3c0b0ff85a66c67eaefecf2ce8",
+        "score": "8fe5c1293f0e74aad157c54d1037637b66bf6b9f3c4d59ab3c5c13a45d961385",
+        "summary": "f11735706b01db0b36c48be3ca50d5b90be4f084f32758babc89171a60e94bbe",
+        "health": "a6e3041c736162ac2cf52248cda085b45b38cc454b05064329cc36f520154d91",
+        "scan_metrics": "b947f25966a69dbebb6217f06d006f3f48704b15ab66cc2f305cc086ef27ae97",
+        "scan_log": "e67472056fe6efe3134b1e3f22269fe41fb838700f30dd4d8d6060b0909f381e",
+        "score_log": "cd70a3b36091f521942b9717db0f5b2e3d4ff00b3ee9629889c2655b4584d02e"
+      }
+    },
+    {
+      "run": 4,
+      "metrics": {
+        "confirmed_tp": 88,
+        "confirmed_raw_fp": 2,
+        "confirmed_precision_percent": 97.78,
+        "with_review_tp": 134,
+        "with_review_raw_fp": 81,
+        "needs_review": 125,
+        "total_tokens": 1213205,
+        "wall_seconds": 2464.9404
+      },
+      "completeness": {
+        "report_present": true,
+        "score_present": true,
+        "summary_present": true,
+        "backend_health_present": true,
+        "queue_empty": true,
+        "backend_valid": true,
+        "source_truth_isolated": true
+      },
+      "evidence_sha256": {
+        "report": "17432ef98b144e67f0f7a541c765d59cd9fa7c31bf0fe7b48fc7ddecf9ce5535",
+        "score": "04accc58b8067e18e49448ecd79bb60c269e2ab9157fcba6c86587d12774d7e2",
+        "summary": "f9be7a03153a2188883bbf738762a079653fd96021e6c3f058b2663974f78ffc",
+        "health": "a1f6ee098bee235b8c4b08d99e7d323c3d6ecd7e071a55b0e7864c076e1123cd",
+        "scan_metrics": "d44fb8e251951f737fe38cd0cc67babc3e497c32101001470e8d034063fba6f3",
+        "scan_log": "142e308e2cdfb69fc2057fded205ab3bfd2beb3c346db8b1d3bf032c72a2e42b",
+        "score_log": "a94cfbd08ae686a32abc5e929dda708950aeeefe64e848adecf730d44458bf0d"
+      }
+    },
+    {
+      "run": 5,
+      "metrics": {
+        "confirmed_tp": 87,
+        "confirmed_raw_fp": 0,
+        "confirmed_precision_percent": 100.0,
+        "with_review_tp": 134,
+        "with_review_raw_fp": 81,
+        "needs_review": 128,
+        "total_tokens": 1219453,
+        "wall_seconds": 3116.466
+      },
+      "completeness": {
+        "report_present": true,
+        "score_present": true,
+        "summary_present": true,
+        "backend_health_present": true,
+        "queue_empty": true,
+        "backend_valid": true,
+        "source_truth_isolated": true
+      },
+      "evidence_sha256": {
+        "report": "8dd5225e31639e0d8b2bd60adec9ee038a3fc90e2c757d53612af0e3e755cea8",
+        "score": "5e3f1fcae1fcdd4777dd233ed66e01c3ff1627f40bf7285b0685930b429b9e08",
+        "summary": "81554d62de1dfdd193782199062989cac4ebae8fb267f8f7ac8ab2006b6f9f1a",
+        "health": "e7d190d80e05df3105a3ec1a03d8d47d21bc9bf19b62f2e392abe161274311a7",
+        "scan_metrics": "b9725f5005dc3437551386fad068c77aee4466c0455bbbb397a29ae4e370531d",
+        "scan_log": "781257ebee0731723e1be284b5d46bc2641978c11c9aede9ea0f1c475710add8",
+        "score_log": "28ffe03798a5c2b64f324e83bd5b53be03c2f166e4c2c76adb56b69b06e802e8"
+      }
+    }
+  ],
+  "artifact_policy": {
+    "repository_contains_raw_reports": false,
+    "raw_artifacts_must_be_release_assets": true,
+    "truth_content_archived": false
+  }
+}

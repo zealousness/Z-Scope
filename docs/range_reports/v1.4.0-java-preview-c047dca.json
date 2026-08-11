@@ -1,0 +1,224 @@
+{
+  "schema_version": "zscope.formal-benchmark-archive.v1",
+  "target_version": "1.4.0-preview",
+  "package_version_at_run": "1.3.1",
+  "release_track": "java-preview-baseline",
+  "language": "java",
+  "model": "glm-5.1",
+  "artifact_name": "java-c047dca-20260811_024401",
+  "benchmark_git_sha": "c047dca722474b2e21b13f7dedaef89de3656662",
+  "benchmark_git_tree": "dd313de81352bf9eb8904f3b0f07111d49608b4e",
+  "aggregate_sha256": "d381f47b791e599c592a021deac786eadaf8929fa139f9425c0f4519a910fa75",
+  "aggregate": {
+    "schema_version": "zscope.formal-benchmark.v1",
+    "cold_runs": 5,
+    "all_completed": true,
+    "formal_runner_passed": true,
+    "medians": {
+      "confirmed_tp": 18,
+      "confirmed_raw_fp": 4,
+      "confirmed_precision_percent": 80.0,
+      "with_review_tp": 45,
+      "with_review_raw_fp": 30,
+      "needs_review": 53,
+      "total_tokens": 760658,
+      "wall_seconds": 761.3101
+    }
+  },
+  "gate": {
+    "numeric_gates_passed": true,
+    "numeric_accuracy_threshold_predeclared": false,
+    "all_five_complete": true,
+    "validation_queue_empty": true,
+    "backend_health_valid": true,
+    "source_truth_isolated": true,
+    "sealed_set_verified": false,
+    "release_class": "preview_baseline",
+    "blockers": []
+  },
+  "toolchain": {
+    "platform": "Ubuntu 24.04 / WSL2, Linux x86_64, glibc 2.39",
+    "python": "3.12.3",
+    "java": "OpenJDK 21.0.12 LTS",
+    "maven": "3.8.7",
+    "structure": ["sootup", "wala"],
+    "signals": ["joern"],
+    "adapter_sha256": "65eec6f9e5584acebe723946c46ccb34bf31e3fb167e4b1c7180cd8778a5ba9e"
+  },
+  "performance_analysis": {
+    "outlier_runs": [3],
+    "run_3": {
+      "wall_seconds": 4518.0725,
+      "scan_log_timestamp_span_seconds": 4415,
+      "largest_silent_gap_seconds": 3502,
+      "progress_before_gap": "53_of_54_entries_complete",
+      "event_after_gap": "joern_websocket_closed_and_query_failed",
+      "later_model_read_timeouts": 2,
+      "model_read_timeout_seconds": 120,
+      "dominant_cause": "unbounded_joern_websocket_query_wait"
+    },
+    "remediation": "Routine Joern queries are now bounded and formal runner v2 records health, scan, score, and total phase durations plus gross outliers."
+  },
+  "runs": [
+    {
+      "run": 1,
+      "metrics": {
+        "confirmed_tp": 17,
+        "confirmed_raw_fp": 4,
+        "confirmed_precision_percent": 80.95,
+        "with_review_tp": 45,
+        "with_review_raw_fp": 30,
+        "needs_review": 54,
+        "total_tokens": 819629,
+        "wall_seconds": 707.7281
+      },
+      "completeness": {
+        "report_present": true,
+        "score_present": true,
+        "summary_present": true,
+        "backend_health_present": true,
+        "queue_empty": true,
+        "backend_valid": true,
+        "source_truth_isolated": true
+      },
+      "evidence_sha256": {
+        "report": "3ddee1d5334ed4d34e68a7c481cdae96c4e70715eeedc49eb4696deaf5af8d3c",
+        "score": "31e59004c74724f0ec37ac3bbe88fdf102172b8e20efcfd7f1f532d3af52d966",
+        "summary": "8d5f068b649bac80268d9745830fbf7147d34f36a7a4ce8235d8b7e04e7d7654",
+        "health": "bdcb10073a132f49bc346b26575f2f5f2176e1b62376b6daa39c7f8a9e0ce9ce",
+        "scan_metrics": "47e6e1a2e3e172a6acbc264156c89738c8e05a8fc2e5537f1a69c47d659bd925",
+        "scan_log": "8cdf43ca7b857a927426f8e035ff6409c5f386ddf3bc32316c616ad13fc782ee",
+        "score_log": "cc7b8b67d2a5fa46283d7d4f256ac509cc2f82990d0d36e59515e7769568540e"
+      }
+    },
+    {
+      "run": 2,
+      "metrics": {
+        "confirmed_tp": 18,
+        "confirmed_raw_fp": 4,
+        "confirmed_precision_percent": 81.82,
+        "with_review_tp": 45,
+        "with_review_raw_fp": 30,
+        "needs_review": 53,
+        "total_tokens": 737836,
+        "wall_seconds": 657.917
+      },
+      "completeness": {
+        "report_present": true,
+        "score_present": true,
+        "summary_present": true,
+        "backend_health_present": true,
+        "queue_empty": true,
+        "backend_valid": true,
+        "source_truth_isolated": true
+      },
+      "evidence_sha256": {
+        "report": "a88dc98166f057afb51f277f15f5db4e957221e7f56fc7175f646dfc5aee7331",
+        "score": "f256aeacff5742acc13e81470df5c50f6033a853768c174d8db1604db3b70595",
+        "summary": "882c5c88bd15b6947ef52d221fd8145e1ad76aa6f18554ab5a4f2d3450e55232",
+        "health": "d5766b21f58f36fd501dcb68504a98b41e26920c2a33575ab7a2eca7dada815e",
+        "scan_metrics": "3156ab9d427b911aa8d098eb7b9439d78fbd0dc584e8dc86cae434e901893c06",
+        "scan_log": "9719ce02936a464a1a6c26742532e6d3672ee714dd46a2a29f2af482192e9d94",
+        "score_log": "3c1872bc6f6f3d128d6eef92a15abb1990b5b5d0184359a5d858b45b50e7159b"
+      }
+    },
+    {
+      "run": 3,
+      "metrics": {
+        "confirmed_tp": 15,
+        "confirmed_raw_fp": 4,
+        "confirmed_precision_percent": 78.95,
+        "with_review_tp": 45,
+        "with_review_raw_fp": 30,
+        "needs_review": 56,
+        "total_tokens": 760658,
+        "wall_seconds": 4518.0725
+      },
+      "completeness": {
+        "report_present": true,
+        "score_present": true,
+        "summary_present": true,
+        "backend_health_present": true,
+        "queue_empty": true,
+        "backend_valid": true,
+        "source_truth_isolated": true
+      },
+      "evidence_sha256": {
+        "report": "09454da97a5fbab47508f1fde6ede41b95f26de625e4d230dc1c226df596340f",
+        "score": "d13bebdc71a85be0b8f81173ae1a5178962e28520d1a7a753d69dd3c7c6f2caa",
+        "summary": "cef4d539fb5d3bbae79a13c4b459f3d269a91fceccfb04a13997c23bc159890e",
+        "health": "cab248e9efb0eafb317053ffaadc53fb991bccda9a75beb9a8c3139cbc5f0af0",
+        "scan_metrics": "8c69db06285b9650a33423a492ba0944095b197a128f6fe155f3f929e8307ec6",
+        "scan_log": "1feca2577291b6b7c38d43681423a418f77691e2a21a6262e85458492d38a5bd",
+        "score_log": "d225b28c255b1a14654daf9d7e3f94febb9f0d5b203353702ee4b84436c1f4e6"
+      }
+    },
+    {
+      "run": 4,
+      "metrics": {
+        "confirmed_tp": 20,
+        "confirmed_raw_fp": 5,
+        "confirmed_precision_percent": 80.0,
+        "with_review_tp": 45,
+        "with_review_raw_fp": 30,
+        "needs_review": 50,
+        "total_tokens": 727339,
+        "wall_seconds": 761.3101
+      },
+      "completeness": {
+        "report_present": true,
+        "score_present": true,
+        "summary_present": true,
+        "backend_health_present": true,
+        "queue_empty": true,
+        "backend_valid": true,
+        "source_truth_isolated": true
+      },
+      "evidence_sha256": {
+        "report": "c0c4bfdf5e719b7465344cda3880ddd81e7b4cf39803915f199a2a1d7eaa6530",
+        "score": "958dc4f1157f3895f3d0a6688ca869bf1e39f4f90933f2a2367bb0a027cb6ae1",
+        "summary": "4d86b693b26a161c083cc4103d767c84e411d8223a4f4ba55496360ae62367c1",
+        "health": "26dc06803ee1ea8d86d89e02ecfec7776626b16e149581fe7445302ed1953851",
+        "scan_metrics": "6f70f9943aa3884fed3983ed55524bdf0bbf9bcb7530eeb83c3e11a42c4abf46",
+        "scan_log": "0b1479db475b1e81974332b29254009a8bbb02be63c70316888289ef224abf60",
+        "score_log": "5f41dea546ea01fa5fdce76dccb40b2d295ebdbbf119eaa483df35c0f591900c"
+      }
+    },
+    {
+      "run": 5,
+      "metrics": {
+        "confirmed_tp": 19,
+        "confirmed_raw_fp": 5,
+        "confirmed_precision_percent": 79.17,
+        "with_review_tp": 45,
+        "with_review_raw_fp": 30,
+        "needs_review": 51,
+        "total_tokens": 793232,
+        "wall_seconds": 770.44
+      },
+      "completeness": {
+        "report_present": true,
+        "score_present": true,
+        "summary_present": true,
+        "backend_health_present": true,
+        "queue_empty": true,
+        "backend_valid": true,
+        "source_truth_isolated": true
+      },
+      "evidence_sha256": {
+        "report": "4943f59eea762cacaff43f14e84cb1148b5f07c7069c8ce2c576e91c148008bf",
+        "score": "12fe262aa4aad8ac91a3c7acd81639449103dabb76b9786be03f5a480b33d433",
+        "summary": "55c95fb312b9034a60098c1c413773d4f18dab7505e02b1f8d37cade08da90d0",
+        "health": "fda85b978f3bcad9272ebe69cc472b842766f88e2c44bbac351364570dbd959d",
+        "scan_metrics": "93b547f9d41ac53a0ae53d2094dc1c24f71f1c916e6aed81fcf4e55452b3b879",
+        "scan_log": "547e7c745b22144f942ea1f57594897feaa9a46b4d2ed77219b7017a2a693ff6",
+        "score_log": "44abcef52209d855958b6199375863d4d20cf91fc7b59e81aabe1c6ad469b659"
+      }
+    }
+  ],
+  "artifact_policy": {
+    "repository_contains_raw_reports": false,
+    "raw_artifacts_must_be_release_assets": true,
+    "truth_content_archived": false
+  }
+}

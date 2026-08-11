@@ -27,7 +27,7 @@ v1.3.1 是 C/C++ 稳定化、离线交付和 Python 3.9 兼容版本，同时落
 - **可追踪持久化与反馈记忆**：分析产生的终极漏洞（Issues）与语义模型会写入本地 `.zscope_snapshots/snapshots.db`；`code_knowledge.db` schema v7 持久化代码事实、macro 定义、Inspection IR、候选 source/sink、资源事件、锁事件、共享访问与路径切片，并带调用图查询缓存和删除 TU 清理；用户领域知识落在 `user_config.xlsx`，反馈状态通过旁路 state DB 和 `ReviewMemory` 复用。
 - **自动报告备份护城河**：每次批量生成或覆盖 JSON 分析主报告前，自动创建带时间戳的增量备份至 `.zscope_knowledge/backups/` 目录。
 - **严格编译与类型检查**：开发环境支持 `compileall` 强制编译检查和 `mypy` 静态类型检查，避免 Python 解释执行到冷门分支时才暴露错误。
-- **Benchmark 与发布门禁**：内置 Range 开发集与外部 benchmark harness。v1.3.1 C 基线的五轮中位数为 confirmed TP 89、raw FP 2、precision 97.80%、with-review TP 134、needs-review 135、tokens 1,324,485、wall time 2,105.97 秒；正式 precision 始终按 `TP / (TP + raw FP)` 计算。
+- **Benchmark 与发布门禁**：内置 Range 开发集与外部 benchmark harness。v1.3.1 冻结 C 基线的五轮中位数为 confirmed TP 89、raw FP 2、precision 97.80%、with-review TP 134、needs-review 135、tokens 1,324,485、wall time 2,105.97 秒；`fab8398` 复核候选另行归档且因 sealed-set 缺失只允许 RC。正式 precision 始终按 `TP / (TP + raw FP)` 计算。
 - **纯 YAML 驱动**：所有项目分析参数通过 `zscope.yaml` 统一定义，支持 `${ENV_VAR}` 环境变量展开；运行态 workflow 由 CLI flags 决定，`analysis.workflow_name` 写入配置会被拒绝。
 
 ## 系统架构
@@ -658,7 +658,7 @@ python scripts/external_benchmark.py run-prepared --suite-root benchmarks/extern
 ### v1.3.1
 - **版本与 Python 门禁**：包版本、CLI/MCP/Web 同步到 `1.3.1`，Python 3.9–3.14 使用独立带哈希约束和真实解释器 CI。
 - **离线交付**：新增签名校验的一键安装器、CPython 3.13 应用包、按语言拆分依赖包、SBOM、许可证与升级/回滚布局。
-- **Java Preview**：迁入 Java source/java_unified 索引、SootUp/WALA/Joern 信号接口、48 条本地规则和 58 条 truth（覆盖 49 个规则 ID）/54 个入口的结构 benchmark；尚无可信 LLM 精度基线。
+- **Java Preview**：迁入 Java source/java_unified 索引、SootUp/WALA/Joern 信号接口、48 条本地规则和 58 条 truth（覆盖 49 个规则 ID）/54 个入口的结构 benchmark；`c047dca` 上已归档首个五轮 Preview LLM 基线，但不参与 v1.3.1 C/C++ 发布门禁。
 - **统一规则扩展**：新增 `rule_pack_version: 1` YAML 校验、`zscope.rule_providers` entry point、语言隔离、重复 ID/未知 Skill 失败以及 `zscope-rules list|validate|test`。
 - **候选生命周期 v3.3**：项目事实、结构化安全义务、validation group、occurrence alias 和 canonical outcome 进入单一流水线；正常完成时不允许残留 `pending`、`requested`、`running` 或 `validation_not_completed`。
 - **确定性证据闭环**：新增 guard/边界、所有权/生命周期、锁/HB、调用契约等 proof provider。完整正向 proof 直接确认，完整反证才允许拒绝，证据冲突或缺失保守进入一个组级 `needs_review`。

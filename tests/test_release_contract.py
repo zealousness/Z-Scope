@@ -8,6 +8,9 @@ import sys
 from pathlib import Path
 
 from zscope._version import __version__
+from scripts.evaluate_release_candidate import evaluate_candidate
+from scripts.generate_release_manifest import build_manifest
+from scripts.verify_release_assets import verify_release_assets
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -51,6 +54,8 @@ def test_python_39_314_constraints_and_ci_are_declared() -> None:
         assert f'lock: "py{suffix}"' in workflow
     assert "scripts/check_mypy_baseline.py" in workflow
     assert "scripts/check_black_baseline.py" in workflow
+    assert "test/range/benchmark test/java_range/benchmark" in workflow
+    assert "zscope scripts test tests tools" not in workflow
 
 
 def test_release_lock_contains_runtime_and_java_extra_but_not_dev_tools() -> None:
@@ -116,6 +121,50 @@ def test_spdx_generation_is_reproducible_and_uses_unique_package_name(tmp_path: 
     assert document["packages"][0]["packageVerificationCode"]["packageVerificationCodeValue"]
 
 
+def test_release_manifest_and_hash_verification_are_consistent(tmp_path: Path) -> None:
+    asset = tmp_path / f"zscope-app-{__version__}-linux-x86_64.tar.zst"
+    cpp = tmp_path / "zscope-deps-cpp-test-linux-x86_64.tar.zst"
+    java = tmp_path / "zscope-deps-java-test-linux-x86_64.tar.zst"
+    licenses = tmp_path / f"third-party-licenses-{__version__}.tar.zst"
+    installer = tmp_path / "install.sh"
+    lock = tmp_path / "release-py313.txt"
+    for path in (asset, cpp, java, licenses, installer, lock):
+        path.write_text(path.name, encoding="utf-8")
+    for name in (
+        f"zscope-{__version__}.spdx.json",
+        "zscope-deps-cpp-test.spdx.json",
+        "zscope-deps-java-test.spdx.json",
+    ):
+        (tmp_path / name).write_text(
+            json.dumps({"spdxVersion": "SPDX-2.3", "packages": [{"name": name}]}),
+            encoding="utf-8",
+        )
+    manifest_path = tmp_path / "release-manifest.json"
+    manifest_path.write_text(
+        json.dumps(build_manifest(tmp_path, __version__), indent=2) + "\n", encoding="utf-8"
+    )
+    names = [item["name"] for item in json.loads(manifest_path.read_text())["artifacts"]]
+    names.append("release-manifest.json")
+    sums = []
+    import hashlib
+
+    for name in names:
+        digest = hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
+        sums.append(f"{digest}  {name}")
+    (tmp_path / "SHA256SUMS").write_text("\n".join(sums) + "\n", encoding="utf-8")
+    (tmp_path / "SHA256SUMS.sig").write_bytes(b"test")
+    (tmp_path / "public-key.pem").write_text("test", encoding="utf-8")
+
+    result = verify_release_assets(
+        tmp_path,
+        verify_signature=False,
+        inspect_archives=False,
+    )
+
+    assert result["passed"] is True
+    assert result["package_version"] == __version__
+
+
 def test_java_structural_baseline_does_not_claim_llm_accuracy() -> None:
     baseline = (ROOT / "test/java_range/benchmark/structural_baseline.json").read_text(
         encoding="utf-8"
@@ -125,3 +174,24 @@ def test_java_structural_baseline_does_not_claim_llm_accuracy() -> None:
     assert '"entry_functions": 54' in baseline
     assert '"java_rules": 48' in baseline
     assert '"llm_metrics_available": false' in baseline
+
+
+def test_formal_archives_are_bound_to_exact_benchmark_commits() -> None:
+    provenance_path = ROOT / "docs/releases/benchmark-provenance.json"
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    assert provenance["package_version"] == __version__
+    assert provenance["exact_release_sha_required"] is True
+    for item in provenance["benchmarks"]:
+        archive = json.loads((ROOT / item["archive"]).read_text(encoding="utf-8"))
+        assert archive["benchmark_git_sha"] == item["git_sha"]
+        assert len(archive["runs"]) == 5
+        assert all(run["completeness"]["source_truth_isolated"] for run in archive["runs"])
+
+    audit = evaluate_candidate(
+        provenance_path,
+        release_sha="f" * 40,
+        version=__version__,
+    )
+    assert audit["status"] == "blocked"
+    assert "cpp:benchmark_sha_not_release_sha" in audit["hard_blockers"]
+    assert "cpp:sealed_set_not_verified" in audit["rc_blockers"]

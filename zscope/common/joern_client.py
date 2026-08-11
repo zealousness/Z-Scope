@@ -15,6 +15,10 @@ from typing import Any, Dict, List, Optional, cast
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_QUERY_TIMEOUT_SECONDS = 300.0
+DEFAULT_QUERY_MAX_ATTEMPTS = 2
+CPG_IMPORT_QUERY_TIMEOUT_SECONDS = 3600.0
+
 
 class JoernQueryError(RuntimeError):
     """Raised when a Joern fact query failed or returned an invalid payload."""
@@ -30,12 +34,20 @@ class JoernClient:
         port: int = 8080,
         heap_size: str = "8g",
         language: str = "c",
+        query_timeout_seconds: float = DEFAULT_QUERY_TIMEOUT_SECONDS,
+        query_max_attempts: int = DEFAULT_QUERY_MAX_ATTEMPTS,
     ):
         self.joern_path = joern_path
         self.host = host
         self.port = port
         self.heap_size = heap_size
         self.language = self._normalize_language(language)
+        self.query_timeout_seconds = float(query_timeout_seconds)
+        self.query_max_attempts = int(query_max_attempts)
+        if self.query_timeout_seconds <= 0:
+            raise ValueError("query_timeout_seconds must be positive")
+        if self.query_max_attempts <= 0:
+            raise ValueError("query_max_attempts must be positive")
 
         self._server_process: Optional[subprocess.Popen] = None
         self._cli_mode = False
@@ -166,7 +178,11 @@ class JoernClient:
         print("  [Joern] Waiting for CPG build to complete...", flush=True)
         while time.time() < deadline:
             try:
-                result = self.query("cpg.method.size")
+                result = self.query(
+                    "cpg.method.size",
+                    timeout_seconds=min(self.query_timeout_seconds, 30.0),
+                    max_attempts=1,
+                )
                 if isinstance(result, (int, str)):
                     count = (
                         int(result)
@@ -247,7 +263,11 @@ class JoernClient:
         if os.path.exists(cpg_bin):
             cpg_bin_escaped = cpg_bin.replace("\\", "\\\\")
             print(f"  [Joern] Found existing CPG, importing {cpg_bin}...", flush=True)
-            result = self.query(f'importCpg("{cpg_bin_escaped}")')
+            result = self.query(
+                f'importCpg("{cpg_bin_escaped}")',
+                timeout_seconds=CPG_IMPORT_QUERY_TIMEOUT_SECONDS,
+                max_attempts=1,
+            )
         else:
             source_path_escaped = source_path.replace("\\", "\\\\")
             print(f"  [Joern] Building CPG for {source_path}...", flush=True)
@@ -256,7 +276,9 @@ class JoernClient:
                     source_path_escaped,
                     compile_commands_path,
                     language=normalized_language,
-                )
+                ),
+                timeout_seconds=CPG_IMPORT_QUERY_TIMEOUT_SECONDS,
+                max_attempts=1,
             )
             if result is not None:
                 # importCode 可能异步返回项目引用，需要轮询确认 CPG 真正加载完成
@@ -397,7 +419,11 @@ class JoernClient:
 
                 if os.path.exists(cpg_bin):
                     cpg_bin_escaped = cpg_bin.replace("\\", "\\\\")
-                    result = self.query(f'importCpg("{cpg_bin_escaped}")')
+                    result = self.query(
+                        f'importCpg("{cpg_bin_escaped}")',
+                        timeout_seconds=CPG_IMPORT_QUERY_TIMEOUT_SECONDS,
+                        max_attempts=1,
+                    )
                 else:
                     source_path_escaped = source_path.replace("\\", "\\\\")
                     result = self.query(
@@ -405,7 +431,9 @@ class JoernClient:
                             source_path_escaped,
                             compile_commands_path,
                             language=normalized_language,
-                        )
+                        ),
+                        timeout_seconds=CPG_IMPORT_QUERY_TIMEOUT_SECONDS,
+                        max_attempts=1,
                     )
                     if result is not None and not self._wait_for_cpg_ready():
                         result = None
@@ -497,24 +525,46 @@ class JoernClient:
         with self._cpg_lock:
             return self._cpg_build_error
 
-    def query(self, cpgql: str) -> Any:
-        """Execute a CPGQL query via cpgqls-client."""
+    def query(
+        self,
+        cpgql: str,
+        timeout_seconds: Optional[float] = None,
+        max_attempts: Optional[int] = None,
+    ) -> Any:
+        """Execute a bounded CPGQL query via cpgqls-client."""
+        query_timeout = float(
+            self.query_timeout_seconds if timeout_seconds is None else timeout_seconds
+        )
+        query_attempts = int(self.query_max_attempts if max_attempts is None else max_attempts)
+        if query_timeout <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        if query_attempts <= 0:
+            raise ValueError("max_attempts must be positive")
         if self._cli_mode:
-            return self._query_via_cli(cpgql)
+            return self._query_via_cli(cpgql, timeout_seconds=query_timeout)
         try:
             from cpgqls_client import CPGQLSClient  # type: ignore[import-untyped]
 
+            import asyncio
+
             # Workaround for cpgqls-client concurrent UUID broadcast bug
             if not hasattr(CPGQLSClient, "_zscope_patched"):
-                import asyncio
-
                 original_send_query = getattr(CPGQLSClient, "_send_query", None)
                 if original_send_query:
 
                     async def patched_send_query(self, query_str):
+                        timeout = float(
+                            getattr(
+                                self,
+                                "_zscope_query_timeout_seconds",
+                                DEFAULT_QUERY_TIMEOUT_SECONDS,
+                            )
+                        )
                         endpoint = self.connect_endpoint()
                         async with self._transport.connect(endpoint) as ws_conn:
-                            connected_msg = await ws_conn.recv()
+                            connected_msg = await asyncio.wait_for(
+                                ws_conn.recv(), timeout=min(timeout, 30.0)
+                            )
                             if connected_msg != self.CPGQLS_MSG_CONNECTED:
                                 raise Exception("Received unexpected first message")
                             endpoint = self.post_query_endpoint()
@@ -526,7 +576,7 @@ class JoernClient:
 
                             target_uuid = post_res.json()["uuid"]
                             while True:
-                                msg = await asyncio.wait_for(ws_conn.recv(), timeout=3600)
+                                msg = await asyncio.wait_for(ws_conn.recv(), timeout=timeout)
                                 if msg == target_uuid:
                                     break
 
@@ -541,7 +591,7 @@ class JoernClient:
 
             import os
 
-            for attempt in range(30):
+            for attempt in range(query_attempts):
                 try:
                     # Temporarily bypass any global proxies that might hijack local WS connections
                     old_http = os.environ.get("HTTP_PROXY")
@@ -555,6 +605,7 @@ class JoernClient:
                             f"{self.host}:{self.port}",
                             event_loop=self._get_query_event_loop(),
                         )
+                        client._zscope_query_timeout_seconds = query_timeout
                         result = client.execute(cpgql)
                     finally:
                         if old_http is not None:
@@ -570,33 +621,42 @@ class JoernClient:
                         return self._parse_server_stdout(result["stdout"])
                     return result
                 except Exception as e:
-                    if (
+                    retryable = (
                         "handshake" in str(e)
                         or "timeout" in str(e).lower()
-                        or isinstance(e, ConnectionError)
-                    ):
-                        if attempt < 29:
+                        or isinstance(e, (asyncio.TimeoutError, TimeoutError, ConnectionError))
+                    )
+                    if retryable:
+                        if attempt + 1 < query_attempts:
                             logger.warning(
-                                f"Joern query attempt {attempt+1} failed: {e}. Retrying..."
+                                "Joern query attempt %d/%d failed: %s. Retrying...",
+                                attempt + 1,
+                                query_attempts,
+                                type(e).__name__,
                             )
                             time.sleep(5)
                             continue
                     raise e
 
         except ImportError:
-            return self._query_via_cli(cpgql)
+            return self._query_via_cli(cpgql, timeout_seconds=query_timeout)
         except Exception as e:
             logger.error("Joern query failed: %s", e)
             return None
 
-    def _query_via_cli(self, cpgql: str) -> Any:
+    def _query_via_cli(self, cpgql: str, timeout_seconds: float = 600.0) -> Any:
         """Fallback: execute query via joern CLI."""
         script_path = None
         try:
             script_path = self._write_cli_query_script(cpgql, self._cpg_path)
             cmd = [self.joern_path, "--nocolors", "--script", script_path]
             proc = subprocess.run(
-                cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_seconds,
             )
             if proc.returncode != 0:
                 logger.error("Joern CLI error: %s", proc.stderr)

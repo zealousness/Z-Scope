@@ -1,0 +1,24 @@
+{
+  "schema_version": "zscope.release-benchmark-provenance.v1",
+  "package_version": "1.3.1",
+  "exact_release_sha_required": true,
+  "benchmarks": [
+    {
+      "language": "cpp",
+      "target_version": "1.3.1",
+      "required_for_release": true,
+      "git_sha": "fab8398a3bac5ff4791b749fd86b0ae7347abeac",
+      "archive": "docs/range_reports/v1.3.1-cpp-formal-fab8398.json",
+      "status": "rc_only_sealed_set_missing"
+    },
+    {
+      "language": "java",
+      "target_version": "1.4.0-preview",
+      "required_for_release": false,
+      "git_sha": "c047dca722474b2e21b13f7dedaef89de3656662",
+      "archive": "docs/range_reports/v1.4.0-java-preview-c047dca.json",
+      "status": "preview_baseline_complete"
+    }
+  ],
+  "release_rule": "A required benchmark must be rerun at the exact protected release SHA. C also requires sealed-set deltas. Java Preview evidence does not gate the v1.3.1 C/C++ release."
+}

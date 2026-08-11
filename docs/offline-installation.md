@@ -9,7 +9,7 @@
 - `zscope-app-{version}-linux-x86_64.tar.zst`：CPython 3.13、Z-SCOPE wheel、带哈希依赖 wheelhouse、pip zipapp 和启动所需文件。
 - `zscope-deps-cpp-{toolset}-linux-x86_64.tar.zst`：C/C++ 工具链，不含 Joern。
 - `zscope-deps-java-{toolset}-linux-x86_64.tar.zst`：Temurin 21、Maven、Joern、SootUp/WALA runner 和工具自身 Maven 依赖。
-- `install.sh`、`SHA256SUMS`、`SHA256SUMS.sig`、`public-key.pem`、每个资产的 SPDX 2.3 SBOM、Python 约束和第三方许可证包。
+- `install.sh`、`release-manifest.json`、`SHA256SUMS`、`SHA256SUMS.sig`、`public-key.pem`、每个资产的 SPDX 2.3 SBOM、Python 约束和第三方许可证包。
 
 CodeQL CLI 只支持用户自备探测与配置，不进入任何官方资产，原因与使用边界见 [CodeQL CLI 许可](https://github.com/github/codeql-cli-binaries/blob/main/LICENSE.md)。客户业务 Maven 依赖也不属于 Java 工具包；用 `zscope-maven-cache` 在联网机准备，在隔离机导入。发行二进制和 Maven 仓库只作为 GitHub Release 资产发布，仓库不跟踪这些对象；单资产限制与使用方式见 [GitHub Release 资产说明](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)。
 
@@ -73,8 +73,19 @@ scripts/build_release_assets.sh \
   --private-key /secure/path/release-key.pem
 ```
 
-脚本拒绝 Java 工具目录中的 CodeQL、拒绝超过 2 GiB 的单资产，并生成签名、哈希和 SBOM。发布首先创建 draft；正式 benchmark 产物关联、Release notes 和最终发布均需人工批准。
+脚本拒绝 Java 工具目录中的 CodeQL、拒绝超过 2 GiB 的单资产，并生成签名、哈希、SBOM 和包含 Git SHA/tree 的确定性资产 manifest。`scripts/verify_release_assets.py` 会复核资产名称、manifest/SHA-256、签名、SPDX、2 GiB 上限和 Java 包的 CodeQL 禁入边界。发布首先创建 draft；正式 benchmark 产物关联、Release notes 和最终发布均需人工批准。
 
 ## 验收
 
-CI 用伪 runtime 执行安装、签名/篡改校验、启动、升级布局和回滚 smoke。正式发布还必须在断网普通用户环境完成 `zscope-doctor`、C 扫描、Java 扫描、升级和回滚；缺少 SVF/Saber 或 Java 默认结构/信号后端的结果不得标为正式 benchmark。
+CI 用伪 runtime 执行确定性构建、安装、签名/篡改校验、启动、升级布局和回滚 smoke；该结果必须标记为 synthetic，不能替代生产资产验收。正式发布须在外部强制断网的 Ubuntu 24.04 普通用户环境，用审批后的 C/Java smoke 脚本执行：
+
+```bash
+Z_SCOPE_NETWORK_ISOLATION_CONFIRMED=1 \
+bash scripts/smoke_release_assets.sh \
+  --asset-dir ./release-assets \
+  --cpp-smoke-script /approved/smoke-cpp.sh \
+  --java-smoke-script /approved/smoke-java.sh \
+  --evidence ./offline-smoke.json
+```
+
+该证据绑定 `release-manifest.json` 的 SHA-256，并包含 doctor、C 扫描和 Java 扫描结果。缺少 SVF/Saber 或 Java 默认结构/信号后端的结果不得标为正式 benchmark。当前本地 WSL 只有 Python 3.12.3，且未配置审批后的 CPython 3.13 runtime、C/Java toolset、pip.pyz、许可证目录和发布私钥，因此只能执行 synthetic smoke，不能伪装成生产离线资产构建。

@@ -2,7 +2,13 @@
 
 ## 当前可声明基线
 
-`test/java_range` 当前固化的是结构基线：58 条 truth 记录（覆盖 49 个规则 ID）、54 个入口、48 条 Java 本地规则，所有规则均有 fixture 覆盖。仓库没有可信、已提交的 Java LLM 精度结果，因此不得把结构数量描述成 recall/precision，也不得虚构“当前精度”。
+`test/java_range` 的结构基线是 58 条 truth 记录（覆盖 49 个规则 ID）、54 个入口、48 条 Java 本地规则，所有规则均有 fixture 覆盖。
+
+首个五轮 Java Preview 正式聚合已在 `c047dca722474b2e21b13f7dedaef89de3656662` 完成并归档到 `docs/range_reports/v1.4.0-java-preview-c047dca.json`。中位数为 confirmed TP 18、raw FP 4、precision 80.00%；with-review TP 45、raw FP 30、needs-review 53；tokens 760,658、wall time 761.3101 秒。五轮均有报告、评分、队列清空、truth 隔离和 SootUp/WALA/Joern 健康证据。
+
+这是一条 `v1.4.0-preview` 基线，不是 v1.3.1 发布指标，也不是预先设定精度门槛后的 GA 结论；运行时包版本仍为 1.3.1。以后发布 Java Preview 或 GA 时必须在对应受保护发布 SHA 重跑并重新绑定。
+
+第 3 轮耗时 4,518.0725 秒，是显著异常值。脱敏日志时间证据显示，在 54 个入口完成 53 个后，一个 Joern WebSocket 查询静默等待 3,502 秒并失败，随后 Validator 又发生两次 120 秒模型读超时。Joern 查询现已改为有界等待；正式 runner v2 会直接记录 health、scan、score、total 分阶段耗时和异常轮次，避免再次依赖事后日志反推。
 
 ## 正式执行协议
 
@@ -16,4 +22,4 @@
 
 `.github/workflows/formal-benchmark.yml` 调用 `scripts/run_formal_benchmark.py`。自托管环境配置三个不含密钥的 argv 命令：`Z_SCOPE_JAVA_HEALTH_COMMAND`、`Z_SCOPE_JAVA_SCAN_COMMAND`、`Z_SCOPE_JAVA_SCORE_COMMAND`；路径通过 `Z_SCOPE_BENCHMARK_SOURCE/CACHE/REPORT/SCORE/TRUTH` 环境变量传入。`TRUTH` 只在 scorer 阶段存在。
 
-Preview 首次门禁只要求五轮全部成功、结构覆盖完整、队列清空、产物可复现并发布，不预设精度数字。形成首个正式聚合后，GA 门禁才相对该基线检查 recall/precision、raw FP、token 与耗时回归。
+Preview 首次门禁只要求五轮全部成功、结构覆盖完整、队列清空、产物可复现并发布，不预设精度数字。当前归档满足该首次基线门禁；GA 门禁再相对这条基线检查 recall/precision、raw FP、token 与耗时回归。
