@@ -10,6 +10,8 @@
 
 `compileall` 覆盖产品代码、维护脚本、自动化测试、工具和一方 C/Java benchmark runner，不递归编译 `test/range/codeql_runs` 等归档的第三方 benchmark 数据集；这些数据可能故意包含不能作为独立 Python 模块执行的测试片段，不能据此判断 Z-SCOPE 的 Python 兼容性。
 
+push/PR 的 `secret-scan` 对 `HEAD` 的完整可达历史和当前工作树分别扫描，因此某个短分支只能被其自身历史阻断，不会因无关远端分支而误判。仓库级全引用审计仍使用不带 `--ref` 的 `scripts/scan_git_history_secrets.py`；管理员应在分支清理或历史迁移窗口执行它，并单独处置仍引用已吊销凭据历史的遗留分支。
+
 建议在仓库设置中把以下 job 设为 required：六个 `Python x.y`、`quality`、`java`、`offline-smoke`、`secret-scan`，PR 上再要求 `dependency-review`。
 
 ## CODEOWNERS 与 AI Review

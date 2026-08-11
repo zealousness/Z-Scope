@@ -85,12 +85,26 @@ def _lines(commit: str) -> Iterable[Tuple[str, int, str]]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--current-only", action="store_true")
+    parser.add_argument(
+        "--ref",
+        action="append",
+        dest="refs",
+        metavar="REVISION",
+        help=(
+            "scan the complete history reachable from this revision; repeat for multiple "
+            "release refs (default: every local ref)"
+        ),
+    )
     args = parser.parse_args()
+    if args.current_only and args.refs:
+        parser.error("--current-only cannot be combined with --ref")
     commits = (
         [""]
         if args.current_only
         else subprocess.check_output(
-            ["git", "rev-list", "--all"], text=True, encoding="utf-8"
+            ["git", "rev-list", *(args.refs or ["--all"])],
+            text=True,
+            encoding="utf-8",
         ).splitlines()
     )
     findings = set()
