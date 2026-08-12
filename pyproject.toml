@@ -70,5 +70,9 @@ disallow_untyped_defs = false
 module = ["click", "click.*"]
 follow_imports = "skip"
 
+[[tool.mypy.overrides]]
+module = ["zscope.retrieval._clang_runtime_fixes"]
+disable_error_code = ["misc", "attr-defined", "method-assign"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
