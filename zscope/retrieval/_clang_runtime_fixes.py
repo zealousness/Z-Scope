@@ -57,25 +57,6 @@ def _metadata_set(db: Any, key: str, value: str) -> None:
         setter(key, value)
 
 
-def _visible_records(
-    extractor: Any,
-    records: List[Dict[str, Any]],
-    function_file: str,
-    include_closure: Optional[List[str]],
-) -> List[Dict[str, Any]]:
-    visible_paths = [function_file]
-    visible_paths.extend(str(path or "") for path in (include_closure or []))
-    return [
-        record
-        for record in records
-        if any(
-            extractor._paths_match(path, str(record.get("file_path") or ""))
-            for path in visible_paths
-            if path
-        )
-    ]
-
-
 def install_clang_runtime_fixes() -> None:
     ClangExtractor = _extractor_mod.ClangExtractor
     ClangBackend = _backend_mod.ClangBackend
@@ -135,7 +116,7 @@ def install_clang_runtime_fixes() -> None:
                         logger.warning("LSP request '%s' timed out (id=%d)", method, msg_id)
                         return None
 
-                    # Normal responses call notify_all() and wake immediately.  The
+                    # Normal responses call notify_all() and wake immediately. The
                     # bounded wait only ensures a dead clangd process is noticed even
                     # if stdout closes without another dispatch.
                     cond.wait(timeout=min(remaining, 0.5))
@@ -157,7 +138,7 @@ def install_clang_runtime_fixes() -> None:
         method = msg.get("method")
         has_id = "id" in msg
 
-        # clangd -> client request.  A JSON-RPC request has both method and id;
+        # clangd -> client request. A JSON-RPC request has both method and id;
         # it must never be inserted into the response map for one of our calls.
         if method is not None and has_id:
             request_id = msg.get("id")
@@ -218,7 +199,14 @@ def install_clang_runtime_fixes() -> None:
         macro_refs: set[Tuple[int, int, int]],
         include_closure: Optional[List[str]] = None,
     ) -> None:
-        """Collect direct symbol references and query clangd only for ambiguity."""
+        """Collect direct symbol references and query clangd only for ambiguity.
+
+        The fast path is deliberately conservative: it is used only when exactly
+        one indexed global/macro candidate exists for the ordinary identifier.
+        Candidate rows are not visibility-filtered before resolution because a
+        visible ``extern`` declaration may resolve to a definition in another TU.
+        """
+        del include_closure  # kept for call-site compatibility and future metrics
         start_line = max(1, int(function.get("start_line") or 1))
         end_line = min(len(lines), max(start_line, int(function.get("end_line") or start_line)))
         body_lines = lines[start_line - 1 : end_line]
@@ -235,18 +223,8 @@ def install_clang_runtime_fixes() -> None:
             masked_line = self._mask_c_comments_and_literals(raw_line)
             for match in re.finditer(r"\b[A-Za-z_]\w*\b", masked_line):
                 name = match.group(0)
-                global_candidates = _visible_records(
-                    self,
-                    globals_by_name.get(name, []),
-                    function_file,
-                    include_closure,
-                )
-                macro_candidates = _visible_records(
-                    self,
-                    macros_by_name.get(name, []),
-                    function_file,
-                    include_closure,
-                )
+                global_candidates = list(globals_by_name.get(name, []))
+                macro_candidates = list(macros_by_name.get(name, []))
                 if not global_candidates and not macro_candidates:
                     continue
 
@@ -255,7 +233,7 @@ def install_clang_runtime_fixes() -> None:
                 is_field_access = self._is_field_access(masked_line, match.start())
 
                 # A local declaration or field access can rule out the global
-                # candidate before paying for an LSP round trip.  Macro candidates
+                # candidate before paying for an LSP round trip. Macro candidates
                 # remain because preprocessing happens before C name lookup.
                 if is_shadowed or is_field_access:
                     global_candidates = []
@@ -411,7 +389,7 @@ def install_clang_runtime_fixes() -> None:
         types_by_name: Dict[str, List[Dict[str, Any]]],
         include_closure: List[str],
     ) -> List[Tuple[Any, ...]]:
-        """Collect type refs and avoid definition RPCs for one visible type."""
+        """Collect type refs and avoid definition RPCs for globally unique types."""
         function_id = int(function.get("id") or 0)
         if function_id <= 0:
             return []
@@ -424,12 +402,11 @@ def install_clang_runtime_fixes() -> None:
             lookup_char = int(candidate.get("lookup_char") or candidate["character"])
             cache_key = (name, lookup_line, lookup_char)
             if cache_key not in resolved_cache:
-                records = types_by_name.get(name, [])
-                visible = _visible_records(self, records, function_file, include_closure)
-                unique_visible = {int(item.get("id") or 0): item for item in visible}
-                unique_visible.pop(0, None)
-                if len(unique_visible) == 1:
-                    resolved_cache[cache_key] = (next(iter(unique_visible.values())), "")
+                records = list(types_by_name.get(name, []))
+                unique_records = {int(item.get("id") or 0): item for item in records}
+                unique_records.pop(0, None)
+                if len(unique_records) == 1:
+                    resolved_cache[cache_key] = (next(iter(unique_records.values())), "")
                     self._type_ref_fast_resolved = (
                         int(getattr(self, "_type_ref_fast_resolved", 0)) + 1
                     )
@@ -715,7 +692,7 @@ def install_clang_runtime_fixes() -> None:
     ClangExtractor.rebuild_function_type_refs = rebuild_function_type_refs
     ClangExtractor._zscope_runtime_fixes_installed = True
 
-    # Install backend durability/invalidation fixes.  Bump derived-index versions
+    # Install backend durability/invalidation fixes. Bump derived-index versions
     # because the resolver semantics and interruption guarantees changed.
     ClangBackend.SYMBOL_CONTEXT_EXTRACTOR_VERSION = "3"
     ClangBackend.FUNCTION_TYPE_REF_EXTRACTOR_VERSION = "3"
