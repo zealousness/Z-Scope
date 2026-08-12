@@ -29,6 +29,6 @@ AI Review 使用普通 `pull_request` 事件，不使用 `pull_request_target`�
 5. Release job 校验 artifact 内的五轮聚合、逐轮报告/评分/health/队列、truth 隔离、数值门禁和 sealed-set，再运行 `verify_release_assets.py`，并提交绑定同一 asset manifest 的断网普通用户 C/Java smoke 证据。
 6. `evaluate_release_candidate.py` 汇总 benchmark、sealed-set、资产和离线 smoke：存在硬阻断时禁止创建 Release，仅缺 sealed-set 时最多为 RC；全部通过后才保持 draft 等待人工发布。
 
-正式 benchmark workflow 只允许手工触发，在自托管 Linux runner 上把 truth 与扫描副本隔离。仓库变量 `Z_SCOPE_{CPP,JAVA}_{HEALTH,SCAN,SCORE}_COMMAND` 指向经审批且不输出认证信息的命令。runner v2 记录 health/scan/score/total 分阶段耗时、命令哈希、Git tree、逐轮完整性和显著异常轮次。C 评分 JSON 必须包含 `sealed_confirmed_recall_delta_pp` 与 `sealed_precision_delta_pp`；缺失或任一低于 `-2.0` 时 artifact 只能用于 RC，不能通过正式发布评估。即使某轮失败，workflow 也会归档已经产生的日志和单轮产物。
+正式 benchmark workflow 只允许手工触发，在自托管 Linux runner 上通过源码内的 `zscope-benchmark` 把 truth 与严格 allowlist 扫描副本隔离。仓库环境只提供模型 endpoint/name、凭据和工具位置，不再注入 health/scan/score 命令。runner v2 记录分阶段耗时、canonical argv hash、Git tree、逐轮输入 manifest、完整性和显著异常轮次。C 评分 JSON 必须包含 `sealed_confirmed_recall_delta_pp` 与 `sealed_precision_delta_pp`；缺失或任一低于 `-2.0` 时 artifact 只能用于 RC。即使某轮失败，workflow 也会归档已经产生的日志和单轮产物。
 
 所有 JavaScript Action 使用 Node 24 主版本；自托管 `zscope-release` 与 `zscope-benchmark` runner 必须至少为 Actions Runner `v2.327.1`。升级 Action 或 runner 后先在非发布任务验证 checkout、artifact 上传和环境审批，再冻结正式 Release SHA。

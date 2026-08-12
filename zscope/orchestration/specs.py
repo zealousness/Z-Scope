@@ -27,6 +27,8 @@ _SPEC_REGISTRY_CACHE: Dict[
     Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]],
 ] = {}
 
+SUPPORTED_SKILL_LANGUAGES = frozenset({"c_cpp", "java"})
+
 
 def _as_list(value: Any) -> List[str]:
     if value is None:
@@ -46,6 +48,27 @@ def _as_bool(value: Any, default: bool = True) -> bool:
     if isinstance(value, str):
         return value.strip().lower() not in {"0", "false", "no", "off"}
     return bool(value)
+
+
+def _parse_skill_languages(value: Any, path: Path) -> List[str]:
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{path}: skill frontmatter 'languages' must be a non-empty YAML list")
+    languages: List[str] = []
+    for index, raw_language in enumerate(value):
+        if not isinstance(raw_language, str) or not raw_language.strip():
+            raise ValueError(
+                f"{path}: skill frontmatter languages[{index}] must be a non-empty string"
+            )
+        language = raw_language.strip()
+        if language not in SUPPORTED_SKILL_LANGUAGES:
+            allowed = ", ".join(sorted(SUPPORTED_SKILL_LANGUAGES))
+            raise ValueError(
+                f"{path}: unsupported skill language {language!r}; expected one of: {allowed}"
+            )
+        if language in languages:
+            raise ValueError(f"{path}: duplicate skill language {language!r}")
+        languages.append(language)
+    return languages
 
 
 def _read_frontmatter(path: Path) -> Tuple[Dict[str, Any], str]:
@@ -69,6 +92,7 @@ class SkillSpec:
     name: str
     description: str = ""
     category: str = ""
+    languages: List[str] = field(default_factory=list)
     triggers: List[str] = field(default_factory=list)
     allowed_tools: List[str] = field(default_factory=list)
     allowed_mcp_tools: List[str] = field(default_factory=list)
@@ -86,6 +110,7 @@ class SkillSpec:
             name=str(meta.get("name") or path.parent.name),
             description=str(meta.get("description") or ""),
             category=str(meta.get("category") or ""),
+            languages=_parse_skill_languages(meta.get("languages"), path),
             triggers=_as_list(meta.get("triggers")),
             allowed_tools=_as_list(meta.get("allowed_tools") or meta.get("tools")),
             allowed_mcp_tools=_as_list(meta.get("allowed_mcp_tools")),

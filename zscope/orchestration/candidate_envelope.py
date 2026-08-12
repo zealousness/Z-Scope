@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, cast
 
 from ..core.candidates.evidence_models import build_evidence_models
 from ..core.candidates.decision_facts import (
@@ -23,6 +23,11 @@ from ..core.candidates.decision_facts import (
     attach_decision_facts,
     security_obligation_for,
 )
+
+
+def _as_mapping(value: Any) -> Mapping[str, Any]:
+    return cast(Mapping[str, Any], value) if isinstance(value, Mapping) else {}
+
 
 CANDIDATE_SCHEMA_VERSION = "zscope.candidate.v3.3"
 DECISION_CONTEXT_VERSION = DECISION_CONTEXT_V33
@@ -59,10 +64,7 @@ def occurrence_uid_for(
     entry: str = "",
     entry_paths: Iterable[Iterable[Any]] = (),
 ) -> str:
-    normalized_paths = [
-        [str(item) for item in path if str(item)]
-        for path in entry_paths
-    ]
+    normalized_paths = [[str(item) for item in path if str(item)] for path in entry_paths]
     payload = {
         "candidate": candidate_uid,
         "entry": str(entry or ""),
@@ -77,10 +79,7 @@ def context_signature_for(
     entry_paths: Iterable[Iterable[Any]] = (),
     constraints: Any = None,
 ) -> str:
-    normalized_paths = [
-        [str(item) for item in path if str(item)]
-        for path in entry_paths
-    ]
+    normalized_paths = [[str(item) for item in path if str(item)] for path in entry_paths]
     return _digest(
         {
             "entry": str(entry or ""),
@@ -242,9 +241,7 @@ def _project_relative_path(value: Any, project_root: Any = "") -> str:
         marker_index = marked.rfind(marker)
         if marker_index >= 0:
             original_marked = f"/{path.lstrip('/')}"
-            return original_marked[
-                marker_index + len(marker) :
-            ].lstrip("./")
+            return original_marked[marker_index + len(marker) :].lstrip("./")
     return path.lstrip("./")
 
 
@@ -314,11 +311,7 @@ def _evidence_pack(issue: Mapping[str, Any]) -> Dict[str, Any]:
         "entry_identity",
         "reported_from_entry",
     }
-    return {
-        str(key): item
-        for key, item in value.items()
-        if str(key) not in identity_fields
-    }
+    return {str(key): item for key, item in value.items() if str(key) not in identity_fields}
 
 
 def infer_candidate_disposition(
@@ -326,11 +319,9 @@ def infer_candidate_disposition(
     *,
     default: str = "needs_review",
 ) -> str:
-    explicit = str(
-        issue.get("candidate_disposition")
-        or issue.get("disposition")
-        or ""
-    ).strip().lower()
+    explicit = (
+        str(issue.get("candidate_disposition") or issue.get("disposition") or "").strip().lower()
+    )
     if explicit in CANDIDATE_DISPOSITIONS:
         return explicit
 
@@ -404,14 +395,17 @@ class CandidateEnvelope:
         requested_context_version = (
             DECISION_CONTEXT_V33
             if bool(issue.get("decision_context_v33"))
-            else DECISION_CONTEXT_V32
-            if bool(issue.get("decision_context_v32"))
-            else DECISION_CONTEXT_V31
-            if bool(
-                issue.get("decision_context_v31")
-                or issue.get("decision_fact_graph_v1")
+            else (
+                DECISION_CONTEXT_V32
+                if bool(issue.get("decision_context_v32"))
+                else (
+                    DECISION_CONTEXT_V31
+                    if bool(
+                        issue.get("decision_context_v31") or issue.get("decision_fact_graph_v1")
+                    )
+                    else DECISION_CONTEXT_VERSION
+                )
             )
-            else DECISION_CONTEXT_VERSION
         )
         existing_schema = str(issue.get("candidate_schema_version") or "")
         if (
@@ -420,15 +414,18 @@ class CandidateEnvelope:
             and issue.get("occurrence_uid")
             and issue.get("decision_evidence_hash")
             and issue.get("validation_cluster_uid")
-            and str(issue.get("decision_context_version") or "")
-            == requested_context_version
+            and str(issue.get("decision_context_version") or "") == requested_context_version
         ):
             raw_paths = issue.get("entry_paths") or issue.get("call_paths") or []
-            existing_paths = [
-                [str(item) for item in path if str(item)]
-                for path in raw_paths
-                if isinstance(path, list)
-            ] if isinstance(raw_paths, list) else []
+            existing_paths = (
+                [
+                    [str(item) for item in path if str(item)]
+                    for path in raw_paths
+                    if isinstance(path, list)
+                ]
+                if isinstance(raw_paths, list)
+                else []
+            )
             return cls(
                 candidate_uid=str(issue["candidate_uid"]),
                 occurrence_uid=str(issue["occurrence_uid"]),
@@ -444,9 +441,7 @@ class CandidateEnvelope:
                 source_identity=str(issue.get("source_identity") or ""),
                 sink_identity=str(issue.get("sink_identity") or ""),
                 resource_identity=str(
-                    issue.get("resource_identity")
-                    or issue.get("resource_signature")
-                    or ""
+                    issue.get("resource_identity") or issue.get("resource_signature") or ""
                 ),
                 severity=str(issue.get("impact_level") or "medium").lower(),
                 evidence_completeness=str(issue.get("evidence_completeness") or "unknown"),
@@ -461,9 +456,7 @@ class CandidateEnvelope:
                 decision_context_version=requested_context_version,
                 record_role=str(issue.get("record_role") or "validation_obligation"),
                 evidence_models=dict(issue.get("evidence_models") or {}),
-                evidence_sources=[
-                    str(value) for value in (issue.get("evidence_sources") or [])
-                ],
+                evidence_sources=[str(value) for value in (issue.get("evidence_sources") or [])],
                 entry_paths=existing_paths,
             )
 
@@ -478,9 +471,7 @@ class CandidateEnvelope:
             or pack.get("defect_class")
         )
         function = _normalize_text(
-            issue.get("function")
-            or issue.get("sink_function")
-            or issue.get("target_function")
+            issue.get("function") or issue.get("sink_function") or issue.get("target_function")
         )
         raw_source = (
             pack.get("source")
@@ -490,9 +481,7 @@ class CandidateEnvelope:
         raw_sink = (
             pack.get("sink")
             if isinstance(pack.get("sink"), Mapping)
-            else issue.get("sink")
-            or issue.get("sink_function")
-            or pack.get("sink")
+            else issue.get("sink") or issue.get("sink_function") or pack.get("sink")
         )
         if raw_source and not isinstance(raw_source, Mapping):
             raw_source = {
@@ -593,23 +582,27 @@ class CandidateEnvelope:
                         if obligation.decision_fact_slice is not None
                         else "partial"
                     ),
-                    "decision_fact_slice": obligation.decision_fact_slice.to_dict()
-                    if obligation.decision_fact_slice is not None
-                    else {},
-                    "missing_fact_kinds": list(
-                        obligation.decision_fact_slice.missing_fact_kinds
-                    )
-                    if obligation.decision_fact_slice is not None
-                    else [],
-                    "security_obligation": obligation.to_dict(),
-                    "deterministic_proofs": list(
-                        fact_target.get("deterministic_proofs") or []
+                    "decision_fact_slice": (
+                        obligation.decision_fact_slice.to_dict()
+                        if obligation.decision_fact_slice is not None
+                        else {}
                     ),
+                    "missing_fact_kinds": (
+                        list(obligation.decision_fact_slice.missing_fact_kinds)
+                        if obligation.decision_fact_slice is not None
+                        else []
+                    ),
+                    "security_obligation": obligation.to_dict(),
+                    "deterministic_proofs": list(fact_target.get("deterministic_proofs") or []),
                 }
             )
 
         raw_call_paths = issue.get("call_paths")
-        if isinstance(raw_call_paths, list) and raw_call_paths and isinstance(raw_call_paths[0], list):
+        if (
+            isinstance(raw_call_paths, list)
+            and raw_call_paths
+            and isinstance(raw_call_paths[0], list)
+        ):
             entry_paths = [
                 [str(item) for item in path if str(item)]
                 for path in raw_call_paths
@@ -617,7 +610,9 @@ class CandidateEnvelope:
             ]
         else:
             raw_path = issue.get("call_path") or pack.get("call_path") or []
-            path = [str(item) for item in raw_path if str(item)] if isinstance(raw_path, list) else []
+            path = (
+                [str(item) for item in raw_path if str(item)] if isinstance(raw_path, list) else []
+            )
             entry_paths = [path] if path else []
 
         entry = str(
@@ -634,8 +629,8 @@ class CandidateEnvelope:
             entry_paths=entry_paths,
         )
         evidence_models = build_evidence_models(issue)
-        ast_cfg = pack.get("ast_cfg") if isinstance(pack.get("ast_cfg"), Mapping) else {}
-        local_path = pack.get("path") if isinstance(pack.get("path"), Mapping) else {}
+        ast_cfg = _as_mapping(pack.get("ast_cfg"))
+        local_path = _as_mapping(pack.get("path"))
         local_decision_complete = local_path.get("complete_in_function") is True
         evidence = {
             "pack": pack,
@@ -760,9 +755,7 @@ class CandidateEnvelope:
             entry=entry,
             entry_paths=entry_paths,
             constraints=(
-                issue.get("path_constraints")
-                or pack.get("path_constraints")
-                or pack.get("path")
+                issue.get("path_constraints") or pack.get("path_constraints") or pack.get("path")
             ),
         )
         run_issue_uid = f"RUNISSUE_{_digest({'run': run_id, 'occurrence': occurrence_uid, 'evidence': evidence_hash, 'ordinal': ordinal})}"
@@ -778,8 +771,12 @@ class CandidateEnvelope:
                 if value
             }
         )
-        complete = pack.get("path", {}).get("complete") if isinstance(pack.get("path"), Mapping) else None
-        evidence_completeness = "complete" if complete is True else "partial" if complete is False else "unknown"
+        complete = (
+            pack.get("path", {}).get("complete") if isinstance(pack.get("path"), Mapping) else None
+        )
+        evidence_completeness = (
+            "complete" if complete is True else "partial" if complete is False else "unknown"
+        )
         return cls(
             candidate_uid=candidate_uid,
             occurrence_uid=occurrence_uid,
@@ -803,7 +800,8 @@ class CandidateEnvelope:
             obligation_shape=obligation_shape,
             decision_fact_version=(
                 DECISION_FACT_VERSION
-                if requested_context_version in {
+                if requested_context_version
+                in {
                     DECISION_CONTEXT_V31,
                     DECISION_CONTEXT_V32,
                     DECISION_CONTEXT_V33,

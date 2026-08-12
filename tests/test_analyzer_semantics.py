@@ -115,21 +115,20 @@ def test_llm_iteration_budget_is_observed_without_hard_failure() -> None:
 
 def test_candidate_first_skips_entry_scoped_investigator_planning() -> None:
     analyzer = object.__new__(Analyzer)
-    analyzer.config = SimpleNamespace(analysis=SimpleNamespace(candidate_first_validation=True))
     recorded = []
     analyzer._record_engine_capability = lambda *args, **kwargs: recorded.append((args, kwargs))
     state = {"notes": []}
 
     analyzer._step_focused_subagent_planning(state)
 
-    assert "skipped for the candidate-first" in state["notes"][0]
+    assert "stable candidate-first" in state["notes"][0]
     assert recorded == [
         (
             ("focused_investigators",),
             {
                 "status": "complete",
                 "active": False,
-                "reason": "candidate_first_validation",
+                "reason": "stable_candidate_first_lifecycle",
             },
         )
     ]
@@ -145,7 +144,6 @@ def test_candidate_first_uses_local_skill_routing_before_fact_collection() -> No
     )
     analyzer = object.__new__(Analyzer)
     analyzer.config = SimpleNamespace(
-        analysis=SimpleNamespace(candidate_first_validation=True),
         project=SimpleNamespace(
             agents=[
                 SimpleNamespace(
@@ -181,12 +179,23 @@ def test_candidate_first_uses_local_skill_routing_before_fact_collection() -> No
 
 def test_candidate_first_skill_selection_keeps_every_deterministic_skill() -> None:
     analyzer = object.__new__(Analyzer)
+    skills = {
+        name: SimpleNamespace(name=name, languages=["c_cpp"])
+        for name in (
+            "bounds_and_integer",
+            "resource_lifecycle",
+            "shared_state_race",
+        )
+    }
+    analyzer.config = SimpleNamespace(project=SimpleNamespace(language="c_cpp"))
     analyzer.spec_registry = SimpleNamespace(
         skills_for_agent=lambda name, extra: [
-            SimpleNamespace(name="bounds_and_integer"),
-            SimpleNamespace(name="resource_lifecycle"),
-            SimpleNamespace(name="shared_state_race"),
-        ]
+            skills["bounds_and_integer"],
+            skills["resource_lifecycle"],
+            skills["shared_state_race"],
+        ],
+        skills=skills,
+        get_skill=skills.get,
     )
 
     selection = analyzer._candidate_first_skill_selection(SimpleNamespace(skills=[]))

@@ -34,6 +34,10 @@ ReportIssueDeduper = Callable[[List[Dict[str, Any]], Dict[str, Any]], List[Dict[
 MetadataFactory = Callable[[Dict[str, Any]], Dict[str, Any]]
 
 
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return cast(Dict[str, Any], value) if isinstance(value, dict) else {}
+
+
 class ReportAssembler:
     """Build and persist final reports from workflow state."""
 
@@ -65,21 +69,19 @@ class ReportAssembler:
                 or metadata.get("project_root")
                 or ""
             ),
-            "project_root": str(
-                metadata.get("repo") or metadata.get("project_root") or ""
-            ),
+            "project_root": str(metadata.get("repo") or metadata.get("project_root") or ""),
             "revision": str(metadata.get("commit_sha") or metadata.get("source_revision") or ""),
-            "entry_function": str(
-                state.get("entry_identity")
-                or state.get("entry_func")
-                or ""
-            ),
+            "entry_function": str(state.get("entry_identity") or state.get("entry_func") or ""),
             "run_id": str(state.get("run_id") or metadata.get("run_id") or ""),
         }
         annotate_issue_collection(
             [issue for issue in all_issues if isinstance(issue, dict)],
             default_disposition="confirmed",
-            **identity_kwargs,
+            project_id=identity_kwargs["project_id"],
+            project_root=identity_kwargs["project_root"],
+            revision=identity_kwargs["revision"],
+            entry_function=identity_kwargs["entry_function"],
+            run_id=identity_kwargs["run_id"],
         )
         canonical_outcomes = (
             self._canonical_outcome_items(state)
@@ -92,19 +94,19 @@ class ReportAssembler:
             # for diagnostics, but never let them add or override findings.
             state["raw_observations"] = list(observations)
             all_issues = [
-                item for item in canonical_outcomes
+                item
+                for item in canonical_outcomes
                 if str(item.get("candidate_disposition") or "").lower() == "confirmed"
             ]
             observations = [
-                item for item in canonical_outcomes
+                item
+                for item in canonical_outcomes
                 if str(item.get("candidate_disposition") or "").lower() == "needs_review"
             ]
             state["_canonical_report_issues"] = list(all_issues)
             state["_canonical_review_observations"] = list(observations)
             lifecycle = state.get("candidate_lifecycle_snapshot")
-            lifecycle_summary = (
-                lifecycle.get("summary") if isinstance(lifecycle, dict) else {}
-            )
+            lifecycle_summary = lifecycle.get("summary") if isinstance(lifecycle, dict) else {}
             if int((lifecycle_summary or {}).get("nonterminal_validation_count") or 0):
                 state["completeness"] = "degraded"
                 state["notes"].append(
@@ -121,7 +123,11 @@ class ReportAssembler:
         annotate_issue_collection(
             [issue for issue in observations if isinstance(issue, dict)],
             default_disposition="needs_review",
-            **identity_kwargs,
+            project_id=identity_kwargs["project_id"],
+            project_root=identity_kwargs["project_root"],
+            revision=identity_kwargs["revision"],
+            entry_function=identity_kwargs["entry_function"],
+            run_id=identity_kwargs["run_id"],
         )
         self.resolve_issue_locations(all_issues)
         if canonical_outcomes is None and self.deduplicate_report_issues:
@@ -162,17 +168,12 @@ class ReportAssembler:
             identity = str(item.get("occurrence_uid") or item.get("candidate_uid") or "")
             if not identity or not any(
                 identity
-                == str(
-                    existing.get("occurrence_uid")
-                    or existing.get("candidate_uid")
-                    or ""
-                )
+                == str(existing.get("occurrence_uid") or existing.get("candidate_uid") or "")
                 for existing in terminal_states
             ):
                 terminal_states.append(item)
         if finding == "clean" and any(
-            str(item.get("candidate_disposition") or "").lower()
-            == "needs_review"
+            str(item.get("candidate_disposition") or "").lower() == "needs_review"
             for item in terminal_states
         ):
             finding = "needs_review"
@@ -194,9 +195,7 @@ class ReportAssembler:
         governance = review_governance_summary(
             list(state.get("observations", [])) + operational_terminal,
             canonical_review=[
-                item
-                for item in state.get("observations", [])
-                if isinstance(item, dict)
+                item for item in state.get("observations", []) if isinstance(item, dict)
             ],
         )
         invariant_status = self._report_invariant_status(
@@ -205,9 +204,7 @@ class ReportAssembler:
             terminal_states,
             canonical_outcomes is not None,
         )
-        if "validation_queue_drained" in state and not bool(
-            state.get("validation_queue_drained")
-        ):
+        if "validation_queue_drained" in state and not bool(state.get("validation_queue_drained")):
             invariant_status["valid"] = False
             invariant_status["validation_queue_drained"] = False
         else:
@@ -273,34 +270,30 @@ class ReportAssembler:
             canonical_issues = state.get("_canonical_report_issues")
             canonical_observations = state.get("_canonical_review_observations")
             final_report.report_views = build_report_views(
-                canonical_issues
-                if isinstance(canonical_issues, list)
-                else state.get("_deduped_report_issues")
-                or (state.get("issues", []) + state.get("verified_hist_issues", [])),
-                canonical_observations
-                if isinstance(canonical_observations, list)
-                else state.get("observations", []),
+                (
+                    canonical_issues
+                    if isinstance(canonical_issues, list)
+                    else state.get("_deduped_report_issues")
+                    or (state.get("issues", []) + state.get("verified_hist_issues", []))
+                ),
+                (
+                    canonical_observations
+                    if isinstance(canonical_observations, list)
+                    else state.get("observations", [])
+                ),
                 canonical_projection=(
-                    isinstance(canonical_issues, list)
-                    and isinstance(canonical_observations, list)
+                    isinstance(canonical_issues, list) and isinstance(canonical_observations, list)
                 ),
             )
         with_review = final_report.report_views.get("with_needs_review", {})
         governance = (
-            with_review.get("needs_review_governance")
-            if isinstance(with_review, dict)
-            else None
+            with_review.get("needs_review_governance") if isinstance(with_review, dict) else None
         )
         if isinstance(governance, dict):
             governance = dict(governance)
             governance["operational_obligation_count"] = max(
                 int(governance.get("operational_obligation_count") or 0),
-                int(
-                    final_report.needs_review_governance.get(
-                        "operational_obligation_count"
-                    )
-                    or 0
-                ),
+                int(final_report.needs_review_governance.get("operational_obligation_count") or 0),
             )
             final_report.needs_review_governance = governance
             final_report.run_manifest.update(
@@ -374,7 +367,9 @@ class ReportAssembler:
             "validator_session_count": int(state.get("validator_session_count", 0) or 0),
             "validator_api_call_count": int(state.get("validator_api_call_count", 0) or 0),
             "validator_turn_distribution": dict(state.get("validator_turn_distribution") or {}),
-            "validator_prompt_tokens_by_stage": dict(state.get("validator_prompt_tokens_by_stage") or {}),
+            "validator_prompt_tokens_by_stage": dict(
+                state.get("validator_prompt_tokens_by_stage") or {}
+            ),
             "evidence_slice_token_count": int(state.get("evidence_slice_token_count", 0) or 0),
             "multi_turn_outlier_count": int(state.get("multi_turn_outlier_count", 0) or 0),
             "snapshot_model_call_count": int(state.get("snapshot_model_call_count", 0) or 0),
@@ -448,6 +443,7 @@ class ReportAssembler:
                         "entry_paths",
                         "record_role",
                         "candidate_id",
+                        "candidate_kind",
                         "dedup_key",
                         "candidate_disposition",
                         "status",
@@ -458,6 +454,17 @@ class ReportAssembler:
                         "deferred_reason",
                         "reason",
                         "engine",
+                        "rule",
+                        "rule_id",
+                        "rule_engine",
+                        "rule_revision",
+                        "rule_source",
+                        "rule_status",
+                        "rule_catalog_version",
+                        "rule_catalog_sha256",
+                        "skill",
+                        "signal_source",
+                        "native_rule_id",
                         "parent",
                         "sources",
                         "call_paths",
@@ -507,18 +514,14 @@ class ReportAssembler:
                 if isinstance(value, dict):
                     append_item(value)
         return [
-            dict(item)
-            for item in coalesce_terminal_candidates(terminal)
-            if isinstance(item, dict)
+            dict(item) for item in coalesce_terminal_candidates(terminal) if isinstance(item, dict)
         ]
 
     @staticmethod
     def _terminalize_candidate_item(item: Dict[str, Any]) -> Dict[str, Any]:
         value = dict(item)
         disposition = str(
-            value.get("candidate_disposition")
-            or value.get("disposition")
-            or ""
+            value.get("candidate_disposition") or value.get("disposition") or ""
         ).lower()
         status = str(value.get("status") or "").lower()
         terminal_statuses = {
@@ -531,9 +534,7 @@ class ReportAssembler:
             "deduplicated_alias",
         }
         if disposition not in terminal_statuses:
-            disposition = (
-                status if status in terminal_statuses else "needs_review"
-            )
+            disposition = status if status in terminal_statuses else "needs_review"
         if status not in terminal_statuses:
             prior_status = status
             status = disposition
@@ -562,13 +563,11 @@ class ReportAssembler:
             if not isinstance(raw, dict):
                 continue
             disposition = str(
-                raw.get("terminal_disposition")
-                or raw.get("candidate_disposition")
-                or ""
+                raw.get("terminal_disposition") or raw.get("candidate_disposition") or ""
             ).lower()
             if not disposition:
                 continue
-            issue = raw.get("issue") if isinstance(raw.get("issue"), dict) else {}
+            issue = _as_dict(raw.get("issue"))
             value = deepcopy(issue)
             value.update(
                 {
@@ -607,8 +606,7 @@ class ReportAssembler:
             1
             for item in observations
             if isinstance(item, dict)
-            and str(item.get("candidate_disposition") or "").lower()
-            == "needs_review"
+            and str(item.get("candidate_disposition") or "").lower() == "needs_review"
         )
         terminal_confirmed = sum(
             1
@@ -642,23 +640,19 @@ class ReportAssembler:
         open_validation_count = sum(
             1
             for item in terminal_items
-            if str(item.get("status") or "").lower()
-            in {"pending", "queued", "planned", "running"}
+            if str(item.get("status") or "").lower() in {"pending", "queued", "planned", "running"}
         )
         obligation_uids = {
             str(item.get("obligation_uid") or item.get("candidate_uid") or "")
             for item in terminal_items
             if str(item.get("record_role") or "") != "operational_obligation"
         }
-        valid = (
-            not canonical_enabled
-            or (
-                default_count == terminal_confirmed
-                and review_count == terminal_review
-                and len(clusters) == security_terminal_count
-                and open_completion_count == 0
-                and open_validation_count == 0
-            )
+        valid = not canonical_enabled or (
+            default_count == terminal_confirmed
+            and review_count == terminal_review
+            and len(clusters) == security_terminal_count
+            and open_completion_count == 0
+            and open_validation_count == 0
         )
         return {
             "valid": valid,
@@ -669,18 +663,15 @@ class ReportAssembler:
             "terminal_review_count": terminal_review,
             "canonical_validation_group_count": len(clusters),
             "validation_group_alias_count": sum(
-                len(item.get("alias_occurrence_uids") or [])
-                for item in terminal_items
+                len(item.get("alias_occurrence_uids") or []) for item in terminal_items
             ),
             "validator_invocation_count": sum(
-                int(item.get("validation_attempt_count") or 0)
-                for item in terminal_items
+                int(item.get("validation_attempt_count") or 0) for item in terminal_items
             ),
             "rejected_with_proof_count": sum(
                 1
                 for item in terminal_items
-                if str(item.get("candidate_disposition") or "").lower()
-                == "rejected_with_proof"
+                if str(item.get("candidate_disposition") or "").lower() == "rejected_with_proof"
             ),
             "cluster_fragmentation_count": max(0, len(clusters) - len(obligation_uids)),
             "open_evidence_completion_count": open_completion_count,
@@ -713,26 +704,16 @@ class ReportAssembler:
             if str(raw.get("record_role") or "") != "validation_obligation":
                 continue
             terminal = ReportAssembler._terminalize_candidate_item(raw)
-            disposition = str(
-                terminal.get("candidate_disposition") or ""
-            ).lower()
+            disposition = str(terminal.get("candidate_disposition") or "").lower()
             if disposition != "needs_review":
                 continue
             identity = terminal_candidate_identity(terminal)
             if identity and identity in represented:
                 continue
 
-            ticket = raw.get("ticket") if isinstance(raw.get("ticket"), dict) else {}
-            evidence = (
-                ticket.get("evidence")
-                if isinstance(ticket.get("evidence"), dict)
-                else {}
-            )
-            payload = (
-                evidence.get("candidate_payload")
-                if isinstance(evidence.get("candidate_payload"), dict)
-                else {}
-            )
+            ticket = _as_dict(raw.get("ticket"))
+            evidence = _as_dict(ticket.get("evidence"))
+            payload = _as_dict(evidence.get("candidate_payload"))
             observation = deepcopy(payload)
             for key in (
                 "candidate_schema_version",
@@ -793,12 +774,11 @@ class ReportAssembler:
             ):
                 observation["occurrence_uid"] = occurrence_uids[0]
 
+            evidence_path = _as_dict(evidence.get("path"))
             function_name = str(
                 observation.get("function")
                 or evidence.get("function")
-                or ((evidence.get("path") or {}).get("function")
-                    if isinstance(evidence.get("path"), dict)
-                    else "")
+                or evidence_path.get("function")
                 or ""
             )
             if not function_name:
@@ -814,11 +794,7 @@ class ReportAssembler:
                 observation.setdefault("function", function_name)
 
             line = int(observation.get("line") or ticket.get("line") or 0)
-            file_path = str(
-                observation.get("file_path")
-                or observation.get("file")
-                or ""
-            )
+            file_path = str(observation.get("file_path") or observation.get("file") or "")
             if not file_path:
                 for endpoint in ("sink", "source"):
                     endpoint_value = evidence.get(endpoint)
@@ -856,13 +832,11 @@ class ReportAssembler:
             priority = int(ticket.get("priority_score") or 0)
             observation.setdefault(
                 "impact_level",
-                "critical"
-                if priority >= 90
-                else "high"
-                if priority >= 75
-                else "medium"
-                if priority >= 45
-                else "low",
+                (
+                    "critical"
+                    if priority >= 90
+                    else "high" if priority >= 75 else "medium" if priority >= 45 else "low"
+                ),
             )
             observation.setdefault(
                 "confidence",

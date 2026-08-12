@@ -1,0 +1,18 @@
+runtime_spec_version: 1
+agents:
+  vulnerability_analyzer:
+    enabled: false
+  issue_reconciler_agent:
+    enabled: false
+  validator_agent:
+    enabled: false
+analysis:
+  enable_global_model: true
+  enable_subagent_workers: false
+  max_premodel_depth: 5
+  max_premodel_callees: 20
+  trivial_function_max_lines: 10
+  max_subagent_tickets: 0
+paths:
+  snapshots: ${Z_SCOPE_GLOBAL_MODEL_SNAPSHOT_DIR}
+  knowledge_db: .zscope_knowledge/global_model_benchmark.db

@@ -13,6 +13,8 @@ from ..config.config import ZScopeConfig
 from ..config.user_config_store import UserConfigStore
 from ..retrieval.code_index import CodeIndex
 from .engine import RuleEngine, RuleMatch
+from .catalog import EffectiveRuleSet, serialize_effective_rules
+from .extensions import preflight_rules
 from ..reporting.report import FinalReport, Issue, ReportGenerator
 from ..framework.llm_client import LLMClient
 from .._version import __version__
@@ -30,6 +32,9 @@ class RuleDrivenAnalyzer:
         user_config: Optional[UserConfigStore] = None,
     ):
         self.config = config
+        # Third-party/direct construction must not bypass the same strict rule
+        # preflight used by CLI, Web, MCP, and batch scans.
+        self.effective_rules = preflight_rules(config)
         self.code_index = code_index
         db_dir = (
             Path(config.analysis.user_config_db)
@@ -45,9 +50,7 @@ class RuleDrivenAnalyzer:
                 models=llm_cfg.models,
                 timeout=llm_cfg.timeout,
                 max_retries=llm_cfg.max_retries,
-                retry_until_available=getattr(
-                    llm_cfg, "retry_until_available", False
-                ),
+                retry_until_available=getattr(llm_cfg, "retry_until_available", False),
                 max_tokens=llm_cfg.max_tokens,
                 base_url_rate_limit_per_minute=getattr(
                     llm_cfg, "base_url_rate_limit_per_minute", 0
@@ -55,16 +58,13 @@ class RuleDrivenAnalyzer:
                 base_url_max_concurrent_requests=getattr(
                     llm_cfg, "base_url_max_concurrent_requests", 0
                 ),
-                global_max_concurrent_requests=getattr(
-                    config.analysis, "llm_max_inflight", 8
-                ),
-                supports_structured_output=getattr(
-                    llm_cfg, "supports_structured_output", False
-                ),
+                global_max_concurrent_requests=config.concurrency.llm_max_inflight,
+                supports_structured_output=getattr(llm_cfg, "supports_structured_output", False),
             )
         self.report_generator = ReportGenerator(config.project.project_root)
 
         from ..retrieval.joern_backend import JoernBackend
+
         if not isinstance(code_index.backend, JoernBackend):
             raise ValueError("Rule-driven mode requires Joern CPG backend")
         self.rule_engine = RuleEngine(code_index.backend.joern_client, self.user_config)
@@ -100,8 +100,7 @@ class RuleDrivenAnalyzer:
         notes: List[str] = []
 
         validator_enabled = any(
-            a.name == "validator_agent" and a.enabled
-            for a in self.config.project.agents
+            a.name == "validator_agent" and a.enabled for a in self.config.project.agents
         )
 
         for func_name, matches in by_func.items():
@@ -140,13 +139,15 @@ class RuleDrivenAnalyzer:
 
         tools = [
             GetFunctionImplTool(self.code_index, self.user_config),
-            GetFunctionSnapshotTool(
-                SnapshotStore(Path(self.config.analysis.snapshot_dir))
-            ),
+            GetFunctionSnapshotTool(SnapshotStore.from_config(self.config)),
         ]
-        
-        val_agent_cfg = next((a for a in self.config.project.agents if a.name == "validator_agent"), None)
-        val_llm_ref = val_agent_cfg.llm_ref if val_agent_cfg and val_agent_cfg.llm_ref else "default"
+
+        val_agent_cfg = next(
+            (a for a in self.config.project.agents if a.name == "validator_agent"), None
+        )
+        val_llm_ref = (
+            val_agent_cfg.llm_ref if val_agent_cfg and val_agent_cfg.llm_ref else "default"
+        )
         val_client = self.llm_clients.get(val_llm_ref, self.llm_clients["default"])
         validator = ValidatorAgent(val_client, tools)
 
@@ -162,26 +163,22 @@ class RuleDrivenAnalyzer:
             resp = validator.run(val_input)
             if resp.success:
                 data = resp.data
-                issue["validation_status"] = (
-                    "validated" if data.get("is_valid") else "rejected"
-                )
+                issue["validation_status"] = "validated" if data.get("is_valid") else "rejected"
                 issue["validation_reasoning"] = data.get("reasoning")
-                issue["confidence"] = data.get(
-                    "confidence_score", issue.get("confidence", 0.5)
-                )
+                issue["confidence"] = data.get("confidence_score", issue.get("confidence", 0.5))
             else:
                 logger.warning(
                     "Validation failed for rule %s in %s: %s",
-                    issue.get("rule_id"), func_name, resp.error,
+                    issue.get("rule_id"),
+                    func_name,
+                    resp.error,
                 )
                 issue["validation_status"] = "pending"
                 issue["validation_error"] = resp.error
             validated.append(issue)
         return validated
 
-    def _filter_false_positives(
-        self, issues: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+    def _filter_false_positives(self, issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         filtered = []
         for issue in issues:
             func = issue.get("function", "")
@@ -193,9 +190,7 @@ class RuleDrivenAnalyzer:
             filtered.append(issue)
         return filtered
 
-    def _build_report(
-        self, issues: List[Dict[str, Any]], notes: List[str]
-    ) -> Dict[str, Any]:
+    def _build_report(self, issues: List[Dict[str, Any]], notes: List[str]) -> Dict[str, Any]:
         verdict = "issues_found" if issues else "no_issue_found"
         report = FinalReport(
             entry_function="[rule-driven]",
@@ -207,10 +202,30 @@ class RuleDrivenAnalyzer:
             ],
             notes=notes,
         )
+        effective = getattr(self, "effective_rules", None)
+        rule_catalog = (
+            serialize_effective_rules(effective) if isinstance(effective, EffectiveRuleSet) else {}
+        )
+        backend_signal_counts: Dict[str, int] = {}
+        for issue in issues:
+            if str(issue.get("candidate_kind") or "") != "backend_signal":
+                continue
+            native_id = str(issue.get("native_rule_id") or issue.get("rule_id") or "")
+            if native_id:
+                backend_signal_counts[native_id] = backend_signal_counts.get(native_id, 0) + 1
         report.metadata = {
             "timestamp": datetime.datetime.now().isoformat(),
             "version": __version__,
             "mode": "rule_driven",
+            "effective_rules_sha256": str(
+                getattr(getattr(effective, "provenance", None), "effective_sha256", "") or ""
+            ),
+            "rule_catalog": rule_catalog,
+            # Rule-driven Joern findings are backend signals, not registered
+            # deterministic rules.  Keep deterministic counts honest and
+            # expose native signal aggregation separately.
+            "rule_candidate_counts": {"total": 0, "by_engine": {}, "by_rule": {}},
+            "backend_signal_counts": dict(sorted(backend_signal_counts.items())),
         }
         self.report_generator.save_json_report(report)
         self.report_generator.save_markdown_report(report)

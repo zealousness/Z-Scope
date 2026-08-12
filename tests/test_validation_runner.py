@@ -72,13 +72,19 @@ def _runner(
     result_cache=None,
     scheduler=None,
     get_tools=None,
+    concurrency=None,
 ):
     memory = memory if memory is not None else []
     config = SimpleNamespace(
         analysis=analysis,
+        concurrency=concurrency
+        or SimpleNamespace(
+            validator_workers=2,
+            evidence_completion_workers=2,
+        ),
         project=SimpleNamespace(
             agents=[SimpleNamespace(name="validator_agent", enabled=enabled, llm_ref="default")]
-        )
+        ),
     )
     return ValidationRunner(
         config=config,
@@ -88,7 +94,9 @@ def _runner(
         snapshot_store=FakeSnapshotStore(),
         get_tools=get_tools or (lambda agent_name: []),
         tool_policy_for_agent=lambda agent_name: None,
-        attach_agent_contract=lambda context, agent_name: context.update({"agent_contract": agent_name}),
+        attach_agent_contract=lambda context, agent_name: context.update(
+            {"agent_contract": agent_name}
+        ),
         remember_validation_result=lambda issue, status: memory.append((issue["id"], status)),
         validator_agent_factory=validator_agent_factory or (lambda *args, **kwargs: agent),
         result_cache=result_cache,
@@ -128,7 +136,9 @@ def _issue(**overrides):
     return issue
 
 
-def test_validation_runner_cache_key_uses_stable_evidence_fingerprint_without_candidate_id() -> None:
+def test_validation_runner_cache_key_uses_stable_evidence_fingerprint_without_candidate_id() -> (
+    None
+):
     runner = _runner(None)
     issue = _issue(
         id="ISSUE_VOLATILE",
@@ -227,9 +237,7 @@ def test_validation_runner_cache_key_ignores_occurrence_only_entry_context() -> 
     }
 
     assert len(keys) == 3
-    assert runner._validator_cache_key(first) == runner._validator_cache_key(
-        changed_entry
-    )
+    assert runner._validator_cache_key(first) == runner._validator_cache_key(changed_entry)
 
 
 def test_validation_runner_cluster_cache_key_ignores_occurrence_payload() -> None:
@@ -310,7 +318,11 @@ def test_validation_runner_coalesces_identical_inflight_work_across_entry_runner
     second_state = _state(_issue(candidate_id="CAND_SHARED"))
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        list(pool.map(lambda pair: pair[0].run(pair[1]), [(first, first_state), (second, second_state)]))
+        list(
+            pool.map(
+                lambda pair: pair[0].run(pair[1]), [(first, first_state), (second, second_state)]
+            )
+        )
 
     assert len(calls) == 1
     assert len(first_state["issues"]) == 1
@@ -349,12 +361,9 @@ def test_validation_runner_validates_issue_and_remembers_outcome() -> None:
     assert agent.inputs[0]["agent_contract"] == "validator_agent"
 
 
-def test_validation_runner_skips_validator_for_prevalidation_proof() -> None:
+def test_validation_runner_always_skips_validator_for_prevalidation_proof() -> None:
     agent = FakeValidatorAgent([])
-    runner = _runner(
-        agent,
-        analysis=SimpleNamespace(deterministic_prevalidation_v2=True),
-    )
+    runner = _runner(agent)
     issue = _issue(
         deterministic_proofs=[
             {
@@ -378,7 +387,7 @@ def test_validation_runner_skips_validator_for_prevalidation_proof() -> None:
     assert state["deterministic_prevalidation_confirmed_count"] == 1
 
 
-def test_validator_evidence_slice_v2_disables_open_ended_tools() -> None:
+def test_stable_validator_evidence_slice_disables_open_ended_tools() -> None:
     captured = {}
 
     def factory(client, tools, **kwargs):
@@ -387,7 +396,6 @@ def test_validator_evidence_slice_v2_disables_open_ended_tools() -> None:
 
     runner = _runner(
         FakeValidatorAgent([]),
-        analysis=SimpleNamespace(validator_evidence_slice_v2=True),
         validator_agent_factory=factory,
         get_tools=lambda _agent_name: ["broad_code_browser"],
     )
@@ -444,17 +452,11 @@ def test_validation_runner_compacts_large_validator_payloads() -> None:
     _runner(agent).run(state)
 
     validator_input = agent.inputs[0]
-    assert "RAW_PAYLOAD_SHOULD_NOT_SURVIVE" not in validator_input["finding"]
-    assert "irrelevant_large_blob" not in validator_input["finding"]
-    candidate_evidence = validator_input["evidence_pack"]["candidate_evidence"]
-    assert "raw_evidence" not in candidate_evidence
-    assert "raw_reports" not in candidate_evidence
-    assert candidate_evidence["path"]["complete_to_entry"] is True
-    assert candidate_evidence["positive_evidence"] == ["entry reaches sink"]
-    assert candidate_evidence["compaction_metadata"]["omitted_large_payload_keys"] == [
-        "raw_evidence",
-        "raw_reports",
-    ]
+    serialized_slice = json.dumps(validator_input["evidence_slice"])
+    assert "RAW_PAYLOAD_SHOULD_NOT_SURVIVE" not in serialized_slice
+    assert "irrelevant_large_blob" not in serialized_slice
+    assert validator_input["evidence_slice"]["evidence"]["positive"] == ["entry reaches sink"]
+    assert validator_input["validator_protocol"] == "zscope.validator-protocol.v2"
 
 
 def test_validation_runner_keeps_entry_root_rejection_without_proof_for_review() -> None:
@@ -475,8 +477,7 @@ def test_validation_runner_keeps_entry_root_rejection_without_proof_for_review()
 
     _runner(agent, memory=memory).run(state)
 
-    assert len(agent.inputs) == 2
-    assert agent.inputs[1]["evidence_pack"]["mode"] == "tri_state_exploitability_validation_entry_root_retry"
+    assert len(agent.inputs) == 1
     assert state["issues"] == []
     assert len(state["observations"]) == 1
     assert state["observations"][0]["validation_status"] == "needs_review"
@@ -593,8 +594,7 @@ def test_validation_runner_parallel_workers_preserve_order_and_token_totals() ->
 
     class PerIssueValidatorAgent:
         def run(self, input_data):
-            finding = json.loads(input_data["finding"])
-            issue_id = finding["id"]
+            issue_id = input_data["finding_uid"]
             calls.append((threading.current_thread().name, issue_id))
             return AgentResponse(
                 success=True,
@@ -626,7 +626,6 @@ def test_validation_runner_parallel_workers_preserve_order_and_token_totals() ->
 
     runner = _runner(
         None,
-        analysis=SimpleNamespace(parallel_workers=12, validation_parallel_workers=2),
         validator_agent_factory=lambda *args, **kwargs: PerIssueValidatorAgent(),
     )
     runner.run(state)
@@ -707,7 +706,6 @@ def test_parent_cancellation_cancels_unstarted_validation_futures_without_draini
         None,
         analysis=SimpleNamespace(
             validation_deadline_seconds=0.001,
-            validation_parallel_workers=2,
         ),
         validator_agent_factory=lambda *args, **kwargs: BlockingValidator(),
     )
@@ -768,7 +766,6 @@ def test_parent_deadline_is_a_hard_cutoff_for_parallel_validation_batch() -> Non
         None,
         analysis=SimpleNamespace(
             validation_deadline_seconds=0.001,
-            validation_parallel_workers=2,
         ),
         validator_agent_factory=lambda *args, **kwargs: BlockingValidator(),
     )
@@ -828,7 +825,6 @@ def test_parent_cancellation_cancels_queued_scan_scheduler_validations() -> None
         None,
         analysis=SimpleNamespace(
             validation_deadline_seconds=0.001,
-            validator_workers=1,
         ),
         validator_agent_factory=lambda *args, **kwargs: BlockingValidator(),
         scheduler=scheduler,
@@ -853,14 +849,12 @@ def test_parent_cancellation_cancels_queued_scan_scheduler_validations() -> None
     assert state["pending_new_issues"] == issues
 
 
-def test_validation_runner_prefers_role_specific_validator_workers() -> None:
+def test_validation_runner_uses_explicit_concurrency_validator_workers() -> None:
     runner = _runner(
         None,
-        analysis=SimpleNamespace(
-            entry_workers=8,
-            parallel_workers=2,
+        concurrency=SimpleNamespace(
             validator_workers=3,
-            validation_parallel_workers=1,
+            evidence_completion_workers=2,
         ),
     )
 
@@ -898,8 +892,11 @@ def test_validation_runner_normalizes_external_api_function_to_entry_function() 
 
     _runner(agent, code_index=MissingExternalApiCodeIndex()).run(state)
 
-    compact_finding = json.loads(agent.inputs[0]["finding"])
-    assert compact_finding["function"] == "api_entry"
-    assert compact_finding["sink_function"] == "pthread_create"
+    evidence_slice = agent.inputs[0]["evidence_slice"]
+    assert evidence_slice["obligation"]["function"] == "api_entry"
+    assert evidence_slice["evidence"]["sink"] == "pthread_create"
     assert issue["validation_function_normalized_from"] == "pthread_create"
-    assert issue["validation_function_normalization_reason"] == "external_api_function_without_indexed_body"
+    assert (
+        issue["validation_function_normalization_reason"]
+        == "external_api_function_without_indexed_body"
+    )

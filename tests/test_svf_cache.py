@@ -21,13 +21,15 @@ def _write_compile_commands(tmp_path: Path) -> tuple[Path, Path]:
 
     compile_commands = tmp_path / "compile_commands.json"
     compile_commands.write_text(
-        json.dumps([
-            {
-                "directory": str(source_root),
-                "command": "cc -c main.c",
-                "file": "main.c",
-            }
-        ]),
+        json.dumps(
+            [
+                {
+                    "directory": str(source_root),
+                    "command": "cc -c main.c",
+                    "file": "main.c",
+                }
+            ]
+        ),
         encoding="utf-8",
     )
     return source_root, compile_commands
@@ -37,9 +39,7 @@ def _write_callgraph(dot_path: Path, edges: list[tuple[str, str]]) -> Path:
     names = sorted({name for edge in edges for name in edge})
     node_ids = {name: f"0x{index + 1:x}" for index, name in enumerate(names)}
     lines = ["digraph {"]
-    lines.extend(
-        f'  Node{node_ids[name]} [label="{{ {name} }}"];' for name in names
-    )
+    lines.extend(f'  Node{node_ids[name]} [label="{{ {name} }}"];' for name in names)
     lines.extend(
         f"  Node{node_ids[caller]} -> Node{node_ids[callee]} [color=red];"
         for caller, callee in edges
@@ -139,7 +139,9 @@ def test_svf_mapper_resolves_unique_field_pointer_callsite_from_source(tmp_path:
     )
     db = KnowledgeDB(str(tmp_path / "knowledge.db"))
     try:
-        db.insert_function("caller", "src/main.c", 4, 6, signature="void caller(Ops ops, void* value)")
+        db.insert_function(
+            "caller", "src/main.c", 4, 6, signature="void caller(Ops ops, void* value)"
+        )
         db.insert_function("Target", "src/main.c", 3, 3, signature="void Target(void* value)")
         db.insert_type(
             "Ops",
@@ -193,7 +195,9 @@ def test_svf_mapper_resolves_unique_field_pointer_callsite_from_source(tmp_path:
         db.close()
 
 
-def test_svf_mapper_resolves_parameter_function_pointer_callsite_from_source(tmp_path: Path) -> None:
+def test_svf_mapper_resolves_parameter_function_pointer_callsite_from_source(
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "src" / "main.c"
     source.parent.mkdir()
     source.write_text(
@@ -605,12 +609,15 @@ def test_split_svf_runs_wpa_groups_in_parallel_and_saber_once(
 
     analyzer = SvfAnalyzer(db=db, timeout=42, parallel_workers=2)
 
-    assert analyzer.run(
-        source_root,
-        tmp_path,
-        compile_commands,
-        entry_functions=["api_a", "api_b"],
-    ) is True
+    assert (
+        analyzer.run(
+            source_root,
+            tmp_path,
+            compile_commands,
+            entry_functions=["api_a", "api_b"],
+        )
+        is True
+    )
     assert sorted(calls["ander"]) == ["cluster1.bc", "cluster2.bc"]
     assert calls["saber"] == ["saber_default.bc"]
     assert calls["max_active"] == 2
@@ -662,13 +669,16 @@ def test_explicit_svf_groups_still_enable_entry_clustering(
 
     analyzer = SvfAnalyzer(db=db, timeout=42, parallel_workers=2)
 
-    assert analyzer.run(
-        source_root,
-        tmp_path,
-        compile_commands,
-        entry_functions=["api_alpha"],
-        svf_groups_config=str(groups_config),
-    ) is True
+    assert (
+        analyzer.run(
+            source_root,
+            tmp_path,
+            compile_commands,
+            entry_functions=["api_alpha"],
+            svf_groups_config=str(groups_config),
+        )
+        is True
+    )
     assert seen == {
         "groups": {"alpha": []},
         "auto_entry_clusters": True,
@@ -714,21 +724,26 @@ def test_wpa_group_timeout_does_not_block_successful_groups_or_full_saber(
 
         def run_saber(self, bc_path, output_dir):
             calls["saber"] += 1
-            return SvfResult(tool="saber", success=True, bugs=[
-                {"type": "Double Free", "file": "src/a.c", "line": 7}
-            ])
+            return SvfResult(
+                tool="saber",
+                success=True,
+                bugs=[{"type": "Double Free", "file": "src/a.c", "line": 7}],
+            )
 
     monkeypatch.setattr(svf_module, "BitcodeBuilder", FakeBitcodeBuilder)
     monkeypatch.setattr(svf_module, "SvfRunner", FakeSvfRunner)
 
     analyzer = SvfAnalyzer(db=db, timeout=42, parallel_workers=2)
 
-    assert analyzer.run(
-        source_root,
-        tmp_path,
-        compile_commands,
-        entry_functions=["api_a", "api_b"],
-    ) is False
+    assert (
+        analyzer.run(
+            source_root,
+            tmp_path,
+            compile_commands,
+            entry_functions=["api_a", "api_b"],
+        )
+        is False
+    )
     assert calls["saber"] == 1
     assert db.get_taint_bugs("Double Free")[0]["svf_group"] == "saber:default"
     assert db.get_svf_hash() == ""
@@ -782,20 +797,26 @@ def test_svf_resume_reruns_only_failed_groups(
 
     analyzer = SvfAnalyzer(db=db, timeout=42, parallel_workers=2)
     run_number["value"] = 1
-    assert analyzer.run(
-        source_root,
-        tmp_path,
-        compile_commands,
-        entry_functions=["api_a", "api_b"],
-    ) is False
+    assert (
+        analyzer.run(
+            source_root,
+            tmp_path,
+            compile_commands,
+            entry_functions=["api_a", "api_b"],
+        )
+        is False
+    )
 
     run_number["value"] = 2
-    assert analyzer.run(
-        source_root,
-        tmp_path,
-        compile_commands,
-        entry_functions=["api_a", "api_b"],
-    ) is True
+    assert (
+        analyzer.run(
+            source_root,
+            tmp_path,
+            compile_commands,
+            entry_functions=["api_a", "api_b"],
+        )
+        is True
+    )
 
     assert calls["ander"].count("ok.bc") == 1
     assert calls["ander"].count("retry.bc") == 2
@@ -936,11 +957,11 @@ def test_tu_purge_advances_generation_and_replays_dot_for_global_modeler(
 
     config = SimpleNamespace(
         analysis=SimpleNamespace(
-            parallel_workers=1,
             max_premodel_depth=-1,
             max_premodel_callees=30,
             max_function_lines=500,
-        )
+        ),
+        concurrency=SimpleNamespace(entry_workers=1),
     )
     modeler = GlobalModeler(
         config,
@@ -1095,14 +1116,17 @@ def test_materialization_failure_rolls_back_existing_group(
 
     monkeypatch.setattr(svf_module.SvfOutputMapper, "import_callgraph", fail_import)
     analyzer = SvfAnalyzer(db=db)
-    assert analyzer._materialize_group(
-        "ander",
-        "default",
-        "fingerprint",
-        dot,
-        analyzer._file_hash(dot),
-        ".zscope_svf/callgraph_final.dot",
-    ) is False
+    assert (
+        analyzer._materialize_group(
+            "ander",
+            "default",
+            "fingerprint",
+            dot,
+            analyzer._file_hash(dot),
+            ".zscope_svf/callgraph_final.dot",
+        )
+        is False
+    )
     assert db.get_indirect_callees("old_caller")[0]["name"] == "old_callee"
     assert db.get_indirect_callees("new_caller") == []
     assert db.get_metadata("svf_db_import:ander:default") == ""

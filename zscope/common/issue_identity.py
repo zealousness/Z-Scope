@@ -5,12 +5,16 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, cast
 
 
 MAX_CATEGORY_TOKEN_LENGTH = 64
 MAX_ISSUE_KEY_PART_LENGTH = 160
 ISSUE_KEY_HASH_LENGTH = 12
+
+
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return cast(Dict[str, Any], value) if isinstance(value, dict) else {}
 
 
 def deduplicate_issues(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -148,11 +152,7 @@ def issues_have_destructive_equivalence(
             return False
         return bool(
             (left_file and right_file and left_file == right_file)
-            or (
-                left_function
-                and right_function
-                and left_function == right_function
-            )
+            or (left_function and right_function and left_function == right_function)
         )
 
     # A concrete object/resource can identify the same lifecycle or race root
@@ -165,11 +165,7 @@ def issues_have_destructive_equivalence(
             return False
         return bool(
             (left_file and right_file and left_file == right_file)
-            or (
-                left_function
-                and right_function
-                and left_function == right_function
-            )
+            or (left_function and right_function and left_function == right_function)
         )
 
     # Legacy candidates without endpoint fields may still carry an exact
@@ -215,7 +211,7 @@ def issues_have_destructive_equivalence(
 def _detector_occurrence_signature(issue: Dict[str, Any]) -> str:
     """Return a detector fact identity that never depends on a display ID."""
 
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    pack = _as_dict(issue.get("evidence_pack"))
     source = normalize_issue_key_part(
         issue.get("candidate_source")
         or issue.get("detector")
@@ -241,30 +237,21 @@ def _explicit_resource_signature(issue: Dict[str, Any]) -> str:
     for mapping in _identity_mappings(issue):
         explicit = first_issue_value(mapping, *_RESOURCE_IDENTITY_KEYS)
         if explicit:
-            return (
-                _resource_signature_from_text(explicit)
-                or _concrete_resource_token(explicit)
-            )
+            return _resource_signature_from_text(explicit) or _concrete_resource_token(explicit)
     return ""
 
 
 def _internal_occurrence_identity(issue: Dict[str, Any]) -> str:
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    pack = _as_dict(issue.get("evidence_pack"))
     validation_cluster_uid = str(
-        issue.get("validation_cluster_uid")
-        or pack.get("validation_cluster_uid")
-        or ""
+        issue.get("validation_cluster_uid") or pack.get("validation_cluster_uid") or ""
     )
     if validation_cluster_uid:
         return "|".join(("validation_cluster", validation_cluster_uid))
     occurrence_uid = str(issue.get("occurrence_uid") or pack.get("occurrence_uid") or "")
     candidate_uid = str(issue.get("candidate_uid") or pack.get("candidate_uid") or "")
     evidence_hash = str(issue.get("evidence_hash") or pack.get("evidence_hash") or "")
-    context_signature = str(
-        issue.get("context_signature")
-        or pack.get("context_signature")
-        or ""
-    )
+    context_signature = str(issue.get("context_signature") or pack.get("context_signature") or "")
     if occurrence_uid and evidence_hash and context_signature:
         return "|".join(("occurrence", occurrence_uid, evidence_hash, context_signature))
     if candidate_uid and evidence_hash and context_signature:
@@ -273,9 +260,7 @@ def _internal_occurrence_identity(issue: Dict[str, Any]) -> str:
 
 
 def _independent_occurrence_key(issue: Dict[str, Any], base_key: str) -> str:
-    file_path, line = parse_issue_location(
-        str(issue.get("location") or issue.get("file") or "")
-    )
+    file_path, line = parse_issue_location(str(issue.get("location") or issue.get("file") or ""))
     payload = {
         "base": base_key,
         "internal": _internal_occurrence_identity(issue),
@@ -288,9 +273,7 @@ def _independent_occurrence_key(issue: Dict[str, Any], base_key: str) -> str:
         "sink_location": _issue_endpoint_location(issue, "sink"),
         "evidence_hash": issue.get("evidence_hash"),
     }
-    digest = hashlib.sha256(
-        repr(sorted(payload.items())).encode("utf-8")
-    ).hexdigest()[:16]
+    digest = hashlib.sha256(repr(sorted(payload.items())).encode("utf-8")).hexdigest()[:16]
     return f"{base_key}|occurrence:{digest}"
 
 
@@ -311,7 +294,9 @@ def merge_duplicate_issue(
         primary.setdefault("resource_signature", signature)
 
     duplicate_extra_count = int(duplicate.get("duplicate_count", 0) or 0)
-    primary["duplicate_count"] = int(primary.get("duplicate_count", 0) or 0) + 1 + duplicate_extra_count
+    primary["duplicate_count"] = (
+        int(primary.get("duplicate_count", 0) or 0) + 1 + duplicate_extra_count
+    )
 
     sources = primary.get("duplicate_sources")
     if not isinstance(sources, list):
@@ -345,9 +330,7 @@ def merge_duplicate_issue(
             decisions = []
             primary["dedup_decisions"] = decisions
         compact_decision = {
-            key: value
-            for key, value in decision.items()
-            if value not in (None, "", [], {})
+            key: value for key, value in decision.items() if value not in (None, "", [], {})
         }
         if compact_decision and compact_decision not in decisions:
             decisions.append(compact_decision)
@@ -503,7 +486,11 @@ def normalize_issue_fields(issue: Dict[str, Any]) -> None:
         )
     )
     structured_category = structured_issue_category(issue)
-    normalized_category = semantic_category_override(structured_category, inferred_category) or structured_category or inferred_category
+    normalized_category = (
+        semantic_category_override(structured_category, inferred_category)
+        or structured_category
+        or inferred_category
+    )
     current = str(issue.get("category") or "").replace("-", "_").lower()
     generic_categories = {
         "",
@@ -621,9 +608,11 @@ def issue_rank(issue: Dict[str, Any]) -> tuple[int, int, int, int, float, int]:
 
 def issue_precision_rank(issue: Dict[str, Any]) -> int:
     """Prefer precise sink/category reports over broad static audit candidates."""
-    category = str(
-        issue.get("category") or issue.get("subcategory") or issue.get("defect_class") or ""
-    ).replace("-", "_").lower()
+    category = (
+        str(issue.get("category") or issue.get("subcategory") or issue.get("defect_class") or "")
+        .replace("-", "_")
+        .lower()
+    )
     group = str(issue.get("candidate_priority_group") or "").lower()
     finding_kind = str(issue.get("finding_kind") or "").lower()
     generic_categories = {
@@ -649,7 +638,11 @@ def issue_precision_rank(issue: Dict[str, Any]) -> int:
         "stack_overflow",
         "use_after_free",
     }
-    if finding_kind == "audit_observation" or group == "generic_audit" or category in generic_categories:
+    if (
+        finding_kind == "audit_observation"
+        or group == "generic_audit"
+        or category in generic_categories
+    ):
         return 0
     if group == "exact_sink" or category in exact_categories:
         return 3
@@ -660,7 +653,7 @@ def issue_precision_rank(issue: Dict[str, Any]) -> int:
 
 def structured_evidence_rank(issue: Dict[str, Any]) -> int:
     """Prefer concrete local/backend evidence over long free-form duplicates."""
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    pack = _as_dict(issue.get("evidence_pack"))
     source = str(
         issue.get("candidate_source")
         or pack.get("candidate_source")
@@ -668,9 +661,11 @@ def structured_evidence_rank(issue: Dict[str, Any]) -> int:
         or ""
     ).lower()
     rule = str(issue.get("rule") or pack.get("rule") or issue.get("id") or "").lower()
-    category = str(
-        issue.get("category") or issue.get("subcategory") or issue.get("defect_class") or ""
-    ).replace("-", "_").lower()
+    category = (
+        str(issue.get("category") or issue.get("subcategory") or issue.get("defect_class") or "")
+        .replace("-", "_")
+        .lower()
+    )
     if source == "clang_ast_cfg" and category in {
         "integer_overflow",
         "protocol_validation",
@@ -901,8 +896,7 @@ def report_cluster_category(category: str, root: str) -> str:
     if (
         root_key.startswith("numeric_")
         or any(
-            marker in root_key
-            for marker in ("allocation_size", "byte_limit", "size_calculation")
+            marker in root_key for marker in ("allocation_size", "byte_limit", "size_calculation")
         )
     ) and normalized in {
         "integer_overflow",
@@ -969,8 +963,8 @@ def issue_resource_signature(issue: Dict[str, Any]) -> str:
         if explicit_token:
             return explicit_token
 
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
-    clang_fact = pack.get("clang_matcher_fact") if isinstance(pack.get("clang_matcher_fact"), dict) else {}
+    pack = _as_dict(issue.get("evidence_pack"))
+    clang_fact = _as_dict(pack.get("clang_matcher_fact"))
     for key in (
         "resource_symbol",
         "object_symbol",
@@ -1094,8 +1088,8 @@ def _resource_root_for_issue(issue: Dict[str, Any], text: str) -> str:
     if explicit:
         return _resource_signature_from_text(explicit) or _concrete_resource_token(explicit)
 
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
-    clang_fact = pack.get("clang_matcher_fact") if isinstance(pack.get("clang_matcher_fact"), dict) else {}
+    pack = _as_dict(issue.get("evidence_pack"))
+    clang_fact = _as_dict(pack.get("clang_matcher_fact"))
     for key in (
         "resource_symbol",
         "object_symbol",
@@ -1148,7 +1142,9 @@ def semantic_root_cause_key(issue: Dict[str, Any]) -> str:
     function = issue_function_identity(issue)
     resource = issue_resource_signature(issue)
     parts = ["semantic-v1", family, file_path, function, root or resource]
-    normalized = [normalize_issue_key_part(part) for part in parts if normalize_issue_key_part(part)]
+    normalized = [
+        normalize_issue_key_part(part) for part in parts if normalize_issue_key_part(part)
+    ]
     if len(normalized) < 4:
         return ""
     return "|".join(normalized)
@@ -1240,7 +1236,14 @@ def issues_same_context(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
     right_file = issue_file_identity(right, flatten_issue_text(right))
     left_func = issue_function_identity(left)
     right_func = issue_function_identity(right)
-    if left_file and right_file and left_file == right_file and left_func and right_func and left_func == right_func:
+    if (
+        left_file
+        and right_file
+        and left_file == right_file
+        and left_func
+        and right_func
+        and left_func == right_func
+    ):
         return True
 
     left_paths = _call_path_sets(left)
@@ -1457,10 +1460,7 @@ def deduplicate_semantic_issues_programmatic(
             for lookup_key in _programmatic_merge_lookup_keys(issue):
                 for primary in primary_index.get(lookup_key, []):
                     primary_id = id(primary)
-                    if (
-                        primary_id not in active_primary_ids
-                        or primary_id in seen_candidate_ids
-                    ):
+                    if primary_id not in active_primary_ids or primary_id in seen_candidate_ids:
                         continue
                     seen_candidate_ids.add(primary_id)
                     candidates.append(primary)
@@ -1476,7 +1476,9 @@ def deduplicate_semantic_issues_programmatic(
             if matched is None:
                 add_primary(issue)
                 continue
-            root_key = semantic_root_cause_key(matched) or semantic_root_cause_key(issue) or group_key
+            root_key = (
+                semantic_root_cause_key(matched) or semantic_root_cause_key(issue) or group_key
+            )
             if issue_rank(issue) > issue_rank(matched):
                 primaries.remove(matched)
                 active_primary_ids.discard(id(matched))
@@ -1559,7 +1561,11 @@ def _call_path_sets(issue: Dict[str, Any]) -> Set[Tuple[str, ...]]:
     paths: Set[Tuple[str, ...]] = set()
 
     def add_path(value: Any) -> None:
-        if isinstance(value, list) and value and all(not isinstance(item, (list, dict)) for item in value):
+        if (
+            isinstance(value, list)
+            and value
+            and all(not isinstance(item, (list, dict)) for item in value)
+        ):
             normalized = tuple(str(item).lower() for item in value if str(item).strip())
             if normalized:
                 paths.add(normalized)
@@ -1690,7 +1696,9 @@ def stable_issue_fingerprint(issue: Dict[str, Any]) -> str:
         "variable",
     )
     parts = ["v1", category, file_path, function, root, rule, source, sink, resource]
-    normalized = [normalize_issue_key_part(part) for part in parts if normalize_issue_key_part(part)]
+    normalized = [
+        normalize_issue_key_part(part) for part in parts if normalize_issue_key_part(part)
+    ]
     # Avoid producing a dangerously broad fingerprint such as only category/file.
     if len(normalized) < 4:
         return ""
@@ -1721,7 +1729,9 @@ def source_context_fingerprint(issue: Dict[str, Any]) -> str:
             sorted(
                 {
                     normalized
-                    for normalized in (_normalize_source_context(fragment) for fragment in fragments)
+                    for normalized in (
+                        _normalize_source_context(fragment) for fragment in fragments
+                    )
                     if normalized
                 }
             )
@@ -1858,7 +1868,14 @@ def _source_context_fragments(value: Any, *, depth: int = 0) -> List[str]:
                 "code_excerpt",
             }:
                 fragments.extend(_coerce_context_fragment(item))
-            elif key_text in {"evidence_pack", "candidate_evidence", "source_path", "path", "ast_cfg", "clang_tooling"}:
+            elif key_text in {
+                "evidence_pack",
+                "candidate_evidence",
+                "source_path",
+                "path",
+                "ast_cfg",
+                "clang_tooling",
+            }:
                 fragments.extend(_source_context_fragments(item, depth=depth + 1))
         return fragments
     if isinstance(value, list):
@@ -1903,15 +1920,17 @@ def _normalize_source_context(fragment: str) -> str:
 
 
 def _source_span_identity(issue: Dict[str, Any]) -> str:
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
-    values = [
+    pack = _as_dict(issue.get("evidence_pack"))
+    values: List[Any] = [
         issue_file_identity(issue),
         issue_function_identity(issue),
         first_issue_value(issue, "sink", "sink_function", "target_function", "release_func"),
         first_issue_value(issue, "source", "source_function", "acquire_func"),
-        first_issue_value(issue, "resource", "resource_object", "affected_object", "symbol", "variable"),
+        first_issue_value(
+            issue, "resource", "resource_object", "affected_object", "symbol", "variable"
+        ),
     ]
-    clang_fact = pack.get("clang_matcher_fact") if isinstance(pack.get("clang_matcher_fact"), dict) else {}
+    clang_fact = _as_dict(pack.get("clang_matcher_fact"))
     values.extend(
         [
             clang_fact.get("matcher"),
@@ -1921,13 +1940,15 @@ def _source_span_identity(issue: Dict[str, Any]) -> str:
             clang_fact.get("sink_symbol"),
         ]
     )
-    ast_cfg = pack.get("ast_cfg") if isinstance(pack.get("ast_cfg"), dict) else {}
+    ast_cfg = _as_dict(pack.get("ast_cfg"))
     events = ast_cfg.get("events")
     if isinstance(events, list):
         for event in events[:5]:
             if isinstance(event, dict):
                 values.extend([event.get("kind"), event.get("variable"), event.get("callee")])
-    normalized = [normalize_issue_key_part(value) for value in values if normalize_issue_key_part(value)]
+    normalized = [
+        normalize_issue_key_part(value) for value in values if normalize_issue_key_part(value)
+    ]
     if len(normalized) < 3:
         return ""
     return "|".join(normalized)
@@ -1966,7 +1987,10 @@ _RULE_ROOT_ALIASES = (
     ("partial_resource_not_released_on_retry_failure", "retry_cleanup_missing"),
     ("parsed_protocol_version_is_ignored", "parsed_protocol_version_ignored"),
     ("raw_fd_revalidated_as_encoded", "raw_fd_reaches_encoded_fd_validator"),
-    ("protocol_units_length_reaches_copy_without_packet_bound", "protocol_length_without_packet_bound"),
+    (
+        "protocol_units_length_reaches_copy_without_packet_bound",
+        "protocol_length_without_packet_bound",
+    ),
     ("global_dynamic_array_resize_without_lock", "unsynchronized_dynamic_array_resize"),
     ("probe_error_branch_can_return_success_status", "error_branch_returns_success"),
     ("stack_address_passed_to_thread", "stack_address_async_escape"),
@@ -2052,8 +2076,7 @@ def _structured_lock_order_root(issue: Dict[str, Any], text: str) -> str:
                     lock_tokens.add(token)
     if len(lock_tokens) < 2:
         for match in re.finditer(
-            r"\b([A-Za-z_][A-Za-z0-9_]*(?:(?:->|\.)[A-Za-z_][A-Za-z0-9_]*)*"
-            r"(?:_lock|_mutex))\b",
+            r"\b([A-Za-z_][A-Za-z0-9_]*(?:(?:->|\.)[A-Za-z_][A-Za-z0-9_]*)*" r"(?:_lock|_mutex))\b",
             text,
             flags=re.IGNORECASE,
         ):
@@ -2143,23 +2166,25 @@ def _project_agnostic_root_cause_token(
     if stack_resource and category == "stack_escape":
         return f"stack_address_async_escape_{stack_resource}"
 
-    if category == "signed_unsigned" and (
-        "size_t" in raw_lower or "unsigned" in lower or "size max" in lower
-    ) and (
-        "recv" in lower
-        or "read" in lower
-        or "signed length" in lower
-        or "signed return" in lower
+    if (
+        category == "signed_unsigned"
+        and ("size_t" in raw_lower or "unsigned" in lower or "size max" in lower)
+        and (
+            "recv" in lower
+            or "read" in lower
+            or "signed length" in lower
+            or "signed return" in lower
+        )
     ):
         return "negative_length_to_unsigned_size"
-    if (
-        ("dynamic array" in lower or "array resize" in lower or "old storage" in lower)
-        and ("without a lock" in lower or "without synchronization" in lower or "race" in lower)
+    if ("dynamic array" in lower or "array resize" in lower or "old storage" in lower) and (
+        "without a lock" in lower or "without synchronization" in lower or "race" in lower
     ):
         return "unsynchronized_dynamic_array_resize"
-    if (
-        ("error branch" in lower or "probe failure" in lower)
-        and ("return success" in lower or "returns ret" in lower or "returns the transport status" in lower)
+    if ("error branch" in lower or "probe failure" in lower) and (
+        "return success" in lower
+        or "returns ret" in lower
+        or "returns the transport status" in lower
     ):
         return "error_branch_returns_success"
     if (
@@ -2178,8 +2203,10 @@ def _project_agnostic_root_cause_token(
         "leak" in lower or "not released" in lower or "missing cleanup" in lower
     ):
         return "retry_cleanup_missing"
-    if "encoded fd" in lower and "raw fd" in lower and (
-        "check value" in lower or "validate" in lower
+    if (
+        "encoded fd" in lower
+        and "raw fd" in lower
+        and ("check value" in lower or "validate" in lower)
     ):
         return "raw_fd_reaches_encoded_fd_validator"
     if (
@@ -2202,17 +2229,15 @@ def _project_agnostic_root_cause_token(
         return "full_key_lookup_truncated_insert"
     if "active tasks" in lower and ("destroy" in lower or "free" in lower):
         return "pool_destroyed_with_active_tasks"
-    if "registration" in lower and ("ops" in lower or "slot" in lower) and (
-        "race" in lower or "check then act" in lower
+    if (
+        "registration" in lower
+        and ("ops" in lower or "slot" in lower)
+        and ("race" in lower or "check then act" in lower)
     ):
         return "operation_registration_check_then_act"
-    if "hash node" in lower and (
-        "allocator" in lower or "alloc free" in lower
-    ):
+    if "hash node" in lower and ("allocator" in lower or "alloc free" in lower):
         return "hash_node_allocator_pairing"
-    if ("ftok" in lower or "key generation" in lower) and (
-        "path" in lower or "collision" in lower
-    ):
+    if ("ftok" in lower or "key generation" in lower) and ("path" in lower or "collision" in lower):
         return "shared_key_generation_collision"
     if "value+1" in compact and category == "invalid_free":
         return "interior_pointer_free"
@@ -2258,65 +2283,238 @@ def normalize_issue_category(value: str) -> str:
         return "stack_escape"
     groups = {
         "format_string": ("format string", "格式化字符串", "cwe-134"),
-        "command_injection": ("command injection", "shell injection", "命令注入", "system(", "cwe-78"),
+        "command_injection": (
+            "command injection",
+            "shell injection",
+            "命令注入",
+            "system(",
+            "cwe-78",
+        ),
         "double_checked_locking": ("double checked locking", "double checked", "双重检查"),
-        "signed_unsigned": ("signed unsigned", "negative length", "size_max", "sizemax", "有符号", "无符号", "cwe-195"),
+        "signed_unsigned": (
+            "signed unsigned",
+            "negative length",
+            "size_max",
+            "sizemax",
+            "有符号",
+            "无符号",
+            "cwe-195",
+        ),
         "off_by_one": ("off by one", "off-by-one", "sizeof index", "差一", "cwe-193"),
         "uninitialized_read": ("uninitialized read", "未初始化", "栈上垃圾", "cwe-457"),
-        "stack_escape": ("stack escape", "use after return", "return stack", "栈地址逃逸", "栈指针", "cwe-562"),
+        "stack_escape": (
+            "stack escape",
+            "use after return",
+            "return stack",
+            "栈地址逃逸",
+            "栈指针",
+            "cwe-562",
+        ),
         "stack_overflow": ("stack overflow", "vla", "栈溢出", "cwe-121"),
         "double_free": ("double free", "free twice", "same object released twice", "cwe-415"),
         "invalid_free": ("invalid free", "non owner", "非堆", "栈缓冲区内部", "cwe-590"),
-        "type_confusion": ("type confusion", "wrong type", "invalid mutex", "sharedresources", "类型混淆", "cwe-843"),
-        "use_after_free": ("use after free", "use-after-free", "uaf", "dangling", "释放后使用", "悬垂", "cwe-416"),
+        "type_confusion": (
+            "type confusion",
+            "wrong type",
+            "invalid mutex",
+            "sharedresources",
+            "类型混淆",
+            "cwe-843",
+        ),
+        "use_after_free": (
+            "use after free",
+            "use-after-free",
+            "uaf",
+            "dangling",
+            "释放后使用",
+            "悬垂",
+            "cwe-416",
+        ),
         "null_pointer_dereference": ("null pointer", "null dereference", "空指针", "cwe-476"),
         "realloc_misuse": ("realloc misuse", "direct realloc", "realloc返回值直接", "cwe-401"),
         "missing_unlock": ("missing unlock", "return while lock", "锁泄漏", "未释放锁", "cwe-667"),
-        "held_lock_callback": ("callback while lock", "held lock callback", "under lock", "cwe-667"),
-        "lost_wakeup": ("lost wakeup", "condition variable", "虚假唤醒", "pthread cond wait", "cwe-366"),
+        "held_lock_callback": (
+            "callback while lock",
+            "held lock callback",
+            "under lock",
+            "cwe-667",
+        ),
+        "lost_wakeup": (
+            "lost wakeup",
+            "condition variable",
+            "虚假唤醒",
+            "pthread cond wait",
+            "cwe-366",
+        ),
         "refcount_race": ("refcount race", "reference count", "ref count"),
-        "object_publication": ("object publication", "published before initialization", "half initialized"),
+        "object_publication": (
+            "object publication",
+            "published before initialization",
+            "half initialized",
+        ),
         "integer_overflow": ("integer overflow", "overflow", "wrap", "整数溢出", "回绕", "cwe-190"),
-        "bounds": ("bounds", "out of bounds", "buffer overflow", "buffer overread", "越界", "缓冲区", "cwe-125", "cwe-787"),
-        "race": ("race", "data race", "toctou", "concurrency", "竞态", "无锁", "cwe-362", "cwe-367"),
+        "bounds": (
+            "bounds",
+            "out of bounds",
+            "buffer overflow",
+            "buffer overread",
+            "越界",
+            "缓冲区",
+            "cwe-125",
+            "cwe-787",
+        ),
+        "race": (
+            "race",
+            "data race",
+            "toctou",
+            "concurrency",
+            "竞态",
+            "无锁",
+            "cwe-362",
+            "cwe-367",
+        ),
         "deadlock": ("deadlock", "lock order", "死锁", "重入", "cwe-833"),
-        "memory_leak": ("memory leak", "resource leak", "leak", "内存泄漏", "资源泄漏", "未释放", "cwe-401", "cwe-772"),
-        "fd_leak": ("fd leak", "file descriptor leak", "descriptor leak", "unclosed fd", "unclosed descriptor", "cwe-775"),
+        "memory_leak": (
+            "memory leak",
+            "resource leak",
+            "leak",
+            "内存泄漏",
+            "资源泄漏",
+            "未释放",
+            "cwe-401",
+            "cwe-772",
+        ),
+        "fd_leak": (
+            "fd leak",
+            "file descriptor leak",
+            "descriptor leak",
+            "unclosed fd",
+            "unclosed descriptor",
+            "cwe-775",
+        ),
         "alignment": ("alignment", "unaligned", "strict alias", "cwe-704"),
         "stale_fd": ("stale fd", "file descriptor", "closed fd", "cwe-672"),
         "path_traversal": ("path traversal", "路径遍历"),
         "state_inconsistency": ("state inconsistency", "state not restored", "rollback", "cwe-672"),
         "unchecked_return": ("unchecked return", "unchecked result", "return success", "cwe-252"),
-        "busy_loop": ("busy loop", "infinite loop", "spin", "no delay", "resource exhaustion", "cwe-400", "cwe-835"),
+        "busy_loop": (
+            "busy loop",
+            "infinite loop",
+            "spin",
+            "no delay",
+            "resource exhaustion",
+            "cwe-400",
+            "cwe-835",
+        ),
         "log_amplification": ("log amplification", "log storm", "resource exhaustion", "cwe-400"),
         "key_truncation": ("key truncation", "truncated key", "partial comparison", "cwe-187"),
-        "size_limit_mismatch": ("size limit", "fixed limit", "buffer limit", "spec mismatch", "cwe-131"),
+        "size_limit_mismatch": (
+            "size limit",
+            "fixed limit",
+            "buffer limit",
+            "spec mismatch",
+            "cwe-131",
+        ),
         "fd_type_mismatch": ("fd type", "reliable fd", "raw fd", "mismatched parameter", "cwe-628"),
-        "protocol_mixup": ("protocol mixup", "protocol mismatch", "auth level", "origin validation", "cwe-346"),
+        "protocol_mixup": (
+            "protocol mixup",
+            "protocol mismatch",
+            "auth level",
+            "origin validation",
+            "cwe-346",
+        ),
         "partial_resource_leak": ("partial resource leak", "retry leak"),
         "dynamic_array_race": ("dynamic array", "array expansion"),
-        "version_filtering": ("version filtering", "missing version", "low version", "version filter", "cwe-20"),
-        "missing_refcount": ("missing refcount", "reference count", "refcount", "shared resource", "cwe-772"),
+        "version_filtering": (
+            "version filtering",
+            "missing version",
+            "low version",
+            "version filter",
+            "cwe-20",
+        ),
+        "missing_refcount": (
+            "missing refcount",
+            "reference count",
+            "refcount",
+            "shared resource",
+            "cwe-772",
+        ),
         "sigpipe_unhandled": ("sigpipe", "closed peer", "signal", "cwe-404"),
-        "premature_destroy": ("premature destroy", "destroyed while active", "active tasks", "cwe-416"),
+        "premature_destroy": (
+            "premature destroy",
+            "destroyed while active",
+            "active tasks",
+            "cwe-416",
+        ),
         "registration_race": ("registration race", "check then act", "ops registration", "cwe-362"),
-        "alloc_free_mismatch": ("allocator mismatch", "alloc free mismatch", "allocator pairing", "cwe-762"),
+        "alloc_free_mismatch": (
+            "allocator mismatch",
+            "alloc free mismatch",
+            "allocator pairing",
+            "cwe-762",
+        ),
         "key_generation_race": ("ftok", "key generation", "key collision", "cwe-362"),
         "fd_encoding_mismatch": ("fd encoding", "encoded fd", "raw fd", "check value", "cwe-587"),
-        "semantic_mismatch": ("semantic mismatch", "semantic unit", "callback parameter", "counter domain", "cwe-628"),
+        "semantic_mismatch": (
+            "semantic mismatch",
+            "semantic unit",
+            "callback parameter",
+            "counter domain",
+            "cwe-628",
+        ),
         "byte_order_logic": ("byte order", "endian", "ctz", "trailing zero", "cwe-682"),
-        "reader_state_race": ("reader state", "reader pid", "multiple readers", "rwlock", "cwe-362"),
-        "uninitialized_output": ("uninitialized output", "partially initialized", "output parameter", "cwe-457"),
-        "file_type_validation": ("file type", "character device", "regular file", "mapping size", "cwe-20"),
+        "reader_state_race": (
+            "reader state",
+            "reader pid",
+            "multiple readers",
+            "rwlock",
+            "cwe-362",
+        ),
+        "uninitialized_output": (
+            "uninitialized output",
+            "partially initialized",
+            "output parameter",
+            "cwe-457",
+        ),
+        "file_type_validation": (
+            "file type",
+            "character device",
+            "regular file",
+            "mapping size",
+            "cwe-20",
+        ),
         "log_level_misuse": ("log level", "logged at error", "alert noise", "cwe-778"),
-        "logic_error": ("logic error", "wrong group", "wrong index", "semantic mismatch", "cwe-682"),
+        "logic_error": (
+            "logic error",
+            "wrong group",
+            "wrong index",
+            "semantic mismatch",
+            "cwe-682",
+        ),
         "global_mode_race": ("global mode", "mutable global mode", "cwe-362"),
         "slot_race": ("slot race", "cas result", "process slot", "stolen slot", "cwe-362"),
-        "shared_memory_race": ("shared memory race", "lookup before lock", "concurrent create", "memzone", "cwe-362"),
+        "shared_memory_race": (
+            "shared memory race",
+            "lookup before lock",
+            "concurrent create",
+            "memzone",
+            "cwe-362",
+        ),
         "state_machine": ("state machine", "missing transition", "lifecycle state", "cwe-672"),
-        "signal_deadlock": ("signal deadlock", "signal handler", "async signal", "semaphore", "cwe-833"),
+        "signal_deadlock": (
+            "signal deadlock",
+            "signal handler",
+            "async signal",
+            "semaphore",
+            "cwe-833",
+        ),
         "signal_race": ("signal race", "signal handler", "async signal", "callstack", "cwe-479"),
-        "callback_self_destroy_race": ("callback self destroy", "self destruction", "callback can free", "cwe-416"),
+        "callback_self_destroy_race": (
+            "callback self destroy",
+            "self destruction",
+            "callback can free",
+            "cwe-416",
+        ),
         "backend_signal": ("backend signal", "svf", "saber", "knowledge db"),
     }
     priority_groups = (

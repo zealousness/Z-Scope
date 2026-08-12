@@ -1,0 +1,74 @@
+# Strict v2 public configuration for the global-model benchmark.
+# run.sh supplies the developer-only RuntimeSpec override. This is a non-release
+# diagnostic and is not an alternative formal benchmark entry point.
+config_version: 2
+
+llms:
+  default:
+    base_urls: ["${Z_SCOPE_LLM_BASE_URL}"]
+    models: ["${Z_SCOPE_LLM_MODEL}"]
+    api_key: ${Z_SCOPE_API_KEY}
+    max_tokens: 8192
+    max_retries: 2
+    timeout: 120
+  smart_model:
+    base_urls: ["${Z_SCOPE_LLM_BASE_URL}"]
+    models: ["${Z_SCOPE_LLM_MODEL}"]
+    api_key: ${Z_SCOPE_API_KEY}
+    max_tokens: 8192
+    max_retries: 2
+    timeout: 120
+
+project:
+  root: test/range
+  source_root: .
+  language: c_cpp
+  entry_functions_list: benchmark/deterministic_entries.json
+  compile_commands_path: build/compile_commands.json
+  include_paths: [include, internal, src]
+  exclude_paths:
+    - build
+    - .zscope_knowledge
+    - .zscope_snapshots
+    - benchmark
+  entry_discovery:
+    enabled: false
+    search_root: .
+    interface_files: [include/task_dispatcher.h]
+    max_entries: 100
+    max_functions: 1000
+
+scan:
+  task: ""
+  llm_profiles:
+    modeling: default
+    analysis: smart_model
+    validation: smart_model
+
+indexing:
+  backend: unified
+  svf:
+    scope: auto
+    entry_depth: 4
+    max_selected_tus: 200
+    fallback: full
+    groups_file: ""
+    always_include: []
+    exclusive_pools: []
+    shared_pools: []
+    heap_limit_mb: 8192
+    timeout_seconds: 600
+  tools:
+    clangd: clangd
+    gclang: gclang
+    get_bc: get-bc
+    llvm_link: llvm-link
+
+concurrency:
+  entry_workers: 12
+  validator_workers: 2
+  investigator_workers: 1
+  evidence_completion_workers: 2
+  index_workers: 8
+  svf_workers: 12
+  llm_max_inflight: 4

@@ -10,6 +10,349 @@ from zscope.web import server as web_server
 from zscope.web.services import ReportFeedbackService
 
 
+def _publish_empty_derived_index(
+    db: KnowledgeDB,
+    index_name: str,
+    version: str = "1",
+) -> None:
+    db.begin_derived_index_rebuild(index_name, version)
+    db.prepare_derived_index_staging(index_name)
+    db.finalize_derived_index_rebuild(index_name, version, {"rows": 0})
+
+
+def test_knowledge_db_missing_and_corrupt_derived_state_are_dirty(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        missing = db.get_derived_index_state("function_symbol_context")
+        assert missing == {
+            "applied_version": "",
+            "target_version": "",
+            "status": "dirty",
+            "dirty_reason": "missing_state",
+            "last_error": "",
+            "last_stats": {},
+            "updated_at": 0.0,
+        }
+        assert db.derived_index_needs_rebuild("function_symbol_refs", "2") is True
+
+        db.set_metadata("derived_index_state:function_type_refs", "{not-json")
+        corrupt = db.get_derived_index_state("function_type_refs")
+        assert corrupt["status"] == "dirty"
+        assert corrupt["dirty_reason"] == "invalid_state"
+
+        db.set_metadata(
+            "derived_index_state:function_type_refs",
+            '{"status":"current","applied_version":"2"}',
+        )
+        malformed = db.get_derived_index_state("function_type_refs")
+        assert malformed["status"] == "dirty"
+        assert malformed["dirty_reason"] == "invalid_state"
+        with pytest.raises(ValueError, match="unsupported derived index"):
+            db.get_derived_index_state("unknown")
+    finally:
+        db.close()
+
+
+def test_knowledge_db_atomically_finalizes_staged_symbol_context(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_function("entry", "src/entry.c", 10, 20)
+        db.insert_global_variable("g_old", "int", "src/old.c", 1)
+        db.insert_global_variable("g_new", "int", "src/new.c", 2)
+        db.insert_macro_definitions_batch(
+            [("NEW_MACRO", "include/new.h", 3, "#define NEW_MACRO 1\n", 0)]
+        )
+        db.commit()
+        function_id = db.get_function("entry", "src/entry.c")["id"]
+        macro_id = db.get_macro_definitions("NEW_MACRO")[0]["id"]
+        db.insert_function_symbol_refs_batch(
+            [("entry", "src/entry.c", "g_old", "global", "src/old.c", 12, "read")]
+        )
+        db.commit()
+
+        started = db.begin_derived_index_rebuild("function_symbol_context", "7")
+        assert started["status"] == "in_progress"
+        db.prepare_derived_index_staging("function_symbol_context")
+        db.stage_function_symbol_refs_batch(
+            [("entry", "src/entry.c", "g_new", "global", "src/new.c", 13, "read")]
+        )
+        db.stage_function_symbol_refs_batch(
+            [("entry", "src/entry.c", "g_new", "global", "src/new.c", 13, "write")]
+        )
+        db.stage_function_macro_refs_batch(
+            [(function_id, macro_id, 14), (function_id, macro_id, 14)]
+        )
+
+        # Staged rows are invisible until the atomic publish.
+        before = db.get_function_symbol_context("entry", "src/entry.c")
+        assert [item["name"] for item in before["referenced_globals"]] == ["g_old"]
+        assert before["referenced_macros"] == []
+
+        state = db.finalize_derived_index_rebuild(
+            "function_symbol_context",
+            "7",
+            {"symbol_rows": 1, "macro_rows": 1},
+        )
+        after = db.get_function_symbol_context("entry", "src/entry.c")
+        assert [item["name"] for item in after["referenced_globals"]] == ["g_new"]
+        assert after["referenced_globals"][0]["access"] == "read_write"
+        assert after["referenced_macros"][0]["macro_index_name"].startswith("NEW_MACRO@")
+        assert len(after["referenced_macros"]) == 1
+        assert state["status"] == "current"
+        assert state["applied_version"] == "7"
+        assert state["last_stats"] == {"symbol_rows": 1, "macro_rows": 1}
+        assert db.derived_index_needs_rebuild("function_symbol_context", "7") is False
+    finally:
+        db.close()
+
+
+def test_knowledge_db_atomically_finalizes_staged_function_type_refs(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_function("entry", "src/entry.c", 10, 20)
+        old_type_id = db.insert_type("OldType", "struct", "include/old.h", 1, 3)
+        new_type_id = db.insert_type("NewType", "struct", "include/new.h", 4, 8)
+        db.commit()
+        function_id = db.get_function("entry", "src/entry.c")["id"]
+        old_type = next(item for item in db.get_all_type_definitions() if item["id"] == old_type_id)
+        new_type = next(item for item in db.get_all_type_definitions() if item["id"] == new_type_id)
+        db.replace_function_type_refs(
+            [
+                (
+                    function_id,
+                    old_type_id,
+                    db.type_index_name(old_type),
+                    "OldType",
+                    "src/entry.c",
+                    11,
+                    "local",
+                    "",
+                )
+            ]
+        )
+        db.commit()
+
+        db.begin_derived_index_rebuild("function_type_refs", "4")
+        db.prepare_derived_index_staging("function_type_refs")
+        db.stage_function_type_refs_batch(
+            [
+                (
+                    function_id,
+                    new_type_id,
+                    db.type_index_name(new_type),
+                    "NewType",
+                    "src/entry.c",
+                    12,
+                    "parameter",
+                    "",
+                )
+            ]
+        )
+        db.stage_function_type_refs_batch(
+            [
+                (
+                    function_id,
+                    new_type_id,
+                    db.type_index_name(new_type),
+                    "NewType",
+                    "src/entry.c",
+                    12,
+                    "parameter",
+                    "",
+                )
+            ]
+        )
+        before = db.get_function_type_context("entry", "src/entry.c", 10)
+        assert [item["name"] for item in before["referenced_types"]] == ["OldType"]
+
+        db.finalize_derived_index_rebuild(
+            "function_type_refs",
+            "4",
+            {"type_rows": 1},
+        )
+        after = db.get_function_type_context("entry", "src/entry.c", 10)
+        assert [item["name"] for item in after["referenced_types"]] == ["NewType"]
+        state = db.get_derived_index_state("function_type_refs")
+        assert state["status"] == "current"
+        assert state["last_stats"] == {"type_rows": 1}
+    finally:
+        db.close()
+
+
+def test_knowledge_db_finalize_rollback_preserves_old_symbol_context(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db.insert_function("entry", "src/entry.c", 10, 20)
+        db.insert_global_variable("g_old", "int", "src/old.c", 1)
+        db.insert_global_variable("g_new", "int", "src/new.c", 2)
+        db.insert_function_symbol_refs_batch(
+            [("entry", "src/entry.c", "g_old", "global", "src/old.c", 12, "read")]
+        )
+        db.commit()
+        db.begin_derived_index_rebuild("function_symbol_context", "8")
+        db.prepare_derived_index_staging("function_symbol_context")
+        db.stage_function_symbol_refs_batch(
+            [("entry", "src/entry.c", "g_new", "global", "src/new.c", 13, "write")]
+        )
+
+        def fail_state_write(_index_name, _state):
+            raise RuntimeError("injected finalize failure")
+
+        monkeypatch.setattr(db, "_write_derived_index_state_uncommitted", fail_state_write)
+        with pytest.raises(RuntimeError, match="injected finalize failure"):
+            db.finalize_derived_index_rebuild("function_symbol_context", "8")
+
+        context = db.get_function_symbol_context("entry", "src/entry.c")
+        assert [item["name"] for item in context["referenced_globals"]] == ["g_old"]
+        state = db.get_derived_index_state("function_symbol_context")
+        assert state["status"] == "in_progress"
+        assert state["target_version"] == "8"
+    finally:
+        db.close()
+
+
+def test_knowledge_db_finalize_interrupt_rolls_back_before_close(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "knowledge.db"
+    db = KnowledgeDB(str(db_path))
+    db.insert_function("entry", "src/entry.c", 10, 20)
+    db.insert_global_variable("g_old", "int", "src/old.c", 1)
+    db.insert_global_variable("g_new", "int", "src/new.c", 2)
+    db.insert_function_symbol_refs_batch(
+        [("entry", "src/entry.c", "g_old", "global", "src/old.c", 12, "read")]
+    )
+    db.commit()
+    db.begin_derived_index_rebuild("function_symbol_context", "8")
+    db.prepare_derived_index_staging("function_symbol_context")
+    db.stage_function_symbol_refs_batch(
+        [("entry", "src/entry.c", "g_new", "global", "src/new.c", 13, "write")]
+    )
+
+    def interrupt_state_write(_index_name, _state):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(db, "_write_derived_index_state_uncommitted", interrupt_state_write)
+    with pytest.raises(KeyboardInterrupt):
+        db.finalize_derived_index_rebuild("function_symbol_context", "8")
+    db.close()
+
+    reopened = KnowledgeDB(str(db_path))
+    try:
+        context = reopened.get_function_symbol_context("entry", "src/entry.c")
+        assert [item["name"] for item in context["referenced_globals"]] == ["g_old"]
+        state = reopened.get_derived_index_state("function_symbol_context")
+        assert state["status"] == "in_progress"
+        assert state["target_version"] == "8"
+    finally:
+        reopened.close()
+
+
+def test_knowledge_db_in_progress_state_survives_reopen_without_staging(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "knowledge.db"
+    db = KnowledgeDB(str(db_path))
+    db.begin_derived_index_rebuild("function_type_refs", "5")
+    db.prepare_derived_index_staging("function_type_refs")
+    db.close()
+
+    reopened = KnowledgeDB(str(db_path))
+    try:
+        state = reopened.get_derived_index_state("function_type_refs")
+        assert state["status"] == "in_progress"
+        assert state["target_version"] == "5"
+        assert reopened.derived_index_needs_rebuild("function_type_refs", "5") is True
+        assert (
+            reopened._conn.execute(
+                "SELECT COUNT(*) AS count FROM sqlite_temp_master "
+                "WHERE name LIKE 'zscope_stage_%'"
+            ).fetchone()["count"]
+            == 0
+        )
+        assert (
+            reopened._conn.execute(
+                "SELECT COUNT(*) AS count FROM sqlite_master " "WHERE name LIKE 'zscope_stage_%'"
+            ).fetchone()["count"]
+            == 0
+        )
+        failed = reopened.fail_derived_index_rebuild(
+            "function_type_refs",
+            "5",
+            RuntimeError("interrupted"),
+            {"files": 12},
+        )
+        assert failed["status"] == "failed"
+        assert failed["last_error"] == "interrupted"
+        assert failed["last_stats"] == {"files": 12}
+    finally:
+        reopened.close()
+
+
+def test_knowledge_db_tu_hash_invalidation_only_dirties_changed_base_facts(
+    tmp_path: Path,
+) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        tu_id, changed = db.register_tu_hash("src/entry.c", "hash-1")
+        assert changed is True
+        assert db.get_derived_index_state("function_symbol_context")["status"] == "dirty"
+        assert db.get_derived_index_state("function_type_refs")["status"] == "dirty"
+        db.mark_tu_indexed(tu_id)
+
+        _publish_empty_derived_index(db, "function_symbol_context", "2")
+        _publish_empty_derived_index(db, "function_type_refs", "3")
+        symbol_state_before = db.get_derived_index_state("function_symbol_context")
+        type_state_before = db.get_derived_index_state("function_type_refs")
+        same_id, changed = db.register_tu_hash("src/entry.c", "hash-1")
+        assert same_id == tu_id
+        assert changed is False
+        assert db.get_derived_index_state("function_symbol_context") == symbol_state_before
+        assert db.get_derived_index_state("function_type_refs") == type_state_before
+
+        same_id, changed = db.register_tu_hash("src/entry.c", "hash-2")
+        assert same_id == tu_id
+        assert changed is True
+        assert db.get_derived_index_state("function_symbol_context")["dirty_reason"] == (
+            "translation_unit_hash_changed"
+        )
+        assert db.get_derived_index_state("function_type_refs")["dirty_reason"] == (
+            "translation_unit_hash_changed"
+        )
+    finally:
+        db.close()
+
+
+def test_knowledge_db_macro_clear_and_tu_purge_dirty_derived_state(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        tu_id = db.register_tu("src/entry.c", 1.0)
+        db.mark_tu_indexed(tu_id)
+        _publish_empty_derived_index(db, "function_symbol_context", "2")
+        _publish_empty_derived_index(db, "function_type_refs", "3")
+
+        db.clear_macro_definitions()
+        assert db.get_derived_index_state("function_symbol_context")["dirty_reason"] == (
+            "macro_definitions_cleared"
+        )
+        assert db.get_derived_index_state("function_type_refs")["status"] == "current"
+
+        _publish_empty_derived_index(db, "function_symbol_context", "2")
+        db.purge_tu_data(tu_id)
+        assert db.get_derived_index_state("function_symbol_context")["dirty_reason"] == (
+            "translation_unit_purged"
+        )
+        assert db.get_derived_index_state("function_type_refs")["dirty_reason"] == (
+            "translation_unit_purged"
+        )
+    finally:
+        db.close()
+
+
 def test_knowledge_db_migrates_legacy_macro_identity_and_range(tmp_path: Path) -> None:
     db_path = tmp_path / "legacy.db"
     with sqlite3.connect(db_path) as conn:
@@ -372,6 +715,32 @@ def test_knowledge_db_function_type_context_round_trip_and_optional_unresolved(
             }
         ]
         assert db.stats()["function_type_refs"] == 3
+    finally:
+        db.close()
+
+
+def test_knowledge_db_batches_transitive_include_closures(tmp_path: Path) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        db._conn.executemany(
+            "INSERT INTO include_edges (source_file, included_file, line, is_system) "
+            "VALUES (?, ?, ?, ?)",
+            [
+                ("src/a.c", "include/shared.h", 1, 0),
+                ("src/b.c", "include/b.h", 1, 0),
+                ("include/b.h", "include/shared.h", 2, 0),
+                ("src/a.c", "stdint.h", 2, 1),
+            ],
+        )
+        db.commit()
+
+        closures = db.get_transitive_include_closures(["src/a.c", "src/b.c", "src/solo.c"])
+        assert closures == {
+            "src/a.c": ["include/shared.h", "src/a.c"],
+            "src/b.c": ["include/b.h", "include/shared.h", "src/b.c"],
+            "src/solo.c": ["src/solo.c"],
+        }
+        assert db.get_transitive_include_closure("src/b.c") == closures["src/b.c"]
     finally:
         db.close()
 

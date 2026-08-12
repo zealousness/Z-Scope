@@ -149,10 +149,7 @@ def route_vulnerability_skills_with_llm(
         trace_agent="skill_selection",
         trace_label=str(task)[:120],
     )
-    content = str(
-        ((response.get("choices") or [{}])[0].get("message") or {}).get("content")
-        or ""
-    )
+    content = str(((response.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
     blocks = extract_json_blocks(content)
     parsed = blocks[0] if blocks else json.loads(content)
     if not isinstance(parsed, dict):
@@ -163,13 +160,17 @@ def route_vulnerability_skills_with_llm(
     except (TypeError, ValueError):
         confidence = 0.0
     selection = SkillSelection(
-        skills=[name for name in available if name in {str(item) for item in parsed.get("skills", [])}],
+        skills=[
+            name for name in available if name in {str(item) for item in parsed.get("skills", [])}
+        ],
         restricted=bool(parsed.get("restricted")),
         source="semantic_cache",
         confidence=max(0.0, min(1.0, confidence)),
-        reasons=[str(item) for item in parsed.get("reasons", [])]
-        if isinstance(parsed.get("reasons"), list)
-        else [],
+        reasons=(
+            [str(item) for item in parsed.get("reasons", [])]
+            if isinstance(parsed.get("reasons"), list)
+            else []
+        ),
     )
     cache[cache_key] = selection
     return parsed
@@ -209,7 +210,10 @@ def compact_subagent_reports(reports: Any, *, limit: int = 50) -> List[Dict[str,
         if not isinstance(report, dict):
             compact_reports.append({"value": str(report)})
             continue
-        data = report.get("data") if isinstance(report.get("data"), dict) else {}
+        raw_data = report.get("data")
+        data: Dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
+        raw_metadata = report.get("metadata")
+        metadata: Dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
         compact_reports.append(
             {
                 "ticket": compact_subagent_item(report.get("ticket", {})),
@@ -220,8 +224,7 @@ def compact_subagent_reports(reports: Any, *, limit: int = 50) -> List[Dict[str,
                 "conclusion": data.get("conclusion"),
                 "issues_found_count": len(data.get("issues_found") or []),
                 "needs_human_review": bool(
-                    (report.get("metadata") or {}).get("needs_human_review")
-                    or data.get("needs_human_review")
+                    metadata.get("needs_human_review") or data.get("needs_human_review")
                 ),
             }
         )

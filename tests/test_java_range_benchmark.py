@@ -22,25 +22,27 @@ def test_java_range_benchmark_config_uses_unified_java_auto_detection(monkeypatc
     raw_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
     monkeypatch.setenv("Z_SCOPE_API_KEY", "benchmark-test-key")
+    monkeypatch.setenv("Z_SCOPE_LLM_BASE_URL", "https://benchmark.invalid/v1")
+    monkeypatch.setenv("Z_SCOPE_LLM_MODEL", "benchmark-test-model")
     monkeypatch.chdir(BENCHMARK_ROOT.parents[1])
     config = ConfigLoader.load(str(config_path))
 
     assert "java_profile" not in raw_config["project"]
     assert config.project.language == "java"
-    assert config.project.java_profile == "auto"
     assert config.project.project_root == BENCHMARK_ROOT.resolve()
     assert config.project.source_root == BENCHMARK_ROOT.resolve()
     assert config.indexing.backend == "java_unified"
     assert config.indexing.java_structure_frontend == "auto"
-    assert config.indexing.java_signal_backends == ["sootup", "wala", "joern"]
-    assert raw_config["llms"]["default"]["models"] == ["glm-5.1"]
-    assert raw_config["llms"]["default"]["base_url"].rstrip("/") == (
-        "https://open.bigmodel.cn/api/paas/v4"
-    )
+    assert config.indexing.java_signal_backends == ["joern"]
+    assert raw_config["llms"]["default"]["models"] == ["${Z_SCOPE_LLM_MODEL}"]
+    assert raw_config["llms"]["default"]["base_urls"] == ["${Z_SCOPE_LLM_BASE_URL}"]
     assert raw_config["indexing"]["java"]["signals"] == ["joern"]
     assert not (BENCHMARK_ROOT / "zscope.signals.yaml").exists()
-    assert config.indexing.java_structure_db_path == ".zscope_knowledge/java_structure.db"
-    assert config.analysis.snapshot_dir == "test/java_range/.zscope_snapshots"
+    assert (
+        Path(config.indexing.knowledge_db_path)
+        == (BENCHMARK_ROOT / ".zscope_knowledge" / "code_knowledge.db").resolve()
+    )
+    assert Path(config.analysis.snapshot_dir) == (BENCHMARK_ROOT / ".zscope_snapshots").resolve()
     agents = {agent.name: agent for agent in config.project.agents}
     assert {
         "semantic_modeler",
@@ -49,11 +51,12 @@ def test_java_range_benchmark_config_uses_unified_java_auto_detection(monkeypatc
         "issue_reconciler_agent",
     } <= set(agents)
     assert agents["vulnerability_analyzer"].enabled is True
-    assert "full Java category benchmark" in agents["vulnerability_analyzer"].task
+    assert agents["vulnerability_analyzer"].task == ""
 
 
 def test_java_range_benchmark_manifest_is_consistent() -> None:
     entries = _load_json(BENCHMARK_ROOT / "benchmark" / "entries.json")
+    coverage = _load_json(BENCHMARK_ROOT / "benchmark" / "maintenance" / "entry_rule_coverage.json")
     truth = _load_json(BENCHMARK_ROOT / "benchmark" / "ground_truth.json")
 
     vulnerabilities = truth["vulnerabilities"]
@@ -70,6 +73,7 @@ def test_java_preview_structural_baseline_is_explicit_and_non_numeric_for_llm() 
     baseline = _load_json(BENCHMARK_ROOT / "benchmark" / "structural_baseline.json")
     truth = _load_json(BENCHMARK_ROOT / "benchmark" / "ground_truth.json")
     entries = _load_json(BENCHMARK_ROOT / "benchmark" / "entries.json")
+    coverage = _load_json(BENCHMARK_ROOT / "benchmark" / "maintenance" / "entry_rule_coverage.json")
     vulnerabilities = truth["vulnerabilities"]
 
     assert baseline["package_version"] == "1.3.1"
@@ -100,10 +104,11 @@ def test_java_preview_structural_baseline_is_explicit_and_non_numeric_for_llm() 
     }
     expected_rule_ids = {rule.rule_id for rule in JavaRuleCandidateGenerator._RULES}
     assert set(truth["coverage"]["rule_ids"]) == expected_rule_ids
+    assert all("covers_rule_ids" not in entry for entry in entries["functions"])
     assert expected_rule_ids <= {
         rule_id
-        for entry in entries["functions"]
-        for rule_id in entry.get("covers_rule_ids", [])
+        for entry in coverage["entries"]
+        for rule_id in entry.get("rule_ids", [])
         if rule_id.startswith("java_") and rule_id in expected_rule_ids
     }
     assert set(truth["coverage"]["security_categories"]) == {
@@ -186,13 +191,15 @@ def test_java_range_benchmark_exercises_generic_entry_to_sink_flows() -> None:
 
 
 @pytest.mark.skipif(
-    shutil.which("mvn") is None or shutil.which("java") is None,
-    reason="formal Java structure benchmark requires Maven and Java",
+    shutil.which("mvn") is None or shutil.which("java") is None or shutil.which("joern") is None,
+    reason="formal Java unified benchmark requires Maven, Java, and Joern",
 )
 def test_java_range_benchmark_indexes_with_maven_spoon_structure(monkeypatch) -> None:
     config_path = BENCHMARK_ROOT / "zscope.benchmark.yaml"
 
     monkeypatch.setenv("Z_SCOPE_API_KEY", "benchmark-test-key")
+    monkeypatch.setenv("Z_SCOPE_LLM_BASE_URL", "https://benchmark.invalid/v1")
+    monkeypatch.setenv("Z_SCOPE_LLM_MODEL", "benchmark-test-model")
     monkeypatch.chdir(BENCHMARK_ROOT.parents[1])
     config = ConfigLoader.load(str(config_path))
 

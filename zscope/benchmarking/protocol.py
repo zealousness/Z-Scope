@@ -16,7 +16,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, cast
 
 from zscope._version import __version__
 from zscope.common.issue_identity import issues_may_share_root_cause, stable_issue_fingerprint
@@ -53,6 +53,12 @@ RELEASE_THRESHOLDS = {
     "median_report_tail_seconds": 120.0,
     "tokens_per_true_positive_reduction": 0.30,
 }
+
+
+def _as_dict(value: Any) -> Dict[str, Any]:
+    """Narrow dynamic benchmark artifacts to their expected mapping shape."""
+    return cast(Dict[str, Any], value) if isinstance(value, dict) else {}
+
 
 FP_AUDIT_DUPLICATE_OF_GT = "duplicate_of_gt"
 FP_AUDIT_TRUE_EXTRA_ADD_GT = "true_extra_add_gt"
@@ -142,9 +148,9 @@ def source_tree_manifest(project_root: Path) -> Dict[str, Any]:
         candidates.append(path)
 
     for path in sorted(candidates, key=lambda item: item.relative_to(project_root).as_posix()):
-        relative = path.relative_to(project_root).as_posix()
+        relative_path = path.relative_to(project_root).as_posix()
         file_digest = sha256_file(path)
-        digest.update(relative.encode("utf-8"))
+        digest.update(relative_path.encode("utf-8"))
         digest.update(b"\0")
         digest.update(file_digest.encode("ascii"))
         digest.update(b"\n")
@@ -170,6 +176,8 @@ def build_benchmark_artifact_manifest(
         project_root = suite_root
     truth_path = suite_root / "benchmark" / "ground_truth.json"
     entries_path = suite_root / "benchmark" / "entries.json"
+    if not entries_path.is_file():
+        entries_path = suite_root / "benchmark" / "deterministic_entries.json"
     benchmark_manifest_path = suite_root / "benchmark" / "manifest.json"
     selected_config = Path(config_path) if config_path else suite_root / "zscope.benchmark.yaml"
     selected_execution_config = (
@@ -215,7 +223,7 @@ def issue_identity(issue: Dict[str, Any]) -> str:
 def issue_identity_record(issue: Dict[str, Any]) -> Dict[str, Any]:
     """Return auditable identity metadata for benchmark reports."""
 
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    pack = _as_dict(issue.get("evidence_pack"))
     stable = stable_issue_fingerprint(issue)
     return {
         "identity": issue_identity(issue),
@@ -306,23 +314,24 @@ def _alerted_safe_entry_identities(
         if not name:
             continue
         signature = str(
-            safe_entry.get("signature")
-            or safe_entry.get("full_signature")
-            or ""
+            safe_entry.get("signature") or safe_entry.get("full_signature") or ""
         ).strip()
-        file_path = str(
-            safe_entry.get("file")
-            or safe_entry.get("file_path")
-            or ""
-        ).strip().replace("\\", "/")
-        identity = "|".join(
-            part
-            for part in (
-                file_path.lower(),
-                signature.lower() or name.lower(),
+        file_path = (
+            str(safe_entry.get("file") or safe_entry.get("file_path") or "")
+            .strip()
+            .replace("\\", "/")
+        )
+        identity = (
+            "|".join(
+                part
+                for part in (
+                    file_path.lower(),
+                    signature.lower() or name.lower(),
+                )
+                if part
             )
-            if part
-        ) or f"safe-entry-{safe_index}"
+            or f"safe-entry-{safe_index}"
+        )
         expected_names = {name.lower()}
         if signature:
             expected_names.add(signature.lower())
@@ -353,10 +362,7 @@ def score_report(
     fp_audit_classifier: Optional[FalsePositiveClassifier] = None,
 ) -> Dict[str, Any]:
     issues = report_issues(report, view)
-    issue_texts = [
-        _flatten(issue).lower().replace("\\", "/")
-        for issue in issues
-    ]
+    issue_texts = [_flatten(issue).lower().replace("\\", "/") for issue in issues]
     vulns = [item for item in truth.get("vulnerabilities", []) if isinstance(item, dict)]
     matched_truth: Dict[str, int] = {}
     matched_pairs: List[Dict[str, Any]] = []
@@ -409,7 +415,8 @@ def score_report(
         matched_truth[truth_id] = issue_index
         matched_issues.add(issue_index)
         matched_issue_by_truth_index[truth_index] = issue_index
-        issue = pair.get("issue") if isinstance(pair.get("issue"), dict) else issues[issue_index]
+        raw_issue = pair.get("issue")
+        issue = raw_issue if isinstance(raw_issue, dict) else issues[issue_index]
         matched_pairs.append(
             {
                 "truth_id": truth_id,
@@ -439,7 +446,11 @@ def score_report(
         matched_issue_by_truth_index,
     )
     raw_fp = max(0, len(issues) - len(matched_issues))
-    effective_fp = raw_fp if count_duplicate_of_matched_as_fp else max(0, raw_fp - len(duplicate_of_matched_indices))
+    effective_fp = (
+        raw_fp
+        if count_duplicate_of_matched_as_fp
+        else max(0, raw_fp - len(duplicate_of_matched_indices))
+    )
 
     tp = len(matched_truth)
     fp = effective_fp
@@ -455,9 +466,7 @@ def score_report(
     )
     false_discovery_rate = fp / (tp + fp) if tp + fp else 0.0
     actionable_false_discovery_rate = raw_fp / (tp + raw_fp) if tp + raw_fp else 0.0
-    safe_entries = [
-        item for item in truth.get("safe_entries", []) if isinstance(item, dict)
-    ]
+    safe_entries = [item for item in truth.get("safe_entries", []) if isinstance(item, dict)]
     alerted_safe_entries = _alerted_safe_entry_identities(issues, safe_entries)
     standard_false_positive_rate = (
         len(alerted_safe_entries) / len(safe_entries) if safe_entries else None
@@ -490,23 +499,16 @@ def score_report(
     high_critical_truth = [
         (index, vuln)
         for index, vuln in enumerate(vulns)
-        if str(
-            vuln.get("severity")
-            or vuln.get("impact_level")
-            or vuln.get("priority")
-            or ""
-        ).strip().lower()
+        if str(vuln.get("severity") or vuln.get("impact_level") or vuln.get("priority") or "")
+        .strip()
+        .lower()
         in {"high", "critical"}
     ]
     high_critical_tp = sum(
-        1
-        for index, vuln in high_critical_truth
-        if str(vuln.get("id") or index) in matched_truth
+        1 for index, vuln in high_critical_truth if str(vuln.get("id") or index) in matched_truth
     )
     high_critical_recall = (
-        high_critical_tp / len(high_critical_truth)
-        if high_critical_truth
-        else None
+        high_critical_tp / len(high_critical_truth) if high_critical_truth else None
     )
     cwe_groups: Dict[str, List[tuple[int, Dict[str, Any]]]] = {}
     for index, vuln in enumerate(vulns):
@@ -516,9 +518,7 @@ def score_report(
     per_cwe_recall: Dict[str, Dict[str, Any]] = {}
     for cwe, group in sorted(cwe_groups.items()):
         matched_count = sum(
-            1
-            for index, vuln in group
-            if str(vuln.get("id") or index) in matched_truth
+            1 for index, vuln in group if str(vuln.get("id") or index) in matched_truth
         )
         per_cwe_recall[cwe] = {
             "sample_count": len(group),
@@ -567,9 +567,7 @@ def score_report(
         "recall": round(recall, 4),
         "distinct_root_recall": round(recall, 4),
         "high_critical_recall": (
-            round(high_critical_recall, 4)
-            if high_critical_recall is not None
-            else None
+            round(high_critical_recall, 4) if high_critical_recall is not None else None
         ),
         "high_critical_sample_count": len(high_critical_truth),
         "high_critical_true_positives": high_critical_tp,
@@ -636,9 +634,15 @@ def _select_max_weight_pairs(
     sink = source + 1
     graph: List[List[Dict[str, Any]]] = [[] for _ in range(sink + 1)]
 
-    def add_edge(u: int, v: int, cap: int, cost: int, payload: Optional[Dict[str, Any]] = None) -> None:
-        graph[u].append({"to": v, "rev": len(graph[v]), "cap": cap, "cost": cost, "payload": payload})
-        graph[v].append({"to": u, "rev": len(graph[u]) - 1, "cap": 0, "cost": -cost, "payload": None})
+    def add_edge(
+        u: int, v: int, cap: int, cost: int, payload: Optional[Dict[str, Any]] = None
+    ) -> None:
+        graph[u].append(
+            {"to": v, "rev": len(graph[v]), "cap": cap, "cost": cost, "payload": payload}
+        )
+        graph[v].append(
+            {"to": u, "rev": len(graph[u]) - 1, "cap": 0, "cost": -cost, "payload": None}
+        )
 
     for truth_index in range(truth_count):
         add_edge(source, truth_index, 1, 0)
@@ -666,9 +670,7 @@ def _select_max_weight_pairs(
     max_score = max((max(0, int(pair.get("score") or 0)) for pair in potential_pairs), default=0)
     tie_total_bound = matching_bound * max_stable_tie
     score_scale = tie_total_bound + 1
-    secondary_total_bound = matching_bound * (
-        max_score * score_scale + max_stable_tie
-    )
+    secondary_total_bound = matching_bound * (max_score * score_scale + max_stable_tie)
     cardinality_bonus = secondary_total_bound + 1
     for pair in potential_pairs:
         truth_index = int(pair.get("truth_index") or 0)
@@ -703,9 +705,7 @@ def _select_max_weight_pairs(
                     issue_distances[issue_index],
                     int(edge["cost"]),
                 )
-    reachable_issue_distances = [
-        distance for distance in issue_distances if distance < infinity
-    ]
+    reachable_issue_distances = [distance for distance in issue_distances if distance < infinity]
     for issue_index, distance in enumerate(issue_distances):
         if distance < infinity:
             potential[truth_count + issue_index] = distance
@@ -725,15 +725,9 @@ def _select_max_weight_pairs(
                 if int(edge["cap"]) <= 0:
                     continue
                 nxt = int(edge["to"])
-                reduced_cost = (
-                    int(edge["cost"])
-                    + potential[node]
-                    - potential[nxt]
-                )
+                reduced_cost = int(edge["cost"]) + potential[node] - potential[nxt]
                 if reduced_cost < 0:
-                    raise RuntimeError(
-                        "negative reduced cost in benchmark matching graph"
-                    )
+                    raise RuntimeError("negative reduced cost in benchmark matching graph")
                 new_dist = current_dist + reduced_cost
                 if new_dist < dist[nxt]:
                     dist[nxt] = new_dist
@@ -777,7 +771,10 @@ def _match_diagnostics(
     for pair in potential_pairs:
         potentials_by_truth.setdefault(int(pair.get("truth_index") or 0), []).append(pair)
 
-    issue_to_truth = {issue_index: truth_index for truth_index, issue_index in matched_issue_by_truth_index.items()}
+    issue_to_truth = {
+        issue_index: truth_index
+        for truth_index, issue_index in matched_issue_by_truth_index.items()
+    }
     matched_elsewhere: List[Dict[str, Any]] = []
     for truth_index, vuln in enumerate(vulns):
         if truth_index in matched_truth_indices:
@@ -789,12 +786,18 @@ def _match_diagnostics(
         best = max(diverted, key=lambda pair: int(pair.get("score") or 0))
         issue_index = int(best.get("issue_index") or 0)
         matched_truth_index = issue_to_truth.get(issue_index)
-        matched_truth = vulns[matched_truth_index] if matched_truth_index is not None and matched_truth_index < len(vulns) else {}
+        matched_truth = (
+            vulns[matched_truth_index]
+            if matched_truth_index is not None and matched_truth_index < len(vulns)
+            else {}
+        )
         matched_elsewhere.append(
             {
                 "truth_id": str(vuln.get("id") or truth_index),
                 "issue_index": issue_index,
-                "issue_identity": issue_identity(issues[issue_index]) if issue_index < len(issues) else "",
+                "issue_identity": (
+                    issue_identity(issues[issue_index]) if issue_index < len(issues) else ""
+                ),
                 "matched_truth_id": str(matched_truth.get("id") or matched_truth_index or ""),
                 "score": best.get("score") or 0,
                 "match": best.get("match") or {},
@@ -1037,7 +1040,9 @@ def build_cost_metrics(
         "tool_calls": tool_calls,
         "wall_time_seconds": round(wall_time_seconds, 4),
         "report_tail_seconds": report_tail_seconds,
-        "tokens_per_verified_issue": round(billable_tokens / verified, 4) if billable_tokens else 0.0,
+        "tokens_per_verified_issue": (
+            round(billable_tokens / verified, 4) if billable_tokens else 0.0
+        ),
         "tool_calls_per_verified_issue": round(tool_calls / verified, 4) if tool_calls else 0.0,
     }
 
@@ -1056,7 +1061,9 @@ def copy_conversation_trajectory(project_root: Path, run_dir: Path) -> List[str]
     if target.exists():
         shutil.rmtree(target)
     shutil.copytree(latest, target)
-    return [path.relative_to(run_dir).as_posix() for path in sorted(target.rglob("*")) if path.is_file()]
+    return [
+        path.relative_to(run_dir).as_posix() for path in sorted(target.rglob("*")) if path.is_file()
+    ]
 
 
 def build_trajectory_summary(
@@ -1065,9 +1072,9 @@ def build_trajectory_summary(
     run_dir: Path,
     conversation_files: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    metadata = report.get("metadata") if isinstance(report.get("metadata"), dict) else {}
-    worker_reports = metadata.get("subagent_reports") if isinstance(metadata, dict) else []
-    workflow_progress = metadata.get("workflow_progress") if isinstance(metadata, dict) else []
+    metadata = _as_dict(report.get("metadata"))
+    worker_reports = metadata.get("subagent_reports")
+    workflow_progress = metadata.get("workflow_progress")
     return {
         "schema_version": SCHEMA_VERSION,
         "run_dir": run_dir.as_posix(),
@@ -1087,12 +1094,12 @@ def grade_trial(
     cost: Dict[str, Any],
     trajectory: Dict[str, Any],
 ) -> Dict[str, Any]:
-    final_outcome_score = float(
-        evaluation.get("actionable_f1")
-        if evaluation.get("actionable_f1") is not None
-        else evaluation.get("f1") or 0.0
+    actionable_f1 = evaluation.get("actionable_f1")
+    final_value = actionable_f1 if actionable_f1 is not None else evaluation.get("f1")
+    final_outcome_score = float(str(final_value or 0.0))
+    has_trajectory = bool(
+        trajectory.get("conversation_files") or trajectory.get("workflow_progress")
     )
-    has_trajectory = bool(trajectory.get("conversation_files") or trajectory.get("workflow_progress"))
     evidence_score = 1.0 if has_trajectory or trajectory.get("worker_report_count", 0) else 0.5
     tool_behavior_score = 1.0
     if cost.get("tool_calls_per_verified_issue", 0.0) > 80:
@@ -1217,8 +1224,7 @@ def aggregate_trial_summaries(
             float(
                 item.get("evaluation", {}).get("actionable_f1")
                 if item.get("evaluation", {}).get("actionable_f1") is not None
-                else item.get("evaluation", {}).get("f1")
-                or 0.0
+                else item.get("evaluation", {}).get("f1") or 0.0
             )
             for item in items
         ]
@@ -1229,8 +1235,7 @@ def aggregate_trial_summaries(
             float(
                 item.get("evaluation", {}).get("actionable_precision")
                 if item.get("evaluation", {}).get("actionable_precision") is not None
-                else item.get("evaluation", {}).get("precision")
-                or 0.0
+                else item.get("evaluation", {}).get("precision") or 0.0
             )
             for item in items
         ]
@@ -1525,12 +1530,11 @@ def _trial_protocol_status(
     all_signatures: Set[tuple[str, ...]] = set()
     for condition, items in sorted(by_condition.items()):
         valid_items = [item for item in items if _is_valid_release_trial(item)]
-        valid_indices = {
-            int(item.get("trial_index"))
-            for item in valid_items
-            if isinstance(item.get("trial_index"), int)
-            and not isinstance(item.get("trial_index"), bool)
-        }
+        valid_indices: Set[int] = set()
+        for item in valid_items:
+            trial_index = item.get("trial_index")
+            if isinstance(trial_index, int) and not isinstance(trial_index, bool):
+                valid_indices.add(trial_index)
         valid_index_sets.append(valid_indices)
         signatures = {
             signature
@@ -1568,17 +1572,9 @@ def _trial_protocol_status(
                 if not _is_valid_release_trial(item)
             ],
         }
-    paired_indices = (
-        set.intersection(*valid_index_sets)
-        if valid_index_sets
-        else set()
-    )
+    paired_indices = set.intersection(*valid_index_sets) if valid_index_sets else set()
     paired_passed = len(paired_indices) >= MIN_RELEASE_TRIALS
-    protocol_passed = (
-        protocol_passed
-        and paired_passed
-        and len(all_signatures) == 1
-    )
+    protocol_passed = protocol_passed and paired_passed and len(all_signatures) == 1
     return {
         "minimum_trials_per_condition": MIN_RELEASE_TRIALS,
         "conditions": condition_rows,
@@ -1599,14 +1595,15 @@ def _metric_gate(
     details: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     available = actual is not None
+    actual_value = float(actual) if actual is not None else 0.0
     if operator == ">=":
-        passed = available and float(actual) >= threshold
+        passed = available and actual_value >= threshold
     elif operator == "<=":
-        passed = available and float(actual) <= threshold
+        passed = available and actual_value <= threshold
     else:  # pragma: no cover - internal contract
         raise ValueError(f"Unsupported release gate operator: {operator}")
     result: Dict[str, Any] = {
-        "actual": round(float(actual), 4) if available else None,
+        "actual": round(actual_value, 4) if available else None,
         "threshold": threshold,
         "operator": operator,
         "available": available,
@@ -1655,9 +1652,7 @@ def evaluate_release_readiness(
     def eval_values(key: str, *, fallback: str = "") -> List[float]:
         values = _summary_numeric_values(target_items, "evaluation", key)
         return values or (
-            _summary_numeric_values(target_items, "evaluation", fallback)
-            if fallback
-            else []
+            _summary_numeric_values(target_items, "evaluation", fallback) if fallback else []
         )
 
     precision_stats = _series_stats(
@@ -1715,8 +1710,7 @@ def evaluate_release_readiness(
         ci_statistic="median",
     )
     issue_sets = [
-        set(item.get("evaluation", {}).get("issue_identities") or [])
-        for item in target_items
+        set(item.get("evaluation", {}).get("issue_identities") or []) for item in target_items
     ]
     tp_sets = [
         set(item.get("evaluation", {}).get("true_positive_truth_ids") or [])
@@ -1732,8 +1726,7 @@ def evaluate_release_readiness(
     eligible_cwes = {
         cwe: row
         for cwe, row in cwe_stats.items()
-        if int(row.get("sample_count") or 0)
-        >= int(RELEASE_THRESHOLDS["per_cwe_min_samples"])
+        if int(row.get("sample_count") or 0) >= int(RELEASE_THRESHOLDS["per_cwe_min_samples"])
     }
     failing_cwes = {
         cwe: row
@@ -1763,13 +1756,17 @@ def evaluate_release_readiness(
             statistics=recall_stats,
         ),
         "high_critical_recall": _metric_gate(
-            actual=high_stats.get("mean") if len(high_stats["values"]) == len(target_items) else None,
+            actual=(
+                high_stats.get("mean") if len(high_stats["values"]) == len(target_items) else None
+            ),
             threshold=RELEASE_THRESHOLDS["high_critical_recall"],
             operator=">=",
             statistics=high_stats,
         ),
         "safe_entry_alert_rate": _metric_gate(
-            actual=safe_stats.get("mean") if len(safe_stats["values"]) == len(target_items) else None,
+            actual=(
+                safe_stats.get("mean") if len(safe_stats["values"]) == len(target_items) else None
+            ),
             threshold=RELEASE_THRESHOLDS["safe_entry_alert_rate"],
             operator="<=",
             statistics=safe_stats,
@@ -1791,9 +1788,11 @@ def evaluate_release_readiness(
             },
         },
         "actionable_f1_stdev": _metric_gate(
-            actual=float(actionable_f1_stats.get("stdev") or 0.0)
-            if actionable_f1_stats["values"]
-            else None,
+            actual=(
+                float(actionable_f1_stats.get("stdev") or 0.0)
+                if actionable_f1_stats["values"]
+                else None
+            ),
             threshold=RELEASE_THRESHOLDS["actionable_f1_stdev"],
             operator="<=",
             statistics=actionable_f1_stats,
@@ -1809,13 +1808,19 @@ def evaluate_release_readiness(
             operator=">=",
         ),
         "median_wall_time_seconds": _metric_gate(
-            actual=wall_stats.get("median") if len(wall_stats["values"]) == len(target_items) else None,
+            actual=(
+                wall_stats.get("median") if len(wall_stats["values"]) == len(target_items) else None
+            ),
             threshold=RELEASE_THRESHOLDS["median_wall_time_seconds"],
             operator="<=",
             statistics=wall_stats,
         ),
         "median_billable_tokens": _metric_gate(
-            actual=token_stats.get("median") if len(token_stats["values"]) == len(target_items) else None,
+            actual=(
+                token_stats.get("median")
+                if len(token_stats["values"]) == len(target_items)
+                else None
+            ),
             threshold=RELEASE_THRESHOLDS["median_billable_tokens"],
             operator="<=",
             statistics=token_stats,
@@ -1836,9 +1841,7 @@ def evaluate_release_readiness(
         item for item in (baseline_summaries or []) if isinstance(item, dict)
     ]
     baseline_protocol = (
-        _trial_protocol_status(provided_baseline_summaries)
-        if provided_baseline_summaries
-        else None
+        _trial_protocol_status(provided_baseline_summaries) if provided_baseline_summaries else None
     )
     baseline_items = [
         item
@@ -1873,9 +1876,7 @@ def evaluate_release_readiness(
         if baseline_token_stats["values"]:
             baseline_token_value = float(baseline_token_stats["median"])
     current_token_value = (
-        float(token_per_tp_stats["median"])
-        if token_per_tp_stats["values"]
-        else None
+        float(token_per_tp_stats["median"]) if token_per_tp_stats["values"] else None
     )
     if baseline_token_value is not None:
         reduction = (
@@ -1910,8 +1911,10 @@ def evaluate_release_readiness(
             "reason": "no frozen baseline was supplied",
         }
 
-    if provided_baseline_summaries and baseline_protocol is not None and not baseline_protocol.get(
-        "passed"
+    if (
+        provided_baseline_summaries
+        and baseline_protocol is not None
+        and not baseline_protocol.get("passed")
     ):
         improvement_claim = {
             "status": "invalid_baseline",
@@ -2003,14 +2006,10 @@ def evaluate_improvement_claim(
         current_eval = current.get("evaluation")
         baseline_eval = baseline.get("evaluation")
         current_quality = (
-            current_eval.get("actionable_f1")
-            if isinstance(current_eval, dict)
-            else None
+            current_eval.get("actionable_f1") if isinstance(current_eval, dict) else None
         )
         baseline_quality = (
-            baseline_eval.get("actionable_f1")
-            if isinstance(baseline_eval, dict)
-            else None
+            baseline_eval.get("actionable_f1") if isinstance(baseline_eval, dict) else None
         )
         if current_quality is None and isinstance(current_eval, dict):
             current_quality = current_eval.get("f1")
@@ -2018,8 +2017,12 @@ def evaluate_improvement_claim(
             baseline_quality = baseline_eval.get("f1")
         current_cost = current.get("cost")
         baseline_cost = baseline.get("cost")
-        current_wall = current_cost.get("wall_time_seconds") if isinstance(current_cost, dict) else None
-        baseline_wall = baseline_cost.get("wall_time_seconds") if isinstance(baseline_cost, dict) else None
+        current_wall = (
+            current_cost.get("wall_time_seconds") if isinstance(current_cost, dict) else None
+        )
+        baseline_wall = (
+            baseline_cost.get("wall_time_seconds") if isinstance(baseline_cost, dict) else None
+        )
         if not all(
             isinstance(value, (int, float)) and not isinstance(value, bool)
             for value in (current_quality, baseline_quality, current_wall, baseline_wall)
@@ -2030,9 +2033,11 @@ def evaluate_improvement_claim(
                 "reason": "paired trials are missing actionable F1 or wall time",
                 "paired_trial_indices": paired_indices,
             }
-        quality_deltas.append(float(current_quality) - float(baseline_quality))
-        current_walls.append(float(current_wall))
-        baseline_walls.append(float(baseline_wall))
+        quality_deltas.append(
+            float(cast(float, current_quality)) - float(cast(float, baseline_quality))
+        )
+        current_walls.append(float(cast(float, current_wall)))
+        baseline_walls.append(float(cast(float, baseline_wall)))
 
     quality_delta = sum(quality_deltas) / len(quality_deltas)
     quality_ci = _bootstrap_ci(
@@ -2064,14 +2069,9 @@ def evaluate_improvement_claim(
         else 0.0
     )
     quality_gain_path = (
-        quality_delta >= 0.05
-        and quality_ci is not None
-        and float(quality_ci["lower"]) > 0.0
+        quality_delta >= 0.05 and quality_ci is not None and float(quality_ci["lower"]) > 0.0
     )
-    performance_path = (
-        quality_delta >= -0.02
-        and max(median_reduction, p95_reduction) >= 0.20
-    )
+    performance_path = quality_delta >= -0.02 and max(median_reduction, p95_reduction) >= 0.20
     passed = quality_gain_path or performance_path
     return {
         "status": "passed" if passed else "failed",
@@ -2177,9 +2177,29 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
     category_key = category.replace("-", "_").lower()
     builtins = {
         "memory_safety": ["memory safety", "bounds", "buffer", "overflow", "leak"],
-        "integer_overflow": ["integer overflow", "overflow", "wrap", "signed unsigned", "bounds", "cwe-190"],
-        "heap_overflow": ["heap overflow", "heap buffer overflow", "buffer overflow", "bounds", "cwe-122"],
-        "buffer_overflow": ["buffer overflow", "heap overflow", "out of bounds", "bounds", "cwe-787", "cwe-122"],
+        "integer_overflow": [
+            "integer overflow",
+            "overflow",
+            "wrap",
+            "signed unsigned",
+            "bounds",
+            "cwe-190",
+        ],
+        "heap_overflow": [
+            "heap overflow",
+            "heap buffer overflow",
+            "buffer overflow",
+            "bounds",
+            "cwe-122",
+        ],
+        "buffer_overflow": [
+            "buffer overflow",
+            "heap overflow",
+            "out of bounds",
+            "bounds",
+            "cwe-787",
+            "cwe-122",
+        ],
         "out_of_bounds_write": [
             "out of bounds write",
             "out-of-bounds write",
@@ -2204,11 +2224,39 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
             "cwe-823",
             "cwe-787",
         ],
-        "buffer_overread": ["buffer overread", "buffer over read", "out-of-bounds read", "bounds", "cwe-126"],
-        "buffer_over_read": ["buffer overread", "buffer over read", "out-of-bounds read", "bounds", "cwe-126"],
-        "buffer_underread": ["buffer underread", "buffer under read", "buffer underflow", "cwe-127"],
-        "buffer_underwrite": ["buffer underwrite", "buffer under write", "buffer underflow", "cwe-124"],
-        "buffer_underflow": ["buffer underflow", "buffer underread", "buffer underwrite", "cwe-127", "cwe-124"],
+        "buffer_overread": [
+            "buffer overread",
+            "buffer over read",
+            "out-of-bounds read",
+            "bounds",
+            "cwe-126",
+        ],
+        "buffer_over_read": [
+            "buffer overread",
+            "buffer over read",
+            "out-of-bounds read",
+            "bounds",
+            "cwe-126",
+        ],
+        "buffer_underread": [
+            "buffer underread",
+            "buffer under read",
+            "buffer underflow",
+            "cwe-127",
+        ],
+        "buffer_underwrite": [
+            "buffer underwrite",
+            "buffer under write",
+            "buffer underflow",
+            "cwe-124",
+        ],
+        "buffer_underflow": [
+            "buffer underflow",
+            "buffer underread",
+            "buffer underwrite",
+            "cwe-127",
+            "cwe-124",
+        ],
         "bounds": [
             "bounds",
             "out of bounds",
@@ -2231,9 +2279,27 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
             "cwe-20",
         ],
         "format_string": ["format string", "cwe-134"],
-        "deadlock": ["deadlock", "lock order", "recursive lock", "callback lock", "timer callback", "lock-order cycle", "cwe-833"],
+        "deadlock": [
+            "deadlock",
+            "lock order",
+            "recursive lock",
+            "callback lock",
+            "timer callback",
+            "lock-order cycle",
+            "cwe-833",
+        ],
         "command_injection": ["command injection", "shell injection", "system(", "cwe-78"],
-        "memory_leak": ["memory leak", "resource leak", "leak", "child list", "owned member", "children", "proc head", "cwe-401", "cwe-772"],
+        "memory_leak": [
+            "memory leak",
+            "resource leak",
+            "leak",
+            "child list",
+            "owned member",
+            "children",
+            "proc head",
+            "cwe-401",
+            "cwe-772",
+        ],
         "resource_lifecycle": [
             "resource lifecycle",
             "memory leak",
@@ -2250,7 +2316,15 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
         "null_pointer_dereference": ["null pointer", "null dereference", "cwe-476"],
         "stack_escape": ["stack escape", "stack address", "cwe-562"],
         "stack_overflow": ["stack overflow", "stack buffer", "vla", "cwe-121"],
-        "signed_unsigned": ["signed", "unsigned", "negative", "integer overflow", "bounds", "cwe-195", "cwe-190"],
+        "signed_unsigned": [
+            "signed",
+            "unsigned",
+            "negative",
+            "integer overflow",
+            "bounds",
+            "cwe-195",
+            "cwe-190",
+        ],
         "off_by_one": ["off by one", "off-by-one", "one byte", "cwe-193"],
         "uninitialized_read": ["uninitialized", "padding", "cwe-457"],
         "race": [
@@ -2302,7 +2376,12 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
             "cwe-362",
         ],
         "refcount_race": ["refcount", "reference count", "ref count", "race", "cwe-362"],
-        "held_lock_callback": ["held lock callback", "callback while lock", "under lock", "cwe-667"],
+        "held_lock_callback": [
+            "held lock callback",
+            "callback while lock",
+            "under lock",
+            "cwe-667",
+        ],
         "missing_unlock": ["missing unlock", "return while lock", "forgot unlock", "cwe-667"],
         "unlock_without_lock": [
             "unlock without lock",
@@ -2324,7 +2403,14 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
         "realloc_misuse": ["realloc misuse", "direct realloc", "old pointer", "cwe-401"],
         "alignment": ["alignment", "unaligned", "strict alias", "cwe-704"],
         "stale_fd": ["stale fd", "file descriptor", "closed fd", "cwe-672"],
-        "fd_leak": ["fd leak", "file descriptor leak", "descriptor leak", "unclosed fd", "unclosed descriptor", "cwe-775"],
+        "fd_leak": [
+            "fd leak",
+            "file descriptor leak",
+            "descriptor leak",
+            "unclosed fd",
+            "unclosed descriptor",
+            "cwe-775",
+        ],
         "file_descriptor_leak": [
             "fd leak",
             "file descriptor leak",
@@ -2357,11 +2443,25 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
             "cwe-362",
         ],
         "unchecked_return": ["unchecked return", "unchecked result", "return success", "cwe-252"],
-        "busy_loop": ["busy loop", "infinite loop", "spin", "no delay", "resource exhaustion", "cwe-400"],
+        "busy_loop": [
+            "busy loop",
+            "infinite loop",
+            "spin",
+            "no delay",
+            "resource exhaustion",
+            "cwe-400",
+        ],
         "infinite_loop": ["infinite loop", "busy loop", "spin", "cwe-835", "cwe-400"],
         "log_amplification": ["log amplification", "log storm", "resource exhaustion", "cwe-400"],
         "key_truncation": ["key truncation", "truncated key", "partial comparison", "cwe-187"],
-        "size_limit_mismatch": ["size limit", "fixed limit", "buffer limit", "spec", "cwe-131", "cwe-190"],
+        "size_limit_mismatch": [
+            "size limit",
+            "fixed limit",
+            "buffer limit",
+            "spec",
+            "cwe-131",
+            "cwe-190",
+        ],
         "fd_type_mismatch": ["fd type", "reliable fd", "raw fd", "mismatched parameter", "cwe-628"],
         "permission": [
             "permission",
@@ -2398,9 +2498,21 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
             "cwe-346",
         ],
         "partial_resource_leak": ["partial resource leak", "resource leak", "retry", "cwe-401"],
-        "dynamic_array_race": ["dynamic array", "array expansion", "race", "double free", "cwe-362"],
+        "dynamic_array_race": [
+            "dynamic array",
+            "array expansion",
+            "race",
+            "double free",
+            "cwe-362",
+        ],
         "version_filtering": ["version", "missing version", "low version", "filter", "cwe-20"],
-        "missing_refcount": ["refcount", "reference count", "shared resource", "cleanup", "cwe-772"],
+        "missing_refcount": [
+            "refcount",
+            "reference count",
+            "shared resource",
+            "cleanup",
+            "cwe-772",
+        ],
         "thread_cache_leak": [
             "thread cache leak",
             "cache leak",
@@ -2428,15 +2540,50 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
             "dangling",
             "cwe-416",
         ],
-        "registration_race": ["registration race", "check then act", "ops registration", "race", "cwe-362"],
-        "alloc_free_mismatch": ["allocator mismatch", "alloc free mismatch", "allocator pairing", "cwe-762"],
+        "registration_race": [
+            "registration race",
+            "check then act",
+            "ops registration",
+            "race",
+            "cwe-362",
+        ],
+        "alloc_free_mismatch": [
+            "allocator mismatch",
+            "alloc free mismatch",
+            "allocator pairing",
+            "cwe-762",
+        ],
         "key_generation_race": ["ftok", "key generation", "key collision", "path state", "cwe-362"],
         "fd_encoding_mismatch": ["encoded fd", "fd encoding", "check value", "raw fd", "cwe-587"],
-        "type_confusion": ["type confusion", "wrong type", "invalid mutex", "sharedresources", "cwe-843"],
-        "semantic_mismatch": ["semantic mismatch", "callback parameter", "counter domain", "busy work", "cwe-628"],
+        "type_confusion": [
+            "type confusion",
+            "wrong type",
+            "invalid mutex",
+            "sharedresources",
+            "cwe-843",
+        ],
+        "semantic_mismatch": [
+            "semantic mismatch",
+            "callback parameter",
+            "counter domain",
+            "busy work",
+            "cwe-628",
+        ],
         "byte_order_logic": ["byte order", "endian", "ctz", "trailing zero", "cwe-682"],
-        "reader_state_race": ["reader state", "reader pid", "multiple readers", "rwlock", "race", "cwe-362"],
-        "uninitialized_output": ["uninitialized output", "partially initialized", "output parameter", "cwe-457"],
+        "reader_state_race": [
+            "reader state",
+            "reader pid",
+            "multiple readers",
+            "rwlock",
+            "race",
+            "cwe-362",
+        ],
+        "uninitialized_output": [
+            "uninitialized output",
+            "partially initialized",
+            "output parameter",
+            "cwe-457",
+        ],
         "file_type_validation": [
             "file type",
             "character device",
@@ -2474,11 +2621,29 @@ def _category_aliases(category: str, cwe: str) -> List[str]:
         "logic_error": ["logic error", "wrong group", "wrong index", "cwe-682"],
         "global_mode_race": ["global mode", "qrcu", "crcu", "race", "cwe-362"],
         "slot_race": ["slot race", "cas result", "process slot", "race", "cwe-362"],
-        "shared_memory_race": ["shared memory race", "lookup before lock", "concurrent create", "memzone", "cwe-362"],
+        "shared_memory_race": [
+            "shared memory race",
+            "lookup before lock",
+            "concurrent create",
+            "memzone",
+            "cwe-362",
+        ],
         "state_machine": ["state machine", "missing transition", "lifecycle state", "cwe-672"],
-        "signal_deadlock": ["signal deadlock", "signal handler", "semaphore", "deadlock", "cwe-833"],
+        "signal_deadlock": [
+            "signal deadlock",
+            "signal handler",
+            "semaphore",
+            "deadlock",
+            "cwe-833",
+        ],
         "signal_race": ["signal race", "signal handler", "async signal", "callstack", "cwe-479"],
-        "callback_self_destroy_race": ["callback self destroy", "self destruction", "callback can free", "use after free", "cwe-416"],
+        "callback_self_destroy_race": [
+            "callback self destroy",
+            "self destruction",
+            "callback can free",
+            "use after free",
+            "cwe-416",
+        ],
     }
     aliases = builtins.get(category_key, [category_key.replace("_", " ")])
     if cwe:
@@ -2667,13 +2832,14 @@ def _truth_line_ranges(truth: Dict[str, Any]) -> List[tuple[str, int, int]]:
         if start_value in (None, ""):
             return
         try:
-            start = int(start_value)
+            start = int(str(start_value))
         except (TypeError, ValueError):
             return
         if start <= 1:
             return
         try:
-            end = int(truth.get(end_key) or start)
+            end_value = truth.get(end_key)
+            end = int(str(end_value if end_value not in (None, "") else start))
         except (TypeError, ValueError):
             end = start
         if end < start:
@@ -2764,6 +2930,7 @@ def _issue_line_ranges(issue: Dict[str, Any]) -> List[tuple[int, int]]:
 
     walk(issue)
     return ranges
+
 
 def _short_text(issue: Dict[str, Any]) -> str:
     text = str(issue.get("description") or issue.get("message") or issue.get("title") or "")

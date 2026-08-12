@@ -116,7 +116,7 @@ flowchart TB
 
 总体架构由四个主平面组成。事实平面负责代码索引和程序事实沉淀；证据平面负责候选生成、去重、合并、diff impact 入口选择和风险预算输入；智能体平面负责语义建模、漏洞挖掘、聚焦深挖、问题调和和三态验证；反馈平面通过 SnapshotStore、UserConfigStore 与 ReviewMemory 保留语义快照、最终报告、人工抑制、baseline 和 Validator 记忆。UserConfigStore 当前既能读取历史 SQLite 配置，也能以 `user_config.xlsx` 作为人工可审阅的主配置界面，并用同名旁路 state DB 保存反馈状态。LLM Agent 通过受 ToolPolicy 约束的 ToolsRuntime 访问被索引、被切片、被缓存、被配置增强过的事实；LLMClient 还可以在同一 profile 的多个 endpoint 间做容量选择和 cooldown；实际可见工具会经过 `AGENT.md` 白名单和后端能力 gate，分析过程与底层代码库保持可追踪边界。
 
-v1.3.1 在既有候选生命周期上增加语言隔离：`project.language` 决定 C/C++ 与 Java 后端、规则、Skill 和语义 schema；公共 `RuleRegistry` 只加载显式配置的 YAML pack 和指定 entry point，重复 ID、未知字段、语言错配与缺失 Skill 直接失败。Python 3.9–3.14、离线资产、签名/SBOM 和发布门禁构成新的交付平面。`zscope.candidate.v3.3` 是内部候选协议，不是产品版本号。
+跨语言规则治理在既有候选生命周期上增加严格预检：`project.language` 决定 C/C++ 与 Java 后端、规则、Skill 和语义 schema；包内目录、YAML pack、指定 provider、Skill 契约和 disabled IDs 组合为不可变 `EffectiveRuleSet`。重复 ID/alias、未知字段、语言错配、缺失 Skill 或能力错配在任何外部工具/LLM 启动前失败。`zscope.candidate.v3.3` 仍是内部候选协议，规则 provenance 以兼容字段追加，不改变稳定候选身份算法。
 
 v1.2 没有替换 v1.1 的主平面；该版本的架构增量集中在性能、精度和可审计性：diff impact 从反向入口枚举收敛为语义义务与覆盖计划；Unified/SVF 增加入口聚类、互斥/共享 bitcode pool 与缓存 manifest；Clang/KnowledgeDB 强化增量缓存、macro 和删除文件处理；Validator、alert-verify 与 LLM 客户端增加并行、fast-path、endpoint 容量控制和成本统计。v1.0 已经把原来集中在 `Analyzer` 和 `zscope/core/*.py` 的职责拆成可测试模块：
 
@@ -124,6 +124,7 @@ v1.2 没有替换 v1.1 的主平面；该版本的架构增量集中在性能、
 |------|----------|------|
 | Analysis | `zscope/core/analysis/analyzer.py` | 顶层协调器，装配 pipelines、agents、tools、workflow、budget、snapshot 与 agent policy |
 | Candidates | `zscope/core/candidates/` | regex、Clang AST/CFG、SVF/Saber、Java rules/signals、Graph、KnowledgeDB 后端信号和 candidate evidence |
+| Rules | `zscope/rules/` | 内置目录、descriptor/alias、`EffectiveRuleSet`、YAML pack、Provider V2、预检与 provenance |
 | Validation | `zscope/core/validation/` | Validator evidence pack、验证运行、suppression、baseline、score、`needs_review` 分流 |
 | Reporting | `zscope/reporting/` | `FinalReport`、JSON/Markdown、report views、semantic dedup metadata、SARIF v2.1.0 |
 | Identity | `zscope/common/issue_identity.py` | `canonical_issue_key`、`stable_issue_fingerprint`、source context fingerprint、根因级去重 |
@@ -132,6 +133,18 @@ v1.2 没有替换 v1.1 的主平面；该版本的架构增量集中在性能、
 | Orchestration | `zscope/orchestration/` | workflow、entry discovery、diff impact、risk budget、subagent、history reconciler、parallel analyzer |
 | Tools | `zscope/tools/` | LLM 工具运行时、参数校验、ToolPolicy、敏感路径 hook 和审计 |
 | Web / MCP | `zscope/web/`、`zscope/mcp/` | Dashboard service layer、stdio/HTTP MCP、远程安全校验 |
+
+### 3.1 配置边界：UserConfigV2 + RuntimeSpec
+
+配置加载分为三层：
+
+1. `UserConfigV2` 严格解析用户 YAML，只接受 LLM、项目/入口、审计重点、语言后端拓扑、SVF 规划、并发和规则扩展。
+2. 打包的 `runtime_defaults.yaml` 解析为 `RuntimeSpec`，提供 Agent 启用状态/LLM 角色、分析预算、缓存、报告策略和稳定算法默认值。
+3. loader 把两者组合为内部 `EffectiveConfig`，并把 RuntimeSpec 的版本、来源路径和 SHA-256 写入配置哈希、缓存身份与报告 metadata。
+
+产品运行时只接受 `config_version: 2`，不保留 v1 别名。旧配置只能由独立的 `zscope-config migrate` 读取。开发者覆盖必须同时设置 `Z_SCOPE_DEVELOPER_MODE=1` 和绝对路径 `Z_SCOPE_RUNTIME_SPEC`；覆盖文件也执行重复键、未知键、类型和枚举校验。
+
+`AGENT.md`、`SKILL.md` 和 workflow YAML 分别保持 Agent prompt、Skill/Tool 和流程契约，不复制进 RuntimeSpec。KnowledgeDB、snapshot 与默认 user-config 状态路径统一相对 `project.root`，避免跨目录运行污染进程工作目录。
 
 ## 4. 运行时主流程
 
@@ -147,7 +160,7 @@ v1.2 没有替换 v1.1 的主平面；该版本的架构增量集中在性能、
 6. `validate_findings`：Validator 做三态验证和可利用性判断。
 7. `persist_report`：写入最终报告、SQLite 快照和元数据。
 
-Workflow 是 Python 编排层的执行计划，不作为大段提示词注入模型。CLI 选择运行模式：默认使用 `default`，`--resume` 切换到 `resume`，`--maintain` 切换到 `maintain`；`--mode ruledriven` 和 `--mode alert-verify` 走各自的专用入口，不通过默认 entry workflow。`ScanSessionRunner` 会在 session 步骤后决定入口形态：显式 `entry_functions_list`、入口发现候选或 diff impact 候选进入批量模式，否则回退到 `entry_function` 单入口模式。v1.0 中 `Analyzer.run()` 已收敛为调用 `WorkflowRunner.run()`；v1.2 的 `DiffImpactPlanner` 在进入 workflow 前把 git diff 转换为语义义务、覆盖计划、批量入口和 `diff_focus`。运行态 state 创建、workflow step 执行、已有报告返回分流和最终持久化由 `zscope/orchestration/workflow_runner.py` 负责。`analysis.workflow_name` 是运行时内部字段，写入 `zscope.yaml` 会被 `ConfigLoader` 拒绝。
+Workflow 是 Python 编排层的执行计划，不作为大段提示词注入模型。CLI 选择运行模式：默认使用 `default`，`--resume` 切换到 `resume`，`--maintain` 切换到 `maintain`；`--mode ruledriven` 和 `--mode alert-verify` 走各自的专用入口，不通过默认 entry workflow。`ScanSessionRunner` 会在 session 步骤后决定入口形态：显式 `entry_functions_list`、入口发现候选或 diff impact 候选进入批量模式，否则回退到 `entry_function` 单入口模式。`DiffImpactPlanner` 在进入 workflow 前把 git diff 转换为语义义务、覆盖计划、批量入口和 `diff_focus`。public v2 不暴露 workflow 或 `analysis` 区块。
 
 ### 4.2 批量、断点续扫和增量维护
 
@@ -162,7 +175,7 @@ Workflow 是 Python 编排层的执行计划，不作为大段提示词注入模
 | `--mode alert-verify` | SARIF | 将外部 SAST 告警归一化为 `ExternalAlert`，再由 LLM 二次确认 |
 | `--export-sarif` | 完成后的 Z-SCOPE 报告 | 将本次扫描结果导出为 SARIF v2.1.0，供代码扫描平台消费 |
 
-diff impact 模式由 CLI 的 `--diff-base` 启用，不能与 `--resume` 或 `--maintain` 同时使用；选根语义可以通过 `project.diff_impact` 配置，但不会把运行态 workflow 写入 YAML。它会生成项目根目录 `entry_functions_diff.json`，其中包含 `path_filters`、`changed_functions`、`analysis_obligations`、`coverage_summary`、`function_coverage` 和每个入口的 `diff_focus`。`--diff-repo-root` 可显式指定 git worktree，重复 `--diff-path` 可只纳入特定路径下的 changed files / changed functions；最终扫描 root 仍可位于路径外，用于完整覆盖释放、owner 或 source 责任链。`ParallelAnalyzer` 会据此把 issue 标为 `incremental`、`existing` 或 `unknown`，批量报告覆盖前会自动将旧 JSON 备份到 `.zscope_knowledge/backups/`。
+diff impact 模式由 CLI 的 `--diff-base` 启用，不能与 `--resume` 或 `--maintain` 同时使用；选根语义使用内置稳定策略，不暴露为 public YAML。它会生成项目根目录 `entry_functions_diff.json`，其中包含 `path_filters`、`changed_functions`、`analysis_obligations`、`coverage_summary`、`function_coverage` 和每个入口的 `diff_focus`。`--diff-repo-root` 可显式指定 git worktree，重复 `--diff-path` 可只纳入特定路径下的 changed files / changed functions；最终扫描 root 仍可位于路径外。
 
 ## 5. 核心分层
 
@@ -175,7 +188,7 @@ diff impact 模式由 CLI 的 `--diff-base` 启用，不能与 `--resume` 或 `-
 - `zscope/orchestration/workflow_executor.py` 执行声明式 workflow step，并在报告 metadata 中记录进度。
 - `zscope/orchestration/workflow_runner.py` 装配单入口运行态，负责 state factory、workflow executor、report build/persist/finalize 回调和已有报告返回路径；history reconciler 与 validation runner 仍由 `Analyzer` step handler 调用。
 
-`--infer-user-config` 是独立的控制面命令：它构建 CodeIndex，运行 `infer_user_config_rows()`，再用默认 LLM profile 按 `analysis.parallel_workers` 并行筛选、修订或丢弃候选行，把保留的 resource/lock/dispatcher/module lifecycle/pointer target/function intent 行合并进 `user_config.xlsx`，然后退出。该命令不会触发漏洞扫描，适合在首次接入项目或接口语义变化后让人工先审阅配置。
+`--infer-user-config` 是独立的控制面命令：它构建 CodeIndex，运行 `infer_user_config_rows()`，再用默认 LLM profile 按 `concurrency.llm_max_inflight` 并行筛选、修订或丢弃候选行，把保留的语义行合并进 `user_config.xlsx`，然后退出。该命令不会触发漏洞扫描。
 
 这种设计把“什么时候运行哪个阶段”从 Agent prompt 中拿出来，放到可测试、可审计的 Python 编排层。
 
@@ -185,14 +198,14 @@ diff impact 模式由 CLI 的 `--diff-base` 启用，不能与 `--resume` 或 `-
 
 | 后端 | 主要能力 | 适用场景 |
 |------|----------|----------|
-| `regex` | 轻量函数提取和源码片段读取 | 无外部依赖的回退模式 |
+| `regex` | 轻量函数提取和源码片段读取 | 用户显式选择的无外部依赖模式 |
 | `clang` | clangd LSP 批量提取函数、类型、调用、宏、全局变量 | 常规结构化 C 索引路径 |
 | `joern` | Java CPG 信号；C/C++ 仅 1.x 弃用兼容 | Java Preview 或旧配置迁移 |
 | `unified` | ClangBackend + SVF/Saber，共享 KnowledgeDB | 需要间接调用、指针分析、内存缺陷后端信号的深度模式 |
 | `java_source` | Java 源码结构、框架注解与方法索引 | 最小 Java Preview |
 | `java_unified` | Java structure + SootUp/WALA/Joern provider evidence | Java Preview 默认深度模式 |
 
-`KnowledgeDB` 当前 schema v7 不只保存传统代码事实，也保存 macro 与 Inspection IR：
+`KnowledgeDB` 当前 schema v14 不只保存传统代码事实，也保存 macro 与 Inspection IR：
 
 - 代码事实：`functions`、`type_definitions`、`type_members`、`call_edges`、`global_variables`、`macro_definitions`、`include_edges`
 - SVF/Saber 信号：`indirect_calls`、`taint_signatures`
@@ -203,9 +216,9 @@ diff impact 模式由 CLI 的 `--diff-base` 启用，不能与 `--resume` 或 `-
 
 当前 `CodeIndex.get_function_impl()` 还会查找函数声明和实现前的 C/C++ 注释块，并把这些 comment block 连同带绝对行号的实现源码一起返回。v1.2 进一步加入 per-run 源文件行缓存、函数实现缓存、函数文件解析缓存和 macro 定义查询，函数式宏可作为轻量实现返回。这样头文件中的 API 契约、所有权说明、锁要求、宏别名和参数语义可以在不额外检索文档的情况下进入 Agent 上下文，同时仍然保留文件与行号来源。
 
-Clang 后端的增量策略以 translation unit 文件哈希为准，未变文件会跳过 clangd 提取；删除文件会清理对应 TU、函数、类型、调用边和 macro，并按 include/callee 影响标记相关文件强制刷新。KnowledgeDB 使用 WAL 与线程本地 SQLite connection，并对直接/间接 callee 查询做版本化缓存，写入调用图或 SVF 数据时会自动失效。
+Clang 后端把增量缓存分成两层：基础 TU 事实只由源码哈希、真实 pending 状态、删除影响和基础 extractor 版本失效，`indexed + hash unchanged` 的 TU 不会因为派生格式变化重新执行 documentSymbol；`function_symbol_context` 与 `function_type_refs` 则用 schema v14 既有 metadata 记录独立的 `dirty/in_progress/current/failed` 生命周期。派生重建期间新结果分批进入 SQLite TEMP staging，事实替换与 `current` 状态在同一事务发布，因此进程中断后可保留旧完整结果并只恢复派生阶段。删除文件仍会清理对应 TU、函数、类型、调用边和 macro，并按 include/callee 影响标记相关文件强制刷新。KnowledgeDB 使用 WAL 与线程本地 SQLite connection，并对直接/间接 callee 查询做版本化缓存，写入调用图或 SVF 数据时会自动失效。
 
-Unified 后端的 SVF 路径支持入口裁剪和入口聚类。`svf_scope=auto|entry` 时，`EntryBitcodeSelector` 会从入口函数沿 KnowledgeDB 调用图选择相关翻译单元，再通过 `llvm-nm` 的 undefined symbol 闭包补齐依赖；如果没有选中 bitcode 或超过 `svf_max_selected_tus`，按 `svf_fallback=full|skip` 保守处理。v1.2 默认 `svf_max_selected_tus=200`，并支持 `svf_exclusive_pools` / `svf_shared_pools` 把会产生同名强符号冲突的源码拆成 link variants。每个 SVF 分组会在 bitcode 输出目录写入 `bitcode_scope_<group>.json` 裁剪计划，入口聚类会额外写入 `entry_cluster_layout_<group>.json`，bitcode/link 构建会写入 `bitcode_manifest.json`；通常该目录是 `.zscope_bc/`，WSL `/mnt/...` 场景会自动重定向到 Linux 原生临时目录以避开 NTFS 与 gllvm/objcopy 的兼容问题。
+Unified 后端的 SVF 路径支持入口裁剪和入口聚类。public v2 使用 `indexing.svf.scope`、`entry_depth`、`max_selected_tus`、`fallback`、`exclusive_pools` 和 `shared_pools` 表达项目规划。`EntryBitcodeSelector` 会从入口函数沿 KnowledgeDB 调用图选择翻译单元，再通过 `llvm-nm` 的 undefined symbol 闭包补齐依赖；pool 名称必须全局唯一、路径非空且冲突引用有效。每个 SVF 分组会写入裁剪计划、入口聚类布局和 bitcode/link manifest；这些布局及 RuntimeSpec provenance 一同参与缓存身份。
 
 ### 5.3 证据平面：CandidatePipeline + Backend Signals
 
@@ -217,6 +230,26 @@ v1.2 继续沿用证据候选层，并把候选收集、合并、统计和 IR �
 - `zscope/core/candidates/svf_value_flow.py` 与 `backend_signals.py`：把 SVF/Saber、KnowledgeDB、Joern/CPG 等后端信号归一化为 candidate。
 - 语义快照中的历史候选会在 focused subagent planning 阶段进入 `CandidateLedger`，用于 Deep Worker 工单规划。
 - Agent 新发现和 `CandidatePipeline` 产生的 merged candidates 会在 vulnerability mining 后一起进入 `pending_new_issues`，再由 Validator 统一处理。
+
+#### 确定性规则、后端信号与规则目录
+
+`zscope/rules/builtin_catalog.yaml` 只保存规则元数据，不把 AST/CFG、Graph 或其他复杂算法搬进 YAML。每个 `RuleDescriptor` 定义 canonical ID、language、engine、defect class、CWE、Skill、severity、revision、status、title/summary、required capabilities 和 aliases。已有 ID 原样保留；新内置规则使用 `zscope.<language>.<engine>.<slug>`，外部扩展不得占用 `zscope.` 命名空间。
+
+扫描前工厂依次加载目录、`SpecRegistry`、YAML packs 和显式选中的 Python provider descriptor，校验全局 ID/alias、Skill 语言、backend capability 与 `rules.disabled_ids`，然后生成共享的不可变 `EffectiveRuleSet`/`RulePolicy`。Provider 在此阶段只被导入，不执行 `evaluate()`。CLI、config validate、doctor、Web、MCP 与批量扫描复用同一预检/序列化服务；Analyzer 仍保留防御性预检。
+
+候选分为三种身份：
+
+| `candidate_kind` | 来源与契约 | 规则目录约束 |
+|------------------|------------|----------------|
+| `deterministic_rule` | Regex、Clang CFG/matcher、Graph、Java local、YAML pack、Python provider | 必须有已登记 canonical `rule_id`，descriptor 决定 CWE/Skill/语言，受 `disabled_ids` 控制 |
+| `backend_signal` | SVF/Saber、Joern、Java signal provider 等后端原生事实 | 不要求目录 ID，保留 `signal_source` 和 `native_rule_id`，由 `indexing` 控制 |
+| `llm_observation` | LLM 主动审计新发现 | 受 active Skill 与 Validator 约束，不伪造确定性规则 ID |
+
+Skill trigger 是 Worker 路由启发式，不是漏洞规则；finding suppression 是 ReviewMemory 中的人工决策，也不是规则开关。`disabled_ids` 只停止指定确定性检测器，其他规则、backend signal 或 LLM 仍可独立发现等价问题。中央候选门禁会在 merge/ledger 前再校验 descriptor 一致性并丢弃已禁用候选，防止实现绕过引擎内部门禁。
+
+目录原始字节与规范化内容、相关引擎源码、disabled IDs、pack/provider 内容与版本、当前语言/backend capability 共同形成 effective SHA-256。该哈希进入 config hash、snapshot/cache、Validator environment fingerprint 和报告 provenance，但不参与既有 candidate/finding 稳定身份算法。
+
+C/C++ 确定性引擎对外保留 `RegexCandidateGenerator`、`ClangAstCfgCandidateGenerator` 和 `GraphCandidateGenerator` 稳定 facade，内部按资源/生命周期、内存/边界/整数、并发/锁/共享状态、协议/所有权/逻辑四个领域调度 detector。每个 facade 只解析一次源码/图事实，共享只读 `RuleContext` 和 `CandidateEmitter`，并保持原规则顺序、候选身份、dedup key、evidence 与置信度。Graph 查询缓存/错误记录仍归 facade；旧模块路径仅作 re-export 兼容层。Worker 中的 `SKILL_TRIGGERS`/`JAVA_SKILL_TRIGGERS` 只是路由启发式，不参与规则目录。
 
 `CandidatePipeline.collect_signal_candidates()` 输出 `CandidateSignalBatch`，分为 `local_candidates`、`graph_candidates`、`backend_candidates` 和 `merged_candidates`。这使上层只消费 evidence-only candidate，不再直接关心候选来自 regex、Clang、SVF、Graph 还是 Joern。
 
@@ -240,6 +273,8 @@ v1.2 继续沿用证据候选层，并把候选收集、合并、统计和 IR �
 |------|------|
 | `candidate_id` | 稳定候选 ID |
 | `dedup_key` | 跨入口、跨 Worker 的去重键 |
+| `rule_id` / `rule_engine` / `rule_revision` | 确定性候选的 canonical descriptor 引用 |
+| `rule_source` / `rule_catalog_sha256` | 规则来源与目录 provenance |
 | `defect_class` | 缺陷类别到 Skill 的映射依据 |
 | `source` / `sink` | 可验证的数据源与危险操作 |
 | `positive_evidence` | 支持该候选的源码事实 |
@@ -265,7 +300,7 @@ Worker 预算仅限制本轮深挖数量，不限定候选覆盖边界。`max_su
 
 这种设计把“覆盖率”和“深挖成本”拆开：候选会尽量全量保留，低风险入口减少预建模、图遍历和 Worker 消耗；高风险入口才接近硬上限。报告 metadata 会记录 `effective_budget`、`budget_hard_caps`、`budget_scores` 和 `budget_reasons`，便于解释某个入口为什么被深挖或为什么被轻量处理。
 
-Deep Worker 执行控制保持显式配置化：`subagent_max_turns` 限制单个工单工具/模型轮次，`subagent_ticket_timeout` 限制单工单耗时，`subagent_spawn_allowlist` 与 `ToolPolicy` 共同约束可创建的子 Agent，`subagent_skill_llm_refs` / `subagent_skill_efforts` 允许按 Skill 做模型或推理策略路由，`tool_audit_log` 可把工具、MCP 和子 Agent policy 事件写入 JSONL 审计日志。v1.2 另用 `validation_parallel_workers` 控制单入口 Validator 并发，避免验证阶段被单个入口串行拖慢。
+Deep Worker 的轮次、deadline、spawn allowlist、Skill 路由和工具审计属于 RuntimeSpec/Agent/ToolPolicy 内部契约。用户只通过 `scan.llm_profiles` 选择 modeling、analysis、validation 资源，通过 `concurrency.investigator_workers`、`validator_workers` 和 `evidence_completion_workers` 表达环境容量。
 
 ### 5.5 智能体平面：Agent + Skill + Tool
 
@@ -279,7 +314,7 @@ Z-SCOPE 的多智能体采用职责分离设计：
 | `issue_reconciler_agent` | 增量维护中判断历史缺陷仍存在还是已修复 | 历史 issue、新代码 | still_exists / fixed |
 | `validator_agent` | 做可利用性和证据闭合验证 | 候选证据、源码上下文、调用关系 | verified / rejected / uncertain |
 
-Skill 是漏洞领域契约，用于约束分析目标和证据要求。`vulnerability_analyzer.task` 会被解析为 active skills，例如 `bounds_and_integer`、`resource_lifecycle`、`temporal_memory`、`shared_state_race` 等。当前选择器先用本地关键词、否定词和范围词做快速判断；当本地置信度不足时，可调用同一 Agent 模型做语义路由。语义路由低置信或与本地结果冲突时会保守放宽到全量 Skill，避免老配置和含糊任务漏扫。
+Skill 是漏洞领域契约，用于约束分析目标和证据要求，不是检测规则。每个 `SKILL.md` 通过 frontmatter `languages` 声明适用于 `c_cpp`、`java` 或两者。`scan.task` 会被解析为 active skills，例如 `bounds_and_integer`、`resource_lifecycle`、`temporal_memory`、`shared_state_race` 等；空字符串启用当前语言全部适用 Skill，非空文本只表达审计重点。规则 descriptor 必须引用一个存在且支持相同语言的 Skill。
 
 LLMClient 是所有 Agent 的 OpenAI-compatible 调用门面。v1.2 支持同一 profile 配置多个 `base_urls`，按最近一分钟请求数和共享 in-flight 数选择 endpoint，并支持 `base_url_rate_limit_per_minute`、`base_url_max_concurrent_requests`、429/5xx `Retry-After` cooldown、线程本地 HTTP session、累计 prompt/completion token 统计和旧工具结果压缩。这样并发入口、并行 Validator 和告警复核可以共用容量控制，而不是各自盲目打满同一个网关。
 
@@ -307,7 +342,7 @@ Agent 实际能看到的工具不是固定 12 个。`Analyzer._get_tools()` 会�
 
 这层的设计目标是让所有候选都先保持“待验证证据”的形态，再由统一的验证门禁决定是否进入 `issues[]`、`metadata.audit_observations[]` 或被 suppression/baseline 拦截。高置信规则也不再绕过验证流水线；它们只能在证据完整、无反证且满足评分门槛时被自动接受。
 
-v1.2 把验证阶段拆成更可伸缩的执行路径：每个候选先构造 compact evidence pack，Validator 会尝试一次无工具 fast-path，只有高置信 `verified` / `rejected` 且证据字段完整时才接受；否则回退到常规工具会话。`ValidationRunner` 可按 `validation_parallel_workers` 并行验证同一入口内的候选，默认会根据入口 worker 数自动收敛并发；若 Validator 因“入口没有上游 caller”误拒绝外部 root，runner 会用 entry-root retry 指令重新评估具体 entry-to-sink 路径。验证 metadata 会累计 context token、prompt/completion token、工具调用、fast-path attempted/accepted 等成本指标。
+验证阶段固定使用 bounded `ValidatorEvidenceSlice v2`：每个 validation cluster 只传一个 canonical occurrence、结构化决策事实、proof、代表性路径和精确代码片段，不开放宽泛代码浏览工具。`ValidationRunner` 按 `concurrency.validator_workers` 调度候选，并由 `concurrency.evidence_completion_workers` 执行类型化补证；共享队列和稳定 proof 路径不再由 rollout 开关控制。
 
 ### 5.7 持久化与反馈平面
 
@@ -342,7 +377,7 @@ Issue identity 由 `zscope/common/issue_identity.py` 统一提供。`canonical_i
 
 与 prompt 相关的用户配置上下文已经迁入 `zscope/semantics/user_config_context.py`。运行时会按当前函数源码标识符和文件 scope 过滤用户配置，只注入与当前入口相关的 resource、lock、pointer target、dispatcher、module lifecycle 和 function intent 片段。
 
-报告层默认生成两类视图：`report_views.default` 只包含可报告的确认问题；`report_views.with_needs_review` 会把 `needs_review` 审计观察项也并入列表，供人工复核或 WebUI 切换查看。`ReportAssembler` 负责最终 report、views、metadata、JSON/Markdown 和 snapshot 持久化，并支持 `deduplicate_report_issues` 钩子，让最终报告在构建视图前应用语义去重。`semantic_dedup_summary` 会记录程序化合并、LLM 小簇判重、cache hit、合并数和拒绝合并数；issue 本身保留 `duplicate_sources`、`alternate_evidence`、`dedup_decisions`、`category_family` 与 `resource_signature`。v1.2 的批量报告还会汇总累计 token、Validator fast-path、diff impact coverage 和 interrupted entries。CLI 的 `--export-sarif` 读取完成后的 JSON 报告并输出 SARIF v2.1.0，保留 rule、level、位置、codeFlows、`partialFingerprints.zscopeStableIssueFingerprint` 和 Z-SCOPE 私有证据属性，便于接入 GitHub code scanning 或其他 SARIF 消费端。
+报告层默认生成两类视图：`report_views.default` 只包含可报告的确认问题；`report_views.with_needs_review` 会把 `needs_review` 审计观察项也并入列表，供人工复核或 WebUI 切换查看。`ReportAssembler` 负责最终 report、views、metadata、JSON/Markdown 和 snapshot 持久化，并支持 `deduplicate_report_issues` 钩子，让最终报告在构建视图前应用语义去重。`semantic_dedup_summary` 会记录程序化合并、LLM 小簇判重、cache hit、合并数和拒绝合并数；issue 本身保留 `duplicate_sources`、`alternate_evidence`、`dedup_decisions`、`category_family` 与 `resource_signature`。报告 metadata 另外记录规则目录 schema/hash、enabled/disabled/unavailable IDs、扩展来源和按 engine/rule 聚合的已产生候选数。CLI 的 `--export-sarif` 输出 SARIF v2.1.0：`ruleId` 直接使用 canonical `rule_id`，CWE 进入 tags/properties，历史 `CWE:rule` 写入 `properties.legacyRuleId`，engine/revision/Skill/catalog hash 进入 rule descriptor；`partialFingerprints.zscopeStableIssueFingerprint` 与 finding 身份算法保持不变。读取旧报告时仍会回退到历史 `rule` 字段，不就地改写归档。
 
 ## 6. 架构优势
 
@@ -530,14 +565,18 @@ WebUI 保存验证状态时，`rejected` 会写入 `finding_suppressions`，后�
 | `zscope -c zscope.yaml --resume` | 断点续扫 |
 | `zscope -c zscope.yaml --maintain` | 增量维护 |
 | `zscope -c zscope.yaml --discover-entries` | 自动入口发现 |
+| `zscope -c zscope.yaml --plan-entries` | 构建索引并预览/写出入口计划，不调用 LLM |
 | `zscope -c zscope.yaml --diff-base origin/main --diff-head HEAD` | 差异影响扫描，生成 `entry_functions_diff.json` 并标注 diff relevance |
 | `zscope -c zscope.yaml --diff-base origin/main --diff-head HEAD --diff-repo-root /repo --diff-path src/net` | 指定 git worktree 并只纳入特定路径下的变更函数；必要扫描 root 可位于路径外 |
 | `zscope -c zscope.yaml --infer-user-config` | 推断或刷新 `user_config.xlsx` 后退出 |
-| `zscope -c zscope.yaml --build-cpg` | 仅构建索引 |
+| `zscope -c zscope.yaml --build-index` | 仅构建索引（`--build-cpg` 为弃用别名） |
 | `zscope -c zscope.yaml --dashboard` | 启动 Web 仪表盘 |
 | `zscope -c zscope.yaml --mcp-stdio` | 启动 MCP stdio server |
 | `zscope -c zscope.yaml --mcp-http --mcp-host 127.0.0.1 --mcp-port 8765` | 启动实验性 Streamable HTTP MCP server |
 | `zscope -c zscope.yaml --export-sarif zscope-results.sarif` | 扫描完成后导出 SARIF v2.1.0 |
+| `zscope-rules list --config zscope.yaml [--language/--engine/--status] [--json]` | 查看规则 descriptor、来源与 effective status |
+| `zscope-rules show RULE_ID --config zscope.yaml [--json]` | 查看单条规则、启停原因与 capability |
+| `zscope-rules validate|test PACK...` | 验证 YAML pack 或执行其正反例 |
 | `zscope --mode ruledriven -c zscope.yaml` | Joern 规则驱动模式 |
 | `zscope --mode alert-verify --sarif alerts.sarif -c zscope.yaml` | SARIF 告警验证 |
 
@@ -553,6 +592,7 @@ WebUI 保存验证状态时，`rejected` 会写入 `finding_suppressions`，后�
 | `CpgService` | CPG/索引状态查询和异步构建触发 |
 | `SourceSnippetService` | 报告位置到源码片段的安全读取 |
 | `ReportFeedbackService` | `/api/save_findings` 的验证状态更新、snapshot 更新、feedback 持久化和报告保存 |
+| `RuleService` | 复用扫描预检/序列化服务，提供与 CLI `--json` 相同 schema 的只读规则目录与筛选 |
 
 主要 HTTP API：
 
@@ -563,6 +603,7 @@ WebUI 保存验证状态时，`rejected` 会写入 `finding_suppressions`，后�
 | `POST /api/save_findings` | 保存验证状态并持久化 feedback |
 | `GET/POST /api/config` | 读取和保存 `zscope.yaml` |
 | `GET/POST /api/config/structured` | 读取和保存结构化配置 |
+| `GET /api/rules?language=&engine=&skill=&status=&q=` | 查询规则目录、汇总与 effective status（只读） |
 | `GET /api/cpg_status` | 查询索引构建状态 |
 | `POST /api/build_cpg` | 触发索引构建 |
 | `GET /api/source_snippet` | 读取报告位置附近源码片段 |
@@ -589,8 +630,9 @@ stdio MCP 适合作为本地 IDE/Agent 接入。HTTP MCP 是显式开启的远�
 |----------|----------|
 | 新增代码分析后端 | 实现 `CodeBackend` ABC，并在 `CodeIndex` 工厂中注册 |
 | 新增漏洞类型 | 新建或扩展 `zscope/skills/<skill>/SKILL.md`，并补充 task-to-skill 映射 |
-| 新增本地候选规则 | 扩展 `RegexCandidateGenerator` 或 `ClangAstCfgCandidateGenerator`，输出完整 `evidence_pack`、`dedup_key` 和 `validation_required=true` |
-| 新增跨函数图规则 | 扩展 `GraphCandidateGenerator`，保持输出与普通候选相同的数据形状 |
+| 新增本地候选规则 | 扩展对应 Regex/Clang/Java detector，同步 `builtin_catalog.yaml` descriptor/revision、正反例和目录校验 |
+| 新增跨函数图规则 | 扩展 `GraphCandidateGenerator`，经公共 emitter 输出 canonical ID 和完整 evidence，同步目录/测试 |
+| 新增外部确定性规则 | 简单正则使用 YAML pack；复杂算法使用严格 Provider V2，见 `docs/rule-development.md` |
 | 新增用户配置推断 | 扩展 `infer_user_config_rows()` 或 `UserConfigWorkbook` sheet 映射，保持人工行不被覆盖 |
 | 新增后端信号归一化 | 扩展 `zscope/core/candidates/backend_signals.py` 或 `adapters.py`，由 `CandidatePipeline` 汇总 |
 | 新增预算信号 | 扩展 `RiskBudgetPlanner` 的打分维度，继续保留硬上限与 metadata 可解释性 |

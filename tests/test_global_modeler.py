@@ -5,6 +5,7 @@ import pytest
 
 from zscope.config.config import (
     AnalysisConfig,
+    ConcurrencyConfig,
     IndexingConfig,
     LLMConfig,
     ProjectConfig,
@@ -201,12 +202,12 @@ def _config(tmp_path: Path) -> ZScopeConfig:
         analysis=AnalysisConfig(
             snapshot_dir=str(tmp_path / "snapshots"),
             user_config_db=str(tmp_path / "user-config"),
-            parallel_workers=2,
             max_premodel_depth=-1,
             max_premodel_callees=10,
             trivial_function_max_lines=0,
         ),
         project=ProjectConfig(project_root=tmp_path, source_root=tmp_path),
+        concurrency=ConcurrencyConfig(entry_workers=2),
     )
 
 

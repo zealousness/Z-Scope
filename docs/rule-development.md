@@ -1,31 +1,93 @@
-# 规则扩展开发
+# 规则开发与治理
 
-## 选择 YAML 还是 Python
+本文面向内置 Java/C/C++ 检测器、YAML rule pack 和第三方 Python provider 的开发者。普通用户只需在 `zscope.yaml` 中引用 pack/provider 或禁用已知规则；内置目录不是 public YAML 的一部分。
 
-局部、可由安全正则表达的规则使用 `rule_pack_version: 1` YAML。需要调用图、框架模型、外部事实或复杂状态机的规则实现 Python `ExecutableRule`，由 `zscope.rule_providers` entry point 注册。YAML 只描述数据，绝不执行代码。
+## 先区分四类机制
 
-用户规则包必须在 `zscope.yaml` 中显式启用：
+| 机制 | 用途 | 身份 | 如何关闭 |
+|------|------|------|----------|
+| 确定性规则 | Regex、Clang CFG/matcher、Graph、Java local、YAML pack 或 Python 算法产生可重现候选 | 必须有目录内 canonical `rule_id` | `rules.disabled_ids` |
+| Backend signal | SVF/Saber、Joern 或 Java signal provider 产生的原生后端事实 | `candidate_kind: backend_signal`，保留 `signal_source` 和 `native_rule_id` | 修改 `indexing` 后端/信号源 |
+| Skill trigger | 把任务或候选路由给合适的 Agent/Deep Worker | Skill ID，不是规则 ID | `scan.task` 与内部路由策略 |
+| Finding suppression | 记住人工确认的误报/例外 | finding 稳定身份与 scope | Web 或用户配置状态 |
+
+不要把 backend signal 登记成确定性规则，也不要用 `disabled_ids` 代替 finding suppression。禁用一条确定性规则只停止该检测器；其他规则、后端信号和 LLM 仍可独立发现等价问题。
+
+## 内置规则目录
+
+`zscope/rules/builtin_catalog.yaml` 只管理元数据；AST/CFG、Graph 等检测算法继续使用 Python。目录在扫描前与实现、Skill 和当前 backend 能力一起预检，任一未登记 ID、重复 ID/alias、CWE 错误或 Skill 语言错配都会终止扫描。
 
 ```yaml
+rule_catalog_version: 1
 rules:
-  packs:
-    - security-rules/acme.yaml
-  providers:
-    - acme_rules
-  disabled_ids:
-    - builtin.rule_to_disable
+  - id: clang_cfg_use_after_release
+    language: c_cpp
+    engine: cpp_clang_cfg
+    defect_class: use_after_free
+    cwe: CWE-416
+    skill: temporal_memory
+    default_severity: high
+    revision: 1
+    status: stable
+    title: Use after release
+    summary: Released object is subsequently used on a feasible local path.
+    required_capabilities: [source_text, clang_structure]
+    aliases: []
+    legacy_id: true
 ```
 
-相对 pack 路径按 `project.root` 解析。用户 pack 不能覆盖同名内置或第三方规则。
+字段要求：
 
-## YAML schema
+- `language` 只能是 `c_cpp` 或 `java`。
+- 内置 `engine` 只能是 `cpp_regex`、`cpp_clang_cfg`、`cpp_clang_matcher`、`cpp_graph` 或 `java_local`。YAML pack 与 provider 的 engine/source 由注册器赋值，扩展不得冒充内置引擎。
+- `status` 只能是 `stable`、`experimental` 或 `deprecated`；它是状态说明，不是 disabled-by-default 开关。
+- `revision` 必须是正整数。规则语义、CWE、Skill、required capability 或验证要求变化时必须递增。
+- `required_capabilities` 从代码定义的固定能力集选取；不要自由造字符串。
+- 已有 ID 始终作为 canonical ID，并保留 `legacy_id: true`。新内置 ID 使用 `zscope.<language>.<engine>.<slug>`；外部规则不得占用 `zscope.` 命名空间。
+- `aliases` 仅用于查询/迁移，不用新 alias 替代历史 canonical ID。
+
+唯一的历史多态例外是 `clang_cfg_unchecked_pointer_backtrack`：同一旧 ID 会按实际 sink 保留 `buffer_underread / CWE-127` 或 `buffer_underwrite / CWE-124`。运行时只接受这两个封闭 variant，其他组合严格失败；后续若拆为新规则必须作为单独的 revision/迁移设计，不能在本轮重写历史 ID。
+
+### Skill 语言与标准映射
+
+每个 `SKILL.md` 的 frontmatter 必须声明 `languages: [c_cpp]`、`[java]` 或 `[c_cpp, java]`。规则 descriptor 只能引用支持相同语言的 Skill。空 `scan.task` 根据该归属启用当前语言的全部适用 Skill，不再依赖 Java Skill 硬编码列表。
+
+| 规则语义 | 标准 Skill |
+|------------|------------|
+| 资源获取/泄漏、fd 生命周期 | `resource_lifecycle` |
+| double-free、UAF、invalid-free、提前销毁 | `temporal_memory` |
+| 越界、整数、指针偏移、未初始化缓冲区 | `bounds_and_integer` |
+| 空指针、失败返回、错误路径 | `null_and_failure` |
+| 格式串和字符串契约 | `string_and_format` |
+| 栈地址逃逸 | `stack_escape` |
+| 锁平衡、死锁、锁顺序 | `concurrency_lock_order` |
+| 数据竞态、发布顺序、共享状态 | `shared_state_race` |
+| 所有权、协议、状态机和逻辑契约 | `ownership_contract` |
+
+CWE、defect class 与 Skill 以规则目录为唯一真源，生成器不应再维护另一份通用类别映射；资源类型、API role 等纯运行时映射可继续留在引擎中。
+
+### 修改内置检测器
+
+一次完整变更应同时包含：
+
+1. Python 检测逻辑，通过公共 emitter 输出 canonical `rule_id` 和规则特有 evidence。
+2. `builtin_catalog.yaml` descriptor；语义性变化递增 `revision`。
+3. 至少一个正例和一个反例，并在需要时增加候选 golden/snapshot。
+4. 目录与实现一致性测试，覆盖 language、CWE、Skill、capability 和 disabled 行为。
+5. 如果 raw candidate、Worker 路由或最终报告发生变化，按 Range/Java benchmark 协议补做回归。
+
+仅修正实现 bug 但保持完全相同的规则契约时，实现源码摘要本身会改变 effective hash；是否递增 revision 应以候选语义/验证要求是否变化为准。
+
+## YAML rule pack
+
+局部、可用安全正则表达的扩展使用 `rule_pack_version: 1`。该 public schema 保持不变，YAML 只描述数据，绝不执行代码。
 
 ```yaml
 rule_pack_version: 1
 name: acme
 rules:
   - id: acme.unsafe_copy
-    language: c_cpp              # c_cpp | java
+    language: c_cpp
     cwe: CWE-120
     defect_class: buffer_overflow
     severity: high
@@ -50,33 +112,90 @@ tests:
     code: 'memcpy(dst, src, size);'
 ```
 
-规则字段固定为 `id`、`language`、`cwe`、`defect_class`、`severity`、`match`、`guards`、`evidence`、`skill`。未知字段、非法正则、未知 Skill、重复 ID 或语言不匹配都会失败。每条规则至少有一个正例、一个反例；正例可带候选快照断言。
+规则字段固定为 `id`、`language`、`cwe`、`defect_class`、`severity`、`match`、`guards`、`evidence`、`skill`。加载器将其转换为 descriptor，并把 pack 原始内容 SHA-256 纳入 effective ruleset 身份。未知字段、非法正则、未知 Skill、缺失正/反例、重复 ID 或语言不匹配都会失败。
 
-## Python provider
+## Python provider V2
 
-Provider 返回一个或多个实现 `evaluate(RuleContext) -> Iterable[Candidate]` 的规则。输出必须是 `zscope.rules.extensions.Candidate`，不能返回任意 dict。
+需要调用图、框架模型、外部事实或复杂状态机时，实现严格 V2 `ExecutableRule`：
 
 ```python
-class AcmeProvider:
-    def rules(self):
-        return [AcmeExecutableRule()]
+class ExecutableRule(Protocol):
+    descriptor: RuleDescriptor
+
+    def evaluate(self, context: RuleContext) -> Iterable[Candidate]:
+        ...
 ```
 
-第三方包注册：
+descriptor 必须在导入 provider 时即可读，预检只导入显式选中的 provider，不执行 `evaluate()`。注册器强制将 engine 标记为 `python_provider`，并把 source 标记为实际 distribution；provider 不得冒充内置引擎或伪造来源。
+
+预检完成后 registry 会冻结，后续不能再注册规则。并行入口共享 provider 实例时，同一条 provider 规则的 `evaluate()` 由 registry 串行调用，不同规则仍可并行；provider 不应依赖跨扫描的可变全局状态。发行版名称/版本、provider 工厂、`rules()` 与每条 `evaluate()` 的可读源码摘要（不可读时使用稳定实现身份）共同进入 provenance 和 effective hash。
+
+`evaluate()` 只能返回强类型 `Candidate`，不能返回任意 dict。Candidate 只提供：
+
+- 与 descriptor 相同的 `rule_id`。
+- 函数、文件和行号定位。
+- 该规则特有的 evidence。
+
+language、CWE、defect class、severity 和 Skill 都由 descriptor 注入。Candidate 使用其他 ID、携带冲突元数据或返回未登记规则时立即失败。provider 的 descriptor、distribution 版本和可读的实现摘要会进入 provenance。
+
+第三方包通过 entry point 注册：
 
 ```toml
 [project.entry-points."zscope.rule_providers"]
 acme_rules = "acme_zscope_rules:AcmeProvider"
 ```
 
-Provider 是可执行代码，只安装来自受信来源且经过依赖/许可证扫描的 wheel。未列入 `rules.providers` 的 entry point 不会加载。
+Provider 是可执行代码；只安装来自受信来源且经过依赖/许可证审查的 wheel。未列入 `rules.providers` 的 entry point 不会导入。旧的 descriptor 推断或 dict 返回协议不兼容，provider 需一次性升级到 V2。
 
-## 命令与测试
+同一个 provider rule 实例可能被多个入口 worker 共享。运行时会按 rule 实例串行调用 `evaluate()`，不同 rule 仍可并行，因此 provider 不得依赖跨 rule 的调用顺序；如需共享缓存，仍应自行使用线程安全的数据结构。预检绑定 `EffectiveRuleSet` 后 registry 会被封存，扫描期间不能再注册 pack/provider 或替换 descriptor。
 
-```bash
-zscope-rules list --config zscope.yaml
-zscope-rules validate security-rules/acme.yaml
-zscope-rules test security-rules/acme.yaml
+## Public YAML 与禁用语义
+
+```yaml
+rules:
+  packs:
+    - security-rules/acme.yaml
+  providers:
+    - acme_rules
+  disabled_ids:
+    - clang_cfg_use_after_release
 ```
 
-内置 C 与 Java 规则将逐步迁入同一注册表；迁移期间仍必须输出标准候选并进入统一 Validator/报告流水线，不能建立旁路告警。
+相对 pack 路径按 `project.root` 解析。两份根目录参考 YAML 在没有扩展/禁用需求时省略空 `rules` 区块。
+
+`disabled_ids` 对 Java local、C/C++ Regex、Clang CFG/matcher、Graph、YAML pack 和 Python provider 全局生效。未知 ID、重复 ID 或跨语言 ID 会报出完整字段路径和近似建议。同语言但当前 backend 不会运行的规则可以禁用，`validate` 会输出“当前 backend 不适用”警告。
+
+SVF/Joern/provider 原生信号不是目录规则 ID，不能写入 `disabled_ids`。如需停止信号源，修改 `indexing`；如需抑制已确认误报，使用 finding suppression。
+
+## 命令、预检与测试
+
+```bash
+# 查看当前配置的全部规则及 effective status
+zscope-rules list --config zscope.yaml
+zscope-rules list --config zscope.yaml --language c_cpp --engine cpp_graph --status stable
+zscope-rules list --config zscope.yaml --json
+
+# 查看 descriptor、启停原因、capability、来源与 hash
+zscope-rules show clang_cfg_use_after_release --config zscope.yaml
+zscope-rules show clang_cfg_use_after_release --config zscope.yaml --json
+
+# 验证/执行 YAML pack 内的正反例
+zscope-rules validate security-rules/acme.yaml
+zscope-rules test security-rules/acme.yaml
+
+# 完整配置预检与环境检查
+zscope-config validate --config zscope.yaml
+zscope-doctor --config zscope.yaml
+```
+
+`zscope`、`zscope-config validate`、`zscope-doctor`、Web、批量扫描和 MCP 复用同一预检工厂。扫描前会完成目录/Skill/pack/provider/disabled ID 的全局校验，再生成不可变 `EffectiveRuleSet`。Analyzer 保留防御性预检，避免第三方直接调用绕过入口校验。
+
+最低测试集应包括：
+
+- 目录 schema、重复键、ID/alias 冲突、CWE、revision、Skill/language 和 capability 校验。
+- 每条规则的正例、反例与必要的 candidate golden。
+- 启用与禁用路径，确认禁用候选不进入 merge、ledger、Worker、Validator、JSON、Markdown 或 SARIF。
+- pack/provider 冲突、跨语言输出、Candidate ID 错配和旧 provider 协议拒绝。
+- descriptor、实现、disabled IDs、pack 或 provider revision 变化时，effective/config/cache/Validator fingerprint 随之变化。
+
+只要更改会影响 Range 候选、Worker 路由或最终 finding，就必须额外遵守 `docs/range-benchmark.md` 的工具链、ground truth 隔离和正式 unified 回归要求。

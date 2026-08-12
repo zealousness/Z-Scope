@@ -614,30 +614,41 @@ def test_java_unified_backend_exposes_structure_profile(tmp_path: Path) -> None:
 def test_config_loader_parses_java_structure_and_signal_options(tmp_path: Path) -> None:
     config = tmp_path / "zscope.yaml"
     config.write_text(
-        """
+        f"""
+config_version: 2
 project:
-  root: .
+  root: {tmp_path.as_posix()}
+  source_root: .
   language: java
   entry_function: demo.App.run:void()
-  agents:
-    - name: vulnerability_analyzer
-      task: audit
-llm:
-  api_key: test
-  models: [test-model]
+llms:
+  default:
+    api_key: test
+    base_urls: [http://localhost/v1]
+    models: [test-model]
+scan:
+  task: audit
 indexing:
   backend: java_unified
-  java_structure_frontend: spoon
-  java_structure_extractor_command:
-    - java
-    - -jar
-    - tools/java-structure-spoon/target/zscope-java-structure-spoon-0.1.0.jar
-    - --project-root
-    - "{source_root}"
-    - "{source_root}"
-  java_signal_backends: [sootup, codeql, joern]
-  java_signal_provider_commands:
-    codeql: [python, run_codeql.py, "{source_root}"]
+  java:
+    structure_frontend: spoon
+    extractor_command:
+      - java
+      - -jar
+      - tools/java-structure-spoon/target/zscope-java-structure-spoon-0.1.0.jar
+      - --project-root
+      - "{{source_root}}"
+      - "{{source_root}}"
+    signals: [sootup, codeql, joern]
+    provider_commands:
+      codeql: [python, run_codeql.py, "{{source_root}}"]
+concurrency:
+  entry_workers: 2
+  validator_workers: 2
+  investigator_workers: 1
+  evidence_completion_workers: 2
+  index_workers: 2
+  llm_max_inflight: 2
 """,
         encoding="utf-8",
     )
@@ -662,49 +673,67 @@ indexing:
     ]
 
 
-def test_config_loader_parses_entry_discovery_scan_after_discovery(tmp_path: Path) -> None:
+def test_config_loader_rejects_removed_scan_after_discovery(tmp_path: Path) -> None:
     config = tmp_path / "zscope.yaml"
     config.write_text(
-        """
+        f"""
+config_version: 2
 project:
-  root: .
+  root: {tmp_path.as_posix()}
+  source_root: .
   language: java
   entry_function: demo.App.run:void()
   entry_discovery:
     enabled: true
     scan_after_discovery: false
-  agents:
-    - name: vulnerability_analyzer
-      task: audit
-llm:
-  api_key: test
-  models: [test-model]
+llms:
+  default:
+    api_key: test
+    base_urls: [http://localhost/v1]
+    models: [test-model]
+indexing:
+  backend: java_source
+concurrency:
+  entry_workers: 2
+  validator_workers: 2
+  investigator_workers: 1
+  evidence_completion_workers: 2
+  index_workers: 2
+  llm_max_inflight: 2
 """,
         encoding="utf-8",
     )
 
-    cfg = ConfigLoader.load(config)
-
-    assert cfg.project.entry_discovery.enabled is True
-    assert cfg.project.entry_discovery.scan_after_discovery is False
+    with pytest.raises(ValueError, match="scan_after_discovery"):
+        ConfigLoader.load(config)
 
 
 def test_config_loader_defaults_java_structure_to_auto(tmp_path: Path) -> None:
     config = tmp_path / "zscope.yaml"
     config.write_text(
-        """
+        f"""
+config_version: 2
 project:
-  root: .
+  root: {tmp_path.as_posix()}
+  source_root: .
   language: java
   entry_function: demo.App.run:void()
-  agents:
-    - name: vulnerability_analyzer
-      task: audit
-llm:
-  api_key: test
-  models: [test-model]
+llms:
+  default:
+    api_key: test
+    base_urls: [http://localhost/v1]
+    models: [test-model]
+scan:
+  task: audit
 indexing:
   backend: java_source
+concurrency:
+  entry_workers: 2
+  validator_workers: 2
+  investigator_workers: 1
+  evidence_completion_workers: 2
+  index_workers: 2
+  llm_max_inflight: 2
 """,
         encoding="utf-8",
     )

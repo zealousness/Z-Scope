@@ -8,7 +8,7 @@ import re
 import threading
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, cast
 
 from .candidate_envelope import (
     CANDIDATE_SCHEMA_VERSION,
@@ -32,6 +32,11 @@ TERMINAL_DISPOSITIONS = frozenset(
     }
 )
 NONTERMINAL_STATUSES = frozenset({"pending", "queued", "planned", "running"})
+
+
+def _as_dict(value: Any) -> Dict[str, Any]:
+    """Narrow candidate evidence mappings while preserving mutability."""
+    return cast(Dict[str, Any], value) if isinstance(value, dict) else {}
 
 
 @dataclass(frozen=True)
@@ -81,10 +86,14 @@ class ValidationGroupOutcome:
             "decision_evidence_hash": self.decision_evidence_hash,
             "primary_occurrence_uid": self.primary_occurrence_uid,
             "alias_occurrence_uids": list(self.alias_occurrence_uids),
-            "occurrence_uids": [
-                self.primary_occurrence_uid,
-                *self.alias_occurrence_uids,
-            ] if self.primary_occurrence_uid else list(self.alias_occurrence_uids),
+            "occurrence_uids": (
+                [
+                    self.primary_occurrence_uid,
+                    *self.alias_occurrence_uids,
+                ]
+                if self.primary_occurrence_uid
+                else list(self.alias_occurrence_uids)
+            ),
             "decision_proof": deepcopy(dict(self.decision_proof)),
             "validation_attempt_count": self.validation_attempt_count,
             "evidence_completion_status": self.evidence_completion_status,
@@ -168,9 +177,7 @@ class CandidateRecord:
             "decision_context_version": self.decision_context_version,
             "evidence_hash": self.evidence_hash,
             "decision_evidence_hash": self.decision_evidence_hash,
-            "provenance_hash": (
-                self.provenance_hashes[0] if self.provenance_hashes else ""
-            ),
+            "provenance_hash": (self.provenance_hashes[0] if self.provenance_hashes else ""),
             "provenance_hashes": list(self.provenance_hashes),
             "evidence_hashes": list(self.evidence_hashes),
             "validation_cluster_uid": self.validation_cluster_uid,
@@ -182,18 +189,10 @@ class CandidateRecord:
             "occurrence_count": len(self.occurrence_uids),
             "grouped_alias_count": max(0, len(self.occurrence_uids) - 1),
             "entry_count": len(
-                {
-                    item.entry_identity
-                    for item in self.occurrences
-                    if item.entry_identity
-                }
+                {item.entry_identity for item in self.occurrences if item.entry_identity}
             ),
             "entries": sorted(
-                {
-                    item.entry_identity
-                    for item in self.occurrences
-                    if item.entry_identity
-                }
+                {item.entry_identity for item in self.occurrences if item.entry_identity}
             ),
             "record_role": self.record_role,
             "candidate_disposition": self.disposition,
@@ -241,47 +240,35 @@ class CandidateLedger:
             dedup_key = self.canonical_key(ticket)
             normalized_path = [str(item) for item in (call_path or []) if str(item)]
             evidence = ticket.evidence if isinstance(ticket.evidence, dict) else {}
-            context_signature = (
-                str(evidence.get("context_signature") or "")
-                or self._context_signature(ticket, normalized_path)
-            )
+            context_signature = str(
+                evidence.get("context_signature") or ""
+            ) or self._context_signature(ticket, normalized_path)
             candidate_uid = str(evidence.get("candidate_uid") or "") or self._candidate_uid(
                 dedup_key
             )
-            history_key = str(evidence.get("history_key") or "") or self._history_key(
-                dedup_key
-            )
-            evidence_hash = (
-                str(evidence.get("evidence_hash") or "")
-                or self._evidence_hash(ticket)
-            )
-            decision_evidence_hash = (
-                str(evidence.get("decision_evidence_hash") or "")
-                or self._decision_evidence_hash(ticket, candidate_uid)
-            )
-            obligation_uid = (
-                str(evidence.get("obligation_uid") or "") or candidate_uid
-            )
+            history_key = str(evidence.get("history_key") or "") or self._history_key(dedup_key)
+            evidence_hash = str(evidence.get("evidence_hash") or "") or self._evidence_hash(ticket)
+            decision_evidence_hash = str(
+                evidence.get("decision_evidence_hash") or ""
+            ) or self._decision_evidence_hash(ticket, candidate_uid)
+            obligation_uid = str(evidence.get("obligation_uid") or "") or candidate_uid
             decision_context_version = str(
-                evidence.get("decision_context_version")
-                or DECISION_CONTEXT_VERSION
+                evidence.get("decision_context_version") or DECISION_CONTEXT_VERSION
             )
             evidence.setdefault("obligation_uid", obligation_uid)
             evidence.setdefault("decision_context_version", decision_context_version)
-            validation_cluster_uid = (
-                str(evidence.get("validation_cluster_uid") or "")
-                or validation_cluster_uid_for(
-                    candidate_uid,
-                    decision_evidence_hash=decision_evidence_hash,
-                    validator_contract=evidence.get("validator_contract")
-                    or evidence.get("validation_requirements"),
-                    obligation_uid=obligation_uid,
-                    decision_context_version=decision_context_version,
-                )
+            validation_cluster_uid = str(
+                evidence.get("validation_cluster_uid") or ""
+            ) or validation_cluster_uid_for(
+                candidate_uid,
+                decision_evidence_hash=decision_evidence_hash,
+                validator_contract=evidence.get("validator_contract")
+                or evidence.get("validation_requirements"),
+                obligation_uid=obligation_uid,
+                decision_context_version=decision_context_version,
             )
-            provenance_hash = (
-                str(evidence.get("provenance_hash") or "")
-                or self._provenance_hash(ticket, source)
+            provenance_hash = str(evidence.get("provenance_hash") or "") or self._provenance_hash(
+                ticket, source
             )
             validation_key = validation_cluster_uid
             record = self._records.get(validation_key)
@@ -311,14 +298,8 @@ class CandidateLedger:
                         if record_role == "validation_obligation"
                         else "triage_lead"
                     ),
-                    status=(
-                        "queued"
-                        if record_role == "validation_obligation"
-                        else "pending"
-                    ),
-                    disposition=(
-                        ""
-                    ),
+                    status=("queued" if record_role == "validation_obligation" else "pending"),
+                    disposition=(""),
                 )
                 self._records[validation_key] = record
             else:
@@ -339,10 +320,7 @@ class CandidateLedger:
                     record.evidence_hashes.append(evidence_hash)
                 if provenance_hash and provenance_hash not in record.provenance_hashes:
                     record.provenance_hashes.append(provenance_hash)
-                if (
-                    context_signature
-                    and context_signature not in record.context_signatures
-                ):
+                if context_signature and context_signature not in record.context_signatures:
                     record.context_signatures.append(context_signature)
 
             if source and source not in record.sources:
@@ -350,13 +328,10 @@ class CandidateLedger:
 
             if normalized_path and normalized_path not in record.call_paths:
                 record.call_paths.append(normalized_path)
-            occurrence_uid = (
-                str(evidence.get("occurrence_uid") or "")
-                or self._occurrence_uid(
-                    record.candidate_uid,
-                    normalized_path,
-                    entry_identity=str(evidence.get("entry_identity") or ""),
-                )
+            occurrence_uid = str(evidence.get("occurrence_uid") or "") or self._occurrence_uid(
+                record.candidate_uid,
+                normalized_path,
+                entry_identity=str(evidence.get("entry_identity") or ""),
             )
             if occurrence_uid not in record.occurrence_uids:
                 record.occurrence_uids.append(occurrence_uid)
@@ -458,36 +433,18 @@ class CandidateLedger:
     ) -> int:
         """Backfill the main validator disposition into matching records."""
 
-        pack = (
-            issue.get("evidence_pack")
-            if isinstance(issue.get("evidence_pack"), dict)
-            else {}
-        )
-        occurrence_uid = str(
-            issue.get("occurrence_uid") or pack.get("occurrence_uid") or ""
-        )
-        candidate_uid = str(
-            issue.get("candidate_uid") or pack.get("candidate_uid") or ""
-        )
-        evidence_hash = str(
-            issue.get("evidence_hash") or pack.get("evidence_hash") or ""
-        )
+        pack = _as_dict(issue.get("evidence_pack"))
+        occurrence_uid = str(issue.get("occurrence_uid") or pack.get("occurrence_uid") or "")
+        candidate_uid = str(issue.get("candidate_uid") or pack.get("candidate_uid") or "")
+        evidence_hash = str(issue.get("evidence_hash") or pack.get("evidence_hash") or "")
         context_signature = str(
             issue.get("context_signature") or pack.get("context_signature") or ""
         )
         validation_cluster_uid = str(
-            issue.get("validation_cluster_uid")
-            or pack.get("validation_cluster_uid")
-            or ""
+            issue.get("validation_cluster_uid") or pack.get("validation_cluster_uid") or ""
         )
-        has_exact_validation_identity = bool(
-            candidate_uid and evidence_hash and context_signature
-        )
-        if (
-            not occurrence_uid
-            and not has_exact_validation_identity
-            and not validation_cluster_uid
-        ):
+        has_exact_validation_identity = bool(candidate_uid and evidence_hash and context_signature)
+        if not occurrence_uid and not has_exact_validation_identity and not validation_cluster_uid:
             return 0
 
         updated = 0
@@ -506,28 +463,21 @@ class CandidateLedger:
                 if not matches:
                     continue
                 record.disposition = (
-                    disposition
-                    if disposition in TERMINAL_DISPOSITIONS
-                    else "needs_review"
+                    disposition if disposition in TERMINAL_DISPOSITIONS else "needs_review"
                 )
                 record.status = status or record.disposition
                 record.terminal_issue = deepcopy(issue)
                 proof = issue.get("decision_proof") or issue.get("rejection_proof")
-                record.decision_proof = (
-                    deepcopy(proof) if isinstance(proof, dict) else {}
-                )
+                record.decision_proof = deepcopy(proof) if isinstance(proof, dict) else {}
                 record.evidence_completion_status = str(
-                    issue.get("evidence_completion_status")
-                    or record.evidence_completion_status
+                    issue.get("evidence_completion_status") or record.evidence_completion_status
                 )
                 record.engine_status = str(
                     issue.get("engine_status")
                     or (
                         "failed"
                         if record.disposition == "engine_failed"
-                        else "interrupted"
-                        if record.disposition == "interrupted"
-                        else "complete"
+                        else "interrupted" if record.disposition == "interrupted" else "complete"
                     )
                 )
                 updated += 1
@@ -536,7 +486,7 @@ class CandidateLedger:
     def mark_validation_running(self, issue: Mapping[str, Any]) -> int:
         """Claim a validation group without assigning a security disposition."""
 
-        pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+        pack = _as_dict(issue.get("evidence_pack"))
         cluster_uid = str(
             issue.get("validation_cluster_uid") or pack.get("validation_cluster_uid") or ""
         )
@@ -583,13 +533,9 @@ class CandidateLedger:
                     continue
                 if occurrences:
                     value["occurrences"] = occurrences
-                    value["occurrence_uids"] = [
-                        item["occurrence_uid"] for item in occurrences
-                    ]
+                    value["occurrence_uids"] = [item["occurrence_uid"] for item in occurrences]
                     value["call_paths"] = [
-                        path
-                        for item in occurrences
-                        for path in item.get("call_paths", [])
+                        path for item in occurrences for path in item.get("call_paths", [])
                     ]
                     value["entries"] = sorted(
                         {
@@ -607,13 +553,16 @@ class CandidateLedger:
                     str(item.get("candidate_uid") or ""),
                 )
             )
-            outcomes = [
-                self._outcome_for_record(record, entry_identity=entry_identity)
-                for record in self._records.values()
-                if record.record_role == "validation_obligation"
-                and self._outcome_for_record(record, entry_identity=entry_identity)
-                is not None
-            ]
+            outcomes = []
+            for record in self._records.values():
+                if record.record_role != "validation_obligation":
+                    continue
+                outcome = self._outcome_for_record(
+                    record,
+                    entry_identity=entry_identity,
+                )
+                if outcome is not None:
+                    outcomes.append(outcome)
             outcomes.sort(key=lambda item: item.validation_cluster_uid)
             return {
                 "candidate_schema_version": CANDIDATE_SCHEMA_VERSION,
@@ -669,11 +618,7 @@ class CandidateLedger:
                 for status in sorted({record.status for record in triage})
             },
             "by_disposition": {
-                disposition: sum(
-                    1
-                    for record in obligations
-                    if record.disposition == disposition
-                )
+                disposition: sum(1 for record in obligations if record.disposition == disposition)
                 for disposition in sorted(
                     {record.disposition for record in obligations if record.disposition}
                 )
@@ -686,9 +631,7 @@ class CandidateLedger:
             "nonterminal_validation_count": sum(
                 1 for record in obligations if record.status in NONTERMINAL_STATUSES
             ),
-            "duplicates_merged": sum(
-                record.duplicate_count for record in self._records.values()
-            ),
+            "duplicates_merged": sum(record.duplicate_count for record in self._records.values()),
         }
 
     def _outcome_for_record(
@@ -709,13 +652,14 @@ class CandidateLedger:
         if entry_identity and not occurrences:
             return None
         occurrence_uids = sorted(
-            {item.occurrence_uid for item in occurrences}
-            or set(record.occurrence_uids)
+            {item.occurrence_uid for item in occurrences} or set(record.occurrence_uids)
         )
         primary = occurrence_uids[0] if occurrence_uids else ""
         issue = deepcopy(record.terminal_issue)
         if not issue:
-            ticket_evidence = record.ticket.evidence if isinstance(record.ticket.evidence, dict) else {}
+            ticket_evidence = (
+                record.ticket.evidence if isinstance(record.ticket.evidence, dict) else {}
+            )
             issue = deepcopy(ticket_evidence.get("candidate_payload") or {})
         canonical = record.to_dict(include_context=False)
         # Preserve validator-produced content but make lifecycle identity and
@@ -724,7 +668,8 @@ class CandidateLedger:
             {
                 key: deepcopy(value)
                 for key, value in canonical.items()
-                if key not in {"ticket", "occurrence_uids", "occurrences", "call_paths", "entry_paths"}
+                if key
+                not in {"ticket", "occurrence_uids", "occurrences", "call_paths", "entry_paths"}
             }
         )
         issue.update(
@@ -737,8 +682,12 @@ class CandidateLedger:
                 "alias_occurrence_uids": occurrence_uids[1:],
                 "occurrences": [item.to_dict() for item in occurrences],
                 "occurrence_count": len(occurrence_uids),
-                "entry_count": len({item.entry_identity for item in occurrences if item.entry_identity}),
-                "entries": sorted({item.entry_identity for item in occurrences if item.entry_identity}),
+                "entry_count": len(
+                    {item.entry_identity for item in occurrences if item.entry_identity}
+                ),
+                "entries": sorted(
+                    {item.entry_identity for item in occurrences if item.entry_identity}
+                ),
                 "entry_paths": [list(path) for item in occurrences for path in item.call_paths],
                 "decision_proof": deepcopy(record.decision_proof),
                 "validation_attempt_count": record.validation_attempt_count,
@@ -774,9 +723,9 @@ class CandidateLedger:
             "revision": self.revision,
             "root": dedup_key,
         }
-        digest = hashlib.sha256(
-            json.dumps(payload, sort_keys=True).encode("utf-8")
-        ).hexdigest()[:24]
+        digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[
+            :24
+        ]
         return f"CAND_{digest}"
 
     def _history_key(self, dedup_key: str) -> str:
@@ -784,9 +733,9 @@ class CandidateLedger:
             "project": self.project_id,
             "root": dedup_key,
         }
-        digest = hashlib.sha256(
-            json.dumps(payload, sort_keys=True).encode("utf-8")
-        ).hexdigest()[:24]
+        digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[
+            :24
+        ]
         return f"HIST_{digest}"
 
     @staticmethod
@@ -810,7 +759,7 @@ class CandidateLedger:
         candidate_uid: str,
     ) -> str:
         evidence = ticket.evidence if isinstance(ticket.evidence, dict) else {}
-        path = evidence.get("path") if isinstance(evidence.get("path"), dict) else {}
+        path = _as_dict(evidence.get("path"))
         payload = {
             "candidate_uid": candidate_uid,
             "negative_evidence": evidence.get("negative_evidence") or [],
@@ -875,10 +824,9 @@ class CandidateLedger:
         call_path: List[str],
     ) -> str:
         evidence = ticket.evidence if isinstance(ticket.evidence, dict) else {}
-        path = evidence.get("path") if isinstance(evidence.get("path"), dict) else {}
+        path = _as_dict(evidence.get("path"))
         return context_signature_for(
-            entry=str(evidence.get("entry_identity") or "")
-            or (call_path[0] if call_path else ""),
+            entry=str(evidence.get("entry_identity") or "") or (call_path[0] if call_path else ""),
             entry_paths=[call_path] if call_path else [],
             constraints=(
                 path.get("path_constraints")
@@ -893,22 +841,15 @@ class CandidateLedger:
         evidence_hash: str,
         context_signature: str,
     ) -> str:
-        return (
-            f"{candidate_uid}|evidence={evidence_hash}"
-            f"|context={context_signature}"
-        )
+        return f"{candidate_uid}|evidence={evidence_hash}" f"|context={context_signature}"
 
     @staticmethod
     def _merge_ticket_evidence(
         primary: SubAgentTicket,
         secondary: SubAgentTicket,
     ) -> None:
-        primary_evidence = (
-            primary.evidence if isinstance(primary.evidence, dict) else {}
-        )
-        secondary_evidence = (
-            secondary.evidence if isinstance(secondary.evidence, dict) else {}
-        )
+        primary_evidence = primary.evidence if isinstance(primary.evidence, dict) else {}
+        secondary_evidence = secondary.evidence if isinstance(secondary.evidence, dict) else {}
         for key, value in secondary_evidence.items():
             if key not in primary_evidence or primary_evidence.get(key) in (
                 None,
@@ -969,9 +910,7 @@ class CandidateLedger:
     def _ticket_defect_class(cls, ticket: SubAgentTicket) -> str:
         evidence = ticket.evidence or {}
         return cls._normalize(
-            evidence.get("defect_class")
-            or evidence.get("subcategory")
-            or ticket.skill
+            evidence.get("defect_class") or evidence.get("subcategory") or ticket.skill
         )
 
     @classmethod

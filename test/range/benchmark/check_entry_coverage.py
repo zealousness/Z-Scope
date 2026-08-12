@@ -23,9 +23,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 
-FUNC_DEF_RE = re.compile(
-    r"(?m)^[A-Za-z_][\w\s\*\(\),]*\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*\{"
-)
+FUNC_DEF_RE = re.compile(r"(?m)^[A-Za-z_][\w\s\*\(\),]*\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*\{")
 
 
 @dataclass(frozen=True, order=True)
@@ -113,11 +111,7 @@ def paths_match(left: str, right: str) -> bool:
     b = normalize_path(right)
     if not a or not b:
         return False
-    return (
-        a == b
-        or a.endswith("/" + b)
-        or b.endswith("/" + a)
-    )
+    return a == b or a.endswith("/" + b) or b.endswith("/" + a)
 
 
 def function_name(value: Any) -> str:
@@ -202,15 +196,13 @@ class KnowledgeCallGraph:
 
             direct_rows = list(
                 connection.execute(
-                    "SELECT caller_name, caller_file, callee_name, callee_file "
-                    "FROM call_edges"
+                    "SELECT caller_name, caller_file, callee_name, callee_file " "FROM call_edges"
                 )
             )
             indirect_rows = (
                 list(
                     connection.execute(
-                        "SELECT caller_name, call_file, callee_name "
-                        "FROM indirect_calls"
+                        "SELECT caller_name, call_file, callee_name " "FROM indirect_calls"
                     )
                 )
                 if _table_exists(connection, "indirect_calls")
@@ -300,9 +292,7 @@ class KnowledgeCallGraph:
     ) -> set[FunctionNode]:
         normalized_signature = normalize_signature(signature)
         records = [
-            record
-            for record in self.records_by_name.get(name, [])
-            if not record.is_declaration
+            record for record in self.records_by_name.get(name, []) if not record.is_declaration
         ]
         if normalized_signature:
             signature_matches = [
@@ -313,9 +303,7 @@ class KnowledgeCallGraph:
             if signature_matches:
                 records = signature_matches
         nodes = {
-            FunctionNode(record.name, record.file_path)
-            for record in records
-            if record.file_path
+            FunctionNode(record.name, record.file_path) for record in records if record.file_path
         }
         if not nodes:
             nodes = {
@@ -327,17 +315,10 @@ class KnowledgeCallGraph:
     def _resolve_callee_nodes(self, name: str, file_hint: str) -> set[FunctionNode]:
         if file_hint:
             matched_records = self.records_matching_path(name, file_hint)
-            definitions = [
-                record for record in matched_records if not record.is_declaration
-            ]
+            definitions = [record for record in matched_records if not record.is_declaration]
             if definitions:
-                return {
-                    FunctionNode(record.name, record.file_path)
-                    for record in definitions
-                }
-            declarations = [
-                record for record in matched_records if record.is_declaration
-            ]
+                return {FunctionNode(record.name, record.file_path) for record in definitions}
+            declarations = [record for record in matched_records if record.is_declaration]
             for declaration in declarations:
                 resolved = self.definition_nodes(
                     name,
@@ -358,11 +339,7 @@ class KnowledgeCallGraph:
         return resolved or {FunctionNode(name, "")}
 
     def entry_signatures(self, entry: Mapping[str, Any]) -> list[str]:
-        explicit = str(
-            entry.get("signature")
-            or entry.get("full_signature")
-            or ""
-        ).strip()
+        explicit = str(entry.get("signature") or entry.get("full_signature") or "").strip()
         if explicit:
             return [explicit]
         name = function_name(entry.get("function_name"))
@@ -378,14 +355,9 @@ class KnowledgeCallGraph:
         name = function_name(entry.get("function_name"))
         file_path = normalize_path(entry.get("file_path"), self.root)
         exact_records = self.records_matching_path(name, file_path)
-        exact_definitions = [
-            record for record in exact_records if not record.is_declaration
-        ]
+        exact_definitions = [record for record in exact_records if not record.is_declaration]
         if exact_definitions:
-            return {
-                FunctionNode(record.name, record.file_path)
-                for record in exact_definitions
-            }
+            return {FunctionNode(record.name, record.file_path) for record in exact_definitions}
         exact_callers = {
             FunctionNode(name, path)
             for path in self.caller_files_by_name.get(name, set())
@@ -419,11 +391,7 @@ def _source_signatures_for_entry(
     *,
     root: Path,
 ) -> list[str]:
-    explicit = str(
-        entry.get("signature")
-        or entry.get("full_signature")
-        or ""
-    ).strip()
+    explicit = str(entry.get("signature") or entry.get("full_signature") or "").strip()
     if explicit:
         return [explicit]
     name = function_name(entry.get("function_name"))
@@ -481,8 +449,7 @@ def truth_function_refs(vulnerability: Mapping[str, Any]) -> list[FunctionNode]:
 
 def node_is_reachable(target: FunctionNode, reachable: Iterable[FunctionNode]) -> bool:
     return any(
-        node.name == target.name
-        and paths_match(node.file_path, target.file_path)
+        node.name == target.name and paths_match(node.file_path, target.file_path)
         for node in reachable
     )
 
@@ -523,16 +490,12 @@ def evaluate_coverage(
         for entry in entries
         if function_name(entry.get("function_name"))
     ]
-    duplicate_names = sorted(
-        name for name, count in Counter(entry_names).items() if count > 1
-    )
+    duplicate_names = sorted(name for name, count in Counter(entry_names).items() if count > 1)
 
     missing_definitions: list[str] = []
     for entry in entries:
         name = function_name(entry.get("function_name"))
-        if not source_defs.get(name) and not (
-            graph is not None and graph.definition_nodes(name)
-        ):
+        if not source_defs.get(name) and not (graph is not None and graph.definition_nodes(name)):
             file_path = normalize_path(entry.get("file_path"), root)
             missing_definitions.append(f"{file_path}::{entry.get('function_name') or name}")
 
@@ -561,11 +524,7 @@ def evaluate_coverage(
     for vulnerability in vulnerabilities:
         refs = truth_function_refs(vulnerability)
         coverage = [node_is_reachable(ref, reachable) for ref in refs]
-        covered = (
-            bool(refs) and all(coverage)
-            if require_all_functions
-            else any(coverage)
-        )
+        covered = bool(refs) and all(coverage) if require_all_functions else any(coverage)
         if covered:
             continue
         rendered = [f"{ref.file_path}::{ref.name}" for ref in refs]
@@ -609,11 +568,7 @@ def evaluate_coverage(
             "reachable_nodes": len(reachable),
         }
 
-    valid = not (
-        missing_truth
-        or duplicate_identities
-        or missing_definitions
-    )
+    valid = not (missing_truth or duplicate_identities or missing_definitions)
     return output, valid
 
 
@@ -621,7 +576,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path("test/range"))
     parser.add_argument("--config", type=Path, default=Path("test/range/zscope.benchmark.yaml"))
-    parser.add_argument("--entries", type=Path, default=None)
+    parser.add_argument(
+        "--entries",
+        type=Path,
+        default=Path("test/range/benchmark/deterministic_entries.json"),
+        help="Entry manifest to check; formal auto-discovery runs pass their generated run artifact.",
+    )
     parser.add_argument(
         "--truth",
         type=Path,
@@ -664,9 +624,7 @@ def main() -> None:
     if not isinstance(raw_vulnerabilities, list):
         raise SystemExit(f"{args.truth} field 'vulnerabilities' must be an array")
     entries = [item for item in raw_entries if isinstance(item, dict)]
-    vulnerabilities = [
-        item for item in raw_vulnerabilities if isinstance(item, dict)
-    ]
+    vulnerabilities = [item for item in raw_vulnerabilities if isinstance(item, dict)]
 
     output, valid = evaluate_coverage(
         root=root,

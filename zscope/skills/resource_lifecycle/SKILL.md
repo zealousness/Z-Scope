@@ -1,5 +1,6 @@
 ---
 name: resource_lifecycle
+languages: [c_cpp]
 description: Trace acquired resources through normal and error paths.
 category: resource_management
 triggers:

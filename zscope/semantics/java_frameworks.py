@@ -8,7 +8,16 @@ that the analyzer, local rules, and CPG rule engine can share.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, cast
+
+
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return cast(Dict[str, Any], value) if isinstance(value, dict) else {}
+
+
+def _as_list(value: Any) -> List[Any]:
+    return cast(List[Any], value) if isinstance(value, list) else []
+
 
 SPRING_CONTROLLER_ANNOTATIONS = {
     "Controller",
@@ -190,20 +199,18 @@ def java_framework_summary(semantics: Dict[str, Any]) -> str:
     if not isinstance(semantics, dict):
         return ""
     parts: List[str] = []
-    entry = semantics.get("entry") if isinstance(semantics.get("entry"), dict) else {}
+    entry = _as_dict(semantics.get("entry"))
     if entry.get("is_entry"):
         methods = ", ".join(entry.get("http_methods") or ["ANY"])
         paths = ", ".join(entry.get("paths") or [])
         parts.append(f"Spring MVC entry {methods} {paths}".strip())
-    sources = semantics.get("sources") if isinstance(semantics.get("sources"), list) else []
+    sources = _as_list(semantics.get("sources"))
     if sources:
         names = ", ".join(
             f"{src.get('parameter')}:{src.get('kind')}" for src in sources if isinstance(src, dict)
         )
         parts.append(f"external inputs [{names}]")
-    sql_templates = (
-        semantics.get("sql_templates") if isinstance(semantics.get("sql_templates"), list) else []
-    )
+    sql_templates = _as_list(semantics.get("sql_templates"))
     dollar_templates = [
         item
         for item in sql_templates
@@ -216,7 +223,7 @@ def java_framework_summary(semantics: Dict[str, Any]) -> str:
             if isinstance(item, dict)
         )
         parts.append(f"MyBatis text substitution [{vars_text}]")
-    security = semantics.get("security") if isinstance(semantics.get("security"), dict) else {}
+    security = _as_dict(semantics.get("security"))
     if security.get("annotations"):
         parts.append(
             f"Spring Security annotations [{', '.join(security.get('annotations') or [])}]"
@@ -224,43 +231,35 @@ def java_framework_summary(semantics: Dict[str, Any]) -> str:
     security_runtime = _runtime_signal_names(security)
     if security_runtime:
         parts.append(f"Spring Security runtime signals [{', '.join(security_runtime)}]")
-    data_access = (
-        semantics.get("data_access") if isinstance(semantics.get("data_access"), dict) else {}
-    )
+    data_access = _as_dict(semantics.get("data_access"))
     if data_access.get("queries"):
         parts.append("Spring Data JPA query method")
     data_runtime = _runtime_signal_names(data_access)
     if data_runtime:
         parts.append(f"Spring Data/JPA runtime signals [{', '.join(data_runtime)}]")
-    reactive = semantics.get("reactive") if isinstance(semantics.get("reactive"), dict) else {}
+    reactive = _as_dict(semantics.get("reactive"))
     if reactive.get("is_reactive"):
         parts.append("Spring WebFlux/reactive handler")
-    filter_interceptor = (
-        semantics.get("filter_interceptor")
-        if isinstance(semantics.get("filter_interceptor"), dict)
-        else {}
-    )
+    filter_interceptor = _as_dict(semantics.get("filter_interceptor"))
     if filter_interceptor.get("is_filter") or filter_interceptor.get("is_interceptor"):
         parts.append("Servlet filter/interceptor boundary")
-    messaging = semantics.get("messaging") if isinstance(semantics.get("messaging"), dict) else {}
+    messaging = _as_dict(semantics.get("messaging"))
     if messaging.get("is_consumer"):
         parts.append(f"message consumer [{', '.join(messaging.get('annotations') or [])}]")
     elif messaging.get("runtime_signals"):
         parts.append(f"messaging runtime signals [{', '.join(_runtime_signal_names(messaging))}]")
-    scheduled = semantics.get("scheduled") if isinstance(semantics.get("scheduled"), dict) else {}
+    scheduled = _as_dict(semantics.get("scheduled"))
     if scheduled.get("is_scheduled"):
         parts.append("scheduled job")
-    rpc = semantics.get("rpc") if isinstance(semantics.get("rpc"), dict) else {}
+    rpc = _as_dict(semantics.get("rpc"))
     if rpc.get("is_rpc"):
         rpc_labels = list(rpc.get("annotations") or []) + _runtime_signal_names(rpc)
         parts.append(f"RPC endpoint/client [{', '.join(rpc_labels)}]")
-    runtime_ir = (
-        semantics.get("runtime_ir") if isinstance(semantics.get("runtime_ir"), dict) else {}
-    )
+    runtime_ir = _as_dict(semantics.get("runtime_ir"))
     if runtime_ir.get("security_policies"):
         policy_names = ", ".join(
             str(policy.get("decision") or policy.get("kind") or "")
-            for policy in runtime_ir.get("security_policies", [])
+            for policy in _as_list(runtime_ir.get("security_policies"))
             if isinstance(policy, dict)
         )
         parts.append(f"runtime security policies [{policy_names}]")

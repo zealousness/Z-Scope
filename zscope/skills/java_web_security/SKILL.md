@@ -1,5 +1,6 @@
 ---
 name: java_web_security
+languages: [java]
 description: Audit Java web request boundaries, SSRF, path traversal, redirects, and file/URL construction.
 category: java_security
 triggers:

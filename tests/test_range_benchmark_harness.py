@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -9,10 +8,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHECKER_PATH = REPO_ROOT / "test" / "range" / "benchmark" / "check_entry_coverage.py"
-RUNNER_PATH = REPO_ROOT / "test" / "range" / "benchmark" / "run_auto_unified_wsl.sh"
-ZHIPU_PREFLIGHT_PATH = REPO_ROOT / "test" / "range" / "benchmark" / "preflight_zhipu_glm51_wsl.sh"
-BENCHMARK_CONFIG_PATH = REPO_ROOT / "test" / "range" / "zscope.auto_unified.yaml"
-GIT_ATTRIBUTES_PATH = REPO_ROOT / ".gitattributes"
+BENCHMARK_CONFIG_PATH = REPO_ROOT / "test" / "range" / "zscope.benchmark.yaml"
 
 SPEC = importlib.util.spec_from_file_location("range_entry_coverage", CHECKER_PATH)
 assert SPEC is not None and SPEC.loader is not None
@@ -223,79 +219,16 @@ def test_no_database_fallback_is_honest_direct_identity_check(
     assert result["missing_truth_entry"]
 
 
-def test_wsl_runner_separates_process_report_and_valid_scan_states() -> None:
-    runner = RUNNER_PATH.read_text(encoding="utf-8")
-    assert "Z_SCOPE_BENCHMARK_VENV" in runner
-    assert "$benchmark_venv/bin/python3" in runner
-    python_blocks = re.findall(r"<<'PY'\n(.*?)\nPY", runner, flags=re.DOTALL)
-
-    assert python_blocks
-    for index, block in enumerate(python_blocks):
-        compile(block, f"{RUNNER_PATH.name}:heredoc-{index}", "exec")
-    assert "report_emitted = bool(report)" in runner
-    assert '"process_ended": True' in runner
-    assert 'report_completeness == "complete"' in runner
-    assert "manifest_valid" in runner
-    assert "valid_scan_exit" in runner
-    assert "and entry_coverage_rc == 0" in runner
-    assert 'models != {"glm-5.1"}' in runner
-    assert 'base_urls != {"https://open.bigmodel.cn/api/paas/v4"}' in runner
-    assert "ConfigLoader.load(str(path))" in runner
-    assert "did not resolve in the benchmark configuration" in runner
-    assert "bash test/range/benchmark/preflight_zhipu_glm51_wsl.sh" in runner
-    assert "preexisting_entry_functions_list.json" in runner
-    assert '"candidate_lifecycle_v3"' in runner
-    assert '"canonical_outcome_projection"' in runner
-    assert "model_trace_valid" in runner
-    assert '"scan_completed": scan_completed' in runner
-    assert '"benchmark_valid": benchmark_valid' in runner
-    assert '"confirmed_tp_gte_85": confirmed_tp >= 85' in runner
-    assert '"confirmed_raw_precision_gte_0_95": confirmed_raw_precision >= 0.95' in runner
-    assert '"with_review_tp_gte_134": review_tp >= 134' in runner
-    assert '"with_review_raw_fp_lte_100": review_raw_fp <= 100' in runner
-    assert '"needs_review_lte_150": needs_review_count <= 150' in runner
-    assert '"tokens_lte_6m": total_tokens <= 6_000_000' in runner
-    assert '"wall_seconds_lte_3600": measured_wall_seconds <= 3_600' in runner
-    assert '"deferred_budget_zero": deferred_budget_count == 0' in runner
-    assert '"budget_policy_observe_only": budget_policy == "observe"' in runner
-    assert 'manifest["release_gate_status"] = release_gate_status' in runner
-    assert 'print("release_failed")' in runner
-    assert '--knowledge-db "${knowledge_db_path}"' in runner
-
-
-def test_wsl_runner_is_forced_to_lf_line_endings() -> None:
-    assert b"\r\n" not in RUNNER_PATH.read_bytes()
-    assert b"\r\n" not in ZHIPU_PREFLIGHT_PATH.read_bytes()
-    assert "*.sh text eol=lf" in GIT_ATTRIBUTES_PATH.read_text(encoding="utf-8")
-
-
-def test_zhipu_auth_preflight_never_prints_key_or_response_body() -> None:
-    script = ZHIPU_PREFLIGHT_PATH.read_text(encoding="utf-8")
-
-    assert "Authorization: Bearer ${Z_SCOPE_API_KEY}" in script
-    assert '--output "${response_file}"' in script
-    assert "response_file" in script
-    assert 'cat "${response_file}"' not in script
-    assert "authentication: ok (HTTP" in script
-
-
-def test_range_benchmark_uses_zhipu_glm51_endpoint() -> None:
+def test_range_benchmark_is_provider_neutral_auto_unified() -> None:
     config = BENCHMARK_CONFIG_PATH.read_text(encoding="utf-8")
 
-    assert config.count("https://open.bigmodel.cn/api/paas/v4/") == 2
-    assert "candidate_lifecycle_v3: true" in config
-    assert "canonical_outcome_projection: true" in config
-    assert "deterministic_proof_routing: true" in config
-    assert "global_validation_group_queue: true" in config
-    assert "decision_fact_graph_v1: true" in config
-    assert "security_obligation_v1: true" in config
-    assert "deterministic_prevalidation_v2: true" in config
-    assert "decision_context_v31: true" in config
-    assert "project_deterministic_fact_pass_v1: true" in config
-    assert "proof_providers_v11: true" in config
-    assert "decision_context_v32: true" in config
-    assert "structured_candidate_promotion_v1: true" in config
-    assert "proof_providers_v12: true" in config
-    assert "decision_context_v33: true" in config
-    assert "finding_root_v1: true" in config
-    assert "validator_evidence_slice_v2: true" in config
+    assert "${Z_SCOPE_LLM_BASE_URL}" in config
+    assert "${Z_SCOPE_LLM_MODEL}" in config
+    assert "config_version: 2" in config
+    assert "backend: unified" in config
+    assert "entry_discovery:\n    enabled: true" in config
+    assert 'task: ""' in config
+    assert "/home/" not in config
+    assert "\nanalysis:\n" not in config
+    assert "\nreporting:\n" not in config
+    assert "candidate_lifecycle_v3" not in config

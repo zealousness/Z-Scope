@@ -1,5 +1,6 @@
 ---
 name: null_and_failure
+languages: [c_cpp]
 description: Audit unchecked allocation/API failures and null dereferences.
 category: reliability_memory_safety
 triggers:

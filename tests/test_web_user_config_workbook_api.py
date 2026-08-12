@@ -84,19 +84,41 @@ def test_workbook_rows_payload_rejects_unknown_shape() -> None:
         WorkbookService.rows_from_payload({"items": []})
 
 
-def test_structured_config_round_trips_yaml_document(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    config = {
+def _v2_config(root: Path) -> dict:
+    return {
+        "config_version": 2,
+        "llms": {
+            "default": {
+                "base_urls": ["http://localhost/v1"],
+                "models": ["unit-model"],
+                "api_key": "unit-key",
+            }
+        },
         "project": {
-            "root": ".",
+            "root": str(root),
             "source_root": ".",
+            "language": "c_cpp",
             "entry_function": "main",
             "include_paths": ["include"],
             "exclude_paths": ["build"],
         },
-        "indexing": {"backend": "regex", "batch_size": 12},
-        "analysis": {"snapshot_dir": ".zscope_snapshots", "parallel_workers": 2},
+        "scan": {"task": ""},
+        "indexing": {"backend": "regex"},
+        "concurrency": {
+            "entry_workers": 2,
+            "validator_workers": 2,
+            "investigator_workers": 1,
+            "evidence_completion_workers": 2,
+            "index_workers": 2,
+            "svf_workers": 1,
+            "llm_max_inflight": 2,
+        },
     }
+
+
+def test_structured_config_round_trips_yaml_document(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    config = _v2_config(tmp_path)
 
     service = ConfigService()
     service.save_document(config)
@@ -150,7 +172,7 @@ def test_config_service_uses_explicit_path(tmp_path: Path) -> None:
     config_path = tmp_path / "custom.yaml"
     service = ConfigService(config_path)
 
-    service.save_document({"project": {"entry_function": "main"}})
+    service.save_document(_v2_config(tmp_path))
 
     assert service.structured_payload()["config"]["project"]["entry_function"] == "main"
     assert config_path.exists()
@@ -197,7 +219,9 @@ def test_report_feedback_service_saves_validation_feedback(tmp_path: Path) -> No
     assert payload["db_persisted"] is True
     assert saved["issues"][0]["validation_status"] == "rejected"
     assert store.is_false_positive("entry", "src/demo.c:42", "double_free")
-    assert store.get_finding_baseline("double_free|entry|src/demo.c:42")["status"] == "false_positive"
+    assert (
+        store.get_finding_baseline("double_free|entry|src/demo.c:42")["status"] == "false_positive"
+    )
 
 
 def test_report_feedback_service_partial_updates_preserve_other_issue_statuses(
@@ -308,7 +332,9 @@ def test_report_feedback_service_can_skip_snapshot_persistence_for_single_save(
     assert payload["snapshot_persistence"]["skipped"] is True
     assert payload["snapshot_persistence"]["final_reports_scanned"] == 0
     assert saved["issues"][0]["validation_status"] == "validated"
-    assert store.get_finding_baseline("double_free|entry|src/demo.c:42")["status"] == "true_positive"
+    assert (
+        store.get_finding_baseline("double_free|entry|src/demo.c:42")["status"] == "true_positive"
+    )
     assert snapshot_saved["issues"][0]["validation_status"] == "pending"
 
 
@@ -567,7 +593,9 @@ def test_report_feedback_service_findings_payload_can_return_full_report(tmp_pat
                 "report_views": {
                     "default": {
                         "issue_count": 1,
-                        "issues": [{"id": "ISSUE_1", "function": "entry", "location": "src/demo.c:42"}],
+                        "issues": [
+                            {"id": "ISSUE_1", "function": "entry", "location": "src/demo.c:42"}
+                        ],
                     }
                 },
             }

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ..config.function_entry import FunctionEntry
-from ..common.utils import matches_configured_path
+from ..common.utils import matches_interface_path
 from ..retrieval.code_index import CodeIndex
 
 
@@ -64,9 +64,7 @@ class EntryCandidate:
             "confidence": self.confidence,
             "selection_status": self.selection_status,
             "candidate_disposition": (
-                "deferred_budget"
-                if self.selection_status == "deferred_budget"
-                else "selected"
+                "deferred_budget" if self.selection_status == "deferred_budget" else "selected"
             ),
             "deferred_reason": self.deferred_reason,
         }
@@ -96,9 +94,7 @@ class EntryDiscoveryResult:
             "summary": self.summary,
             "notes": self.notes,
             "candidates": [c.to_dict() for c in self.candidates],
-            "deferred_candidates": [
-                candidate.to_dict() for candidate in self.deferred_candidates
-            ],
+            "deferred_candidates": [candidate.to_dict() for candidate in self.deferred_candidates],
         }
 
     def to_function_entries(self) -> List[FunctionEntry]:
@@ -242,7 +238,7 @@ class EntryDiscovery:
         self,
         code_index: CodeIndex,
         max_functions: int = 10000,
-        header_files: Optional[List[str]] = None,
+        interface_files: Optional[List[str]] = None,
         project_root: Optional[Path] = None,
         source_root: Optional[Path] = None,
         search_root: Optional[Path] = None,
@@ -253,7 +249,7 @@ class EntryDiscovery:
     ):
         self.code_index = code_index
         self.max_functions = max_functions
-        self.header_files = header_files
+        self.interface_files = interface_files
         self.project_root = Path(project_root).resolve() if project_root else None
         self.source_root = Path(source_root).resolve() if source_root else self.project_root
         self.search_root = Path(search_root).resolve() if search_root else None
@@ -280,9 +276,7 @@ class EntryDiscovery:
         )
         selected = self._select_stratified(merged, max_candidates)
         selected_ids = {id(candidate) for candidate in selected}
-        deferred = [
-            candidate for candidate in merged if id(candidate) not in selected_ids
-        ]
+        deferred = [candidate for candidate in merged if id(candidate) not in selected_ids]
         for candidate in selected:
             candidate.selection_status = "selected"
             candidate.deferred_reason = ""
@@ -310,7 +304,9 @@ class EntryDiscovery:
 
         notes = []
         if not selected:
-            notes.append("No header API, communication, thread, or other user-input entry candidates were found.")
+            notes.append(
+                "No header API, communication, thread, or other user-input entry candidates were found."
+            )
         if self._inactive_implementation_identities:
             notes.append(
                 "Excluded "
@@ -343,9 +339,7 @@ class EntryDiscovery:
             return list(candidates)
 
         bucket_order = ("input", "thread", "lifecycle_resource", "api", "other")
-        buckets: Dict[str, List[EntryCandidate]] = {
-            name: [] for name in bucket_order
-        }
+        buckets: Dict[str, List[EntryCandidate]] = {name: [] for name in bucket_order}
         for candidate in candidates:
             buckets[cls._entry_budget_layer(candidate)].append(candidate)
 
@@ -396,7 +390,9 @@ class EntryDiscovery:
             if not name:
                 continue
             decl_file = item.get("filename") or ""
-            if self.header_files and not matches_configured_path(decl_file, self.header_files):
+            if self.interface_files and not matches_interface_path(
+                decl_file, self.interface_files, self.search_root
+            ):
                 continue
             if decl_file and not self._is_in_search_root(decl_file):
                 continue
@@ -434,9 +430,15 @@ class EntryDiscovery:
             reasons: List[str] = []
             exposure_parts: List[str] = []
 
-            comm_hits = self._find_calls(call_search_code, self.communication_calls, code_is_stripped=True)
-            shm_hits = self._find_calls(call_search_code, self.shared_memory_calls, code_is_stripped=True)
-            thread_hits = self._find_calls(call_search_code, self.thread_calls, code_is_stripped=True)
+            comm_hits = self._find_calls(
+                call_search_code, self.communication_calls, code_is_stripped=True
+            )
+            shm_hits = self._find_calls(
+                call_search_code, self.shared_memory_calls, code_is_stripped=True
+            )
+            thread_hits = self._find_calls(
+                call_search_code, self.thread_calls, code_is_stripped=True
+            )
             input_hits = self._find_calls(call_search_code, self.input_calls, code_is_stripped=True)
 
             if comm_hits or shm_hits:
@@ -578,11 +580,7 @@ class EntryDiscovery:
         for info in infos:
             if not isinstance(info, dict):
                 continue
-            index_name = str(
-                info.get("index_name")
-                or info.get("function_name")
-                or name
-            )
+            index_name = str(info.get("index_name") or info.get("function_name") or name)
             file_path = str(info.get("file_path") or info.get("file") or "")
             impl = self._get_function_impl(index_name, file_path=file_path)
             if not impl:
@@ -678,7 +676,9 @@ class EntryDiscovery:
             if not existing:
                 by_identity[identity] = candidate
                 continue
-            exposures = list(dict.fromkeys(existing.exposure.split("+") + candidate.exposure.split("+")))
+            exposures = list(
+                dict.fromkeys(existing.exposure.split("+") + candidate.exposure.split("+"))
+            )
             reasons = sorted(set(existing.reasons + candidate.reasons))
             prompts = [existing.custom_prompt, candidate.custom_prompt]
             existing.exposure = "+".join(exposures)
@@ -736,7 +736,9 @@ class EntryDiscovery:
         return re.sub(r"^\s*\d+\s*\|\s*", "", code, flags=re.MULTILINE)
 
     @staticmethod
-    def _find_calls(code: str, names: Sequence[str], *, code_is_stripped: bool = False) -> List[str]:
+    def _find_calls(
+        code: str, names: Sequence[str], *, code_is_stripped: bool = False
+    ) -> List[str]:
         stripped = code if code_is_stripped else EntryDiscovery._strip_code_for_call_search(code)
         hits = []
         symbol_names = {"argv", "stdin", "environ", "optarg"}

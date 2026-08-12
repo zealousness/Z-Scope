@@ -67,7 +67,7 @@ class SubAgentTicket:
 class SubAgentOrchestrator:
     """Creates and optionally executes narrow deep-worker investigations."""
 
-    RULES = [
+    SKILL_TRIGGERS = [
         (
             "resource_lifecycle",
             re.compile(r"\b(malloc|calloc|realloc|strdup|open|fopen|socket|shm_open)\s*\("),
@@ -82,7 +82,9 @@ class SubAgentOrchestrator:
         ),
         (
             "bounds_and_integer",
-            re.compile(r"\b(memcpy|memmove|strcpy|strncpy|strcat|sprintf|snprintf|read|recv|fread)\s*\("),
+            re.compile(
+                r"\b(memcpy|memmove|strcpy|strncpy|strcat|sprintf|snprintf|read|recv|fread)\s*\("
+            ),
             "Audit buffer bounds and integer/size conversions feeding this copy or IO operation.",
         ),
         (
@@ -114,7 +116,9 @@ class SubAgentOrchestrator:
         ),
         (
             "concurrency_lock_order",
-            re.compile(r"\b(pthread_mutex_lock|pthread_rwlock_wrlock|pthread_rwlock_rdlock|mtx_lock|spin_lock)\s*\("),
+            re.compile(
+                r"\b(pthread_mutex_lock|pthread_rwlock_wrlock|pthread_rwlock_rdlock|mtx_lock|spin_lock)\s*\("
+            ),
             "Audit lock acquisition and release balance, lock order, and early returns while locked.",
         ),
         (
@@ -129,7 +133,7 @@ class SubAgentOrchestrator:
         ),
     ]
 
-    JAVA_RULES = [
+    JAVA_SKILL_TRIGGERS = [
         (
             "java_injection",
             re.compile(
@@ -217,8 +221,16 @@ class SubAgentOrchestrator:
         code: str,
         allowed_skills: Optional[List[str]] = None,
     ) -> List[SubAgentTicket]:
-        rules = self.JAVA_RULES if self._java_skill_scope(allowed_skills) else self.RULES
-        source_name = "java_active_source_rule" if rules is self.JAVA_RULES else "source_rule"
+        skill_triggers = (
+            self.JAVA_SKILL_TRIGGERS
+            if self._java_skill_scope(allowed_skills)
+            else self.SKILL_TRIGGERS
+        )
+        source_name = (
+            "java_active_source_rule"
+            if skill_triggers is self.JAVA_SKILL_TRIGGERS
+            else "source_rule"
+        )
         lines = code.splitlines()
         tickets: List[SubAgentTicket] = []
         seen = set()
@@ -226,7 +238,7 @@ class SubAgentOrchestrator:
         for idx, line in enumerate(lines):
             clean = re.sub(r"^\s*(\d+)\s*\|\s*", "", line)
             line_no = self._extract_line_number(line, idx + 1)
-            for skill, pattern, task in rules:
+            for skill, pattern, task in skill_triggers:
                 if allowed is not None and skill not in allowed:
                     continue
                 match = pattern.search(clean)
@@ -369,11 +381,7 @@ class SubAgentOrchestrator:
         # remains authoritative, but a local ticket budget never kills work.
         budget_policy = "observe"
         parent_token = current_cancellation_token()
-        if (
-            self.scheduler is None
-            and workers == 1
-            and not (ticket_timeout and ticket_timeout > 0)
-        ):
+        if self.scheduler is None and workers == 1 and not (ticket_timeout and ticket_timeout > 0):
             return [
                 self._run_one_ticket(
                     llm_client,
@@ -406,35 +414,43 @@ class SubAgentOrchestrator:
         try:
             for idx, ticket in enumerate(tickets):
                 worker_index = idx % workers
-                submitter = (
-                    self.scheduler.submit
-                    if self.scheduler is not None
-                    else executor.submit
-                )
-                submit_args = (
-                    (INVESTIGATOR_ROLE, self._run_one_ticket, llm_client, ticket)
-                    if self.scheduler is not None
-                    else (self._run_one_ticket, llm_client, ticket)
-                )
-                future = submitter(
-                    *submit_args,
-                    max_iterations=max_iterations,
-                    tool_policy=tool_policy,
-                    worker_index=worker_index,
-                    agent_type=agent_type,
-                    nested_spawn_allowed=nested_spawn_allowed,
-                    llm_client_resolver=llm_client_resolver,
-                    execution_policy_resolver=execution_policy_resolver,
-                    worktree_isolation=worktree_isolation,
-                    parent_token=parent_token,
-                    ticket_timeout=ticket_timeout,
-                    budget_exhaustion_policy=budget_policy,
-                    **(
-                        {"priority": int(ticket.priority_score or 0)}
-                        if self.scheduler is not None
-                        else {}
-                    ),
-                )
+                if self.scheduler is not None:
+                    future = self.scheduler.submit(
+                        INVESTIGATOR_ROLE,
+                        self._run_one_ticket,
+                        llm_client,
+                        ticket,
+                        max_iterations=max_iterations,
+                        tool_policy=tool_policy,
+                        worker_index=worker_index,
+                        agent_type=agent_type,
+                        nested_spawn_allowed=nested_spawn_allowed,
+                        llm_client_resolver=llm_client_resolver,
+                        execution_policy_resolver=execution_policy_resolver,
+                        worktree_isolation=worktree_isolation,
+                        parent_token=parent_token,
+                        ticket_timeout=ticket_timeout,
+                        budget_exhaustion_policy=budget_policy,
+                        priority=int(ticket.priority_score or 0),
+                    )
+                else:
+                    assert executor is not None
+                    future = executor.submit(
+                        self._run_one_ticket,
+                        llm_client,
+                        ticket,
+                        max_iterations=max_iterations,
+                        tool_policy=tool_policy,
+                        worker_index=worker_index,
+                        agent_type=agent_type,
+                        nested_spawn_allowed=nested_spawn_allowed,
+                        llm_client_resolver=llm_client_resolver,
+                        execution_policy_resolver=execution_policy_resolver,
+                        worktree_isolation=worktree_isolation,
+                        parent_token=parent_token,
+                        ticket_timeout=ticket_timeout,
+                        budget_exhaustion_policy=budget_policy,
+                    )
                 futures[future] = (ticket, worker_index)
 
             pending = set(futures)
@@ -551,12 +567,18 @@ class SubAgentOrchestrator:
         input_data = {
             "ticket": ticket.to_dict(),
             "context_slice": ticket.context_slice,
-            "agent_contract": agent.to_prompt_block(allowed_tools=visible_tool_names) if agent else "",
-            "skill_contract": skill.to_prompt_block(
-                allowed_tools=visible_tool_names,
-                allowed_mcp_tools=[],
-                allowed_mcp_resources=[],
-            ) if skill else "",
+            "agent_contract": (
+                agent.to_prompt_block(allowed_tools=visible_tool_names) if agent else ""
+            ),
+            "skill_contract": (
+                skill.to_prompt_block(
+                    allowed_tools=visible_tool_names,
+                    allowed_mcp_tools=[],
+                    allowed_mcp_resources=[],
+                )
+                if skill
+                else ""
+            ),
             "max_iterations": max_iterations,
             "agent_type": agent_type,
             "nested_spawn_allowed": nested_spawn_allowed,
@@ -565,13 +587,9 @@ class SubAgentOrchestrator:
         }
         try:
             ticket_token = (
-                parent_token.child(
-                    timeout_seconds=None
-                )
+                parent_token.child(timeout_seconds=None)
                 if parent_token is not None
-                else CancellationToken(
-                    timeout_seconds=None
-                )
+                else CancellationToken(timeout_seconds=None)
             )
             with bind_cancellation_token(ticket_token):
                 ticket_token.raise_if_cancelled()
@@ -682,11 +700,7 @@ class SubAgentOrchestrator:
         policy: str,
     ) -> Dict[str, Any]:
         try:
-            budget = (
-                float(ticket_budget_seconds)
-                if ticket_budget_seconds is not None
-                else None
-            )
+            budget = float(ticket_budget_seconds) if ticket_budget_seconds is not None else None
         except (TypeError, ValueError):
             budget = None
         if budget is not None and budget <= 0:
@@ -840,7 +854,11 @@ class SubAgentOrchestrator:
             (r"\bpthread|\bthread|\block|\bmutex", 5, "concurrency_context"),
             (r"\bmemcpy|\bstrcpy|\bread|\brecv", 4, "copy_or_input_context"),
             (r"\bstrcmp|\bstrncmp|\bstrlen|\bstrstr|\bsscanf|\bprintf", 5, "string_api_context"),
-            (r"\bnull\b|!\s*[a-z_][a-z0-9_]*|\bgoto\s+(err|fail|cleanup)", 5, "failure_path_context"),
+            (
+                r"\bnull\b|!\s*[a-z_][a-z0-9_]*|\bgoto\s+(err|fail|cleanup)",
+                5,
+                "failure_path_context",
+            ),
             (r"\breturn\s+(0|-?1|true|false|[A-Z_][A-Z0-9_]*)\s*;", 3, "contract_return_context"),
         ]
         for pattern, weight, reason in risk_patterns:
@@ -871,7 +889,9 @@ class SubAgentOrchestrator:
         ).lower()
         if any(word in text for word in ("overflow", "bounds", "oob", "integer", "copy", "buffer")):
             return "bounds_and_integer"
-        if any(word in text for word in ("leak", "resource", "cleanup", "release", "file", "socket")):
+        if any(
+            word in text for word in ("leak", "resource", "cleanup", "release", "file", "socket")
+        ):
             return "resource_lifecycle"
         if any(word in text for word in ("uaf", "use after free", "double free", "invalid free")):
             return "temporal_memory"
@@ -885,19 +905,91 @@ class SubAgentOrchestrator:
             return "stack_escape"
         if any(word in text for word in ("string", "format", "strcmp", "strlen", "termination")):
             return "string_and_format"
-        if any(word in text for word in ("sql", "jdbc", "jpa", "mybatis", "command", "processbuilder", "template", "expression", "ldap", "jndi")):
+        if any(
+            word in text
+            for word in (
+                "sql",
+                "jdbc",
+                "jpa",
+                "mybatis",
+                "command",
+                "processbuilder",
+                "template",
+                "expression",
+                "ldap",
+                "jndi",
+            )
+        ):
             return "java_injection"
-        if any(word in text for word in ("ssrf", "path traversal", "upload", "download", "redirect", "cors", "servlet", "controller")):
+        if any(
+            word in text
+            for word in (
+                "ssrf",
+                "path traversal",
+                "upload",
+                "download",
+                "redirect",
+                "cors",
+                "servlet",
+                "controller",
+            )
+        ):
             return "java_web_security"
-        if any(word in text for word in ("deserialization", "readobject", "xxe", "xml", "xstream", "yaml", "zip slip")):
+        if any(
+            word in text
+            for word in (
+                "deserialization",
+                "readobject",
+                "xxe",
+                "xml",
+                "xstream",
+                "yaml",
+                "zip slip",
+            )
+        ):
             return "java_deserialization"
-        if any(word in text for word in ("authz", "authorization", "tenant", "idor", "permission", "role", "filter", "interceptor")):
+        if any(
+            word in text
+            for word in (
+                "authz",
+                "authorization",
+                "tenant",
+                "idor",
+                "permission",
+                "role",
+                "filter",
+                "interceptor",
+            )
+        ):
             return "java_authz"
-        if any(word in text for word in ("crypto", "cipher", "jwt", "random", "secret", "trustmanager", "hostnameverifier")):
+        if any(
+            word in text
+            for word in (
+                "crypto",
+                "cipher",
+                "jwt",
+                "random",
+                "secret",
+                "trustmanager",
+                "hostnameverifier",
+            )
+        ):
             return "java_crypto"
-        if any(word in text for word in ("closeable", "jdbc", "resultset", "stream", "readallbytes", "temp file")):
+        if any(
+            word in text
+            for word in ("closeable", "jdbc", "resultset", "stream", "readallbytes", "temp file")
+        ):
             return "java_resource_lifecycle"
-        if any(word in text for word in ("java race", "unsafe publication", "executor", "completablefuture", "static mutable")):
+        if any(
+            word in text
+            for word in (
+                "java race",
+                "unsafe publication",
+                "executor",
+                "completablefuture",
+                "static mutable",
+            )
+        ):
             return "java_concurrency"
         if any(word in text for word in ("ownership", "contract", "logic", "caller", "callee")):
             return "ownership_contract"
@@ -944,9 +1036,14 @@ class SubAgentOrchestrator:
             return "lock"
         if any(word in text for word in ("string", "strcmp", "strncmp", "strlen", "format")):
             return "string"
-        if any(word in text for word in ("jdbc", "connection", "resultset", "stream", "closeable", "temp")):
+        if any(
+            word in text
+            for word in ("jdbc", "connection", "resultset", "stream", "closeable", "temp")
+        ):
             return "java_resource"
-        if any(word in text for word in ("url", "uri", "http", "file", "path", "upload", "download")):
+        if any(
+            word in text for word in ("url", "uri", "http", "file", "path", "upload", "download")
+        ):
             return "java_boundary"
         if any(word in text for word in ("jwt", "cipher", "secret", "random", "tls")):
             return "java_crypto"

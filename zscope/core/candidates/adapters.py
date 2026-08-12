@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, cast
 
 from ...common.issue_identity import (
     issue_call_path_signature,
@@ -14,12 +14,18 @@ from ...common.issue_identity import (
 )
 
 
+def _as_dict(value: Any) -> Dict[str, Any]:
+    """Narrow untyped evidence payloads without copying their contents."""
+    return cast(Dict[str, Any], value) if isinstance(value, dict) else {}
+
+
 def clang_tooling_matcher_candidates_from_evidence(
     func_name: str,
     file_path: str,
     tooling_evidence: Dict[str, Any],
     *,
     allowed_skills: Optional[List[str]] = None,
+    rule_policy: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     ast_dump = tooling_evidence.get("ast_dump") if isinstance(tooling_evidence, dict) else {}
     ast_summary = ast_dump.get("summary") if isinstance(ast_dump, dict) else {}
@@ -32,10 +38,22 @@ def clang_tooling_matcher_candidates_from_evidence(
     for fact in facts:
         if not isinstance(fact, dict):
             continue
+        rule_id = str(fact.get("rule_id") or "")
+        if rule_policy is not None:
+            effective = getattr(rule_policy, "effective", None)
+            state_for = getattr(effective, "state_for", None)
+            state = state_for(rule_id) if callable(state_for) else None
+            if state is not None and str(getattr(state, "state", "")) != "enabled":
+                continue
+            if state is None and not callable(state_for) and not rule_policy.is_enabled(rule_id):
+                continue
         defect_class = defect_class_from_clang_matcher_fact(fact)
         if not defect_class:
             continue
-        skill = skill_for_matcher_defect(defect_class)
+        if rule_policy is not None and state is not None:
+            skill = str(rule_policy.descriptor(rule_id).skill)
+        else:
+            skill = skill_for_matcher_defect(defect_class)
         if allowed is not None and skill not in allowed:
             continue
         issues.append(
@@ -85,7 +103,12 @@ def clang_matcher_fact_to_candidate(
     rule = str(fact.get("rule_id") or "clang_ast_matcher_fact")
     line = int(fact.get("line") or 0)
     if not line:
-        line = int(((tooling_evidence.get("range") or {}) if isinstance(tooling_evidence, dict) else {}).get("start_line") or 0)
+        line = int(
+            (
+                (tooling_evidence.get("range") or {}) if isinstance(tooling_evidence, dict) else {}
+            ).get("start_line")
+            or 0
+        )
     callee = str(fact.get("callee") or fact.get("resource_symbol") or rule)
     candidate_id = f"CLANG_AST_MATCHER_{defect_class.upper()}_{func_name}_{line}_{uuid.uuid5(uuid.NAMESPACE_URL, rule + callee).hex[:8]}"
     location = f"{file_path}:{line}" if file_path else f"{func_name}:{line}"
@@ -142,11 +165,17 @@ def clang_matcher_fact_to_candidate(
         "suggested_fix": "Validate the fact against concrete data/control flow before changing code.",
         "confidence": 0.64 if defect_class != "memory_leak" else 0.58,
         "rule_confidence": 0.64 if defect_class != "memory_leak" else 0.58,
-        "impact_level": "high" if defect_class in {"command_injection", "double_free", "use_after_free"} else "medium",
+        "impact_level": (
+            "high"
+            if defect_class in {"command_injection", "double_free", "use_after_free"}
+            else "medium"
+        ),
         "reasoning": "Clang AST matcher fact normalized into an evidence-only candidate for Validator review.",
         "source": callee,
         "sink": callee,
-        "dedup_key": "|".join([defect_class, file_path.replace("\\", "/").lower(), str(line), rule, callee]),
+        "dedup_key": "|".join(
+            [defect_class, file_path.replace("\\", "/").lower(), str(line), rule, callee]
+        ),
         "positive_evidence": positive,
         "negative_evidence": negative,
         "evidence_pack": evidence,
@@ -157,11 +186,11 @@ def clang_matcher_fact_to_candidate(
 def compact_clang_tooling_evidence(tooling_evidence: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(tooling_evidence, dict):
         return {}
-    ast_dump = tooling_evidence.get("ast_dump") if isinstance(tooling_evidence.get("ast_dump"), dict) else {}
-    cfg_dump = tooling_evidence.get("cfg_dump") if isinstance(tooling_evidence.get("cfg_dump"), dict) else {}
-    ast_summary = ast_dump.get("summary") if isinstance(ast_dump.get("summary"), dict) else {}
-    cfg_summary = cfg_dump.get("summary") if isinstance(cfg_dump.get("summary"), dict) else {}
-    target = ast_summary.get("target_function") if isinstance(ast_summary.get("target_function"), dict) else {}
+    ast_dump = _as_dict(tooling_evidence.get("ast_dump"))
+    cfg_dump = _as_dict(tooling_evidence.get("cfg_dump"))
+    ast_summary = _as_dict(ast_dump.get("summary"))
+    cfg_summary = _as_dict(cfg_dump.get("summary"))
+    target = _as_dict(ast_summary.get("target_function"))
     return {
         "schema": tooling_evidence.get("schema"),
         "status": tooling_evidence.get("status"),
@@ -197,7 +226,7 @@ def dedupe_rule_candidates(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 
 
 def rule_candidate_dedup_key(issue: Dict[str, Any]) -> str:
-    evidence = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    evidence = _as_dict(issue.get("evidence_pack"))
     if issue.get("internal_sink_lifted") or evidence.get("internal_sink_lifted"):
         sink_func = str(evidence.get("sink_function") or issue.get("function") or "")
         location = str(issue.get("location") or "").replace("\\", "/").lower()
@@ -261,8 +290,8 @@ def merge_rule_candidate_duplicate(primary: Dict[str, Any], duplicate: Dict[str,
             if duplicate_path not in paths:
                 paths.append(duplicate_path)
 
-    primary_pack = primary.get("evidence_pack") if isinstance(primary.get("evidence_pack"), dict) else {}
-    duplicate_pack = duplicate.get("evidence_pack") if isinstance(duplicate.get("evidence_pack"), dict) else {}
+    primary_pack = _as_dict(primary.get("evidence_pack"))
+    duplicate_pack = _as_dict(duplicate.get("evidence_pack"))
     if not primary_pack:
         primary["evidence_pack"] = primary_pack
     if duplicate_pack:
@@ -276,7 +305,9 @@ def merge_rule_candidate_duplicate(primary: Dict[str, Any], duplicate: Dict[str,
                 edge_sets.append(duplicate_edges)
 
 
-def merge_unified_evidence_candidates(candidates: List[Dict[str, Any]], *, enabled: bool) -> List[Dict[str, Any]]:
+def merge_unified_evidence_candidates(
+    candidates: List[Dict[str, Any]], *, enabled: bool
+) -> List[Dict[str, Any]]:
     """Merge Clang and SVF evidence for the same issue in unified mode."""
     if not enabled:
         return candidates
@@ -305,7 +336,10 @@ def unified_candidates_may_refer_same_issue(
     right_source = candidate_source_name(right)
     if not {left_source, right_source} & {"svf_value_flow"}:
         return False
-    if not ({left_source, right_source} & {"clang_ast_cfg", "clang_ast_matcher", "clang_knowledgedb_call_edges"}):
+    if not (
+        {left_source, right_source}
+        & {"clang_ast_cfg", "clang_ast_matcher", "clang_knowledgedb_call_edges"}
+    ):
         return False
     if not defect_classes_compatible(left, right):
         return False
@@ -349,8 +383,13 @@ def unified_candidates_may_refer_same_issue(
 
 
 def candidate_source_name(issue: Dict[str, Any]) -> str:
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
-    return str(pack.get("candidate_source") or issue.get("candidate_source") or issue.get("finding_kind") or "")
+    pack = _as_dict(issue.get("evidence_pack"))
+    return str(
+        pack.get("candidate_source")
+        or issue.get("candidate_source")
+        or issue.get("finding_kind")
+        or ""
+    )
 
 
 def defect_classes_compatible(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
@@ -363,10 +402,10 @@ def defect_classes_compatible(left: Dict[str, Any], right: Dict[str, Any]) -> bo
 
 def candidate_file_line(issue: Dict[str, Any]) -> tuple[str, int]:
     file_path, line = parse_location_file_line(str(issue.get("location") or ""))
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    pack = _as_dict(issue.get("evidence_pack"))
     for key in ("source_path", "value_flow", "path"):
-        data = pack.get(key) if isinstance(pack.get(key), dict) else {}
-        reported = data.get("reported_location") if isinstance(data.get("reported_location"), dict) else {}
+        data = _as_dict(pack.get(key))
+        reported = _as_dict(data.get("reported_location"))
         if not file_path:
             file_path = str(data.get("file") or reported.get("file") or "")
         if not line:
@@ -388,9 +427,9 @@ def candidate_function_names(issue: Dict[str, Any]) -> Set[str]:
         str(issue.get("sink_function") or ""),
         str(issue.get("target_function") or ""),
     }
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    pack = _as_dict(issue.get("evidence_pack"))
     for key in ("path", "source_path", "value_flow"):
-        data = pack.get(key) if isinstance(pack.get(key), dict) else {}
+        data = _as_dict(pack.get(key))
         names.update(
             str(data.get(field) or "")
             for field in (
@@ -414,7 +453,9 @@ def candidate_symbols(issue: Dict[str, Any]) -> Set[str]:
         issue.get("positive_evidence"),
         issue.get("evidence_pack"),
     ]
-    text = "\n".join(json.dumps(field, ensure_ascii=False, default=str) for field in fields if field)
+    text = "\n".join(
+        json.dumps(field, ensure_ascii=False, default=str) for field in fields if field
+    )
     tokens = {
         token
         for token in re.findall(r"[A-Za-z_]\w*", text)
@@ -439,10 +480,10 @@ def candidate_symbols(issue: Dict[str, Any]) -> Set[str]:
 
 
 def attach_unified_secondary_evidence(primary: Dict[str, Any], secondary: Dict[str, Any]) -> None:
-    primary_pack = primary.get("evidence_pack") if isinstance(primary.get("evidence_pack"), dict) else {}
+    primary_pack = _as_dict(primary.get("evidence_pack"))
     if not primary_pack:
         primary["evidence_pack"] = primary_pack
-    secondary_pack = secondary.get("evidence_pack") if isinstance(secondary.get("evidence_pack"), dict) else {}
+    secondary_pack = _as_dict(secondary.get("evidence_pack"))
     compact = {
         "candidate_id": secondary.get("candidate_id") or secondary.get("id"),
         "candidate_source": candidate_source_name(secondary),

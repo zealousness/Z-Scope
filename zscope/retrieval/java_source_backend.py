@@ -62,7 +62,8 @@ class JavaSourceBackend(CodeBackend):
     def _ensure_default_spoon_jar(cls, source_root: Path, project_root: Path) -> tuple[str, str]:
         if not cls._find_maven_project_root(project_root, source_root):
             return "", "pom.xml not found for Spoon MavenLauncher"
-        if not shutil.which("mvn"):
+        mvn = shutil.which("mvn")
+        if not mvn:
             return "", "mvn not found on PATH"
         repo_root = Path(__file__).resolve().parents[2]
         spoon_dir = repo_root / "tools" / "java-structure-spoon"
@@ -70,7 +71,6 @@ class JavaSourceBackend(CodeBackend):
         if jar.exists():
             return str(jar), ""
         pom = spoon_dir / "pom.xml"
-        mvn = shutil.which("mvn")
         if not pom.exists():
             return "", f"missing Spoon sidecar pom: {pom}"
         try:
@@ -90,7 +90,8 @@ class JavaSourceBackend(CodeBackend):
 
     @staticmethod
     def _ensure_default_javaparser_jar() -> tuple[str, str]:
-        if not shutil.which("mvn"):
+        mvn = shutil.which("mvn")
+        if not mvn:
             return "", "mvn not found on PATH"
         repo_root = Path(__file__).resolve().parents[2]
         parser_dir = repo_root / "tools" / "java-structure-javaparser"
@@ -98,7 +99,6 @@ class JavaSourceBackend(CodeBackend):
         if jar.exists():
             return str(jar), ""
         pom = parser_dir / "pom.xml"
-        mvn = shutil.which("mvn")
         if not pom.exists():
             return "", f"missing JavaParser sidecar pom: {pom}"
         try:

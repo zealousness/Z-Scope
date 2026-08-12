@@ -42,7 +42,7 @@ class AlertVerifier:
         self.llm_client = llm_client
         self.user_config = user_config
         self.scheduler = scheduler
-        self.snapshot_store = SnapshotStore(Path(config.analysis.snapshot_dir))
+        self.snapshot_store = SnapshotStore.from_config(config)
         self.spec_registry = SpecRegistry(project_root=config.project.project_root)
         self.tools_runtime = ToolsRuntime(
             code_index=code_index,
@@ -75,17 +75,18 @@ class AlertVerifier:
         worker_count = self._worker_count(total, max_workers)
         if worker_count <= 1:
             results = [
-                self._verify_alert_safely(alert, idx, total)
-                for idx, alert in enumerate(alerts, 1)
+                self._verify_alert_safely(alert, idx, total) for idx, alert in enumerate(alerts, 1)
             ]
         elif getattr(self, "scheduler", None) is not None:
             logger.info(
                 "Verifying %d alert(s) through the scan-level scheduler.",
                 total,
             )
-            results_by_index = {}
+            scheduler = self.scheduler
+            assert scheduler is not None
+            results_by_index: Dict[int, Dict[str, Any]] = {}
             future_to_index = {
-                self.scheduler.submit(
+                scheduler.submit(
                     VALIDATOR_ROLE,
                     self._verify_alert_safely,
                     alert,
@@ -116,7 +117,7 @@ class AlertVerifier:
                 total,
                 worker_count,
             )
-            results_by_index: Dict[int, Dict[str, Any]] = {}
+            local_results_by_index: Dict[int, Dict[str, Any]] = {}
             with ThreadPoolExecutor(
                 max_workers=worker_count,
                 thread_name_prefix="zscope-alert-verifier",
@@ -128,19 +129,21 @@ class AlertVerifier:
                 for future in as_completed(future_to_index):
                     idx = future_to_index[future]
                     try:
-                        results_by_index[idx] = future.result()
+                        local_results_by_index[idx] = future.result()
                     except Exception as e:
                         alert = alerts[idx - 1]
                         logger.exception("Alert verification worker crashed for alert %d.", idx)
-                        results_by_index[idx] = self._make_error_result(alert, idx, str(e))
-            results = [results_by_index[idx] for idx in range(1, total + 1)]
+                        local_results_by_index[idx] = self._make_error_result(alert, idx, str(e))
+            results = [local_results_by_index[idx] for idx in range(1, total + 1)]
 
         confirmed = sum(1 for r in results if r.get("verdict") == "confirmed")
         rejected = sum(1 for r in results if r.get("verdict") == "rejected")
         uncertain = sum(1 for r in results if r.get("verdict") == "uncertain")
         logger.info(
             "Verification complete: %d confirmed, %d rejected, %d uncertain",
-            confirmed, rejected, uncertain,
+            confirmed,
+            rejected,
+            uncertain,
         )
         return results
 
@@ -245,9 +248,7 @@ class AlertVerifier:
 
         return context
 
-    def _build_prompt(
-        self, alert: ExternalAlert, alert_id: str, context: Dict[str, Any]
-    ) -> str:
+    def _build_prompt(self, alert: ExternalAlert, alert_id: str, context: Dict[str, Any]) -> str:
         """构建发送给 LLM 的验证 prompt。"""
         parts = [
             f"## 待验证告警 [{alert_id}]",
@@ -278,9 +279,7 @@ class AlertVerifier:
                         f"— {step.get('message', '')}"
                     )
 
-        parts.append(
-            "\n请使用工具获取更多上下文后，输出验证结果 JSON。"
-        )
+        parts.append("\n请使用工具获取更多上下文后，输出验证结果 JSON。")
         return "\n".join(parts)
 
     def _parse_verification(
@@ -312,7 +311,9 @@ class AlertVerifier:
 
         if not parsed:
             logger.warning("No JSON block found in verification response for %s", alert_id)
-            base.update({"verdict": "uncertain", "confidence": 0.0, "reasoning": "无法解析验证结果"})
+            base.update(
+                {"verdict": "uncertain", "confidence": 0.0, "reasoning": "无法解析验证结果"}
+            )
             base.update(
                 {
                     "validation_status": "pending",
@@ -323,13 +324,15 @@ class AlertVerifier:
             )
             return base
 
-        base.update({
-            "verdict": parsed.get("verdict", "uncertain"),
-            "confidence": parsed.get("confidence", 0.0),
-            "reasoning": parsed.get("reasoning", ""),
-            "severity_adjustment": parsed.get("severity_adjustment", ""),
-            "missing_context": parsed.get("missing_context", []),
-        })
+        base.update(
+            {
+                "verdict": parsed.get("verdict", "uncertain"),
+                "confidence": parsed.get("confidence", 0.0),
+                "reasoning": parsed.get("reasoning", ""),
+                "severity_adjustment": parsed.get("severity_adjustment", ""),
+                "missing_context": parsed.get("missing_context", []),
+            }
+        )
         verdict = str(base.get("verdict") or "uncertain").strip().lower()
         confirmed = verdict in {"confirmed", "verified"}
         base.update(
@@ -344,9 +347,7 @@ class AlertVerifier:
         )
         return base
 
-    def _make_error_result(
-        self, alert: ExternalAlert, idx: int, error: str
-    ) -> Dict[str, Any]:
+    def _make_error_result(self, alert: ExternalAlert, idx: int, error: str) -> Dict[str, Any]:
         return {
             "alert_id": f"ALERT_{idx}",
             "tool": alert.tool,

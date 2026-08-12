@@ -1,5 +1,6 @@
 ---
 name: java_resource_lifecycle
+languages: [java]
 description: Audit Java Closeable/AutoCloseable resource lifecycle and transaction cleanup.
 category: java_reliability_security
 triggers:

@@ -100,7 +100,9 @@ class UnifiedBackend(CodeBackend):
             self._status = "ready"
             return True
 
-        self.run_svf(entry_functions=kwargs.get("svf_entry_functions"))
+        if not self.run_svf(entry_functions=kwargs.get("svf_entry_functions")):
+            self._status = "error"
+            return False
         self._status = "ready"
         return True
 
@@ -374,4 +376,6 @@ class UnifiedBackend(CodeBackend):
         db = self.db
         if not db:
             return []
-        return cast(List[Dict[str, Any]], db.get_enriched_taint_bugs(bug_type=bug_type, limit=limit))
+        return cast(
+            List[Dict[str, Any]], db.get_enriched_taint_bugs(bug_type=bug_type, limit=limit)
+        )

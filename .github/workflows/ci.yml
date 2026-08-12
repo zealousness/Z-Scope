@@ -47,6 +47,7 @@ jobs:
           zscope-doctor --help
           zscope-rules --help
           zscope-maven-cache --help
+          zscope-benchmark --help
       - name: Build and install wheel
         run: |
           python -m build --wheel
@@ -90,6 +91,37 @@ jobs:
         run: |
           for pom in tools/java-*/pom.xml; do mvn -B -f "$pom" test package; done
           python -m pytest -q tests/test_java_*.py
+
+  benchmark-hygiene:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Install and validate canonical benchmark assets
+        run: |
+          python -m pip install --require-hashes -r requirements/constraints/py313.txt
+          python -m pip install --no-deps -e .
+          python scripts/check_benchmark_hygiene.py
+          zscope-benchmark run --language c_cpp --mode smoke --output benchmark-artifacts/cpp-smoke
+          zscope-benchmark run --language java --mode smoke --output benchmark-artifacts/java-smoke
+      - name: Verify smoke paths from a tracked-only archive
+        run: |
+          archive_dir="$(mktemp -d)"
+          git archive HEAD | tar -x -C "$archive_dir"
+          cd "$archive_dir"
+          python -m zscope.cli.benchmark run --language c_cpp --mode smoke --output "$RUNNER_TEMP/archive-cpp-smoke"
+          python -m zscope.cli.benchmark run --language java --mode smoke --output "$RUNNER_TEMP/archive-java-smoke"
+      - name: Assert tracked fixture remains clean
+        run: |
+          git diff --check
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
 
   offline-smoke:
     runs-on: ubuntu-24.04

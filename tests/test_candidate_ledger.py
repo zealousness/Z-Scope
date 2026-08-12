@@ -1,6 +1,6 @@
 from zscope.core.analysis.analyzer import Analyzer
 from zscope.core.candidates.decision_facts import (
-    DECISION_CONTEXT_V31,
+    DECISION_CONTEXT_V33,
     DecisionFactGraphCache,
 )
 from zscope.orchestration.candidates import CandidateLedger
@@ -154,7 +154,7 @@ def test_candidate_ledger_shares_validation_across_equivalent_entry_wrappers() -
     }
 
 
-def test_analyzer_propagates_v31_identity_into_scan_ledger() -> None:
+def test_analyzer_propagates_stable_v33_identity_into_scan_ledger() -> None:
     """The ledger, rather than the transient issue, owns report identity."""
 
     analyzer = object.__new__(Analyzer)
@@ -200,8 +200,8 @@ def test_analyzer_propagates_v31_identity_into_scan_ledger() -> None:
     analyzer._register_candidate_issues(state, [issue], source="clang_ast_cfg")
 
     record = ledger.records()[0]
-    assert record.decision_context_version == DECISION_CONTEXT_V31
-    assert record.ticket.evidence["decision_context_version"] == DECISION_CONTEXT_V31
+    assert record.decision_context_version == DECISION_CONTEXT_V33
+    assert record.ticket.evidence["decision_context_version"] == DECISION_CONTEXT_V33
     assert record.ticket.evidence["decision_fact_version"]
 
 
@@ -222,21 +222,27 @@ def test_repeated_display_id_across_entries_cannot_cross_update_terminal_state()
         entry_identity="entry_b",
     )
 
-    assert ledger.mark_issue_terminal(
-        {"id": "ISSUE_1", "candidate_id": "ISSUE_1"},
-        disposition="confirmed",
-        status="validated",
-    ) == 0
+    assert (
+        ledger.mark_issue_terminal(
+            {"id": "ISSUE_1", "candidate_id": "ISSUE_1"},
+            disposition="confirmed",
+            status="validated",
+        )
+        == 0
+    )
     # Queue state is not a security disposition; only a closed validation
     # group may become confirmed/rejected/review.
     assert first.disposition == ""
     assert second.disposition == ""
 
-    assert ledger.mark_issue_terminal(
-        {"occurrence_uid": first.occurrence_uids[0], "id": "ISSUE_1"},
-        disposition="confirmed",
-        status="validated",
-    ) == 1
+    assert (
+        ledger.mark_issue_terminal(
+            {"occurrence_uid": first.occurrence_uids[0], "id": "ISSUE_1"},
+            disposition="confirmed",
+            status="validated",
+        )
+        == 1
+    )
     assert first.disposition == "confirmed"
     assert second.disposition == "confirmed"
 
@@ -263,18 +269,21 @@ def test_same_candidate_and_context_keep_distinct_evidence_validation_records() 
     assert first.context_signature == second.context_signature
     assert first.evidence_hash != second.evidence_hash
 
-    assert ledger.mark_issue_terminal(
-        {
-            # Both evidence records describe the same occurrence.  The exact
-            # validation identity must take precedence over that broader UID.
-            "occurrence_uid": first.occurrence_uids[0],
-            "candidate_uid": first.candidate_uid,
-            "evidence_hash": first.evidence_hash,
-            "context_signature": first.context_signature,
-        },
-        disposition="rejected_with_proof",
-        status="rejected",
-    ) == 1
+    assert (
+        ledger.mark_issue_terminal(
+            {
+                # Both evidence records describe the same occurrence.  The exact
+                # validation identity must take precedence over that broader UID.
+                "occurrence_uid": first.occurrence_uids[0],
+                "candidate_uid": first.candidate_uid,
+                "evidence_hash": first.evidence_hash,
+                "context_signature": first.context_signature,
+            },
+            disposition="rejected_with_proof",
+            status="rejected",
+        )
+        == 1
+    )
     assert first.disposition == "rejected_with_proof"
     assert second.disposition == ""
 
@@ -306,9 +315,7 @@ def test_lifecycle_snapshot_filters_entry_and_excludes_triage_leads() -> None:
 
     assert snapshot["candidate_schema_version"] == "zscope.candidate.v3.3"
     assert len(snapshot["records"]) == 1
-    assert snapshot["records"][0]["validation_cluster_uid"] == (
-        obligation.validation_cluster_uid
-    )
+    assert snapshot["records"][0]["validation_cluster_uid"] == (obligation.validation_cluster_uid)
     assert snapshot["records"][0]["entry_count"] == 1
     assert snapshot["records"][0]["entries"] == ["entry_a"]
     assert snapshot["summary"]["triage_lead_count"] == 1
@@ -344,11 +351,14 @@ def test_validation_group_outcome_is_the_only_reportable_terminal_projection() -
 
     # A queued group is diagnostic state, not an actionable review row.
     assert ledger.lifecycle_snapshot()["outcomes"] == []
-    assert ledger.mark_issue_terminal(
-        {"validation_cluster_uid": first.validation_cluster_uid, "description": "confirmed"},
-        disposition="confirmed",
-        status="validated",
-    ) == 1
+    assert (
+        ledger.mark_issue_terminal(
+            {"validation_cluster_uid": first.validation_cluster_uid, "description": "confirmed"},
+            disposition="confirmed",
+            status="validated",
+        )
+        == 1
+    )
 
     outcome = ledger.freeze()["outcomes"]
     assert len(outcome) == 1

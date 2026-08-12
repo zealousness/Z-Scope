@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from copy import deepcopy
-from typing import Any, Dict, Iterable, List, Set
+from typing import Any, Dict, Iterable, List, Set, cast
 
 from .adapters import candidate_source_name, parse_location_file_line
 from ...retrieval.java_models import JAVA_EVIDENCE_PRECISION_RANK, normalize_java_evidence_precision
@@ -23,10 +23,14 @@ _PATH_SEPARATORS_RE = re.compile(r"[\\/]+")
 _TOKEN_RE = re.compile(r"[A-Za-z_]\w*")
 
 
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return cast(Dict[str, Any], value) if isinstance(value, dict) else {}
+
+
 def normalize_java_candidate(issue: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize Java candidate fields in-place and return the same issue."""
 
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    pack = _as_dict(issue.get("evidence_pack"))
     if not pack:
         issue["evidence_pack"] = pack
 
@@ -69,8 +73,8 @@ def normalize_java_candidate(issue: Dict[str, Any]) -> Dict[str, Any]:
     pack.setdefault("guards", issue.get("guards") or issue.get("guard_analysis") or [])
     pack.setdefault("limitations", issue.get("limitations") or issue.get("limitation") or [])
 
-    source = pack.get("source") if isinstance(pack.get("source"), dict) else {}
-    sink = pack.get("sink") if isinstance(pack.get("sink"), dict) else {}
+    source = _as_dict(pack.get("source"))
+    sink = _as_dict(pack.get("sink"))
     file_path, line = parse_location_file_line(str(issue.get("location") or ""))
     if not file_path:
         file_path = str(issue.get("file") or issue.get("file_path") or "")
@@ -94,7 +98,7 @@ def normalize_java_candidate(issue: Dict[str, Any]) -> Dict[str, Any]:
     pack["source"] = source
     pack["sink"] = sink
 
-    path = pack.get("path") if isinstance(pack.get("path"), dict) else {}
+    path = _as_dict(pack.get("path"))
     path.setdefault("function", issue.get("function") or issue.get("func_name") or "")
     if issue.get("entry_function"):
         path.setdefault("entry_function", issue.get("entry_function"))
@@ -204,7 +208,7 @@ def java_candidates_may_refer_same_issue(left: Dict[str, Any], right: Dict[str, 
     right_file, right_line = _sink_file_line(right)
     if left_file and right_file and left_file == right_file:
         if left_line and right_line and abs(left_line - right_line) <= 4:
-            return _sink_tokens(left) & _sink_tokens(right) or _same_sink_family(left, right)
+            return bool(_sink_tokens(left) & _sink_tokens(right)) or _same_sink_family(left, right)
         if _sink_operation_key(left) and _sink_operation_key(left) == _sink_operation_key(right):
             return True
 
@@ -217,7 +221,7 @@ def java_candidates_may_refer_same_issue(left: Dict[str, Any], right: Dict[str, 
 
 
 def java_candidate_dedup_key(issue: Dict[str, Any]) -> str:
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    pack = _as_dict(issue.get("evidence_pack"))
     defect = _defect_class(issue)
     mapper = _mapper_statement_key(issue)
     if mapper:
@@ -228,7 +232,7 @@ def java_candidate_dedup_key(issue: Dict[str, Any]) -> str:
     sink_file, sink_line = _sink_file_line(issue)
     sink_func = _sink_function(issue)
     sink = _sink_operation_key(issue)
-    source = pack.get("source") if isinstance(pack.get("source"), dict) else {}
+    source = _as_dict(pack.get("source"))
     source_kind = str(source.get("kind") or "")
     root = _java_root_cause_token(issue)
     if root and (sink_file or sink_func):
@@ -247,14 +251,10 @@ def java_candidate_dedup_key(issue: Dict[str, Any]) -> str:
 
 
 def attach_java_alternate_evidence(primary: Dict[str, Any], secondary: Dict[str, Any]) -> None:
-    primary_pack = (
-        primary.get("evidence_pack") if isinstance(primary.get("evidence_pack"), dict) else {}
-    )
+    primary_pack = _as_dict(primary.get("evidence_pack"))
     if not primary_pack:
         primary["evidence_pack"] = primary_pack
-    secondary_pack = (
-        secondary.get("evidence_pack") if isinstance(secondary.get("evidence_pack"), dict) else {}
-    )
+    secondary_pack = _as_dict(secondary.get("evidence_pack"))
 
     primary_pack.setdefault("primary_evidence", _compact_java_candidate(primary))
     alternate = primary_pack.setdefault("alternate_evidence", [])
@@ -295,8 +295,8 @@ def _prefer_java_primary(left: Dict[str, Any], right: Dict[str, Any]) -> Dict[st
 
 
 def _java_evidence_rank(issue: Dict[str, Any]) -> int:
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
-    path = pack.get("path") if isinstance(pack.get("path"), dict) else {}
+    pack = _as_dict(issue.get("evidence_pack"))
+    path = _as_dict(pack.get("path"))
     source = candidate_source_name(issue)
     rule = str(issue.get("rule") or pack.get("rule") or "")
     rank = 10
@@ -350,7 +350,7 @@ def _confidence_tier(precision: str) -> str:
 
 
 def _looks_like_java_candidate(issue: Dict[str, Any]) -> bool:
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    pack = _as_dict(issue.get("evidence_pack"))
     source = candidate_source_name(issue)
     rule = str(issue.get("rule") or pack.get("rule") or "")
     language = str(issue.get("language") or pack.get("language") or "").lower()
@@ -367,7 +367,7 @@ def _looks_like_java_candidate(issue: Dict[str, Any]) -> bool:
 
 
 def _defect_class(issue: Dict[str, Any]) -> str:
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    pack = _as_dict(issue.get("evidence_pack"))
     return (
         str(
             issue.get("defect_class")
@@ -425,8 +425,8 @@ def _sink_kind(issue: Dict[str, Any], pack: Dict[str, Any]) -> str:
 
 
 def _sink_file_line(issue: Dict[str, Any]) -> tuple[str, int]:
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
-    sink = pack.get("sink") if isinstance(pack.get("sink"), dict) else {}
+    pack = _as_dict(issue.get("evidence_pack"))
+    sink = _as_dict(pack.get("sink"))
     file_path = str(sink.get("file") or issue.get("file") or issue.get("file_path") or "")
     line = int(sink.get("line") or issue.get("line") or issue.get("line_number") or 0)
     loc_file, loc_line = parse_location_file_line(str(issue.get("location") or ""))
@@ -436,8 +436,8 @@ def _sink_file_line(issue: Dict[str, Any]) -> tuple[str, int]:
 
 
 def _sink_function(issue: Dict[str, Any]) -> str:
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
-    path = pack.get("path") if isinstance(pack.get("path"), dict) else {}
+    pack = _as_dict(issue.get("evidence_pack"))
+    path = _as_dict(pack.get("path"))
     return str(
         pack.get("sink_function")
         or path.get("sink_function")
@@ -449,8 +449,8 @@ def _sink_function(issue: Dict[str, Any]) -> str:
 
 
 def _entry_sink_key(issue: Dict[str, Any]) -> str:
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
-    path = pack.get("path") if isinstance(pack.get("path"), dict) else {}
+    pack = _as_dict(issue.get("evidence_pack"))
+    path = _as_dict(pack.get("path"))
     entry = str(
         pack.get("entry_function")
         or path.get("entry_function")
@@ -466,7 +466,7 @@ def _entry_sink_key(issue: Dict[str, Any]) -> str:
 
 
 def _mapper_statement_key(issue: Dict[str, Any]) -> str:
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    pack = _as_dict(issue.get("evidence_pack"))
     candidates = [
         pack,
         pack.get("framework_evidence"),
@@ -494,8 +494,8 @@ def _mapper_statement_key(issue: Dict[str, Any]) -> str:
 
 
 def _sink_operation_key(issue: Dict[str, Any]) -> str:
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
-    sink = pack.get("sink") if isinstance(pack.get("sink"), dict) else {}
+    pack = _as_dict(issue.get("evidence_pack"))
+    sink = _as_dict(pack.get("sink"))
     value = str(sink.get("operation") or issue.get("sink") or issue.get("code_snippet") or "")
     value = value.lower().replace("\\", "/")
     value = re.sub(r"\s+", "", value)
@@ -518,7 +518,7 @@ def _same_sink_family(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
 
 
 def _compact_java_candidate(issue: Dict[str, Any]) -> Dict[str, Any]:
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    pack = _as_dict(issue.get("evidence_pack"))
     compact_pack = {
         key: deepcopy(pack.get(key))
         for key in (
@@ -562,7 +562,7 @@ def _compact_java_candidate(issue: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _evidence_engines(issue: Dict[str, Any]) -> List[str]:
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    pack = _as_dict(issue.get("evidence_pack"))
     values: List[str] = []
     for source in (issue.get("evidence_engines"), pack.get("evidence_engines")):
         if isinstance(source, list):

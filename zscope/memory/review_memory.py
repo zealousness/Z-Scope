@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 
 class ReviewMemory:
@@ -19,7 +19,7 @@ class ReviewMemory:
         return bool(self.store.is_false_positive(func_name, location, category))
 
     def get_finding_baseline(self, dedup_key: str) -> Optional[Dict[str, Any]]:
-        return self.store.get_finding_baseline(dedup_key)
+        return cast(Optional[Dict[str, Any]], self.store.get_finding_baseline(dedup_key))
 
     def get_finding_baseline_for_issue(
         self,
@@ -28,7 +28,7 @@ class ReviewMemory:
     ) -> Optional[Dict[str, Any]]:
         lookup = getattr(self.store, "get_finding_baseline_for_issue", None)
         if callable(lookup):
-            return lookup(issue, dedup_key)
+            return cast(Optional[Dict[str, Any]], lookup(issue, dedup_key))
         key = dedup_key or str((issue or {}).get("dedup_key") or "")
         if not key:
             return None

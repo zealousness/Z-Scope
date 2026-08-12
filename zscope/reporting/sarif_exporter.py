@@ -63,7 +63,10 @@ def report_to_sarif(
 
 def _load_report(report_or_path: Any) -> Dict[str, Any]:
     if isinstance(report_or_path, (str, Path)):
-        return json.loads(Path(report_or_path).read_text(encoding="utf-8"))
+        loaded = json.loads(Path(report_or_path).read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            return loaded
+        raise TypeError("SARIF report JSON root must be an object")
     if isinstance(report_or_path, dict):
         return report_or_path
     raise TypeError("report_or_path must be a report dict or JSON path")
@@ -98,18 +101,40 @@ def _build_rules(issues: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         rule_id = _rule_id(issue)
         if rule_id in rules:
             continue
-        name = str(issue.get("defect_class") or issue.get("subcategory") or issue.get("category") or rule_id)
+        name = str(
+            issue.get("defect_class")
+            or issue.get("subcategory")
+            or issue.get("category")
+            or rule_id
+        )
         cwe = str(issue.get("cwe") or "").strip()
         tags = ["security", name.replace("_", "-")]
         if cwe:
             tags.append(cwe)
+        properties: Dict[str, Any] = {
+            "tags": tags,
+            "legacyRuleId": _legacy_rule_id(issue),
+        }
+        if cwe:
+            properties["cwe"] = cwe
+        for field in (
+            "rule_engine",
+            "rule_revision",
+            "skill",
+            "rule_catalog_sha256",
+        ):
+            value = _rule_metadata(issue, field)
+            if value not in (None, ""):
+                properties[field] = value
         rules[rule_id] = {
             "id": rule_id,
             "name": name,
             "shortDescription": {"text": name.replace("_", " ")},
-            "fullDescription": {"text": str(issue.get("root_cause") or issue.get("description") or name)},
+            "fullDescription": {
+                "text": str(issue.get("root_cause") or issue.get("description") or name)
+            },
             "help": {"text": str(issue.get("suggested_fix") or "Review the finding evidence.")},
-            "properties": {"tags": tags},
+            "properties": properties,
         }
     return rules
 
@@ -134,7 +159,9 @@ def _issue_to_result(
     )
     result: Dict[str, Any] = {
         "ruleId": rule_id,
-        "level": _LEVEL_BY_IMPACT.get(str(issue.get("impact_level") or "medium").lower(), "warning"),
+        "level": _LEVEL_BY_IMPACT.get(
+            str(issue.get("impact_level") or "medium").lower(), "warning"
+        ),
         "message": {"text": message},
         "locations": [
             {
@@ -186,7 +213,8 @@ def _issue_to_result(
 
 
 def _code_flows(issue: Dict[str, Any], *, source_root: Optional[Path]) -> List[Dict[str, Any]]:
-    evidence_pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    raw_evidence_pack = issue.get("evidence_pack")
+    evidence_pack: Dict[str, Any] = raw_evidence_pack if isinstance(raw_evidence_pack, dict) else {}
     steps: List[Dict[str, Any]] = []
     for key in ("source", "sink"):
         item = evidence_pack.get(key)
@@ -203,7 +231,9 @@ def _code_flows(issue: Dict[str, Any], *, source_root: Optional[Path]) -> List[D
                         "artifactLocation": {"uri": _artifact_uri(file_path, source_root)},
                         "region": {"startLine": line},
                     },
-                    "message": {"text": str(item.get("expression") or item.get("operation") or key)},
+                    "message": {
+                        "text": str(item.get("expression") or item.get("operation") or key)
+                    },
                 }
             }
         )
@@ -233,9 +263,40 @@ def _artifact_uri(file_path: str, source_root: Optional[Path]) -> str:
 
 
 def _rule_id(issue: Dict[str, Any]) -> str:
+    return str(
+        issue.get("rule_id")
+        or issue.get("rule")
+        or issue.get("defect_class")
+        or issue.get("subcategory")
+        or "zscope-finding"
+    ).strip()
+
+
+def _legacy_rule_id(issue: Dict[str, Any]) -> str:
+    """Return the composite identifier emitted before canonical rule IDs."""
     cwe = str(issue.get("cwe") or "").strip()
-    rule = str(issue.get("rule") or issue.get("defect_class") or issue.get("subcategory") or "zscope-finding")
+    rule = str(
+        issue.get("rule")
+        or issue.get("defect_class")
+        or issue.get("subcategory")
+        or "zscope-finding"
+    ).strip()
     return f"{cwe}:{rule}" if cwe else f"zscope:{rule}"
+
+
+def _rule_metadata(issue: Dict[str, Any], field: str) -> Any:
+    """Read rule-governance metadata from an issue or its evidence descriptor."""
+    if issue.get(field) not in (None, ""):
+        return issue[field]
+    evidence_pack = issue.get("evidence_pack")
+    if not isinstance(evidence_pack, dict):
+        return None
+    if evidence_pack.get(field) not in (None, ""):
+        return evidence_pack[field]
+    descriptor = evidence_pack.get("rule_descriptor")
+    if isinstance(descriptor, dict):
+        return descriptor.get(field)
+    return None
 
 
 def _fingerprint(value: str) -> str:

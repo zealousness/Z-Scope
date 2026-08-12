@@ -8,7 +8,7 @@ versioned proof record), and turns them into small auditable decision proofs.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Iterable, Mapping, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional, cast
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,10 @@ class DecisionProof:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+def _as_mapping(value: Any) -> Mapping[str, Any]:
+    return cast(Mapping[str, Any], value) if isinstance(value, Mapping) else {}
 
 
 _REJECTION_REQUIREMENTS = {
@@ -216,9 +220,7 @@ def deterministic_decision_proof(
     """
 
     expected = str(outcome or "").lower()
-    requirements = (
-        _REJECTION_REQUIREMENTS if expected == "reject" else _CONFIRMATION_REQUIREMENTS
-    )
+    requirements = _REJECTION_REQUIREMENTS if expected == "reject" else _CONFIRMATION_REQUIREMENTS
     for proof in _proof_records(issue):
         proof_outcome = str(proof.get("outcome") or proof.get("decision") or "").lower()
         if proof_outcome not in {expected, "rejected" if expected == "reject" else "confirmed"}:
@@ -239,7 +241,9 @@ def deterministic_decision_proof(
             outcome=expected,
             proof_kind=kind,
             producer_engine=engine,
-            fact_ids=tuple(sorted(_string_values(proof.get("fact_ids") or proof.get("evidence_refs")))),
+            fact_ids=tuple(
+                sorted(_string_values(proof.get("fact_ids") or proof.get("evidence_refs")))
+            ),
             code_hash=str(proof.get("code_hash") or _code_hash(issue)),
             assumptions=tuple(sorted(_string_values(proof.get("assumptions")))),
             contradiction_or_obligation=str(
@@ -257,13 +261,15 @@ def deterministic_decision_proof(
                 or issue.get("source_identity")
                 or ""
             ),
-            cfg_nodes=tuple(sorted(_string_values(proof.get("cfg_nodes") or proof.get("fact_ids")))),
+            cfg_nodes=tuple(
+                sorted(_string_values(proof.get("cfg_nodes") or proof.get("fact_ids")))
+            ),
         )
     return None
 
 
 def _proof_records(issue: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]:
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), Mapping) else {}
+    pack = _as_mapping(issue.get("evidence_pack"))
     sources = (
         issue.get("deterministic_proofs"),
         issue.get("decision_proofs"),
@@ -307,7 +313,7 @@ def _has_fact_ids(proof: Mapping[str, Any]) -> bool:
 
 
 def _code_hash(issue: Mapping[str, Any]) -> str:
-    pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), Mapping) else {}
+    pack = _as_mapping(issue.get("evidence_pack"))
     return str(
         issue.get("dependency_code_hash")
         or issue.get("code_hash")

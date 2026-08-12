@@ -8,11 +8,48 @@ import sys
 from pathlib import Path
 
 from zscope._version import __version__
-from scripts.evaluate_release_candidate import evaluate_candidate
+from scripts.evaluate_release_candidate import (
+    CPP_FORMAL_LIMITS,
+    _metric_gate_failures,
+    evaluate_candidate,
+)
 from scripts.generate_release_manifest import build_manifest
 from scripts.verify_release_assets import verify_release_assets
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_release_gate_prefers_scan_wall_and_keeps_legacy_wall_fallback() -> None:
+    failures = _metric_gate_failures(
+        {
+            "confirmed_tp": 90,
+            "precision": 98,
+            "with_review_tp": 135,
+            "with_review_raw_fp": 90,
+            "needs_review": 100,
+            "tokens": 1_000_000,
+            "scan_wall_seconds": 4_000,
+            "wall_seconds": 2_000,
+        },
+        CPP_FORMAL_LIMITS,
+        prefix="cpp:run_1",
+    )
+    assert failures == ["cpp:run_1_scan_wall_seconds_gate_failed"]
+
+    legacy = _metric_gate_failures(
+        {
+            "confirmed_tp": 90,
+            "precision": 98,
+            "with_review_tp": 135,
+            "with_review_raw_fp": 90,
+            "needs_review": 100,
+            "tokens": 1_000_000,
+            "wall_seconds": 2_000,
+        },
+        CPP_FORMAL_LIMITS,
+        prefix="cpp:legacy",
+    )
+    assert legacy == []
 
 
 def test_package_version_is_semver_and_shared_by_user_surfaces() -> None:

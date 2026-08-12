@@ -1,500 +1,329 @@
 {
-  "description": "Fixed Z-SCOPE benchmark entry list for full Java category adaptation.",
+  "description": "Answer-free Z-SCOPE Java benchmark runtime entry manifest.",
   "functions": [
     {
       "function_name": "com.zscope.cli.CliApp.main:void(java.lang.String[])",
       "file_path": "src/main/java/com/zscope/cli/CliApp.java",
       "entry_kind": "cli_main",
-      "component": "cli",
-      "covers_rule_ids": [
-        "java_command_execution"
-      ]
+      "component": "cli"
     },
     {
       "function_name": "com.zscope.cli.LibraryApi.load:java.lang.String(java.lang.String)",
       "file_path": "src/main/java/com/zscope/cli/LibraryApi.java",
       "entry_kind": "public_api",
-      "component": "cli",
-      "covers_rule_ids": [
-        "java_path_traversal_file_api"
-      ]
+      "component": "cli"
     },
     {
       "function_name": "com.zscope.cli.MessageWorker.onMessage:void(java.lang.String)",
       "file_path": "src/main/java/com/zscope/cli/MessageWorker.java",
       "entry_kind": "message_listener",
-      "component": "cli",
-      "covers_rule_ids": [
-        "java_object_deserialization"
-      ]
+      "component": "cli"
     },
     {
       "function_name": "com.zscope.cli.EnvBatchJob.run:void()",
       "file_path": "src/main/java/com/zscope/cli/EnvBatchJob.java",
       "entry_kind": "batch_env",
-      "component": "cli",
-      "covers_rule_ids": [
-        "java_command_execution"
-      ]
+      "component": "cli"
     },
     {
       "function_name": "com.zscope.cli.StdinTool.readFromStdin:java.lang.String()",
       "file_path": "src/main/java/com/zscope/cli/StdinTool.java",
       "entry_kind": "stdin",
-      "component": "cli",
-      "covers_rule_ids": [
-        "java_path_traversal_file_api"
-      ]
+      "component": "cli"
     },
     {
       "function_name": "com.zscope.cli.PermissionTool.makeShared:java.nio.file.Path(java.lang.String)",
       "file_path": "src/main/java/com/zscope/cli/PermissionTool.java",
       "entry_kind": "file_permission",
-      "component": "cli",
-      "covers_rule_ids": [
-        "java_temp_file_risk",
-        "java_insecure_file_permissions"
-      ]
+      "component": "cli"
     },
     {
       "function_name": "com.zscope.web.controller.UserController.search:java.util.List(java.lang.String)",
       "file_path": "src/main/java/com/zscope/web/controller/UserController.java",
       "entry_kind": "spring_controller",
-      "component": "controller",
-      "covers_rule_ids": [
-        "java_mybatis_dollar_substitution"
-      ]
+      "component": "controller"
     },
     {
       "function_name": "com.zscope.web.controller.UserController.fetch:java.lang.String(java.lang.String)",
       "file_path": "src/main/java/com/zscope/web/controller/UserController.java",
       "entry_kind": "spring_controller",
-      "component": "controller",
-      "covers_rule_ids": [
-        "java_ssrf_http_client",
-        "java_resource_exhaustion_read_all"
-      ]
+      "component": "controller"
     },
     {
       "function_name": "com.zscope.web.controller.UserController.upload:java.lang.String(org.springframework.web.multipart.MultipartFile)",
       "file_path": "src/main/java/com/zscope/web/controller/UserController.java",
       "entry_kind": "spring_controller",
-      "component": "controller",
-      "covers_rule_ids": [
-        "java_file_upload_path"
-      ]
+      "component": "controller"
     },
     {
       "function_name": "com.zscope.web.controller.UserController.download:java.lang.String(java.lang.String)",
       "file_path": "src/main/java/com/zscope/web/controller/UserController.java",
       "entry_kind": "spring_controller",
-      "component": "controller",
-      "covers_rule_ids": [
-        "java_path_traversal_file_api"
-      ]
+      "component": "controller"
     },
     {
       "function_name": "com.zscope.web.controller.UserController.delete:int(java.lang.Long)",
       "file_path": "src/main/java/com/zscope/web/controller/UserController.java",
       "entry_kind": "spring_controller",
-      "component": "controller",
-      "covers_rule_ids": [
-        "java_sensitive_state_change_missing_authz",
-        "java_missing_object_authorization"
-      ]
+      "component": "controller"
     },
     {
       "function_name": "com.zscope.web.controller.UserController.deserialize:java.lang.Object(byte[])",
       "file_path": "src/main/java/com/zscope/web/controller/UserController.java",
       "entry_kind": "spring_controller",
-      "component": "controller",
-      "covers_rule_ids": [
-        "java_object_deserialization"
-      ]
+      "component": "controller"
     },
     {
       "function_name": "com.zscope.web.controller.UserController.parseXml:java.lang.String(java.lang.String)",
       "file_path": "src/main/java/com/zscope/web/controller/UserController.java",
       "entry_kind": "spring_controller",
-      "component": "controller",
-      "covers_rule_ids": [
-        "java_xxe_factory"
-      ]
+      "component": "controller"
     },
     {
       "function_name": "com.zscope.web.controller.UserController.redirect:java.lang.String(java.lang.String)",
       "file_path": "src/main/java/com/zscope/web/controller/UserController.java",
       "entry_kind": "spring_controller",
-      "component": "controller",
-      "covers_rule_ids": [
-        "java_open_redirect"
-      ]
+      "component": "controller"
     },
     {
       "function_name": "com.zscope.web.controller.UserController.crypto:java.lang.String(com.zscope.web.dto.UserDto)",
       "file_path": "src/main/java/com/zscope/web/controller/UserController.java",
       "entry_kind": "spring_controller",
-      "component": "controller",
-      "covers_rule_ids": [
-        "java_weak_crypto",
-        "java_jwt_verification_misuse",
-        "java_hardcoded_secret"
-      ]
+      "component": "controller"
     },
     {
       "function_name": "com.zscope.web.filter.JwtBypassFilter.doFilter:void(jakarta.servlet.ServletRequest,jakarta.servlet.ServletResponse,jakarta.servlet.FilterChain)",
       "file_path": "src/main/java/com/zscope/web/filter/JwtBypassFilter.java",
       "entry_kind": "servlet_filter",
-      "component": "filter",
-      "covers_rule_ids": [
-        "java_jwt_verification_misuse",
-        "java_filter_unconditional_chain"
-      ]
+      "component": "filter"
     },
     {
       "function_name": "com.zscope.web.interceptor.AdminInterceptor.preHandle:boolean(jakarta.servlet.http.HttpServletRequest,jakarta.servlet.http.HttpServletResponse,java.lang.Object)",
       "file_path": "src/main/java/com/zscope/web/interceptor/AdminInterceptor.java",
       "entry_kind": "spring_interceptor",
-      "component": "interceptor",
-      "covers_rule_ids": [
-        "java_handler_interceptor_missing_authz"
-      ]
+      "component": "interceptor"
     },
     {
       "function_name": "com.zscope.persistence.PersistenceEntry.jdbcSearch:java.sql.ResultSet(java.sql.Statement,java.lang.String)",
       "file_path": "src/main/java/com/zscope/persistence/PersistenceEntry.java",
       "entry_kind": "public_api",
-      "component": "persistence",
-      "covers_rule_ids": [
-        "java_sql_statement_execute"
-      ]
+      "component": "persistence"
     },
     {
       "function_name": "com.zscope.persistence.PersistenceEntry.jpaSearch:java.util.List(jakarta.persistence.EntityManager,java.lang.String)",
       "file_path": "src/main/java/com/zscope/persistence/PersistenceEntry.java",
       "entry_kind": "public_api",
-      "component": "persistence",
-      "covers_rule_ids": [
-        "java_jpa_dynamic_query"
-      ]
+      "component": "persistence"
     },
     {
       "function_name": "com.zscope.persistence.PersistenceEntry.nosqlSearch:org.bson.Document(java.lang.String)",
       "file_path": "src/main/java/com/zscope/persistence/PersistenceEntry.java",
       "entry_kind": "public_api",
-      "component": "persistence",
-      "covers_rule_ids": [
-        "java_nosql_query_injection"
-      ]
+      "component": "persistence"
     },
     {
       "function_name": "com.zscope.persistence.PersistenceEntry.jndiLookup:java.lang.Object(java.lang.String)",
       "file_path": "src/main/java/com/zscope/persistence/PersistenceEntry.java",
       "entry_kind": "public_api",
-      "component": "persistence",
-      "covers_rule_ids": [
-        "java_jndi_lookup"
-      ]
+      "component": "persistence"
     },
     {
       "function_name": "com.zscope.persistence.PersistenceEntry.ldapSearch:java.lang.Object(javax.naming.directory.DirContext,java.lang.String)",
       "file_path": "src/main/java/com/zscope/persistence/PersistenceEntry.java",
       "entry_kind": "public_api",
-      "component": "persistence",
-      "covers_rule_ids": [
-        "java_ldap_search_filter"
-      ]
+      "component": "persistence"
     },
     {
       "function_name": "com.zscope.parser.ParserEntry.nativeDeserialize:java.lang.Object(byte[])",
       "file_path": "src/main/java/com/zscope/parser/ParserEntry.java",
       "entry_kind": "public_api",
-      "component": "parser",
-      "covers_rule_ids": [
-        "java_object_deserialization"
-      ]
+      "component": "parser"
     },
     {
       "function_name": "com.zscope.parser.ParserEntry.thirdPartyDeserialize:java.lang.Object(java.lang.String)",
       "file_path": "src/main/java/com/zscope/parser/ParserEntry.java",
       "entry_kind": "public_api",
-      "component": "parser",
-      "covers_rule_ids": [
-        "java_third_party_deserialization"
-      ]
+      "component": "parser"
     },
     {
       "function_name": "com.zscope.parser.ParserEntry.parseXml:org.w3c.dom.Document(java.lang.String)",
       "file_path": "src/main/java/com/zscope/parser/ParserEntry.java",
       "entry_kind": "public_api",
-      "component": "parser",
-      "covers_rule_ids": [
-        "java_xxe_factory",
-        "java_xpath_expression_concat"
-      ]
+      "component": "parser"
     },
     {
       "function_name": "com.zscope.parser.ParserEntry.renderTemplate:java.lang.String(java.lang.String)",
       "file_path": "src/main/java/com/zscope/parser/ParserEntry.java",
       "entry_kind": "public_api",
-      "component": "parser",
-      "covers_rule_ids": [
-        "java_template_injection"
-      ]
+      "component": "parser"
     },
     {
       "function_name": "com.zscope.parser.ParserEntry.evaluateExpression:java.lang.Object(java.lang.String)",
       "file_path": "src/main/java/com/zscope/parser/ParserEntry.java",
       "entry_kind": "public_api",
-      "component": "parser",
-      "covers_rule_ids": [
-        "java_expression_or_script_eval"
-      ]
+      "component": "parser"
     },
     {
       "function_name": "com.zscope.parser.ParserEntry.regexMatch:boolean(java.lang.String,java.lang.String)",
       "file_path": "src/main/java/com/zscope/parser/ParserEntry.java",
       "entry_kind": "public_api",
-      "component": "parser",
-      "covers_rule_ids": [
-        "java_regex_dos"
-      ]
+      "component": "parser"
     },
     {
       "function_name": "com.zscope.parser.ParserEntry.unzip:java.nio.file.Path(java.io.InputStream)",
       "file_path": "src/main/java/com/zscope/parser/ParserEntry.java",
       "entry_kind": "public_api",
-      "component": "parser",
-      "covers_rule_ids": [
-        "java_zip_entry_path_traversal"
-      ]
+      "component": "parser"
     },
     {
       "function_name": "com.zscope.crypto.CryptoEntry.weakCipher:javax.crypto.Cipher()",
       "file_path": "src/main/java/com/zscope/crypto/CryptoEntry.java",
       "entry_kind": "public_api",
-      "component": "crypto",
-      "covers_rule_ids": [
-        "java_weak_crypto"
-      ]
+      "component": "crypto"
     },
     {
       "function_name": "com.zscope.crypto.CryptoEntry.fixedIv:javax.crypto.spec.IvParameterSpec()",
       "file_path": "src/main/java/com/zscope/crypto/CryptoEntry.java",
       "entry_kind": "public_api",
-      "component": "crypto",
-      "covers_rule_ids": [
-        "java_crypto_fixed_iv_or_salt"
-      ]
+      "component": "crypto"
     },
     {
       "function_name": "com.zscope.crypto.CryptoEntry.weakRandomToken:long()",
       "file_path": "src/main/java/com/zscope/crypto/CryptoEntry.java",
       "entry_kind": "public_api",
-      "component": "crypto",
-      "covers_rule_ids": [
-        "java_weak_random_security"
-      ]
+      "component": "crypto"
     },
     {
       "function_name": "com.zscope.crypto.CryptoEntry.trustAllHostname:void(javax.net.ssl.HttpsURLConnection)",
       "file_path": "src/main/java/com/zscope/crypto/CryptoEntry.java",
       "entry_kind": "public_api",
-      "component": "crypto",
-      "covers_rule_ids": [
-        "java_tls_verification_disabled"
-      ]
+      "component": "crypto"
     },
     {
       "function_name": "com.zscope.crypto.CryptoEntry.hardcodedSecret:java.lang.String()",
       "file_path": "src/main/java/com/zscope/crypto/CryptoEntry.java",
       "entry_kind": "public_api",
-      "component": "crypto",
-      "covers_rule_ids": [
-        "java_hardcoded_secret"
-      ]
+      "component": "crypto"
     },
     {
       "function_name": "com.zscope.crypto.CryptoEntry.weakDigest:byte[](byte[])",
       "file_path": "src/main/java/com/zscope/crypto/CryptoEntry.java",
       "entry_kind": "public_api",
-      "component": "crypto",
-      "covers_rule_ids": [
-        "java_crypto_fixed_iv_or_salt",
-        "java_weak_crypto"
-      ]
+      "component": "crypto"
     },
     {
       "function_name": "com.zscope.runtime.RuntimeEntry.reflect:java.lang.Object(java.lang.String,java.lang.String)",
       "file_path": "src/main/java/com/zscope/runtime/RuntimeEntry.java",
       "entry_kind": "public_api",
-      "component": "runtime",
-      "covers_rule_ids": [
-        "java_reflection_dynamic_call"
-      ]
+      "component": "runtime"
     },
     {
       "function_name": "com.zscope.runtime.RuntimeEntry.loadPlugin:java.lang.Class(java.net.URL[],java.lang.String)",
       "file_path": "src/main/java/com/zscope/runtime/RuntimeEntry.java",
       "entry_kind": "public_api",
-      "component": "runtime",
-      "covers_rule_ids": [
-        "java_dynamic_class_loading"
-      ]
+      "component": "runtime"
     },
     {
       "function_name": "com.zscope.runtime.RuntimeEntry.resource:java.io.InputStream(java.lang.String)",
       "file_path": "src/main/java/com/zscope/runtime/RuntimeEntry.java",
       "entry_kind": "public_api",
-      "component": "runtime",
-      "covers_rule_ids": [
-        "java_classpath_resource_traversal"
-      ]
+      "component": "runtime"
     },
     {
       "function_name": "com.zscope.resource.ResourceEntry.leakFile:int(java.lang.String)",
       "file_path": "src/main/java/com/zscope/resource/ResourceEntry.java",
       "entry_kind": "public_api",
-      "component": "resource",
-      "covers_rule_ids": [
-        "java_manual_close_resource"
-      ]
+      "component": "resource"
     },
     {
       "function_name": "com.zscope.resource.ResourceEntry.readAll:byte[](org.springframework.web.multipart.MultipartFile)",
       "file_path": "src/main/java/com/zscope/resource/ResourceEntry.java",
       "entry_kind": "public_api",
-      "component": "resource",
-      "covers_rule_ids": [
-        "java_resource_exhaustion_read_all"
-      ]
+      "component": "resource"
     },
     {
       "function_name": "com.zscope.resource.ResourceEntry.tempFile:java.io.File(java.lang.String)",
       "file_path": "src/main/java/com/zscope/resource/ResourceEntry.java",
       "entry_kind": "public_api",
-      "component": "resource",
-      "covers_rule_ids": [
-        "java_temp_file_risk"
-      ]
+      "component": "resource"
     },
     {
       "function_name": "com.zscope.resource.ResourceEntry.makeShared:void(java.nio.file.Path)",
       "file_path": "src/main/java/com/zscope/resource/ResourceEntry.java",
       "entry_kind": "public_api",
-      "component": "resource",
-      "covers_rule_ids": [
-        "java_insecure_file_permissions"
-      ]
+      "component": "resource"
     },
     {
       "function_name": "com.zscope.resource.ResourceEntry.cache:java.util.Map(java.lang.String,java.lang.String)",
       "file_path": "src/main/java/com/zscope/resource/ResourceEntry.java",
       "entry_kind": "public_api",
-      "component": "resource",
-      "covers_rule_ids": [
-        "java_shared_mutable_static_state"
-      ]
+      "component": "resource"
     },
     {
       "function_name": "com.zscope.web.controller.SecuritySurfaceController.writeHeader:void(jakarta.servlet.http.HttpServletResponse,java.lang.String)",
       "file_path": "src/main/java/com/zscope/web/controller/SecuritySurfaceController.java",
       "entry_kind": "spring_controller",
-      "component": "controller",
-      "covers_rule_ids": [
-        "java_header_injection"
-      ]
+      "component": "controller"
     },
     {
       "function_name": "com.zscope.web.controller.SecuritySurfaceController.cookie:void(jakarta.servlet.http.HttpServletResponse,java.lang.String)",
       "file_path": "src/main/java/com/zscope/web/controller/SecuritySurfaceController.java",
       "entry_kind": "spring_controller",
-      "component": "controller",
-      "covers_rule_ids": [
-        "java_insecure_cookie_flags"
-      ]
+      "component": "controller"
     },
     {
       "function_name": "com.zscope.web.controller.SecuritySurfaceController.cors:java.lang.String(java.lang.String)",
       "file_path": "src/main/java/com/zscope/web/controller/SecuritySurfaceController.java",
       "entry_kind": "spring_controller",
-      "component": "controller",
-      "covers_rule_ids": [
-        "java_cors_wildcard"
-      ]
+      "component": "controller"
     },
     {
       "function_name": "com.zscope.web.controller.SecuritySurfaceController.logToken:void(java.lang.String)",
       "file_path": "src/main/java/com/zscope/web/controller/SecuritySurfaceController.java",
       "entry_kind": "spring_controller",
-      "component": "controller",
-      "covers_rule_ids": [
-        "java_sensitive_logging"
-      ]
+      "component": "controller"
     },
     {
       "function_name": "com.zscope.web.config.InsecureSecurityConfig.securityFilterChain:org.springframework.security.web.SecurityFilterChain(org.springframework.security.config.annotation.web.builders.HttpSecurity)",
       "file_path": "src/main/java/com/zscope/web/config/InsecureSecurityConfig.java",
       "entry_kind": "spring_security_config",
-      "component": "config",
-      "covers_rule_ids": [
-        "java_spring_security_permit_all",
-        "java_druid_monitor_exposure"
-      ]
+      "component": "config"
     },
     {
       "function_name": "com.zscope.persistence.PersistenceEntry.jdbcConcatenatedSql:java.sql.ResultSet(java.sql.Statement,java.lang.String)",
       "file_path": "src/main/java/com/zscope/persistence/PersistenceEntry.java",
       "entry_kind": "public_api",
-      "component": "persistence",
-      "covers_rule_ids": [
-        "java_jdbc_concatenated_sql"
-      ]
+      "component": "persistence"
     },
     {
       "function_name": "com.zscope.persistence.PersistenceEntry.jdbcFakePrepared:java.sql.ResultSet(java.sql.Connection,java.lang.String)",
       "file_path": "src/main/java/com/zscope/persistence/PersistenceEntry.java",
       "entry_kind": "public_api",
-      "component": "persistence",
-      "covers_rule_ids": [
-        "java_jdbc_fake_prepared_statement"
-      ]
+      "component": "persistence"
     },
     {
       "function_name": "com.zscope.parser.ParserEntry.xmlDecoderDeserialize:java.lang.Object(byte[])",
       "file_path": "src/main/java/com/zscope/parser/ParserEntry.java",
       "entry_kind": "public_api",
-      "component": "parser",
-      "covers_rule_ids": [
-        "java_xmldecoder_readobject"
-      ]
+      "component": "parser"
     },
     {
       "function_name": "com.zscope.web.controller.SecuritySurfaceController.reflectedXss:java.lang.String(java.lang.String)",
       "file_path": "src/main/java/com/zscope/web/controller/SecuritySurfaceController.java",
       "entry_kind": "spring_controller",
-      "component": "controller",
-      "covers_rule_ids": [
-        "java_reflected_xss_response_body"
-      ]
+      "component": "controller"
     },
     {
       "function_name": "com.zscope.web.controller.SecuritySurfaceController.storedXss:java.lang.String(com.mongodb.client.MongoCollection,java.lang.String,java.lang.String)",
       "file_path": "src/main/java/com/zscope/web/controller/SecuritySurfaceController.java",
       "entry_kind": "spring_controller",
-      "component": "controller",
-      "covers_rule_ids": [
-        "java_stored_xss_persistent_content"
-      ]
+      "component": "controller"
     },
     {
       "function_name": "com.zscope.web.controller.SecuritySurfaceController.templateXss:java.lang.String(java.lang.String,org.springframework.ui.Model)",
       "file_path": "src/main/java/com/zscope/web/controller/SecuritySurfaceController.java",
       "entry_kind": "spring_controller",
-      "component": "controller",
-      "covers_rule_ids": [
-        "java_template_utext_xss"
-      ]
+      "component": "controller"
     }
   ]
 }

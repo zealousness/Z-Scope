@@ -37,14 +37,18 @@ dev = [
 zscope = "zscope.cli.cli:main"
 zscope-init = "zscope.cli.init:main"
 zscope-doctor = "zscope.cli.doctor:main"
+zscope-config = "zscope.cli.config_cli:main"
 zscope-rules = "zscope.cli.rules:main"
 zscope-maven-cache = "zscope.cli.maven_cache:main"
+zscope-benchmark = "zscope.cli.benchmark:main"
 
 [tool.setuptools.packages.find]
 include = ["zscope*"]
 
 [tool.setuptools.package-data]
 zscope = [
+    "config/*.yaml",
+    "rules/*.yaml",
     "agents/*/AGENT.md",
     "skills/*/SKILL.md",
     "skills/*/references/*.md",

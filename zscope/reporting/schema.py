@@ -26,13 +26,9 @@ def terminal_candidate_identity(item: Mapping[str, Any]) -> str:
     evidence_hash = str(item.get("evidence_hash") or "")
     context_signature = str(item.get("context_signature") or "")
     if occurrence_uid and evidence_hash and context_signature:
-        return "|".join(
-            ("occurrence", occurrence_uid, evidence_hash, context_signature)
-        )
+        return "|".join(("occurrence", occurrence_uid, evidence_hash, context_signature))
     if candidate_uid and evidence_hash and context_signature:
-        return "|".join(
-            ("candidate", candidate_uid, evidence_hash, context_signature)
-        )
+        return "|".join(("candidate", candidate_uid, evidence_hash, context_signature))
     if occurrence_uid and evidence_hash:
         return "|".join(("occurrence", occurrence_uid, evidence_hash))
     if candidate_uid and evidence_hash:
@@ -59,10 +55,7 @@ def coalesce_terminal_candidates(
 
     def item_priority(item: Mapping[str, Any]) -> int:
         disposition = str(
-            item.get("candidate_disposition")
-            or item.get("disposition")
-            or item.get("status")
-            or ""
+            item.get("candidate_disposition") or item.get("disposition") or item.get("status") or ""
         ).lower()
         value = priority.get(disposition, 0)
         engine_status = str(item.get("engine_status") or "").lower()
@@ -111,11 +104,7 @@ def coalesce_terminal_candidates(
         }
         merged = dict(loser)
         merged.update(
-            {
-                key: value
-                for key, value in winner.items()
-                if value not in (None, "", [], {})
-            }
+            {key: value for key, value in winner.items() if value not in (None, "", [], {})}
         )
         if len(conflicts) > 1:
             merged["terminal_conflicts"] = sorted(conflicts)
@@ -169,9 +158,7 @@ def engine_failure_terminal_states(
                         sort_keys=True,
                     ).encode("utf-8")
                 ).hexdigest()[:24]
-                disposition = (
-                    "interrupted" if status == "interrupted" else "engine_failed"
-                )
+                disposition = "interrupted" if status == "interrupted" else "engine_failed"
                 terminal.append(
                     {
                         "candidate_uid": f"ENGINE_{digest}",
@@ -209,7 +196,8 @@ def finding_status(
     ]
     if any(
         str(issue.get("candidate_disposition") or "").lower() == "confirmed"
-        or str(issue.get("validation_status") or "").lower() in {"validated", "verified", "confirmed"}
+        or str(issue.get("validation_status") or "").lower()
+        in {"validated", "verified", "confirmed"}
         for issue in issue_dicts
     ):
         return "confirmed"
@@ -234,8 +222,7 @@ def finding_status(
         and str(item.get("candidate_disposition") or "").lower()
         not in {"deferred_budget", "engine_failed", "interrupted"}
         and (
-            str(item.get("candidate_disposition") or "").lower()
-            == "needs_review"
+            str(item.get("candidate_disposition") or "").lower() == "needs_review"
             or str(item.get("validation_status") or "").lower()
             in {"needs_review", "uncertain", "unvalidated"}
         )
@@ -261,9 +248,7 @@ def needs_review_count(
 
     def add(item: Mapping[str, Any], *, fallback: str) -> None:
         disposition = str(
-            item.get("candidate_disposition")
-            or item.get("disposition")
-            or ""
+            item.get("candidate_disposition") or item.get("disposition") or ""
         ).lower()
         validation = str(item.get("validation_status") or "").lower()
         if str(item.get("record_role") or "") == "operational_obligation":
@@ -303,26 +288,17 @@ def unresolved_obligation_count(
     """Count security-review and operational obligations without conflating them."""
 
     identities: set[tuple[str, str]] = set()
-    for index, item in enumerate(
-        _dict_items(observations) + _dict_items(terminal_candidates)
-    ):
+    for index, item in enumerate(_dict_items(observations) + _dict_items(terminal_candidates)):
         disposition = str(
-            item.get("candidate_disposition")
-            or item.get("disposition")
-            or ""
+            item.get("candidate_disposition") or item.get("disposition") or ""
         ).lower()
         validation = str(item.get("validation_status") or "").lower()
-        if (
-            disposition
-            not in {
-                "needs_review",
-                "deferred_budget",
-                "engine_failed",
-                "interrupted",
-            }
-            and validation
-            not in {"needs_review", "uncertain", "unvalidated", "pending"}
-        ):
+        if disposition not in {
+            "needs_review",
+            "deferred_budget",
+            "engine_failed",
+            "interrupted",
+        } and validation not in {"needs_review", "uncertain", "unvalidated", "pending"}:
             continue
         for field in (
             "operational_uid",
@@ -344,11 +320,7 @@ def completeness_status(
     state: Mapping[str, Any],
     candidates: Iterable[Any] = (),
 ) -> str:
-    explicit = str(
-        state.get("completeness")
-        or state.get("scan_completeness")
-        or ""
-    ).lower()
+    explicit = str(state.get("completeness") or state.get("scan_completeness") or "").lower()
     if explicit in COMPLETENESS_STATUSES:
         return explicit
     if state.get("interrupted") or state.get("_interrupted"):
@@ -379,8 +351,7 @@ def completeness_status(
     if "failed" in capability_values:
         return "degraded"
     if any(
-        value in {"degraded", "unavailable", "fallback", "pending"}
-        for value in capability_values
+        value in {"degraded", "unavailable", "fallback", "pending"} for value in capability_values
     ):
         return "degraded"
 
@@ -424,10 +395,7 @@ def report_reuse_blockers(
     if not isinstance(manifest, Mapping) or manifest.get("valid") is not True:
         blockers.append("invalid_or_missing_manifest")
         manifest = {}
-    if (
-        str(manifest.get("candidate_schema_version") or "")
-        != CANDIDATE_SCHEMA_VERSION
-    ):
+    if str(manifest.get("candidate_schema_version") or "") != CANDIDATE_SCHEMA_VERSION:
         blockers.append("candidate_schema_mismatch")
 
     unresolved_dispositions = {
@@ -453,15 +421,10 @@ def report_reuse_blockers(
     for collection in candidate_collections:
         for item in _dict_items(collection or []):
             disposition = str(
-                item.get("candidate_disposition")
-                or item.get("disposition")
-                or ""
+                item.get("candidate_disposition") or item.get("disposition") or ""
             ).lower()
             validation = str(item.get("validation_status") or "").lower()
-            if (
-                disposition in unresolved_dispositions
-                or validation in unresolved_validation
-            ):
+            if disposition in unresolved_dispositions or validation in unresolved_validation:
                 blockers.append("unresolved_candidate_terminal")
                 break
         if "unresolved_candidate_terminal" in blockers:
@@ -474,6 +437,7 @@ def report_reuse_blockers(
             "config_hash",
             "model_manifest_hash",
             "knowledge_db_version",
+            "effective_rules_sha256",
         ):
             expected = str(expected_manifest.get(key) or "")
             if not expected:
@@ -517,6 +481,9 @@ def build_run_manifest(
         "source_tree_hash": metadata.get("source_tree_hash") or "",
         "config_hash": metadata.get("config_hash") or "",
         "model_manifest_hash": metadata.get("model_manifest_hash") or "",
+        "effective_rules_sha256": metadata.get("effective_rules_sha256") or "",
+        "rule_catalog": metadata.get("rule_catalog") or {},
+        "rule_candidate_counts": metadata.get("rule_candidate_counts") or {},
         "workflow": metadata.get("workflow") or "",
         "knowledge_db_version": metadata.get("knowledge_db_version") or "",
         "candidate_schema_version": CANDIDATE_SCHEMA_VERSION,
@@ -527,34 +494,22 @@ def build_run_manifest(
         "raw_occurrence_count": int(governance.get("raw_occurrence_count") or 0),
         "raw_projection_count": int(governance.get("raw_projection_count") or 0),
         "unique_security_obligation_count": int(
-            governance.get("unique_security_obligation_count")
-            or needs_review_count
-            or 0
+            governance.get("unique_security_obligation_count") or needs_review_count or 0
         ),
-        "operational_obligation_count": int(
-            governance.get("operational_obligation_count") or 0
-        ),
+        "operational_obligation_count": int(governance.get("operational_obligation_count") or 0),
         "displayed_review_count": int(
             governance.get("displayed_review_count") or needs_review_count or 0
         ),
         "unresolved_obligation_count": int(
-            governance.get("unique_security_obligation_count")
-            or needs_review_count
-            or 0
+            governance.get("unique_security_obligation_count") or needs_review_count or 0
         )
         + int(governance.get("operational_obligation_count") or 0),
-        "grouped_alias_count": int(
-            governance.get("grouped_alias_count") or 0
-        ),
-        "attached_to_confirmed_count": int(
-            governance.get("attached_to_confirmed_count") or 0
-        ),
+        "grouped_alias_count": int(governance.get("grouped_alias_count") or 0),
+        "attached_to_confirmed_count": int(governance.get("attached_to_confirmed_count") or 0),
         "validation_not_completed_count": int(
             governance.get("validation_not_completed_count") or 0
         ),
-        "pending_validation_count": int(
-            governance.get("pending_validation_count") or 0
-        ),
+        "pending_validation_count": int(governance.get("pending_validation_count") or 0),
         "valid": completeness == "complete",
         "resume_lineage": metadata.get("resume_lineage") or [],
         "engine_capabilities": metadata.get("engine_capabilities") or {},
@@ -575,15 +530,11 @@ def apply_report_schema_v2(
 
     raw_terminal_candidates = state.get("candidate_terminal_states")
     terminal_candidates = (
-        list(raw_terminal_candidates)
-        if isinstance(raw_terminal_candidates, (list, tuple))
-        else []
+        list(raw_terminal_candidates) if isinstance(raw_terminal_candidates, (list, tuple)) else []
     )
     terminal_candidates.extend(
         engine_failure_terminal_states(
-            state.get("engine_capabilities")
-            or state.get("backend_capabilities")
-            or {},
+            state.get("engine_capabilities") or state.get("backend_capabilities") or {},
             scope=entry_function,
         )
     )
@@ -606,10 +557,13 @@ def apply_report_schema_v2(
         in {"deferred_budget", "engine_failed", "interrupted"}
     ]
     governance = review_governance_summary(
-        list(observations) + (operational_terminal if canonical_projection else list(terminal_candidates)),
-        canonical_review=[item for item in observations if isinstance(item, Mapping)]
-        if canonical_projection
-        else None,
+        list(observations)
+        + (operational_terminal if canonical_projection else list(terminal_candidates)),
+        canonical_review=(
+            [dict(item) for item in observations if isinstance(item, Mapping)]
+            if canonical_projection
+            else None
+        ),
     )
     invariant = report_invariant_status(
         issues,
@@ -617,9 +571,7 @@ def apply_report_schema_v2(
         terminal_candidates,
         canonical_projection=canonical_projection,
     )
-    if "validation_queue_drained" in state and not bool(
-        state.get("validation_queue_drained")
-    ):
+    if "validation_queue_drained" in state and not bool(state.get("validation_queue_drained")):
         invariant["valid"] = False
         invariant["validation_queue_drained"] = False
     else:
@@ -660,9 +612,7 @@ def apply_report_schema_v2(
         }
     )
     report["run_manifest"]["report_invariant_status"] = invariant
-    report["run_manifest"]["finding_root_count"] = int(
-        state.get("finding_root_count", 0) or 0
-    )
+    report["run_manifest"]["finding_root_count"] = int(state.get("finding_root_count", 0) or 0)
     report["run_manifest"]["finding_root_alias_count"] = int(
         state.get("finding_root_alias_count", 0) or 0
     )
@@ -757,8 +707,7 @@ def report_invariant_status(
     open_validation_count = sum(
         1
         for item in terminal_items
-        if str(item.get("status") or "").lower()
-        in {"pending", "queued", "planned", "running"}
+        if str(item.get("status") or "").lower() in {"pending", "queued", "planned", "running"}
     )
     obligation_uids = {
         str(item.get("obligation_uid") or item.get("candidate_uid") or "")
@@ -780,18 +729,15 @@ def report_invariant_status(
         "terminal_review_count": terminal_review,
         "canonical_validation_group_count": len(clusters),
         "validation_group_alias_count": sum(
-            len(item.get("alias_occurrence_uids") or [])
-            for item in terminal_items
+            len(item.get("alias_occurrence_uids") or []) for item in terminal_items
         ),
         "validator_invocation_count": sum(
-            int(item.get("validation_attempt_count") or 0)
-            for item in terminal_items
+            int(item.get("validation_attempt_count") or 0) for item in terminal_items
         ),
         "rejected_with_proof_count": sum(
             1
             for item in terminal_items
-            if str(item.get("candidate_disposition") or "").lower()
-            == "rejected_with_proof"
+            if str(item.get("candidate_disposition") or "").lower() == "rejected_with_proof"
         ),
         "cluster_fragmentation_count": max(0, len(clusters) - len(obligation_uids)),
         "open_evidence_completion_count": open_completion_count,

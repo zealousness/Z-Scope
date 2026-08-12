@@ -466,10 +466,7 @@ def test_score_report_accepts_suite_specific_fp_audit_classifier() -> None:
         fp_audit_classifier=classify_range_false_positive_record,
     )
 
-    assert (
-        scored["false_positive_audit"]["counts"][FP_AUDIT_FALSE_POSITIVE_SUPPRESS]
-        == 1
-    )
+    assert scored["false_positive_audit"]["counts"][FP_AUDIT_FALSE_POSITIVE_SUPPRESS] == 1
 
 
 def test_issue_matches_additional_function_and_location_anchor() -> None:
@@ -1215,9 +1212,7 @@ def test_release_readiness_passes_every_explicit_hard_gate() -> None:
     }
     assert required_gates == set(readiness["hard_gates"])
     assert all(gate["passed"] for gate in readiness["hard_gates"].values())
-    precision_stats = aggregate["conditions"][CONDITION_FULL_ZSCOPE][
-        "actionable_precision"
-    ]
+    precision_stats = aggregate["conditions"][CONDITION_FULL_ZSCOPE]["actionable_precision"]
     assert precision_stats["bootstrap_ci"]["confidence_level"] == 0.95
     assert precision_stats["bootstrap_ci"]["lower"] == 0.75
     assert precision_stats["bootstrap_ci"]["upper"] == 0.75
@@ -1333,8 +1328,7 @@ def test_paired_improvement_claim_and_frozen_token_baseline() -> None:
 
 def test_improvement_claim_accepts_speed_path_with_at_most_two_point_quality_loss() -> None:
     current = [
-        _release_summary(index, actionable_f1=0.79, wall_time_seconds=75.0)
-        for index in range(1, 6)
+        _release_summary(index, actionable_f1=0.79, wall_time_seconds=75.0) for index in range(1, 6)
     ]
     baseline = [
         _release_summary(index, actionable_f1=0.80, wall_time_seconds=100.0)
@@ -1377,9 +1371,7 @@ def test_formal_matrix_rejects_too_few_or_warm_trials_before_execution(
         )
 
     parser = external_benchmark.build_parser()
-    args = parser.parse_args(
-        ["run-matrix", "--suite-root", str(tmp_path), "--trials", "5"]
-    )
+    args = parser.parse_args(["run-matrix", "--suite-root", str(tmp_path), "--trials", "5"])
     assert args.bootstrap_samples == DEFAULT_BOOTSTRAP_SAMPLES
 
 
@@ -1429,10 +1421,7 @@ def _write_integrity_suite(tmp_path: Path) -> tuple[Path, Path, str]:
     source.parent.mkdir(parents=True)
     benchmark.mkdir(parents=True)
     source.write_text(
-        "int leaky(void) {\n"
-        "  void *p = malloc(8);\n"
-        "  return p != 0;\n"
-        "}\n",
+        "int leaky(void) {\n" "  void *p = malloc(8);\n" "  return p != 0;\n" "}\n",
         encoding="utf-8",
     )
     (benchmark / "entries.json").write_text(
@@ -1459,15 +1448,29 @@ def _write_integrity_suite(tmp_path: Path) -> tuple[Path, Path, str]:
         encoding="utf-8",
     )
     original_config = (
+        "config_version: 2\n"
+        "llms:\n"
+        "  default:\n"
+        '    base_urls: ["http://localhost/v1"]\n'
+        '    models: ["unit-model"]\n'
+        "    api_key: unit-key\n"
         "project:\n"
         f'  root: "{project.as_posix()}"\n'
         "  source_root: .\n"
+        "  language: c_cpp\n"
         '  entry_functions_list: "../benchmark/entries.json"\n'
+        "scan:\n"
+        '  task: ""\n'
         "indexing:\n"
         "  backend: regex\n"
-        "analysis:\n"
-        f'  snapshot_dir: "{(suite_root / "user_snapshots").as_posix()}"\n'
-        "  enable_snapshot_cache: true\n"
+        "concurrency:\n"
+        "  entry_workers: 1\n"
+        "  validator_workers: 1\n"
+        "  investigator_workers: 1\n"
+        "  evidence_completion_workers: 1\n"
+        "  index_workers: 1\n"
+        "  svf_workers: 1\n"
+        "  llm_max_inflight: 1\n"
     )
     (suite_root / "zscope.benchmark.yaml").write_text(original_config, encoding="utf-8")
     return suite_root, source, original_config
@@ -1475,9 +1478,7 @@ def _write_integrity_suite(tmp_path: Path) -> tuple[Path, Path, str]:
 
 def test_artifact_manifest_detects_source_changes(tmp_path: Path) -> None:
     suite_root, source, _original_config = _write_integrity_suite(tmp_path)
-    truth = json.loads(
-        (suite_root / "benchmark" / "ground_truth.json").read_text(encoding="utf-8")
-    )
+    truth = json.loads((suite_root / "benchmark" / "ground_truth.json").read_text(encoding="utf-8"))
     before = build_benchmark_artifact_manifest(suite_root, truth=truth)
 
     source.write_text(source.read_text(encoding="utf-8") + "/* changed */\n", encoding="utf-8")
@@ -1570,10 +1571,14 @@ def test_full_trial_uses_isolated_snapshot_cache_and_records_integrity(
     run_dir = tmp_path / "full_run"
     observed_config: dict[str, str] = {}
 
-    def fake_run(command, **_kwargs):
+    def fake_run(command, **kwargs):
         execution_config = Path(command[command.index("-c") + 1])
         observed_config["path"] = execution_config.as_posix()
         observed_config["text"] = execution_config.read_text(encoding="utf-8")
+        observed_config["developer_mode"] = kwargs["env"]["Z_SCOPE_DEVELOPER_MODE"]
+        runtime_override = Path(kwargs["env"]["Z_SCOPE_RUNTIME_SPEC"])
+        observed_config["runtime_override"] = runtime_override.as_posix()
+        observed_config["runtime_text"] = runtime_override.read_text(encoding="utf-8")
         report = {
             "type": "parallel_analysis_report",
             "summary": {
@@ -1615,8 +1620,10 @@ def test_full_trial_uses_isolated_snapshot_cache_and_records_integrity(
 
     assert (suite_root / "zscope.benchmark.yaml").read_text(encoding="utf-8") == original_config
     assert Path(observed_config["path"]).parent == run_dir
-    assert ".cold_snapshot_cache" in observed_config["text"]
-    assert "user_snapshots" not in observed_config["text"]
+    assert observed_config["text"] == original_config
+    assert observed_config["developer_mode"] == "1"
+    assert Path(observed_config["runtime_override"]).parent == run_dir
+    assert ".cold_snapshot_cache" in observed_config["runtime_text"]
     assert summary["integrity"]["status"] == "passed"
     assert summary["integrity"]["cache_mode"] == "isolated_cold"
     assert summary["artifact_manifest"]["truth_sha256"]

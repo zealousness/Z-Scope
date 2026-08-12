@@ -277,7 +277,11 @@ def test_infer_user_config_defers_svf(monkeypatch, tmp_path: Path) -> None:
             analysis=SimpleNamespace(
                 snapshot_dir=str(tmp_path / "snapshots"),
                 user_config_db=str(tmp_path / "user_config.xlsx"),
-                parallel_workers=3,
+            ),
+            concurrency=SimpleNamespace(
+                svf_workers=2,
+                index_workers=4,
+                llm_max_inflight=3,
             ),
             llms={
                 "default": SimpleNamespace(
@@ -298,16 +302,20 @@ def test_infer_user_config_defers_svf(monkeypatch, tmp_path: Path) -> None:
         "infer_user_config_rows",
         lambda *args, **kwargs: {name: [] for name in SHEET_HEADERS},
     )
+
     def fake_filter_user_config_rows_with_llm(rows, *args, **kwargs):
         captured_filter["kwargs"] = kwargs
-        return (rows, {
-            "reviewed": 0,
-            "kept": 0,
-            "dropped": 0,
-            "revised": 0,
-            "unreviewed": 0,
-            "errors": 0,
-        })
+        return (
+            rows,
+            {
+                "reviewed": 0,
+                "kept": 0,
+                "dropped": 0,
+                "revised": 0,
+                "unreviewed": 0,
+                "errors": 0,
+            },
+        )
 
     monkeypatch.setattr(
         inference_module,
@@ -393,7 +401,9 @@ def test_inference_detects_private_apis_macros_and_many_to_many_pairs(tmp_path: 
     assert "lock_arg=arg1" in locks["VOS_Lock"]["description"]
 
 
-def test_inference_filters_constant_like_names_and_does_not_promote_api_callers(tmp_path: Path) -> None:
+def test_inference_filters_constant_like_names_and_does_not_promote_api_callers(
+    tmp_path: Path,
+) -> None:
     (tmp_path / "api.h").write_text(
         "\n".join(
             [
@@ -704,8 +714,7 @@ def test_inference_moves_dispatcher_and_handler_context_into_user_config(tmp_pat
     rows = infer_user_config_rows(FakeCodeIndex(tmp_path))
     assert "HandleApply" not in {item["symbol_name"] for item in rows["resource"]}
     dispatch_rows = {
-        (item["message_type"], item["handler_name"]): item
-        for item in rows["dispatcher"]
+        (item["message_type"], item["handler_name"]): item for item in rows["dispatcher"]
     }
     assert dispatch_rows[("ZIP_MSG_APPLY", "HandleApply")]["handler_kind"] == "resource_acquire"
     assert dispatch_rows[("ZIP_MSG_APPLY", "HandleApply")]["pair"] == "HandleRelease"

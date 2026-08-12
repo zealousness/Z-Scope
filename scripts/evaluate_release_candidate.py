@@ -18,6 +18,14 @@ except ModuleNotFoundError:  # Direct execution sets sys.path[0] to scripts/.
     from verify_release_version import package_version
 
 ROOT = Path(__file__).resolve().parents[1]
+SCAN_INPUT_ALLOWED_ROOTS = {
+    "cpp": {"src", "include", "internal"},
+    "java": {"src"},
+}
+SCAN_INPUT_ALLOWED_FILES = {
+    "cpp": {"CMakeLists.txt", "README.md"},
+    "java": {"pom.xml", "README.md", "entries.json"},
+}
 CPP_FORMAL_LIMITS = {
     "confirmed_tp": (("confirmed_tp",), ">=", 85.0),
     "confirmed_precision_percent": (
@@ -29,7 +37,7 @@ CPP_FORMAL_LIMITS = {
     "with_review_raw_fp": (("with_review_raw_fp",), "<=", 100.0),
     "needs_review": (("needs_review",), "<=", 150.0),
     "total_tokens": (("total_tokens", "tokens"), "<=", 6_000_000.0),
-    "wall_seconds": (("wall_seconds",), "<=", 3600.0),
+    "scan_wall_seconds": (("scan_wall_seconds", "wall_seconds"), "<=", 3600.0),
 }
 CPP_SEALED_LIMITS = {
     "sealed_confirmed_recall_delta_pp": (
@@ -76,6 +84,53 @@ def _metric_gate_failures(
         if failed:
             failures.append(f"{prefix}_{name}_gate_failed")
     return failures
+
+
+def _validate_scan_input_manifest(
+    run_dir: Path,
+    run: Dict[str, Any],
+    *,
+    language: str,
+) -> bool:
+    """Validate additive v2 input provenance without rejecting historical v2 artifacts."""
+
+    manifest_path = run_dir / "input-manifest.json"
+    if not manifest_path.is_file():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    files = manifest.get("files")
+    if not isinstance(files, list) or manifest.get("manifest_sha256") != run.get(
+        "input_manifest_sha256"
+    ):
+        return False
+    canonical = json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if hashlib.sha256(canonical).hexdigest() != manifest.get("manifest_sha256"):
+        return False
+    observed = []
+    for row in files:
+        if not isinstance(row, dict) or not isinstance(row.get("path"), str):
+            return False
+        relative = Path(row["path"])
+        if relative.is_absolute() or ".." in relative.parts:
+            return False
+        allowed = relative.as_posix() in SCAN_INPUT_ALLOWED_FILES[language] or (
+            bool(relative.parts) and relative.parts[0] in SCAN_INPUT_ALLOWED_ROOTS[language]
+        )
+        if not allowed or "ground_truth" in relative.as_posix().lower():
+            return False
+        actual = run_dir / "scan-input" / relative
+        if not actual.is_file() or _sha256(actual) != row.get("sha256"):
+            return False
+        observed.append(relative.as_posix())
+    actual_files = sorted(
+        path.relative_to(run_dir / "scan-input").as_posix()
+        for path in (run_dir / "scan-input").rglob("*")
+        if path.is_file()
+    )
+    return sorted(observed) == actual_files
 
 
 def _evaluate_formal_artifact(
@@ -127,6 +182,11 @@ def _evaluate_formal_artifact(
         hard_blockers.append(f"{language}:formal_artifact_incomplete")
     if aggregate.get("passed") is not True:
         hard_blockers.append(f"{language}:numeric_gate_failed")
+    current_frontend = aggregate.get("mode") is not None
+    if current_frontend and (
+        aggregate.get("mode") != "formal" or aggregate.get("release_eligible") is not True
+    ):
+        hard_blockers.append(f"{language}:formal_artifact_not_release_eligible")
 
     seen_runs = set()
     for run in runs:
@@ -165,6 +225,26 @@ def _evaluate_formal_artifact(
         )
         if not complete or leaked_truth:
             hard_blockers.append(f"{language}:run_{run_number}_incomplete")
+        if current_frontend:
+            if completeness.get(
+                "input_manifest_present"
+            ) is not True or not _validate_scan_input_manifest(
+                run_dir,
+                run,
+                language=language,
+            ):
+                hard_blockers.append(f"{language}:run_{run_number}_input_manifest_invalid")
+            execution = run.get("execution") if isinstance(run.get("execution"), dict) else {}
+            scan_phase_text = json.dumps(
+                {
+                    key: value
+                    for key, value in execution.items()
+                    if key in {"health_argv", "index_argv", "scan_argv"}
+                },
+                sort_keys=True,
+            ).lower()
+            if "ground_truth" in scan_phase_text or "benchmark/ground_truth" in scan_phase_text:
+                hard_blockers.append(f"{language}:run_{run_number}_truth_isolation_invalid")
         try:
             archived_summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
         except (OSError, ValueError, json.JSONDecodeError):

@@ -39,7 +39,9 @@ def _empty_semantic_overlay() -> Dict[str, Any]:
     }
 
 
-def _candidate_report(project_root: Path, entries_path: Path, *, backend: str = "regex") -> Dict[str, Any]:
+def _candidate_report(
+    project_root: Path, entries_path: Path, *, backend: str = "regex"
+) -> Dict[str, Any]:
     entries = _load_json(entries_path).get("functions", [])
     compile_commands = project_root / "build" / "compile_commands.json"
     index = CodeIndex(
@@ -82,10 +84,7 @@ def _candidate_report(project_root: Path, entries_path: Path, *, backend: str = 
         for callee in impl.get("callees", []):
             if isinstance(callee, dict):
                 callee_name = str(
-                    callee.get("name")
-                    or callee.get("function")
-                    or callee.get("callee")
-                    or ""
+                    callee.get("name") or callee.get("function") or callee.get("callee") or ""
                 ).strip()
             else:
                 callee_name = str(callee or "").strip()
@@ -204,7 +203,10 @@ def _candidate_miss_analysis(
             truth_function = str(vuln.get("function") or "").lower()
             secondary_function = str(vuln.get("secondary_function") or "").lower()
             category = str(vuln.get("category") or "").lower().replace("_", " ").replace("-", " ")
-            keywords = [str(k or "").lower().replace("_", " ").replace("-", " ") for k in vuln.get("keywords", [])]
+            keywords = [
+                str(k or "").lower().replace("_", " ").replace("-", " ")
+                for k in vuln.get("keywords", [])
+            ]
             same_function = bool(truth_function and truth_function in text) or bool(
                 secondary_function and secondary_function in text
             )
@@ -278,7 +280,7 @@ def evaluate_range_regression(
 ) -> Dict[str, Any]:
     benchmark_dir = benchmark_dir or project_root / "benchmark"
     truth_path = truth_path or benchmark_dir / "ground_truth.json"
-    entries_path = entries_path or benchmark_dir / "entries.json"
+    entries_path = entries_path or benchmark_dir / "deterministic_entries.json"
 
     if regex_candidates:
         report = _legacy_regex_candidate_report(project_root, entries_path)
@@ -385,5 +387,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-

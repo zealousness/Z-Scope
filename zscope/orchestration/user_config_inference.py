@@ -96,11 +96,11 @@ RELEASE_CALL_RE = re.compile(
 GLOBAL_DS_RE = re.compile(
     r"\b(g_[A-Za-z0-9_]+|LIST|List|Hash|hash|Map|map|BitMap|Bitmap|RBTree|Tree|ADD|DEL|REMOVE|INSERT)\b"
 )
-LOCK_RE = re.compile(r"(mutex|rwlock|spinlock|pthread_mutex|pthread_rwlock|\bLOCK\b|\bUNLOCK\b)", re.I)
-ERROR_PATH_RE = re.compile(r"\b(return|goto|ERROR|FAIL|ERR|ENOMEM|EINVAL)\b")
-MESSAGE_TYPE_RE = re.compile(
-    r"\b([A-Z][A-Z0-9_]+_(?:MSG|REQUEST|NOTIFY|APPLY|FREE|CLOSE)\w*)\b"
+LOCK_RE = re.compile(
+    r"(mutex|rwlock|spinlock|pthread_mutex|pthread_rwlock|\bLOCK\b|\bUNLOCK\b)", re.I
 )
+ERROR_PATH_RE = re.compile(r"\b(return|goto|ERROR|FAIL|ERR|ENOMEM|EINVAL)\b")
+MESSAGE_TYPE_RE = re.compile(r"\b([A-Z][A-Z0-9_]+_(?:MSG|REQUEST|NOTIFY|APPLY|FREE|CLOSE)\w*)\b")
 LITERAL_PARAM_CALL_RE = re.compile(
     r"\b(?P<callee>[A-Za-z_]\w*)\s*\((?P<args>[^;{}]*\b(?:TRUE|FALSE|true|false|0|1)\b[^;{}]*)\)\s*;",
     re.S,
@@ -154,7 +154,9 @@ class FunctionEvidence:
         )
 
 
-def infer_user_config_rows(code_index: Any, snapshot_dir: Optional[Path] = None) -> Dict[str, List[Dict[str, Any]]]:
+def infer_user_config_rows(
+    code_index: Any, snapshot_dir: Optional[Path] = None
+) -> Dict[str, List[Dict[str, Any]]]:
     """Infer rows for a user config workbook without requiring an LLM call."""
 
     rows: Dict[str, List[Dict[str, Any]]] = {name: [] for name in SHEET_HEADERS}
@@ -187,7 +189,9 @@ def infer_user_config_rows(code_index: Any, snapshot_dir: Optional[Path] = None)
             continue
         code = str(impl.get("code") or "")
         evidence_by_name[name] = _evidence_from_impl(name, impl)
-        body_kind = _classify_body(code, roles) if (name in roles or _should_inspect_body(name)) else ""
+        body_kind = (
+            _classify_body(code, roles) if (name in roles or _should_inspect_body(name)) else ""
+        )
         if body_kind and (name not in roles or _body_role_can_refine(roles[name], body_kind)):
             roles[name] = body_kind
             _add_symbol(
@@ -246,7 +250,9 @@ def infer_user_config_rows(code_index: Any, snapshot_dir: Optional[Path] = None)
             item.get("handler_name", ""),
         ),
     )
-    rows["module_lifecycle"] = sorted(rows["module_lifecycle"], key=lambda item: item["symbol_name"])
+    rows["module_lifecycle"] = sorted(
+        rows["module_lifecycle"], key=lambda item: item["symbol_name"]
+    )
     return rows
 
 
@@ -308,7 +314,7 @@ def filter_user_config_rows_with_llm(
                 decisions.update(batch_decisions)
                 stats["reviewed"] += len(batch_decisions)
 
-    filtered = {name: [] for name in SHEET_HEADERS}
+    filtered: Dict[str, List[Dict[str, Any]]] = {name: [] for name in SHEET_HEADERS}
     dropped_by_sheet: Dict[str, set[str]] = {sheet: set() for sheet in SHEET_HEADERS}
 
     for sheet, sheet_rows in normalized.items():
@@ -412,11 +418,7 @@ def _request_llm_user_config_decisions(
         trace_agent="user_config_infer_filter",
         trace_label="llm_screen_user_config",
     )
-    content = str(
-        response.get("choices", [{}])[0]
-        .get("message", {})
-        .get("content", "")
-    )
+    content = str(response.get("choices", [{}])[0].get("message", {}).get("content", ""))
     parsed_blocks = extract_json_blocks(content)
     decisions: Dict[str, Dict[str, Any]] = {}
     for block in parsed_blocks:
@@ -488,15 +490,17 @@ def _llm_user_config_system_prompt() -> str:
         "- Prefer dropping a noisy candidate over keeping speculative configuration. The workbook "
         "will be manually reviewed later.\n\n"
         "Return exactly one JSON object with this schema:\n"
-        "{ \"items\": [ { \"id\": string, \"action\": \"keep\"|\"drop\"|\"revise\", "
-        "\"kind\": optional string, \"pair\": optional string, \"description\": optional string, "
-        "\"confidence\": optional number, \"generalized_pattern\": optional string, "
-        "\"notes\": string } ] }\n"
+        '{ "items": [ { "id": string, "action": "keep"|"drop"|"revise", '
+        '"kind": optional string, "pair": optional string, "description": optional string, '
+        '"confidence": optional number, "generalized_pattern": optional string, '
+        '"notes": string } ] }\n'
         "No markdown, no prose outside JSON."
     )
 
 
-def _apply_llm_decision(sheet: str, row: Dict[str, Any], decision: Dict[str, Any]) -> Dict[str, Any]:
+def _apply_llm_decision(
+    sheet: str, row: Dict[str, Any], decision: Dict[str, Any]
+) -> Dict[str, Any]:
     updated = dict(row)
     action = str(decision.get("action") or "keep").strip().lower()
     for field in ("kind", "pair", "description"):
@@ -609,7 +613,9 @@ def _symbol_evidence(code_index: Any, symbol: str) -> Dict[str, Any]:
 
 
 def _llm_safe_row(row: Dict[str, Any]) -> Dict[str, Any]:
-    return {key: row.get(key, "") for key in row.keys() if key in set().union(*SHEET_HEADERS.values())}
+    return {
+        key: row.get(key, "") for key in row.keys() if key in set().union(*SHEET_HEADERS.values())
+    }
 
 
 def _candidate_id(sheet: str, idx: int) -> str:
@@ -618,7 +624,7 @@ def _candidate_id(sheet: str, idx: int) -> str:
 
 def _chunks(items: Sequence[Dict[str, Any]], size: int) -> Iterable[List[Dict[str, Any]]]:
     for start in range(0, len(items), size):
-        yield list(items[start:start + size])
+        yield list(items[start : start + size])
 
 
 def _coerce_positive_int(value: Any, default: int) -> int:
@@ -872,7 +878,9 @@ def _infer_pairs(roles: Dict[str, str]) -> List[Dict[str, Any]]:
     pairs: List[Dict[str, Any]] = []
     normalized = {name: _normalize_role(kind) for name, kind in roles.items()}
     resource_acquires = [
-        name for name, kind in normalized.items() if kind in {"allocator", "calloc", "reallocator", "resource_acquire"}
+        name
+        for name, kind in normalized.items()
+        if kind in {"allocator", "calloc", "reallocator", "resource_acquire"}
     ]
     resource_releases = [name for name, kind in normalized.items() if kind == "deallocator"]
     lock_acquires = [name for name, kind in normalized.items() if kind == "lock"]
@@ -943,7 +951,7 @@ def _merge_handler_evidence(
     evidence_by_name: Dict[str, FunctionEvidence],
     known_names: Sequence[str],
 ) -> None:
-    dispatcher_handler_names = set()
+    dispatcher_handler_names: set[str] = set()
     for name in sorted(evidence_by_name):
         evidence = evidence_by_name[name]
         category = _handler_category(evidence)
@@ -1030,7 +1038,9 @@ def _evidence_from_impl(name: str, impl: Dict[str, Any]) -> FunctionEvidence:
     )
 
 
-def _dispatcher_branches(dispatcher: FunctionEvidence, known_names: Sequence[str]) -> List[Tuple[str, str]]:
+def _dispatcher_branches(
+    dispatcher: FunctionEvidence, known_names: Sequence[str]
+) -> List[Tuple[str, str]]:
     known = set(known_names)
     rows: List[Tuple[str, str]] = []
     seen = set()
@@ -1072,7 +1082,7 @@ def _first_known_call(code: str, known_names: set, current_name: str) -> str:
         if callee in ignored:
             continue
         if callee in known_names:
-            return callee
+            return str(callee)
     return ""
 
 
@@ -1116,7 +1126,11 @@ def _dispatcher_description(
     handler_kind: str,
 ) -> str:
     if handler is None:
-        style = "table/function-pointer dispatch" if _looks_like_table_dispatch(dispatcher.code) else "switch/case dispatch"
+        style = (
+            "table/function-pointer dispatch"
+            if _looks_like_table_dispatch(dispatcher.code)
+            else "switch/case dispatch"
+        )
         return (
             f"Dispatcher `{dispatcher.name}` uses {style}. Review branch coverage, duplicate/default handling, "
             "message buffer cleanup, and branch-specific resource ownership."
@@ -1260,7 +1274,10 @@ def _literal_param_calls(code: str) -> List[Tuple[str, str]]:
     for match in LITERAL_PARAM_CALL_RE.finditer(code):
         callee = match.group("callee")
         args = " ".join(match.group("args").split())
-        if any(word in callee.lower() for word in ("close", "free", "release", "remove", "destroy", "delete")):
+        if any(
+            word in callee.lower()
+            for word in ("close", "free", "release", "remove", "destroy", "delete")
+        ):
             calls.append((callee, args))
     return calls[:3]
 
@@ -1295,7 +1312,9 @@ def _call_summary(calls: Sequence[str], fallback: str) -> str:
 
 
 def _looks_like_table_dispatch(code: str) -> bool:
-    return bool(re.search(r"\b(?:handler|dispatch|proc|ops)\w*(?:table|api|map|list|array)\b", code, re.I))
+    return bool(
+        re.search(r"\b(?:handler|dispatch|proc|ops)\w*(?:table|api|map|list|array)\b", code, re.I)
+    )
 
 
 def _first_match(pattern: re.Pattern[str], text: str) -> str:
@@ -1324,7 +1343,11 @@ def _scan_function_like_macros(code_index: Any) -> Iterable[Tuple[str, str]]:
         if not root.exists():
             continue
         for path in root.rglob("*"):
-            if path in seen_files or not path.is_file() or path.suffix.lower() not in SOURCE_SUFFIXES:
+            if (
+                path in seen_files
+                or not path.is_file()
+                or path.suffix.lower() not in SOURCE_SUFFIXES
+            ):
                 continue
             if _skip_path(code_index, path):
                 continue
@@ -1475,7 +1498,9 @@ def _description_for_kind(
 ) -> str:
     params = _parameter_names(name, body, signature)
     param_text = ", ".join(params) if params else "unknown"
-    size_params = [p for p in params if re.search(r"size|len|length|num|count|cnt|bytes|n$", p, re.I)]
+    size_params = [
+        p for p in params if re.search(r"size|len|length|num|count|cnt|bytes|n$", p, re.I)
+    ]
     pointer_params = [p for p in params if re.search(r"ptr|buf|buffer|data|mem|addr|p$", p, re.I)]
     kind = str(kind or "").lower()
     if kind in {"allocator", "calloc", "resource_acquire"}:
@@ -1501,18 +1526,30 @@ def _description_for_kind(
             "failure_values=NULL/review. Return: resized owned resource or failure/null value."
         )
     if kind in {"deallocator", "resource_release"}:
-        target = pointer_params[0] if pointer_params else (params[0] if params else "review released parameter")
+        target = (
+            pointer_params[0]
+            if pointer_params
+            else (params[0] if params else "review released parameter")
+        )
         target_arg = _first_param_ref(params, [target]) if target in params else "review"
         return (
             f"{symbol_type} `{name}` releases resource passed by caller. "
             f"resource_input={target_arg}; Released param: {target}."
         )
     if kind == "lock":
-        lock_obj = pointer_params[0] if pointer_params else (params[0] if params else "review lock parameter")
+        lock_obj = (
+            pointer_params[0]
+            if pointer_params
+            else (params[0] if params else "review lock parameter")
+        )
         lock_arg = _first_param_ref(params, [lock_obj]) if lock_obj in params else "review"
         return f"{symbol_type} `{name}` acquires lock object. lock_arg={lock_arg}; Lock param: {lock_obj}."
     if kind == "unlock":
-        lock_obj = pointer_params[0] if pointer_params else (params[0] if params else "review lock parameter")
+        lock_obj = (
+            pointer_params[0]
+            if pointer_params
+            else (params[0] if params else "review lock parameter")
+        )
         lock_arg = _first_param_ref(params, [lock_obj]) if lock_obj in params else "review"
         return f"{symbol_type} `{name}` releases lock object. lock_arg={lock_arg}; Lock param: {lock_obj}."
     if body:
@@ -1557,7 +1594,9 @@ def _resource_output_ref(name: str, body: str, signature: str) -> str:
     lowered = str(text or "").lower()
     if re.search(r"\bvoid\s+" + re.escape(name).lower() + r"\s*\(", lowered):
         params = _parameter_names(name, body, signature)
-        pointer_like = [p for p in params if re.search(r"out|ret|result|obj|handle|ptr|buf|p$", p, re.I)]
+        pointer_like = [
+            p for p in params if re.search(r"out|ret|result|obj|handle|ptr|buf|p$", p, re.I)
+        ]
         ref = _first_param_ref(params, pointer_like)
         return f"{ref}_deref" if ref else "review"
     return "return"

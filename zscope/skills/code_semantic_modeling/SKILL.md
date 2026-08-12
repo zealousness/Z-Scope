@@ -1,5 +1,6 @@
 ---
 name: code_semantic_modeling
+languages: [c_cpp, java]
 description: Model a C function as a compact reusable semantic snapshot.
 category: modeling
 triggers:

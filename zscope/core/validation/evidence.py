@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from copy import deepcopy
-from typing import Any, Callable, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, cast
 
 from ...common.issue_identity import canonical_issue_key, flatten_issue_text, parse_issue_location
 from ..candidates.evidence_models import build_evidence_models
@@ -30,6 +30,11 @@ VALIDATOR_MISSING_FACT_KINDS = frozenset(
         "type_layout",
     }
 )
+
+
+def _as_dict(value: Any) -> Dict[str, Any]:
+    """Narrow dynamic state/evidence mappings without copying them."""
+    return cast(Dict[str, Any], value) if isinstance(value, dict) else {}
 
 
 def validation_verdict(val_data: Dict[str, Any]) -> str:
@@ -136,23 +141,26 @@ def build_validation_evidence_pack(
     except Exception:
         callees = []
 
-    agent_context = state.get("agent_context") if isinstance(state.get("agent_context"), dict) else {}
+    agent_context = _as_dict(state.get("agent_context"))
     analysis_entry = str(state.get("entry_func") or agent_context.get("func_name") or "").strip()
     issue_entry = str(issue.get("entry_function") or issue.get("analyzed_from") or "").strip()
     candidate_path = issue.get("call_path") or issue.get("call_paths")
-    candidate_evidence = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
+    candidate_evidence = _as_dict(issue.get("evidence_pack"))
+    candidate_path_evidence = _as_dict(candidate_evidence.get("path"))
     entry_custom_prompt = str(agent_context.get("entry_custom_prompt") or "")
     entry_exposure = _entry_exposure_from_prompt(entry_custom_prompt)
-    entry_is_external_root = entry_exposure in {"api", "communication", "thread", "other_user_input"}
+    entry_is_external_root = entry_exposure in {
+        "api",
+        "communication",
+        "thread",
+        "other_user_input",
+    }
     reachable_from_entry = bool(
         issue.get("reachable_from_entry")
         or (analysis_entry and issue_func == analysis_entry)
         or issue_entry
         or candidate_evidence.get("entry_function")
-        or (
-            isinstance(candidate_evidence.get("path"), dict)
-            and candidate_evidence.get("path", {}).get("complete_to_entry")
-        )
+        or (candidate_path_evidence.get("complete_to_entry"))
     )
     validation_requirements = _base_validation_requirements()
     validation_requirements.extend(category_validation_requirements(issue))
@@ -162,15 +170,24 @@ def build_validation_evidence_pack(
         "candidate_id": issue.get("candidate_id") or issue.get("id"),
         "candidate_role": issue.get("candidate_role") or "evidence_only",
         "candidate_is_conclusion": False,
-        "validation_required": issue.get("validation_required", candidate_evidence.get("validation_required", True)),
+        "validation_required": issue.get(
+            "validation_required", candidate_evidence.get("validation_required", True)
+        ),
         "proofs": issue.get("proofs") or candidate_evidence.get("proofs") or {},
         "audit_observation_reason": issue.get("audit_observation_reason")
         or candidate_evidence.get("audit_observation_reason"),
-        "va_unreviewed": bool(issue.get("va_unreviewed") or candidate_evidence.get("va_unreviewed")),
-        "backend_profile": issue.get("backend_profile") or candidate_evidence.get("backend_profile"),
+        "va_unreviewed": bool(
+            issue.get("va_unreviewed") or candidate_evidence.get("va_unreviewed")
+        ),
+        "backend_profile": issue.get("backend_profile")
+        or candidate_evidence.get("backend_profile"),
         "evidence_checker": issue.get("evidence_checker") or candidate_evidence.get("checker"),
-        "evidence_engines": issue.get("evidence_engines") or candidate_evidence.get("evidence_engines") or [],
-        "semantic_overlays": issue.get("semantic_overlays") or candidate_evidence.get("semantic_overlays") or {},
+        "evidence_engines": issue.get("evidence_engines")
+        or candidate_evidence.get("evidence_engines")
+        or [],
+        "semantic_overlays": issue.get("semantic_overlays")
+        or candidate_evidence.get("semantic_overlays")
+        or {},
         "semantic_overlay_evidence": issue.get("semantic_overlay_evidence")
         or candidate_evidence.get("semantic_overlay_evidence")
         or {},
@@ -178,7 +195,9 @@ def build_validation_evidence_pack(
         "defect_class": issue.get("defect_class") or issue.get("subcategory"),
         "rule_confidence": issue.get("rule_confidence"),
         "score_components": issue.get("score_components") or score_components_fn(issue, {}),
-        "evidence_refs": issue.get("evidence_refs") or candidate_evidence.get("evidence_refs") or [],
+        "evidence_refs": issue.get("evidence_refs")
+        or candidate_evidence.get("evidence_refs")
+        or [],
         "finding_summary": {
             "id": issue.get("id"),
             "function": issue_func,
@@ -199,25 +218,30 @@ def build_validation_evidence_pack(
             "entry_is_scan_root": bool(analysis_entry),
             "zero_callers_is_expected_for_entry": bool(analysis_entry),
             "public_trigger": (
-                "Header-declared/configured entry function is an external scan root; "
-                "zero repository callers does not make it dead code."
-            )
-            if entry_is_external_root
-            else (
-                "Configured entry function is the scan root; zero repository callers above "
-                "the selected root is not sufficient dead-code evidence."
+                (
+                    "Header-declared/configured entry function is an external scan root; "
+                    "zero repository callers does not make it dead code."
+                )
+                if entry_is_external_root
+                else (
+                    "Configured entry function is the scan root; zero repository callers above "
+                    "the selected root is not sufficient dead-code evidence."
+                )
             ),
             "issue_entry_function": issue_entry,
             "reachable_from_entry": reachable_from_entry,
             "internal_sink_lifted": bool(issue.get("internal_sink_lifted")),
             "call_path": candidate_path or candidate_evidence.get("call_path"),
-            "candidate_path": candidate_evidence.get("path") if isinstance(candidate_evidence, dict) else {},
+            "candidate_path": candidate_path_evidence,
         },
         "candidate_evidence": candidate_evidence,
-        "evidence_models": issue.get("evidence_models")
-        or build_evidence_models(issue),
-        "positive_evidence": issue.get("positive_evidence") or candidate_evidence.get("positive_evidence") or [],
-        "negative_evidence": issue.get("negative_evidence") or candidate_evidence.get("negative_evidence") or [],
+        "evidence_models": issue.get("evidence_models") or build_evidence_models(issue),
+        "positive_evidence": issue.get("positive_evidence")
+        or candidate_evidence.get("positive_evidence")
+        or [],
+        "negative_evidence": issue.get("negative_evidence")
+        or candidate_evidence.get("negative_evidence")
+        or [],
         "primary_location_snippet": snippet,
         "function_context": {
             "code": trim_code(issue_code, max_lines=140),
@@ -321,12 +345,9 @@ def build_validator_evidence_slice_v2(
             "obligation_uid": issue.get("obligation_uid"),
             "defect_family": issue.get("defect_class") or issue.get("category"),
             "obligation_shape": issue.get("obligation_shape"),
-            "subject_uid": issue.get("resource_identity")
-            or security_obligation.get("subject_uid"),
-            "source_uid": issue.get("source_identity")
-            or security_obligation.get("source_uid"),
-            "sink_uid": issue.get("sink_identity")
-            or security_obligation.get("sink_uid"),
+            "subject_uid": issue.get("resource_identity") or security_obligation.get("subject_uid"),
+            "source_uid": issue.get("source_identity") or security_obligation.get("source_uid"),
+            "sink_uid": issue.get("sink_identity") or security_obligation.get("sink_uid"),
             "function": issue.get("function") or finding.get("function"),
             "location": issue.get("location") or finding.get("location"),
             "category": issue.get("category") or finding.get("category"),
@@ -338,20 +359,16 @@ def build_validator_evidence_slice_v2(
             "entry_identity": issue.get("entry_identity")
             or entry_context.get("current_analysis_entry"),
             "reachable_from_entry": bool(
-                issue.get("reachable_from_entry")
-                or entry_context.get("reachable_from_entry")
+                issue.get("reachable_from_entry") or entry_context.get("reachable_from_entry")
             ),
             "representative_call_path": representative_path,
         },
         "decision_facts": {
             "version": issue.get("decision_fact_version"),
-            "coverage": issue.get("decision_fact_coverage")
-            or fact_slice.get("coverage"),
+            "coverage": issue.get("decision_fact_coverage") or fact_slice.get("coverage"),
             "fact_uids": list(fact_slice.get("fact_uids") or [])[:32],
             "edge_uids": list(fact_slice.get("edge_uids") or [])[:32],
-            "dependency_code_hashes": list(
-                fact_slice.get("dependency_code_hashes") or []
-            )[:8],
+            "dependency_code_hashes": list(fact_slice.get("dependency_code_hashes") or [])[:8],
             "missing_fact_kinds": missing_fact_kinds,
             "deterministic_proofs": [
                 _compact_validation_value(item, max_string_chars=1200)
@@ -423,12 +440,11 @@ def _normalized_missing_fact_kinds(value: Any) -> List[str]:
 
 
 def category_validation_requirements(issue: Dict[str, Any]) -> List[str]:
-    category = str(
-        issue.get("defect_class")
-        or issue.get("subcategory")
-        or issue.get("category")
-        or ""
-    ).replace("-", "_").lower()
+    category = (
+        str(issue.get("defect_class") or issue.get("subcategory") or issue.get("category") or "")
+        .replace("-", "_")
+        .lower()
+    )
     requirements_by_category: Dict[str, List[str]] = {
         "signed_unsigned": [
             "For signed/unsigned conversion, a negative signed return cast to size_t before a copy/IO length is a concrete sink when the pre-cast value is not checked.",
@@ -571,7 +587,9 @@ def trim_code(code: str, max_lines: int = 140) -> str:
         return code
     head = max_lines // 2
     tail = max_lines - head
-    return "\n".join(lines[:head] + ["/* ... trimmed for validator evidence pack ... */"] + lines[-tail:])
+    return "\n".join(
+        lines[:head] + ["/* ... trimmed for validator evidence pack ... */"] + lines[-tail:]
+    )
 
 
 def compact_snapshot(snapshot: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -632,8 +650,7 @@ def _entry_root_reachable(evidence_pack: Dict[str, Any]) -> bool:
     if not isinstance(entry_context, dict):
         return False
     return bool(
-        entry_context.get("entry_is_external_root")
-        and entry_context.get("reachable_from_entry")
+        entry_context.get("entry_is_external_root") and entry_context.get("reachable_from_entry")
     )
 
 

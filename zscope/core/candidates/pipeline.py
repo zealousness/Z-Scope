@@ -121,7 +121,7 @@ class CandidatePipeline:
             summary.setdefault(key, 0)
         for key, value in batch.summary_increment().items():
             summary[key] += value
-        return summary
+        return dict(summary)
 
     def persist(self, batch: CandidateSignalBatch) -> None:
         self._candidate_persister(batch.merged_candidates)

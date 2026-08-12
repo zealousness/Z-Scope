@@ -1,5 +1,6 @@
 ---
 name: concurrency_lock_order
+languages: [c_cpp]
 description: Audit lock balance, inconsistent lock order, and deadlocks.
 category: concurrency
 triggers:

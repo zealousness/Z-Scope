@@ -51,7 +51,7 @@ class DashboardHttpServer:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                 sock.connect(("8.8.8.8", 80))
-                return sock.getsockname()[0]
+                return str(sock.getsockname()[0])
         except OSError:
             try:
                 return socket.gethostbyname(socket.gethostname())

@@ -375,9 +375,7 @@ def test_code_index_file_root_filter_emits_project_relative_paths(tmp_path):
     code_index = CodeIndex(project_root, source_root=source_root)
 
     try:
-        assert code_index.list_functions(limit=20, file_root="net") == [
-            "NetRecv@src/net/net.c:1-1"
-        ]
+        assert code_index.list_functions(limit=20, file_root="net") == ["NetRecv@src/net/net.c:1-1"]
     finally:
         code_index.close()
 
@@ -422,7 +420,7 @@ def test_public_api_prompt_requires_callee_sink_audit():
     assert "concrete vulnerable callee location" in prompt
 
 
-def test_header_file_regex_filter_is_applied_in_entry_discovery_only():
+def test_interface_file_glob_filter_is_applied_in_entry_discovery_only():
     class HeaderCodeIndex(FakeCodeIndex):
         def __init__(self, functions):
             super().__init__(functions)
@@ -443,7 +441,7 @@ def test_header_file_regex_filter_is_applied_in_entry_discovery_only():
     )
     discovery = EntryDiscovery(
         fake_index,
-        header_files=[r"^include/.+_api\.h$"],
+        interface_files=["include/*_api.h"],
     )
 
     result = discovery.discover()
@@ -483,7 +481,7 @@ def test_header_file_glob_filter_only_limits_public_api_discovery():
     )
     discovery = EntryDiscovery(
         fake_index,
-        header_files=["include/*.h"],
+        interface_files=["include/*.h"],
     )
 
     result = discovery.discover()
@@ -512,7 +510,7 @@ def test_header_file_extension_globs_match_h_and_ph_public_api_headers():
                 "IncApi": "int IncApi(void) { return 0; }",
             }
         ),
-        header_files=["*.h", "*.ph"],
+        interface_files=["*.h", "*.ph"],
     )
 
     result = discovery.discover()
@@ -573,14 +571,33 @@ def test_config_loader_accepts_absolute_entry_discovery_search_root(tmp_path):
     config_path.write_text(
         json.dumps(
             {
-                "llms": {"default": {"model": "dummy"}},
+                "config_version": 2,
+                "llms": {
+                    "default": {
+                        "base_urls": ["http://localhost/v1"],
+                        "models": ["dummy"],
+                        "api_key": "test",
+                    }
+                },
                 "project": {
                     "root": str(project_root),
-                    "source_root": str(project_root),
+                    "source_root": ".",
+                    "language": "c_cpp",
                     "entry_discovery": {
                         "enabled": True,
                         "search_root": str(search_root),
                     },
+                },
+                "scan": {"task": ""},
+                "indexing": {"backend": "regex"},
+                "concurrency": {
+                    "entry_workers": 2,
+                    "validator_workers": 2,
+                    "investigator_workers": 1,
+                    "evidence_completion_workers": 2,
+                    "index_workers": 2,
+                    "svf_workers": 1,
+                    "llm_max_inflight": 2,
                 },
             }
         ),
@@ -619,11 +636,7 @@ def test_discovery_keeps_same_name_functions_from_different_files(tmp_path):
     finally:
         code_index.close()
 
-    handles = [
-        candidate
-        for candidate in result.candidates
-        if candidate.function_name == "Handle"
-    ]
+    handles = [candidate for candidate in result.candidates if candidate.function_name == "Handle"]
     assert len(handles) == 2
     assert len(identities) == 2
     assert {identity["file_path"] for identity in identities} == {
@@ -682,14 +695,10 @@ def test_discovery_filters_implementations_outside_active_translation_units(tmp_
     finally:
         code_index.close()
 
-    assert [
-        (candidate.function_name, candidate.file_path)
-        for candidate in result.candidates
-    ] == [("PlatformRecv", "src/platform_linux.c")]
-    assert any(
-        "outside the active compile_commands" in note
-        for note in result.notes
-    )
+    assert [(candidate.function_name, candidate.file_path) for candidate in result.candidates] == [
+        ("PlatformRecv", "src/platform_linux.c")
+    ]
+    assert any("outside the active compile_commands" in note for note in result.notes)
 
 
 def test_discovered_entry_payload_preserves_complete_identity():
@@ -706,9 +715,9 @@ def test_discovered_entry_payload_preserves_complete_identity():
             }
         )
     )
-    discovery.code_index.functions["ReadPacket"]["signature"] = (
-        "int ReadPacket(int fd, unsigned char *buf, size_t len)"
-    )
+    discovery.code_index.functions["ReadPacket"][
+        "signature"
+    ] = "int ReadPacket(int fd, unsigned char *buf, size_t len)"
     payload = discovery.discover().to_entry_functions_payload()
 
     assert payload["functions"][0]["file_path"] == "src/net/packet.c"
@@ -722,8 +731,7 @@ def test_discovered_entry_payload_preserves_complete_identity():
 
 def test_entry_budget_is_stratified_and_marks_deferred_candidates(monkeypatch) -> None:
     candidates = [
-        EntryCandidate(f"Api{index}", "api", confidence=0.99 - index / 100)
-        for index in range(4)
+        EntryCandidate(f"Api{index}", "api", confidence=0.99 - index / 100) for index in range(4)
     ] + [
         EntryCandidate("Receive", "communication", confidence=0.7),
         EntryCandidate("Worker", "thread", confidence=0.7),

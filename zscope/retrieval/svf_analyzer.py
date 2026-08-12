@@ -11,7 +11,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, cast
 
 from ..config.function_entry import FunctionEntry
 from .bitcode_scope import BitcodeScopeConfig
@@ -101,10 +101,15 @@ class SvfAnalyzer:
             )
             old_hash = self._db.get_svf_hash()
             materialization_current = self._materialization_current(project_root)
-            if cache_fingerprint and old_hash in {
-                cache_fingerprint,
-                legacy_cache_fingerprint,
-            } and materialization_current:
+            if (
+                cache_fingerprint
+                and old_hash
+                in {
+                    cache_fingerprint,
+                    legacy_cache_fingerprint,
+                }
+                and materialization_current
+            ):
                 if old_hash == legacy_cache_fingerprint and old_hash != cache_fingerprint:
                     self._db.set_svf_hash(cache_fingerprint)
                 logger.info("SVF incremental: cache fingerprint unchanged; reusing cached data")
@@ -125,9 +130,7 @@ class SvfAnalyzer:
                     len(normalized_entries),
                 )
             else:
-                logger.info(
-                    "SVF incremental: no previous cache fingerprint; building SVF data"
-                )
+                logger.info("SVF incremental: no previous cache fingerprint; building SVF data")
 
             builder = BitcodeBuilder(
                 source_root=source_path,
@@ -243,27 +246,27 @@ class SvfAnalyzer:
         explicit_groups_config: bool = False,
     ) -> Dict[str, Path]:
         """Call BitcodeBuilder with scope kwargs when the implementation supports them."""
+        params: Mapping[str, inspect.Parameter]
         try:
             params = inspect.signature(builder.build).parameters
         except (TypeError, ValueError):
             params = {}
-        supports_scope_kwargs = (
-            "scope_config" in params
-            or any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values())
+        supports_scope_kwargs = "scope_config" in params or any(
+            param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
         )
         if not supports_scope_kwargs:
-            return builder.build(groups=groups)
-        return builder.build(
-            groups=groups,
-            scope_config=self._scope_config,
-            entry_functions=scope_entries,
-            knowledge_db=self._db,
-            project_root=project_root,
-            auto_entry_clusters=(
-                self._scope_config.mode != "full"
-                and bool(scope_entries)
+            return cast(Dict[str, Path], builder.build(groups=groups))
+        return cast(
+            Dict[str, Path],
+            builder.build(
+                groups=groups,
+                scope_config=self._scope_config,
+                entry_functions=scope_entries,
+                knowledge_db=self._db,
+                project_root=project_root,
+                auto_entry_clusters=(self._scope_config.mode != "full" and bool(scope_entries)),
+                saber_groups=True,
             ),
-            saber_groups=True,
         )
 
     def _run_split_svf(
@@ -275,9 +278,7 @@ class SvfAnalyzer:
         wpa_paths = {
             name: path for name, path in bc_paths.items() if not self._is_saber_group(name)
         }
-        saber_paths = {
-            name: path for name, path in bc_paths.items() if self._is_saber_group(name)
-        }
+        saber_paths = {name: path for name, path in bc_paths.items() if self._is_saber_group(name)}
         if hasattr(self._db, "purge_svf_data_except"):
             self._db.purge_svf_data_except(set(wpa_paths) | set(saber_paths))
 
@@ -334,9 +335,13 @@ class SvfAnalyzer:
             pending_paths[group_name] = bc_path
         if not pending_paths:
             return False
-        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="zscope-wpa") as executor:
+        with ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="zscope-wpa"
+        ) as executor:
             futures = {
-                executor.submit(self._run_one_wpa_group, runner, group_name, bc_path, project_root): (
+                executor.submit(
+                    self._run_one_wpa_group, runner, group_name, bc_path, project_root
+                ): (
                     group_name,
                     bc_path,
                 )
@@ -735,9 +740,7 @@ class SvfAnalyzer:
                 return False
             tool = str(item.get("tool") or "")
             group_name = str(item.get("group") or "")
-            raw_marker = self._db.get_metadata(
-                self._materialization_marker_key(tool, group_name)
-            )
+            raw_marker = self._db.get_metadata(self._materialization_marker_key(tool, group_name))
             try:
                 marker = json.loads(raw_marker)
             except (json.JSONDecodeError, TypeError):
@@ -859,9 +862,7 @@ class SvfAnalyzer:
             "heap_limit_mb": self._heap_limit,
             "svf_bin_dir": str(self._svf_bin_dir or ""),
         }
-        return hashlib.sha256(
-            json.dumps(payload, sort_keys=True).encode("utf-8")
-        ).hexdigest()
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
     @staticmethod
     def _file_hash(path: Path) -> str:
@@ -884,7 +885,7 @@ class SvfAnalyzer:
         logger.info("Running WPA analysis for group '%s' using %s", group_name, bc_path)
         group_suffix = f"_{group_name}" if group_name != "default" else ""
         output_dir = project_root / f".zscope_svf{group_suffix}"
-        return runner.run_ander(bc_path, output_dir)
+        return cast(SvfResult, runner.run_ander(bc_path, output_dir))
 
     @staticmethod
     def _load_groups_config(project_root: Path, svf_groups_config: str) -> Dict[str, List[str]]:

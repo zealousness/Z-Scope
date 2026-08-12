@@ -6,6 +6,7 @@ from pathlib import Path
 from zscope.config.config import (
     AgentConfig,
     AnalysisConfig,
+    ConcurrencyConfig,
     IndexingConfig,
     LLMConfig,
     ProjectConfig,
@@ -39,7 +40,6 @@ def _config(
         analysis=AnalysisConfig(
             snapshot_dir=str(tmp_path / "snapshots"),
             user_config_db=str(tmp_path / "user-config"),
-            parallel_workers=1,
             entry_deadline_seconds=entry_budget_seconds,
             scan_deadline_seconds=scan_budget_seconds,
             budget_exhaustion_policy=budget_exhaustion_policy,
@@ -49,6 +49,7 @@ def _config(
             source_root=tmp_path,
             agents=[AgentConfig(name="vulnerability_analyzer", task="audit")],
         ),
+        concurrency=ConcurrencyConfig(entry_workers=1),
     )
 
 
@@ -113,9 +114,7 @@ def test_entry_budget_is_observe_only_and_reported(monkeypatch, tmp_path) -> Non
     assert function_summary["entry_budget_overrun_seconds"] > 0
     assert report["summary"]["entry_budget"]["exceeded_entry_count"] == 1
     assert report["metadata"]["entry_budget"]["exceeded_entry_count"] == 1
-    assert report["summary"]["llm_iteration_budget"][
-        "budget_reached_count"
-    ] == 1
+    assert report["summary"]["llm_iteration_budget"]["budget_reached_count"] == 1
     assert report["summary"]["llm_iteration_budget"]["hard_failure_count"] == 0
 
 
@@ -158,9 +157,7 @@ def test_scan_budget_is_observed_and_all_entries_complete(
     observed_remaining = []
     _install_slow_analyzer(monkeypatch, observed_remaining)
 
-    results = parallel.analyze_function_entries(
-        [FunctionEntry("first"), FunctionEntry("second")]
-    )
+    results = parallel.analyze_function_entries([FunctionEntry("first"), FunctionEntry("second")])
 
     assert set(results) == {"first", "second"}
     assert all(result.verdict == "no_issue_found" for result in results.values())

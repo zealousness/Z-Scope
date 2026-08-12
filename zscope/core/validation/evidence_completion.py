@@ -6,9 +6,19 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Mapping, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional, cast
 
 from .proofs import deterministic_decision_proof
+
+
+def _as_mapping(value: Any) -> Mapping[str, Any]:
+    """Narrow structured evidence while keeping the original mapping."""
+    return cast(Mapping[str, Any], value) if isinstance(value, Mapping) else {}
+
+
+def _as_list(value: Any) -> list[Any]:
+    """Narrow repeated list-valued evidence fields for static checking."""
+    return cast(list[Any], value) if isinstance(value, list) else []
 
 
 @dataclass(frozen=True)
@@ -82,8 +92,7 @@ class EvidenceCompletionQueue:
         # positive proof is still evidence of a real obligation.
         if issue.get("blocking_negative_evidence") is True:
             proofs = [
-                proof for proof in proofs
-                if str(proof.get("outcome") or "").lower() != "reject"
+                proof for proof in proofs if str(proof.get("outcome") or "").lower() != "reject"
             ]
         if proofs:
             existing = issue.get("deterministic_proofs")
@@ -100,9 +109,9 @@ class EvidenceCompletionQueue:
             issue["evidence_completion_status"] = "exhausted"
             issue["evidence_completion_terminal_status"] = "exhausted"
             issue["evidence_completion_missing_fact"] = request.missing_fact
-        issue["evidence_completion_attempt_count"] = int(
-            issue.get("evidence_completion_attempt_count") or 0
-        ) + 1
+        issue["evidence_completion_attempt_count"] = (
+            int(issue.get("evidence_completion_attempt_count") or 0) + 1
+        )
         return request
 
     def complete_prevalidation(
@@ -134,8 +143,7 @@ class EvidenceCompletionQueue:
         # positive proof is still evidence of a real obligation.
         if issue.get("blocking_negative_evidence") is True:
             proofs = [
-                proof for proof in proofs
-                if str(proof.get("outcome") or "").lower() != "reject"
+                proof for proof in proofs if str(proof.get("outcome") or "").lower() != "reject"
             ]
         if not proofs:
             issue.setdefault("prevalidation_fact_completion", "not_applicable")
@@ -145,11 +153,7 @@ class EvidenceCompletionQueue:
             issue["deterministic_proofs"] = existing
         authoritative_existing = self._authoritative_completion_proofs(
             issue,
-            (
-                item
-                for item in existing
-                if isinstance(item, Mapping)
-            ),
+            (item for item in existing if isinstance(item, Mapping)),
         )
         known = {
             (str(item.get("outcome") or ""), str(item.get("proof_kind") or ""))
@@ -163,9 +167,9 @@ class EvidenceCompletionQueue:
         issue["prevalidation_fact_completion"] = "completed_with_proof"
         issue["evidence_completion_status"] = "completed"
         issue["evidence_completion_terminal_status"] = "completed_with_proof"
-        issue["evidence_completion_attempt_count"] = int(
-            issue.get("evidence_completion_attempt_count") or 0
-        ) + 1
+        issue["evidence_completion_attempt_count"] = (
+            int(issue.get("evidence_completion_attempt_count") or 0) + 1
+        )
         return True
 
     @staticmethod
@@ -185,15 +189,11 @@ class EvidenceCompletionQueue:
         accepted: list[Dict[str, Any]] = []
         for raw_proof in proofs:
             proof = dict(raw_proof)
-            outcome = str(
-                proof.get("outcome") or proof.get("decision") or ""
-            ).lower()
+            outcome = str(proof.get("outcome") or proof.get("decision") or "").lower()
             normalized_outcome = (
                 "reject"
                 if outcome in {"reject", "rejected"}
-                else "confirm"
-                if outcome in {"confirm", "confirmed"}
-                else ""
+                else "confirm" if outcome in {"confirm", "confirmed"} else ""
             )
             if not normalized_outcome:
                 continue
@@ -208,10 +208,13 @@ class EvidenceCompletionQueue:
                 clean_pack.pop("decision_proofs", None)
                 clean_pack.pop("proofs", None)
                 trial["evidence_pack"] = clean_pack
-            if deterministic_decision_proof(
-                trial,
-                outcome=normalized_outcome,
-            ) is not None:
+            if (
+                deterministic_decision_proof(
+                    trial,
+                    outcome=normalized_outcome,
+                )
+                is not None
+            ):
                 accepted.append(proof)
         return accepted
 
@@ -220,7 +223,7 @@ class EvidenceCompletionQueue:
         issue: Mapping[str, Any],
         validation_evidence: Optional[Mapping[str, Any]] = None,
     ) -> Iterable[Dict[str, Any]]:
-        pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), Mapping) else {}
+        pack = _as_mapping(issue.get("evidence_pack"))
         values = (
             issue.get("evidence_completion_proofs"),
             pack.get("evidence_completion_proofs"),
@@ -328,9 +331,11 @@ class EvidenceCompletionQueue:
             )
             if incomplete_cleanup_proof is not None:
                 yield incomplete_cleanup_proof
-            lifecycle_protocol_proof = EvidenceCompletionQueue._lifecycle_protocol_confirmation_proof(
-                issue,
-                validation_evidence,
+            lifecycle_protocol_proof = (
+                EvidenceCompletionQueue._lifecycle_protocol_confirmation_proof(
+                    issue,
+                    validation_evidence,
+                )
             )
             if lifecycle_protocol_proof is not None:
                 yield lifecycle_protocol_proof
@@ -365,16 +370,16 @@ class EvidenceCompletionQueue:
     ) -> Optional[Dict[str, Any]]:
         ast_cfg, path, events = EvidenceCompletionQueue._ast_pack(issue)
         allocations = [
-            event for event in events
+            event
+            for event in events
             if str(event.get("kind") or "").lower() == "unbounded_allocation"
         ]
         if not allocations or path.get("complete_in_function") is not True:
             return None
         allocations = [
-            event for event in allocations
-            if EvidenceCompletionQueue._allocation_call_names(
-                str(event.get("expression") or "")
-            )
+            event
+            for event in allocations
+            if EvidenceCompletionQueue._allocation_call_names(str(event.get("expression") or ""))
             and re.search(r"(?:=|\breturn\b)", str(event.get("expression") or ""))
         ]
         if not allocations:
@@ -385,7 +390,8 @@ class EvidenceCompletionQueue:
         if not code:
             code = str(issue.get("code_snippet") or "")
         allocations = [
-            event for event in allocations
+            event
+            for event in allocations
             if EvidenceCompletionQueue._allocation_source_bound_to_parameters(
                 event,
                 code,
@@ -395,14 +401,14 @@ class EvidenceCompletionQueue:
             return None
         function = str(issue.get("function") or path.get("function") or "")
         call_edges = [
-            edge for edge in path.get("call_edges") or []
+            edge
+            for edge in path.get("call_edges") or []
             if isinstance(edge, Mapping) and str(edge.get("callee") or "") == function
         ]
         external_edges = []
         for edge in call_edges:
             mappings = [
-                item for item in edge.get("parameter_mapping") or []
-                if isinstance(item, Mapping)
+                item for item in edge.get("parameter_mapping") or [] if isinstance(item, Mapping)
             ]
             if any(item.get("source_parameter") for item in mappings):
                 caller = edge.get("guard_summary")
@@ -414,7 +420,9 @@ class EvidenceCompletionQueue:
                     for item in caller_side.get("checks") or []
                     if isinstance(item, Mapping)
                 ]
-                if not any(EvidenceCompletionQueue._terminating_upper_bound(check) for check in checks):
+                if not any(
+                    EvidenceCompletionQueue._terminating_upper_bound(check) for check in checks
+                ):
                     external_edges.append(edge)
         if not external_edges:
             return None
@@ -452,7 +460,8 @@ class EvidenceCompletionQueue:
     ) -> Optional[Dict[str, Any]]:
         ast_cfg, path, events = EvidenceCompletionQueue._ast_pack(issue)
         arithmetic = [
-            event for event in events
+            event
+            for event in events
             if str(event.get("kind") or "").lower() == "integer_size_arithmetic"
         ]
         if not arithmetic or path.get("complete_in_function") is not True:
@@ -490,7 +499,9 @@ class EvidenceCompletionQueue:
             ],
             summary="unchecked allocation-size arithmetic is evaluated before any overflow guard and reaches the allocator",
             scope="complete intraprocedural allocation expression",
-            subject_identity=EvidenceCompletionQueue._normalize_symbol(event.get("variable") or expression),
+            subject_identity=EvidenceCompletionQueue._normalize_symbol(
+                event.get("variable") or expression
+            ),
         )
 
     @staticmethod
@@ -515,7 +526,8 @@ class EvidenceCompletionQueue:
             for value in (path if isinstance(path, (list, tuple)) else [path])
         ]
         signal_roots = [
-            value for value in signatures
+            value
+            for value in signatures
             if re.search(r"\(\s*int\s+\w*sig\w*\s*,\s*void\s*\*", value, re.IGNORECASE)
         ]
         if not signal_roots:
@@ -561,7 +573,10 @@ class EvidenceCompletionQueue:
         if str(issue.get("rule") or "").lower() != "clang_cfg_system_with_nonliteral_command":
             return None
         ast_cfg, path, events = EvidenceCompletionQueue._ast_pack(issue)
-        if path.get("complete_in_function") is not True or path.get("complete_to_entry") is not True:
+        if (
+            path.get("complete_in_function") is not True
+            or path.get("complete_to_entry") is not True
+        ):
             return None
         sinks = [
             event
@@ -588,9 +603,7 @@ class EvidenceCompletionQueue:
             # the immutable entry identity still contains the full signature.
             # This fallback makes offline replay equivalent to live routing
             # without consulting a model or reconstructing broad source text.
-            parameters = EvidenceCompletionQueue._function_parameter_names(
-                f"{entry_identity} {{"
-            )
+            parameters = EvidenceCompletionQueue._function_parameter_names(f"{entry_identity} {{")
         if source not in parameters:
             return None
         sanitizer_kinds = {
@@ -608,7 +621,11 @@ class EvidenceCompletionQueue:
         ]
         if any(
             source in guard
-            and re.search(r"\b(?:sanitize|escape|allowlist|validate_(?:command|shell))\w*\s*\(", guard, re.IGNORECASE)
+            and re.search(
+                r"\b(?:sanitize|escape|allowlist|validate_(?:command|shell))\w*\s*\(",
+                guard,
+                re.IGNORECASE,
+            )
             for guard in guards
         ):
             return None
@@ -647,15 +664,14 @@ class EvidenceCompletionQueue:
         if str(issue.get("rule") or "").lower() != "clang_cfg_callback_while_lock_held":
             return None
         ast_cfg, path, events = EvidenceCompletionQueue._ast_pack(issue)
-        if path.get("complete_in_function") is not True or path.get("complete_to_entry") is not True:
+        if (
+            path.get("complete_in_function") is not True
+            or path.get("complete_to_entry") is not True
+        ):
             return None
-        lock_events = [
-            item for item in events if str(item.get("kind") or "").lower() == "lock"
-        ]
+        lock_events = [item for item in events if str(item.get("kind") or "").lower() == "lock"]
         callback_events = [
-            item
-            for item in events
-            if str(item.get("kind") or "").lower() == "callback_call"
+            item for item in events if str(item.get("kind") or "").lower() == "callback_call"
         ]
         if len(lock_events) != 1 or len(callback_events) != 1:
             return None
@@ -736,7 +752,10 @@ class EvidenceCompletionQueue:
                 r"\b(?:UNLOCK|pthread_mutex_unlock)\s*\(\s*&?([^)]+)\)",
                 statement,
             )
-            if unlock and EvidenceCompletionQueue._normalize_symbol(unlock.group(1)) == lock_identity:
+            if (
+                unlock
+                and EvidenceCompletionQueue._normalize_symbol(unlock.group(1)) == lock_identity
+            ):
                 unlock_line = int(numbered.group(1))
                 break
         if unlock_line <= callback_line:
@@ -759,7 +778,12 @@ class EvidenceCompletionQueue:
             "producer_engine": "clang_lock_callback_contract_v12",
             "proof_version": "zscope.decision-proof.v4",
             "fact_ids": fact_ids,
-            "cfg_nodes": [str(lock_line), str(assignment_line), str(callback_line), str(unlock_line)],
+            "cfg_nodes": [
+                str(lock_line),
+                str(assignment_line),
+                str(callback_line),
+                str(unlock_line),
+            ],
             "subject_identity": callback_identity,
             "code_hash": EvidenceCompletionQueue._code_hash(code, issue),
             "facts": [
@@ -840,13 +864,16 @@ class EvidenceCompletionQueue:
         if path.get("complete_in_function") is not True:
             return None
         acquisitions = [
-            event for event in events
+            event
+            for event in events
             if str(event.get("kind") or "").lower() in {"acquire", "allocation", "resource_acquire"}
             and event.get("success_path", True) is not False
         ]
         exits = [
-            event for event in events
-            if str(event.get("kind") or "").lower() in {"exit_without_release", "return_without_release"}
+            event
+            for event in events
+            if str(event.get("kind") or "").lower()
+            in {"exit_without_release", "return_without_release"}
         ]
         if len(acquisitions) != 1 or not exits:
             return None
@@ -858,12 +885,14 @@ class EvidenceCompletionQueue:
         if not subject:
             return None
         release_or_transfer = [
-            event for event in events
+            event
+            for event in events
             if str(event.get("kind") or "").lower()
             in {"release", "free", "ownership_transfer", "return_transfer", "container_transfer"}
             and EvidenceCompletionQueue._normalize_symbol(
                 event.get("access_path") or event.get("field_path") or event.get("variable")
-            ) == subject
+            )
+            == subject
         ]
         if release_or_transfer:
             return None
@@ -949,20 +978,25 @@ class EvidenceCompletionQueue:
         validation_evidence: Optional[Mapping[str, Any]],
     ) -> Optional[Dict[str, Any]]:
         ast_cfg, path, events = EvidenceCompletionQueue._ast_pack(issue)
-        if not any(str(event.get("kind") or "").lower() == "unbounded_allocation" for event in events):
+        if not any(
+            str(event.get("kind") or "").lower() == "unbounded_allocation" for event in events
+        ):
             return None
         if path.get("complete_to_entry") is not True:
             return None
         function = str(issue.get("function") or path.get("function") or "")
         edges = [
-            edge for edge in path.get("call_edges") or []
+            edge
+            for edge in path.get("call_edges") or []
             if isinstance(edge, Mapping) and str(edge.get("callee") or "") == function
         ]
         if not edges:
             return None
         bounded = []
         for edge in edges:
-            mappings = [item for item in edge.get("parameter_mapping") or [] if isinstance(item, Mapping)]
+            mappings = [
+                item for item in edge.get("parameter_mapping") or [] if isinstance(item, Mapping)
+            ]
             if not mappings:
                 return None
             arguments = [str(item.get("actual") or "") for item in mappings]
@@ -979,11 +1013,17 @@ class EvidenceCompletionQueue:
                 for item in caller.get("checks") or []
                 if isinstance(item, Mapping)
             ]
-            guarded = any(EvidenceCompletionQueue._terminating_upper_bound(check) for check in checks)
+            guarded = any(
+                EvidenceCompletionQueue._terminating_upper_bound(check) for check in checks
+            )
             if not constant and not guarded:
                 return None
             bounded.append(edge)
-        event = next(event for event in events if str(event.get("kind") or "").lower() == "unbounded_allocation")
+        event = next(
+            event
+            for event in events
+            if str(event.get("kind") or "").lower() == "unbounded_allocation"
+        )
         return EvidenceCompletionQueue._proof_from_ast(
             issue,
             outcome="reject",
@@ -1001,8 +1041,8 @@ class EvidenceCompletionQueue:
         issue: Mapping[str, Any],
         validation_evidence: Optional[Mapping[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), Mapping) else {}
-        proof_facts = pack.get("proof_facts") if isinstance(pack.get("proof_facts"), Mapping) else {}
+        pack = _as_mapping(issue.get("evidence_pack"))
+        proof_facts = _as_mapping(pack.get("proof_facts"))
         if not (
             proof_facts.get("allocation_capacity_covers_sink") is True
             and proof_facts.get("signedness_safe") is True
@@ -1031,7 +1071,9 @@ class EvidenceCompletionQueue:
         ast_cfg, path, events = EvidenceCompletionQueue._ast_pack(issue)
         if path.get("complete_in_function") is not True:
             return None
-        arrays = [event for event in events if str(event.get("kind") or "").lower() == "fixed_array"]
+        arrays = [
+            event for event in events if str(event.get("kind") or "").lower() == "fixed_array"
+        ]
         loops = [event for event in events if str(event.get("kind") or "").lower() == "count_loop"]
         if len(arrays) != 1 or len(loops) != 1:
             return None
@@ -1039,7 +1081,10 @@ class EvidenceCompletionQueue:
         bound = str(loops[0].get("api") or "")
         constraints = [str(value) for value in path.get("path_constraints") or []]
         guarded = any(
-            capacity and bound and capacity in value and bound in value
+            capacity
+            and bound
+            and capacity in value
+            and bound in value
             and re.search(r"(?:>|>=)", value)
             for value in constraints
         )
@@ -1062,9 +1107,9 @@ class EvidenceCompletionQueue:
         issue: Mapping[str, Any],
         validation_evidence: Optional[Mapping[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), Mapping) else {}
+        pack = _as_mapping(issue.get("evidence_pack"))
         ownership = pack.get("ownership")
-        ownership = ownership if isinstance(ownership, Mapping) else {}
+        ownership = _as_mapping(ownership)
         if not (
             ownership.get("all_exits_release_or_transfer") is True
             and ownership.get("field_sensitive_object")
@@ -1091,10 +1136,14 @@ class EvidenceCompletionQueue:
         validation_evidence: Optional[Mapping[str, Any]],
     ) -> Optional[Dict[str, Any]]:
         ast_cfg, path, events = EvidenceCompletionQueue._ast_pack(issue)
-        accesses = [event for event in events if str(event.get("kind") or "").lower() == "shared_state_access"]
-        pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), Mapping) else {}
+        accesses = [
+            event
+            for event in events
+            if str(event.get("kind") or "").lower() == "shared_state_access"
+        ]
+        pack = _as_mapping(issue.get("evidence_pack"))
         concurrency = pack.get("concurrency")
-        concurrency = concurrency if isinstance(concurrency, Mapping) else {}
+        concurrency = _as_mapping(concurrency)
         if len(accesses) != 1 or path.get("complete_in_function") is not True:
             return None
         if concurrency.get("project_access_set_complete") is not True:
@@ -1144,7 +1193,9 @@ class EvidenceCompletionQueue:
         expression = str(event.get("expression") or "")
         lhs = expression.split("=", 1)[0].strip() if "=" in expression else ""
         match = re.search(r"([A-Za-z_]\w*(?:(?:->|\.)[A-Za-z_]\w*)*)\s*$", lhs)
-        return EvidenceCompletionQueue._normalize_symbol(match.group(1) if match else event.get("variable"))
+        return EvidenceCompletionQueue._normalize_symbol(
+            match.group(1) if match else event.get("variable")
+        )
 
     @staticmethod
     def _exact_allocation_copy_v12_rejection_proof(
@@ -1153,27 +1204,36 @@ class EvidenceCompletionQueue:
     ) -> Optional[Dict[str, Any]]:
         """Reject a narrowed-copy lead when both operations use one exact length."""
 
-        if str(issue.get("rule") or "").lower() != "clang_cfg_narrowed_allocation_original_length_copy":
+        if (
+            str(issue.get("rule") or "").lower()
+            != "clang_cfg_narrowed_allocation_original_length_copy"
+        ):
             return None
         _ast_cfg, path, events = EvidenceCompletionQueue._ast_pack(issue)
         if path.get("complete_in_function") is not True:
             return None
         allocations = [
-            item for item in events
+            item
+            for item in events
             if str(item.get("kind") or "").lower() == "narrowed_heap_allocation"
         ]
         copies = [
-            item for item in events
+            item
+            for item in events
             if str(item.get("kind") or "").lower() == "original_length_heap_copy"
         ]
         for allocation in allocations:
             allocated_object = EvidenceCompletionQueue._normalize_symbol(allocation.get("variable"))
-            allocated_length = EvidenceCompletionQueue._normalized_value_expression(allocation.get("api"))
+            allocated_length = EvidenceCompletionQueue._normalized_value_expression(
+                allocation.get("api")
+            )
             if not allocated_object or not allocated_length:
                 continue
             for copied in copies:
                 copied_object = EvidenceCompletionQueue._normalize_symbol(copied.get("variable"))
-                copied_length = EvidenceCompletionQueue._normalized_value_expression(copied.get("api"))
+                copied_length = EvidenceCompletionQueue._normalized_value_expression(
+                    copied.get("api")
+                )
                 if allocated_object != copied_object or allocated_length != copied_length:
                     continue
                 return EvidenceCompletionQueue._proof_from_ast(
@@ -1218,7 +1278,9 @@ class EvidenceCompletionQueue:
             depth -= text.count("}")
             brace_depths.append(depth)
             depth += text.count("{")
-        for acquisition in (item for item in events if str(item.get("kind") or "").lower() == "acquire"):
+        for acquisition in (
+            item for item in events if str(item.get("kind") or "").lower() == "acquire"
+        ):
             subject = EvidenceCompletionQueue._event_lvalue(acquisition)
             acquire_text = str(acquisition.get("expression") or "").strip()
             if not subject or not acquire_text:
@@ -1233,7 +1295,8 @@ class EvidenceCompletionQueue:
             source_line_base = acquire_line - acquire_index
             escaped = re.escape(subject).replace(r"\->", r"\s*->\s*").replace(r"\.", r"\s*\.\s*")
             exits = [
-                item for item in events
+                item
+                for item in events
                 if str(item.get("kind") or "").lower() == "exit"
                 and int(item.get("line") or 0) > int(acquisition.get("line") or 0)
             ]
@@ -1286,7 +1349,10 @@ class EvidenceCompletionQueue:
     ) -> Optional[Dict[str, Any]]:
         """Reject a parent cleanup lead on a failed member acquisition branch."""
 
-        if str(issue.get("rule") or "").lower() != "clang_cfg_parent_release_without_owned_member_cleanup":
+        if (
+            str(issue.get("rule") or "").lower()
+            != "clang_cfg_parent_release_without_owned_member_cleanup"
+        ):
             return None
         _ast_cfg, path, events = EvidenceCompletionQueue._ast_pack(issue)
         if path.get("complete_in_function") is not True:
@@ -1309,7 +1375,7 @@ class EvidenceCompletionQueue:
         assignment = re.search(
             rf"(?P<member>{re.escape(parent)}\s*->\s*[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)*)"
             r"\s*=\s*[^;]*(?:alloc|dup|open|create)[A-Za-z_0-9]*\s*\([^;]*;",
-            code[parent_zeroed.end():],
+            code[parent_zeroed.end() :],
             re.IGNORECASE,
         )
         if assignment is None:
@@ -1366,10 +1432,16 @@ class EvidenceCompletionQueue:
         if not pointer_parameters:
             return None
         exits = [item for item in events if str(item.get("kind") or "").lower() == "exit"]
-        success_exits = [item for item in exits if re.search(r"\breturn\s+0\s*;", str(item.get("expression") or ""))]
+        success_exits = [
+            item
+            for item in exits
+            if re.search(r"\breturn\s+0\s*;", str(item.get("expression") or ""))
+        ]
         if not success_exits:
             return None
-        for acquisition in (item for item in events if str(item.get("kind") or "").lower() == "acquire"):
+        for acquisition in (
+            item for item in events if str(item.get("kind") or "").lower() == "acquire"
+        ):
             subject = EvidenceCompletionQueue._event_lvalue(acquisition)
             parent = subject.split("->", 1)[0] if "->" in subject else ""
             if parent not in pointer_parameters:
@@ -1398,7 +1470,10 @@ class EvidenceCompletionQueue:
     ) -> Optional[Dict[str, Any]]:
         """Propagate a terminating upper bound through one local size expression."""
 
-        if str(issue.get("rule") or "").lower() != "clang_cfg_external_size_allocation_without_limit":
+        if (
+            str(issue.get("rule") or "").lower()
+            != "clang_cfg_external_size_allocation_without_limit"
+        ):
             return None
         ast_cfg, path, events = EvidenceCompletionQueue._ast_pack(issue)
         if path.get("complete_in_function") is not True:
@@ -1406,10 +1481,16 @@ class EvidenceCompletionQueue:
         code = EvidenceCompletionQueue._function_code(validation_evidence, issue)
         if not code or len(code) > 64 * 1024:
             return None
-        allocations = [item for item in events if str(item.get("kind") or "").lower() == "unbounded_allocation"]
-        returns = (ast_cfg.get("scope_summary") or {}).get("return_lines") if isinstance(ast_cfg.get("scope_summary"), Mapping) else []
-        returns = returns if isinstance(returns, list) else []
-        guards = ast_cfg.get("condition_guards") if isinstance(ast_cfg.get("condition_guards"), list) else []
+        allocations = [
+            item for item in events if str(item.get("kind") or "").lower() == "unbounded_allocation"
+        ]
+        returns = (
+            (ast_cfg.get("scope_summary") or {}).get("return_lines")
+            if isinstance(ast_cfg.get("scope_summary"), Mapping)
+            else []
+        )
+        returns = _as_list(returns)
+        guards = _as_list(ast_cfg.get("condition_guards"))
         for allocation in allocations:
             derived = EvidenceCompletionQueue._normalize_symbol(allocation.get("variable"))
             allocation_line = int(allocation.get("line") or 0)
@@ -1421,9 +1502,9 @@ class EvidenceCompletionQueue:
             value = assignment.group("value")
             dynamic_value = re.sub(r"\bsizeof\s*\([^)]*\)", "", value)
             sources = {
-                token for token in re.findall(r"\b[A-Za-z_]\w*\b", dynamic_value)
-                if token not in {"sizeof", "size_t", "uint32_t", "uint64_t"}
-                and not token.isupper()
+                token
+                for token in re.findall(r"\b[A-Za-z_]\w*\b", dynamic_value)
+                if token not in {"sizeof", "size_t", "uint32_t", "uint64_t"} and not token.isupper()
             }
             if len(sources) != 1:
                 continue
@@ -1433,11 +1514,18 @@ class EvidenceCompletionQueue:
                     continue
                 guard_line = int(guard.get("line") or 0)
                 condition = str(guard.get("condition") or "")
-                if not re.search(rf"\b{re.escape(source)}\s*>\s*(?:[A-Z][A-Z0-9_]*|\d+)\b", condition):
+                if not re.search(
+                    rf"\b{re.escape(source)}\s*>\s*(?:[A-Z][A-Z0-9_]*|\d+)\b", condition
+                ):
                     continue
-                if not (guard_line < allocation_line and any(
-                    guard_line < int(line) <= guard_line + 3 for line in returns if isinstance(line, int)
-                )):
+                if not (
+                    guard_line < allocation_line
+                    and any(
+                        guard_line < int(line) <= guard_line + 3
+                        for line in returns
+                        if isinstance(line, int)
+                    )
+                ):
                     continue
                 return EvidenceCompletionQueue._proof_from_ast(
                     issue,
@@ -1445,7 +1533,11 @@ class EvidenceCompletionQueue:
                     proof_kind="terminating_allocation_upper_bound",
                     producer_engine="clang_value_relation_v12",
                     events=[guard, allocation],
-                    facts=["explicit_upper_bound", "terminating_guard", "guard_dominates_allocation"],
+                    facts=[
+                        "explicit_upper_bound",
+                        "terminating_guard",
+                        "guard_dominates_allocation",
+                    ],
                     summary="a terminating upper bound on the sole dynamic source propagates to the derived allocation size",
                     scope="complete local bound-to-allocation relation",
                     subject_identity=derived,
@@ -1503,19 +1595,24 @@ class EvidenceCompletionQueue:
                     leaks[0].get("variable")
                 ).replace("->", ".")
                 owner = member.rsplit(".", 1)[0] if "." in member else ""
-                if owner and re.search(
-                    rf"\b(?:safe_free|free|release|destroy)\s*\(\s*{re.escape(owner)}\s*\)",
-                    code,
-                    re.IGNORECASE,
-                ) and not re.search(
-                    rf"\b(?:safe_free|free|release|destroy)\s*\(\s*{re.escape(member.replace('.', '->'))}\s*\)",
-                    code,
-                    re.IGNORECASE,
-                ) and re.search(
-                    rf"\b{re.escape(member.replace('.', '->'))}\s*=\s*"
-                    r"(?:[A-Za-z_]\w*\s*\()?[^;]*(?:alloc|dup|open|create)[A-Za-z_0-9]*\s*\(",
-                    code,
-                    re.IGNORECASE,
+                if (
+                    owner
+                    and re.search(
+                        rf"\b(?:safe_free|free|release|destroy)\s*\(\s*{re.escape(owner)}\s*\)",
+                        code,
+                        re.IGNORECASE,
+                    )
+                    and not re.search(
+                        rf"\b(?:safe_free|free|release|destroy)\s*\(\s*{re.escape(member.replace('.', '->'))}\s*\)",
+                        code,
+                        re.IGNORECASE,
+                    )
+                    and re.search(
+                        rf"\b{re.escape(member.replace('.', '->'))}\s*=\s*"
+                        r"(?:[A-Za-z_]\w*\s*\()?[^;]*(?:alloc|dup|open|create)[A-Za-z_0-9]*\s*\(",
+                        code,
+                        re.IGNORECASE,
+                    )
                 ):
                     return proof(
                         "owned_member_left_live_when_parent_released",
@@ -1532,8 +1629,8 @@ class EvidenceCompletionQueue:
         validation_evidence: Optional[Mapping[str, Any]],
         issue: Mapping[str, Any],
     ) -> str:
-        evidence = validation_evidence if isinstance(validation_evidence, Mapping) else {}
-        function_context = evidence.get("function_context") if isinstance(evidence.get("function_context"), Mapping) else {}
+        evidence = _as_mapping(validation_evidence)
+        function_context = _as_mapping(evidence.get("function_context"))
         return str(function_context.get("code") or issue.get("issue_code") or "")
 
     @staticmethod
@@ -1562,11 +1659,13 @@ class EvidenceCompletionQueue:
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     @staticmethod
-    def _ast_pack(issue: Mapping[str, Any]) -> tuple[Mapping[str, Any], Mapping[str, Any], list[Mapping[str, Any]]]:
-        pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), Mapping) else {}
-        ast_cfg = pack.get("ast_cfg") if isinstance(pack.get("ast_cfg"), Mapping) else {}
-        path = pack.get("path") if isinstance(pack.get("path"), Mapping) else {}
-        events = [item for item in ast_cfg.get("events", []) if isinstance(item, Mapping)]
+    def _ast_pack(
+        issue: Mapping[str, Any],
+    ) -> tuple[Mapping[str, Any], Mapping[str, Any], list[Mapping[str, Any]]]:
+        pack = _as_mapping(issue.get("evidence_pack"))
+        ast_cfg = _as_mapping(pack.get("ast_cfg"))
+        path = _as_mapping(pack.get("path"))
+        events = [item for item in _as_list(ast_cfg.get("events")) if isinstance(item, Mapping)]
         return ast_cfg, path, events
 
     @staticmethod
@@ -1599,7 +1698,9 @@ class EvidenceCompletionQueue:
             "producer_engine": producer_engine,
             "proof_version": "zscope.decision-proof.v4",
             "fact_ids": fact_ids,
-            "cfg_nodes": [str(item.get("line")) for item in selected if item.get("line") not in (None, "")],
+            "cfg_nodes": [
+                str(item.get("line")) for item in selected if item.get("line") not in (None, "")
+            ],
             "subject_identity": subject_identity,
             "code_hash": EvidenceCompletionQueue._evidence_code_hash(issue, ast_cfg),
             "facts": list(facts),
@@ -1734,13 +1835,14 @@ class EvidenceCompletionQueue:
                     (
                         prior
                         for prior in range(index - 1, -1, -1)
-                        if EvidenceCompletionQueue._lock_argument(lines[prior], acquire=True) == lock
+                        if EvidenceCompletionQueue._lock_argument(lines[prior], acquire=True)
+                        == lock
                     ),
                     -1,
                 )
                 if acquire_index < 0:
                     continue
-                if any("return" in item for item in lines[acquire_index + 1:index]):
+                if any("return" in item for item in lines[acquire_index + 1 : index]):
                     continue
                 return EvidenceCompletionQueue._proof_from_code(
                     issue,
@@ -1825,7 +1927,10 @@ class EvidenceCompletionQueue:
             if match:
                 allocations[match.group("var")] = (match.group("size").replace(" ", ""), index)
         for index, text in enumerate(lines, start=1):
-            call = re.search(r"\b(?:memcpy|memmove)\s*\(\s*(?P<dst>[A-Za-z_]\w*)\s*,[^,]+,\s*(?P<len>[^)]+)\)", text)
+            call = re.search(
+                r"\b(?:memcpy|memmove)\s*\(\s*(?P<dst>[A-Za-z_]\w*)\s*,[^,]+,\s*(?P<len>[^)]+)\)",
+                text,
+            )
             if not call or call.group("dst") not in allocations:
                 continue
             size, allocation_line = allocations[call.group("dst")]
@@ -1844,7 +1949,7 @@ class EvidenceCompletionQueue:
                         rf"\b{re.escape(symbol)}\b\s*>=\s*(?:SIZE_MAX|UINT(?:32|64)_MAX|[A-Z][A-Z0-9_]*)",
                         item,
                     )
-                    and re.search(r"\breturn\b", "\n".join(lines[guard_line - 1:guard_line + 3]))
+                    and re.search(r"\breturn\b", "\n".join(lines[guard_line - 1 : guard_line + 3]))
                 ),
                 0,
             )
@@ -1871,7 +1976,10 @@ class EvidenceCompletionQueue:
     ) -> Optional[Dict[str, Any]]:
         """Reject parent-member leak reports on an allocation-failure-only branch."""
 
-        if str(issue.get("rule") or "").lower() != "clang_cfg_parent_release_without_owned_member_cleanup":
+        if (
+            str(issue.get("rule") or "").lower()
+            != "clang_cfg_parent_release_without_owned_member_cleanup"
+        ):
             return None
         _ast_cfg, path, _events = EvidenceCompletionQueue._ast_pack(issue)
         if path.get("complete_in_function") is not True:
@@ -1882,17 +1990,17 @@ class EvidenceCompletionQueue:
         code = "\n".join(lines)
         source = str(issue.get("source") or "")
         member_match = re.search(r"\b([A-Za-z_]\w*)\s*->\s*([A-Za-z_]\w*)", source)
-        parent_match = re.search(r"SAFE_FREE\s*\(\s*([A-Za-z_]\w*)\s*\)", str(issue.get("sink") or ""))
+        parent_match = re.search(
+            r"SAFE_FREE\s*\(\s*([A-Za-z_]\w*)\s*\)", str(issue.get("sink") or "")
+        )
         if not member_match or not parent_match or member_match.group(1) != parent_match.group(1):
             return None
         parent, member = member_match.groups()
-        pattern = re.compile(
-            rf"if\s*\(\s*!\s*{re.escape(parent)}\s*->\s*{re.escape(member)}\s*\)"
-        )
+        pattern = re.compile(rf"if\s*\(\s*!\s*{re.escape(parent)}\s*->\s*{re.escape(member)}\s*\)")
         for index, text in enumerate(lines, start=1):
             if not pattern.search(text):
                 continue
-            window = "\n".join(lines[index - 1:index + 5])
+            window = "\n".join(lines[index - 1 : index + 5])
             if not re.search(rf"SAFE_FREE\s*\(\s*{re.escape(parent)}\s*\)", window):
                 continue
             if not re.search(r"\breturn\b", window):
@@ -1928,8 +2036,7 @@ class EvidenceCompletionQueue:
             return None
         code = "\n".join(lines)
         pointer_params = {
-            item
-            for item in re.findall(r"\b[A-Za-z_]\w*\s*\*\s*([A-Za-z_]\w*)", code.split("{")[0])
+            item for item in re.findall(r"\b[A-Za-z_]\w*\s*\*\s*([A-Za-z_]\w*)", code.split("{")[0])
         }
         for index, text in enumerate(lines, start=1):
             match = re.search(
@@ -1966,14 +2073,19 @@ class EvidenceCompletionQueue:
         ast_cfg, path, events = EvidenceCompletionQueue._ast_pack(issue)
         if path.get("complete_in_function") is not True:
             return None
-        stack_events = [item for item in events if str(item.get("kind") or "").lower() == "stack_object"]
-        escape_events = [item for item in events if str(item.get("kind") or "").lower() == "thread_arg_escape"]
+        stack_events = [
+            item for item in events if str(item.get("kind") or "").lower() == "stack_object"
+        ]
+        escape_events = [
+            item for item in events if str(item.get("kind") or "").lower() == "thread_arg_escape"
+        ]
         if not stack_events or not escape_events:
             return None
         stack = stack_events[0]
         escaped = next(
             (
-                item for item in escape_events
+                item
+                for item in escape_events
                 if EvidenceCompletionQueue._normalize_symbol(item.get("variable"))
                 == EvidenceCompletionQueue._normalize_symbol(stack.get("variable"))
             ),
@@ -1991,8 +2103,7 @@ class EvidenceCompletionQueue:
         # the escape.  A non-detached thread without a join remains reviewable.
         detached = bool(re.search(r"\bpthread_detach\s*\(", code))
         joined_after_escape = any(
-            re.search(r"\bpthread_join\s*\(", text)
-            for text in lines[max(escape_line, 0):]
+            re.search(r"\bpthread_join\s*\(", text) for text in lines[max(escape_line, 0) :]
         )
         if not detached or joined_after_escape:
             return None
@@ -2025,7 +2136,8 @@ class EvidenceCompletionQueue:
         if path.get("complete_in_function") is not True:
             return None
         unlink_events = [
-            item for item in events
+            item
+            for item in events
             if str(item.get("kind") or "").lower()
             in {"container_unlink", "container_detach", "ownership_unlink"}
         ]
@@ -2035,7 +2147,9 @@ class EvidenceCompletionQueue:
                 return None
             for index, text in enumerate(lines, start=1):
                 if re.search(r"\*\s*[A-Za-z_]\w*\s*=\s*[A-Za-z_]\w*\s*->\s*next", text):
-                    unlink_events = [{"kind": "container_unlink", "line": index, "expression": text}]
+                    unlink_events = [
+                        {"kind": "container_unlink", "line": index, "expression": text}
+                    ]
                     break
         if not unlink_events:
             return None
@@ -2049,11 +2163,18 @@ class EvidenceCompletionQueue:
             unlink_events[0].get("variable") or issue.get("resource_identity")
         )
         if not subject:
-            assign = re.search(r"\*\s*[A-Za-z_]\w*\s*=\s*([A-Za-z_]\w*)\s*->\s*next", str(unlink_events[0].get("expression") or ""))
+            assign = re.search(
+                r"\*\s*[A-Za-z_]\w*\s*=\s*([A-Za-z_]\w*)\s*->\s*next",
+                str(unlink_events[0].get("expression") or ""),
+            )
             subject = assign.group(1) if assign else ""
         if not subject:
             return None
-        if re.search(rf"\b(?:SAFE_FREE|free|release|destroy)\s*\(\s*{re.escape(subject)}\b", remainder, re.IGNORECASE):
+        if re.search(
+            rf"\b(?:SAFE_FREE|free|release|destroy)\s*\(\s*{re.escape(subject)}\b",
+            remainder,
+            re.IGNORECASE,
+        ):
             return None
         if re.search(rf"\b(?:return|\*)\s*{re.escape(subject)}\b", remainder):
             return None
@@ -2103,7 +2224,7 @@ class EvidenceCompletionQueue:
                 continue
             # A return inside a failure branch is a complete witness only if a
             # preceding condition names the failed acquisition or NULL guard.
-            preceding = "\n".join(lines[max(0, index - 5):index])
+            preceding = "\n".join(lines[max(0, index - 5) : index])
             if not re.search(r"\bif\s*\([^)]*(?:!|==\s*NULL|<\s*0)", preceding):
                 continue
             lock, lock_line = held[-1]
@@ -2148,7 +2269,9 @@ class EvidenceCompletionQueue:
                 text,
                 re.IGNORECASE,
             )
-            if assignment and re.search(r"(?:alloc|dup|open|create)", assignment.group("api"), re.IGNORECASE):
+            if assignment and re.search(
+                r"(?:alloc|dup|open|create)", assignment.group("api"), re.IGNORECASE
+            ):
                 owner = EvidenceCompletionQueue._normalize_symbol(assignment.group("owner"))
                 initialized.setdefault(owner, set()).add(assignment.group("field"))
             cleanup = re.search(
@@ -2211,15 +2334,18 @@ class EvidenceCompletionQueue:
         ast_cfg, path, events = EvidenceCompletionQueue._ast_pack(issue)
         if path.get("complete_in_function") is not True:
             return None
-        acquires = [item for item in events if str(item.get("kind") or "").lower() in {"acquire", "allocation_result"}]
+        acquires = [
+            item
+            for item in events
+            if str(item.get("kind") or "").lower() in {"acquire", "allocation_result"}
+        ]
         uses = [
             item
             for item in events
-            if str(item.get("kind") or "").lower()
-            in {"deref", "unchecked_allocation_use"}
+            if str(item.get("kind") or "").lower() in {"deref", "unchecked_allocation_use"}
         ]
-        guards = ast_cfg.get("condition_guards") if isinstance(ast_cfg.get("condition_guards"), list) else []
-        returns = ast_cfg.get("scope_summary", {}).get("return_lines", []) if isinstance(ast_cfg.get("scope_summary"), Mapping) else []
+        guards = _as_list(ast_cfg.get("condition_guards"))
+        returns = _as_list(_as_mapping(ast_cfg.get("scope_summary")).get("return_lines"))
         if not isinstance(returns, list):
             return None
         for acquire in acquires:
@@ -2229,7 +2355,10 @@ class EvidenceCompletionQueue:
                 continue
             for use in uses:
                 use_line = int(use.get("line") or 0)
-                if EvidenceCompletionQueue._normalize_symbol(use.get("variable")) != symbol or use_line < acquire_line:
+                if (
+                    EvidenceCompletionQueue._normalize_symbol(use.get("variable")) != symbol
+                    or use_line < acquire_line
+                ):
                     continue
                 for guard in guards:
                     if not isinstance(guard, Mapping):
@@ -2244,7 +2373,11 @@ class EvidenceCompletionQueue:
                     # A return immediately after (or in the same tiny branch
                     # as) the guard is the conservative local termination
                     # witness available in the fact model.
-                    if not any(guard_line < int(line) <= guard_line + 3 for line in returns if isinstance(line, int)):
+                    if not any(
+                        guard_line < int(line) <= guard_line + 3
+                        for line in returns
+                        if isinstance(line, int)
+                    ):
                         continue
                     return EvidenceCompletionQueue._proof_from_ast(
                         issue,
@@ -2281,8 +2414,12 @@ class EvidenceCompletionQueue:
         if path and path.get("complete_in_function") is not True:
             return None
         opens = [item for item in events if str(item.get("kind") or "").lower() == "fd_open"]
-        exits = [item for item in events if str(item.get("kind") or "").lower() == "return_without_fd_close"]
-        guards = ast_cfg.get("condition_guards") if isinstance(ast_cfg.get("condition_guards"), list) else []
+        exits = [
+            item
+            for item in events
+            if str(item.get("kind") or "").lower() == "return_without_fd_close"
+        ]
+        guards = _as_list(ast_cfg.get("condition_guards"))
         for opened in opens:
             fd = EvidenceCompletionQueue._normalize_symbol(opened.get("variable"))
             open_line = int(opened.get("line") or 0)
@@ -2329,7 +2466,9 @@ class EvidenceCompletionQueue:
                     failed_fd = re.compile(
                         rf"\b{re.escape(fd)}\s*(?:<|<=)\s*(?:0|-1)\b|\b{re.escape(fd)}\s*==\s*-1\b"
                     )
-                    path_constraints = [str(value) for value in path.get("path_constraints") or []]
+                    path_constraints = [
+                        str(value) for value in _as_list(path.get("path_constraints"))
+                    ]
                     guard_is_on_path = any(
                         f"line {guard_line}:" in constraint for constraint in path_constraints
                     )
@@ -2343,7 +2482,11 @@ class EvidenceCompletionQueue:
                             outcome="reject",
                             proof_kind="failed_acquisition_exit",
                             producer_engine="clang_ast_cfg_fd_ownership",
-                            events=[opened, {"kind": "fd_failure_guard", "line": guard_line}, exited],
+                            events=[
+                                opened,
+                                {"kind": "fd_failure_guard", "line": guard_line},
+                                exited,
+                            ],
                             facts=["fd_failure_guard", "failure_return"],
                             summary="the reported return is guarded by a failed descriptor acquisition",
                             scope="failed descriptor acquisition branch",
@@ -2362,15 +2505,20 @@ class EvidenceCompletionQueue:
         reachable caller controls the allocation size.
         """
 
-        if str(issue.get("rule") or "").lower() != "clang_cfg_external_size_allocation_without_limit":
+        if (
+            str(issue.get("rule") or "").lower()
+            != "clang_cfg_external_size_allocation_without_limit"
+        ):
             return None
         ast_cfg, path, events = EvidenceCompletionQueue._ast_pack(issue)
         if path.get("complete_in_function") is not True:
             return None
-        allocations = [item for item in events if str(item.get("kind") or "").lower() == "unbounded_allocation"]
-        guards = ast_cfg.get("condition_guards") if isinstance(ast_cfg.get("condition_guards"), list) else []
-        summary = ast_cfg.get("scope_summary") if isinstance(ast_cfg.get("scope_summary"), Mapping) else {}
-        returns = summary.get("return_lines") if isinstance(summary.get("return_lines"), list) else []
+        allocations = [
+            item for item in events if str(item.get("kind") or "").lower() == "unbounded_allocation"
+        ]
+        guards = _as_list(ast_cfg.get("condition_guards"))
+        summary = _as_mapping(ast_cfg.get("scope_summary"))
+        returns = _as_list(summary.get("return_lines"))
         for allocation in allocations:
             expression = str(allocation.get("expression") or "")
             line = int(allocation.get("line") or 0)
@@ -2390,7 +2538,15 @@ class EvidenceCompletionQueue:
                     re.search(rf"\b{re.escape(term)}\s*>\s*(?:[A-Z][A-Z0-9_]*|\d+)\b", condition)
                     for term in terms
                 )
-                if not (bounded and guard_line < line and any(guard_line < int(ret) <= guard_line + 3 for ret in returns if isinstance(ret, int))):
+                if not (
+                    bounded
+                    and guard_line < line
+                    and any(
+                        guard_line < int(ret) <= guard_line + 3
+                        for ret in returns
+                        if isinstance(ret, int)
+                    )
+                ):
                     continue
                 return EvidenceCompletionQueue._proof_from_ast(
                     issue,
@@ -2398,7 +2554,11 @@ class EvidenceCompletionQueue:
                     proof_kind="terminating_allocation_upper_bound",
                     producer_engine="clang_ast_cfg_allocation_context",
                     events=[allocation, {"kind": "upper_bound_guard", "line": guard_line}],
-                    facts=["explicit_upper_bound", "terminating_guard", "guard_dominates_allocation"],
+                    facts=[
+                        "explicit_upper_bound",
+                        "terminating_guard",
+                        "guard_dominates_allocation",
+                    ],
                     summary="a terminating upper-bound guard dominates the allocation",
                     scope="complete intraprocedural allocation path",
                 )
@@ -2422,11 +2582,15 @@ class EvidenceCompletionQueue:
         fixed_var = EvidenceCompletionQueue._normalize_symbol(fixed.get("variable"))
         write_var = EvidenceCompletionQueue._normalize_symbol(write.get("variable"))
         write_expression = str(write.get("expression") or "")
-        if fixed_var and write_var and (
-            fixed_var != write_var
-            or (
-                bool(write_expression)
-                and not re.search(rf"\b{re.escape(fixed_var)}\s*\[", write_expression)
+        if (
+            fixed_var
+            and write_var
+            and (
+                fixed_var != write_var
+                or (
+                    bool(write_expression)
+                    and not re.search(rf"\b{re.escape(fixed_var)}\s*\[", write_expression)
+                )
             )
         ):
             return EvidenceCompletionQueue._proof_from_ast(
@@ -2440,7 +2604,7 @@ class EvidenceCompletionQueue:
                 scope="complete intraprocedural array access path",
                 subject_identity=f"{fixed_var}!={write_var}",
             )
-        declarations = ast_cfg.get("declarations") if isinstance(ast_cfg.get("declarations"), list) else []
+        declarations = _as_list(ast_cfg.get("declarations"))
         if fixed_var and any(
             isinstance(item, Mapping)
             and EvidenceCompletionQueue._normalize_symbol(item.get("name")) == fixed_var
@@ -2461,9 +2625,9 @@ class EvidenceCompletionQueue:
         loop_expression = str(loop.get("expression") or "")
         count_match = re.search(r"<\s*([A-Za-z_]\w*)", loop_expression)
         count = count_match.group(1) if count_match else ""
-        guards = ast_cfg.get("condition_guards") if isinstance(ast_cfg.get("condition_guards"), list) else []
-        summary = ast_cfg.get("scope_summary") if isinstance(ast_cfg.get("scope_summary"), Mapping) else {}
-        returns = summary.get("return_lines") if isinstance(summary.get("return_lines"), list) else []
+        guards = _as_list(ast_cfg.get("condition_guards"))
+        summary = _as_mapping(ast_cfg.get("scope_summary"))
+        returns = _as_list(summary.get("return_lines"))
         for guard in guards:
             if not isinstance(guard, Mapping):
                 continue
@@ -2476,14 +2640,20 @@ class EvidenceCompletionQueue:
                     condition,
                 )
             )
-            if has_bound and any(guard_line < int(ret) <= guard_line + 3 for ret in returns if isinstance(ret, int)):
+            if has_bound and any(
+                guard_line < int(ret) <= guard_line + 3 for ret in returns if isinstance(ret, int)
+            ):
                 return EvidenceCompletionQueue._proof_from_ast(
                     issue,
                     outcome="reject",
                     proof_kind="array_bound_guard_dominates_loop",
                     producer_engine="clang_ast_cfg_bounds",
                     events=[fixed, {"kind": "array_bound_guard", "line": guard_line}, loop, write],
-                    facts=["fixed_array_bound", "terminating_upper_bound_guard", "guard_dominates_loop"],
+                    facts=[
+                        "fixed_array_bound",
+                        "terminating_upper_bound_guard",
+                        "guard_dominates_loop",
+                    ],
                     summary="a terminating array-size guard dominates the counted loop",
                     scope="complete intraprocedural fixed-array loop",
                     subject_identity=fixed_var,
@@ -2529,7 +2699,12 @@ class EvidenceCompletionQueue:
                     subject_identity=lhs,
                 )
             parent = lhs.split("->", 1)[0].strip() if "->" in lhs else ""
-            if parent and any(re.search(rf"\breturn\s+{re.escape(parent)}\s*;", str(exited.get("expression") or "")) for exited in exits):
+            if parent and any(
+                re.search(
+                    rf"\breturn\s+{re.escape(parent)}\s*;", str(exited.get("expression") or "")
+                )
+                for exited in exits
+            ):
                 return EvidenceCompletionQueue._proof_from_ast(
                     issue,
                     outcome="reject",
@@ -2601,7 +2776,11 @@ class EvidenceCompletionQueue:
                     "outcome": "reject",
                     "proof_kind": "guard_dominates_sink",
                     "producer_engine": "clang_ast_cfg_guard_dominance",
-                    "fact_ids": [f"cfg:{source_index + 1}", f"cfg:{index + 1}", f"cfg:{sink_index + 1}"],
+                    "fact_ids": [
+                        f"cfg:{source_index + 1}",
+                        f"cfg:{index + 1}",
+                        f"cfg:{sink_index + 1}",
+                    ],
                     "cfg_nodes": [str(source_index + 1), str(index + 1), str(sink_index + 1)],
                     "subject_identity": var,
                     "code_hash": EvidenceCompletionQueue._code_hash(code, issue),
@@ -2699,22 +2878,47 @@ class EvidenceCompletionQueue:
             {"probe_status", "probe_error_condition", "success_possible_return"},
         )
         direct_contracts = {
-            "clang_cfg_unchecked_pointer_backtrack": {"pointer_backtrack", "backtracked_pointer_sink"},
-            "clang_cfg_timer_callback_object_lock_without_scheduler_lock": {"global_scheduler_walk", "object_lock_in_callback"},
+            "clang_cfg_unchecked_pointer_backtrack": {
+                "pointer_backtrack",
+                "backtracked_pointer_sink",
+            },
+            "clang_cfg_timer_callback_object_lock_without_scheduler_lock": {
+                "global_scheduler_walk",
+                "object_lock_in_callback",
+            },
             "clang_cfg_free_derived_pointer_alias": {"pointer_derivation", "invalid_free_alias"},
             "clang_cfg_realloc_lost_original": {"realloc_assign"},
             "clang_cfg_fd_closed_without_owner_invalidation": {"fd_close"},
-            "clang_cfg_requested_permission_not_applied_to_mode": {"hardcoded_permission", "requested_permission_check"},
-            "clang_cfg_parsed_protocol_version_is_ignored": {"protocol_version_parse", "protocol_version_ignored"},
+            "clang_cfg_requested_permission_not_applied_to_mode": {
+                "hardcoded_permission",
+                "requested_permission_check",
+            },
+            "clang_cfg_parsed_protocol_version_is_ignored": {
+                "protocol_version_parse",
+                "protocol_version_ignored",
+            },
             "clang_cfg_raw_fd_revalidated_as_encoded": {"encoded_fd_validate", "raw_fd_derive"},
             "clang_cfg_fixed_byte_limit_before_spec_count_check": {"spec_byte_limit_mismatch"},
-            "clang_cfg_path_state_key_generation_before_locked_registration": {"key_generation", "locked_registration_lookup", "path_state_check"},
+            "clang_cfg_path_state_key_generation_before_locked_registration": {
+                "key_generation",
+                "locked_registration_lookup",
+                "path_state_check",
+            },
             "clang_cfg_unchecked_strchr_result": {"strchr_result", "unchecked_pointer_use"},
-            "clang_cfg_shared_resource_freed_without_refcount_protocol": {"free_without_refcount", "refcount_state"},
-            "clang_cfg_global_dynamic_array_resize_without_lock": {"dynamic_array_publish", "dynamic_array_resize_guard"},
+            "clang_cfg_shared_resource_freed_without_refcount_protocol": {
+                "free_without_refcount",
+                "refcount_state",
+            },
+            "clang_cfg_global_dynamic_array_resize_without_lock": {
+                "dynamic_array_publish",
+                "dynamic_array_resize_guard",
+            },
             "clang_cfg_size_addition_without_overflow_guard": {"integer_size_arithmetic"},
             "clang_cfg_unchecked_param_indexes_fixed_global_array": {"global_array_index"},
-            "clang_cfg_full_key_lookup_truncated_key_insert": {"full_key_lookup", "truncated_key_store"},
+            "clang_cfg_full_key_lookup_truncated_key_insert": {
+                "full_key_lookup",
+                "truncated_key_store",
+            },
             "clang_cfg_slot_overwrite_without_existing_owner_cleanup": {"slot_overwrite"},
             "clang_cfg_unbounded_vla_or_stack_array": {"runtime_stack_array"},
             "clang_cfg_role_specific_release_argument_mismatch": {"role_check", "role_release"},
@@ -2745,11 +2949,7 @@ class EvidenceCompletionQueue:
             outcome="confirm",
             proof_kind="deterministic_cfg_obligation_path",
             producer_engine="clang_ast_cfg_obligation_prover",
-            events=[
-                item
-                for item in events
-                if str(item.get("kind") or "").lower() in matched
-            ],
+            events=[item for item in events if str(item.get("kind") or "").lower() in matched],
             facts=["source_to_sink_complete", "event_path_complete", *sorted(matched)],
             summary="deterministic AST/CFG events establish the reported safety obligation",
             scope="complete intraprocedural AST/CFG source-to-sink path",
@@ -2771,8 +2971,8 @@ class EvidenceCompletionQueue:
         consulting a model description or an external evaluation label.
         """
 
-        pack = issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), Mapping) else {}
-        path = pack.get("path") if isinstance(pack.get("path"), Mapping) else {}
+        pack = _as_mapping(issue.get("evidence_pack"))
+        path = _as_mapping(pack.get("path"))
         rule = str(issue.get("rule") or "").lower()
         if path.get("complete_in_function") is not True:
             return None
@@ -2818,7 +3018,10 @@ class EvidenceCompletionQueue:
                 "proof_kind": "same_function_owned_member_cleanup_gap",
                 "producer_engine": "graph_contract_prover",
                 "proof_version": "zscope.decision-proof.v2",
-                "fact_ids": [f"graph_cfg:{source_line}:wrapper_allocation", f"graph_cfg:{sink_line}:wrapper_release"],
+                "fact_ids": [
+                    f"graph_cfg:{source_line}:wrapper_allocation",
+                    f"graph_cfg:{sink_line}:wrapper_release",
+                ],
                 "cfg_nodes": [str(source_line), str(sink_line)],
                 "subject_identity": f"{allocation}->{cleanup}",
                 "code_hash": EvidenceCompletionQueue._evidence_code_hash(issue, path),
@@ -2847,13 +3050,11 @@ class EvidenceCompletionQueue:
             "clang_cfg_global_state_write_without_lock",
         }:
             return None
-        evidence = validation_evidence if isinstance(validation_evidence, Mapping) else {}
-        function_context = evidence.get("function_context") if isinstance(evidence.get("function_context"), Mapping) else {}
+        evidence = _as_mapping(validation_evidence)
+        function_context = _as_mapping(evidence.get("function_context"))
         code = str(function_context.get("code") or "")
         resource = str(
-            issue.get("resource_signature")
-            or issue.get("resource_identity")
-            or ""
+            issue.get("resource_signature") or issue.get("resource_identity") or ""
         ).strip()
         if not code or not resource or len(code) > 64 * 1024:
             return None
@@ -2878,7 +3079,10 @@ class EvidenceCompletionQueue:
         if not assignment_locks or len(set(assignment_locks)) != 1:
             return None
         lock_name = assignment_locks[0]
-        if not any(lock_name in line and re.search(r"\b(?:UNLOCK|pthread_mutex_unlock)\b", line) for line in code.splitlines()):
+        if not any(
+            lock_name in line and re.search(r"\b(?:UNLOCK|pthread_mutex_unlock)\b", line)
+            for line in code.splitlines()
+        ):
             return None
         code_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
         return {
@@ -2909,9 +3113,7 @@ class EvidenceCompletionQueue:
 
     @staticmethod
     def _missing_fact(issue: Mapping[str, Any], validator_data: Mapping[str, Any]) -> str:
-        category = str(
-            issue.get("defect_class") or issue.get("category") or ""
-        ).lower()
+        category = str(issue.get("defect_class") or issue.get("category") or "").lower()
         verdict = str(validator_data.get("verdict") or "").lower()
         if category in {"race", "deadlock", "unsynchronized_shared_state"}:
             return "lock_or_happens_before"

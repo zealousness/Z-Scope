@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
 JAVA_ACTIVE_GENERIC_RULE = "java_llm_active_audit"
 
@@ -493,12 +493,16 @@ class JavaCoordinateResolver:
         if code_index is None or not entry_func or not hasattr(code_index, "get_function_impl"):
             return None
         try:
-            return code_index.get_function_impl(
-                entry_func, warn_missing=False, file_path=entry_file
+            return cast(
+                Optional[Dict[str, Any]],
+                code_index.get_function_impl(entry_func, warn_missing=False, file_path=entry_file),
             )
         except TypeError:
             try:
-                return code_index.get_function_impl(entry_func, warn_missing=False)
+                return cast(
+                    Optional[Dict[str, Any]],
+                    code_index.get_function_impl(entry_func, warn_missing=False),
+                )
             except Exception:
                 return None
         except Exception:

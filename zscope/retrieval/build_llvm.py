@@ -64,6 +64,7 @@ class BitcodeBuilder:
         default_out = self.source_root / ".zscope_bc"
         if output_dir is None and str(self.source_root).startswith("/mnt/"):
             import tempfile
+
             default_out = Path(tempfile.mkdtemp(prefix="zscope_bc_"))
             logger.info("WSL detected: using native temp dir for bitcode: %s", default_out)
         self.output_dir = Path(output_dir or default_out).resolve()
@@ -118,7 +119,7 @@ class BitcodeBuilder:
         saber_full_group: bool = False,
     ) -> Dict[str, Path]:
         """执行完整构建流程，返回各分组合并后的 .bc 路径字典。
-        
+
         groups: 可选的分组配置，格式 {"group_name": ["exclude_file1.c", ...]}
         """
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -144,10 +145,11 @@ class BitcodeBuilder:
             for idx, cmd in enumerate(commands):
                 self._compile_tu(cmd, idx)
         else:
-            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="zscope-gclang") as executor:
+            with ThreadPoolExecutor(
+                max_workers=workers, thread_name_prefix="zscope-gclang"
+            ) as executor:
                 futures = [
-                    executor.submit(self._compile_tu, cmd, idx)
-                    for idx, cmd in enumerate(commands)
+                    executor.submit(self._compile_tu, cmd, idx) for idx, cmd in enumerate(commands)
                 ]
                 for future in as_completed(futures):
                     try:
@@ -193,7 +195,7 @@ class BitcodeBuilder:
                 group_name,
                 Path(project_root or self.source_root),
             )
-            
+
             group_bcs = []
             bc_items = sorted(
                 self._bc_to_src.items(),
@@ -215,9 +217,7 @@ class BitcodeBuilder:
             ] = []
             if selector and auto_entry_clusters:
                 cluster_prefix = (
-                    "entry_cluster"
-                    if group_name == "default"
-                    else f"{group_name}__entry_cluster"
+                    "entry_cluster" if group_name == "default" else f"{group_name}__entry_cluster"
                 )
                 clusters = self._load_or_build_entry_clusters(
                     selector=selector,
@@ -234,9 +234,11 @@ class BitcodeBuilder:
                         cluster.group_name,
                         len(cluster.selected_bcs),
                         len(group_bcs),
-                        f" (fallback={cluster.plan.fallback_reason})"
-                        if cluster.plan.fallback_reason
-                        else "",
+                        (
+                            f" (fallback={cluster.plan.fallback_reason})"
+                            if cluster.plan.fallback_reason
+                            else ""
+                        ),
                     )
                     selected_items.append(
                         (cluster.group_name, cluster.selected_bcs, cluster.plan, None, True)
@@ -255,7 +257,9 @@ class BitcodeBuilder:
                     len(group_bcs),
                     f" (fallback={plan.fallback_reason})" if plan.fallback_reason else "",
                 )
-                selected_items.append((group_name, selected_bcs, plan, previous_selected_bcs, False))
+                selected_items.append(
+                    (group_name, selected_bcs, plan, previous_selected_bcs, False)
+                )
             elif scope_config and pool_classifier.enabled:
                 plan = self._full_scope_plan(group_name, scope_entry_names, group_bcs)
                 selected_items.append((group_name, group_bcs, plan, previous_selected_bcs, False))
@@ -274,7 +278,13 @@ class BitcodeBuilder:
                     symbol_reader=symbol_reader,
                 )
 
-            for selected_group_name, selected_bcs, plan, reuse_bcs, direct_link in selected_items:
+            for (
+                selected_group_name,
+                selected_bcs,
+                selected_plan,
+                reuse_bcs,
+                direct_link,
+            ) in selected_items:
                 if not selected_bcs:
                     logger.warning("No .bc files selected for group '%s'", selected_group_name)
                     continue
@@ -286,8 +296,8 @@ class BitcodeBuilder:
                     )
                     if merged:
                         results[selected_group_name] = merged
-                    if plan:
-                        self._write_scope_plan(plan)
+                    if selected_plan:
+                        self._write_scope_plan(selected_plan)
                     continue
                 link_variants, duplicate_symbols = self._exclusive_pool_link_variants(
                     group_name=selected_group_name,
@@ -297,14 +307,14 @@ class BitcodeBuilder:
                     pool_classifier=pool_classifier,
                     symbol_reader=symbol_reader,
                 )
-                if plan:
-                    plan.duplicate_symbols = duplicate_symbols
+                if selected_plan:
+                    selected_plan.duplicate_symbols = duplicate_symbols
 
                 for variant in link_variants:
                     variant_name = str(variant["group_name"])
                     variant_bcs = list(variant["bc_files"])
-                    if plan:
-                        plan.link_variants.append(
+                    if selected_plan:
+                        selected_plan.link_variants.append(
                             {
                                 "group_name": variant_name,
                                 "exclusive_pool": variant.get("exclusive_pool", ""),
@@ -329,8 +339,8 @@ class BitcodeBuilder:
                     if merged:
                         results[variant_name] = merged
                         continue
-                    if plan:
-                        plan.skipped_variants.append(
+                    if selected_plan:
+                        selected_plan.skipped_variants.append(
                             {
                                 "group_name": variant_name,
                                 "exclusive_pool": variant.get("exclusive_pool", ""),
@@ -342,8 +352,8 @@ class BitcodeBuilder:
                             }
                         )
 
-                if plan:
-                    self._write_scope_plan(plan)
+                if selected_plan:
+                    self._write_scope_plan(selected_plan)
 
         self._save_manifest()
         return results
@@ -417,9 +427,11 @@ class BitcodeBuilder:
             "candidates": [
                 {
                     "bc": str(Path(bc).resolve()),
-                    "src": str(Path(bc_to_src.get(Path(bc).resolve(), "")).resolve())
-                    if bc_to_src.get(Path(bc).resolve())
-                    else "",
+                    "src": (
+                        str(Path(bc_to_src.get(Path(bc).resolve(), "")).resolve())
+                        if bc_to_src.get(Path(bc).resolve())
+                        else ""
+                    ),
                     "hash": self._file_hash(Path(bc).resolve()),
                 }
                 for bc in candidate_bcs
@@ -467,8 +479,7 @@ class BitcodeBuilder:
         if not isinstance(raw_clusters, list):
             return None
         entry_by_name = {
-            str(getattr(entry, "function_name", entry) or ""): entry
-            for entry in entries
+            str(getattr(entry, "function_name", entry) or ""): entry for entry in entries
         }
         clusters: List[EntryBitcodeCluster] = []
         for raw in raw_clusters:
@@ -486,9 +497,15 @@ class BitcodeBuilder:
                 entries=[str(value) for value in raw_plan.get("entries") or []],
                 selected_sources=[str(value) for value in raw_plan.get("selected_sources") or []],
                 selected_bcs=[str(value) for value in raw_plan.get("selected_bcs") or []],
-                reachable_functions=[str(value) for value in raw_plan.get("reachable_functions") or []],
-                unresolved_entries=[str(value) for value in raw_plan.get("unresolved_entries") or []],
-                symbol_closure_added=[str(value) for value in raw_plan.get("symbol_closure_added") or []],
+                reachable_functions=[
+                    str(value) for value in raw_plan.get("reachable_functions") or []
+                ],
+                unresolved_entries=[
+                    str(value) for value in raw_plan.get("unresolved_entries") or []
+                ],
+                symbol_closure_added=[
+                    str(value) for value in raw_plan.get("symbol_closure_added") or []
+                ],
                 fallback_reason=str(raw_plan.get("fallback_reason") or ""),
                 exclusive_pool=str(raw_plan.get("exclusive_pool") or ""),
                 duplicate_symbols=list(raw_plan.get("duplicate_symbols") or []),
@@ -677,25 +694,16 @@ class BitcodeBuilder:
                 }
             ], []
 
-        pool_by_bc = {
-            bc: pool_classifier.pool_for_bc(bc, bc_to_src)
-            for bc in all_bc_list
-        }
+        pool_by_bc = {bc: pool_classifier.pool_for_bc(bc, bc_to_src) for bc in all_bc_list}
         shared_pools_by_bc = {
-            bc: pool_classifier.shared_pools_for_bc(bc, bc_to_src)
-            for bc in all_bc_list
+            bc: pool_classifier.shared_pools_for_bc(bc, bc_to_src) for bc in all_bc_list
         }
         shared_conflicts_by_bc = {
-            bc: pool_classifier.shared_conflicts_for_bc(bc, bc_to_src)
-            for bc in all_bc_list
+            bc: pool_classifier.shared_conflicts_for_bc(bc, bc_to_src) for bc in all_bc_list
         }
-        symbols_by_bc = {
-            bc: self._read_symbols(symbol_reader, bc)
-            for bc in all_bc_list
-        }
+        symbols_by_bc = {bc: self._read_symbols(symbol_reader, bc) for bc in all_bc_list}
         effective_pool_by_bc = {
-            bc: self._effective_exclusive_pool(pool_by_bc.get(bc, ""))
-            for bc in all_bc_list
+            bc: self._effective_exclusive_pool(pool_by_bc.get(bc, "")) for bc in all_bc_list
         }
         duplicates = self._duplicate_external_symbols(
             bc_list,
@@ -730,7 +738,8 @@ class BitcodeBuilder:
         variants: List[Dict[str, Any]] = []
         for pool_name in self._ordered_effective_pools(pool_classifier, split_pools):
             seed_bcs = [
-                bc for bc in bc_list
+                bc
+                for bc in bc_list
                 if self._bc_allowed_in_effective_pool(
                     bc,
                     pool_name,
@@ -763,7 +772,8 @@ class BitcodeBuilder:
                     "shared_pools": variant_shared_pools,
                     "bc_files": variant_bcs,
                     "excluded_pools": [
-                        pool for pool in self._ordered_effective_pools(pool_classifier, split_pools)
+                        pool
+                        for pool in self._ordered_effective_pools(pool_classifier, split_pools)
                         if pool != pool_name
                     ],
                     "dependency_closure_added": dependency_added,
@@ -1036,9 +1046,7 @@ class BitcodeBuilder:
                 for path in bc_files
             ],
         }
-        return hashlib.sha256(
-            json.dumps(payload, sort_keys=True).encode("utf-8")
-        ).hexdigest()
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
     def _reuse_linked_bitcode_if_current(
         self,
@@ -1186,7 +1194,7 @@ class BitcodeBuilder:
             if proc.stderr:
                 logger.debug("gclang stderr: %s", proc.stderr[:300])
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            stderr = getattr(e, 'stderr', '') or ''
+            stderr = getattr(e, "stderr", "") or ""
             logger.warning("Compile failed for %s: %s stderr=%s", src_file, e, stderr[:300])
             self._record_tu_failure(src_file, "compile_failed")
             return
@@ -1219,16 +1227,18 @@ class BitcodeBuilder:
                 logger.warning("get-bc succeeded but %s not found", bc_path)
                 self._record_tu_failure(src_file, "bitcode_missing")
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            stderr = getattr(e, 'stderr', '') or ''
+            stderr = getattr(e, "stderr", "") or ""
             logger.warning("get-bc failed for %s: %s stderr=%s", obj_path, e, stderr[:300])
             self._record_tu_failure(src_file, "get_bc_failed")
 
     def _record_tu_failure(self, src_file: str, reason: str) -> None:
         with self._state_lock:
-            self.failed_tus.append({
-                "file": str(src_file),
-                "reason": reason,
-            })
+            self.failed_tus.append(
+                {
+                    "file": str(src_file),
+                    "reason": reason,
+                }
+            )
 
     def _reuse_bitcode_if_current(
         self,
@@ -1280,9 +1290,7 @@ class BitcodeBuilder:
             "gclang": self.gclang,
             "get_bc": self.get_bc,
         }
-        return hashlib.sha256(
-            json.dumps(payload, sort_keys=True).encode("utf-8")
-        ).hexdigest()
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
     @staticmethod
     def _build_worker_count(command_count: int) -> int:
@@ -1320,7 +1328,11 @@ class BitcodeBuilder:
                 len(bc_files),
             )
             proc = subprocess.run(
-                cmd, timeout=self.timeout, capture_output=True, text=True, check=True,
+                cmd,
+                timeout=self.timeout,
+                capture_output=True,
+                text=True,
+                check=True,
             )
             logger.info("Merged %d .bc files → %s", len(bc_files), merged_path)
             self._record_linked_bitcode_manifest(merged_path, group_name, link_fingerprint)
@@ -1328,7 +1340,11 @@ class BitcodeBuilder:
         except subprocess.CalledProcessError as e:
             # 命令太长或链接冲突
             stderr = e.stderr or ""
-            if "Argument list too long" in str(e) or "Argument list too long" in stderr or e.returncode == 7: # 7 on windows
+            if (
+                "Argument list too long" in str(e)
+                or "Argument list too long" in stderr
+                or e.returncode == 7
+            ):  # 7 on windows
                 logger.warning("llvm-link args too long, falling back to chunked linking...")
                 return self._link_in_chunks(
                     bc_files,
@@ -1336,7 +1352,7 @@ class BitcodeBuilder:
                     group_name,
                     link_fingerprint,
                 )
-            
+
             # 其他链接错误（可能存在多重定义或 IR 版本不兼容）
             logger.error("llvm-link failed (exit code %d).", e.returncode)
             logger.error("llvm-link stderr (first 1000 chars):\n%s", stderr[:1000])
@@ -1356,7 +1372,7 @@ class BitcodeBuilder:
         chunk_size = 500
         intermediate_bcs = []
         for i in range(0, len(bc_files), chunk_size):
-            chunk = bc_files[i:i + chunk_size]
+            chunk = bc_files[i : i + chunk_size]
             chunk_output = self.output_dir / f"chunk_{group_name}_{i//chunk_size}.bc"
             cmd = [self.llvm_link, "-o", str(chunk_output)] + [str(p) for p in chunk]
             try:
@@ -1367,13 +1383,11 @@ class BitcodeBuilder:
             except subprocess.CalledProcessError as e:
                 logger.error("Chunk linking failed: %s\n%s", e, (e.stderr or "")[:1000])
                 return None
-        
+
         # 链接所有 chunk
         try:
             cmd = [self.llvm_link, "-o", str(final_output)] + [str(p) for p in intermediate_bcs]
-            subprocess.run(
-                cmd, timeout=self.timeout, capture_output=True, text=True, check=True
-            )
+            subprocess.run(cmd, timeout=self.timeout, capture_output=True, text=True, check=True)
             logger.info("Successfully merged via chunks → %s", final_output)
             self._record_linked_bitcode_manifest(
                 final_output,
@@ -1519,19 +1533,26 @@ class BitcodeBuilder:
                 dropped.append(arg)
                 continue
             # 跳过 Make 展开残留碎片（不以 - 开头、不是源文件、含 % 或 )" 等特征）
-            if (not arg.startswith("-") and arg != args[0]
-                    and ("%" in arg or arg.endswith(")\"'") or arg.endswith("))'"))):
+            if (
+                not arg.startswith("-")
+                and arg != args[0]
+                and ("%" in arg or arg.endswith(")\"'") or arg.endswith("))'"))
+            ):
                 dropped.append(arg)
                 continue
             cleaned.append(arg)
         if dropped:
             logger.debug(
                 "Sanitized %d broken args for %s: %s",
-                len(dropped), Path(src_file).name, dropped,
+                len(dropped),
+                Path(src_file).name,
+                dropped,
             )
         if rewritten:
             logger.debug(
                 "Rewrote %d filename define(s) for %s: %s",
-                len(rewritten), Path(src_file).name, rewritten,
+                len(rewritten),
+                Path(src_file).name,
+                rewritten,
             )
         return cleaned

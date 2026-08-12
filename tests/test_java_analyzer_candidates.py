@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from zscope.core.analysis.analyzer import Analyzer
 from zscope.core.candidates.java_rules import JavaRuleCandidateGenerator
+from zscope.orchestration.specs import SpecRegistry
 from zscope.orchestration.subagents import SubAgentOrchestrator
 
 
@@ -359,38 +360,42 @@ def test_analyzer_scans_java_properties_for_project_file_secrets(tmp_path) -> No
 class FakeSkill:
     def __init__(self, name: str) -> None:
         self.name = name
+        self.languages = ["java"] if name.startswith("java_") else ["c_cpp"]
 
 
 class FakeSpecRegistry:
+    names = [
+        "bounds_and_integer",
+        "resource_lifecycle",
+        "java_injection",
+        "java_web_security",
+    ]
+
+    def __init__(self) -> None:
+        self.skills = {name: FakeSkill(name) for name in self.names}
+
     def skills_for_agent(self, agent_name: str, extra=None):
         assert agent_name == "vulnerability_analyzer"
-        names = [
-            "bounds_and_integer",
-            "resource_lifecycle",
-            "java_injection",
-            "java_web_security",
-        ]
+        names = list(self.names)
         names.extend(extra or [])
-        return [FakeSkill(name) for name in names]
+        return [self.skills[name] for name in names]
+
+    def get_skill(self, name: str):
+        return self.skills.get(name)
 
 
-class FakeFullJavaSpecRegistry:
-    def skills_for_agent(self, agent_name: str, extra=None):
-        assert agent_name == "vulnerability_analyzer"
-        return [
-            FakeSkill(name)
-            for name in [
-                "bounds_and_integer",
-                "resource_lifecycle",
-                "java_injection",
-                "java_web_security",
-                "java_deserialization",
-                "java_authz",
-                "java_crypto",
-                "java_resource_lifecycle",
-                "java_concurrency",
-            ]
-        ]
+class FakeFullJavaSpecRegistry(FakeSpecRegistry):
+    names = [
+        "bounds_and_integer",
+        "resource_lifecycle",
+        "java_injection",
+        "java_web_security",
+        "java_deserialization",
+        "java_authz",
+        "java_crypto",
+        "java_resource_lifecycle",
+        "java_concurrency",
+    ]
 
 
 def test_java_project_filters_vulnerability_skills_to_java_family() -> None:
@@ -423,6 +428,25 @@ def test_java_security_task_can_activate_all_java_skills() -> None:
         "java_crypto",
         "java_resource_lifecycle",
         "java_concurrency",
+    ]
+
+
+def test_java_empty_task_activates_every_language_scoped_vulnerability_skill() -> None:
+    analyzer = object.__new__(Analyzer)
+    analyzer.config = SimpleNamespace(project=SimpleNamespace(language="java"))
+    analyzer.spec_registry = SpecRegistry()
+
+    selection = analyzer._candidate_first_skill_selection(SimpleNamespace(skills=[]))
+
+    assert selection.restricted is False
+    assert selection.skills == [
+        "java_authz",
+        "java_concurrency",
+        "java_crypto",
+        "java_deserialization",
+        "java_injection",
+        "java_resource_lifecycle",
+        "java_web_security",
     ]
 
 

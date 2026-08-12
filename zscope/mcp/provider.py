@@ -16,6 +16,7 @@ from ..tools.policy import ToolPolicy, deny_sensitive_paths_hook
 from ..tools.runtime import ToolsRuntime
 from ..orchestration.entry_discovery import EntryDiscovery
 from ..retrieval.code_index import CodeIndex
+from ..rules.extensions import preflight_rules
 
 
 MCP_TOOL_ALIASES: Dict[str, str] = {
@@ -52,6 +53,7 @@ class ZScopeMcpProvider:
         tool_policy: Optional[ToolPolicy] = None,
         max_result_chars: int = 100000,
     ):
+        preflight_rules(config)
         self.config = config
         self.code_index = code_index or CodeIndex(
             config.project.project_root,
@@ -61,9 +63,11 @@ class ZScopeMcpProvider:
             include_paths=config.project.include_paths,
             exclude_paths=config.project.exclude_paths,
             wait_for_cpg=True,
-            svf_parallel_workers=config.analysis.parallel_workers,
+            svf_parallel_workers=(
+                config.concurrency.svf_workers or config.concurrency.index_workers
+            ),
         )
-        self.snapshot_store = snapshot_store or SnapshotStore(Path(config.analysis.snapshot_dir))
+        self.snapshot_store = snapshot_store or SnapshotStore.from_config(config)
         resolved_policy = tool_policy or ToolPolicy.allow_all(
             pre_hooks=[deny_sensitive_paths_hook],
             audit_log_path=self._tool_audit_log_path(config),
@@ -118,7 +122,7 @@ class ZScopeMcpProvider:
             limit = self._query_int(query, "limit", default=1000, min_value=1, max_value=10000)
             offset = self._query_int(query, "offset", default=0, min_value=0, max_value=100000)
             functions = self.code_index.list_functions(limit=offset + limit + 1)
-            page = functions[offset: offset + limit]
+            page = functions[offset : offset + limit]
             return self._resource(
                 uri,
                 {
@@ -135,7 +139,7 @@ class ZScopeMcpProvider:
             limit = self._query_int(query, "limit", default=1000, min_value=1, max_value=10000)
             offset = self._query_int(query, "offset", default=0, min_value=0, max_value=100000)
             snapshots = self.snapshot_store.list_snapshots()
-            page = snapshots[offset: offset + limit]
+            page = snapshots[offset : offset + limit]
             return self._resource(
                 uri,
                 {
@@ -151,7 +155,7 @@ class ZScopeMcpProvider:
         raise KeyError(f"Unknown resource: {uri}")
 
     def list_prompts(self) -> List[Dict[str, Any]]:
-        prompts = [
+        prompts: List[Dict[str, Any]] = [
             {
                 "name": "zscope.entry_discovery",
                 "description": "Classify public API, communication, thread, and other input entry functions.",
@@ -262,7 +266,12 @@ class ZScopeMcpProvider:
             discovery = EntryDiscovery(self.code_index)
             result = self._bounded_tool_result(
                 requested_name,
-                {"success": True, "data": discovery.discover(int(arguments.get("max_candidates") or 200)).to_dict()},
+                {
+                    "success": True,
+                    "data": discovery.discover(
+                        int(arguments.get("max_candidates") or 200)
+                    ).to_dict(),
+                },
             )
             return self._post_tool_result(requested_name, arguments, result, start)
         result = self._bounded_tool_result(
@@ -348,7 +357,10 @@ class ZScopeMcpProvider:
         with sqlite3.connect(str(db_path)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(limited_sql, params).fetchall()
-            return {"success": True, "data": {"rows": [dict(row) for row in rows], "count": len(rows)}}
+            return {
+                "success": True,
+                "data": {"rows": [dict(row) for row in rows], "count": len(rows)},
+            }
 
     def _knowledge_db_path(self) -> Path:
         configured = Path(self.config.indexing.knowledge_db_path)
@@ -357,10 +369,7 @@ class ZScopeMcpProvider:
         return self.config.project.project_root / configured
 
     def _tool_schema_by_name(self) -> Dict[str, Dict[str, Any]]:
-        return {
-            self.tool_policy.schema_name(schema): schema
-            for schema in self.list_tools()
-        }
+        return {self.tool_policy.schema_name(schema): schema for schema in self.list_tools()}
 
     @staticmethod
     def _with_namespaced_aliases(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -370,7 +379,9 @@ class ZScopeMcpProvider:
             raw_name = ToolPolicy.schema_name(schema)
             alias_name = MCP_RAW_TOOL_ALIASES.get(raw_name)
             if alias_name:
-                visible_tools.append(ZScopeMcpProvider._alias_tool_schema(schema, alias_name, raw_name))
+                visible_tools.append(
+                    ZScopeMcpProvider._alias_tool_schema(schema, alias_name, raw_name)
+                )
         return visible_tools
 
     @staticmethod

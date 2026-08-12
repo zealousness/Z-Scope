@@ -77,7 +77,10 @@ dependency/
 zscope.local.yaml
 .zscope_snapshots*/
 .zscope_conversations*/
-.zscope_knowledge/
+.zscope_knowledge*/
+.zscope_svf*/
+.zscope_bc/
+.zscope_joern/
 workspace/
 tmp/
 *.log
@@ -112,6 +115,8 @@ test/range/zscope.local.yaml
 test/range/zscope.local.env
 test/range/current_eval.json
 test/range/metrics.json
+test/range/entry_functions_list.json
+test/range/entry_functions_diff*.json
 
 # Java Preview generated data
 tools/java-*/target/
@@ -122,8 +127,19 @@ test/java_range/zscope_batch_report.json
 test/java_range/zscope_batch_report.md
 test/java_range/evaluation.json
 test/java_range/zscope_run.log
+test/java_range/entry_functions_list.json
+test/java_range/entry_functions_diff*.json
 
 # External benchmark generated data
 benchmarks/external/workspace/
 benchmarks/external/sources/
 benchmarks/external/runs/
+
+# Canonical benchmark runner and developer tooling outputs
+benchmark-artifacts/
+release-evidence/
+.mypy_cache/
+.ruff_cache/
+ai-review.md
+entry_functions_list.json
+entry_functions_diff*.json

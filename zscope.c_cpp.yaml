@@ -1,0 +1,50 @@
+# Z-SCOPE C/C++ 配置 v2。复制为目标项目的 zscope.yaml 后修改。
+config_version: 2
+
+llms:
+  default:
+    base_urls: ["${Z_SCOPE_LLM_BASE_URL}"]
+    models: ["${Z_SCOPE_LLM_MODEL}"]
+    api_key: "${Z_SCOPE_API_KEY}"
+    base_url_max_concurrent_requests: 4
+
+project:
+  language: c_cpp
+  root: .
+  source_root: .
+  compile_commands_path: build/compile_commands.json
+  include_paths: []
+  exclude_paths: [build, third_party]
+  # 也可改用 entry_function 或 entry_functions_list；自动发现时请明确目标模块和接口头文件。
+  entry_discovery:
+    enabled: true
+    search_root: .
+    interface_files: ["include/**/*.h", "include/**/*.hpp"]
+    max_entries: 200
+
+scan:
+  task: "" # 空串启用当前语言全部适用 Skill；非空文本仅指定审计重点。
+
+indexing:
+  backend: unified
+  svf:
+    scope: auto
+    entry_depth: 4
+    max_selected_tus: 200
+    fallback: full
+    groups_file: "" # 可填写相对 project.root 的分组规划文件。
+    always_include: []
+    exclusive_pools: [] # 元素格式：{name: variant, paths: ["src/variant/**"]}
+    shared_pools: [] # 元素可增加 conflicts_with，引用 exclusive_pools 中的名称。
+    heap_limit_mb: 32768
+    timeout_seconds: 1800
+  # tools 可选；省略时从 PATH 查找 clangd、gclang、get-bc、llvm-link、wpa 和 saber。
+
+concurrency:
+  entry_workers: 4
+  validator_workers: 2
+  investigator_workers: 1
+  evidence_completion_workers: 2
+  index_workers: 4
+  svf_workers: 2
+  llm_max_inflight: 4

@@ -10,7 +10,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple, cast
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple, cast
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,22 @@ class KnowledgeDB:
     """SQLite-backed code knowledge store."""
 
     SCHEMA_VERSION = "14"
+    DERIVED_INDEX_SYMBOL_CONTEXT = "function_symbol_context"
+    DERIVED_INDEX_TYPE_REFS = "function_type_refs"
+    DERIVED_INDEX_NAMES = (
+        DERIVED_INDEX_SYMBOL_CONTEXT,
+        DERIVED_INDEX_TYPE_REFS,
+    )
+    DERIVED_INDEX_METADATA_PREFIX = "derived_index_state:"
+    _DERIVED_INDEX_ALIASES = {
+        "function_symbol_context": DERIVED_INDEX_SYMBOL_CONTEXT,
+        "function_symbol_refs": DERIVED_INDEX_SYMBOL_CONTEXT,
+        "function_type_refs": DERIVED_INDEX_TYPE_REFS,
+    }
+    _DERIVED_INDEX_STATUSES = {"current", "dirty", "in_progress", "failed"}
+    _DERIVED_SYMBOL_REF_STAGE = "zscope_stage_function_symbol_refs"
+    _DERIVED_MACRO_REF_STAGE = "zscope_stage_function_macro_refs"
+    _DERIVED_TYPE_REF_STAGE = "zscope_stage_function_type_refs"
     CALLGRAPH_READ_CONCURRENCY = 8
     TAINT_SIGNATURE_IDENTITY = (
         "source_func",
@@ -38,6 +54,7 @@ class KnowledgeDB:
         self._connections_lock = threading.RLock()
         self._query_cache_lock = threading.RLock()
         self._svf_materialization_lock = threading.RLock()
+        self._derived_index_lock = threading.RLock()
         self._callgraph_read_semaphore = threading.BoundedSemaphore(self.CALLGRAPH_READ_CONCURRENCY)
         self._thread_local = threading.local()
         self._connections: List[sqlite3.Connection] = []
@@ -791,6 +808,11 @@ class KnowledgeDB:
                 "UPDATE translation_units SET file_hash = ?, last_modified = ?, status = 'pending' WHERE id = ?",
                 (file_hash, time.time(), tu_id),
             )
+            if old_hash != file_hash:
+                self.mark_derived_indexes_dirty(
+                    reason="translation_unit_hash_changed",
+                    commit=False,
+                )
             self._conn.commit()
             return (tu_id, True)
         else:
@@ -799,16 +821,22 @@ class KnowledgeDB:
                 "VALUES (?, ?, ?, 'pending')",
                 (file_path, file_hash, time.time()),
             )
+            self.mark_derived_indexes_dirty(
+                reason="translation_unit_added",
+                commit=False,
+            )
             self._conn.commit()
             row = self._conn.execute(
-                "SELECT id FROM translation_units WHERE file_path = ?", (file_path,),
+                "SELECT id FROM translation_units WHERE file_path = ?",
+                (file_path,),
             ).fetchone()
             return (row["id"], True)
 
     def get_tu_delete_impact(self, tu_id: int) -> Dict[str, Any]:
         """Return files and symbols affected by deleting one translation unit."""
         row = self._conn.execute(
-            "SELECT file_path FROM translation_units WHERE id = ?", (tu_id,),
+            "SELECT file_path FROM translation_units WHERE id = ?",
+            (tu_id,),
         ).fetchone()
         if not row:
             return {"deleted_paths": [], "deleted_symbols": [], "related_files": []}
@@ -892,6 +920,10 @@ class KnowledgeDB:
     def purge_tu_data(self, tu_id: int, purge_incoming_refs: bool = False):
         """清除某 TU 关联的所有提取数据。"""
         self._invalidate_callgraph_query_cache()
+        self.mark_derived_indexes_dirty(
+            reason="translation_unit_purged",
+            commit=False,
+        )
         deleted_svf_rows = 0
         self._conn.execute(
             "DELETE FROM function_type_refs WHERE function_id IN "
@@ -1053,6 +1085,10 @@ class KnowledgeDB:
             "UPDATE translation_units SET status = 'pending', last_modified = ? WHERE id = ?",
             (time.time(), tu_id),
         )
+        self.mark_derived_indexes_dirty(
+            reason="translation_unit_pending",
+            commit=False,
+        )
         self._conn.commit()
 
     def get_pending_tus(self) -> List[Dict[str, Any]]:
@@ -1063,10 +1099,17 @@ class KnowledgeDB:
 
     # Inspection IR
 
-    def upsert_ir_statement(self, file_path: str, line: int, function: str,
-                            kind: str = "", normalized_code: str = "",
-                            ast_kind: str = "", defs: str = "[]",
-                            uses: str = "[]") -> int:
+    def upsert_ir_statement(
+        self,
+        file_path: str,
+        line: int,
+        function: str,
+        kind: str = "",
+        normalized_code: str = "",
+        ast_kind: str = "",
+        defs: str = "[]",
+        uses: str = "[]",
+    ) -> int:
         self._conn.execute(
             "INSERT OR IGNORE INTO ir_statements "
             "(file_path, line, function, kind, normalized_code, ast_kind, defs, uses) "
@@ -1194,6 +1237,369 @@ class KnowledgeDB:
         self._conn.execute("DELETE FROM metadata WHERE key = ?", (key,))
         if commit:
             self._conn.commit()
+
+    # -- Derived index lifecycle --
+
+    @classmethod
+    def _canonical_derived_index_name(cls, index_name: str) -> str:
+        clean_name = str(index_name or "").strip()
+        canonical = cls._DERIVED_INDEX_ALIASES.get(clean_name)
+        if canonical is None:
+            supported = ", ".join(cls.DERIVED_INDEX_NAMES)
+            raise ValueError(
+                f"unsupported derived index {clean_name!r}; expected one of: {supported}"
+            )
+        return canonical
+
+    @classmethod
+    def _derived_index_metadata_key(cls, index_name: str) -> str:
+        canonical = cls._canonical_derived_index_name(index_name)
+        return f"{cls.DERIVED_INDEX_METADATA_PREFIX}{canonical}"
+
+    @staticmethod
+    def _dirty_derived_index_state(reason: str) -> Dict[str, Any]:
+        return {
+            "applied_version": "",
+            "target_version": "",
+            "status": "dirty",
+            "dirty_reason": str(reason or "invalid_state"),
+            "last_error": "",
+            "last_stats": {},
+            "updated_at": 0.0,
+        }
+
+    @classmethod
+    def _normalize_derived_index_state(cls, raw: str) -> Dict[str, Any]:
+        if not raw:
+            return cls._dirty_derived_index_state("missing_state")
+        try:
+            value = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return cls._dirty_derived_index_state("invalid_state")
+        required = {
+            "applied_version",
+            "target_version",
+            "status",
+            "dirty_reason",
+            "last_error",
+            "last_stats",
+            "updated_at",
+        }
+        if not isinstance(value, dict) or not required.issubset(value):
+            return cls._dirty_derived_index_state("invalid_state")
+        if not all(
+            isinstance(value.get(field), str)
+            for field in (
+                "applied_version",
+                "target_version",
+                "status",
+                "dirty_reason",
+                "last_error",
+            )
+        ):
+            return cls._dirty_derived_index_state("invalid_state")
+        if value.get("status") not in cls._DERIVED_INDEX_STATUSES:
+            return cls._dirty_derived_index_state("invalid_state")
+        if not isinstance(value.get("last_stats"), dict):
+            return cls._dirty_derived_index_state("invalid_state")
+        updated_at = value.get("updated_at")
+        if isinstance(updated_at, bool) or not isinstance(updated_at, (int, float)):
+            return cls._dirty_derived_index_state("invalid_state")
+        return {
+            "applied_version": str(value["applied_version"]),
+            "target_version": str(value["target_version"]),
+            "status": str(value["status"]),
+            "dirty_reason": str(value["dirty_reason"]),
+            "last_error": str(value["last_error"]),
+            "last_stats": dict(value["last_stats"]),
+            "updated_at": float(updated_at),
+        }
+
+    def _write_derived_index_state_uncommitted(
+        self,
+        index_name: str,
+        state: Dict[str, Any],
+    ) -> None:
+        canonical = self._canonical_derived_index_name(index_name)
+        payload = {
+            "applied_version": str(state.get("applied_version") or ""),
+            "target_version": str(state.get("target_version") or ""),
+            "status": str(state.get("status") or "dirty"),
+            "dirty_reason": str(state.get("dirty_reason") or ""),
+            "last_error": str(state.get("last_error") or ""),
+            "last_stats": dict(state.get("last_stats") or {}),
+            "updated_at": float(state.get("updated_at") or 0.0),
+        }
+        if payload["status"] not in self._DERIVED_INDEX_STATUSES:
+            raise ValueError(f"invalid derived index status: {payload['status']!r}")
+        self._set_metadata_uncommitted(
+            f"{self.DERIVED_INDEX_METADATA_PREFIX}{canonical}",
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        )
+
+    def get_derived_index_state(self, index_name: str) -> Dict[str, Any]:
+        """Return normalized lifecycle state; missing or corrupt metadata is dirty."""
+        key = self._derived_index_metadata_key(index_name)
+        return self._normalize_derived_index_state(self.get_metadata(key))
+
+    def derived_index_needs_rebuild(self, index_name: str, target_version: str) -> bool:
+        state = self.get_derived_index_state(index_name)
+        return not (
+            state["status"] == "current" and state["applied_version"] == str(target_version or "")
+        )
+
+    def mark_derived_indexes_dirty(
+        self,
+        index_names: Optional[Iterable[str]] = None,
+        *,
+        reason: str = "base_facts_changed",
+        commit: bool = True,
+    ) -> None:
+        """Invalidate derived indexes while retaining their last complete rows."""
+        if isinstance(index_names, str):
+            requested_names: Iterable[str] = (index_names,)
+        else:
+            requested_names = index_names or self.DERIVED_INDEX_NAMES
+        canonical_names = tuple(
+            dict.fromkeys(self._canonical_derived_index_name(name) for name in requested_names)
+        )
+        with self._derived_index_lock:
+            for canonical in canonical_names:
+                previous = self.get_derived_index_state(canonical)
+                self._write_derived_index_state_uncommitted(
+                    canonical,
+                    {
+                        "applied_version": previous["applied_version"],
+                        "target_version": previous["target_version"],
+                        "status": "dirty",
+                        "dirty_reason": str(reason or "base_facts_changed"),
+                        "last_error": "",
+                        "last_stats": previous["last_stats"],
+                        "updated_at": time.time(),
+                    },
+                )
+            if commit:
+                self._conn.commit()
+
+    def begin_derived_index_rebuild(
+        self,
+        index_name: str,
+        target_version: str,
+    ) -> Dict[str, Any]:
+        """Durably mark a rebuild in progress before any staged work begins."""
+        canonical = self._canonical_derived_index_name(index_name)
+        with self._derived_index_lock:
+            previous = self.get_derived_index_state(canonical)
+            state = {
+                "applied_version": previous["applied_version"],
+                "target_version": str(target_version or ""),
+                "status": "in_progress",
+                "dirty_reason": previous["dirty_reason"],
+                "last_error": "",
+                "last_stats": {},
+                "updated_at": time.time(),
+            }
+            self._write_derived_index_state_uncommitted(canonical, state)
+            self._conn.commit()
+            return dict(state)
+
+    def prepare_derived_index_staging(self, index_name: str) -> None:
+        """Create and clear connection-local TEMP tables for one derived rebuild."""
+        canonical = self._canonical_derived_index_name(index_name)
+        conn = self._conn
+        with self._derived_index_lock:
+            if canonical == self.DERIVED_INDEX_SYMBOL_CONTEXT:
+                conn.execute(
+                    f"CREATE TEMP TABLE IF NOT EXISTS {self._DERIVED_SYMBOL_REF_STAGE} ("
+                    "function_name TEXT NOT NULL, function_file TEXT NOT NULL, "
+                    "symbol_name TEXT NOT NULL, symbol_kind TEXT NOT NULL, "
+                    "symbol_file TEXT DEFAULT '', reference_line INTEGER DEFAULT 0, "
+                    "access_kind TEXT DEFAULT 'unknown', "
+                    "UNIQUE(function_name, function_file, symbol_name, symbol_kind, "
+                    "symbol_file, reference_line))"
+                )
+                conn.execute(
+                    f"CREATE TEMP TABLE IF NOT EXISTS {self._DERIVED_MACRO_REF_STAGE} ("
+                    "function_id INTEGER NOT NULL, macro_id INTEGER NOT NULL, "
+                    "reference_line INTEGER NOT NULL, "
+                    "UNIQUE(function_id, macro_id, reference_line))"
+                )
+                conn.execute(f"DELETE FROM {self._DERIVED_SYMBOL_REF_STAGE}")
+                conn.execute(f"DELETE FROM {self._DERIVED_MACRO_REF_STAGE}")
+            else:
+                conn.execute(
+                    f"CREATE TEMP TABLE IF NOT EXISTS {self._DERIVED_TYPE_REF_STAGE} ("
+                    "function_id INTEGER NOT NULL, type_id INTEGER, "
+                    "type_index_name TEXT NOT NULL DEFAULT '', "
+                    "referenced_name TEXT NOT NULL, reference_file TEXT NOT NULL, "
+                    "reference_line INTEGER NOT NULL, reference_kind TEXT NOT NULL, "
+                    "resolution_reason TEXT DEFAULT '', "
+                    "UNIQUE(function_id, referenced_name, type_index_name, "
+                    "reference_line, reference_kind))"
+                )
+                conn.execute(f"DELETE FROM {self._DERIVED_TYPE_REF_STAGE}")
+
+    def discard_derived_index_staging(self, index_name: str) -> None:
+        """Drop connection-local staging tables without changing lifecycle state."""
+        canonical = self._canonical_derived_index_name(index_name)
+        conn = self._conn
+        with self._derived_index_lock:
+            if canonical == self.DERIVED_INDEX_SYMBOL_CONTEXT:
+                conn.execute(f"DROP TABLE IF EXISTS temp.{self._DERIVED_SYMBOL_REF_STAGE}")
+                conn.execute(f"DROP TABLE IF EXISTS temp.{self._DERIVED_MACRO_REF_STAGE}")
+            else:
+                conn.execute(f"DROP TABLE IF EXISTS temp.{self._DERIVED_TYPE_REF_STAGE}")
+
+    def stage_function_symbol_refs_batch(self, rows: List[tuple]) -> None:
+        if rows:
+            self._conn.executemany(
+                f"INSERT INTO {self._DERIVED_SYMBOL_REF_STAGE} "
+                "(function_name, function_file, symbol_name, symbol_kind, symbol_file, "
+                "reference_line, access_kind) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(function_name, function_file, symbol_name, symbol_kind, "
+                "symbol_file, reference_line) DO UPDATE SET access_kind = CASE "
+                "WHEN access_kind = 'read_write' OR excluded.access_kind = 'read_write' "
+                "THEN 'read_write' "
+                "WHEN (access_kind = 'read' AND excluded.access_kind = 'write') "
+                "OR (access_kind = 'write' AND excluded.access_kind = 'read') "
+                "THEN 'read_write' "
+                "WHEN excluded.access_kind IN ('read', 'write') THEN excluded.access_kind "
+                "ELSE access_kind END",
+                rows,
+            )
+
+    def stage_function_macro_refs_batch(self, rows: List[tuple]) -> None:
+        if rows:
+            self._conn.executemany(
+                f"INSERT OR IGNORE INTO {self._DERIVED_MACRO_REF_STAGE} "
+                "(function_id, macro_id, reference_line) VALUES (?, ?, ?)",
+                rows,
+            )
+
+    def stage_function_type_refs_batch(self, rows: List[tuple]) -> None:
+        if rows:
+            self._conn.executemany(
+                f"INSERT OR REPLACE INTO {self._DERIVED_TYPE_REF_STAGE} "
+                "(function_id, type_id, type_index_name, referenced_name, reference_file, "
+                "reference_line, reference_kind, resolution_reason) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+
+    def _temporary_table_exists(self, table_name: str) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM sqlite_temp_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+        return row is not None
+
+    def finalize_derived_index_rebuild(
+        self,
+        index_name: str,
+        target_version: str,
+        last_stats: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Atomically publish staged rows and their matching current state."""
+        canonical = self._canonical_derived_index_name(index_name)
+        target = str(target_version or "")
+        conn = self._conn
+        with self._derived_index_lock:
+            previous = self.get_derived_index_state(canonical)
+            if previous["status"] != "in_progress" or previous["target_version"] != target:
+                raise RuntimeError(
+                    "derived index finalize requires matching in_progress state: "
+                    f"index={canonical} target={target!r} state={previous!r}"
+                )
+            required_staging = (
+                (self._DERIVED_SYMBOL_REF_STAGE, self._DERIVED_MACRO_REF_STAGE)
+                if canonical == self.DERIVED_INDEX_SYMBOL_CONTEXT
+                else (self._DERIVED_TYPE_REF_STAGE,)
+            )
+            missing = [name for name in required_staging if not self._temporary_table_exists(name)]
+            if missing:
+                raise RuntimeError(
+                    f"derived index staging was not prepared for {canonical}: {', '.join(missing)}"
+                )
+
+            state = {
+                "applied_version": target,
+                "target_version": target,
+                "status": "current",
+                "dirty_reason": "",
+                "last_error": "",
+                "last_stats": dict(last_stats or {}),
+                "updated_at": time.time(),
+            }
+            savepoint = f"finalize_{canonical}"
+            savepoint_active = False
+            try:
+                conn.execute(f"SAVEPOINT {savepoint}")
+                savepoint_active = True
+                if canonical == self.DERIVED_INDEX_SYMBOL_CONTEXT:
+                    conn.execute("DELETE FROM function_symbol_refs")
+                    conn.execute("DELETE FROM function_macro_refs")
+                    conn.execute(
+                        "INSERT OR REPLACE INTO function_symbol_refs "
+                        "(function_name, function_file, symbol_name, symbol_kind, symbol_file, "
+                        "reference_line, access_kind) "
+                        f"SELECT function_name, function_file, symbol_name, symbol_kind, "
+                        f"symbol_file, reference_line, access_kind "
+                        f"FROM {self._DERIVED_SYMBOL_REF_STAGE}"
+                    )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO function_macro_refs "
+                        "(function_id, macro_id, reference_line) "
+                        f"SELECT function_id, macro_id, reference_line "
+                        f"FROM {self._DERIVED_MACRO_REF_STAGE}"
+                    )
+                    conn.execute(f"DELETE FROM {self._DERIVED_SYMBOL_REF_STAGE}")
+                    conn.execute(f"DELETE FROM {self._DERIVED_MACRO_REF_STAGE}")
+                else:
+                    conn.execute("DELETE FROM function_type_refs")
+                    conn.execute(
+                        "INSERT OR REPLACE INTO function_type_refs "
+                        "(function_id, type_id, type_index_name, referenced_name, "
+                        "reference_file, reference_line, reference_kind, resolution_reason) "
+                        f"SELECT function_id, type_id, type_index_name, referenced_name, "
+                        f"reference_file, reference_line, reference_kind, resolution_reason "
+                        f"FROM {self._DERIVED_TYPE_REF_STAGE}"
+                    )
+                    conn.execute(f"DELETE FROM {self._DERIVED_TYPE_REF_STAGE}")
+                self._write_derived_index_state_uncommitted(canonical, state)
+                conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                savepoint_active = False
+                conn.commit()
+            except BaseException:
+                if savepoint_active:
+                    conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                    conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                conn.rollback()
+                raise
+            return dict(state)
+
+    def fail_derived_index_rebuild(
+        self,
+        index_name: str,
+        target_version: str,
+        error: Any,
+        last_stats: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Persist a failed rebuild while retaining the last applied version."""
+        canonical = self._canonical_derived_index_name(index_name)
+        with self._derived_index_lock:
+            previous = self.get_derived_index_state(canonical)
+            state = {
+                "applied_version": previous["applied_version"],
+                "target_version": str(target_version or ""),
+                "status": "failed",
+                "dirty_reason": previous["dirty_reason"] or "rebuild_failed",
+                "last_error": str(error or "derived index rebuild failed"),
+                "last_stats": dict(last_stats or previous["last_stats"] or {}),
+                "updated_at": time.time(),
+            }
+            self._write_derived_index_state_uncommitted(canonical, state)
+            self._conn.commit()
+            return dict(state)
 
     def get_svf_db_generation(self) -> int:
         """Return the generation of SVF-derived rows in this database."""
@@ -1442,6 +1848,36 @@ class KnowledgeDB:
             rows,
         )
 
+    def replace_function_symbol_context(
+        self,
+        symbol_rows: List[tuple],
+        macro_rows: List[tuple],
+    ) -> None:
+        """Atomically replace the permanent symbol and macro reference tables."""
+        conn = self._conn
+        conn.execute("SAVEPOINT replace_function_symbol_context")
+        try:
+            conn.execute("DELETE FROM function_symbol_refs")
+            conn.execute("DELETE FROM function_macro_refs")
+            if symbol_rows:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO function_symbol_refs "
+                    "(function_name, function_file, symbol_name, symbol_kind, symbol_file, "
+                    "reference_line, access_kind) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    symbol_rows,
+                )
+            if macro_rows:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO function_macro_refs "
+                    "(function_id, macro_id, reference_line) VALUES (?, ?, ?)",
+                    macro_rows,
+                )
+            conn.execute("RELEASE SAVEPOINT replace_function_symbol_context")
+        except Exception:
+            conn.execute("ROLLBACK TO SAVEPOINT replace_function_symbol_context")
+            conn.execute("RELEASE SAVEPOINT replace_function_symbol_context")
+            raise
+
     def clear_function_symbol_refs(self) -> None:
         self._conn.execute("DELETE FROM function_symbol_refs")
 
@@ -1619,6 +2055,11 @@ class KnowledgeDB:
     def clear_macro_definitions(self) -> None:
         self._conn.execute("DELETE FROM function_macro_refs")
         self._conn.execute("DELETE FROM macro_definitions")
+        self.mark_derived_indexes_dirty(
+            (self.DERIVED_INDEX_SYMBOL_CONTEXT,),
+            reason="macro_definitions_cleared",
+            commit=False,
+        )
         self._conn.commit()
 
     @staticmethod
@@ -1713,6 +2154,14 @@ class KnowledgeDB:
 
     def get_transitive_include_closure(self, source_file: str) -> List[str]:
         """Return normalized non-system files transitively visible from source_file."""
+        return self.get_transitive_include_closures((source_file,)).get(str(source_file), [])
+
+    def get_transitive_include_closures(
+        self,
+        source_files: Iterable[str],
+    ) -> Dict[str, List[str]]:
+        """Return include closures for many sources after building the graph once."""
+        requested = [str(source_file) for source_file in source_files]
         rows = self._conn.execute(
             "SELECT source_file, included_file FROM include_edges "
             "WHERE is_system = 0 ORDER BY source_file, included_file"
@@ -1724,19 +2173,22 @@ class KnowledgeDB:
             if source and included:
                 graph.setdefault(source, []).append(included)
 
-        clean_source = str(source_file or "").replace("\\", "/").lstrip("./")
-        roots = [key for key in graph if self._paths_match_hint(key, clean_source)]
-        if not roots and clean_source:
-            roots = [clean_source]
-        visited: set[str] = set()
-        pending = list(roots)
-        while pending:
-            current = pending.pop()
-            if current in visited:
-                continue
-            visited.add(current)
-            pending.extend(item for item in graph.get(current, []) if item not in visited)
-        return sorted(visited)
+        result: Dict[str, List[str]] = {}
+        for source_file in requested:
+            clean_source = str(source_file or "").replace("\\", "/").lstrip("./")
+            roots = [key for key in graph if self._paths_match_hint(key, clean_source)]
+            if not roots and clean_source:
+                roots = [clean_source]
+            visited: set[str] = set()
+            pending = list(roots)
+            while pending:
+                current = pending.pop()
+                if current in visited:
+                    continue
+                visited.add(current)
+                pending.extend(item for item in graph.get(current, []) if item not in visited)
+            result[source_file] = sorted(visited)
+        return result
 
     def replace_function_type_refs(self, rows: List[tuple]) -> None:
         """Atomically replace all direct function-to-type reference facts."""

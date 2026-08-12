@@ -78,7 +78,8 @@ from ..candidates.clang_ast_cfg import ClangAstCfgCandidateGenerator
 from ...retrieval.clang_tooling_evidence import ClangToolingEvidenceProvider
 from ..candidates.regex import RegexCandidateGenerator
 from ..candidates.java_rules import JavaRuleCandidateGenerator
-from ...rules.extensions import RuleContext, RuleRegistry
+from ...rules.extensions import RuleContext, preflight_rules
+from ...rules.catalog import serialize_effective_rules
 from ...semantics.models import LocalPatternSemantics
 from ..candidates.graph import GraphCandidateGenerator
 from ...orchestration.history_reconciler import HistoryReconciler
@@ -156,15 +157,15 @@ DEFAULT_SCAN_STEP_IDS = (
     "persist_report",
 )
 
-JAVA_VULNERABILITY_SKILLS = {
-    "java_injection",
-    "java_web_security",
-    "java_deserialization",
-    "java_authz",
-    "java_crypto",
-    "java_resource_lifecycle",
-    "java_concurrency",
-}
+
+def _as_dict(value: Any) -> Dict[str, Any]:
+    """Narrow an untyped runtime payload to the mutable mapping we expect."""
+    return cast(Dict[str, Any], value) if isinstance(value, dict) else {}
+
+
+def _as_list(value: Any) -> List[Any]:
+    """Narrow an untyped runtime payload to a list without copying it."""
+    return cast(List[Any], value) if isinstance(value, list) else []
 
 
 class Analyzer:
@@ -193,6 +194,12 @@ class Analyzer:
         defer_validation_to_scan: bool = False,
     ):
         self.config = config
+        # Defensive preflight for third-party callers that construct an
+        # Analyzer from an in-memory config instead of going through
+        # ConfigLoader.  It is intentionally before CodeIndex/external tools.
+        self.spec_registry = SpecRegistry(project_root=config.project.project_root)
+        self.effective_rules = preflight_rules(config, spec_registry=self.spec_registry)
+        self.rule_policy = self.effective_rules.policy
         self.cancellation_token = cancellation_token
         self.scheduler = scheduler
         # A batch shares one KnowledgeDB connection between entry workers.
@@ -227,9 +234,11 @@ class Analyzer:
             svf_entry_functions=(
                 [config.project.entry_function] if config.project.entry_function else None
             ),
-            svf_parallel_workers=config.analysis.parallel_workers,
+            svf_parallel_workers=(
+                config.concurrency.svf_workers or config.concurrency.index_workers
+            ),
         )
-        self.snapshot_store = snapshot_store or SnapshotStore(Path(config.analysis.snapshot_dir))
+        self.snapshot_store = snapshot_store or SnapshotStore.from_config(config)
         self.force_ignore_history = force_ignore_history
         self.maintain_mode = maintain_mode
         self.history_reconciler = HistoryReconciler(
@@ -244,9 +253,7 @@ class Analyzer:
         self.user_config = user_config or UserConfigStore(db_dir)
         self.validation_pipeline = ValidationPipeline(
             self.user_config,
-            enable_deterministic_proof_routing=bool(
-                getattr(config.analysis, "deterministic_proof_routing", True)
-            ),
+            enable_deterministic_proof_routing=True,
         )
         self.candidate_pipeline = CandidatePipeline(
             local_detector=self._detect_local_rule_candidates,
@@ -258,10 +265,11 @@ class Analyzer:
         )
         self._owns_llm_clients = llm_clients is None
         self.validation_result_cache = validation_result_cache
+        self.llm_clients: Dict[str, LLMClient]
         if llm_clients is not None:
             self.llm_clients = llm_clients
         else:
-            self.llm_clients: Dict[str, LLMClient] = {}
+            self.llm_clients = {}
             for name, llm_cfg in config.llms.items():
                 self.llm_clients[name] = LLMClient(
                     api_key=llm_cfg.api_key,
@@ -284,7 +292,7 @@ class Analyzer:
                     base_url_max_concurrent_requests=getattr(
                         llm_cfg, "base_url_max_concurrent_requests", 0
                     ),
-                    global_max_concurrent_requests=getattr(config.analysis, "llm_max_inflight", 8),
+                    global_max_concurrent_requests=config.concurrency.llm_max_inflight,
                     supports_structured_output=getattr(
                         llm_cfg, "supports_structured_output", False
                     ),
@@ -308,7 +316,6 @@ class Analyzer:
                 audit_log_path=self._tool_audit_log_path(),
             ),
         )
-        self.spec_registry = SpecRegistry(project_root=config.project.project_root)
         self.workflow_spec = self.spec_registry.get_workflow(config.analysis.workflow_name)
         self.candidate_ledger = candidate_ledger or CandidateLedger(
             project_id=str(
@@ -523,15 +530,9 @@ class Analyzer:
             "candidate_ledger": self.candidate_ledger,
             "candidate_ledger_context": [],
             "candidate_ledger_summary": {},
-            "candidate_lifecycle_v3": bool(
-                getattr(self.config.analysis, "candidate_lifecycle_v3", True)
-            ),
-            "canonical_outcome_projection_enabled": bool(
-                getattr(self.config.analysis, "canonical_outcome_projection", True)
-            ),
-            "finding_root_v1_enabled": bool(
-                getattr(self.config.analysis, "finding_root_v1", False)
-            ),
+            "candidate_lifecycle_v3": True,
+            "canonical_outcome_projection_enabled": True,
+            "finding_root_v1_enabled": True,
             "budget_exhaustion_policy": str(
                 getattr(self.config.analysis, "budget_exhaustion_policy", "observe") or "observe"
             ),
@@ -748,6 +749,7 @@ class Analyzer:
                     "config_hash": self._config_hash(),
                     "model_manifest_hash": self._model_manifest_hash(),
                     "knowledge_db_version": self._knowledge_db_version(),
+                    "effective_rules_sha256": self._effective_rules_sha256(),
                 },
             )
             if blockers:
@@ -895,9 +897,7 @@ class Analyzer:
 
     def _step_model_entry(self, state: Dict[str, Any]) -> None:
         if self.config.analysis.enable_global_model:
-            impl_result = (
-                state.get("impl_result") if isinstance(state.get("impl_result"), dict) else {}
-            )
+            impl_result = _as_dict(state.get("impl_result"))
             entry_func = str(state.get("entry_func") or "")
             entry_index_name = str(state.get("entry_index_name") or "")
             snapshot = self.snapshot_store.load_snapshot(entry_index_name)
@@ -1015,27 +1015,19 @@ class Analyzer:
         # entry and then asked the LLM to choose worker tickets before there
         # was a validation group.  Besides producing the same lead repeatedly,
         # it consumed an LLM request per entry even when no contradictory
-        # decision evidence existed.  Keep deep investigation opt-in through
-        # the legacy broad-synthesis mode until it can be scheduled from a
-        # frozen, high-risk validation group.
-        if bool(
-            getattr(
-                self.config.analysis,
-                "candidate_first_validation",
-                True,
-            )
-        ):
-            state["notes"].append(
-                "Focused investigator planning skipped for the candidate-first "
-                "lifecycle; deterministic discovery owns candidate creation."
-            )
-            self._record_engine_capability(
-                "focused_investigators",
-                status="complete",
-                active=False,
-                reason="candidate_first_validation",
-            )
-            return
+        # decision evidence existed. The stable path keeps candidate creation
+        # deterministic and routes frozen validation groups downstream.
+        state["notes"].append(
+            "Focused investigator planning skipped for the stable candidate-first "
+            "lifecycle; deterministic discovery owns candidate creation."
+        )
+        self._record_engine_capability(
+            "focused_investigators",
+            status="complete",
+            active=False,
+            reason="stable_candidate_first_lifecycle",
+        )
+        return
 
         va_agent_cfg = next(
             (
@@ -1213,12 +1205,7 @@ class Analyzer:
             1,
             min(
                 len(tickets),
-                int(
-                    getattr(self.config.analysis, "investigator_workers", 0)
-                    or getattr(self.config.analysis, "entry_workers", 0)
-                    or getattr(self.config.analysis, "parallel_workers", 1)
-                    or 1
-                ),
+                self.config.concurrency.investigator_workers,
                 max_worker_cap,
             ),
         )
@@ -1356,33 +1343,10 @@ class Analyzer:
                 continue
 
             logger.info("Running Vulnerability Analyzer agent for task: %s", agent_cfg.task)
-            candidate_first = bool(
-                getattr(
-                    self.config.analysis,
-                    "candidate_first_validation",
-                    True,
-                )
-            )
-            if candidate_first:
-                # The candidate-first path must collect *all* inexpensive
-                # deterministic facts before it considers an expensive model.
-                # A task router, even a local one, is a lossy pre-filter (for
-                # example, "memory corruption" does not necessarily name a
-                # bounds skill).  Restricting collectors here would silently
-                # turn an omitted keyword into a false negative.
-                selection = self._candidate_first_skill_selection(agent_cfg)
-            else:
-                va_llm_ref = agent_cfg.llm_ref if agent_cfg.llm_ref else "default"
-                va_client = self.llm_clients.get(va_llm_ref, self.llm_clients["default"])
-                selection = self._select_vulnerability_skills_for_config(agent_cfg, va_client)
-                analyzer_agent = VulnerabilityAnalyzer(
-                    va_client,
-                    self._get_tools("vulnerability_analyzer", active_skill_names=selection.skills),
-                    tool_policy=self._tool_policy_for_agent(
-                        "vulnerability_analyzer",
-                        active_skill_names=selection.skills,
-                    ),
-                )
+            # The stable candidate-first path collects every inexpensive
+            # deterministic fact. A task router would be a lossy pre-filter:
+            # omitted keywords must not turn into false negatives.
+            selection = self._candidate_first_skill_selection(agent_cfg)
 
             agent_context["task"] = agent_cfg.task
             agent_context["entry_custom_prompt"] = getattr(
@@ -1419,130 +1383,29 @@ class Analyzer:
             # of the same validation obligation.  The default route therefore
             # sends structured deterministic candidates directly to the shared
             # validator.  Focused deep workers remain available for the small
-            # set of high-risk contradictory tickets planned above, while an
-            # operator can explicitly opt into broad synthesis for exploration.
-            if candidate_first:
-                self._register_candidate_issues(
-                    state,
-                    candidate_signals,
-                    source="deterministic_candidate_discovery",
-                )
-                new_issues = self._deduplicate_against_history(
-                    list(candidate_signals),
-                    state,
-                )
-                state["pending_new_issues"].extend(new_issues)
-                state["notes"].append(
-                    "Routed structured deterministic candidates directly to "
-                    "validation; broad vulnerability synthesis is disabled "
-                    "for the candidate-first lifecycle."
-                )
-                self._record_engine_capability(
-                    "vulnerability_analyzer",
-                    status="complete",
-                    active=False,
-                    reason="candidate_first_validation",
-                    candidate_count=len(candidate_signals),
-                )
-                continue
-
-            response = analyzer_agent.run(
-                agent_context,
-                max_iterations=self.config.analysis.max_tool_iterations,
-            )
-            iteration_budget_reached = self._record_llm_iteration_budget(
+            # set of high-risk contradictory tickets planned above.
+            self._register_candidate_issues(
                 state,
-                response,
-                agent_name="vulnerability_analyzer",
-                outcome="completed" if response.success else "incomplete",
+                candidate_signals,
+                source="deterministic_candidate_discovery",
             )
-
-            if response.success:
-                self._record_engine_capability(
-                    "vulnerability_analyzer",
-                    status="complete",
-                    active=True,
-                    iteration_budget_reached=iteration_budget_reached,
-                )
-                raw_new_issues = response.data.get("issues", [])
-                coverage = self._normalize_candidate_coverage(
-                    response.data.get("candidate_coverage")
-                )
-                if coverage:
-                    state["va_candidate_coverage_summary"] = self._candidate_coverage_summary(
-                        coverage
-                    )
-                if candidate_signals:
-                    self._mark_va_unreviewed_candidates(candidate_signals, coverage)
-                    raw_new_issues = list(raw_new_issues) + candidate_signals
-                    state["notes"].append(candidate_batch.note())
-                self._register_candidate_issues(
-                    state,
-                    raw_new_issues,
-                    source="vulnerability_mining",
-                )
-                va_ctx_tokens = (
-                    response.metadata.get("context_tokens", 0) if response.metadata else 0
-                )
-                state["total_context_tokens"] += va_ctx_tokens
-                self._accumulate_cumulative_token_metadata(
-                    state, response.metadata if response.metadata else {}
-                )
-                logger.info(
-                    "Vulnerability Analyzer found %d issue(s) for task: %s (ctx ≈%s tokens)",
-                    len(raw_new_issues),
-                    agent_cfg.task,
-                    f"{va_ctx_tokens:,}",
-                )
-
-                new_issues = self._deduplicate_against_history(raw_new_issues, state)
-                state["pending_new_issues"].extend(new_issues)
-                state["notes"].append(f"Analyzed task: {agent_cfg.task}")
-                if agent_context.get("entry_custom_prompt"):
-                    state["notes"].append(
-                        f"Entry custom prompt: {agent_context['entry_custom_prompt']}"
-                    )
-            else:
-                logger.error("Vulnerability analysis failed: %s", response.error)
-                state["notes"].append(f"Vulnerability analysis failed: {response.error}")
-                if candidate_signals:
-                    self._register_candidate_issues(
-                        state,
-                        candidate_signals,
-                        source="deterministic_fallback",
-                    )
-                    new_issues = self._deduplicate_against_history(candidate_signals, state)
-                    state["pending_new_issues"].extend(new_issues)
-                    state["notes"].append(
-                        f"Retained {len(new_issues)} local/backend candidate(s) "
-                        "despite vulnerability analyzer failure."
-                    )
-                if iteration_budget_reached:
-                    # Iteration limits are an observability budget, not a
-                    # correctness authority.  Keep deterministic candidates
-                    # actionable and expose incomplete LLM synthesis without
-                    # converting the entry into an error.
-                    self._record_engine_capability(
-                        "vulnerability_analyzer",
-                        status="degraded",
-                        active=True,
-                        reason="soft_iteration_budget_reached",
-                        result_retained=True,
-                    )
-                    state["notes"].append(
-                        "Vulnerability analyzer reached its soft iteration budget; "
-                        "the entry remains analyzable and unresolved candidates are "
-                        "routed to needs_review."
-                    )
-                else:
-                    self._record_engine_capability(
-                        "vulnerability_analyzer",
-                        status="failed",
-                        active=True,
-                        reason=str(response.error or "llm_analysis_failed"),
-                    )
-                    state["any_failure"] = True
-                    state["failure_msg"] = response.error
+            new_issues = self._deduplicate_against_history(
+                list(candidate_signals),
+                state,
+            )
+            state["pending_new_issues"].extend(new_issues)
+            state["notes"].append(
+                "Routed structured deterministic candidates directly to "
+                "validation through the stable candidate-first lifecycle."
+            )
+            self._record_engine_capability(
+                "vulnerability_analyzer",
+                status="complete",
+                active=False,
+                reason="stable_candidate_first_lifecycle",
+                candidate_count=len(candidate_signals),
+            )
+            continue
 
     def _record_llm_iteration_budget(
         self,
@@ -1686,9 +1549,11 @@ class Analyzer:
         callee_scan = self._direct_callee_rule_scan_budget(state)
         issues: List[Dict[str, Any]] = []
         if self._project_language() == "java":
-            generator = JavaRuleCandidateGenerator()
+            java_generator = JavaRuleCandidateGenerator(
+                rule_policy=getattr(self, "rule_policy", None)
+            )
             issues.extend(
-                generator.generate_issues(
+                java_generator.generate_issues(
                     entry_func,
                     code,
                     file_path,
@@ -1697,7 +1562,7 @@ class Analyzer:
             )
             issues.extend(
                 self._detect_java_entry_field_rule_candidates(
-                    generator,
+                    java_generator,
                     entry_func=entry_func,
                     impl=impl,
                 )
@@ -1705,23 +1570,30 @@ class Analyzer:
             issues.extend(
                 self._detect_direct_callee_rule_candidates(
                     impl,
-                    generator,
+                    java_generator,
                     state=state,
                     entry_func=entry_func,
-                    **callee_scan,
+                    limit=callee_scan["limit"],
+                    max_depth=callee_scan["max_depth"],
+                    total_limit=callee_scan["total_limit"],
                 )
             )
-            issues.extend(self._detect_java_project_file_rule_candidates(generator))
+            issues.extend(self._detect_java_project_file_rule_candidates(java_generator))
         elif profile == "regex":
-            generator = RegexCandidateGenerator(self._get_local_pattern_semantics())
-            issues.extend(generator.generate_issues(entry_func, code, file_path))
+            regex_generator = RegexCandidateGenerator(
+                self._get_local_pattern_semantics(),
+                rule_policy=getattr(self, "rule_policy", None),
+            )
+            issues.extend(regex_generator.generate_issues(entry_func, code, file_path))
             issues.extend(
                 self._detect_direct_callee_rule_candidates(
                     impl,
-                    generator,
+                    regex_generator,
                     state=state,
                     entry_func=entry_func,
-                    **callee_scan,
+                    limit=callee_scan["limit"],
+                    max_depth=callee_scan["max_depth"],
+                    total_limit=callee_scan["total_limit"],
                 )
             )
         if self._project_language() != "java" and profile in {"clang", "unified"}:
@@ -1729,6 +1601,7 @@ class Analyzer:
                 self._get_local_pattern_semantics(),
                 semantic_overlay=self._get_semantic_overlay(),
                 tooling_evidence_provider=self._clang_tooling_evidence_for,
+                rule_policy=getattr(self, "rule_policy", None),
             )
             issues.extend(clang_generator.generate_issues(entry_func, code, file_path))
             issues.extend(
@@ -1741,6 +1614,7 @@ class Analyzer:
                         start_line=int(impl.get("start_line") or 0),
                         end_line=int(impl.get("end_line") or 0),
                     ),
+                    rule_policy=getattr(self, "rule_policy", None),
                 )
             )
             issues.extend(
@@ -1749,20 +1623,12 @@ class Analyzer:
                     clang_generator,
                     state=state,
                     entry_func=entry_func,
-                    **callee_scan,
+                    limit=callee_scan["limit"],
+                    max_depth=callee_scan["max_depth"],
+                    total_limit=callee_scan["total_limit"],
                 )
             )
         issues.extend(self._detect_extension_rule_candidates(state))
-        rules_config = getattr(getattr(self, "config", None), "rules", None)
-        disabled_rule_ids = {
-            str(rule_id) for rule_id in (getattr(rules_config, "disabled_ids", []) or [])
-        }
-        if disabled_rule_ids:
-            issues = [
-                issue
-                for issue in issues
-                if str(issue.get("rule_id") or issue.get("rule") or "") not in disabled_rule_ids
-            ]
         issues = dedupe_rule_candidates(issues)
         issues = self._apply_candidate_validation_budget(issues)
         self._record_engine_capability(
@@ -1803,19 +1669,14 @@ class Analyzer:
             return []
         registry = getattr(self, "_extension_rule_registry", None)
         if registry is None:
-            registry = RuleRegistry(
-                disabled_ids=list(getattr(rules_config, "disabled_ids", []) or [])
-            )
-            known_skills = sorted(self.spec_registry.skills)
-            for configured in packs:
-                path = Path(str(configured)).expanduser()
-                if not path.is_absolute():
-                    path = Path(self.config.project.project_root) / path
-                registry.load_pack(path, known_skills=known_skills)
-            registry.load_providers(providers)
+            registry = self.effective_rules.extension_registry
+            if registry is None:
+                raise RuntimeError(
+                    "rule preflight did not retain the configured extension registry"
+                )
             self._extension_rule_registry = registry
 
-        impl = state.get("impl_result") if isinstance(state.get("impl_result"), dict) else {}
+        impl = _as_dict(state.get("impl_result"))
         context = RuleContext(
             language=self._project_language(),
             project_root=Path(self.config.project.project_root),
@@ -1859,6 +1720,7 @@ class Analyzer:
             self.code_index,
             self._get_local_pattern_semantics(),
             semantic_overlay=self._get_semantic_overlay(),
+            rule_policy=getattr(self, "rule_policy", None),
         )
         issues = generator.generate_for_entry(
             entry_func,
@@ -1939,6 +1801,7 @@ class Analyzer:
             self.code_index,
             self._get_local_pattern_semantics(),
             semantic_overlay=self._get_semantic_overlay(),
+            rule_policy=getattr(self, "rule_policy", None),
         )
         issues = self._detect_graph_rule_candidates(state)
         state.setdefault("_candidate_signal_cache", {})["graph"] = issues
@@ -1959,14 +1822,20 @@ class Analyzer:
         java_generator: Optional[JavaRuleCandidateGenerator] = None
         clang_generator: Optional[ClangAstCfgCandidateGenerator] = None
         if self._project_language() == "java":
-            java_generator = JavaRuleCandidateGenerator()
+            java_generator = JavaRuleCandidateGenerator(
+                rule_policy=getattr(self, "rule_policy", None)
+            )
         elif profile == "regex":
-            generator = RegexCandidateGenerator(self._get_local_pattern_semantics())
+            generator = RegexCandidateGenerator(
+                self._get_local_pattern_semantics(),
+                rule_policy=getattr(self, "rule_policy", None),
+            )
         if self._project_language() != "java" and profile in {"clang", "unified"}:
             clang_generator = ClangAstCfgCandidateGenerator(
                 self._get_local_pattern_semantics(),
                 semantic_overlay=self._get_semantic_overlay(),
                 tooling_evidence_provider=self._clang_tooling_evidence_for,
+                rule_policy=getattr(self, "rule_policy", None),
             )
         issues = self._detect_local_rule_candidates(state)
         state.setdefault("_candidate_signal_cache", {})["local"] = issues
@@ -1981,7 +1850,11 @@ class Analyzer:
                     if issue.get("candidate_source") == "clang_ast_cfg"
                     and clang_generator is not None
                     else (
-                        generator or RegexCandidateGenerator(self._get_local_pattern_semantics())
+                        generator
+                        or RegexCandidateGenerator(
+                            self._get_local_pattern_semantics(),
+                            rule_policy=getattr(self, "rule_policy", None),
+                        )
                     ).issue_to_ticket(issue)
                 )
             )
@@ -2117,7 +1990,7 @@ class Analyzer:
 
     def _direct_callee_rule_scan_budget(self, state: Dict[str, Any]) -> Dict[str, int]:
         budget = self._current_effective_budget(state)
-        hard_caps = budget.get("hard_caps") if isinstance(budget.get("hard_caps"), dict) else {}
+        hard_caps = _as_dict(budget.get("hard_caps"))
         analysis_config = getattr(getattr(self, "config", None), "analysis", None)
         configured_breadth = int(
             budget.get("premodel_callees")
@@ -2221,6 +2094,7 @@ class Analyzer:
                             end_line=int(callee_impl.get("end_line") or 0),
                         ),
                         allowed_skills=allowed_skills,
+                        rule_policy=getattr(self, "rule_policy", None),
                     )
                 )
             issues.extend(
@@ -2754,7 +2628,7 @@ class Analyzer:
         cache_key = (func_name, file_path, int(start_line or 0), int(end_line or 0))
         cache = getattr(self, "_clang_tooling_evidence_cache", None)
         if isinstance(cache, dict) and cache_key in cache:
-            return cache[cache_key]
+            return cast(Dict[str, Any], cache[cache_key])
         provider = getattr(self, "_clang_tooling_provider", None)
         provider_path = getattr(provider, "compile_commands_path", None)
         if provider is None or str(provider_path) != str(compile_commands_path):
@@ -2819,12 +2693,14 @@ class Analyzer:
         tooling_evidence: Dict[str, Any],
         *,
         allowed_skills: Optional[List[str]] = None,
+        rule_policy: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
         return clang_tooling_matcher_candidates_from_evidence(
             func_name,
             file_path,
             tooling_evidence,
             allowed_skills=allowed_skills,
+            rule_policy=rule_policy,
         )
 
     @staticmethod
@@ -3404,9 +3280,9 @@ class Analyzer:
 
     @staticmethod
     def _java_provider_signal_target_function(signal: Dict[str, Any], entry_func: str = "") -> str:
-        sink = signal.get("sink") if isinstance(signal.get("sink"), dict) else {}
-        source = signal.get("source") if isinstance(signal.get("source"), dict) else {}
-        path = signal.get("path") if isinstance(signal.get("path"), list) else []
+        sink = _as_dict(signal.get("sink"))
+        source = _as_dict(signal.get("source"))
+        path = _as_list(signal.get("path"))
         for value in (
             sink.get("function"),
             sink.get("method"),
@@ -4028,24 +3904,40 @@ class Analyzer:
         )
         project_id = str(getattr(project, "project_id", "") or project_root.name or "project")
         configured_entry_identity = ""
-        if project is not None:
+        configured_entry_function = str(getattr(project, "entry_function", "") or "").strip()
+        if project is not None and configured_entry_function:
             configured_entry_identity = FunctionEntry(
-                function_name=str(getattr(project, "entry_function", "") or ""),
+                function_name=configured_entry_function,
                 file_path=str(getattr(project, "entry_file_path", "") or "") or None,
                 signature=str(getattr(project, "entry_signature", "") or "") or None,
             ).identity_key(project_root)
         revision = str(getattr(getattr(self, "candidate_ledger", None), "revision", "") or "")
-        analysis_cfg = getattr(config, "analysis", None)
-        enable_decision_facts = bool(
-            getattr(analysis_cfg, "decision_fact_graph_v1", False)
-            or getattr(analysis_cfg, "security_obligation_v1", False)
-        )
-        enable_context_v31 = bool(
-            getattr(analysis_cfg, "decision_context_v31", False) or enable_decision_facts
-        )
-        enable_context_v32 = bool(getattr(analysis_cfg, "decision_context_v32", False))
-        enable_context_v33 = bool(getattr(analysis_cfg, "decision_context_v33", False))
-        for issue in issues:
+        governed: List[Dict[str, Any]] = []
+        for raw_issue in issues:
+            issue = raw_issue
+            if path_kind == "backend_signal":
+                issue["candidate_kind"] = "backend_signal"
+                issue.setdefault(
+                    "signal_source",
+                    str(issue.get("candidate_source") or issue.get("finding_kind") or checker),
+                )
+                issue.setdefault(
+                    "native_rule_id",
+                    str(issue.get("rule_id") or issue.get("rule") or ""),
+                )
+            else:
+                rule_id = str(issue.get("rule_id") or issue.get("rule") or "")
+                effective_rules = getattr(self, "effective_rules", None)
+                rule_policy = getattr(self, "rule_policy", None)
+                if effective_rules is not None and rule_policy is not None:
+                    state = effective_rules.state_for(rule_id)
+                    if state is not None and state.state == "disabled":
+                        # First-layer generator filtering is an optimization.
+                        # This second gate is authoritative and prevents a
+                        # disabled candidate from reaching merge or reporting.
+                        continue
+                    issue = rule_policy.enrich_issue(issue)
+                issue["candidate_kind"] = "deterministic_rule"
             raw_evidence_pack = issue.get("evidence_pack")
             evidence_pack: Dict[str, Any] = (
                 raw_evidence_pack if isinstance(raw_evidence_pack, dict) else {}
@@ -4068,17 +3960,11 @@ class Analyzer:
                 or ""
             )
             issue.setdefault("entry_identity", entry_identity)
-            if enable_decision_facts:
-                issue["decision_fact_graph_v1"] = True
-                issue["security_obligation_v1"] = bool(
-                    getattr(analysis_cfg, "security_obligation_v1", False)
-                )
-            if enable_context_v31:
-                issue["decision_context_v31"] = True
-            if enable_context_v32:
-                issue["decision_context_v32"] = True
-            if enable_context_v33:
-                issue["decision_context_v33"] = True
+            issue["decision_fact_graph_v1"] = True
+            issue["security_obligation_v1"] = True
+            issue["decision_context_v31"] = True
+            issue["decision_context_v32"] = True
+            issue["decision_context_v33"] = True
             envelope = annotate_issue_identity(
                 issue,
                 project_id=project_id,
@@ -4104,7 +3990,8 @@ class Analyzer:
                         "entry_identity": entry_identity,
                     }
                 )
-        return issues
+            governed.append(issue)
+        return governed
 
     def _register_candidate_issues(
         self,
@@ -4127,31 +4014,15 @@ class Analyzer:
                 signature=str(getattr(project, "entry_signature", "") or "") or None,
             ).identity_key(project.project_root)
         )
-        analysis_cfg = getattr(getattr(self, "config", None), "analysis", None)
-        enable_decision_facts = bool(
-            getattr(analysis_cfg, "decision_fact_graph_v1", False)
-            or getattr(analysis_cfg, "security_obligation_v1", False)
-        )
-        enable_context_v31 = bool(
-            getattr(analysis_cfg, "decision_context_v31", False) or enable_decision_facts
-        )
-        enable_context_v32 = bool(getattr(analysis_cfg, "decision_context_v32", False))
-        enable_context_v33 = bool(getattr(analysis_cfg, "decision_context_v33", False))
         for issue in issues:
             if not isinstance(issue, dict):
                 continue
             issue.setdefault("entry_identity", entry_identity)
-            if enable_decision_facts:
-                issue["decision_fact_graph_v1"] = True
-                issue["security_obligation_v1"] = bool(
-                    getattr(analysis_cfg, "security_obligation_v1", False)
-                )
-            if enable_context_v31:
-                issue["decision_context_v31"] = True
-            if enable_context_v32:
-                issue["decision_context_v32"] = True
-            if enable_context_v33:
-                issue["decision_context_v33"] = True
+            issue["decision_fact_graph_v1"] = True
+            issue["security_obligation_v1"] = True
+            issue["decision_context_v31"] = True
+            issue["decision_context_v32"] = True
+            issue["decision_context_v33"] = True
             envelope = annotate_issue_identity(
                 issue,
                 project_id=str(getattr(project, "project_id", "") or project.project_root.name),
@@ -4234,7 +4105,8 @@ class Analyzer:
                 ticket = SubAgentTicket(
                     id=str(issue.get("candidate_id") or issue.get("id") or envelope.run_issue_uid),
                     skill=str(
-                        issue.get("defect_class")
+                        issue.get("skill")
+                        or issue.get("defect_class")
                         or issue.get("subcategory")
                         or issue.get("category")
                         or "security_review"
@@ -4276,7 +4148,7 @@ class Analyzer:
         explicit = issue.get("priority_score")
         if explicit not in (None, ""):
             try:
-                return max(0, min(100, int(float(explicit))))
+                return max(0, min(100, int(float(str(explicit)))))
             except (TypeError, ValueError):
                 pass
         severity = str(issue.get("impact_level") or "").lower()
@@ -4335,7 +4207,7 @@ class Analyzer:
                 self.code_index,
                 self.user_config,
                 self.snapshot_store,
-                self.config.project.exclude_paths,
+                (Path(path) for path in self.config.project.exclude_paths),
             ).build()
         return self._local_pattern_semantics
 
@@ -4629,24 +4501,19 @@ class Analyzer:
             pipeline = ValidationPipeline(
                 user_config,
                 issue_key_fn=self._canonical_issue_key,
-                enable_deterministic_proof_routing=bool(
-                    getattr(
-                        getattr(getattr(self, "config", None), "analysis", None),
-                        "deterministic_proof_routing",
-                        True,
-                    )
-                ),
+                enable_deterministic_proof_routing=True,
             )
         return pipeline.score_components(issue, val_data)
 
     def _finding_baseline_for_issue(self, issue: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         pipeline = getattr(self, "validation_pipeline", None)
         if pipeline is not None:
-            return pipeline.find_baseline(issue)
+            return cast(Optional[Dict[str, Any]], pipeline.find_baseline(issue))
         dedup_key = str(issue.get("dedup_key") or self._canonical_issue_key(issue))
         lookup = getattr(self.user_config, "get_finding_baseline_for_issue", None)
         if callable(lookup):
-            return lookup(issue, dedup_key)
+            baseline = lookup(issue, dedup_key)
+            return cast(Optional[Dict[str, Any]], baseline)
         return self.user_config.get_finding_baseline(dedup_key)
 
     @staticmethod
@@ -5109,7 +4976,7 @@ class Analyzer:
         return category_validation_requirements(issue)
 
     @staticmethod
-    def _issue_rank(issue: Dict[str, Any]) -> tuple[int, float, int]:
+    def _issue_rank(issue: Dict[str, Any]) -> tuple[int, int, int, int, float, int]:
         return issue_rank(issue)
 
     @classmethod
@@ -5175,6 +5042,12 @@ class Analyzer:
             "commit_sha": self._git_commit_sha(self.config.project.project_root),
             "config_hash": self._config_hash(),
             "model_manifest_hash": self._model_manifest_hash(),
+            "effective_rules_sha256": self._effective_rules_sha256(),
+            "rule_catalog": serialize_effective_rules(self.effective_rules),
+            "rule_candidate_counts": self._rule_candidate_counts(state),
+            "runtime_spec": self._public_config_value(
+                getattr(self.config, "runtime_provenance", None)
+            ),
             "engine_capabilities": engine_capabilities,
             "version": __version__,
             "knowledge_db_version": self._knowledge_db_version(),
@@ -5265,6 +5138,54 @@ class Analyzer:
             "diff_focus": dict(state.get("diff_focus", {})),
             "audit_observation_count": len(state.get("observations", [])),
             "audit_observations": list(state.get("observations", [])),
+        }
+
+    @staticmethod
+    def _rule_candidate_counts(state: Dict[str, Any]) -> Dict[str, Any]:
+        """Count emitted deterministic candidates without claiming rule executions.
+
+        The cache contains the post-detector candidate lists for this entry.
+        Counting those records (and not detector invocations) keeps the report
+        honest when a rule is inapplicable, disabled, or unavailable.
+        """
+
+        cache = state.get("_candidate_signal_cache")
+        if not isinstance(cache, dict):
+            return {"by_engine": {}, "by_rule": {}, "total": 0}
+        by_engine: Dict[str, int] = {}
+        by_rule: Dict[str, int] = {}
+        seen: Set[str] = set()
+        for bucket, values in cache.items():
+            if str(bucket) == "backend" or not isinstance(values, (list, tuple)):
+                continue
+            for raw in values:
+                if not isinstance(raw, dict):
+                    continue
+                if str(raw.get("candidate_kind") or "") == "backend_signal":
+                    continue
+                rule_id = str(raw.get("rule_id") or raw.get("rule") or "")
+                if not rule_id:
+                    continue
+                unique = str(
+                    raw.get("occurrence_uid")
+                    or raw.get("candidate_uid")
+                    or raw.get("candidate_id")
+                    or raw.get("id")
+                    or f"{rule_id}:{raw.get('location') or raw.get('line') or ''}"
+                )
+                seen_key = f"{rule_id}:{unique}"
+                if seen_key in seen:
+                    continue
+                seen.add(seen_key)
+                engine = str(
+                    raw.get("rule_engine") or raw.get("candidate_source") or bucket or "unknown"
+                )
+                by_rule[rule_id] = by_rule.get(rule_id, 0) + 1
+                by_engine[engine] = by_engine.get(engine, 0) + 1
+        return {
+            "by_engine": dict(sorted(by_engine.items())),
+            "by_rule": dict(sorted(by_rule.items())),
+            "total": sum(by_rule.values()),
         }
 
     def _engine_capabilities(self) -> Dict[str, Dict[str, Any]]:
@@ -5508,6 +5429,13 @@ class Analyzer:
             "analysis": self._public_config_value(getattr(self.config, "analysis", None)),
             "indexing": self._public_config_value(getattr(self.config, "indexing", None)),
             "reporting": self._public_config_value(getattr(self.config, "reporting", None)),
+            "scan": self._public_config_value(getattr(self.config, "scan", None)),
+            "concurrency": self._public_config_value(getattr(self.config, "concurrency", None)),
+            "rules": self._public_config_value(getattr(self.config, "rules", None)),
+            "effective_rules_sha256": self._effective_rules_sha256(),
+            "runtime_spec": self._public_config_value(
+                getattr(self.config, "runtime_provenance", None)
+            ),
             "project": {
                 "project_root": str(getattr(self.config.project, "project_root", "") or ""),
                 "source_root": str(getattr(self.config.project, "source_root", "") or ""),
@@ -5520,14 +5448,27 @@ class Analyzer:
         stable = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
         return hashlib.sha256(stable.encode("utf-8")).hexdigest()
 
+    def _effective_rules_sha256(self) -> str:
+        provenance = getattr(self.config, "rule_catalog_provenance", None)
+        if provenance is None:
+            effective = getattr(self.config, "effective_rules", None)
+            provenance = getattr(effective, "provenance", None)
+        if isinstance(provenance, dict):
+            return str(
+                provenance.get("effective_sha256") or provenance.get("effective_rules_sha256") or ""
+            )
+        return str(
+            getattr(provenance, "effective_sha256", "")
+            or getattr(provenance, "effective_rules_sha256", "")
+            or ""
+        )
+
     def _model_manifest_hash(self) -> str:
         llms: Dict[str, Any] = getattr(self.config, "llms", {}) or {}
         payload = {
             name: {
-                "provider": getattr(config, "provider", ""),
                 "base_urls": getattr(config, "base_urls", []),
                 "models": getattr(config, "models", []),
-                "temperature": getattr(config, "temperature", None),
                 "max_tokens": getattr(config, "max_tokens", None),
                 "supports_structured_output": getattr(
                     config,
@@ -5715,6 +5656,7 @@ class Analyzer:
                 extra=getattr(agent_cfg, "skills", None),
             )
         ]
+        available = self._language_filtered_vulnerability_skills(available)
         return SkillSelection(
             skills=available,
             restricted=False,
@@ -5802,9 +5744,7 @@ class Analyzer:
         for item in items[:limit]:
             if not isinstance(item, dict):
                 continue
-            evidence_pack = (
-                item.get("evidence_pack") if isinstance(item.get("evidence_pack"), dict) else {}
-            )
+            evidence_pack = _as_dict(item.get("evidence_pack"))
             compact.append(
                 {
                     "candidate_id": item.get("candidate_id")
@@ -5875,11 +5815,7 @@ class Analyzer:
         for candidate in candidates:
             if not isinstance(candidate, dict):
                 continue
-            evidence_pack = (
-                candidate.get("evidence_pack")
-                if isinstance(candidate.get("evidence_pack"), dict)
-                else {}
-            )
+            evidence_pack = _as_dict(candidate.get("evidence_pack"))
             candidate_id = str(
                 candidate.get("candidate_id")
                 or candidate.get("id")
@@ -6872,9 +6808,9 @@ class Analyzer:
                     issue["line"] = parsed_line
                 if not issue.get("start_line"):
                     issue["start_line"] = parsed_line
-                end_line = issue.get("end_line")
-                if isinstance(end_line, int) and end_line != parsed_line:
-                    issue["location"] = f"{file_path}:{parsed_line}-{end_line}"
+                parsed_end_line = issue.get("end_line")
+                if isinstance(parsed_end_line, int) and parsed_end_line != parsed_line:
+                    issue["location"] = f"{file_path}:{parsed_line}-{parsed_end_line}"
                 else:
                     issue["location"] = f"{file_path}:{parsed_line}"
                 continue
@@ -7030,16 +6966,15 @@ class Analyzer:
             value = impl.get(key) or framework.get(key)
             if value:
                 return str(value)
+        annotations = _as_list(impl.get("annotations"))
+        class_annotations = _as_list(impl.get("class_annotations"))
         text = " ".join(
-            str(item.get("name") or item.get("code") or item)
-            for item in (
-                (impl.get("annotations") if isinstance(impl.get("annotations"), list) else [])
-                + (
-                    impl.get("class_annotations")
-                    if isinstance(impl.get("class_annotations"), list)
-                    else []
-                )
+            (
+                str(item.get("name") or item.get("code") or item)
+                if isinstance(item, dict)
+                else str(item)
             )
+            for item in annotations + class_annotations
         ).lower()
         name = str(
             impl.get("qualified_name") or impl.get("function") or impl.get("name") or ""
@@ -7089,7 +7024,7 @@ class Analyzer:
     def _java_route_context(
         framework: Dict[str, Any], annotations: Sequence[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        route = framework.get("route") if isinstance(framework.get("route"), dict) else {}
+        route = _as_dict(framework.get("route"))
         mappings = [
             item
             for item in annotations
@@ -7102,7 +7037,7 @@ class Analyzer:
 
     @staticmethod
     def _java_reachable_callee_context(impl: Dict[str, Any], *, limit: int) -> List[Dict[str, Any]]:
-        callees = impl.get("callees") if isinstance(impl.get("callees"), list) else []
+        callees = _as_list(impl.get("callees"))
         preferred: List[Dict[str, Any]] = []
         fallback: List[Dict[str, Any]] = []
         for callee in callees:
@@ -7142,18 +7077,18 @@ class Analyzer:
     ) -> List[Dict[str, Any]]:
         if not isinstance(raw_issues, list):
             return []
-        candidate_ids = set()
+        candidate_ids: Set[str] = set()
         for item in candidate_signals:
             if not isinstance(item, dict):
                 continue
-            pack = item.get("evidence_pack") if isinstance(item.get("evidence_pack"), dict) else {}
+            pack = _as_dict(item.get("evidence_pack"))
             candidate_id = str(
                 item.get("candidate_id") or item.get("id") or pack.get("candidate_id") or ""
             )
             if candidate_id:
                 candidate_ids.add(candidate_id)
         entry_func = str(state.get("entry_func") or "")
-        impl = state.get("impl_result") if isinstance(state.get("impl_result"), dict) else {}
+        impl = _as_dict(state.get("impl_result"))
         entry_file = str(impl.get("file") or "")
         normalized: List[Dict[str, Any]] = []
         proof_sources = {
@@ -7168,9 +7103,7 @@ class Analyzer:
             if not isinstance(issue, dict):
                 continue
             issue = dict(issue)
-            pack = (
-                issue.get("evidence_pack") if isinstance(issue.get("evidence_pack"), dict) else {}
-            )
+            pack = _as_dict(issue.get("evidence_pack"))
             candidate_id = str(
                 issue.get("candidate_id") or issue.get("id") or pack.get("candidate_id") or ""
             )
@@ -7187,6 +7120,7 @@ class Analyzer:
                 issue["file"] = entry_file
             if not is_candidate_backed:
                 issue["candidate_source"] = "java_llm_active_audit"
+                issue["candidate_kind"] = "llm_observation"
                 issue["finding_kind"] = "java_active_audit_observation"
                 issue["active_audit_review_only"] = True
                 issue.setdefault("rule", "java_llm_active_audit")
@@ -7226,10 +7160,32 @@ class Analyzer:
     ) -> List[str]:
         """Keep vulnerability skills aligned with the configured project language."""
         names = list(dict.fromkeys(skill_names))
-        if self._project_language() == "java":
-            java_names = [name for name in names if name in JAVA_VULNERABILITY_SKILLS]
-            return java_names or names
-        return [name for name in names if name not in JAVA_VULNERABILITY_SKILLS]
+        language = self._project_language()
+
+        def supports_language(name: str) -> bool:
+            skill = self.spec_registry.get_skill(name)
+            if skill is None:
+                raise ValueError(f"Unknown vulnerability skill {name!r}")
+            languages = list(getattr(skill, "languages", []))
+            if not languages:
+                raise ValueError(f"Skill {name!r} has no language metadata")
+            return language in languages
+
+        filtered = [name for name in names if supports_language(name)]
+        if filtered:
+            return filtered
+
+        # The shared vulnerability-analyzer AGENT.md intentionally remains a
+        # C/C++-oriented prompt contract. Java defaults therefore come from
+        # language-scoped Skill contracts rather than a second hard-coded
+        # name list. Shared modeling/validation skills declare both languages
+        # and are not part of this vulnerability fallback.
+        registry_skills = getattr(self.spec_registry, "skills", {})
+        return sorted(
+            skill.name
+            for skill in registry_skills.values()
+            if list(getattr(skill, "languages", [])) == [language]
+        )
 
     @staticmethod
     def _java_annotation_context(impl: Dict[str, Any]) -> List[Any]:
@@ -7782,12 +7738,10 @@ class Analyzer:
         if not mapper or line <= 0:
             return issue
         binding: Optional[Dict[str, Any]] = None
-        for method in (mapper.get("methods") or {}).values():
+        for method in _as_dict(mapper.get("methods")).values():
             if not isinstance(method, dict):
                 continue
-            annotations = (
-                method.get("annotations") if isinstance(method.get("annotations"), list) else []
-            )
+            annotations = _as_list(method.get("annotations"))
             matched = next(
                 (
                     annotation
@@ -7800,7 +7754,7 @@ class Analyzer:
                 continue
             annotation_code = str(matched.get("code") or "")
             variables = re.findall(r"\$\{\s*([^}\s]+)\s*}", annotation_code)
-            parameters = method.get("parameters") or []
+            parameters = _as_list(method.get("parameters"))
             binding = {
                 "interface": mapper.get("full_name") or "",
                 "interface_file": rel_path,
@@ -7903,11 +7857,7 @@ class Analyzer:
             ]
             if not variables:
                 continue
-            variable_lines = (
-                binding.get("variable_lines")
-                if isinstance(binding.get("variable_lines"), dict)
-                else {}
-            )
+            variable_lines = _as_dict(binding.get("variable_lines"))
             line = int(variable_lines.get(variables[0]) or binding.get("start_line") or -1)
             statement_text = str(binding.get("statement_text") or "")
             sink = f"MyBatis XML ${variables[0]} text substitution"
@@ -7929,7 +7879,7 @@ class Analyzer:
                 if part
             )
             binding_copy = deepcopy(binding)
-            evidence_pack = {
+            evidence_pack: Dict[str, Any] = {
                 "candidate_id": candidate_id,
                 "candidate_source": "java_local_rule",
                 "defect_class": "sql_injection",

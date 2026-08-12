@@ -22,10 +22,7 @@ class _FakeResponse:
         self.closed = False
 
     def iter_lines(self):
-        yield (
-            b'data: {"choices":[{"delta":{"content":"ok"},'
-            b'"finish_reason":"stop"}]}'
-        )
+        yield (b'data: {"choices":[{"delta":{"content":"ok"},' b'"finish_reason":"stop"}]}')
         yield b"data: [DONE]"
 
     def close(self):
@@ -398,18 +395,23 @@ def test_llm_client_usage_snapshot_is_thread_safe_at_response_boundary(
     messages = [{"role": "user", "content": "hello"}]
 
     with ThreadPoolExecutor(max_workers=16) as executor:
-        responses = list(
-            executor.map(lambda _index: client.chat_completion(messages), range(32))
-        )
+        responses = list(executor.map(lambda _index: client.chat_completion(messages), range(32)))
 
-    expected_prompt = sum(
-        int(response["usage"]["prompt_tokens"]) for response in responses
-    )
-    expected_completion = sum(
-        int(response["usage"]["completion_tokens"]) for response in responses
-    )
+    expected_prompt = sum(int(response["usage"]["prompt_tokens"]) for response in responses)
+    expected_completion = sum(int(response["usage"]["completion_tokens"]) for response in responses)
     snapshot = client.usage_snapshot()
-    assert snapshot == {
+    assert {
+        key: snapshot[key]
+        for key in (
+            "successful_calls",
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "estimated_calls",
+            "provider_reported_calls",
+            "provider_usage_coverage",
+        )
+    } == {
         "successful_calls": 32,
         "prompt_tokens": expected_prompt,
         "completion_tokens": expected_completion,
@@ -418,6 +420,8 @@ def test_llm_client_usage_snapshot_is_thread_safe_at_response_boundary(
         "provider_reported_calls": 0,
         "provider_usage_coverage": 0.0,
     }
+    assert snapshot["successful_call_wall_seconds_total"] >= 0.0
+    assert snapshot["successful_call_wall_seconds_p95"] >= 0.0
 
 
 def test_llm_client_usage_snapshot_tracks_provider_coverage_and_survives_failure(
@@ -448,7 +452,18 @@ def test_llm_client_usage_snapshot_tracks_provider_coverage_and_survives_failure
     snapshot_after_success = client.usage_snapshot()
 
     assert response["usage"]["estimated"] is False
-    assert snapshot_after_success == {
+    assert {
+        key: snapshot_after_success[key]
+        for key in (
+            "successful_calls",
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "estimated_calls",
+            "provider_reported_calls",
+            "provider_usage_coverage",
+        )
+    } == {
         "successful_calls": 1,
         "prompt_tokens": 17,
         "completion_tokens": 5,
@@ -474,6 +489,30 @@ def test_llm_client_usage_snapshot_tracks_provider_coverage_and_survives_failure
 
     client.close()
     assert client.usage_snapshot() == snapshot_after_success
+
+
+def test_llm_client_usage_snapshot_records_successful_call_wall_distribution() -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="https://example.test/v1",
+        models=["model"],
+    )
+    usage = {
+        "prompt_tokens": 1,
+        "completion_tokens": 1,
+        "total_tokens": 2,
+        "estimated": True,
+    }
+
+    client._record_successful_usage(usage, duration_seconds=10.0)
+    client._record_successful_usage(usage, duration_seconds=30.0)
+
+    snapshot = client.usage_snapshot()
+    assert snapshot["successful_call_wall_seconds_total"] == 40.0
+    assert snapshot["successful_call_wall_seconds_mean"] == 20.0
+    assert snapshot["successful_call_wall_seconds_p50"] == 20.0
+    assert snapshot["successful_call_wall_seconds_p95"] == 30.0
+    assert snapshot["successful_call_wall_seconds_max"] == 30.0
 
 
 def test_active_stream_has_no_total_elapsed_budget(monkeypatch) -> None:
@@ -695,12 +734,8 @@ def test_llm_client_uses_strictest_positive_cap_for_shared_endpoint() -> None:
         global_max_concurrent_requests=8,
     )
 
-    assert client_a.endpoint_capacity_snapshot()[shared_url][
-        "hard_max_concurrent_requests"
-    ] == 3
-    assert client_b.endpoint_capacity_snapshot()[shared_url][
-        "max_concurrent_requests"
-    ] == 3
+    assert client_a.endpoint_capacity_snapshot()[shared_url]["hard_max_concurrent_requests"] == 3
+    assert client_b.endpoint_capacity_snapshot()[shared_url]["max_concurrent_requests"] == 3
 
 
 def test_llm_client_uses_strictest_positive_process_cap_across_endpoints() -> None:
@@ -740,16 +775,12 @@ def test_llm_client_shared_aimd_reduces_and_recovers_endpoint_cap() -> None:
 
     client_a._record_endpoint_overload(endpoint, reason="unit_test")
 
-    assert client_b.endpoint_capacity_snapshot()[shared_url][
-        "max_concurrent_requests"
-    ] == 4
+    assert client_b.endpoint_capacity_snapshot()[shared_url]["max_concurrent_requests"] == 4
 
     client_a._record_endpoint_success(endpoint)
     client_a._record_endpoint_success(endpoint)
 
-    assert client_b.endpoint_capacity_snapshot()[shared_url][
-        "max_concurrent_requests"
-    ] == 5
+    assert client_b.endpoint_capacity_snapshot()[shared_url]["max_concurrent_requests"] == 5
 
 
 def test_llm_client_aimd_never_reduces_below_two(caplog) -> None:
@@ -765,12 +796,9 @@ def test_llm_client_aimd_never_reduces_below_two(caplog) -> None:
     client._record_endpoint_overload(endpoint, reason="unit_test")
     client._record_endpoint_overload(endpoint, reason="unit_test")
 
-    assert client.endpoint_capacity_snapshot()[shared_url][
-        "max_concurrent_requests"
-    ] == 2
+    assert client.endpoint_capacity_snapshot()[shared_url]["max_concurrent_requests"] == 2
     assert not any(
-        "reduced concurrency from 2 to 2" in record.getMessage()
-        for record in caplog.records
+        "reduced concurrency from 2 to 2" in record.getMessage() for record in caplog.records
     )
 
 
@@ -804,9 +832,9 @@ def test_config_loader_parses_multiple_llm_base_urls(tmp_path) -> None:
     config_path.write_text(
         json.dumps(
             {
+                "config_version": 2,
                 "llms": {
                     "default": {
-                        "provider": "openai",
                         "api_key": "test",
                         "base_urls": [
                             "http://one.example/v1/",
@@ -818,7 +846,22 @@ def test_config_loader_parses_multiple_llm_base_urls(tmp_path) -> None:
                         "models": ["unit-model"],
                     }
                 },
-                "project": {"root": ".", "source_root": "."},
+                "project": {
+                    "root": str(tmp_path),
+                    "source_root": ".",
+                    "language": "c_cpp",
+                },
+                "scan": {"task": ""},
+                "indexing": {"backend": "regex"},
+                "concurrency": {
+                    "entry_workers": 2,
+                    "validator_workers": 2,
+                    "investigator_workers": 1,
+                    "evidence_completion_workers": 2,
+                    "index_workers": 2,
+                    "svf_workers": 1,
+                    "llm_max_inflight": 2,
+                },
             }
         ),
         encoding="utf-8",

@@ -32,6 +32,9 @@ class RuleMatch:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "rule_id": self.rule_id,
+            "candidate_kind": "backend_signal",
+            "signal_source": "joern_rule_engine",
+            "native_rule_id": self.rule_id,
             "rule_name": self.rule_name,
             "category": self.category,
             "score": self.score,
@@ -63,7 +66,9 @@ class RuleEngine:
             try:
                 proc = subprocess.run(
                     [self.joern.joern_path, "--script", str(script)],
-                    capture_output=True, text=True, timeout=300,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
                 )
                 if proc.returncode == 0 and proc.stdout.strip():
                     try:
@@ -121,7 +126,10 @@ class RuleEngine:
             r"@(?:RequestParam|RequestBody|RequestHeader|PathVariable)\b|"
             r"\b(?:args|System\.getenv|System\.getProperty|readLine)\b"
         )
-        if not any(source_markers.search(path.read_text(encoding="utf-8", errors="ignore")) for path in java_files):
+        if not any(
+            source_markers.search(path.read_text(encoding="utf-8", errors="ignore"))
+            for path in java_files
+        ):
             return []
 
         sink_specs = (
@@ -156,7 +164,11 @@ class RuleEngine:
             for category, pattern, score in sink_specs:
                 for match in pattern.finditer(text):
                     line_number = text.count("\n", 0, match.start()) + 1
-                    snippet = lines[line_number - 1].strip() if line_number <= len(lines) else match.group(0)
+                    snippet = (
+                        lines[line_number - 1].strip()
+                        if line_number <= len(lines)
+                        else match.group(0)
+                    )
                     matches.append(
                         RuleMatch(
                             rule_id=f"java_source_entry_cross_layer_flow_{category}",
@@ -229,26 +241,28 @@ class RuleEngine:
             if not name or name.startswith("<"):
                 continue
             line_value = item.get("lineNumber", -1)
-            matches.append(RuleMatch(
-                rule_id=f"paired_{acquire}_{release}",
-                rule_name=f"Missing {release} for {acquire}",
-                category=category,
-                score=6.0,
-                func_name=name,
-                file_path=str(item.get("filename", "")),
-                line_number=int(line_value if line_value is not None else -1),
-                evidence=[
-                    {
-                        "query_family": "paired_ownership_lifecycle",
-                        "acquire": acquire,
-                        "release": release,
-                        "limitation": (
-                            "Same-function release is missing in the CPG summary. The Validator "
-                            "must check ownership transfer, caller cleanup, and custom release aliases."
-                        ),
-                    }
-                ],
-            ))
+            matches.append(
+                RuleMatch(
+                    rule_id=f"paired_{acquire}_{release}",
+                    rule_name=f"Missing {release} for {acquire}",
+                    category=category,
+                    score=6.0,
+                    func_name=name,
+                    file_path=str(item.get("filename", "")),
+                    line_number=int(line_value if line_value is not None else -1),
+                    evidence=[
+                        {
+                            "query_family": "paired_ownership_lifecycle",
+                            "acquire": acquire,
+                            "release": release,
+                            "limitation": (
+                                "Same-function release is missing in the CPG summary. The Validator "
+                                "must check ownership transfer, caller cleanup, and custom release aliases."
+                            ),
+                        }
+                    ],
+                )
+            )
         return matches
 
     def _check_source_to_sink_flow(self, source: str, sink: Dict[str, str]) -> List[RuleMatch]:
@@ -257,14 +271,14 @@ class RuleEngine:
         query = (
             f'def src = cpg.method.name("{source_q}").parameter\n'
             f'def snk = cpg.call.name("{sink_q}").argument\n'
-            f'sink(snk).reachableByFlows(source(src))'
+            f"sink(snk).reachableByFlows(source(src))"
             f'.map(f => Map("source" -> "{self._cpg_string(source)}", '
             f'"sink" -> "{self._cpg_string(sink["name"])}", '
             f'"category" -> "{self._cpg_string(sink["category"])}", '
             f'"path" -> f.elements.map(e => '
             f'Map("code" -> e.code, "lineNumber" -> e.lineNumber.getOrElse(-1), '
             f'"filename" -> e.file.name.headOption.getOrElse(""))).l'
-            f')).l.toJson'
+            f")).l.toJson"
         )
         result = self.joern.query(query)
         if not isinstance(result, list):
@@ -362,8 +376,8 @@ class RuleEngine:
     def _query_semantic_sink_rows(self, sink_regex: str, *, include_nearest: bool) -> Any:
         controls_expr = (
             f'"nearestControls" -> c.method.controlStructure'
-            f'.filter(cs => cs.lineNumber.isDefined && c.lineNumber.isDefined && cs.lineNumber.get <= c.lineNumber.get)'
-            f'.sortBy(cs => -cs.lineNumber.get).code.l.take(6), '
+            f".filter(cs => cs.lineNumber.isDefined && c.lineNumber.isDefined && cs.lineNumber.get <= c.lineNumber.get)"
+            f".sortBy(cs => -cs.lineNumber.get).code.l.take(6), "
             if include_nearest
             else ""
         )
@@ -374,7 +388,7 @@ class RuleEngine:
             f'"lineNumber" -> c.lineNumber.getOrElse(-1), '
             f'"code" -> c.code, "callee" -> c.name, '
             f'"arguments" -> c.argument.code.l, '
-            f'{controls_expr}'
+            f"{controls_expr}"
             f'"controls" -> c.method.controlStructure.code.l.take(8))).l.toJson'
         )
         return self._safe_query(query)
@@ -410,7 +424,9 @@ class RuleEngine:
                 matches.append(
                     RuleMatch(
                         rule_id=str(spec.get("rule_id") or "joern_operator_rule"),
-                        rule_name=str(spec.get("rule_name") or f"Semantic CPG operator: {operator}"),
+                        rule_name=str(
+                            spec.get("rule_name") or f"Semantic CPG operator: {operator}"
+                        ),
                         category=str(spec.get("category") or "backend_signal"),
                         score=float(spec.get("score") or 5.8),
                         func_name=method,
@@ -436,8 +452,8 @@ class RuleEngine:
     def _query_semantic_operator_rows(self, operator_regex: str, *, include_nearest: bool) -> Any:
         controls_expr = (
             f'"nearestControls" -> c.method.controlStructure'
-            f'.filter(cs => cs.lineNumber.isDefined && c.lineNumber.isDefined && cs.lineNumber.get <= c.lineNumber.get)'
-            f'.sortBy(cs => -cs.lineNumber.get).code.l.take(6), '
+            f".filter(cs => cs.lineNumber.isDefined && c.lineNumber.isDefined && cs.lineNumber.get <= c.lineNumber.get)"
+            f".sortBy(cs => -cs.lineNumber.get).code.l.take(6), "
             if include_nearest
             else ""
         )
@@ -448,7 +464,7 @@ class RuleEngine:
             f'"lineNumber" -> c.lineNumber.getOrElse(-1), '
             f'"code" -> c.code, "operator" -> c.name, '
             f'"arguments" -> c.argument.code.l, '
-            f'{controls_expr}'
+            f"{controls_expr}"
             f'"controls" -> c.method.controlStructure.code.l.take(8))).l.toJson'
         )
         return self._safe_query(query)
@@ -460,7 +476,9 @@ class RuleEngine:
             logger.debug("Joern query failed: %s", exc)
             return None
 
-    def _strict_control_evidence_by_call_regex(self, sink_regex: str) -> Dict[tuple[str, int, str], Dict[str, Any]]:
+    def _strict_control_evidence_by_call_regex(
+        self, sink_regex: str
+    ) -> Dict[tuple[str, int, str], Dict[str, Any]]:
         query = (
             f'cpg.call.name("{sink_regex}")'
             f'.map(c => Map("method" -> c.method.name, '
@@ -480,8 +498,14 @@ class RuleEngine:
             line_value = int(item.get("lineNumber") or -1)
             code = str(item.get("code") or "")
             mapping[self._call_key(method, line_value, code)] = {
-                "controlDependencies": item.get("controlDependencies") if isinstance(item.get("controlDependencies"), list) else [],
-                "dominators": item.get("dominators") if isinstance(item.get("dominators"), list) else [],
+                "controlDependencies": (
+                    item.get("controlDependencies")
+                    if isinstance(item.get("controlDependencies"), list)
+                    else []
+                ),
+                "dominators": (
+                    item.get("dominators") if isinstance(item.get("dominators"), list) else []
+                ),
             }
         return mapping
 
@@ -495,8 +519,10 @@ class RuleEngine:
 
     @staticmethod
     def _sink_argument_evidence(sink: Dict[str, Any], item: Dict[str, Any]) -> Dict[str, Any]:
-        args = item.get("arguments") if isinstance(item.get("arguments"), list) else []
-        controls = item.get("controls") if isinstance(item.get("controls"), list) else []
+        raw_args = item.get("arguments")
+        args: List[Any] = raw_args if isinstance(raw_args, list) else []
+        raw_controls = item.get("controls")
+        controls: List[Any] = raw_controls if isinstance(raw_controls, list) else []
         category = str(sink.get("category") or "")
         kind = str(sink.get("kind") or "")
         evidence: Dict[str, Any] = {
@@ -510,16 +536,22 @@ class RuleEngine:
             evidence["source_argument"] = str(args[1]) if len(args) >= 2 else ""
             evidence["query_focus"] = "copy_sink_size_relation"
         elif category == "format_string" or "format" in kind:
-            evidence["format_argument"] = RuleEngine._configured_arg(args, sink, "format_arg_index", 0)
+            evidence["format_argument"] = RuleEngine._configured_arg(
+                args, sink, "format_arg_index", 0
+            )
             evidence["query_focus"] = "format_string_control"
         elif category == "command_injection" or "command" in kind:
-            evidence["command_argument"] = RuleEngine._configured_arg(args, sink, "command_arg_index", 0)
+            evidence["command_argument"] = RuleEngine._configured_arg(
+                args, sink, "command_arg_index", 0
+            )
             evidence["query_focus"] = "command_string_control"
         elif category == "path_traversal" or "path" in kind or "file" in kind:
             evidence["path_argument"] = RuleEngine._configured_arg(args, sink, "path_arg_index", 0)
             evidence["query_focus"] = "path_argument_control"
         elif category == "integer_overflow" or "allocation" in kind:
-            evidence["allocation_size_argument"] = RuleEngine._configured_arg(args, sink, "size_arg_index", 0)
+            evidence["allocation_size_argument"] = RuleEngine._configured_arg(
+                args, sink, "size_arg_index", 0
+            )
             if str(sink.get("name") or "") == "calloc" and len(args) >= 2:
                 evidence["allocation_count_argument"] = str(args[0])
                 evidence["allocation_element_size_argument"] = str(args[1])
@@ -531,8 +563,10 @@ class RuleEngine:
 
     @staticmethod
     def _operator_argument_evidence(spec: Dict[str, Any], item: Dict[str, Any]) -> Dict[str, Any]:
-        args = item.get("arguments") if isinstance(item.get("arguments"), list) else []
-        controls = item.get("controls") if isinstance(item.get("controls"), list) else []
+        raw_args = item.get("arguments")
+        args: List[Any] = raw_args if isinstance(raw_args, list) else []
+        raw_controls = item.get("controls")
+        controls: List[Any] = raw_controls if isinstance(raw_controls, list) else []
         evidence: Dict[str, Any] = {
             "arguments": [str(arg) for arg in args[:8]],
             "control_context": [str(ctrl) for ctrl in controls[:8]],
@@ -559,11 +593,22 @@ class RuleEngine:
         return str(args[index]) if 0 <= index < len(args) else ""
 
     @staticmethod
-    def _control_dependency_evidence(evidence: Dict[str, Any], item: Dict[str, Any]) -> Dict[str, Any]:
-        strict_controls = item.get("controlDependencies") if isinstance(item.get("controlDependencies"), list) else []
-        dominators = item.get("dominators") if isinstance(item.get("dominators"), list) else []
-        nearest = item.get("nearestControls") if isinstance(item.get("nearestControls"), list) else []
-        all_controls = list(strict_controls) if strict_controls else (list(nearest) if nearest else list(evidence.get("control_context") or []))
+    def _control_dependency_evidence(
+        evidence: Dict[str, Any], item: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        raw_strict_controls = item.get("controlDependencies")
+        strict_controls: List[Any] = (
+            raw_strict_controls if isinstance(raw_strict_controls, list) else []
+        )
+        raw_dominators = item.get("dominators")
+        dominators: List[Any] = raw_dominators if isinstance(raw_dominators, list) else []
+        raw_nearest = item.get("nearestControls")
+        nearest: List[Any] = raw_nearest if isinstance(raw_nearest, list) else []
+        all_controls = (
+            list(strict_controls)
+            if strict_controls
+            else (list(nearest) if nearest else list(evidence.get("control_context") or []))
+        )
         interesting = [
             str(evidence.get(key) or "")
             for key in (
@@ -684,32 +729,157 @@ class RuleEngine:
             {"name": "strcat", "category": "buffer_overflow", "kind": "default_string_sink"},
             {"name": "strncat", "category": "buffer_overflow", "kind": "default_string_sink"},
             {"name": "gets", "category": "buffer_overflow", "kind": "default_unsafe_input_sink"},
-            {"name": "sprintf", "category": "format_string", "kind": "default_format_sink", "format_arg_index": "1"},
-            {"name": "snprintf", "category": "format_string", "kind": "default_format_sink", "format_arg_index": "2"},
-            {"name": "vsprintf", "category": "format_string", "kind": "default_format_sink", "format_arg_index": "1"},
-            {"name": "vsnprintf", "category": "format_string", "kind": "default_format_sink", "format_arg_index": "2"},
-            {"name": "printf", "category": "format_string", "kind": "default_format_sink", "format_arg_index": "0"},
-            {"name": "fprintf", "category": "format_string", "kind": "default_format_sink", "format_arg_index": "1"},
-            {"name": "vprintf", "category": "format_string", "kind": "default_format_sink", "format_arg_index": "0"},
-            {"name": "vfprintf", "category": "format_string", "kind": "default_format_sink", "format_arg_index": "1"},
-            {"name": "syslog", "category": "format_string", "kind": "default_format_sink", "format_arg_index": "1"},
+            {
+                "name": "sprintf",
+                "category": "format_string",
+                "kind": "default_format_sink",
+                "format_arg_index": "1",
+            },
+            {
+                "name": "snprintf",
+                "category": "format_string",
+                "kind": "default_format_sink",
+                "format_arg_index": "2",
+            },
+            {
+                "name": "vsprintf",
+                "category": "format_string",
+                "kind": "default_format_sink",
+                "format_arg_index": "1",
+            },
+            {
+                "name": "vsnprintf",
+                "category": "format_string",
+                "kind": "default_format_sink",
+                "format_arg_index": "2",
+            },
+            {
+                "name": "printf",
+                "category": "format_string",
+                "kind": "default_format_sink",
+                "format_arg_index": "0",
+            },
+            {
+                "name": "fprintf",
+                "category": "format_string",
+                "kind": "default_format_sink",
+                "format_arg_index": "1",
+            },
+            {
+                "name": "vprintf",
+                "category": "format_string",
+                "kind": "default_format_sink",
+                "format_arg_index": "0",
+            },
+            {
+                "name": "vfprintf",
+                "category": "format_string",
+                "kind": "default_format_sink",
+                "format_arg_index": "1",
+            },
+            {
+                "name": "syslog",
+                "category": "format_string",
+                "kind": "default_format_sink",
+                "format_arg_index": "1",
+            },
             {"name": "system", "category": "command_injection", "kind": "default_command_sink"},
-            {"name": "popen", "category": "command_injection", "kind": "default_command_sink", "command_arg_index": "0"},
-            {"name": "execl", "category": "command_injection", "kind": "default_exec_sink", "command_arg_index": "0"},
-            {"name": "execlp", "category": "command_injection", "kind": "default_exec_sink", "command_arg_index": "0"},
-            {"name": "execle", "category": "command_injection", "kind": "default_exec_sink", "command_arg_index": "0"},
-            {"name": "execv", "category": "command_injection", "kind": "default_exec_sink", "command_arg_index": "0"},
-            {"name": "execvp", "category": "command_injection", "kind": "default_exec_sink", "command_arg_index": "0"},
-            {"name": "execve", "category": "command_injection", "kind": "default_exec_sink", "command_arg_index": "0"},
-            {"name": "fopen", "category": "path_traversal", "kind": "default_file_path_sink", "path_arg_index": "0"},
-            {"name": "open", "category": "path_traversal", "kind": "default_file_path_sink", "path_arg_index": "0"},
-            {"name": "creat", "category": "path_traversal", "kind": "default_file_path_sink", "path_arg_index": "0"},
-            {"name": "unlink", "category": "path_traversal", "kind": "default_file_path_sink", "path_arg_index": "0"},
-            {"name": "remove", "category": "path_traversal", "kind": "default_file_path_sink", "path_arg_index": "0"},
-            {"name": "rename", "category": "path_traversal", "kind": "default_file_path_sink", "path_arg_index": "0"},
-            {"name": "malloc", "category": "integer_overflow", "kind": "default_allocation_size_sink", "size_arg_index": "0"},
-            {"name": "calloc", "category": "integer_overflow", "kind": "default_allocation_size_sink", "size_arg_index": "1"},
-            {"name": "realloc", "category": "integer_overflow", "kind": "default_allocation_size_sink", "size_arg_index": "1"},
+            {
+                "name": "popen",
+                "category": "command_injection",
+                "kind": "default_command_sink",
+                "command_arg_index": "0",
+            },
+            {
+                "name": "execl",
+                "category": "command_injection",
+                "kind": "default_exec_sink",
+                "command_arg_index": "0",
+            },
+            {
+                "name": "execlp",
+                "category": "command_injection",
+                "kind": "default_exec_sink",
+                "command_arg_index": "0",
+            },
+            {
+                "name": "execle",
+                "category": "command_injection",
+                "kind": "default_exec_sink",
+                "command_arg_index": "0",
+            },
+            {
+                "name": "execv",
+                "category": "command_injection",
+                "kind": "default_exec_sink",
+                "command_arg_index": "0",
+            },
+            {
+                "name": "execvp",
+                "category": "command_injection",
+                "kind": "default_exec_sink",
+                "command_arg_index": "0",
+            },
+            {
+                "name": "execve",
+                "category": "command_injection",
+                "kind": "default_exec_sink",
+                "command_arg_index": "0",
+            },
+            {
+                "name": "fopen",
+                "category": "path_traversal",
+                "kind": "default_file_path_sink",
+                "path_arg_index": "0",
+            },
+            {
+                "name": "open",
+                "category": "path_traversal",
+                "kind": "default_file_path_sink",
+                "path_arg_index": "0",
+            },
+            {
+                "name": "creat",
+                "category": "path_traversal",
+                "kind": "default_file_path_sink",
+                "path_arg_index": "0",
+            },
+            {
+                "name": "unlink",
+                "category": "path_traversal",
+                "kind": "default_file_path_sink",
+                "path_arg_index": "0",
+            },
+            {
+                "name": "remove",
+                "category": "path_traversal",
+                "kind": "default_file_path_sink",
+                "path_arg_index": "0",
+            },
+            {
+                "name": "rename",
+                "category": "path_traversal",
+                "kind": "default_file_path_sink",
+                "path_arg_index": "0",
+            },
+            {
+                "name": "malloc",
+                "category": "integer_overflow",
+                "kind": "default_allocation_size_sink",
+                "size_arg_index": "0",
+            },
+            {
+                "name": "calloc",
+                "category": "integer_overflow",
+                "kind": "default_allocation_size_sink",
+                "size_arg_index": "1",
+            },
+            {
+                "name": "realloc",
+                "category": "integer_overflow",
+                "kind": "default_allocation_size_sink",
+                "size_arg_index": "1",
+            },
         ]
         sinks = list(defaults)
         method = getattr(self.user_config, "list_external_functions", None)
@@ -727,11 +897,17 @@ class RuleEngine:
             if not name:
                 continue
             if kind == "copy":
-                sinks.append({"name": name, "category": "buffer_overflow", "kind": "user_config:copy"})
+                sinks.append(
+                    {"name": name, "category": "buffer_overflow", "kind": "user_config:copy"}
+                )
             elif kind in {"format", "format_sink"}:
-                sinks.append({"name": name, "category": "format_string", "kind": "user_config:format"})
+                sinks.append(
+                    {"name": name, "category": "format_string", "kind": "user_config:format"}
+                )
             elif kind in {"command", "command_sink"}:
-                sinks.append({"name": name, "category": "command_injection", "kind": "user_config:command"})
+                sinks.append(
+                    {"name": name, "category": "command_injection", "kind": "user_config:command"}
+                )
         return self._dedupe_sinks(sinks)
 
     @staticmethod
@@ -756,7 +932,11 @@ class RuleEngine:
                 "rule_name": "Shift operator with data-dependent amount",
                 "category": "integer_overflow",
                 "score": 5.8,
-                "operators": ["<operator>.shiftLeft", "<operator>.logicalShiftRight", "<operator>.arithmeticShiftRight"],
+                "operators": [
+                    "<operator>.shiftLeft",
+                    "<operator>.logicalShiftRight",
+                    "<operator>.arithmeticShiftRight",
+                ],
                 "operand_key": "shift_amount_argument",
                 "operand_index": 1,
                 "query_focus": "shift_amount_range_control",
@@ -792,7 +972,11 @@ class RuleEngine:
         return result
 
     def _sink_name_regex(self, sinks: List[Dict[str, Any]]) -> str:
-        names = [str(sink.get("name") or "").strip() for sink in sinks if str(sink.get("name") or "").strip()]
+        names = [
+            str(sink.get("name") or "").strip()
+            for sink in sinks
+            if str(sink.get("name") or "").strip()
+        ]
         if len(names) == 1:
             return self._cpg_regex(names[0])
         return "^(?:" + "|".join(self._cpg_regex(name) for name in names) + ")$"
@@ -822,17 +1006,21 @@ class RuleEngine:
         matches = []
         for item in result:
             line_value = item.get("lineNumber", -1)
-            matches.append(RuleMatch(
-                rule_id=str(item.get("name", "unknown")),
-                rule_name=str(item.get("title", item.get("name", ""))),
-                category=str(item.get("tags", ["unknown"])[0] if item.get("tags") else "unknown"),
-                score=float(item.get("score", 5.0)),
-                func_name=str(item.get("methodFullName", item.get("methodName", ""))),
-                file_path=str(item.get("filename", "")),
-                line_number=int(line_value if line_value is not None else -1),
-                code_snippet=str(item.get("code", "")),
-                evidence=item.get("evidence", []),
-            ))
+            matches.append(
+                RuleMatch(
+                    rule_id=str(item.get("name", "unknown")),
+                    rule_name=str(item.get("title", item.get("name", ""))),
+                    category=str(
+                        item.get("tags", ["unknown"])[0] if item.get("tags") else "unknown"
+                    ),
+                    score=float(item.get("score", 5.0)),
+                    func_name=str(item.get("methodFullName", item.get("methodName", ""))),
+                    file_path=str(item.get("filename", "")),
+                    line_number=int(line_value if line_value is not None else -1),
+                    code_snippet=str(item.get("code", "")),
+                    evidence=item.get("evidence", []),
+                )
+            )
         return matches
 
     def _parse_script_output(self, data: Any, script_name: str) -> List[RuleMatch]:
@@ -844,15 +1032,17 @@ class RuleEngine:
             if not isinstance(item, dict):
                 continue
             line_value = item.get("line_number", item.get("lineNumber", -1))
-            matches.append(RuleMatch(
-                rule_id=str(item.get("rule_id", script_name)),
-                rule_name=str(item.get("rule_name", script_name)),
-                category=str(item.get("category", "custom")),
-                score=float(item.get("score", 5.0)),
-                func_name=str(item.get("function", item.get("func_name", ""))),
-                file_path=str(item.get("file_path", item.get("filename", ""))),
-                line_number=int(line_value if line_value is not None else -1),
-                code_snippet=str(item.get("code_snippet", item.get("code", ""))),
-                evidence=item.get("evidence", []),
-            ))
+            matches.append(
+                RuleMatch(
+                    rule_id=str(item.get("rule_id", script_name)),
+                    rule_name=str(item.get("rule_name", script_name)),
+                    category=str(item.get("category", "custom")),
+                    score=float(item.get("score", 5.0)),
+                    func_name=str(item.get("function", item.get("func_name", ""))),
+                    file_path=str(item.get("file_path", item.get("filename", ""))),
+                    line_number=int(line_value if line_value is not None else -1),
+                    code_snippet=str(item.get("code_snippet", item.get("code", ""))),
+                    evidence=item.get("evidence", []),
+                )
+            )
         return matches

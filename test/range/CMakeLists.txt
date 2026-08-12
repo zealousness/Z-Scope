@@ -30,10 +30,15 @@ endif()
 include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${PROJECT_SOURCE_DIR}/internal)
 
-file(GLOB COMMON_SOURCES "src/*.c")
-list(FILTER COMMON_SOURCES EXCLUDE REGEX ".*platform_.*\\.c$")
-list(FILTER COMMON_SOURCES EXCLUDE REGEX ".*demo_platform\\.c$")
-file(GLOB_RECURSE INTERNAL_SOURCES "internal/*.c")
+set(COMMON_SOURCES
+    src/executor.c
+    src/lifecycle.c
+    src/main.c
+    src/network.c
+    src/parser.c
+    src/plugin.c
+    src/utils.c
+)
 
 if(CMAKE_SYSTEM_NAME MATCHES "Linux" OR USE_LINUX_IMPL)
     set(PLATFORM_IMPL "src/platform_linux.c")
@@ -43,7 +48,7 @@ elseif(CMAKE_SYSTEM_NAME MATCHES "Windows" OR USE_WINDOWS_IMPL)
     message(STATUS "Using Windows platform implementation")
 endif()
 
-add_executable(z_scope ${COMMON_SOURCES} ${INTERNAL_SOURCES} ${PLATFORM_IMPL})
+add_executable(z_scope ${COMMON_SOURCES} ${PLATFORM_IMPL})
 if(BUILD_PLATFORM_DEMO)
     add_executable(demo_platform src/demo_platform.c ${PLATFORM_IMPL})
 endif()
