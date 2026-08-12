@@ -62,7 +62,7 @@ class ToolCallingAgent(BaseAgent):
         if not isinstance(args, dict):
             validation_error = tool.validate_arguments(args)
             if validation_error:
-                return validation_error
+                return cast(Dict[str, Any], validation_error)
             return {
                 "success": False,
                 "error": "Tool arguments must be a JSON object; please correct the payload and retry.",
@@ -77,7 +77,7 @@ class ToolCallingAgent(BaseAgent):
             return policy_error
         validation_error = tool.validate_arguments(args)
         if validation_error:
-            return validation_error
+            return cast(Dict[str, Any], validation_error)
         start = time.perf_counter()
         result = cast(Dict[str, Any], tool.execute(args))
         self.tool_policy.run_post_hooks(
@@ -269,7 +269,11 @@ class JsonToolAgent(ToolCallingAgent):
                 max_iterations=max_iterations,
                 trace_label=trace_label,
                 additional_tools_schema=[terminal_schema] if terminal_schema else None,
-                terminal_tool_name=(json_output_spec.final_tool_name if terminal_schema else None),
+                terminal_tool_name=(
+                    json_output_spec.final_tool_name
+                    if json_output_spec is not None and terminal_schema
+                    else None
+                ),
                 terminal_tool_handler=terminal_handler if terminal_schema else None,
                 terminal_tool_required=bool(terminal_schema),
             )

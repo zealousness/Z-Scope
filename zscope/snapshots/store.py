@@ -84,11 +84,7 @@ def _ensure_snapshot_symbol_context(snapshot: Dict[str, Any]) -> bool:
         else:
             raw_qualifiers = []
         selected = {value for value in raw_qualifiers if value}
-        normalized = [
-            qualifier
-            for qualifier in _GLOBAL_QUALIFIER_ORDER
-            if qualifier in selected
-        ]
+        normalized = [qualifier for qualifier in _GLOBAL_QUALIFIER_ORDER if qualifier in selected]
         if qualifiers != normalized:
             item["qualifiers"] = normalized
             changed = True
@@ -259,9 +255,7 @@ def compute_type_context_hash(payload: Dict[str, Any]) -> str:
             "type_index_name": identity,
             "kind": str(item.get("kind") or ""),
             "definition_hash": hashlib.sha256(definition.encode("utf-8")).hexdigest(),
-            "reference_kinds": sorted(
-                {str(value) for value in item.get("reference_kinds", [])}
-            ),
+            "reference_kinds": sorted({str(value) for value in item.get("reference_kinds", [])}),
             "reference_lines": sorted(
                 {
                     int(value)
@@ -287,9 +281,7 @@ def compute_type_context_hash(payload: Dict[str, Any]) -> str:
                     {
                         int(value)
                         for value in item.get("reference_lines", [])
-                        if isinstance(value, int)
-                        and not isinstance(value, bool)
-                        and value > 0
+                        if isinstance(value, int) and not isinstance(value, bool) and value > 0
                     }
                 ),
             }
@@ -302,9 +294,7 @@ def compute_type_context_hash(payload: Dict[str, Any]) -> str:
         "unresolved_referenced_types": unresolved_records,
     }
     if "referenced_types_truncation" in payload:
-        projection["referenced_types_truncation"] = payload[
-            "referenced_types_truncation"
-        ]
+        projection["referenced_types_truncation"] = payload["referenced_types_truncation"]
     encoded = json.dumps(
         projection,
         sort_keys=True,
@@ -393,16 +383,38 @@ class SnapshotStore:
         snapshot_dir: Path,
         *,
         cache_max_bytes: int = DEFAULT_CACHE_MAX_BYTES,
+        effective_rules_sha256: str = "",
     ):
         self.snapshot_dir = Path(snapshot_dir)
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.snapshot_dir / "snapshots.db"
         self.lock_manager = SnapshotLockManager()
+        self.effective_rules_sha256 = str(effective_rules_sha256 or "").strip()
         self._cache_max_bytes = max(0, int(cache_max_bytes))
         self._cache_bytes = 0
-        self._cache: "OrderedDict[tuple[str, str], bytes]" = OrderedDict()
+        self._cache: "OrderedDict[tuple[str, str, str], bytes]" = OrderedDict()
         self._cache_lock = threading.RLock()
         self._init_db()
+
+    @classmethod
+    def from_config(
+        cls,
+        config: Any,
+        *,
+        cache_max_bytes: int = DEFAULT_CACHE_MAX_BYTES,
+    ) -> "SnapshotStore":
+        """Create a store bound to the config's effective deterministic rules."""
+
+        provenance = getattr(config, "rule_catalog_provenance", None)
+        effective = getattr(config, "effective_rules", None)
+        if provenance is None and effective is not None:
+            provenance = getattr(effective, "provenance", None)
+        effective_sha256 = str(getattr(provenance, "effective_sha256", "") or "").strip()
+        return cls(
+            Path(config.analysis.snapshot_dir),
+            cache_max_bytes=cache_max_bytes,
+            effective_rules_sha256=effective_sha256,
+        )
 
     @staticmethod
     def _encoded_index_name(index_name: str) -> str:
@@ -423,26 +435,26 @@ class SnapshotStore:
         return f"{cls._encoded_index_name(index_name)}_final.json"
 
     def _cached_snapshot(self, index_name: str) -> Optional[Dict[str, Any]]:
-        return self._cached_json_value(("snapshot", index_name))
+        return self._cached_json_value(("snapshot", self.effective_rules_sha256, index_name))
 
     def _cache_snapshot(self, index_name: str, snapshot: Dict[str, Any]) -> None:
-        self._cache_json_value(("snapshot", index_name), snapshot)
+        self._cache_json_value(("snapshot", self.effective_rules_sha256, index_name), snapshot)
 
     def _invalidate_snapshot_cache(self, index_name: str) -> None:
-        self._invalidate_cache_key(("snapshot", index_name))
+        self._invalidate_cache_key(("snapshot", self.effective_rules_sha256, index_name))
 
     def _cached_final_report(self, index_name: str) -> Optional[Dict[str, Any]]:
-        return self._cached_json_value(("report", index_name))
+        return self._cached_json_value(("report", self.effective_rules_sha256, index_name))
 
     def _cache_final_report(self, index_name: str, report: Dict[str, Any]) -> None:
-        self._cache_json_value(("report", index_name), report)
+        self._cache_json_value(("report", self.effective_rules_sha256, index_name), report)
 
     def _invalidate_final_report_cache(self, index_name: str) -> None:
-        self._invalidate_cache_key(("report", index_name))
+        self._invalidate_cache_key(("report", self.effective_rules_sha256, index_name))
 
     def _cached_json_value(
         self,
-        key: tuple[str, str],
+        key: tuple[str, str, str],
     ) -> Optional[Dict[str, Any]]:
         with self._cache_lock:
             encoded = self._cache.get(key)
@@ -458,14 +470,14 @@ class SnapshotStore:
             logger.exception(
                 "[snapshot-store] in-memory cache decode failed kind=%s index_name=%s",
                 key[0],
-                key[1],
+                key[2],
             )
             return None
         return value if isinstance(value, dict) else None
 
     def _cache_json_value(
         self,
-        key: tuple[str, str],
+        key: tuple[str, str, str],
         value: Dict[str, Any],
     ) -> None:
         if self._cache_max_bytes <= 0:
@@ -488,7 +500,7 @@ class SnapshotStore:
                 _evicted_key, evicted = self._cache.popitem(last=False)
                 self._cache_bytes -= len(evicted)
 
-    def _invalidate_cache_key(self, key: tuple[str, str]) -> None:
+    def _invalidate_cache_key(self, key: tuple[str, str, str]) -> None:
         with self._cache_lock:
             encoded = self._cache.pop(key, None)
             if encoded is not None:
@@ -525,6 +537,7 @@ class SnapshotStore:
                 symbol_context_hash TEXT NOT NULL,
                 callee_summary_hash TEXT NOT NULL,
                 type_context_hash TEXT NOT NULL,
+                effective_rules_sha256 TEXT NOT NULL DEFAULT '',
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 snapshot_file TEXT NOT NULL,
                 final_report_file TEXT
@@ -567,6 +580,7 @@ class SnapshotStore:
                 self._ensure_symbol_context_column(conn, columns)
                 self._ensure_callee_summary_column(conn, columns)
                 self._ensure_type_context_column(conn, columns)
+                self._ensure_effective_rules_column(conn, columns)
                 self._audit_storage_filename_collisions(conn)
                 return
             self._migrate_to_index_schema(conn)
@@ -636,8 +650,7 @@ class SnapshotStore:
                 index_names,
             )
             conn.execute(
-                "UPDATE snapshots SET final_report_file = NULL "
-                "WHERE final_report_file = ?",
+                "UPDATE snapshots SET final_report_file = NULL " "WHERE final_report_file = ?",
                 (final_report_file,),
             )
         conn.commit()
@@ -655,9 +668,7 @@ class SnapshotStore:
             "ALTER TABLE snapshots ADD COLUMN symbol_context_hash "
             f"TEXT NOT NULL DEFAULT '{empty_hash}'"
         )
-        rows = conn.execute(
-            "SELECT index_name, snapshot_file FROM snapshots"
-        ).fetchall()
+        rows = conn.execute("SELECT index_name, snapshot_file FROM snapshots").fetchall()
         migrated = 0
         failed = 0
         for index_name, snapshot_file in rows:
@@ -708,9 +719,7 @@ class SnapshotStore:
             "ALTER TABLE snapshots ADD COLUMN callee_summary_hash "
             f"TEXT NOT NULL DEFAULT '{empty_hash}'"
         )
-        rows = conn.execute(
-            "SELECT index_name, snapshot_file FROM snapshots"
-        ).fetchall()
+        rows = conn.execute("SELECT index_name, snapshot_file FROM snapshots").fetchall()
         migrated = 0
         failed = 0
         for index_name, snapshot_file in rows:
@@ -767,6 +776,24 @@ class SnapshotStore:
             "default=canonical_empty_type_context"
         )
 
+    @staticmethod
+    def _ensure_effective_rules_column(
+        conn: sqlite3.Connection,
+        columns: Dict[str, Any],
+    ) -> None:
+        if "effective_rules_sha256" in columns:
+            return
+        # Historical snapshots remain readable, but the empty identity cannot
+        # match a configured ruleset and therefore forces regeneration.
+        conn.execute(
+            "ALTER TABLE snapshots ADD COLUMN effective_rules_sha256 " "TEXT NOT NULL DEFAULT ''"
+        )
+        conn.commit()
+        logger.info(
+            "[snapshot-migration] effective rules identity column completed "
+            "default=legacy_unidentified"
+        )
+
     def _legacy_table_name(self, conn: sqlite3.Connection) -> str:
         base = "snapshots_legacy"
         candidate = base
@@ -786,14 +813,10 @@ class SnapshotStore:
             return existing
         row_keys = set(row.keys())
         func_name = str(
-            snapshot.get("func_name")
-            or (row["func_name"] if "func_name" in row_keys else "")
-            or ""
+            snapshot.get("func_name") or (row["func_name"] if "func_name" in row_keys else "") or ""
         ).strip()
         file_path = str(
-            snapshot.get("file_path")
-            or (row["file_path"] if "file_path" in row_keys else "")
-            or ""
+            snapshot.get("file_path") or (row["file_path"] if "file_path" in row_keys else "") or ""
         ).strip()
         start_line = int(snapshot.get("start_line") or 0)
         end_line = int(snapshot.get("end_line") or 0)
@@ -880,7 +903,9 @@ class SnapshotStore:
                 self._write_json_atomic(new_snapshot_path, snapshot)
                 created_files.append(new_snapshot_path)
 
-                final_report_file = str(row["final_report_file"] or "") if "final_report_file" in row.keys() else ""
+                final_report_file = (
+                    str(row["final_report_file"] or "") if "final_report_file" in row.keys() else ""
+                )
                 new_final_file: Optional[str] = None
                 if final_report_file:
                     old_final_path = self.snapshot_dir / final_report_file
@@ -928,9 +953,10 @@ class SnapshotStore:
                     index_name, func_name, file_path, start_line, end_line,
                     code_hash, semantic_hash, symbol_context_hash, callee_summary_hash,
                     type_context_hash, snapshot_file, final_report_file
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    , effective_rules_sha256
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                migrated,
+                [row + ("",) for row in migrated],
             )
             legacy_table = self._legacy_table_name(conn)
             conn.execute(f"ALTER TABLE snapshots RENAME TO {legacy_table}")
@@ -1038,8 +1064,9 @@ class SnapshotStore:
                     INSERT INTO snapshots (
                         index_name, func_name, file_path, start_line, end_line,
                         code_hash, semantic_hash, symbol_context_hash, callee_summary_hash,
-                        type_context_hash, snapshot_file, final_report_file
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                        type_context_hash, effective_rules_sha256, snapshot_file,
+                        final_report_file
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                     ON CONFLICT(index_name) DO UPDATE SET
                         func_name=excluded.func_name,
                         file_path=excluded.file_path,
@@ -1050,6 +1077,7 @@ class SnapshotStore:
                         symbol_context_hash=excluded.symbol_context_hash,
                         callee_summary_hash=excluded.callee_summary_hash,
                         type_context_hash=excluded.type_context_hash,
+                        effective_rules_sha256=excluded.effective_rules_sha256,
                         timestamp=CURRENT_TIMESTAMP,
                         snapshot_file=excluded.snapshot_file,
                         final_report_file=NULL
@@ -1065,6 +1093,7 @@ class SnapshotStore:
                         symbol_context_hash,
                         callee_summary_hash,
                         type_context_hash,
+                        self.effective_rules_sha256,
                         snapshot_file,
                     ),
                 )
@@ -1287,8 +1316,7 @@ class SnapshotStore:
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT snapshot_file, final_report_file "
-                "FROM snapshots WHERE index_name = ?",
+                "SELECT snapshot_file, final_report_file " "FROM snapshots WHERE index_name = ?",
                 (index_name,),
             ).fetchone()
             reference_count = (
@@ -1351,7 +1379,7 @@ class SnapshotStore:
         try:
             row = conn.execute(
                 "SELECT code_hash, semantic_hash, symbol_context_hash, callee_summary_hash, "
-                "type_context_hash "
+                "type_context_hash, effective_rules_sha256 "
                 "FROM snapshots WHERE index_name = ?",
                 (index_name,),
             ).fetchone()
@@ -1365,6 +1393,7 @@ class SnapshotStore:
             "symbol_context_hash": str(row[2]),
             "callee_summary_hash": str(row[3]),
             "type_context_hash": str(row[4]),
+            "effective_rules_sha256": str(row[5] or ""),
         }
 
     def reconcile_project_callee_summaries(
@@ -1382,10 +1411,7 @@ class SnapshotStore:
         project_callees = current_symbol_context.get("project_callees")
         if not index_name or not isinstance(project_callees, list):
             return "failed"
-        if any(
-            not isinstance(item, dict) or "is_macro" in item
-            for item in project_callees
-        ):
+        if any(not isinstance(item, dict) or "is_macro" in item for item in project_callees):
             return "llm_refresh_required"
 
         lock_status = self.lock_manager.acquire_refresh(index_name)
@@ -1410,9 +1436,7 @@ class SnapshotStore:
                 return "llm_refresh_required"
 
             desired = _clone_json_value(project_callees)
-            desired_hash = compute_callee_summary_hash(
-                {"project_callees": desired}
-            )
+            desired_hash = compute_callee_summary_hash({"project_callees": desired})
             if snapshot.get("project_callees") == desired:
                 if desired_hash != fingerprints["callee_summary_hash"]:
                     conn = self._connect()
@@ -1479,9 +1503,7 @@ class SnapshotStore:
             or any(
                 isinstance(item, dict)
                 and (
-                    "callee_behavior" in item
-                    or "callee_summary" not in item
-                    or "is_macro" in item
+                    "callee_behavior" in item or "callee_summary" not in item or "is_macro" in item
                 )
                 for item in snapshot.get("project_callees", [])
             )
@@ -1515,14 +1537,19 @@ class SnapshotStore:
             return True, "snapshot_shape_changed"
         if (
             snapshot is not None
-            and str(snapshot.get("snapshot_kind") or "")
-            in DETERMINISTIC_SNAPSHOT_KINDS
+            and str(snapshot.get("snapshot_kind") or "") in DETERMINISTIC_SNAPSHOT_KINDS
             and not is_current_deterministic_snapshot_shape(snapshot)
         ):
             return True, "snapshot_shape_changed"
         fingerprints = self.get_fingerprints(index_name)
         if not fingerprints:
             return True, "no_snapshot"
+        if self.effective_rules_sha256:
+            persisted_rules = fingerprints.get("effective_rules_sha256", "")
+            if not persisted_rules:
+                return True, "effective_rules_identity_missing"
+            if persisted_rules != self.effective_rules_sha256:
+                return True, "effective_rules_changed"
         if (
             compute_symbol_context_hash(current_symbol_context)
             != fingerprints["symbol_context_hash"]
@@ -1557,9 +1584,7 @@ class SnapshotStore:
     def list_snapshots(self) -> list[str]:
         conn = self._connect()
         try:
-            rows = conn.execute(
-                "SELECT index_name FROM snapshots ORDER BY index_name"
-            ).fetchall()
+            rows = conn.execute("SELECT index_name FROM snapshots ORDER BY index_name").fetchall()
         finally:
             conn.close()
         return [str(row[0]) for row in rows]

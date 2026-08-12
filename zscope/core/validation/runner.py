@@ -11,7 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event, Lock
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, cast
 
 from ...agents.validator_agent.agent import ValidatorAgent
 from ...common.cancellation import (
@@ -39,6 +39,13 @@ from .evidence import (
     trim_code,
     validation_verdict,
 )
+
+
+def _as_dict(value: Any) -> Dict[str, Any]:
+    """Narrow dynamic validation payloads while preserving their identity."""
+    return cast(Dict[str, Any], value) if isinstance(value, dict) else {}
+
+
 from .pipeline import ValidationOutcome, ValidationPipeline
 from .evidence_completion import EvidenceCompletionQueue
 
@@ -107,11 +114,7 @@ class ValidationResultCache:
         with self._lock:
             event = self._inflight.get(key)
         if event is not None:
-            deadline = (
-                time.monotonic() + max(0.0, float(timeout))
-                if timeout is not None
-                else None
-            )
+            deadline = time.monotonic() + max(0.0, float(timeout)) if timeout is not None else None
             while not event.is_set():
                 token = current_cancellation_token()
                 if token is not None:
@@ -174,6 +177,7 @@ class ValidationRunner:
         "thrd_create",
         "write",
     }
+
     def __init__(
         self,
         *,
@@ -187,7 +191,9 @@ class ValidationRunner:
         attach_agent_contract: Callable[[Dict[str, Any], str], None],
         remember_validation_result: Callable[[Dict[str, Any], str], None],
         issue_key_fn: Callable[[Dict[str, Any]], str] = canonical_issue_key,
-        deduplicate_issues_fn: Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]] = deduplicate_issues,
+        deduplicate_issues_fn: Callable[
+            [List[Dict[str, Any]]], List[Dict[str, Any]]
+        ] = deduplicate_issues,
         validator_agent_factory: Callable[..., Any] = ValidatorAgent,
         result_cache: Optional[ValidationResultCache] = None,
         scheduler: Optional[ScanScheduler] = None,
@@ -213,20 +219,11 @@ class ValidationRunner:
             self._validator_result_cache_size
         )
         self._validation_environment_fingerprint = self._build_validation_environment_fingerprint()
-        analysis_cfg = getattr(config, "analysis", None)
         self._evidence_completion_queue = EvidenceCompletionQueue(
-            enabled=bool(
-                getattr(analysis_cfg, "enable_evidence_completion_queue", True)
-            ),
-            max_workers=int(
-                getattr(analysis_cfg, "evidence_completion_workers", 2) or 2
-            ),
-            enable_v11_providers=bool(
-                getattr(analysis_cfg, "proof_providers_v11", False)
-            ),
-            enable_v12_providers=bool(
-                getattr(analysis_cfg, "proof_providers_v12", False)
-            ),
+            enabled=True,
+            max_workers=config.concurrency.evidence_completion_workers,
+            enable_v11_providers=True,
+            enable_v12_providers=True,
         )
 
     def run(self, state: Dict[str, Any]) -> None:
@@ -236,16 +233,18 @@ class ValidationRunner:
             return
 
         deduped_issues = self._coalesce_validation_groups(new_issues)
-        state["validation_group_count"] = int(
-            state.get("validation_group_count", 0) or 0
-        ) + len(deduped_issues)
+        state["validation_group_count"] = int(state.get("validation_group_count", 0) or 0) + len(
+            deduped_issues
+        )
         if len(deduped_issues) != len(new_issues):
             merged_count = len(new_issues) - len(deduped_issues)
-            state["validation_group_merged_count"] = int(
-                state.get("validation_group_merged_count", 0) or 0
-            ) + merged_count
+            state["validation_group_merged_count"] = (
+                int(state.get("validation_group_merged_count", 0) or 0) + merged_count
+            )
             logger.info("Merged %d duplicate candidate issue(s) before validation.", merged_count)
-            state["notes"].append(f"Merged {merged_count} duplicate candidate issue(s) before validation.")
+            state["notes"].append(
+                f"Merged {merged_count} duplicate candidate issue(s) before validation."
+            )
         new_issues = deduped_issues
 
         if not self._validator_enabled():
@@ -433,11 +432,7 @@ class ValidationRunner:
         validator_agent: Optional[Any] = None,
     ) -> _ValidationWorkerResult:
         soft_budget = self._validation_soft_budget_seconds()
-        token = (
-            parent_token.child()
-            if parent_token is not None
-            else CancellationToken()
-        )
+        token = parent_token.child() if parent_token is not None else CancellationToken()
         started = time.monotonic()
         try:
             with bind_cancellation_token(token):
@@ -487,8 +482,7 @@ class ValidationRunner:
         return value if value > 0 else None
 
     def _deterministic_prevalidation_enabled(self) -> bool:
-        analysis_cfg = getattr(self.config, "analysis", None)
-        return bool(getattr(analysis_cfg, "deterministic_prevalidation_v2", False))
+        return True
 
     @staticmethod
     def _record_validation_budget(
@@ -527,29 +521,10 @@ class ValidationRunner:
     def _validation_worker_count(self, issue_count: int) -> int:
         if issue_count <= 1:
             return 1
-        analysis_cfg = getattr(self.config, "analysis", None)
-        if analysis_cfg is None:
-            return 1
-        configured = getattr(analysis_cfg, "validator_workers", 0)
-        if not configured:
-            configured = getattr(analysis_cfg, "validation_parallel_workers", 0)
-        try:
-            configured_workers = int(configured or 0)
-        except (TypeError, ValueError):
-            configured_workers = 0
-        if configured_workers > 0:
-            return max(1, min(issue_count, configured_workers))
-
-        try:
-            entry_workers = int(
-                getattr(analysis_cfg, "entry_workers", 0)
-                or getattr(analysis_cfg, "parallel_workers", 1)
-                or 1
-            )
-        except (TypeError, ValueError):
-            entry_workers = 1
-        auto_cap = 2 if entry_workers > 1 else 1
-        return max(1, min(issue_count, auto_cap))
+        return max(
+            1,
+            min(issue_count, int(self.config.concurrency.validator_workers)),
+        )
 
     def _mark_unvalidated(self, state: Dict[str, Any], new_issues: List[Dict[str, Any]]) -> None:
         logger.info("Validator agent disabled, marking %d issue(s) unvalidated.", len(new_issues))
@@ -772,17 +747,14 @@ class ValidationRunner:
         pack = (
             prepared_pack
             if isinstance(prepared_pack, dict)
-            else issue.get("evidence_pack")
-            if isinstance(issue.get("evidence_pack"), dict)
-            else {}
+            else _as_dict(issue.get("evidence_pack"))
         )
         # Display IDs (for example ISSUE_1) are presentation-only and may
         # collide across entries.  Only the content-derived v3 identity can be
         # used directly; otherwise build the key from structured evidence.
         stable_id = issue.get("candidate_uid") or pack.get("candidate_uid")
-        validation_cluster_uid = (
-            issue.get("validation_cluster_uid")
-            or pack.get("validation_cluster_uid")
+        validation_cluster_uid = issue.get("validation_cluster_uid") or pack.get(
+            "validation_cluster_uid"
         )
         # v3's cluster identity already includes the project revision, root
         # cause, decision-changing code/evidence, and validator contract.
@@ -825,7 +797,9 @@ class ValidationRunner:
             "environment": self._validation_environment_fingerprint,
             "validation_cluster_uid": validation_cluster_uid,
             "candidate_uid": stable_id,
-            "category": issue.get("defect_class") or issue.get("category") or pack.get("defect_class"),
+            "category": issue.get("defect_class")
+            or issue.get("category")
+            or pack.get("defect_class"),
             "function": issue.get("function") or item.issue_func,
             "location": issue.get("location"),
             "source": source_value,
@@ -891,8 +865,24 @@ class ValidationRunner:
             "validator_contract": getattr(validator_cfg, "contract", None),
             "validator_prompt_version": getattr(validator_cfg, "prompt_version", None),
             "tool_policy": self._tool_policy_identity(),
+            "effective_rules_sha256": self._effective_rules_sha256(),
         }
         return self._stable_hash(payload)
+
+    def _effective_rules_sha256(self) -> str:
+        provenance = getattr(self.config, "rule_catalog_provenance", None)
+        if provenance is None:
+            effective = getattr(self.config, "effective_rules", None)
+            provenance = getattr(effective, "provenance", None)
+        if isinstance(provenance, dict):
+            return str(
+                provenance.get("effective_sha256") or provenance.get("effective_rules_sha256") or ""
+            )
+        return str(
+            getattr(provenance, "effective_sha256", "")
+            or getattr(provenance, "effective_rules_sha256", "")
+            or ""
+        )
 
     def _index_epoch(self) -> Any:
         for name in (
@@ -968,7 +958,9 @@ class ValidationRunner:
     @staticmethod
     def _cache_component_text(value: Any) -> str:
         if isinstance(value, dict):
-            return " ".join(ValidationRunner._cache_component_text(item) for item in value.values()).strip()
+            return " ".join(
+                ValidationRunner._cache_component_text(item) for item in value.values()
+            ).strip()
         if isinstance(value, list):
             return " ".join(ValidationRunner._cache_component_text(item) for item in value).strip()
         if value is None:
@@ -1049,9 +1041,7 @@ class ValidationRunner:
             return
         fact_kind = str(request.get("fact_kind") or "").strip().lower()
         if fact_kind not in VALIDATOR_MISSING_FACT_KINDS:
-            issue["validator_missing_fact_request_rejected"] = (
-                "unsupported_fact_kind"
-            )
+            issue["validator_missing_fact_request_rejected"] = "unsupported_fact_kind"
             return
         existing = issue.get("missing_fact_kinds")
         values = [str(value) for value in existing] if isinstance(existing, list) else []
@@ -1074,14 +1064,8 @@ class ValidationRunner:
         marker = getattr(ledger, "mark_issue_terminal", None)
         if not callable(marker):
             return
-        disposition = str(
-            issue.get("candidate_disposition") or "needs_review"
-        ).lower()
-        status = str(
-            issue.get("validation_status")
-            or issue.get("status")
-            or disposition
-        ).lower()
+        disposition = str(issue.get("candidate_disposition") or "needs_review").lower()
+        status = str(issue.get("validation_status") or issue.get("status") or disposition).lower()
         marker(issue, disposition=disposition, status=status)
 
     def _normalize_worker_response(
@@ -1104,10 +1088,7 @@ class ValidationRunner:
         return val_data
 
     def _validator_evidence_slice_enabled(self) -> bool:
-        analysis_cfg = getattr(self.config, "analysis", None)
-        return bool(
-            getattr(analysis_cfg, "validator_evidence_slice_v2", False)
-        )
+        return True
 
     def _retry_entry_root_rejection_for_worker(
         self,
@@ -1130,7 +1111,9 @@ class ValidationRunner:
             "Retry directive: the previous rejection used absence of callers/main/worker above the scan root as dead-code evidence. Re-evaluate only the concrete entry-to-sink path; do not require callers above current_analysis_entry.",
         )
         retry_pack["validation_requirements"] = retry_requirements
-        retry_resp = validator_agent.run(self._validator_input(raw_issue, item.issue_code, retry_pack))
+        retry_resp = validator_agent.run(
+            self._validator_input(raw_issue, item.issue_code, retry_pack)
+        )
         self._merge_response_metadata(token_metadata, getattr(retry_resp, "metadata", {}) or {})
         if not retry_resp.success:
             logger.warning(
@@ -1141,7 +1124,7 @@ class ValidationRunner:
             return val_data
 
         retry_data = retry_resp.data
-        return retry_data
+        return _as_dict(retry_data)
 
     @staticmethod
     def _empty_token_metadata() -> Dict[str, int]:
@@ -1166,7 +1149,9 @@ class ValidationRunner:
             except (TypeError, ValueError):
                 return 0
 
-        target["context_tokens"] = int(target.get("context_tokens", 0) or 0) + token_value("context_tokens")
+        target["context_tokens"] = int(target.get("context_tokens", 0) or 0) + token_value(
+            "context_tokens"
+        )
         target["cumulative_prompt_tokens"] = int(
             target.get("cumulative_prompt_tokens", 0) or 0
         ) + token_value("cumulative_prompt_tokens")
@@ -1210,7 +1195,9 @@ class ValidationRunner:
         cumulative_prompt = token_value("cumulative_prompt_tokens")
         cumulative_completion = token_value("cumulative_completion_tokens")
         cumulative_total = token_value("cumulative_total_tokens", "context_tokens")
-        state["total_context_tokens"] = int(state.get("total_context_tokens", 0) or 0) + context_tokens
+        state["total_context_tokens"] = (
+            int(state.get("total_context_tokens", 0) or 0) + context_tokens
+        )
         state["total_cumulative_prompt_tokens"] = (
             int(state.get("total_cumulative_prompt_tokens", 0) or 0) + cumulative_prompt
         )
@@ -1280,15 +1267,19 @@ class ValidationRunner:
         raw_issue: Dict[str, Any],
         decision: Any,
     ) -> None:
-        state["prevalidation_decision_count"] = int(state.get("prevalidation_decision_count", 0) or 0) + 1
+        state["prevalidation_decision_count"] = (
+            int(state.get("prevalidation_decision_count", 0) or 0) + 1
+        )
         if decision.action == "audit_observation":
-            state["static_audit_observation_count"] = int(state.get("static_audit_observation_count", 0) or 0) + 1
+            state["static_audit_observation_count"] = (
+                int(state.get("static_audit_observation_count", 0) or 0) + 1
+            )
         if decision.action == "suppress":
             state["static_suppressed_count"] = int(state.get("static_suppressed_count", 0) or 0) + 1
         if raw_issue.get("candidate_source") == "clang_ast_cfg":
-            state["clang_prevalidation_decision_count"] = int(
-                state.get("clang_prevalidation_decision_count", 0) or 0
-            ) + 1
+            state["clang_prevalidation_decision_count"] = (
+                int(state.get("clang_prevalidation_decision_count", 0) or 0) + 1
+            )
 
     @staticmethod
     def _record_deterministic_prevalidation_outcome(
@@ -1296,32 +1287,30 @@ class ValidationRunner:
         raw_issue: Dict[str, Any],
         outcome: ValidationOutcome,
     ) -> None:
-        state["prevalidation_decision_count"] = int(
-            state.get("prevalidation_decision_count", 0) or 0
-        ) + 1
-        state["deterministic_prevalidation_decision_count"] = int(
-            state.get("deterministic_prevalidation_decision_count", 0) or 0
-        ) + 1
-        state["validator_avoided_count"] = int(
-            state.get("validator_avoided_count", 0) or 0
-        ) + 1
+        state["prevalidation_decision_count"] = (
+            int(state.get("prevalidation_decision_count", 0) or 0) + 1
+        )
+        state["deterministic_prevalidation_decision_count"] = (
+            int(state.get("deterministic_prevalidation_decision_count", 0) or 0) + 1
+        )
+        state["validator_avoided_count"] = int(state.get("validator_avoided_count", 0) or 0) + 1
         decision = str(raw_issue.get("deterministic_prevalidation_decision") or "")
         if decision == "confirmed":
-            state["deterministic_prevalidation_confirmed_count"] = int(
-                state.get("deterministic_prevalidation_confirmed_count", 0) or 0
-            ) + 1
+            state["deterministic_prevalidation_confirmed_count"] = (
+                int(state.get("deterministic_prevalidation_confirmed_count", 0) or 0) + 1
+            )
         elif decision == "rejected_with_proof":
-            state["deterministic_prevalidation_rejected_count"] = int(
-                state.get("deterministic_prevalidation_rejected_count", 0) or 0
-            ) + 1
+            state["deterministic_prevalidation_rejected_count"] = (
+                int(state.get("deterministic_prevalidation_rejected_count", 0) or 0) + 1
+            )
         elif outcome.report_bucket == "observations":
-            state["deterministic_prevalidation_conflict_count"] = int(
-                state.get("deterministic_prevalidation_conflict_count", 0) or 0
-            ) + 1
+            state["deterministic_prevalidation_conflict_count"] = (
+                int(state.get("deterministic_prevalidation_conflict_count", 0) or 0) + 1
+            )
         if raw_issue.get("candidate_source") == "clang_ast_cfg":
-            state["clang_prevalidation_decision_count"] = int(
-                state.get("clang_prevalidation_decision_count", 0) or 0
-            ) + 1
+            state["clang_prevalidation_decision_count"] = (
+                int(state.get("clang_prevalidation_decision_count", 0) or 0) + 1
+            )
 
     def _handle_validation_failure(
         self,
@@ -1341,16 +1330,16 @@ class ValidationRunner:
             state[outcome.report_bucket].append(raw_issue)
 
     def _build_validator_agent(self) -> Any:
-        val_agent_cfg = next((a for a in self.config.project.agents if a.name == "validator_agent"), None)
-        val_llm_ref = val_agent_cfg.llm_ref if val_agent_cfg and val_agent_cfg.llm_ref else "default"
+        val_agent_cfg = next(
+            (a for a in self.config.project.agents if a.name == "validator_agent"), None
+        )
+        val_llm_ref = (
+            val_agent_cfg.llm_ref if val_agent_cfg and val_agent_cfg.llm_ref else "default"
+        )
         val_client = self.llm_clients.get(val_llm_ref, self.llm_clients["default"])
         return self.validator_agent_factory(
             val_client,
-            (
-                []
-                if self._validator_evidence_slice_enabled()
-                else self.get_tools("validator_agent")
-            ),
+            ([] if self._validator_evidence_slice_enabled() else self.get_tools("validator_agent")),
             tool_policy=self.tool_policy_for_agent("validator_agent"),
         )
 
@@ -1358,7 +1347,7 @@ class ValidationRunner:
         return any(a.name == "validator_agent" and a.enabled for a in self.config.project.agents)
 
     def _issue_function(self, raw_issue: Dict[str, Any], state: Dict[str, Any]) -> str:
-        agent_context = state.get("agent_context") if isinstance(state.get("agent_context"), dict) else {}
+        agent_context = _as_dict(state.get("agent_context"))
         default_func = str(agent_context.get("func_name") or state.get("entry_func") or "").strip()
         issue_func = str(raw_issue.get("function") or default_func).strip() or default_func
         if not issue_func or issue_func == default_func:
@@ -1388,16 +1377,16 @@ class ValidationRunner:
             impl = self._get_function_impl(issue_func)
             if impl:
                 issue_code = impl["code"]
-        return issue_code
+        return str(issue_code)
 
     def _get_function_impl(self, func_name: str) -> Optional[Dict[str, Any]]:
         getter = getattr(self.code_index, "get_function_impl", None)
         if not callable(getter):
             return None
         try:
-            return getter(func_name, warn_missing=False)
+            return cast(Optional[Dict[str, Any]], getter(func_name, warn_missing=False))
         except TypeError:
-            return getter(func_name)
+            return cast(Optional[Dict[str, Any]], getter(func_name))
         except Exception:
             return None
 
@@ -1419,7 +1408,9 @@ class ValidationRunner:
     ) -> None:
         raw_issue.setdefault("sink_function", original_func)
         raw_issue["validation_function_normalized_from"] = original_func
-        raw_issue["validation_function_normalization_reason"] = "external_api_function_without_indexed_body"
+        raw_issue["validation_function_normalization_reason"] = (
+            "external_api_function_without_indexed_body"
+        )
         raw_issue["function"] = normalized_func
         logger.info(
             "Normalized validation function for issue %s from external API %s to %s.",
@@ -1462,12 +1453,8 @@ class ValidationRunner:
                 sort_keys=True,
                 separators=(",", ":"),
             )
-            estimated_tokens = LLMClient.estimate_tokens(
-                [{"role": "user", "content": serialized}]
-            )
-            raw_issue["validator_evidence_slice_version"] = (
-                VALIDATOR_EVIDENCE_SLICE_VERSION
-            )
+            estimated_tokens = LLMClient.estimate_tokens([{"role": "user", "content": serialized}])
+            raw_issue["validator_evidence_slice_version"] = VALIDATOR_EVIDENCE_SLICE_VERSION
             raw_issue["evidence_slice_token_count"] = int(estimated_tokens)
             val_input = {
                 "validator_protocol": "zscope.validator-protocol.v2",

@@ -9,7 +9,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, cast
 
 from ..config.config import ZScopeConfig
 from ..config.function_entry import FunctionEntry, FunctionListLoader
@@ -35,6 +35,7 @@ from .java_entry_discovery import JavaEntryDiscovery
 from .diff_impact import DiffImpactPlanner
 from .specs import SpecRegistry, WorkflowStep
 from .workflow_executor import WorkflowExecutor, WorkflowStepHandler
+from ..rules.extensions import preflight_rules
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,8 @@ class ScanSessionRunner:
         exit_policy: str = "review",
         task_id: str = "",
     ) -> None:
+        self.spec_registry = SpecRegistry(project_root=config.project.project_root)
+        preflight_rules(config, spec_registry=self.spec_registry)
         self.config = config
         self.task_id = str(task_id or "").strip()
         self.task_slug = _task_slug(self.task_id)
@@ -102,7 +105,6 @@ class ScanSessionRunner:
         self.exit_policy = normalized_exit_policy
         self._budget_exhaustion_policy = "observe"
         self._cancellation_token = CancellationToken()
-        self.spec_registry = SpecRegistry(project_root=config.project.project_root)
         self.workflow_spec = self.spec_registry.get_workflow(config.analysis.workflow_name)
         self.session_progress: List[Dict[str, Any]] = []
         self.batch_progress: List[Dict[str, Any]] = []
@@ -204,12 +206,12 @@ class ScanSessionRunner:
         discovery = discovery_type(
             code_index,
             max_functions=discovery_cfg.max_functions,
-            header_files=discovery_cfg.header_files or None,
+            interface_files=discovery_cfg.interface_files or None,
             project_root=self.config.project.project_root,
             source_root=self.config.project.source_root,
             search_root=discovery_cfg.search_root,
         )
-        discovery_result = discovery.discover(max_candidates=discovery_cfg.max_candidates)
+        discovery_result = discovery.discover(max_candidates=discovery_cfg.max_entries)
         discovered_entries = discovery_result.to_function_entries()
         state["discovery_result"] = discovery_result.to_dict()
         state["discovered_entries"] = discovered_entries
@@ -244,7 +246,7 @@ class ScanSessionRunner:
             base_ref=self.diff_base,
             head_ref=self.diff_head,
             component=self.diff_scope_name,
-            header_files=discovery_cfg.header_files or None,
+            interface_files=discovery_cfg.interface_files or None,
             strategy=getattr(self.config.project.diff_impact, "strategy", "semantic_obligation"),
             llm_triage=getattr(self.config.project.diff_impact, "llm_triage", "on_demand"),
             caller_search_depth_by_intent=getattr(
@@ -297,7 +299,7 @@ class ScanSessionRunner:
             return False
 
         self.emit("Resuming scan: determining skip points from snapshot store...")
-        snapshot_store = SnapshotStore(Path(self.config.analysis.snapshot_dir))
+        snapshot_store = SnapshotStore.from_config(self.config)
         code_index = self._ensure_code_index(state, defer_svf=True)
         remaining: List[FunctionEntry] = []
         skipped: List[FunctionEntry] = []
@@ -375,7 +377,7 @@ class ScanSessionRunner:
             return False
 
         results: Dict[str, ParallelAnalysisResult] = state["results"]
-        snapshot_store = SnapshotStore(Path(self.config.analysis.snapshot_dir))
+        snapshot_store = SnapshotStore.from_config(self.config)
         code_index = self._ensure_code_index(state, defer_svf=True)
         merged_count = 0
         for entry in skipped_entries:
@@ -468,9 +470,11 @@ class ScanSessionRunner:
                 exclude_paths=self.config.project.exclude_paths,
                 svf_entry_functions=svf_entry_functions,
                 defer_svf=defer_svf,
-                svf_parallel_workers=self.config.analysis.parallel_workers,
+                svf_parallel_workers=(
+                    self.config.concurrency.svf_workers or self.config.concurrency.index_workers
+                ),
             )
-        return state["code_index"]
+        return cast(CodeIndex, state["code_index"])
 
     @staticmethod
     def _entry_names(entries: List[FunctionEntry]) -> List[str]:
@@ -522,7 +526,9 @@ class ScanSessionRunner:
                 exclude_paths=self.config.project.exclude_paths,
                 svf_entry_functions=svf_entries,
                 defer_svf=self.resume and not entries,
-                svf_parallel_workers=self.config.analysis.parallel_workers,
+                svf_parallel_workers=(
+                    self.config.concurrency.svf_workers or self.config.concurrency.index_workers
+                ),
             )
             if self.resume and not entries:
                 logger.info("Resume has no remaining entries; SVF initialization deferred.")
@@ -620,8 +626,8 @@ class ScanSessionRunner:
         self._ensure_svf_for_entries(state, [FunctionEntry(entry_function)])
         scheduler = ScanScheduler(
             entry_workers=1,
-            validator_workers=(getattr(self.config.analysis, "validator_workers", 0) or 4),
-            investigator_workers=(getattr(self.config.analysis, "investigator_workers", 0) or 2),
+            validator_workers=self.config.concurrency.validator_workers,
+            investigator_workers=self.config.concurrency.investigator_workers,
         )
         analyzer: Optional[Analyzer] = None
         entry_started = time.monotonic()
@@ -661,7 +667,7 @@ class ScanSessionRunner:
                 "Single-entry budget exceeded: entry=%s budget=%.2fs "
                 "overrun=%.2fs policy=%s outcome=completed",
                 entry_function,
-                float(entry_budget_seconds),
+                float(str(entry_budget_seconds)),
                 entry_budget["entry_budget_overrun_seconds"],
                 self._budget_exhaustion_policy,
             )

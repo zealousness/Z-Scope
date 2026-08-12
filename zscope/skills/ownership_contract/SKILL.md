@@ -1,5 +1,6 @@
 ---
 name: ownership_contract
+languages: [c_cpp]
 description: Audit caller/callee ownership and API lifetime contract mismatches.
 category: api_contract
 triggers:

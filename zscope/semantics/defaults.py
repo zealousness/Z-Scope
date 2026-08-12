@@ -60,7 +60,8 @@ def default_overlay_models() -> Dict[str, List[Dict[str, Any]]]:
     """Return checker-facing overlay rows for built-in API semantics."""
 
     data = load_default_semantics_data()
-    roles = data.get("api_roles") if isinstance(data.get("api_roles"), dict) else {}
+    raw_roles = data.get("api_roles")
+    roles: Dict[str, Any] = raw_roles if isinstance(raw_roles, dict) else {}
     resources: List[Dict[str, Any]] = []
     locks: List[Dict[str, Any]] = []
     for role_name, category in _ROLE_TO_CATEGORY.items():
@@ -81,7 +82,8 @@ def default_checker_api_names(role_name: str) -> List[str]:
     """Return checker-specific default names that should not affect every generator."""
 
     data = load_default_semantics_data()
-    roles = data.get("checker_roles") if isinstance(data.get("checker_roles"), dict) else {}
+    raw_roles = data.get("checker_roles")
+    roles: Dict[str, Any] = raw_roles if isinstance(raw_roles, dict) else {}
     return _string_list(roles.get(role_name))
 
 

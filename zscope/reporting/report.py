@@ -26,7 +26,9 @@ class Issue:
     impact_level: str  # low, medium, high, critical
     reasoning: Optional[str] = None
     code_snippet: Optional[str] = None
-    validation_status: str = "pending" # pending, validated, needs_review, uncertain, unvalidated, rejected
+    validation_status: str = (
+        "pending"  # pending, validated, needs_review, uncertain, unvalidated, rejected
+    )
     validation_reasoning: Optional[str] = None
     finding_kind: Optional[str] = None
     validator_verdict: Optional[str] = None
@@ -49,6 +51,16 @@ class Issue:
     evidence_refs: Optional[List[str]] = None
     run_id: Optional[str] = None
     rule_id: Optional[str] = None
+    rule_engine: Optional[str] = None
+    rule_revision: Optional[int] = None
+    rule_source: Optional[str] = None
+    rule_status: Optional[str] = None
+    rule_catalog_version: Optional[int] = None
+    rule_catalog_sha256: Optional[str] = None
+    skill: Optional[str] = None
+    candidate_kind: Optional[str] = None
+    signal_source: Optional[str] = None
+    native_rule_id: Optional[str] = None
     file: Optional[str] = None
     line: Optional[int] = None
     start_line: Optional[int] = None
@@ -117,21 +129,22 @@ class Issue:
     rejected_with_proof_count: Optional[int] = None
     cluster_fragmentation_count: Optional[int] = None
 
-
     @classmethod
-    def from_dict(cls, data: Dict[str, Any], context_function: str = "unknown", issue_index: int = 1) -> "Issue":
+    def from_dict(
+        cls, data: Dict[str, Any], context_function: str = "unknown", issue_index: int = 1
+    ) -> "Issue":
         """Create an Issue from a dictionary, filtering out unknown fields and providing defaults."""
         valid_fields = {f.name for f in fields(cls)}
-        
+
         # Mapping for common LLM field variations
         mapping = {
             "type": "category",
             "vulnerability_type": "subcategory",
             "impact": "impact_level",
             "severity": "impact_level",
-            "file": "location" 
+            "file": "location",
         }
-        
+
         filtered_data = {}
         for k, v in data.items():
             if k in valid_fields:
@@ -139,7 +152,7 @@ class Issue:
             if k in mapping and mapping[k] in valid_fields and mapping[k] not in filtered_data:
                 # If we have a mapping and the target field isn't already filled
                 filtered_data[mapping[k]] = v
-        
+
         # Ensure required fields have SOMETHING to avoid __init__ errors
         # These are the 9 fields mentioned in the error message + 'id'
         defaults = {
@@ -153,13 +166,23 @@ class Issue:
             "root_cause": "Unknown",
             "suggested_fix": "Review code",
             "confidence": 0.5,
-            "impact_level": "medium"
+            "impact_level": "medium",
         }
-        
+
         for field_name, default_val in defaults.items():
             if field_name not in filtered_data or filtered_data[field_name] is None:
                 filtered_data[field_name] = default_val
-            elif field_name in ["id", "function", "location", "category", "subcategory", "description", "root_cause", "suggested_fix", "impact_level"]:
+            elif field_name in [
+                "id",
+                "function",
+                "location",
+                "category",
+                "subcategory",
+                "description",
+                "root_cause",
+                "suggested_fix",
+                "impact_level",
+            ]:
                 # Ensure these are strings
                 if not isinstance(filtered_data[field_name], str):
                     filtered_data[field_name] = str(filtered_data[field_name])
@@ -168,7 +191,7 @@ class Issue:
                     filtered_data[field_name] = float(filtered_data[field_name])
                 except:
                     filtered_data[field_name] = 0.5
-                
+
         return cls(**filtered_data)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -200,6 +223,8 @@ class FinalReport:
             "issues": [issue.to_dict() for issue in self.issues],
             "notes": self.notes,
             "metadata": self.metadata,
+            "rule_catalog": self.metadata.get("rule_catalog", {}),
+            "rule_candidate_counts": self.metadata.get("rule_candidate_counts", {}),
             "report_views": self.report_views,
             "schema_version": self.schema_version,
             "finding_status": self.finding_status,
@@ -252,7 +277,7 @@ class ReportGenerator:
         else:
             # Filter out rejected issues for offline report
             reportable_issues = [i for i in report.issues if i.validation_status != "rejected"]
-            
+
             critical = sum(1 for i in reportable_issues if i.impact_level.lower() == "critical")
             high = sum(1 for i in reportable_issues if i.impact_level.lower() == "high")
             medium = sum(1 for i in reportable_issues if i.impact_level.lower() == "medium")
@@ -263,19 +288,16 @@ class ReportGenerator:
             md_content += f"| 🟠 High | {high} |\n"
             md_content += f"| 🟡 Medium | {medium} |\n"
             md_content += f"| 🔵 Low | {low} |\n\n"
-            
+
             validated = sum(1 for i in reportable_issues if i.validation_status == "validated")
             md_content += f"**验证状态**: {validated} 已确认\n\n"
 
             md_content += "## 缺陷列表\n\n"
             for issue in reportable_issues:
-                icon = {
-                    "critical": "🔴",
-                    "high": "🟠",
-                    "medium": "🟡",
-                    "low": "🔵"
-                }.get(issue.impact_level.lower(), "⚪")
-                
+                icon = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🔵"}.get(
+                    issue.impact_level.lower(), "⚪"
+                )
+
                 md_content += f"### {icon} [{issue.id}] {issue.category}: {issue.subcategory}\n"
                 md_content += f"- **所在函数**: `{issue.function}`\n"
                 md_content += f"- **代码位置**: `{issue.location}`\n"
@@ -291,7 +313,7 @@ class ReportGenerator:
                     md_content += f"\n**分析推理**:\n{self._normalize_md_text(issue.reasoning)}\n"
                 md_content += f"\n**根本原因**:\n{self._normalize_md_text(issue.root_cause)}\n"
                 md_content += f"\n**修复建议**:\n> {self._normalize_md_text(issue.suggested_fix)}\n"
-                
+
                 if issue.validation_reasoning:
                     status_label = {
                         "validated": "✅ Validator 确认",
@@ -302,7 +324,7 @@ class ReportGenerator:
                         "rejected": "❌ Validator 否决",
                     }.get(issue.validation_status, "⚪ Validator 未完成")
                     md_content += f"\n**{status_label}**:\n{self._normalize_md_text(issue.validation_reasoning)}\n"
-                    
+
                 md_content += "\n---\n"
 
         if report.notes:
@@ -319,6 +341,6 @@ class ReportGenerator:
         translations = {
             "issues_found": "🔴 发现缺陷",
             "no_issue_found": "🟢 未发现明显问题",
-            "insufficient_info": "🟡 信息不足，无法下定论"
+            "insufficient_info": "🟡 信息不足，无法下定论",
         }
         return translations.get(verdict, verdict)

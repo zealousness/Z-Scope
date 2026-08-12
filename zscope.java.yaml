@@ -1,0 +1,43 @@
+# Z-SCOPE Java 配置 v2。复制为目标项目的 zscope.yaml 后修改。
+config_version: 2
+
+llms:
+  default:
+    base_urls: ["${Z_SCOPE_LLM_BASE_URL}"]
+    models: ["${Z_SCOPE_LLM_MODEL}"]
+    api_key: "${Z_SCOPE_API_KEY}"
+    base_url_max_concurrent_requests: 4
+
+project:
+  language: java
+  root: .
+  source_root: .
+  include_paths: []
+  exclude_paths: [target, build, .gradle]
+  # 也可改用 entry_function 或 entry_functions_list；自动发现时请明确目标模块和 API 源文件。
+  entry_discovery:
+    enabled: true
+    search_root: .
+    interface_files: ["src/main/java/**/*.java"]
+    max_entries: 200
+
+scan:
+  task: "" # 空串启用当前语言全部适用 Skill；非空文本仅指定审计重点。
+
+indexing:
+  backend: java_unified
+  java:
+    structure_frontend: auto
+    signals: [joern]
+    # provider_commands: # 外部信号 provider 的命令及参数；provider 名应同时写入 signals。
+    #   semgrep: [semgrep, --json, --config, auto, .]
+  # tools: # 仅在 Joern 不可从 PATH 或默认服务地址访问时配置。
+  #   joern: {command: joern, host: 127.0.0.1, port: 8080, heap: 8g}
+
+concurrency:
+  entry_workers: 4
+  validator_workers: 2
+  investigator_workers: 1
+  evidence_completion_workers: 2
+  index_workers: 4
+  llm_max_inflight: 4

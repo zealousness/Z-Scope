@@ -145,12 +145,7 @@ class GlobalModeler:
         self.scheduler = scheduler
         self.max_workers = max(
             1,
-            int(
-                max_workers
-                or getattr(config.analysis, "entry_workers", 0)
-                or config.analysis.parallel_workers
-                or 1
-            ),
+            int(max_workers or config.concurrency.entry_workers or 1),
         )
         self._stats_lock = threading.Lock()
 
@@ -192,9 +187,7 @@ class GlobalModeler:
             semantic_agent_factory=make_agent,
             attach_contract=attach_contract,
             scheduler=scheduler,
-            max_workers=(
-                getattr(config.analysis, "entry_workers", 0) or config.analysis.parallel_workers
-            ),
+            max_workers=config.concurrency.entry_workers,
         )
 
     def run(self, entries: Sequence[FunctionEntry]) -> GlobalModelStats:

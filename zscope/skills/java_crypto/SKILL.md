@@ -1,5 +1,6 @@
 ---
 name: java_crypto
+languages: [java]
 description: Audit weak Java cryptography, key handling, randomness, and password hashing.
 category: java_security
 triggers:

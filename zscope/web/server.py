@@ -14,6 +14,7 @@ CONFIG_FILENAME = "zscope.yaml"
 USER_CONFIG_WORKBOOK_NAME = "user_config.xlsx"
 
 _config_service = web_services.ConfigService()
+_rule_service = web_services.RuleService()
 _workbook_service = web_services.WorkbookService()
 _user_config_service = web_services.UserConfigService()
 _cpg_service = web_services.CpgService()
@@ -57,12 +58,17 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
             try:
                 self._send_json(_config_service.structured_payload())
             except Exception as exc:
-                self._send_json({"error": str(exc), "config": {}}, status=500)
+                self._send_json({"error": str(exc), "config": {}}, status=400)
         elif parsed.path == "/api/config":
             try:
                 self._send_json(_config_service.read_text())
             except OSError as exc:
                 self._send_json({"content": "", "error": str(exc)}, status=500)
+        elif parsed.path == "/api/rules":
+            try:
+                self._send_json(_rule_service.payload(parsed.query))
+            except Exception as exc:
+                self._send_json({"error": str(exc), "rules": []}, status=400)
         elif parsed.path == "/api/cpg_status":
             self._handle_cpg_status()
         elif parsed.path == "/api/source_snippet":
@@ -92,7 +98,12 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
 
         if self.path == "/api/config":
             content = payload.get("content", "")
-            self._send_json(_config_service.write_text(content))
+            try:
+                response = _config_service.write_text(content)
+            except Exception as exc:
+                self._send_json({"success": False, "error": str(exc)}, status=400)
+                return
+            self._send_json(response)
         elif self.path == "/api/config/structured":
             data = payload.get("config")
             if not isinstance(data, dict):
@@ -101,14 +112,16 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
             try:
                 _config_service.save_document(data)
             except Exception as exc:
-                self._send_json({"success": False, "error": str(exc)}, status=500)
+                self._send_json({"success": False, "error": str(exc)}, status=400)
                 return
             self._send_json({"success": True, **_config_service.structured_payload()})
         elif self.path == "/api/save_findings":
             try:
                 updates = payload.get("issues", [])
                 if not isinstance(updates, list):
-                    self._send_json({"success": False, "error": "Issues must be a list"}, status=400)
+                    self._send_json(
+                        {"success": False, "error": "Issues must be a list"}, status=400
+                    )
                     return
                 response_payload = _report_feedback_service.save_validation_feedback(
                     updates,
@@ -182,7 +195,9 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
             "Content-type",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-        self.send_header("Content-Disposition", f'attachment; filename="{USER_CONFIG_WORKBOOK_NAME}"')
+        self.send_header(
+            "Content-Disposition", f'attachment; filename="{USER_CONFIG_WORKBOOK_NAME}"'
+        )
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -256,9 +271,10 @@ def run_server(
     host="0.0.0.0",
     port=PORT,
 ):
-    global _config_service, _workbook_service, _user_config_service, _cpg_service, _source_snippet_service, _report_feedback_service
+    global _config_service, _rule_service, _workbook_service, _user_config_service, _cpg_service, _source_snippet_service, _report_feedback_service
     config_file_path = Path(config_path).resolve() if config_path else None
     _config_service = web_services.ConfigService(config_file_path, default_name=CONFIG_FILENAME)
+    _rule_service = web_services.RuleService(config_file_path, default_name=CONFIG_FILENAME)
     _workbook_service = web_services.WorkbookService(user_config_store)
     _user_config_service = web_services.UserConfigService(user_config_store)
     _cpg_service = web_services.CpgService(code_index, project_config)

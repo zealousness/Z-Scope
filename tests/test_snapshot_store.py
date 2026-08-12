@@ -2,6 +2,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -131,6 +132,7 @@ def test_snapshot_save_refreshes_cache_and_fingerprints(tmp_path) -> None:
         "symbol_context_hash": compute_symbol_context_hash(_snapshot(summary="second")),
         "callee_summary_hash": compute_callee_summary_hash(_snapshot(summary="second")),
         "type_context_hash": compute_type_context_hash(_snapshot(summary="second")),
+        "effective_rules_sha256": "",
     }
     assert store.needs_refresh(index_name, second_code, _snapshot()) == (False, None)
 
@@ -221,9 +223,9 @@ def test_type_context_hash_normalizes_order_and_definition_line_endings() -> Non
 
     assert compute_type_context_hash(first) == compute_type_context_hash(reordered)
 
-    reordered["referenced_types"][0]["full_definition"] = (
-        "90 | typedef struct {\n91 |     long id;\n92 | } Plugin;"
-    )
+    reordered["referenced_types"][0][
+        "full_definition"
+    ] = "90 | typedef struct {\n91 |     long id;\n92 | } Plugin;"
     assert compute_type_context_hash(first) != compute_type_context_hash(reordered)
 
 
@@ -246,9 +248,9 @@ def test_type_definition_or_direct_reference_change_requires_semantic_refresh(
     store.save_snapshot(index_name, snapshot, code)
 
     definition_changed = json.loads(json.dumps(snapshot))
-    definition_changed["referenced_types"][0]["full_definition"] = (
-        "1 | typedef struct { long value; } Context;\n"
-    )
+    definition_changed["referenced_types"][0][
+        "full_definition"
+    ] = "1 | typedef struct { long value; } Context;\n"
     assert store.needs_refresh(index_name, code, definition_changed) == (
         True,
         "type_context_changed",
@@ -265,9 +267,9 @@ def test_type_definition_or_direct_reference_change_requires_semantic_refresh(
     )
 
     cosmetic = json.loads(json.dumps(snapshot))
-    cosmetic["referenced_types"][0]["full_definition"] = (
-        "1 | typedef struct { int value; } Context;   \r\n"
-    )
+    cosmetic["referenced_types"][0][
+        "full_definition"
+    ] = "1 | typedef struct { int value; } Context;   \r\n"
     assert store.needs_refresh(index_name, code, cosmetic) == (False, None)
 
 
@@ -441,9 +443,7 @@ def test_concurrent_program_only_reconciliation_is_serialized(tmp_path) -> None:
     store.save_snapshot(index_name, snapshot, code, dependency_context=context)
     desired = {
         **context,
-        "project_callees": [
-            {**context["project_callees"][0], "callee_summary": "child summary"}
-        ],
+        "project_callees": [{**context["project_callees"][0], "callee_summary": "child summary"}],
     }
     barrier = threading.Barrier(2)
     statuses = []
@@ -652,9 +652,7 @@ def test_snapshot_filename_and_sqlite_primary_key_derive_from_index_name(tmp_pat
     assert (snapshot_dir / expected_file).exists()
     with sqlite3.connect(snapshot_dir / "snapshots.db") as conn:
         columns = {row[1]: row for row in conn.execute("PRAGMA table_info(snapshots)")}
-        row = conn.execute(
-            "SELECT index_name, snapshot_file FROM snapshots"
-        ).fetchone()
+        row = conn.execute("SELECT index_name, snapshot_file FROM snapshots").fetchone()
     assert columns["index_name"][5] == 1
     assert "location" not in columns
     assert "symbol_context_hash" in columns
@@ -667,9 +665,7 @@ def test_snapshot_filename_keeps_readable_prefix_and_uses_index_digest() -> None
     encoded = SnapshotStore._encoded_index_name(index_name)
 
     assert encoded.startswith("Widget_run_int_src_widget.cpp_10-40-")
-    assert encoded.endswith(
-        hashlib.sha256(index_name.encode("utf-8")).hexdigest()[:16]
-    )
+    assert encoded.endswith(hashlib.sha256(index_name.encode("utf-8")).hexdigest()[:16])
 
 
 def test_punctuation_collisions_remain_isolated_after_process_reload(tmp_path) -> None:
@@ -879,8 +875,7 @@ def test_legacy_database_migrates_to_index_name_without_deleting_old_table(tmp_p
     assert store.load_snapshot(snapshot["index_name"])["summary"] == "legacy"
     with sqlite3.connect(snapshot_dir / "snapshots.db") as conn:
         tables = {
-            row[0]
-            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
         columns = {row[1] for row in conn.execute("PRAGMA table_info(snapshots)")}
     assert "snapshots" in tables
@@ -889,7 +884,59 @@ def test_legacy_database_migrates_to_index_name_without_deleting_old_table(tmp_p
     assert "symbol_context_hash" in columns
     assert "callee_summary_hash" in columns
     assert "type_context_hash" in columns
+    assert "effective_rules_sha256" in columns
     assert "location" not in columns
+
+
+def test_effective_rule_identity_invalidates_snapshot_without_hiding_history(tmp_path) -> None:
+    snapshot_dir = tmp_path / "snapshots"
+    index_name = "handle_request@src/server.c:10-20"
+    code = "int handle_request(void) { return 0; }"
+    snapshot = _snapshot(index_name)
+    first = SnapshotStore(snapshot_dir, effective_rules_sha256="rules-a")
+    first.save_snapshot(index_name, snapshot, code)
+
+    same = SnapshotStore(snapshot_dir, effective_rules_sha256="rules-a")
+    assert same.needs_refresh(index_name, code, snapshot) == (False, None)
+    assert same.get_fingerprints(index_name)["effective_rules_sha256"] == "rules-a"
+
+    changed = SnapshotStore(snapshot_dir, effective_rules_sha256="rules-b")
+    # Historical data remains available for diagnostics/report migration, but
+    # cannot be selected as a reusable semantic snapshot.
+    assert changed.load_snapshot(index_name) == snapshot
+    assert changed.needs_refresh(index_name, code, snapshot) == (
+        True,
+        "effective_rules_changed",
+    )
+
+
+def test_historical_snapshot_without_rule_identity_is_readable_but_not_reusable(
+    tmp_path,
+) -> None:
+    snapshot_dir = tmp_path / "snapshots"
+    index_name = "handle_request@src/server.c:10-20"
+    code = "int handle_request(void) { return 0; }"
+    snapshot = _snapshot(index_name)
+    legacy = SnapshotStore(snapshot_dir)
+    legacy.save_snapshot(index_name, snapshot, code)
+
+    governed = SnapshotStore(snapshot_dir, effective_rules_sha256="rules-current")
+    assert governed.load_snapshot(index_name) == snapshot
+    assert governed.needs_refresh(index_name, code, snapshot) == (
+        True,
+        "effective_rules_identity_missing",
+    )
+
+
+def test_snapshot_store_from_config_binds_effective_rule_identity(tmp_path) -> None:
+    config = SimpleNamespace(
+        analysis=SimpleNamespace(snapshot_dir=tmp_path / "snapshots"),
+        rule_catalog_provenance=SimpleNamespace(effective_sha256="rules-config"),
+    )
+
+    store = SnapshotStore.from_config(config)
+
+    assert store.effective_rules_sha256 == "rules-config"
 
 
 def test_failed_legacy_migration_preserves_old_table_and_json(tmp_path) -> None:

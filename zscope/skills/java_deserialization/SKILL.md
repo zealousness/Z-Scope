@@ -1,5 +1,6 @@
 ---
 name: java_deserialization
+languages: [java]
 description: Audit unsafe Java deserialization, polymorphic JSON typing, and XML parser XXE.
 category: java_security
 triggers:

@@ -3,10 +3,11 @@ Command Line Interface for Z-SCOPE.
 """
 
 import click
+import json
 import logging
 import sys
 import os
-from pathlib import Path # Keep this import as it's used for 'config: Path'
+from pathlib import Path  # Keep this import as it's used for 'config: Path'
 from typing import Optional
 from .._version import __version__
 from ..retrieval.code_index import CodeIndex
@@ -15,6 +16,7 @@ from ..config.config import ConfigLoader
 from ..framework.conversation_recorder import enable_conversation_recording
 from ..orchestration.scan_session import ScanSessionResult, ScanSessionRunner, _task_slug
 from ..reporting.schema import apply_report_schema_v2, exit_code_for_report
+
 
 @click.command()
 @click.version_option(version=__version__, prog_name="Z-SCOPE")
@@ -26,21 +28,64 @@ from ..reporting.schema import apply_report_schema_v2, exit_code_for_report
 )
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging.")
 @click.option("--dashboard", "-d", is_flag=True, help="Launch the web dashboard to view results.")
-@click.option("--dashboard-host", default="0.0.0.0", show_default=True, help="Host/IP to bind for --dashboard.")
-@click.option("--dashboard-port", default=8000, show_default=True, type=int, help="Port to bind for --dashboard.")
+@click.option(
+    "--dashboard-host",
+    default="0.0.0.0",
+    show_default=True,
+    help="Host/IP to bind for --dashboard.",
+)
+@click.option(
+    "--dashboard-port",
+    default=8000,
+    show_default=True,
+    type=int,
+    help="Port to bind for --dashboard.",
+)
 @click.option("--build-index", is_flag=True, help="Build the configured language index, then exit.")
+@click.option(
+    "--plan-entries",
+    is_flag=True,
+    help="Build the index, preview configured entry discovery, write the entry plan, then exit without LLM calls.",
+)
 @click.option(
     "--build-cpg",
     is_flag=True,
     help="Deprecated 1.x alias for --build-index; removed in 2.0.",
 )
-@click.option("--mode", type=click.Choice(["default", "ruledriven", "alert-verify"]), default="default", help="Analysis mode.")
-@click.option("--sarif", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None, help="SARIF file for alert-verify mode.")
-@click.option("--resume", is_flag=True, default=False, help="Resume interrupted batch scan from last checkpoint.")
-@click.option("--maintain", is_flag=True, default=False, help="Incremental maintenance scan: skip unchanged functions, verify historical issues.")
-@click.option("--discover-entries", is_flag=True, default=False, help="Discover public API, communication, thread, and other input entries before scanning.")
+@click.option(
+    "--mode",
+    type=click.Choice(["default", "ruledriven", "alert-verify"]),
+    default="default",
+    help="Analysis mode.",
+)
+@click.option(
+    "--sarif",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="SARIF file for alert-verify mode.",
+)
+@click.option(
+    "--resume",
+    is_flag=True,
+    default=False,
+    help="Resume interrupted batch scan from last checkpoint.",
+)
+@click.option(
+    "--maintain",
+    is_flag=True,
+    default=False,
+    help="Incremental maintenance scan: skip unchanged functions, verify historical issues.",
+)
+@click.option(
+    "--discover-entries",
+    is_flag=True,
+    default=False,
+    help="Discover public API, communication, thread, and other input entries before scanning.",
+)
 @click.option("--diff-base", default=None, help="Base git ref for diff impact mode.")
-@click.option("--diff-head", default="HEAD", show_default=True, help="Head git ref for diff impact mode.")
+@click.option(
+    "--diff-head", default="HEAD", show_default=True, help="Head git ref for diff impact mode."
+)
 @click.option(
     "--diff-repo-root",
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
@@ -52,15 +97,44 @@ from ..reporting.schema import apply_report_schema_v2, exit_code_for_report
     multiple=True,
     help="Limit diff impact mode to changed files under this path. Repeat for multiple paths.",
 )
-@click.option("--infer-user-config", is_flag=True, default=False, help="Infer/update the human-editable user_config.xlsx and exit.")
-@click.option("--mcp-stdio", is_flag=True, default=False, help="Run Z-SCOPE local MCP server over stdio.")
-@click.option("--mcp-http", is_flag=True, default=False, help="Run experimental remote MCP server over Streamable HTTP.")
-@click.option("--mcp-host", default="127.0.0.1", show_default=True, help="Host/IP to bind for --mcp-http.")
-@click.option("--mcp-port", default=8765, show_default=True, type=int, help="Port to bind for --mcp-http.")
+@click.option(
+    "--infer-user-config",
+    is_flag=True,
+    default=False,
+    help="Infer/update the human-editable user_config.xlsx and exit.",
+)
+@click.option(
+    "--mcp-stdio", is_flag=True, default=False, help="Run Z-SCOPE local MCP server over stdio."
+)
+@click.option(
+    "--mcp-http",
+    is_flag=True,
+    default=False,
+    help="Run experimental remote MCP server over Streamable HTTP.",
+)
+@click.option(
+    "--mcp-host", default="127.0.0.1", show_default=True, help="Host/IP to bind for --mcp-http."
+)
+@click.option(
+    "--mcp-port", default=8765, show_default=True, type=int, help="Port to bind for --mcp-http."
+)
 @click.option("--mcp-endpoint", default="/mcp", show_default=True, help="HTTP path for --mcp-http.")
-@click.option("--mcp-auth-token-env", default="", help="Environment variable containing the bearer token for --mcp-http.")
-@click.option("--mcp-client-allowlist", multiple=True, help="Client IP allowed to call --mcp-http. Repeat for multiple IPs.")
-@click.option("--export-sarif", type=click.Path(dir_okay=False, path_type=Path), default=None, help="Export the completed Z-SCOPE report to SARIF v2.1.0.")
+@click.option(
+    "--mcp-auth-token-env",
+    default="",
+    help="Environment variable containing the bearer token for --mcp-http.",
+)
+@click.option(
+    "--mcp-client-allowlist",
+    multiple=True,
+    help="Client IP allowed to call --mcp-http. Repeat for multiple IPs.",
+)
+@click.option(
+    "--export-sarif",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Export the completed Z-SCOPE report to SARIF v2.1.0.",
+)
 @click.option(
     "--exit-policy",
     type=click.Choice(["review", "confirmed", "legacy"]),
@@ -80,6 +154,7 @@ def main(
     dashboard_host: str,
     dashboard_port: int,
     build_index: bool,
+    plan_entries: bool,
     build_cpg: bool,
     mode: str,
     sarif: Path,
@@ -116,36 +191,42 @@ def main(
 
         if not config:
             config = Path("zscope.yaml")
-        if config.exists():
-            zscope_config = ConfigLoader.load(str(config))
-            cfg = zscope_config.indexing
-            # 通过 CodeIndex 创建后端，保持统一入口
-            dashboard_code_index = CodeIndex(
-                zscope_config.project.project_root,
-                zscope_config.project.compile_commands_path,
-                source_root=zscope_config.project.source_root,
-                indexing_config=cfg,
-                include_paths=zscope_config.project.include_paths,
-                exclude_paths=zscope_config.project.exclude_paths,
-                wait_for_cpg=False,
-                svf_parallel_workers=zscope_config.analysis.parallel_workers,
+        if not config.is_file():
+            raise click.ClickException(
+                "configuration not found; pass --config or create ./zscope.yaml"
             )
-            db_dir = Path(zscope_config.analysis.user_config_db) if zscope_config.analysis.user_config_db else Path(zscope_config.analysis.snapshot_dir)
-            ucs = UserConfigStore(db_dir)
-            snapshot_store = SnapshotStore(Path(zscope_config.analysis.snapshot_dir))
-            
-            run_server(
-                code_index=dashboard_code_index,
-                user_config_store=ucs,
-                project_config=zscope_config.project,
-                snapshot_store=snapshot_store,
-                config_path=config,
-                host=dashboard_host,
-                port=dashboard_port,
-            )
-        else:
-            click.echo("Warning: No config file found, dashboard running without backend/config support")
-            run_server(config_path=config, host=dashboard_host, port=dashboard_port)
+        zscope_config = ConfigLoader.load(str(config))
+        cfg = zscope_config.indexing
+        # 通过 CodeIndex 创建后端，保持统一入口
+        dashboard_code_index = CodeIndex(
+            zscope_config.project.project_root,
+            zscope_config.project.compile_commands_path,
+            source_root=zscope_config.project.source_root,
+            indexing_config=cfg,
+            include_paths=zscope_config.project.include_paths,
+            exclude_paths=zscope_config.project.exclude_paths,
+            wait_for_cpg=False,
+            svf_parallel_workers=(
+                zscope_config.concurrency.svf_workers or zscope_config.concurrency.index_workers
+            ),
+        )
+        db_dir = (
+            Path(zscope_config.analysis.user_config_db)
+            if zscope_config.analysis.user_config_db
+            else Path(zscope_config.analysis.snapshot_dir)
+        )
+        ucs = UserConfigStore(db_dir)
+        snapshot_store = SnapshotStore.from_config(zscope_config)
+
+        run_server(
+            code_index=dashboard_code_index,
+            user_config_store=ucs,
+            project_config=zscope_config.project,
+            snapshot_store=snapshot_store,
+            config_path=config,
+            host=dashboard_host,
+            port=dashboard_port,
+        )
         sys.exit(0)
 
     if not config:
@@ -229,22 +310,19 @@ def main(
                 exclude_paths=zscope_config.project.exclude_paths,
                 wait_for_cpg=True,
                 defer_svf=True,
-                svf_parallel_workers=zscope_config.analysis.parallel_workers,
+                svf_parallel_workers=(
+                    zscope_config.concurrency.svf_workers or zscope_config.concurrency.index_workers
+                ),
             )
             workbook_path = _resolve_user_config_workbook_path(zscope_config)
             generated = infer_user_config_rows(
                 code_index,
                 snapshot_dir=Path(zscope_config.analysis.snapshot_dir),
             )
-            llm_workers = max(
-                1,
-                int(
-                    getattr(zscope_config.analysis, "entry_workers", 0)
-                    or getattr(zscope_config.analysis, "parallel_workers", 1)
-                    or 1
-                ),
+            llm_workers = zscope_config.concurrency.llm_max_inflight
+            click.echo(
+                f"Screening user configuration candidates with LLM ({llm_workers} worker(s))..."
             )
-            click.echo(f"Screening user configuration candidates with LLM ({llm_workers} worker(s))...")
             llm_cfg = zscope_config.llms.get("default") or next(iter(zscope_config.llms.values()))
             llm_client = LLMClient(
                 api_key=llm_cfg.api_key,
@@ -252,9 +330,7 @@ def main(
                 models=llm_cfg.models,
                 timeout=llm_cfg.timeout,
                 max_retries=llm_cfg.max_retries,
-                retry_until_available=getattr(
-                    llm_cfg, "retry_until_available", False
-                ),
+                retry_until_available=getattr(llm_cfg, "retry_until_available", False),
                 max_tokens=llm_cfg.max_tokens,
                 base_url_rate_limit_per_minute=getattr(
                     llm_cfg, "base_url_rate_limit_per_minute", 0
@@ -262,12 +338,8 @@ def main(
                 base_url_max_concurrent_requests=getattr(
                     llm_cfg, "base_url_max_concurrent_requests", 0
                 ),
-                global_max_concurrent_requests=getattr(
-                    zscope_config.analysis, "llm_max_inflight", 8
-                ),
-                supports_structured_output=getattr(
-                    llm_cfg, "supports_structured_output", False
-                ),
+                global_max_concurrent_requests=zscope_config.concurrency.llm_max_inflight,
+                supports_structured_output=getattr(llm_cfg, "supports_structured_output", False),
             )
             try:
                 generated, llm_stats = filter_user_config_rows_with_llm(
@@ -296,6 +368,57 @@ def main(
             click.echo("Review the workbook, then run Z-SCOPE normally.")
             sys.exit(0)
 
+        if plan_entries:
+            from ..orchestration.entry_discovery import EntryDiscovery
+            from ..orchestration.java_entry_discovery import JavaEntryDiscovery
+
+            discovery_cfg = zscope_config.project.entry_discovery
+            click.echo("Building the deterministic index for entry planning...")
+            code_index = CodeIndex(
+                zscope_config.project.project_root,
+                zscope_config.project.compile_commands_path,
+                source_root=zscope_config.project.source_root,
+                indexing_config=zscope_config.indexing,
+                include_paths=zscope_config.project.include_paths,
+                exclude_paths=zscope_config.project.exclude_paths,
+                wait_for_cpg=True,
+                defer_svf=True,
+                svf_parallel_workers=(
+                    zscope_config.concurrency.svf_workers or zscope_config.concurrency.index_workers
+                ),
+            )
+            discovery_type = (
+                JavaEntryDiscovery if zscope_config.project.language == "java" else EntryDiscovery
+            )
+            planner = discovery_type(
+                code_index,
+                max_functions=discovery_cfg.max_functions,
+                interface_files=discovery_cfg.interface_files or None,
+                project_root=zscope_config.project.project_root,
+                source_root=zscope_config.project.source_root,
+                search_root=discovery_cfg.search_root,
+            )
+            plan = planner.discover(max_candidates=discovery_cfg.max_entries)
+            output = zscope_config.project.project_root / "entry_functions.discovered.json"
+            with output.open("w", encoding="utf-8", newline="\n") as handle:
+                json.dump(plan.to_entry_functions_payload(), handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+            click.echo(
+                f"Entry plan: {len(plan.candidates)} selected, "
+                f"{len(plan.deferred_candidates)} deferred; {output}"
+            )
+            for candidate in plan.candidates[:50]:
+                click.echo(
+                    f"  {candidate.function_name} [{candidate.exposure}] "
+                    f"{candidate.file_path}:{candidate.line}"
+                )
+            if not plan.candidates:
+                raise click.ClickException(
+                    "entry discovery found no candidates; review project.entry_discovery.search_root "
+                    "and interface_files"
+                )
+            sys.exit(0)
+
         if build_cpg:
             logger.warning(
                 "--build-cpg is deprecated in Z-SCOPE 1.x; use --build-index. "
@@ -313,7 +436,9 @@ def main(
                 include_paths=zscope_config.project.include_paths,
                 exclude_paths=zscope_config.project.exclude_paths,
                 wait_for_cpg=True,
-                svf_parallel_workers=zscope_config.analysis.parallel_workers,
+                svf_parallel_workers=(
+                    zscope_config.concurrency.svf_workers or zscope_config.concurrency.index_workers
+                ),
             )
             func_count = len(code_index.list_functions())
             click.echo(f"Index build complete. Indexed {func_count} functions.")
@@ -329,6 +454,7 @@ def main(
                 )
             logger.info("Rule-driven mode: running Joern rules + validation")
             from ..rules.analyzer import RuleDrivenAnalyzer
+
             code_index = CodeIndex(
                 zscope_config.project.project_root,
                 zscope_config.project.compile_commands_path,
@@ -336,7 +462,9 @@ def main(
                 indexing_config=zscope_config.indexing,
                 include_paths=zscope_config.project.include_paths,
                 exclude_paths=zscope_config.project.exclude_paths,
-                svf_parallel_workers=zscope_config.analysis.parallel_workers,
+                svf_parallel_workers=(
+                    zscope_config.concurrency.svf_workers or zscope_config.concurrency.index_workers
+                ),
             )
             rda = RuleDrivenAnalyzer(zscope_config, code_index=code_index)
             try:
@@ -371,35 +499,41 @@ def main(
                 indexing_config=zscope_config.indexing,
                 include_paths=zscope_config.project.include_paths,
                 exclude_paths=zscope_config.project.exclude_paths,
-                svf_parallel_workers=zscope_config.analysis.parallel_workers,
+                svf_parallel_workers=(
+                    zscope_config.concurrency.svf_workers or zscope_config.concurrency.index_workers
+                ),
             )
             adapter = SarifAdapter(
                 source_root=str(zscope_config.project.source_root),
             )
             alerts = adapter.parse(str(sarif))
             click.echo(f"Parsed {len(alerts)} alerts from SARIF")
-            
+
             if resume:
                 # For alert-verify mode, --resume is not supported yet
-                click.echo("Warning: --resume is not supported for alert-verify mode. Starting from beginning.")
+                click.echo(
+                    "Warning: --resume is not supported for alert-verify mode. Starting from beginning."
+                )
 
             if not alerts:
                 click.echo("No alerts to verify.")
                 sys.exit(0)
 
-            val_agent_cfg = next((a for a in zscope_config.project.agents if a.name == "validator_agent"), None)
-            val_llm_ref = val_agent_cfg.llm_ref if val_agent_cfg and val_agent_cfg.llm_ref else "default"
+            val_agent_cfg = next(
+                (a for a in zscope_config.project.agents if a.name == "validator_agent"), None
+            )
+            val_llm_ref = (
+                val_agent_cfg.llm_ref if val_agent_cfg and val_agent_cfg.llm_ref else "default"
+            )
             llm_cfg = zscope_config.llms.get(val_llm_ref, zscope_config.llms["default"])
-            
+
             llm_client = LLMClient(
                 api_key=llm_cfg.api_key,
                 base_url=getattr(llm_cfg, "base_urls", None) or llm_cfg.base_url,
                 models=llm_cfg.models,
                 timeout=llm_cfg.timeout,
                 max_retries=llm_cfg.max_retries,
-                retry_until_available=getattr(
-                    llm_cfg, "retry_until_available", False
-                ),
+                retry_until_available=getattr(llm_cfg, "retry_until_available", False),
                 max_tokens=llm_cfg.max_tokens,
                 base_url_rate_limit_per_minute=getattr(
                     llm_cfg, "base_url_rate_limit_per_minute", 0
@@ -407,12 +541,8 @@ def main(
                 base_url_max_concurrent_requests=getattr(
                     llm_cfg, "base_url_max_concurrent_requests", 0
                 ),
-                global_max_concurrent_requests=getattr(
-                    zscope_config.analysis, "llm_max_inflight", 8
-                ),
-                supports_structured_output=getattr(
-                    llm_cfg, "supports_structured_output", False
-                ),
+                global_max_concurrent_requests=zscope_config.concurrency.llm_max_inflight,
+                supports_structured_output=getattr(llm_cfg, "supports_structured_output", False),
             )
             db_dir = (
                 Path(zscope_config.analysis.user_config_db)
@@ -427,29 +557,10 @@ def main(
                 llm_client=llm_client,
                 user_config=ucs,
             )
-            configured_alert_workers = getattr(
-                zscope_config.analysis, "validator_workers", 0
+            alert_workers = max(
+                1,
+                min(len(alerts), zscope_config.concurrency.validator_workers),
             )
-            if not configured_alert_workers:
-                configured_alert_workers = getattr(
-                    zscope_config.analysis,
-                    "validation_parallel_workers",
-                    0,
-                )
-            try:
-                alert_workers = int(configured_alert_workers or 0)
-            except (TypeError, ValueError):
-                alert_workers = 0
-            if alert_workers <= 0:
-                try:
-                    alert_workers = int(
-                        getattr(zscope_config.analysis, "entry_workers", 0)
-                        or getattr(zscope_config.analysis, "parallel_workers", 1)
-                        or 1
-                    )
-                except (TypeError, ValueError):
-                    alert_workers = 1
-            alert_workers = max(1, min(len(alerts), alert_workers))
             alert_scheduler = (
                 ScanScheduler(
                     entry_workers=1,
@@ -472,7 +583,6 @@ def main(
                 verifier.close()
 
             # 输出报告
-            import json
             confirmed_results = [
                 result
                 for result in verification_results
@@ -489,12 +599,16 @@ def main(
                 if result.get("candidate_disposition") == "engine_failed"
             ]
             engine_status = "failed" if failed_results else "complete"
+            alert_metadata = {
+                "workflow": "alert-verify",
+                "runtime_spec": dict(vars(zscope_config.runtime_provenance)),
+            }
             verification_report = apply_report_schema_v2(
                 {
                     "results": verification_results,
                     "issues": confirmed_results,
                     "observations": review_results,
-                    "metadata": {"workflow": "alert-verify"},
+                    "metadata": alert_metadata,
                 },
                 state={
                     "any_failure": bool(failed_results),
@@ -502,9 +616,7 @@ def main(
                         "alert_verifier": {
                             "status": engine_status,
                             "reason": (
-                                "one_or_more_alert_validations_failed"
-                                if failed_results
-                                else ""
+                                "one_or_more_alert_validations_failed" if failed_results else ""
                             ),
                         }
                     },
@@ -512,7 +624,7 @@ def main(
                 issues=confirmed_results,
                 observations=review_results,
                 metadata={
-                    "workflow": "alert-verify",
+                    **alert_metadata,
                     **({"task_id": task_id, "task_slug": _task_slug(task_id)} if task_id else {}),
                 },
                 entry_function="alert-verification",
@@ -568,10 +680,12 @@ def main(
             from ..reporting.sarif_exporter import save_sarif_report
 
             json_reports = [
-                path for path in session_result.reports
+                path
+                for path in session_result.reports
                 if isinstance(path, Path) and path.suffix.lower() == ".json"
             ]
-            report_path = json_reports[0] if json_reports else session_result.project_root / "report.json"
+            report_root = session_result.project_root or zscope_config.project.project_root
+            report_path = json_reports[0] if json_reports else report_root / "report.json"
             if not report_path.exists():
                 raise FileNotFoundError(f"Unable to export SARIF; report not found: {report_path}")
             save_sarif_report(
@@ -625,7 +739,9 @@ def _resolve_user_config_workbook_path(zscope_config) -> Path:
     raw_path = Path(configured) if configured else Path(zscope_config.analysis.snapshot_dir)
     if raw_path.suffix.lower() == ".xlsx":
         if raw_path.exists() and raw_path.is_dir():
-            raise ValueError("analysis.user_config_db must point to an .xlsx workbook or a directory.")
+            raise ValueError(
+                "analysis.user_config_db must point to an .xlsx workbook or a directory."
+            )
         return raw_path
     if raw_path.suffix and not raw_path.exists():
         raise ValueError("analysis.user_config_db must point to an .xlsx workbook or a directory.")
@@ -657,10 +773,7 @@ def _review_count_lines(session_result: ScanSessionResult) -> list[str]:
     """Render visible findings and lifecycle obligations as separate metrics."""
     return [
         f"needs_review findings: {session_result.needs_review_count}",
-        (
-            "Unresolved candidate obligations: "
-            f"{session_result.unresolved_obligations_count}"
-        ),
+        ("Unresolved candidate obligations: " f"{session_result.unresolved_obligations_count}"),
     ]
 
 

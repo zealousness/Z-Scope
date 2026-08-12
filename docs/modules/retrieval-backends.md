@@ -15,6 +15,8 @@ sources:
 tests:
   - tests/test_code_index_cache.py
   - tests/test_clang_incremental_extraction.py
+  - tests/test_clang_derived_reference_resolution.py
+  - tests/test_clang_lsp_transport.py
   - tests/test_knowledge_db_ir_and_config.py
   - tests/test_svf_cache.py
   - tests/test_joern_client.py
@@ -32,7 +34,7 @@ tests:
 ## 主入口和数据流
 
 - `CodeIndex` 负责源码发现、缓存、后端创建和统一查询接口。
-- Clang extractor/backend 写入结构化函数、类型、调用边和增量索引信息。
+- Clang extractor/backend 分阶段写入基础 TU 事实和可重建的函数 symbol/type 派生引用。
 - `KnowledgeDB` 持久化代码事实和后端 IR，并维护版本化查询缓存。
 - Java source backend 提供方法、注解和框架结构；java_unified 叠加 SootUp、WALA、Joern provider evidence。
 - C/C++ Joern 在 1.x 中仅为弃用兼容入口，不属于默认或离线 C 工具链。
@@ -45,7 +47,10 @@ tests:
 - Java provider 信号只能进入 Java 分析路径；CodeQL 为 BYO，不得进入官方依赖包。
 - Java Spoon 默认复用已准备的本地 Maven 缓存，不隐式强制联网刷新；显式刷新只允许发生在联网准备阶段，sidecar 不得在目标项目遗留 `spoon.classpath.tmp`。
 - 日常 Joern WebSocket 查询必须有总量可控的超时和重试边界；CPG import 可以使用独立的长时限，不能把一小时等待传播到普通入口查询。
-- 增量索引以文件/TU 变化为依据；删除文件必须清理旧函数、类型、调用边和缓存。
+- 基础增量索引只以文件哈希、TU 状态、删除影响和基础 extractor 版本为依据；`indexed + hash unchanged` 的 TU 不得因为派生索引版本或生命周期变化而重新执行 `extract_tu()`/`documentSymbol`。
+- `function_symbol_context` 与 `function_type_refs` 的 `dirty/in_progress/current/failed` 生命周期保存在 schema v14 的 metadata JSON 中。耗时扫描只能写 TEMP staging，派生事实与 `current` 状态必须在同一事务发布；中断恢复只重建非 current 的派生层。
+- clangd JSON-RPC 必须使用单调时钟硬超时和事件唤醒，正确回复 server request，并以 work-done token 跟踪 background indexing；索引等待超时不得继续标记后端 ready。
+- symbol/type 引用应先使用逐文件 semantic tokens 和声明反向 references；只有仍然冲突的坐标才查询 definition，失败时不得按候选排序猜测绑定。
 - KnowledgeDB 写入新事实后必须使相关查询缓存失效。
 - Unified 的 Clang 与 SVF 结果必须通过稳定的文件、函数和位置坐标缝合。
 - bitcode 裁剪、符号闭包、共享/互斥 pool 和回退原因必须保留 manifest 供审计。
@@ -62,7 +67,7 @@ tests:
 ## 对应测试与验证命令
 
 ```bash
-python -m pytest -q tests/test_code_index_cache.py tests/test_clang_incremental_extraction.py
+python -m pytest -q tests/test_code_index_cache.py tests/test_clang_incremental_extraction.py tests/test_clang_derived_reference_resolution.py tests/test_clang_lsp_transport.py
 python -m pytest -q tests/test_knowledge_db_ir_and_config.py tests/test_svf_cache.py
 python -m pytest -q tests/test_joern_client.py tests/test_bitcode_scope.py
 ```

@@ -97,7 +97,9 @@ class EntryBitcodeCluster:
     plan: BitcodeScopePlan
 
 
-def normalize_exclusive_pools(raw_pools: Optional[Sequence[Mapping[str, Any]]]) -> List[Dict[str, Any]]:
+def normalize_exclusive_pools(
+    raw_pools: Optional[Sequence[Mapping[str, Any]]],
+) -> List[Dict[str, Any]]:
     """Return valid exclusive pool records from config-like input."""
     pools: List[Dict[str, Any]] = []
     if not raw_pools:
@@ -118,7 +120,9 @@ def normalize_exclusive_pools(raw_pools: Optional[Sequence[Mapping[str, Any]]]) 
     return pools
 
 
-def normalize_shared_pools(raw_pools: Optional[Sequence[Mapping[str, Any]]]) -> List[Dict[str, Any]]:
+def normalize_shared_pools(
+    raw_pools: Optional[Sequence[Mapping[str, Any]]],
+) -> List[Dict[str, Any]]:
     """Return valid shared pool records, including optional conflicts."""
     pools: List[Dict[str, Any]] = []
     for item in normalize_exclusive_pools(raw_pools):
@@ -202,7 +206,9 @@ class ExclusivePoolClassifier:
         conflicts: Set[str] = set()
         for pool in self.shared_pools:
             if any(matches_configured_path(candidate, pool["paths"]) for candidate in candidates):
-                conflicts.update(str(value) for value in pool.get("conflicts_with", []) if str(value))
+                conflicts.update(
+                    str(value) for value in pool.get("conflicts_with", []) if str(value)
+                )
         return conflicts
 
     def ordered_pool_names(self, pools: Iterable[str]) -> List[str]:
@@ -377,13 +383,9 @@ class EntryBitcodeSelector:
             fallback_reason = "no_bitcode_selected"
             selected_bcs = self._fallback_bcs(all_bcs)
 
-        if (
-            self.config.max_selected_tus > 0
-            and len(selected_bcs) > self.config.max_selected_tus
-        ):
+        if self.config.max_selected_tus > 0 and len(selected_bcs) > self.config.max_selected_tus:
             fallback_reason = (
-                f"selected_tu_count_exceeded:{len(selected_bcs)}>"
-                f"{self.config.max_selected_tus}"
+                f"selected_tu_count_exceeded:{len(selected_bcs)}>" f"{self.config.max_selected_tus}"
             )
             selected_bcs = self._fallback_bcs(all_bcs)
 
@@ -503,14 +505,18 @@ class EntryBitcodeSelector:
                 bc_to_src=bc_to_src,
                 entries=entries,
             )
-            return [
-                EntryBitcodeCluster(
-                    group_name=group_prefix,
-                    entries=list(entries),
-                    selected_bcs=selected,
-                    plan=plan,
-                )
-            ] if selected else []
+            return (
+                [
+                    EntryBitcodeCluster(
+                        group_name=group_prefix,
+                        entries=list(entries),
+                        selected_bcs=selected,
+                        plan=plan,
+                    )
+                ]
+                if selected
+                else []
+            )
 
         seeds: List[Dict[str, Any]] = []
         logger.info(
@@ -633,7 +639,12 @@ class EntryBitcodeSelector:
         )
         func = self._entry_function(record, set(source_to_bcs))
         source = self._resolve_source_path(
-            str((func or {}).get("file_path") or (func or {}).get("file") or record.get("file_path") or "")
+            str(
+                (func or {}).get("file_path")
+                or (func or {}).get("file")
+                or record.get("file_path")
+                or ""
+            )
         )
         if not source:
             logger.info(
@@ -702,6 +713,7 @@ class EntryBitcodeSelector:
             ",".join(sorted(seed_pools)) if seed_pools else "<none>",
         )
         allowed_cache_key = tuple(sorted(seed_pools))
+        allowed_sources: Set[Path]
         if allowed_cache_key in allowed_scope_cache:
             cached_allowed_bcs, cached_allowed_sources = allowed_scope_cache[allowed_cache_key]
             allowed_bcs = set(cached_allowed_bcs)
@@ -722,11 +734,11 @@ class EntryBitcodeSelector:
                     shared_conflicts_by_bc,
                 )
             }
-            allowed_sources = {
-                normalized_bc_to_src.get(Path(bc).resolve())
-                for bc in allowed_bcs
-            }
-            allowed_sources = {src for src in allowed_sources if src}
+            allowed_sources = set()
+            for bc in allowed_bcs:
+                source = normalized_bc_to_src.get(Path(bc).resolve())
+                if source is not None:
+                    allowed_sources.add(source)
             allowed_scope_cache[allowed_cache_key] = (set(allowed_bcs), set(allowed_sources))
             logger.info(
                 "SVF seed dependency: allowed scope cache miss for pools=%s; computed in %.3fs",
@@ -771,14 +783,16 @@ class EntryBitcodeSelector:
         selected_sources.update(
             src for src in self._always_include_sources(allowed_sources) if src in allowed_sources
         )
-        selected_bcs = {Path(bc).resolve() for bc in initial_bcs if Path(bc).resolve() in allowed_bcs}
+        selected_bcs = {
+            Path(bc).resolve() for bc in initial_bcs if Path(bc).resolve() in allowed_bcs
+        }
         for src in selected_sources:
             for bc in source_to_bcs.get(src, []):
                 resolved_bc = Path(bc).resolve()
                 if resolved_bc in allowed_bcs:
                     selected_bcs.add(resolved_bc)
 
-        data = {
+        data: Dict[str, Set[Any]] = {
             "selected": selected_bcs,
             "selected_sources": selected_sources,
             "reachable": reachable,
@@ -786,9 +800,7 @@ class EntryBitcodeSelector:
             "allowed_bcs": allowed_bcs,
             "seed_pools": seed_pools,
         }
-        self._seed_dependency_cache[cache_key] = {
-            key: set(value) for key, value in data.items()
-        }
+        self._seed_dependency_cache[cache_key] = {key: set(value) for key, value in data.items()}
         logger.info(
             "SVF seed dependency: completed -> %d selected .bc, %d reachable function(s), %d unresolved entr%s",
             len(selected_bcs),
@@ -873,7 +885,7 @@ class EntryBitcodeSelector:
         for cluster_ids in bit_to_clusters.values():
             unique_ids = sorted(set(cluster_ids))
             for left_idx, left_id in enumerate(unique_ids[:-1]):
-                for right_id in unique_ids[left_idx + 1:]:
+                for right_id in unique_ids[left_idx + 1 :]:
                     initial_pairs.add((left_id, right_id))
 
         for left_id, right_id in sorted(initial_pairs):
@@ -1107,18 +1119,16 @@ class EntryBitcodeSelector:
         bc_to_src: Mapping[Path, Path],
     ) -> tuple[List[Path], BitcodeScopePlan]:
         allowed_bcs = {Path(bc).resolve() for bc in cluster["allowed_bcs"]}
-        selected_bcs = {Path(bc).resolve() for bc in cluster["selected"] if Path(bc).resolve() in allowed_bcs}
+        selected_bcs = {
+            Path(bc).resolve() for bc in cluster["selected"] if Path(bc).resolve() in allowed_bcs
+        }
         fallback_reason = ""
         if not selected_bcs:
             fallback_reason = "no_bitcode_selected"
             selected_bcs = self._fallback_bcs_for_allowed(allowed_bcs)
-        if (
-            self.config.max_selected_tus > 0
-            and len(selected_bcs) > self.config.max_selected_tus
-        ):
+        if self.config.max_selected_tus > 0 and len(selected_bcs) > self.config.max_selected_tus:
             fallback_reason = (
-                f"selected_tu_count_exceeded:{len(selected_bcs)}>"
-                f"{self.config.max_selected_tus}"
+                f"selected_tu_count_exceeded:{len(selected_bcs)}>" f"{self.config.max_selected_tus}"
             )
             selected_bcs = self._fallback_bcs_for_allowed(allowed_bcs)
 
@@ -1154,7 +1164,9 @@ class EntryBitcodeSelector:
             unresolved_entries=sorted(cluster["unresolved"]),
             symbol_closure_added=self._format_paths(symbol_added),
             fallback_reason=fallback_reason,
-            exclusive_pool=next(iter(cluster["seed_pools"]), "") if len(cluster["seed_pools"]) == 1 else "",
+            exclusive_pool=(
+                next(iter(cluster["seed_pools"]), "") if len(cluster["seed_pools"]) == 1 else ""
+            ),
         )
         return ordered_bcs, plan
 
@@ -1252,16 +1264,16 @@ class EntryBitcodeSelector:
 
     def _reachable_sources(
         self,
-        entry_records: Sequence[Dict[str, str]],
+        entry_records: Sequence[Mapping[str, str]],
         *,
         allowed_sources: Optional[Set[Path]] = None,
     ) -> tuple[Set[str], Set[Path], Set[str]]:
         reachable: Set[str] = set()
         selected_sources: Set[Path] = set()
         unresolved: Set[str] = set()
-        queue = deque([
-            (record["name"], 0, record.get("file_path", "")) for record in entry_records
-        ])
+        queue = deque(
+            [(record["name"], 0, record.get("file_path", "")) for record in entry_records]
+        )
         entry_file_hints = {
             record["name"]: record.get("file_path", "")
             for record in entry_records
@@ -1289,15 +1301,19 @@ class EntryBitcodeSelector:
                     len(queue),
                     len(selected_sources),
                 )
-            hinted_file = self._resolve_source_path(file_hint or entry_file_hints.get(func_name, ""))
+            hinted_file = self._resolve_source_path(
+                file_hint or entry_file_hints.get(func_name, "")
+            )
             if hinted_file:
                 selected_sources.add(hinted_file)
             func = self._get_function(func_name, file_hint)
             func_source = self._resolve_source_path(
                 str((func or {}).get("file_path") or (func or {}).get("file") or "")
             )
-            if func and allowed_sources is not None and (
-                not func_source or func_source not in allowed_sources
+            if (
+                func
+                and allowed_sources is not None
+                and (not func_source or func_source not in allowed_sources)
             ):
                 func = self._best_callee_function(
                     func_name,
@@ -1309,7 +1325,9 @@ class EntryBitcodeSelector:
                     unresolved.add(func_name)
                 continue
             reachable.add(reachable_key)
-            file_path = self._resolve_source_path(str(func.get("file_path") or func.get("file") or ""))
+            file_path = self._resolve_source_path(
+                str(func.get("file_path") or func.get("file") or "")
+            )
             if allowed_sources is not None and file_path and file_path not in allowed_sources:
                 continue
             if file_path:
@@ -1330,7 +1348,9 @@ class EntryBitcodeSelector:
                     )
                     if not callee_func:
                         continue
-                    callee_file_hint = str(callee_func.get("file_path") or callee_func.get("file") or "")
+                    callee_file_hint = str(
+                        callee_func.get("file_path") or callee_func.get("file") or ""
+                    )
                 callee_key = f"{callee_name}\0{callee_file_hint}"
                 if not callee_name or callee_key in reachable:
                     continue
@@ -1417,12 +1437,16 @@ class EntryBitcodeSelector:
 
             defined_in_selection: Set[str] = set()
             for bc in selected_bcs:
-                defined_in_selection.update(self._read_symbols_cached(self._symbol_cache, bc).defined)
+                defined_in_selection.update(
+                    self._read_symbols_cached(self._symbol_cache, bc).defined
+                )
 
             before_count = len(selected_bcs)
             for symbol in sorted(unresolved_symbols - defined_in_selection):
                 provider_bcs = [
-                    provider for provider in providers.get(symbol, []) if provider not in selected_bcs
+                    provider
+                    for provider in providers.get(symbol, [])
+                    if provider not in selected_bcs
                 ]
                 for provider in self._allowed_symbol_providers(
                     provider_bcs,
@@ -1560,7 +1584,9 @@ class EntryBitcodeSelector:
         if not file_path:
             return None
         raw = Path(file_path)
-        candidates = [raw] if raw.is_absolute() else [self.source_root / raw, self.project_root / raw]
+        candidates = (
+            [raw] if raw.is_absolute() else [self.source_root / raw, self.project_root / raw]
+        )
         for candidate in candidates:
             try:
                 return candidate.resolve()
@@ -1633,7 +1659,10 @@ class EntryBitcodeSelector:
         clusters: Iterable[Mapping[str, Any]],
         cost_bias: float,
     ) -> float:
-        return sum(cls._entry_cluster_cost(int(cluster["selected_size"]), cost_bias) for cluster in clusters)
+        return sum(
+            cls._entry_cluster_cost(int(cluster["selected_size"]), cost_bias)
+            for cluster in clusters
+        )
 
     @staticmethod
     def _entry_cluster_size_summary(sizes: Sequence[int]) -> str:
@@ -1642,10 +1671,7 @@ class EntryBitcodeSelector:
         ordered = sorted(sizes)
         p50 = ordered[len(ordered) // 2]
         p95_idx = min(len(ordered) - 1, max(0, ((95 * len(ordered)) - 1) // 100))
-        return (
-            f"min={ordered[0]},p50={p50},"
-            f"p95={ordered[p95_idx]},max={ordered[-1]}"
-        )
+        return f"min={ordered[0]},p50={p50}," f"p95={ordered[p95_idx]},max={ordered[-1]}"
 
     @staticmethod
     def _jaccard(left: Set[Path], right: Set[Path]) -> float:

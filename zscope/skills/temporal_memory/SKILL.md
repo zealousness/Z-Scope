@@ -1,5 +1,6 @@
 ---
 name: temporal_memory
+languages: [c_cpp]
 description: Audit UAF, double free, invalid free, and use after close/unmap.
 category: temporal_memory_safety
 triggers:

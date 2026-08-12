@@ -26,20 +26,27 @@ jobs:
       - name: Resolve canonical benchmark SHA
         id: benchmark-source
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install the source-controlled benchmark frontend
+        run: |
+          python3 -m pip install --require-hashes -r requirements/constraints/py313.txt
+          python3 -m pip install --no-deps -e .
+          python3 scripts/check_benchmark_hygiene.py
       - name: Run five isolated cold starts
         env:
           Z_SCOPE_API_KEY: ${{ secrets.Z_SCOPE_BENCHMARK_API_KEY }}
-          Z_SCOPE_CPP_HEALTH_COMMAND: ${{ vars.Z_SCOPE_CPP_HEALTH_COMMAND }}
-          Z_SCOPE_CPP_SCAN_COMMAND: ${{ vars.Z_SCOPE_CPP_SCAN_COMMAND }}
-          Z_SCOPE_CPP_SCORE_COMMAND: ${{ vars.Z_SCOPE_CPP_SCORE_COMMAND }}
-          Z_SCOPE_JAVA_HEALTH_COMMAND: ${{ vars.Z_SCOPE_JAVA_HEALTH_COMMAND }}
-          Z_SCOPE_JAVA_SCAN_COMMAND: ${{ vars.Z_SCOPE_JAVA_SCAN_COMMAND }}
-          Z_SCOPE_JAVA_SCORE_COMMAND: ${{ vars.Z_SCOPE_JAVA_SCORE_COMMAND }}
-        run: >-
-          python3 scripts/run_formal_benchmark.py
-          --language '${{ inputs.language }}'
-          --runs 5
-          --output benchmark-artifacts
+          Z_SCOPE_LLM_BASE_URL: ${{ vars.Z_SCOPE_BENCHMARK_LLM_BASE_URL }}
+          Z_SCOPE_LLM_MODEL: ${{ vars.Z_SCOPE_BENCHMARK_LLM_MODEL }}
+        run: |
+          language='${{ inputs.language }}'
+          if [ "$language" = cpp ]; then language=c_cpp; fi
+          zscope-benchmark run \
+            --language "$language" \
+            --mode formal \
+            --runs 5 \
+            --output benchmark-artifacts
       - uses: actions/upload-artifact@v7
         if: always()
         with:

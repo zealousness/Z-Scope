@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs
 
-from ..config.config import yaml
+from ..config.config import ConfigLoader, yaml
 from ..config.user_config_workbook import SHEET_HEADERS
 from ..reporting.views import (
     DEFAULT_REPORT_VIEW,
@@ -17,6 +18,7 @@ from ..reporting.views import (
     group_by_severity,
     report_view_summary,
 )
+from ..rules.query import query_effective_rules, validate_rule_filters
 
 
 ALLOWED_VALIDATION_STATUSES = {
@@ -69,6 +71,16 @@ DASHBOARD_ISSUE_FIELDS = (
     "defect_class",
     "rule",
     "rule_id",
+    "rule_engine",
+    "rule_revision",
+    "rule_source",
+    "rule_status",
+    "rule_catalog_version",
+    "rule_catalog_sha256",
+    "skill",
+    "candidate_kind",
+    "signal_source",
+    "native_rule_id",
     "cwe",
     "source",
     "sink",
@@ -155,13 +167,20 @@ class ConfigService:
         header = (
             "# Z-SCOPE 配置文件\n"
             "# 本文件由 Web UI 结构化配置编辑器生成。\n"
-            "# 字段说明请参考仓库根目录 zscope.yaml 模板中的注释。\n\n"
+            "# 字段说明请参考仓库根目录 zscope.c_cpp.yaml 或 zscope.java.yaml 中的注释。\n\n"
         )
         text = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
-        self.path.write_text(header + text, encoding="utf-8")
+        self._validate_and_replace(header + text)
 
     def structured_payload(self) -> Dict[str, Any]:
-        return {"config": self.load_document()}
+        if self.path.exists():
+            ConfigLoader.load(str(self.path))
+        document = self.load_document()
+        return {
+            "config": document,
+            "config_version": document.get("config_version"),
+            "language": (document.get("project") or {}).get("language"),
+        }
 
     def read_text(self) -> Dict[str, str]:
         path = self.path
@@ -170,9 +189,56 @@ class ConfigService:
         return {"content": path.read_text(encoding="utf-8")}
 
     def write_text(self, content: str) -> Dict[str, Any]:
+        self._validate_and_replace(content)
+        return {"success": True, "path": str(self.path)}
+
+    def _validate_and_replace(self, content: str) -> None:
         path = self.path
-        path.write_text(content, encoding="utf-8")
-        return {"success": True, "path": str(path)}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+        try:
+            with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+                handle.write(content)
+            ConfigLoader.load(str(temporary))
+            os.replace(temporary, path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
+
+class RuleService:
+    """Return the immutable effective rule catalog used by the current config."""
+
+    def __init__(self, config_path: Optional[Path] = None, *, default_name: str = "zscope.yaml"):
+        self.config_path = Path(config_path).resolve() if config_path else None
+        self.default_name = default_name
+
+    @property
+    def path(self) -> Path:
+        return self.config_path or Path(self.default_name)
+
+    def payload(self, query: str = "") -> Dict[str, Any]:
+        """Load the current config and apply read-only catalog query filters."""
+
+        params = parse_qs(query, keep_blank_values=True)
+        filters = {
+            name: str((params.get(name) or [""])[0]).strip()
+            for name in ("language", "engine", "skill", "status", "q")
+        }
+        validate_rule_filters(filters)
+
+        config = ConfigLoader.load(str(self.path))
+        effective = getattr(config, "effective_rules", None)
+        if effective is None:
+            raise RuntimeError("rule preflight did not produce an EffectiveRuleSet")
+        return query_effective_rules(
+            effective,
+            language=filters["language"],
+            engine=filters["engine"],
+            skill=filters["skill"],
+            status=filters["status"],
+            query=filters["q"],
+        )
 
 
 class WorkbookService:
@@ -405,7 +471,10 @@ class CpgService:
         joern_client = getattr(backend, "joern_client", None)
         importer = getattr(joern_client, "import_cpg_async", None)
         if not callable(importer):
-            return 400, {"success": False, "error": "Current backend does not support async CPG build"}
+            return 400, {
+                "success": False,
+                "error": "Current backend does not support async CPG build",
+            }
 
         source_path = str(getattr(self.project_config, "source_root", ""))
         project_root = str(getattr(self.project_config, "project_root", ""))
@@ -490,7 +559,12 @@ class SourceSnippetService:
         except OSError as exc:
             return 500, {"success": False, "error": str(exc)}
         if not raw_lines:
-            return 200, {"success": True, "path": raw_path, "resolved_path": str(source_path), "lines": []}
+            return 200, {
+                "success": True,
+                "path": raw_path,
+                "resolved_path": str(source_path),
+                "lines": [],
+            }
         start = max(1, start)
         end = max(start, end)
         snippet_start = max(1, start - max(context, 0))
@@ -508,7 +582,7 @@ class SourceSnippetService:
             "snippet_start": snippet_start,
             "snippet_end": snippet_end,
             "lines": lines,
-            "code_snippet": "\n".join(line["text"] for line in lines),
+            "code_snippet": "\n".join(str(line["text"]) for line in lines),
         }
 
 
@@ -541,10 +615,11 @@ class ReportFeedbackService:
         if not sanitized:
             return empty_report()
         try:
-            report = json.loads(sanitized)
+            raw_report = json.loads(sanitized)
         except json.JSONDecodeError as exc:
             print(f"Warning: failed to parse report JSON: {exc}")
             return empty_report()
+        report = raw_report if isinstance(raw_report, dict) else empty_report()
         self._report_cache_key = cache_key
         self._report_cache = report
         return report
@@ -569,7 +644,8 @@ class ReportFeedbackService:
                     if key not in {"issues", "issues_by_severity"}
                 }
 
-        metadata = report.get("metadata") if isinstance(report.get("metadata"), dict) else {}
+        raw_metadata = report.get("metadata")
+        metadata: Dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
         return {
             "entry_function": report.get("entry_function"),
             "overall_verdict": report.get("overall_verdict"),
@@ -579,9 +655,7 @@ class ReportFeedbackService:
             "summary": report.get("summary"),
             "report_views": compact_views,
             "run_manifest": report.get("run_manifest"),
-            "needs_review_governance": report.get(
-                "needs_review_governance"
-            ),
+            "needs_review_governance": report.get("needs_review_governance"),
             "metadata": {
                 "report_view_summary": metadata.get("report_view_summary"),
             },
@@ -608,11 +682,7 @@ class ReportFeedbackService:
 
     @classmethod
     def _compact_findings(cls, findings: list[Any]) -> list[Dict[str, Any]]:
-        return [
-            cls._compact_issue(issue)
-            for issue in findings
-            if isinstance(issue, dict)
-        ]
+        return [cls._compact_issue(issue) for issue in findings if isinstance(issue, dict)]
 
     @classmethod
     def _compact_issue(cls, issue: Dict[str, Any], depth: int = 0) -> Dict[str, Any]:
@@ -678,22 +748,19 @@ class ReportFeedbackService:
             return value
         if isinstance(value, list):
             max_items = 8 if depth > 0 else 16
-            result = [cls._compact_value(item, depth + 1) for item in value[:max_items]]
+            list_result = [cls._compact_value(item, depth + 1) for item in value[:max_items]]
             if len(value) > max_items:
-                result.append(f"... [truncated {len(value) - max_items} items]")
-            return result
+                list_result.append(f"... [truncated {len(value) - max_items} items]")
+            return list_result
         if isinstance(value, dict):
             if depth >= 3:
                 return cls._compact_text(json.dumps(value, ensure_ascii=False, default=str), 1200)
             entries = list(value.items())[:40]
-            result = {
-                str(key): cls._compact_value(item, depth + 1)
-                for key, item in entries
-            }
+            dict_result = {str(key): cls._compact_value(item, depth + 1) for key, item in entries}
             omitted = len(value) - len(entries)
             if omitted > 0:
-                result["_truncated_keys"] = omitted
-            return result
+                dict_result["_truncated_keys"] = omitted
+            return dict_result
         return cls._compact_text(str(value), 1200)
 
     @staticmethod
@@ -701,7 +768,9 @@ class ReportFeedbackService:
         if len(value) <= limit:
             return value
         digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
-        return f"{value[:limit].rstrip()}... [truncated {len(value) - limit} chars, sha256:{digest}]"
+        return (
+            f"{value[:limit].rstrip()}... [truncated {len(value) - limit} chars, sha256:{digest}]"
+        )
 
     def persist_validation_feedback(self, updates: list[Any]) -> Dict[str, Any]:
         store = self.user_config_store
@@ -712,7 +781,7 @@ class ReportFeedbackService:
                 "baseline_upserts": 0,
                 "suppression_upserts": 0,
             }
-        result = {
+        result: Dict[str, Any] = {
             "db_available": True,
             "db_path": str(getattr(store, "db_path", "")),
             "baseline_upserts": 0,
@@ -865,7 +934,7 @@ class ReportFeedbackService:
                         changed += apply_to_issue_list(bucket)
             return changed
 
-        result = {
+        result: Dict[str, Any] = {
             "snapshot_available": True,
             "snapshot_dir": str(getattr(snapshot_store, "snapshot_dir", "")),
             "final_reports_scanned": 0,
@@ -884,7 +953,9 @@ class ReportFeedbackService:
             changed_count = apply_to_report(report)
             if not changed_count:
                 continue
-            final_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            final_path.write_text(
+                json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
             result["final_reports_updated"] += 1
             result["issues_updated"] += changed_count
         return result
@@ -973,12 +1044,7 @@ def normalize_validation(issue: Dict[str, Any]) -> tuple[str, Any]:
 
 
 def feedback_category(issue: Dict[str, Any]) -> str:
-    return str(
-        issue.get("defect_class")
-        or issue.get("subcategory")
-        or issue.get("category")
-        or ""
-    )
+    return str(issue.get("defect_class") or issue.get("subcategory") or issue.get("category") or "")
 
 
 def feedback_dedup_key(issue: Dict[str, Any]) -> str:

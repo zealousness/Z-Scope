@@ -1,5 +1,6 @@
 ---
 name: evidence_validation
+languages: [c_cpp, java]
 description: Validate a suspected defect against source evidence and available contracts.
 category: validation
 triggers:

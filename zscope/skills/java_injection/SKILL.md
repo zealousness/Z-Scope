@@ -1,5 +1,6 @@
 ---
 name: java_injection
+languages: [java]
 description: Audit Java SQL, command, expression, and template injection paths.
 category: java_security
 triggers:

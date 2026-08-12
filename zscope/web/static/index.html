@@ -653,6 +653,7 @@
         <div class="flex flex-wrap gap-2 items-center">
             <div class="tabs tabs-boxed bg-slate-100">
                 <a class="tab tab-sm" :class="activeTab==='findings' && 'tab-active'" @click="activeTab='findings'">审计发现</a>
+                <a class="tab tab-sm" :class="activeTab==='rules' && 'tab-active'" @click="activeTab='rules';loadRules()">规则目录</a>
                 <a class="tab tab-sm" :class="activeTab==='project' && 'tab-active'" @click="activeTab='project';loadStructuredConfig()">项目配置</a>
                 <a class="tab tab-sm" :class="activeTab==='config' && 'tab-active'" @click="activeTab='config';configSubTab='workbook';loadWorkbookConfig()">用户配置</a>
                 <a class="tab tab-sm" :class="activeTab==='warnings' && 'tab-active'" @click="openDashboard()">看板</a>
@@ -842,6 +843,7 @@
                             <div class="flex flex-wrap gap-2 items-center">
                                 <button type="button" class="btn btn-ghost btn-xs" @click="selectPreviousFinding()" :disabled="!hasPreviousFinding()">上一条</button>
                                 <button type="button" class="btn btn-ghost btn-xs" @click="selectNextFinding()" :disabled="!hasNextFinding()">下一条</button>
+                                <button type="button" class="btn btn-link btn-xs" x-show="selectedFinding.rule_id || selectedFinding.rule" @click="openRuleFromFinding(selectedFinding)" x-text="selectedFinding.rule_id || selectedFinding.rule"></button>
                                 <div class="badge badge-outline" x-text="selectedFinding.subcategory || selectedFinding.defect_class || 'uncategorized'"></div>
                                 <div class="badge" :class="getSeverityClass(selectedFinding.impact_level)" x-text="selectedFinding.impact_level || 'unknown'"></div>
                                 <div class="badge badge-info badge-outline" x-text="'score '+findingConfidenceScore(selectedFinding).toFixed(2)"></div>
@@ -1119,6 +1121,93 @@
             </div>
         </aside>
     </div><!-- end findings tab -->
+
+    <!-- ── Read-only Rule Catalog Tab ── -->
+    <div x-show="activeTab==='rules'" class="h-full overflow-auto">
+        <div class="glass rounded-lg p-6 space-y-5 max-w-7xl mx-auto">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                    <h2 class="text-lg font-semibold text-slate-950">规则目录</h2>
+                    <p class="text-xs subtle-text">当前配置预检后的只读 EffectiveRuleSet。启停规则请编辑 zscope.yaml 的 rules.disabled_ids。</p>
+                </div>
+                <div class="text-xs text-right subtle-text">
+                    <div><span x-text="rulePayload.language || '-' "></span> · <span x-text="rulePayload.backend || '-'"></span></div>
+                    <div class="code-font max-w-md truncate" :title="rulePayload.effective_sha256 || ''" x-text="rulePayload.effective_sha256 ? 'effective '+rulePayload.effective_sha256 : ''"></div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-5 gap-2">
+                <select class="select select-bordered select-sm" x-model="ruleFilters.language" @change="loadRules()">
+                    <option value="">全部语言</option>
+                    <template x-for="value in (rulePayload.facets?.languages || [])" :key="value"><option :value="value" x-text="value"></option></template>
+                </select>
+                <select class="select select-bordered select-sm" x-model="ruleFilters.engine" @change="loadRules()">
+                    <option value="">全部引擎</option>
+                    <template x-for="value in (rulePayload.facets?.engines || [])" :key="value"><option :value="value" x-text="value"></option></template>
+                </select>
+                <select class="select select-bordered select-sm" x-model="ruleFilters.skill" @change="loadRules()">
+                    <option value="">全部 Skill</option>
+                    <template x-for="value in (rulePayload.facets?.skills || [])" :key="value"><option :value="value" x-text="value"></option></template>
+                </select>
+                <select class="select select-bordered select-sm" x-model="ruleFilters.status" @change="loadRules()">
+                    <option value="">全部状态</option>
+                    <template x-for="value in (rulePayload.facets?.statuses || [])" :key="value"><option :value="value" x-text="value"></option></template>
+                </select>
+                <input class="input input-bordered input-sm" placeholder="搜索 ID / CWE / 标题 / defect class" x-model="ruleFilters.q" @input.debounce.250ms="loadRules()">
+            </div>
+
+            <div class="flex flex-wrap gap-2 text-xs">
+                <span class="badge badge-outline">匹配 <span class="ml-1" x-text="rulePayload.summary?.total || 0"></span></span>
+                <span class="badge badge-success badge-outline">enabled <span class="ml-1" x-text="rulePayload.summary?.enabled || 0"></span></span>
+                <span class="badge badge-warning badge-outline">disabled <span class="ml-1" x-text="rulePayload.summary?.disabled || 0"></span></span>
+                <span class="badge badge-ghost">unavailable <span class="ml-1" x-text="rulePayload.summary?.unavailable || 0"></span></span>
+                <span class="loading loading-spinner loading-xs" x-show="rulesLoading"></span>
+                <span class="text-error" x-show="rulesError" x-text="rulesError"></span>
+            </div>
+
+            <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,3fr)_minmax(20rem,2fr)] gap-4 min-h-[32rem]">
+                <div class="overflow-auto border border-slate-200 rounded-lg">
+                    <table class="table table-sm">
+                        <thead><tr><th>ID / 标题</th><th>Engine</th><th>CWE / Skill</th><th>状态</th></tr></thead>
+                        <tbody>
+                            <template x-for="rule in rules" :key="rule.id">
+                                <tr class="cursor-pointer hover" :class="selectedRule?.id === rule.id ? 'bg-blue-50' : ''" @click="selectRule(rule)">
+                                    <td><div class="code-font text-xs font-semibold" x-text="rule.id"></div><div class="text-xs subtle-text" x-text="rule.title"></div></td>
+                                    <td class="code-font text-xs" x-text="rule.engine"></td>
+                                    <td><div class="text-xs" x-text="rule.cwe"></div><div class="text-[11px] subtle-text" x-text="rule.skill"></div></td>
+                                    <td><span class="badge badge-sm" :class="ruleStatusClass(rule.effective_status)" x-text="rule.effective_status"></span></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                    <div class="p-5 text-sm subtle-text" x-show="!rulesLoading && !rules.length">当前筛选下没有规则。</div>
+                </div>
+
+                <div class="soft-panel rounded-lg p-5 overflow-auto">
+                    <template x-if="selectedRule">
+                        <div class="space-y-4">
+                            <div><div class="code-font text-sm font-semibold break-all" x-text="selectedRule.id"></div><h3 class="text-lg font-semibold" x-text="selectedRule.title"></h3></div>
+                            <p class="text-sm leading-relaxed" x-text="selectedRule.summary"></p>
+                            <dl class="grid grid-cols-[8rem_1fr] gap-x-3 gap-y-2 text-xs">
+                                <dt class="subtle-text">Effective</dt><dd><span class="badge badge-sm" :class="ruleStatusClass(selectedRule.effective_status)" x-text="selectedRule.effective_status"></span> <span x-text="selectedRule.effective_reason"></span></dd>
+                                <dt class="subtle-text">Language / Engine</dt><dd class="code-font" x-text="selectedRule.language+' / '+selectedRule.engine"></dd>
+                                <dt class="subtle-text">Defect / CWE</dt><dd x-text="selectedRule.defect_class+' / '+selectedRule.cwe"></dd>
+                                <dt class="subtle-text">Skill</dt><dd class="code-font" x-text="selectedRule.skill"></dd>
+                                <dt class="subtle-text">Severity</dt><dd x-text="selectedRule.default_severity"></dd>
+                                <dt class="subtle-text">Revision / Status</dt><dd x-text="selectedRule.revision+' / '+selectedRule.status"></dd>
+                                <dt class="subtle-text">Capabilities</dt><dd class="flex flex-wrap gap-1"><template x-for="cap in (selectedRule.required_capabilities || [])" :key="cap"><span class="badge badge-outline badge-sm" x-text="cap"></span></template></dd>
+                                <dt class="subtle-text">Source</dt><dd class="code-font break-all" x-text="selectedRule.source"></dd>
+                                <dt class="subtle-text">Aliases</dt><dd class="code-font break-all" x-text="(selectedRule.aliases || []).join(', ') || '-'"></dd>
+                                <dt class="subtle-text">Catalog hash</dt><dd class="code-font break-all" x-text="rulePayload.catalog_sha256 || '-'"></dd>
+                            </dl>
+                        </div>
+                    </template>
+                    <p class="text-sm subtle-text" x-show="!selectedRule">从左侧选择一条规则查看元数据。</p>
+                </div>
+            </div>
+        </div>
+    </div><!-- end rule catalog tab -->
+
     <!-- ── Project Config Tab ── -->
     <div x-show="activeTab==='project'" class="h-full overflow-auto">
         <div class="glass rounded-lg p-6 space-y-5 max-w-6xl mx-auto">
@@ -1140,7 +1229,14 @@
             <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
                 <section class="soft-panel rounded-lg p-4 space-y-3">
                     <h3 class="font-semibold text-slate-950">项目范围</h3>
-                    <p class="text-xs subtle-text">路径字段说明来自根目录 zscope.yaml 注释：相对路径基于 project.root 或 source_root 解析。</p>
+                    <p class="text-xs subtle-text">路径字段说明来自根目录 zscope.c_cpp.yaml / zscope.java.yaml 注释：相对路径基于 project.root 或 source_root 解析。</p>
+                    <label class="form-control">
+                        <span class="label-text">语言 language</span>
+                        <select class="select select-bordered select-sm" x-model="configForm.project.language" @change="configLanguageChanged()">
+                            <option value="c_cpp">C/C++</option>
+                            <option value="java">Java</option>
+                        </select>
+                    </label>
                     <label class="form-control">
                         <span class="label-text">项目根目录 root</span>
                         <input class="input input-bordered input-sm" x-model="configForm.project.root" @input="markConfigDirty()">
@@ -1161,7 +1257,7 @@
                         <input class="input input-bordered input-sm" x-model="configForm.project.entry_functions_list" @input="markConfigDirty()">
                         <span class="label-text-alt subtle-text">批量入口 JSON 文件；相对路径基于 project.root 解析。</span>
                     </label>
-                    <label class="form-control">
+                    <label class="form-control" x-show="configForm.project.language === 'c_cpp'">
                         <span class="label-text">编译数据库 compile_commands_path</span>
                         <input class="input input-bordered input-sm" x-model="configForm.project.compile_commands_path" @input="markConfigDirty()">
                         <span class="label-text-alt subtle-text">Clang/unified/SVF 后端使用的 compile_commands.json。</span>
@@ -1185,9 +1281,14 @@
                         <span>启用自动入口发现</span>
                     </label>
                     <label class="form-control">
-                        <span class="label-text">max_candidates</span>
-                        <input type="number" class="input input-bordered input-sm" x-model.number="configForm.entryDiscovery.max_candidates" @input="markConfigDirty()">
-                        <span class="label-text-alt subtle-text">自动入口发现最多保留的候选入口数量。</span>
+                        <span class="label-text">search_root</span>
+                        <input class="input input-bordered input-sm" x-model="configForm.entryDiscovery.search_root" @input="markConfigDirty()">
+                        <span class="label-text-alt subtle-text">待扫描模块；相对 project.root 解析。</span>
+                    </label>
+                    <label class="form-control">
+                        <span class="label-text">max_entries</span>
+                        <input type="number" min="1" class="input input-bordered input-sm" x-model.number="configForm.entryDiscovery.max_entries" @input="markConfigDirty()">
+                        <span class="label-text-alt subtle-text">入口计划最多保留的候选入口数量。</span>
                     </label>
                     <label class="form-control">
                         <span class="label-text">max_functions</span>
@@ -1195,9 +1296,9 @@
                         <span class="label-text-alt subtle-text">自动入口发现最多扫描的函数数量上限。</span>
                     </label>
                     <label class="form-control">
-                        <span class="label-text">header_files</span>
-                        <textarea class="textarea textarea-bordered textarea-sm" rows="3" x-model="configForm.entryDiscovery.header_files" @input="markConfigDirty()"></textarea>
-                        <span class="label-text-alt subtle-text">每行一个 public header 路径 glob/正则过滤。</span>
+                        <span class="label-text">interface_files</span>
+                        <textarea class="textarea textarea-bordered textarea-sm" rows="3" x-model="configForm.entryDiscovery.interface_files" @input="markConfigDirty()"></textarea>
+                        <span class="label-text-alt subtle-text">每行一个相对 search_root 的 POSIX glob；C/C++ 筛选对外头文件，Java 筛选公开 API/框架入口。</span>
                     </label>
 
                     <div class="divider my-2"></div>
@@ -1205,60 +1306,35 @@
                     <label class="form-control">
                         <span class="label-text">backend</span>
                         <select class="select select-bordered select-sm" x-model="configForm.indexing.backend" @change="markConfigDirty()">
-                            <option value="regex">regex</option>
-                            <option value="clang">clang</option>
-                            <option value="joern">joern</option>
-                            <option value="unified">unified</option>
+                            <template x-for="backend in (configForm.project.language === 'java' ? ['java_unified', 'java_source', 'joern'] : ['unified', 'clang', 'regex'])" :key="backend">
+                                <option :value="backend" x-text="backend"></option>
+                            </template>
                         </select>
-                        <span class="label-text-alt subtle-text">后端类型：joern | clang | unified | regex。</span>
+                        <span class="label-text-alt subtle-text">弱后端必须显式选择；不会从 unified/java_unified 自动降级。</span>
                     </label>
+                    <details class="rounded-lg border border-slate-200 p-3">
+                        <summary class="cursor-pointer text-sm font-medium">高级索引配置</summary>
+                        <p class="mt-2 text-xs subtle-text">SVF pool、Java provider 与工具路径保留在当前 YAML 的 indexing.svf、indexing.java 和 indexing.tools 中；可在“原始配置”页精确编辑。</p>
+                    </details>
+                </section>
+
+                <section class="soft-panel rounded-lg p-4 space-y-3">
+                    <h3 class="font-semibold text-slate-950">审计任务</h3>
                     <label class="form-control">
-                        <span class="label-text">knowledge_db_path</span>
-                        <input class="input input-bordered input-sm" x-model="configForm.indexing.knowledge_db_path" @input="markConfigDirty()">
+                        <span class="label-text">scan.task</span>
+                        <textarea class="textarea textarea-bordered textarea-sm" rows="4" x-model="configForm.scan.task" @input="markConfigDirty()"></textarea>
+                        <span class="label-text-alt subtle-text">空串启用当前语言全部适用 Skill；非空文本仅指定审计重点。</span>
                     </label>
-                    <div class="grid grid-cols-2 gap-3">
-                        <label class="form-control">
-                            <span class="label-text">batch_size</span>
-                            <input type="number" class="input input-bordered input-sm" x-model.number="configForm.indexing.batch_size" @input="markConfigDirty()">
-                        </label>
-                        <label class="form-control">
-                            <span class="label-text">max_clangd_threads</span>
-                            <input type="number" class="input input-bordered input-sm" x-model.number="configForm.indexing.max_clangd_threads" @input="markConfigDirty()">
-                        </label>
-                    </div>
                 </section>
 
                 <section class="soft-panel rounded-lg p-4 space-y-3">
-                    <h3 class="font-semibold text-slate-950">工具路径</h3>
-                    <p class="text-xs subtle-text">仅在对应后端启用时使用；为空时通常从 PATH 查找。</p>
-                    <label class="form-control"><span class="label-text">joern_path</span><input class="input input-bordered input-sm" x-model="configForm.indexing.joern_path" @input="markConfigDirty()"></label>
-                    <label class="form-control"><span class="label-text">clangd_path</span><input class="input input-bordered input-sm" x-model="configForm.indexing.clangd_path" @input="markConfigDirty()"></label>
-                    <label class="form-control"><span class="label-text">svf_bin_dir</span><input class="input input-bordered input-sm" x-model="configForm.indexing.svf_bin_dir" @input="markConfigDirty()"></label>
-                    <div class="grid grid-cols-3 gap-3">
-                        <label class="form-control"><span class="label-text">gclang_path</span><input class="input input-bordered input-sm" x-model="configForm.indexing.gclang_path" @input="markConfigDirty()"></label>
-                        <label class="form-control"><span class="label-text">get_bc_path</span><input class="input input-bordered input-sm" x-model="configForm.indexing.get_bc_path" @input="markConfigDirty()"></label>
-                        <label class="form-control"><span class="label-text">llvm_link_path</span><input class="input input-bordered input-sm" x-model="configForm.indexing.llvm_link_path" @input="markConfigDirty()"></label>
-                    </div>
-                </section>
-
-                <section class="soft-panel rounded-lg p-4 space-y-3">
-                    <h3 class="font-semibold text-slate-950">分析行为</h3>
+                    <h3 class="font-semibold text-slate-950">并发资源</h3>
+                    <p class="text-xs subtle-text">全部为正整数，请按机器容量、endpoint 限流和 LLM 额度调整。</p>
                     <div class="grid grid-cols-2 gap-3">
-                        <label class="form-control"><span class="label-text">max_recursion_depth</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.max_recursion_depth" @input="markConfigDirty()"></label>
-                        <label class="form-control"><span class="label-text">max_function_lines</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.max_function_lines" @input="markConfigDirty()"></label>
-                        <label class="form-control"><span class="label-text">max_tool_iterations</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.max_tool_iterations" @input="markConfigDirty()"></label>
-                        <label class="form-control"><span class="label-text">parallel_workers</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.parallel_workers" @input="markConfigDirty()"></label>
-                        <label class="form-control"><span class="label-text">entry_workers</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.entry_workers" @input="markConfigDirty()"></label>
-                        <label class="form-control"><span class="label-text">llm_max_inflight</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.llm_max_inflight" @input="markConfigDirty()"></label>
-                        <label class="form-control"><span class="label-text">validator_workers</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.validator_workers" @input="markConfigDirty()"></label>
-                        <label class="form-control"><span class="label-text">investigator_workers</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.investigator_workers" @input="markConfigDirty()"></label>
-                        <label class="form-control"><span class="label-text">validation_cache_entries</span><input type="number" class="input input-bordered input-sm" x-model.number="configForm.analysis.validation_cache_entries" @input="markConfigDirty()"></label>
-                    </div>
-                    <label class="form-control"><span class="label-text">snapshot_dir</span><input class="input input-bordered input-sm" x-model="configForm.analysis.snapshot_dir" @input="markConfigDirty()"></label>
-                    <label class="form-control"><span class="label-text">user_config_db</span><input class="input input-bordered input-sm" x-model="configForm.analysis.user_config_db" @input="markConfigDirty()"><span class="label-text-alt subtle-text">用户配置 workbook 或目录；为空时使用 snapshot_dir/user_config.xlsx。</span></label>
-                    <div class="grid grid-cols-2 gap-3">
-                        <label class="label cursor-pointer justify-start gap-3"><input type="checkbox" class="checkbox checkbox-primary" x-model="configForm.analysis.enable_snapshot_cache" @change="markConfigDirty()"><span>启用快照缓存</span></label>
-                        <label class="label cursor-pointer justify-start gap-3"><input type="checkbox" class="checkbox checkbox-primary" x-model="configForm.analysis.enable_subagent_workers" @change="markConfigDirty()"><span>启用 Deep Worker</span></label>
+                        <template x-for="field in ['entry_workers', 'validator_workers', 'investigator_workers', 'evidence_completion_workers', 'index_workers', 'llm_max_inflight']" :key="field">
+                            <label class="form-control"><span class="label-text" x-text="field"></span><input type="number" min="1" class="input input-bordered input-sm" x-model.number="configForm.concurrency[field]" @input="markConfigDirty()"></label>
+                        </template>
+                        <label class="form-control" x-show="configForm.project.language === 'c_cpp'"><span class="label-text">svf_workers</span><input type="number" min="1" class="input input-bordered input-sm" x-model.number="configForm.concurrency.svf_workers" @input="markConfigDirty()"></label>
                     </div>
                 </section>
             </div>
@@ -1488,6 +1564,7 @@
                 structuredConfigStatus: '',
                 configForm: {
                     project: {
+                        language: 'c_cpp',
                         root: '',
                         source_root: '',
                         entry_function: '',
@@ -1498,40 +1575,36 @@
                     },
                     entryDiscovery: {
                         enabled: false,
-                        max_candidates: 200,
+                        search_root: '.',
+                        max_entries: 200,
                         max_functions: 10000,
-                        header_files: '',
+                        interface_files: '',
                     },
                     indexing: {
-                        backend: 'regex',
-                        knowledge_db_path: '',
-                        batch_size: 50,
-                        max_clangd_threads: 8,
-                        joern_path: 'joern',
-                        clangd_path: 'clangd',
-                        svf_bin_dir: '',
-                        gclang_path: 'gclang',
-                        get_bc_path: 'get-bc',
-                        llvm_link_path: 'llvm-link',
+                        backend: 'unified',
                     },
-                    analysis: {
-                        max_recursion_depth: 3,
-                        max_function_lines: 500,
-                        max_tool_iterations: 50,
-                        parallel_workers: 5,
-                        entry_workers: 5,
-                        llm_max_inflight: 8,
-                        validator_workers: 0,
-                        investigator_workers: 4,
-                        validation_cache_entries: 4096,
-                        snapshot_dir: '.zscope_snapshots',
-                        user_config_db: '',
-                        enable_snapshot_cache: true,
-                        enable_subagent_workers: true,
+                    scan: {
+                        task: '',
+                    },
+                    concurrency: {
+                        entry_workers: 4,
+                        validator_workers: 2,
+                        investigator_workers: 1,
+                        evidence_completion_workers: 2,
+                        index_workers: 4,
+                        svf_workers: 2,
+                        llm_max_inflight: 4,
                     },
                 },
                 offlineTemplateCache: null,
                 activeTab: 'findings',
+                rulePayload: { rules: [], summary: {}, facets: {} },
+                rules: [],
+                selectedRule: null,
+                rulesLoading: false,
+                rulesError: '',
+                ruleFilters: { language: '', engine: '', skill: '', status: '', q: '' },
+                ruleRequestSeq: 0,
                 configSubTab: 'workbook',
                 cpgStatus: 'unknown',
                 cpgError: '',
@@ -1591,6 +1664,73 @@
                             this.appVersion = data.display || (data.version ? `v${data.version}` : this.appVersion);
                         })
                         .catch(() => {});
+                },
+
+                loadRules(options = {}) {
+                    const selectId = String(options.selectId || this.selectedRule?.id || '');
+                    const params = new URLSearchParams();
+                    Object.entries(this.ruleFilters).forEach(([key, value]) => {
+                        if (String(value || '').trim()) {
+                            params.set(key, String(value).trim());
+                        }
+                    });
+                    const requestSeq = ++this.ruleRequestSeq;
+                    this.rulesLoading = true;
+                    this.rulesError = '';
+                    return fetch(`/api/rules${params.toString() ? `?${params}` : ''}`)
+                        .then(async response => {
+                            const data = await response.json();
+                            if (!response.ok) {
+                                throw new Error(data.error || `HTTP ${response.status}`);
+                            }
+                            return data;
+                        })
+                        .then(data => {
+                            if (requestSeq !== this.ruleRequestSeq) {
+                                return data;
+                            }
+                            this.rulePayload = data;
+                            this.rules = Array.isArray(data.rules) ? data.rules : [];
+                            this.selectedRule = this.rules.find(rule => rule.id === selectId)
+                                || this.rules[0]
+                                || null;
+                            return data;
+                        })
+                        .catch(error => {
+                            if (requestSeq === this.ruleRequestSeq) {
+                                this.rules = [];
+                                this.selectedRule = null;
+                                this.rulesError = error.message || '规则目录加载失败';
+                            }
+                        })
+                        .finally(() => {
+                            if (requestSeq === this.ruleRequestSeq) {
+                                this.rulesLoading = false;
+                            }
+                        });
+                },
+
+                selectRule(rule) {
+                    this.selectedRule = rule || null;
+                },
+
+                openRuleFromFinding(finding) {
+                    const ruleId = String(finding?.rule_id || finding?.rule || '');
+                    if (!ruleId) {
+                        this.showToast('当前发现没有 canonical rule_id', 'warning');
+                        return;
+                    }
+                    this.activeTab = 'rules';
+                    this.ruleFilters = { language: '', engine: '', skill: '', status: '', q: ruleId };
+                    this.loadRules({ selectId: ruleId });
+                },
+
+                ruleStatusClass(status) {
+                    return {
+                        enabled: 'badge-success badge-outline',
+                        disabled: 'badge-warning badge-outline',
+                        unavailable: 'badge-ghost',
+                    }[status] || 'badge-outline';
                 },
 
                 findingIdentity(issue) {
@@ -1974,92 +2114,110 @@
                     const project = cfg.project || {};
                     const discovery = project.entry_discovery || {};
                     const indexing = cfg.indexing || {};
-                    const analysis = cfg.analysis || {};
+                    const scan = cfg.scan || {};
+                    const concurrency = cfg.concurrency || {};
                     this.configForm.project = {
+                        language: project.language || 'c_cpp',
                         root: project.root || '',
                         source_root: project.source_root || '',
                         entry_function: project.entry_function || '',
                         entry_functions_list: project.entry_functions_list || '',
-                        compile_commands_path: project.compile_commands_path || project.compile_commands || '',
+                        compile_commands_path: project.compile_commands_path || '',
                         include_paths: this.listToText(project.include_paths),
                         exclude_paths: this.listToText(project.exclude_paths),
                     };
                     this.configForm.entryDiscovery = {
                         enabled: Boolean(discovery.enabled),
-                        max_candidates: discovery.max_candidates ?? 200,
+                        search_root: discovery.search_root || '.',
+                        max_entries: discovery.max_entries ?? 200,
                         max_functions: discovery.max_functions ?? 10000,
-                        header_files: this.listToText(discovery.header_files),
+                        interface_files: this.listToText(discovery.interface_files),
                     };
                     this.configForm.indexing = {
-                        backend: indexing.backend || 'regex',
-                        knowledge_db_path: indexing.knowledge_db_path || '',
-                        batch_size: indexing.batch_size ?? 50,
-                        max_clangd_threads: indexing.max_clangd_threads ?? 8,
-                        joern_path: indexing.joern_path || 'joern',
-                        clangd_path: indexing.clangd_path || 'clangd',
-                        svf_bin_dir: indexing.svf_bin_dir || '',
-                        gclang_path: indexing.gclang_path || 'gclang',
-                        get_bc_path: indexing.get_bc_path || 'get-bc',
-                        llvm_link_path: indexing.llvm_link_path || 'llvm-link',
+                        backend: indexing.backend || (project.language === 'java' ? 'java_unified' : 'unified'),
                     };
-                    this.configForm.analysis = {
-                        max_recursion_depth: analysis.max_recursion_depth ?? 3,
-                        max_function_lines: analysis.max_function_lines ?? 500,
-                        max_tool_iterations: analysis.max_tool_iterations ?? 50,
-                        parallel_workers: analysis.parallel_workers ?? 5,
-                        entry_workers: analysis.entry_workers ?? analysis.parallel_workers ?? 5,
-                        llm_max_inflight: analysis.llm_max_inflight ?? 8,
-                        validator_workers: analysis.validator_workers ?? analysis.validation_parallel_workers ?? 0,
-                        investigator_workers: analysis.investigator_workers ?? analysis.parallel_workers ?? 4,
-                        validation_cache_entries: analysis.validation_cache_entries ?? 4096,
-                        snapshot_dir: analysis.snapshot_dir || '.zscope_snapshots',
-                        user_config_db: analysis.user_config_db || '',
-                        enable_snapshot_cache: analysis.enable_snapshot_cache ?? true,
-                        enable_subagent_workers: analysis.enable_subagent_workers ?? true,
+                    this.configForm.scan = { task: scan.task || '' };
+                    this.configForm.concurrency = {
+                        entry_workers: concurrency.entry_workers ?? 4,
+                        validator_workers: concurrency.validator_workers ?? 2,
+                        investigator_workers: concurrency.investigator_workers ?? 1,
+                        evidence_completion_workers: concurrency.evidence_completion_workers ?? 2,
+                        index_workers: concurrency.index_workers ?? 4,
+                        svf_workers: concurrency.svf_workers ?? 2,
+                        llm_max_inflight: concurrency.llm_max_inflight ?? 4,
                     };
+                },
+
+                configLanguageChanged() {
+                    this.configForm.indexing.backend = this.configForm.project.language === 'java'
+                        ? 'java_unified'
+                        : 'unified';
+                    this.markConfigDirty();
                 },
 
                 buildStructuredConfig() {
                     const cfg = JSON.parse(JSON.stringify(this.structuredConfig || {}));
+                    cfg.config_version = 2;
                     cfg.project = cfg.project || {};
                     cfg.indexing = cfg.indexing || {};
-                    cfg.analysis = cfg.analysis || {};
+                    cfg.scan = cfg.scan || {};
+                    cfg.concurrency = cfg.concurrency || {};
+                    cfg.project.language = this.configForm.project.language || 'c_cpp';
                     cfg.project.root = this.configForm.project.root || '.';
                     cfg.project.source_root = this.configForm.project.source_root || '.';
-                    cfg.project.entry_function = this.configForm.project.entry_function || null;
-                    cfg.project.entry_functions_list = this.configForm.project.entry_functions_list || null;
-                    cfg.project.compile_commands_path = this.configForm.project.compile_commands_path || null;
-                    delete cfg.project.compile_commands;
+                    if (this.configForm.project.entry_function) {
+                        cfg.project.entry_function = this.configForm.project.entry_function;
+                    } else {
+                        delete cfg.project.entry_function;
+                    }
+                    if (this.configForm.project.entry_functions_list) {
+                        cfg.project.entry_functions_list = this.configForm.project.entry_functions_list;
+                    } else {
+                        delete cfg.project.entry_functions_list;
+                    }
+                    if (cfg.project.language === 'c_cpp') {
+                        if (this.configForm.project.compile_commands_path) {
+                            cfg.project.compile_commands_path = this.configForm.project.compile_commands_path;
+                        } else {
+                            delete cfg.project.compile_commands_path;
+                        }
+                    } else {
+                        delete cfg.project.compile_commands_path;
+                    }
                     cfg.project.include_paths = this.textToList(this.configForm.project.include_paths);
                     cfg.project.exclude_paths = this.textToList(this.configForm.project.exclude_paths);
                     cfg.project.entry_discovery = cfg.project.entry_discovery || {};
                     cfg.project.entry_discovery.enabled = Boolean(this.configForm.entryDiscovery.enabled);
-                    cfg.project.entry_discovery.max_candidates = Number(this.configForm.entryDiscovery.max_candidates) || 200;
+                    cfg.project.entry_discovery.search_root = this.configForm.entryDiscovery.search_root || '.';
+                    cfg.project.entry_discovery.max_entries = Math.max(1, Number(this.configForm.entryDiscovery.max_entries) || 200);
                     cfg.project.entry_discovery.max_functions = Number(this.configForm.entryDiscovery.max_functions) || 10000;
-                    cfg.project.entry_discovery.header_files = this.textToList(this.configForm.entryDiscovery.header_files);
-                    cfg.indexing.backend = this.configForm.indexing.backend || 'regex';
-                    cfg.indexing.knowledge_db_path = this.configForm.indexing.knowledge_db_path || '';
-                    cfg.indexing.batch_size = Number(this.configForm.indexing.batch_size) || 50;
-                    cfg.indexing.max_clangd_threads = Number(this.configForm.indexing.max_clangd_threads) || 8;
-                    cfg.indexing.joern_path = this.configForm.indexing.joern_path || 'joern';
-                    cfg.indexing.clangd_path = this.configForm.indexing.clangd_path || 'clangd';
-                    cfg.indexing.svf_bin_dir = this.configForm.indexing.svf_bin_dir || '';
-                    cfg.indexing.gclang_path = this.configForm.indexing.gclang_path || 'gclang';
-                    cfg.indexing.get_bc_path = this.configForm.indexing.get_bc_path || 'get-bc';
-                    cfg.indexing.llvm_link_path = this.configForm.indexing.llvm_link_path || 'llvm-link';
-                    cfg.analysis.max_recursion_depth = Number(this.configForm.analysis.max_recursion_depth) || 3;
-                    cfg.analysis.max_function_lines = Number(this.configForm.analysis.max_function_lines) || 500;
-                    cfg.analysis.max_tool_iterations = Number(this.configForm.analysis.max_tool_iterations) || 50;
-                    cfg.analysis.parallel_workers = Number(this.configForm.analysis.parallel_workers) || 5;
-                    cfg.analysis.entry_workers = Number(this.configForm.analysis.entry_workers) || cfg.analysis.parallel_workers;
-                    cfg.analysis.llm_max_inflight = Math.max(0, Number(this.configForm.analysis.llm_max_inflight) || 0);
-                    cfg.analysis.validator_workers = Math.max(0, Number(this.configForm.analysis.validator_workers) || 0);
-                    cfg.analysis.investigator_workers = Number(this.configForm.analysis.investigator_workers) || cfg.analysis.entry_workers;
-                    cfg.analysis.validation_cache_entries = Math.max(0, Number(this.configForm.analysis.validation_cache_entries) || 0);
-                    cfg.analysis.snapshot_dir = this.configForm.analysis.snapshot_dir || '.zscope_snapshots';
-                    cfg.analysis.user_config_db = this.configForm.analysis.user_config_db || '';
-                    cfg.analysis.enable_snapshot_cache = Boolean(this.configForm.analysis.enable_snapshot_cache);
-                    cfg.analysis.enable_subagent_workers = Boolean(this.configForm.analysis.enable_subagent_workers);
+                    cfg.project.entry_discovery.interface_files = this.textToList(this.configForm.entryDiscovery.interface_files);
+                    cfg.indexing.backend = this.configForm.indexing.backend || (cfg.project.language === 'java' ? 'java_unified' : 'unified');
+                    cfg.scan.task = this.configForm.scan.task || '';
+                    ['entry_workers', 'validator_workers', 'investigator_workers', 'evidence_completion_workers', 'index_workers', 'llm_max_inflight'].forEach(key => {
+                        cfg.concurrency[key] = Math.max(1, Number(this.configForm.concurrency[key]) || 1);
+                    });
+                    if (cfg.project.language === 'c_cpp') {
+                        cfg.concurrency.svf_workers = Math.max(1, Number(this.configForm.concurrency.svf_workers) || 1);
+                        delete cfg.indexing.java;
+                        if (cfg.indexing.tools && cfg.indexing.tools.joern) {
+                            delete cfg.indexing.tools.joern;
+                        }
+                        if (cfg.indexing.tools && Object.keys(cfg.indexing.tools).length === 0) {
+                            delete cfg.indexing.tools;
+                        }
+                    } else {
+                        delete cfg.concurrency.svf_workers;
+                        delete cfg.indexing.svf;
+                        if (cfg.indexing.tools) {
+                            cfg.indexing.tools = cfg.indexing.tools.joern
+                                ? { joern: cfg.indexing.tools.joern }
+                                : {};
+                            if (Object.keys(cfg.indexing.tools).length === 0) {
+                                delete cfg.indexing.tools;
+                            }
+                        }
+                    }
                     return cfg;
                 },
 

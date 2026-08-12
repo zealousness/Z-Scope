@@ -39,9 +39,7 @@ def normalize_project_language(value: Any, default: str = "auto") -> str:
     }
     normalized = aliases.get(text, text)
     if normalized not in SUPPORTED_PROJECT_LANGUAGES:
-        raise ValueError(
-            f"Invalid project.language {value!r}; expected auto, c_cpp, or java"
-        )
+        raise ValueError(f"Invalid project.language {value!r}; expected auto, c_cpp, or java")
     return normalized
 
 
@@ -87,26 +85,6 @@ def _normalize_llm_base_urls(value: Any, default: str = "https://api.openai.com/
     return urls or [default.rstrip("/")]
 
 
-def _safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _safe_bool(value: Any, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    text = str(value).strip().lower()
-    if text in {"1", "true", "yes", "y", "on"}:
-        return True
-    if text in {"0", "false", "no", "n", "off"}:
-        return False
-    return default
-
-
 def _optional_positive_seconds(value: Any, default: Optional[float]) -> Optional[float]:
     """Parse a deadline once, preserving one-release legacy sentinel support.
 
@@ -133,11 +111,7 @@ def _optional_positive_seconds(value: Any, default: Optional[float]) -> Optional
 def minimum_optional_positive_seconds(*values: Any) -> Optional[float]:
     """Return the strictest configured deadline, or ``None`` if all are unlimited."""
 
-    parsed = [
-        _optional_positive_seconds(value, None)
-        for value in values
-        if value is not None
-    ]
+    parsed = [_optional_positive_seconds(value, None) for value in values if value is not None]
     positive = [value for value in parsed if value is not None]
     return min(positive) if positive else None
 
@@ -218,14 +192,12 @@ def _normalize_budget_exhaustion_policy(value: Any) -> str:
 class LLMConfig:
     """Configuration for LLM client."""
 
-    provider: str = "openai"  # 预留字段，当前未在运行时使用
     api_key: str = ""
     base_url: str = "https://api.openai.com/v1"
     base_urls: List[str] = field(default_factory=list)
     base_url_rate_limit_per_minute: Optional[int] = None
     base_url_max_concurrent_requests: Optional[int] = None
     models: List[str] = field(default_factory=list)
-    temperature: float = 0.1
     max_tokens: int = 4096
     timeout: Optional[float] = 120.0
     max_retries: int = 2
@@ -266,11 +238,75 @@ class EntryDiscoveryConfig:
     """Configuration for automatic entry-point discovery."""
 
     enabled: bool = False
-    max_candidates: int = 200
+    max_entries: int = 200
     max_functions: int = 10000
-    header_files: List[str] = field(default_factory=list)
+    interface_files: List[str] = field(default_factory=list)
     search_root: Optional[Path] = None
-    scan_after_discovery: bool = True
+
+
+@dataclass
+class ScanLLMProfiles:
+    """User-selected LLM profiles for stable runtime roles."""
+
+    modeling: str = "default"
+    analysis: str = "default"
+    validation: str = "default"
+
+
+@dataclass
+class ScanConfig:
+    """Small public scan intent surface."""
+
+    task: str = ""
+    llm_profiles: ScanLLMProfiles = field(default_factory=ScanLLMProfiles)
+
+
+@dataclass
+class ConcurrencyConfig:
+    """Explicit worker and LLM capacity limits supplied by the user."""
+
+    entry_workers: int = 4
+    validator_workers: int = 2
+    investigator_workers: int = 1
+    evidence_completion_workers: int = 2
+    index_workers: int = 4
+    svf_workers: Optional[int] = None
+    llm_max_inflight: int = 4
+
+    def __post_init__(self) -> None:
+        values = {
+            "entry_workers": self.entry_workers,
+            "validator_workers": self.validator_workers,
+            "investigator_workers": self.investigator_workers,
+            "evidence_completion_workers": self.evidence_completion_workers,
+            "index_workers": self.index_workers,
+            "llm_max_inflight": self.llm_max_inflight,
+        }
+        if self.svf_workers is not None:
+            values["svf_workers"] = self.svf_workers
+        for name, value in values.items():
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"concurrency.{name} must be a positive integer")
+
+
+@dataclass
+class RuntimeAgentConfig:
+    """Internal mapping from stable agents to public LLM capacity roles."""
+
+    name: str
+    llm_role: str
+    enabled: bool = True
+    can_spawn_subagents: Optional[bool] = None
+
+
+@dataclass
+class RuntimeSpecProvenance:
+    """Auditable identity of the effective internal runtime specification."""
+
+    version: int = 1
+    source_path: str = ""
+    sha256: str = ""
+    developer_override: bool = False
 
 
 @dataclass
@@ -304,8 +340,7 @@ class DiffImpactConfig:
 class IndexingConfig:
     """Configuration for code indexing."""
 
-    backend: str = "auto"  # auto | clang | unified | regex | java_source | java_unified | joern (deprecated for C)
-    joern_language: str = "auto"
+    backend: str = "regex"
     # Joern 配置
     joern_path: str = "joern"
     joern_server_host: str = "127.0.0.1"
@@ -335,15 +370,13 @@ class IndexingConfig:
     svf_shared_pools: List[Dict[str, Any]] = field(default_factory=list)
     # Java source structure plus optional graph/flow signal providers.
     java_structure_frontend: str = "auto"  # auto | spoon | javaparser | builtin
-    java_structure_backends: List[str] = field(default_factory=lambda: ["sootup", "wala"])
     java_structure_extractor_command: List[str] = field(default_factory=list)
     java_structure_db_path: str = ""
     java_signal_backends: List[str] = field(default_factory=lambda: ["sootup", "wala", "joern"])
     java_signal_provider_commands: Dict[str, List[str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        self.backend = str(self.backend or "auto").strip().lower().replace("-", "_")
-        self.joern_language = normalize_project_language(self.joern_language, "auto")
+        self.backend = str(self.backend or "regex").strip().lower().replace("-", "_")
         self.java_structure_frontend = (
             str(self.java_structure_frontend or "auto").strip().lower().replace("-", "_")
         )
@@ -351,12 +384,12 @@ class IndexingConfig:
             raise ValueError(
                 "indexing.java.structure_frontend must be auto, spoon, javaparser, or builtin"
             )
-        self.java_structure_backends = _normalized_name_list(self.java_structure_backends)
         self.java_signal_backends = _normalized_name_list(self.java_signal_backends)
         self.java_signal_provider_commands = {
-            str(key).strip().lower().replace("-", "_"): [
-                str(part) for part in value if str(part).strip()
-            ]
+            str(key)
+            .strip()
+            .lower()
+            .replace("-", "_"): [str(part) for part in value if str(part).strip()]
             for key, value in self.java_signal_provider_commands.items()
             if str(key).strip() and isinstance(value, list)
         }
@@ -381,50 +414,11 @@ class AnalysisConfig:
     max_tool_iterations: int = 50
     snapshot_dir: str = ".zscope_snapshots"
     enable_snapshot_cache: bool = True
-    # Legacy shared worker count. New configurations should prefer the
-    # role-specific fields below; this remains the compatibility fallback.
-    parallel_workers: int = 5
-    entry_workers: int = 0  # 0 inherits parallel_workers.
-    llm_max_inflight: int = 8  # Process-wide hard cap; legacy non-positive values map to 8.
-    validator_workers: int = 0  # Normalized to legacy override or role default 4.
-    investigator_workers: int = 0  # Normalized to role default 2.
-    evidence_completion_workers: int = 2
-    enable_evidence_completion_queue: bool = True
-    # v3 rollout controls.  They default on for new scans, but can be
-    # independently disabled for one-release shadow/rollback comparisons.
-    candidate_lifecycle_v3: bool = True
-    canonical_outcome_projection: bool = True
-    deterministic_proof_routing: bool = True
-    # v3.1 fact/proof rollout.  These remain independently shadowable so a
-    # scan can attach facts and compare identities before changing outcomes.
-    decision_fact_graph_v1: bool = False
-    security_obligation_v1: bool = False
-    deterministic_prevalidation_v2: bool = False
-    decision_context_v31: bool = False
-    # v3.2 closes the proof/fact contract and keeps its cache namespace
-    # independent from v3.1 while it is rolled out in shadow mode.
-    project_deterministic_fact_pass_v1: bool = False
-    proof_providers_v11: bool = False
-    decision_context_v32: bool = False
-    structured_candidate_promotion_v1: bool = False
-    # v3.3 release convergence keeps its facts, proof outcomes, report roots,
-    # and Validator prompt/cache identity separate from v3.2.
-    proof_providers_v12: bool = False
-    decision_context_v33: bool = False
-    finding_root_v1: bool = False
-    validator_evidence_slice_v2: bool = False
-    # Batch scans collect all deterministic candidates before one shared
-    # validation queue.  Keeping this switch separate permits a one-release
-    # rollback to entry-local validation for compatibility diagnostics.
-    global_validation_group_queue: bool = True
     validation_cache_entries: int = 4096
-    user_config_db: str = ""  # Path to user config workbook or directory, defaults to {snapshot_dir}/
+    user_config_db: str = (
+        ""  # Path to user config workbook or directory, defaults to {snapshot_dir}/
+    )
     enable_global_model: bool = False  # Batch-level global premodel/model_entry replacement.
-    # The normal v3 path is deterministic discovery followed by validation.
-    # Keep unconstrained whole-entry LLM exploration opt-in: it is useful for
-    # investigations, but is not a substitute for a candidate lifecycle and
-    # multiplies the same reasoning across overlapping entries.
-    candidate_first_validation: bool = True
     max_premodel_depth: int = 3  # Callee recursive pre-modeling max depth
     max_premodel_callees: int = 20  # Max callees to expand per level
     trivial_function_max_lines: int = 5  # Skip modeling if function <= this many valid lines
@@ -438,34 +432,12 @@ class AnalysisConfig:
     entry_deadline_seconds: Optional[float] = 1800.0
     scan_deadline_seconds: Optional[float] = None
     budget_exhaustion_policy: str = "observe"
-    validation_parallel_workers: int = 0  # 0 auto; set 1 to keep validator calls serial per entry.
     subagent_spawn_allowlist: List[str] = field(default_factory=lambda: ["deep_worker"])
     subagent_skill_llm_refs: Dict[str, str] = field(default_factory=dict)
     subagent_skill_efforts: Dict[str, str] = field(default_factory=dict)
     tool_audit_log: str = ""  # Optional JSONL audit sink for tool/MCP policy events.
 
     def __post_init__(self) -> None:
-        legacy_workers = max(1, _safe_int(self.parallel_workers, 5))
-        self.parallel_workers = legacy_workers
-
-        configured_entry_workers = _safe_int(self.entry_workers, 0)
-        self.entry_workers = (
-            configured_entry_workers if configured_entry_workers > 0 else legacy_workers
-        )
-        configured_llm_limit = _safe_int(self.llm_max_inflight, 8)
-        self.llm_max_inflight = (
-            configured_llm_limit if configured_llm_limit > 0 else 8
-        )
-
-        legacy_validator_workers = max(
-            0, _safe_int(self.validation_parallel_workers, 0)
-        )
-        configured_validator_workers = max(0, _safe_int(self.validator_workers, 4))
-        if configured_validator_workers <= 0:
-            configured_validator_workers = legacy_validator_workers or 4
-        self.validator_workers = configured_validator_workers
-        # Keep older consumers and serialized config views coherent.
-        self.validation_parallel_workers = configured_validator_workers
         self.validation_cache_entries = _bounded_cache_entries(
             self.validation_cache_entries,
             4096,
@@ -482,21 +454,10 @@ class AnalysisConfig:
         self.entry_deadline_seconds = _optional_positive_seconds(
             self.entry_deadline_seconds, 1800.0
         )
-        self.scan_deadline_seconds = _optional_positive_seconds(
-            self.scan_deadline_seconds, None
-        )
+        self.scan_deadline_seconds = _optional_positive_seconds(self.scan_deadline_seconds, None)
         self.budget_exhaustion_policy = _normalize_budget_exhaustion_policy(
             self.budget_exhaustion_policy
         )
-
-        configured_investigator_workers = _safe_int(self.investigator_workers, 0)
-        self.investigator_workers = (
-            configured_investigator_workers
-            if configured_investigator_workers > 0
-            else 2
-        )
-        configured_completion_workers = _safe_int(self.evidence_completion_workers, 2)
-        self.evidence_completion_workers = max(1, configured_completion_workers)
 
 
 @dataclass
@@ -533,7 +494,6 @@ class ProjectConfig:
     source_root: Path
     project_id: str = ""
     language: str = "auto"
-    java_profile: str = "auto"
     entry_function: Optional[str] = None
     entry_file_path: Optional[str] = None
     entry_signature: Optional[str] = None
@@ -541,6 +501,7 @@ class ProjectConfig:
     compile_commands_path: Optional[Path] = None
     entry_functions_list: Optional[Path] = None  # Path to JSON file for batch mode
     entry_diff_focus: Optional[Dict[str, Any]] = None
+    user_config_file: Optional[Path] = None
     include_paths: List[str] = field(default_factory=list)
     exclude_paths: List[str] = field(default_factory=list)
     entry_discovery: EntryDiscoveryConfig = field(default_factory=EntryDiscoveryConfig)
@@ -563,8 +524,6 @@ class ProjectConfig:
         self.language = normalize_project_language(self.language)
         if self.language == "auto":
             self.language = detect_project_language(self.source_root)
-        self.java_profile = str(self.java_profile or "auto").strip().lower().replace("-", "_")
-
         # Resolve include/exclude paths relative to source_root
         resolved_includes = []
         for p in self.include_paths or []:
@@ -612,10 +571,16 @@ class ProjectConfig:
             else:
                 self.entry_functions_list = Path(self.entry_functions_list).resolve()
 
+        if self.user_config_file:
+            user_config_file = Path(self.user_config_file)
+            if not user_config_file.is_absolute():
+                user_config_file = self.project_root / user_config_file
+            self.user_config_file = user_config_file.resolve()
+
         if self.entry_discovery.search_root:
             search_root = Path(self.entry_discovery.search_root)
             if not search_root.is_absolute():
-                raise ValueError("project.entry_discovery.search_root must be an absolute path")
+                search_root = self.project_root / search_root
             search_root = search_root.resolve()
             if not search_root.is_dir():
                 raise ValueError(
@@ -633,560 +598,62 @@ class ZScopeConfig:
     indexing: IndexingConfig
     analysis: AnalysisConfig
     project: ProjectConfig
+    scan: ScanConfig = field(default_factory=ScanConfig)
+    concurrency: ConcurrencyConfig = field(default_factory=ConcurrencyConfig)
     reporting: ReportingConfig = field(default_factory=ReportingConfig)
+    rules: RulesConfig = field(default_factory=RulesConfig)
+    runtime_provenance: RuntimeSpecProvenance = field(default_factory=RuntimeSpecProvenance)
+    user_config_version: int = 2
+    # Populated by the shared rule preflight before any indexer, external tool,
+    # or LLM is started.  These are internal runtime objects rather than public
+    # v2 YAML fields, so they intentionally do not appear on ``UserConfigV2``.
+    effective_rules: Any = field(default=None, repr=False, compare=False)
+    rule_catalog_provenance: Any = field(default=None, repr=False, compare=False)
+    rule_validation_warnings: List[str] = field(default_factory=list, repr=False)
+
+
+# Public names used by the v2 loader and developer documentation.  The
+# effective type intentionally keeps the long-lived ``ZScopeConfig`` name for
+# Python integrations while exposing the split boundaries explicitly.
+@dataclass
+class UserConfigV2:
+    llms: Dict[str, LLMConfig]
+    project: ProjectConfig
+    scan: ScanConfig
+    indexing: IndexingConfig
+    concurrency: ConcurrencyConfig
     rules: RulesConfig = field(default_factory=RulesConfig)
 
 
+@dataclass
+class RuntimeSpec:
+    analysis: AnalysisConfig
+    reporting: ReportingConfig
+    agents: List[RuntimeAgentConfig]
+    knowledge_db_path: str
+    snapshot_dir: str
+    default_user_config_file: str
+    provenance: RuntimeSpecProvenance
+
+
+EffectiveConfig = ZScopeConfig
+
+
 class ConfigLoader:
-    """Load and parse ZScope configuration from YAML files."""
+    """Load the strict public v2 configuration and bundled runtime specification."""
 
-    DEFAULT_CONFIG_LOCATIONS = [
-        "./zscope.yaml",
-        "~/.zscope/config.yaml",
-        "/etc/zscope/config.yaml",
-    ]
-
-    @staticmethod
-    def _expand_env_vars(value: Any) -> Any:
-        """Recursively expand environment variables in config values."""
-        if isinstance(value, str):
-            # Replace ${VAR} or $VAR with environment variable
-            def replace_var(match):
-                var_name = match.group(1) or match.group(2)
-                return os.environ.get(var_name, match.group(0))
-
-            return re.sub(r"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)", replace_var, value)
-        elif isinstance(value, dict):
-            return {k: ConfigLoader._expand_env_vars(v) for k, v in value.items()}
-        elif isinstance(value, list):
-            return [ConfigLoader._expand_env_vars(item) for item in value]
-        return value
-
-    @staticmethod
-    def _string_list(value: Any, default: Optional[List[str]] = None) -> List[str]:
-        if value is None:
-            return list(default or [])
-        if isinstance(value, str):
-            return [part.strip() for part in value.split(",") if part.strip()]
-        if isinstance(value, list):
-            return [str(part).strip() for part in value if str(part).strip()]
-        return list(default or [])
-
-    @staticmethod
-    def _string_dict(value: Any) -> Dict[str, str]:
-        if not isinstance(value, dict):
-            return {}
-        return {str(key): str(val) for key, val in value.items() if str(key).strip() and str(val).strip()}
-
-    @staticmethod
-    def _string_list_dict(value: Any) -> Dict[str, List[str]]:
-        if not isinstance(value, dict):
-            return {}
-        result: Dict[str, List[str]] = {}
-        for key, item in value.items():
-            name = str(key).strip()
-            if not name:
-                continue
-            result[name] = ConfigLoader._string_list(item)
-        return result
-
-    @staticmethod
-    def _int_dict(value: Any, default: Optional[Dict[str, int]] = None) -> Dict[str, int]:
-        result = dict(default or {})
-        if not isinstance(value, dict):
-            return result
-        for key, val in value.items():
-            clean_key = str(key).strip()
-            if not clean_key:
-                continue
-            result[clean_key] = max(0, _safe_int(val, result.get(clean_key, 0)))
-        return result
-
-    @staticmethod
-    def _config_string(value: Any, default: str) -> str:
-        if value is None:
-            return default
-        if isinstance(value, bool):
-            return "on" if value else "off"
-        cleaned = str(value).strip()
-        return cleaned or default
+    DEFAULT_CONFIG_LOCATIONS = ["./zscope.yaml"]
 
     @staticmethod
     def load(config_path: Optional[str] = None) -> ZScopeConfig:
-        """
-        Load configuration from YAML file.
-        """
-        if yaml is None:
-            raise ImportError("PyYAML is required for config file support.")
+        from .v2 import load_user_config_v2
+        from ..rules.extensions import preflight_rules
 
-        # Find config file
-        config_file = None
-        if config_path:
-            config_file = Path(config_path).expanduser()
-            if not config_file.exists():
-                raise FileNotFoundError(f"Config file not found: {config_file}")
-        else:
-            for loc in ConfigLoader.DEFAULT_CONFIG_LOCATIONS:
-                potential_path = Path(loc).expanduser()
-                if potential_path.exists():
-                    config_file = potential_path
-                    logger.info(f"Using config file: {config_file}")
-                    break
-
-        if not config_file:
-            raise FileNotFoundError("No config file found.")
-
-        # Load YAML
-        with open(config_file, "r", encoding="utf-8") as f:
-            raw_config = yaml.safe_load(f)
-
-        if not isinstance(raw_config, dict):
-            raise ValueError(f"Invalid config file: {config_file}")
-
-        # Expand environment variables
-        raw_config = ConfigLoader._expand_env_vars(raw_config)
-
-        # Parse sections
-        try:
-            # LLM config
-            llms_data = raw_config.get("llms", {})
-            llm_data = raw_config.get("llm", {})
-
-            parsed_llms = {}
-            default_llm_config = None
-
-            # 1. Parse legacy 'llm' block if present
-            if llm_data:
-                models = llm_data.get("models", [])
-                if not models and llm_data.get("model"):
-                    models = [llm_data.get("model")]
-                if models:
-                    base_urls = _normalize_llm_base_urls(
-                        llm_data.get(
-                            "base_urls",
-                            llm_data.get("base_url", "https://api.openai.com/v1"),
-                        )
-                    )
-                    default_llm_config = LLMConfig(
-                        provider=llm_data.get("provider", "openai"),
-                        api_key=llm_data.get("api_key", ""),
-                        base_url=base_urls[0],
-                        base_urls=base_urls,
-                        base_url_rate_limit_per_minute=llm_data.get(
-                            "base_url_rate_limit_per_minute",
-                            llm_data.get(
-                                "base_url_rpm",
-                                llm_data.get("requests_per_minute"),
-                            ),
-                        ),
-                        base_url_max_concurrent_requests=llm_data.get(
-                            "base_url_max_concurrent_requests",
-                            llm_data.get(
-                                "base_url_max_in_flight",
-                                llm_data.get("max_concurrent_requests"),
-                            ),
-                        ),
-                        models=models,
-                        temperature=llm_data.get("temperature", 0.1),
-                        max_tokens=llm_data.get("max_tokens", 4096),
-                        timeout=llm_data.get("timeout", 120),
-                        max_retries=llm_data.get("max_retries", 2),
-                        retry_until_available=_safe_bool(
-                            llm_data.get("retry_until_available", False)
-                        ),
-                        supports_structured_output=_safe_bool(
-                            llm_data.get("supports_structured_output", False)
-                        ),
-                    )
-                    parsed_llms["default"] = default_llm_config
-
-            # 2. Parse 'llms' block if present
-            for name, data in llms_data.items():
-                models = data.get("models", [])
-                if not models and data.get("model"):
-                    models = [data.get("model")]
-                if not models:
-                    logger.warning(f"Skipping LLM config '{name}' due to missing models")
-                    continue
-                base_urls = _normalize_llm_base_urls(
-                    data.get(
-                        "base_urls",
-                        data.get("base_url", "https://api.openai.com/v1"),
-                    )
-                )
-                cfg = LLMConfig(
-                    provider=data.get("provider", "openai"),
-                    api_key=data.get("api_key", ""),
-                    base_url=base_urls[0],
-                    base_urls=base_urls,
-                    base_url_rate_limit_per_minute=data.get(
-                        "base_url_rate_limit_per_minute",
-                        data.get(
-                            "base_url_rpm",
-                            data.get("requests_per_minute"),
-                        ),
-                    ),
-                    base_url_max_concurrent_requests=data.get(
-                        "base_url_max_concurrent_requests",
-                        data.get(
-                            "base_url_max_in_flight",
-                            data.get("max_concurrent_requests"),
-                        ),
-                    ),
-                    models=models,
-                    temperature=data.get("temperature", 0.1),
-                    max_tokens=data.get("max_tokens", 4096),
-                    timeout=data.get("timeout", 120),
-                    max_retries=data.get("max_retries", 2),
-                    retry_until_available=_safe_bool(
-                        data.get("retry_until_available", False)
-                    ),
-                    supports_structured_output=_safe_bool(
-                        data.get("supports_structured_output", False)
-                    ),
-                )
-                parsed_llms[name] = cfg
-                if default_llm_config is None and name == "default":
-                    default_llm_config = cfg
-
-            if not parsed_llms:
-                raise ValueError("Missing 'llm' or 'llms' configuration.")
-
-            if default_llm_config is None:
-                default_llm_config = list(parsed_llms.values())[0]
-                parsed_llms["default"] = default_llm_config
-
-            # Indexing config
-            indexing_data = raw_config.get("indexing", {})
-            java_data = indexing_data.get("java", {}) or {}
-            nested_structure = java_data.get("structure", ["sootup", "wala"])
-            nested_signals = java_data.get("signals", ["joern"])
-            structure_backends = (
-                ConfigLoader._string_list(nested_structure)
-                if not isinstance(nested_structure, dict)
-                else ConfigLoader._string_list(nested_structure.get("backends"), ["sootup", "wala"])
-            )
-            structure_frontend = (
-                nested_structure.get("frontend", "auto")
-                if isinstance(nested_structure, dict)
-                else java_data.get("structure_frontend", "auto")
-            )
-            explicit_signal_backends = indexing_data.get("java_signal_backends")
-            java_signal_backends = (
-                ConfigLoader._string_list(explicit_signal_backends)
-                if explicit_signal_backends is not None
-                else _normalized_name_list(
-                    structure_backends + ConfigLoader._string_list(nested_signals, ["joern"])
-                )
-            )
-            indexing_config = IndexingConfig(
-                backend=indexing_data.get("backend", "auto"),
-                joern_language=indexing_data.get("joern_language", "auto"),
-                joern_path=indexing_data.get("joern_path", "joern"),
-                joern_server_host=indexing_data.get("joern_server_host", "127.0.0.1"),
-                joern_server_port=indexing_data.get("joern_server_port", 8080),
-                joern_heap_size=indexing_data.get("joern_heap_size", "8g"),
-                clangd_path=indexing_data.get("clangd_path", "clangd"),
-                knowledge_db_path=indexing_data.get(
-                    "knowledge_db_path", ".zscope_knowledge/code_knowledge.db"
-                ),
-                batch_size=indexing_data.get("batch_size", 50),
-                max_clangd_threads=indexing_data.get("max_clangd_threads", 8),
-                shared_cache_max_bytes=indexing_data.get(
-                    "shared_cache_max_bytes", 512 * 1024 * 1024
-                ),
-                svf_bin_dir=indexing_data.get("svf_bin_dir", ""),
-                gclang_path=indexing_data.get("gclang_path", "gclang"),
-                get_bc_path=indexing_data.get("get_bc_path", "get-bc"),
-                llvm_link_path=indexing_data.get("llvm_link_path", "llvm-link"),
-                svf_heap_limit_mb=indexing_data.get("svf_heap_limit_mb", 32768),
-                svf_timeout=indexing_data.get("svf_timeout", 1800),
-                svf_groups_config=indexing_data.get("svf_groups_config", ""),
-                svf_scope=indexing_data.get("svf_scope", "auto"),
-                svf_entry_depth=indexing_data.get("svf_entry_depth", 4),
-                svf_max_selected_tus=indexing_data.get("svf_max_selected_tus", 200),
-                svf_fallback=indexing_data.get("svf_fallback", "full"),
-                svf_always_include=indexing_data.get("svf_always_include", []) or [],
-                svf_symbol_closure=indexing_data.get("svf_symbol_closure", True),
-                svf_exclusive_pools=indexing_data.get("svf_exclusive_pools", []) or [],
-                svf_shared_pools=indexing_data.get("svf_shared_pools", []) or [],
-                java_structure_frontend=indexing_data.get(
-                    "java_structure_frontend", structure_frontend
-                ),
-                java_structure_backends=indexing_data.get(
-                    "java_structure_backends", structure_backends
-                ),
-                java_structure_extractor_command=ConfigLoader._string_list(
-                    indexing_data.get("java_structure_extractor_command")
-                    or java_data.get("extractor_command")
-                ),
-                java_structure_db_path=indexing_data.get(
-                    "java_structure_db_path", java_data.get("structure_db_path", "")
-                ),
-                java_signal_backends=java_signal_backends,
-                java_signal_provider_commands=ConfigLoader._string_list_dict(
-                    indexing_data.get("java_signal_provider_commands")
-                    or java_data.get("provider_commands")
-                ),
-            )
-
-            # Analysis config
-            analysis_data = raw_config.get("analysis", {})
-            if "workflow_name" in analysis_data:
-                raise ValueError(
-                    "'analysis.workflow_name' is runtime-only and cannot be set in zscope.yaml. "
-                    "Use CLI flags such as --resume or --maintain to select a workflow."
-                )
-            analysis_config = AnalysisConfig(
-                max_recursion_depth=analysis_data.get("max_recursion_depth", 3),
-                max_function_lines=analysis_data.get("max_function_lines", 500),
-                max_tool_iterations=analysis_data.get("max_tool_iterations", 50),
-                snapshot_dir=analysis_data.get("snapshot_dir", ".zscope_snapshots"),
-                enable_snapshot_cache=analysis_data.get("enable_snapshot_cache", True),
-                parallel_workers=analysis_data.get("parallel_workers", 5),
-                entry_workers=analysis_data.get(
-                    "entry_workers",
-                    min(8, max(1, os.cpu_count() or 1)),
-                ),
-                llm_max_inflight=analysis_data.get("llm_max_inflight", 8),
-                validator_workers=analysis_data.get("validator_workers", 4),
-                investigator_workers=analysis_data.get("investigator_workers", 2),
-                evidence_completion_workers=analysis_data.get(
-                    "evidence_completion_workers", 2
-                ),
-                enable_evidence_completion_queue=analysis_data.get(
-                    "enable_evidence_completion_queue", True
-                ),
-                candidate_lifecycle_v3=analysis_data.get(
-                    "candidate_lifecycle_v3", True
-                ),
-                canonical_outcome_projection=analysis_data.get(
-                    "canonical_outcome_projection", True
-                ),
-                deterministic_proof_routing=analysis_data.get(
-                    "deterministic_proof_routing", True
-                ),
-                decision_fact_graph_v1=analysis_data.get(
-                    "decision_fact_graph_v1", False
-                ),
-                security_obligation_v1=analysis_data.get(
-                    "security_obligation_v1", False
-                ),
-                deterministic_prevalidation_v2=analysis_data.get(
-                    "deterministic_prevalidation_v2", False
-                ),
-                decision_context_v31=analysis_data.get(
-                    "decision_context_v31", False
-                ),
-                project_deterministic_fact_pass_v1=analysis_data.get(
-                    "project_deterministic_fact_pass_v1", False
-                ),
-                proof_providers_v11=analysis_data.get(
-                    "proof_providers_v11", False
-                ),
-                decision_context_v32=analysis_data.get(
-                    "decision_context_v32", False
-                ),
-                structured_candidate_promotion_v1=analysis_data.get(
-                    "structured_candidate_promotion_v1", False
-                ),
-                proof_providers_v12=analysis_data.get(
-                    "proof_providers_v12", False
-                ),
-                decision_context_v33=analysis_data.get(
-                    "decision_context_v33", False
-                ),
-                finding_root_v1=analysis_data.get("finding_root_v1", False),
-                validator_evidence_slice_v2=analysis_data.get(
-                    "validator_evidence_slice_v2", False
-                ),
-                global_validation_group_queue=analysis_data.get(
-                    "global_validation_group_queue", True
-                ),
-                validation_cache_entries=analysis_data.get(
-                    "validation_cache_entries", 4096
-                ),
-                user_config_db=analysis_data.get("user_config_db", ""),
-                enable_global_model=analysis_data.get("enable_global_model", False),
-                candidate_first_validation=analysis_data.get(
-                    "candidate_first_validation", True
-                ),
-                max_premodel_depth=analysis_data.get("max_premodel_depth", 3),
-                max_premodel_callees=analysis_data.get("max_premodel_callees", 20),
-                trivial_function_max_lines=analysis_data.get("trivial_function_max_lines", 5),
-                workflow_name="default",
-                enable_subagent_workers=analysis_data.get("enable_subagent_workers", False),
-                max_subagent_tickets=analysis_data.get("max_subagent_tickets", 4),
-                subagent_max_turns=analysis_data.get("subagent_max_turns", 20),
-                request_deadline_seconds=analysis_data.get(
-                    "request_deadline_seconds", 120.0
-                ),
-                validation_deadline_seconds=analysis_data.get(
-                    "validation_deadline_seconds", 240.0
-                ),
-                subagent_ticket_timeout=analysis_data.get(
-                    "subagent_ticket_timeout", 300.0
-                ),
-                entry_deadline_seconds=analysis_data.get(
-                    "entry_deadline_seconds", 1800.0
-                ),
-                scan_deadline_seconds=analysis_data.get("scan_deadline_seconds"),
-                budget_exhaustion_policy=analysis_data.get(
-                    "budget_exhaustion_policy", "observe"
-                ),
-                validation_parallel_workers=analysis_data.get("validation_parallel_workers", 0),
-                subagent_spawn_allowlist=ConfigLoader._string_list(
-                    analysis_data.get("subagent_spawn_allowlist"),
-                    default=["deep_worker"],
-                ),
-                subagent_skill_llm_refs=ConfigLoader._string_dict(
-                    analysis_data.get("subagent_skill_llm_refs")
-                ),
-                subagent_skill_efforts=ConfigLoader._string_dict(
-                    analysis_data.get("subagent_skill_efforts")
-                ),
-                tool_audit_log=analysis_data.get("tool_audit_log", ""),
-            )
-
-            reporting_data = raw_config.get("reporting", {}) or {}
-            semantic_dedup_data = reporting_data.get("semantic_dedup", {}) or {}
-            reporting_config = ReportingConfig(
-                semantic_dedup=SemanticDedupConfig(
-                    enabled=semantic_dedup_data.get("enabled", True),
-                    llm_enabled=semantic_dedup_data.get("llm_enabled", False),
-                    llm_confidence_threshold=float(
-                        semantic_dedup_data.get("llm_confidence_threshold", 0.85)
-                    ),
-                    max_cluster_size=int(semantic_dedup_data.get("max_cluster_size", 8)),
-                )
-            )
-
-            # Project config
-            project_data = raw_config.get("project", {})
-            if not project_data:
-                raise ValueError("Missing 'project' section")
-
-            project_root = project_data.get("root")
-            if not project_root:
-                raise ValueError("Missing 'project.root'")
-
-            entry_function = project_data.get("entry_function")
-            entry_file_path = project_data.get("entry_file_path")
-            entry_signature = project_data.get("entry_signature")
-            entry_functions_list = project_data.get("entry_functions_list")
-
-            entry_discovery_data = project_data.get("entry_discovery") or {}
-            entry_discovery_config = EntryDiscoveryConfig(
-                enabled=entry_discovery_data.get("enabled", False),
-                max_candidates=entry_discovery_data.get("max_candidates", 200),
-                max_functions=entry_discovery_data.get("max_functions", 10000),
-                header_files=entry_discovery_data.get("header_files", []),
-                search_root=(
-                    entry_discovery_data.get("search_root")
-                    or entry_discovery_data.get("root")
-                    or entry_discovery_data.get("discovery_root")
-                ),
-                scan_after_discovery=entry_discovery_data.get("scan_after_discovery", True),
-            )
-            diff_impact_data = project_data.get("diff_impact") or {}
-            diff_impact_defaults = DiffImpactConfig()
-            diff_impact_config = DiffImpactConfig(
-                strategy=ConfigLoader._config_string(
-                    diff_impact_data.get("strategy"),
-                    diff_impact_defaults.strategy,
-                ),
-                llm_triage=ConfigLoader._config_string(
-                    diff_impact_data.get("llm_triage"),
-                    diff_impact_defaults.llm_triage,
-                ),
-                caller_search_depth_by_intent=ConfigLoader._int_dict(
-                    diff_impact_data.get("caller_search_depth_by_intent"),
-                    diff_impact_defaults.caller_search_depth_by_intent,
-                ),
-            )
-            # Parse Agents
-            agents_data = project_data.get("agents", [])
-            agents = []
-            for a in agents_data:
-                agents.append(
-                    AgentConfig(
-                        name=a.get("name"),
-                        task=a.get("task"),
-                        enabled=a.get("enabled", True),
-                        llm_ref=a.get("llm_ref"),
-                        skills=a.get("skills", []) or [],
-                        tools=a.get("tools", []) or [],
-                        mcp_servers=a.get("mcp_servers", []) or a.get("mcpServers", []) or [],
-                        can_spawn_subagents=a.get("can_spawn_subagents"),
-                    )
-                )
-
-            # Fallback for old 'task' field
-            if not agents and project_data.get("task"):
-                agents.append(
-                    AgentConfig(name="vulnerability_analyzer", task=project_data.get("task"))
-                )
-
-            compile_commands = project_data.get("compile_commands_path") or project_data.get(
-                "compile_commands"
-            )
-            compile_commands_path = Path(compile_commands) if compile_commands else None
-
-            # Parse entry_functions_list for batch mode
-            entry_functions_list = project_data.get("entry_functions_list")
-            entry_functions_list_path = Path(entry_functions_list) if entry_functions_list else None
-
-            project_config = ProjectConfig(
-                project_root=Path(project_root),
-                source_root=Path(project_data.get("source_root", project_root)),
-                project_id=str(project_data.get("id") or project_data.get("project_id") or ""),
-                language=project_data.get("language", "auto"),
-                java_profile=project_data.get("java_profile", "auto"),
-                entry_function=entry_function,
-                entry_file_path=entry_file_path,
-                entry_signature=entry_signature,
-                agents=agents,
-                compile_commands_path=compile_commands_path,
-                entry_functions_list=Path(entry_functions_list) if entry_functions_list else None,
-                include_paths=project_data.get("include_paths", []),
-                exclude_paths=project_data.get("exclude_paths", []),
-                entry_discovery=entry_discovery_config,
-                diff_impact=diff_impact_config,
-            )
-
-            if indexing_config.joern_language == "auto":
-                indexing_config.joern_language = project_config.language
-            if indexing_config.backend in {"", "auto", "language_auto"}:
-                indexing_config.backend = (
-                    "java_unified" if project_config.language == "java" else "unified"
-                )
-            java_backends = {"java_source", "java_unified", "joern"}
-            c_backends = {"regex", "clang", "unified", "joern"}
-            allowed = java_backends if project_config.language == "java" else c_backends
-            if indexing_config.backend not in allowed:
-                raise ValueError(
-                    f"indexing.backend={indexing_config.backend!r} is not valid for "
-                    f"project.language={project_config.language!r}"
-                )
-
-            rules_data = raw_config.get("rules", {}) or {}
-            rules_config = RulesConfig(
-                packs=ConfigLoader._string_list(rules_data.get("packs")),
-                providers=ConfigLoader._string_list(rules_data.get("providers")),
-                disabled_ids=ConfigLoader._string_list(rules_data.get("disabled_ids")),
-            )
-
-            return ZScopeConfig(
-                llm=default_llm_config,
-                llms=parsed_llms,
-                indexing=indexing_config,
-                analysis=analysis_config,
-                project=project_config,
-                reporting=reporting_config,
-                rules=rules_config,
-            )
-
-        except KeyError as e:
-            raise ValueError(f"Missing required config key: {e}")
-        except Exception as e:
-            raise ValueError(f"Invalid config format: {e}")
+        config = load_user_config_v2(config_path)
+        # One shared preflight is deliberately part of configuration loading:
+        # every CLI, Web, MCP, batch, and doctor entry point must reject an
+        # invalid rule universe before constructing CodeIndex or invoking an
+        # external tool/LLM.  ``Analyzer`` repeats this defensively for direct
+        # third-party construction with an in-memory config.
+        preflight_rules(config)
+        return config

@@ -8,6 +8,8 @@ covers:
   - zscope/common
 sources:
   - zscope/config/config.py
+  - zscope/config/v2.py
+  - zscope/config/runtime_defaults.yaml
   - zscope/config/function_entry.py
   - zscope/config/user_config_store.py
   - zscope/config/user_config_workbook.py
@@ -17,6 +19,9 @@ sources:
   - zscope/memory/review_memory.py
   - zscope/common/issue_identity.py
 tests:
+  - tests/test_config_v2.py
+  - tests/test_config_migration.py
+  - tests/test_concurrency_config.py
   - tests/test_user_config_workbook.py
   - tests/test_parallel_custom_prompt.py
   - tests/test_semantics_defaults.py
@@ -35,8 +40,11 @@ tests:
 
 ## 主入口和数据流
 
-- `ConfigLoader` 将 YAML 和环境变量转换为强类型配置，`ProjectConfig` 负责项目路径解析。
-- `project.language=auto|c_cpp|java` 决定语言隔离；`indexing.java` 和 `rules` 分别承载 Java provider 与显式规则扩展配置。
+- `ConfigLoader` 只读取严格的 `UserConfigV2`，再与打包的 `RuntimeSpec` 组合为 `EffectiveConfig`；`ProjectConfig` 负责项目路径解析。
+- public YAML 顶层只允许 `config_version`、`llms`、`project`、`scan`、`indexing`、`concurrency` 和可选 `rules`。`project.language` 只能显式为 `c_cpp` 或 `java`。
+- `runtime_defaults.yaml` 管理 Agent 启用状态/LLM 角色、分析预算、缓存、报告策略和稳定算法默认值；`AGENT.md`、`SKILL.md`、workflow YAML 不在此重复。
+- 根目录 `zscope.c_cpp.yaml` 与 `zscope.java.yaml` 是语言隔离的精简参考文件；Java 不接受 SVF/clang/compile database，C/C++ 不接受 Java provider 字段。
+- `Z_SCOPE_RUNTIME_SPEC` 只在 `Z_SCOPE_DEVELOPER_MODE=1` 时接受绝对覆盖路径。有效规格版本、来源和 SHA-256 进入配置哈希、缓存身份及报告 provenance。
 - `UserConfigWorkbook`/`UserConfigStore` 维护人工可审阅语义以及 suppression、baseline 等旁路状态。
 - semantics 合并内置 defaults、工作簿、源码推断和历史信息，为候选与 prompt 提供当前入口相关的语义片段。
 - snapshot policy 决定完整、轻量或语法快照，store 负责持久化与复用。
@@ -44,18 +52,23 @@ tests:
 
 ## 必须保持的不变量
 
-- `analysis.workflow_name` 不能从用户 YAML 注入。
-- `backend=auto` 必须按已检测语言解析为 `unified` 或 `java_unified`，不允许 Java/C 后端静默串线。
+- 产品运行时不解析 v1；旧字段只允许由 `zscope-config migrate` 读取。未知键、重复 YAML 键、错误类型、非法枚举和未展开必需环境变量必须失败。
+- public YAML 不能包含 Agent、analysis、reporting、workflow、缓存或 rollout 开关。
+- C/C++ 后端只能显式为 `unified|clang|regex`，Java 只能为 `java_unified|java_source|joern`；深度后端不可用时不得静默切换到弱后端。
+- `scan.task` 空串必须激活当前语言全部适用 Skill；非空文本只覆盖审计重点。
+- `concurrency` 的全部字段必须是正整数，并由调度、索引、SVF、Validator、evidence completion 与 LLM 全局限流统一读取。
 - CLI 配置路径和目标项目路径必须区分：`project.root` 相对进程工作目录解析，其余项目相对路径依据 `project.root` 解析。
+- KnowledgeDB、snapshot 和默认 user config 状态路径必须相对 `project.root`，不能因跨目录执行写入进程工作目录。
 - 用户配置只向当前函数/入口注入相关片段，不能把整个工作簿无差别放入 prompt。
 - 人工填写的配置不能被自动推断静默覆盖；推断行必须保留来源和置信度。
-- snapshot cache key 必须覆盖影响语义的代码、配置、Agent/Skill 和后端版本因素。
+- snapshot cache key 必须覆盖影响语义的代码、public config、RuntimeSpec provenance、Agent/Skill 和后端版本因素。
 - 入口 canonical identity 必须保留实现文件和可调用实体；当后端给出的 signature 不含方法名时（如 Java 的返回值/参数描述符），必须同时保留全限定函数名，不能因去重而丢失入口。
 - canonical key、stable fingerprint 和 source-context fingerprint 的用途不能互换；身份算法变更要考虑历史 baseline 兼容性。
 
 ## 常见变更应落到哪里
 
-- YAML 字段、默认值和校验：`zscope/config/config.py`，同步 README 示例和配置测试。
+- public YAML 字段和严格校验：`zscope/config/v2.py`；组合类型在 `config.py`，内部默认在 `runtime_defaults.yaml`。三者变更要同步 README、迁移器和配置测试。
+- v1 到 v2 的一次性字段映射：`zscope/cli/config_cli.py`；禁止把别名兼容加回产品 loader。
 - 工作簿 schema/导入导出：`user_config_workbook.py`、`user_config_store.py`。
 - 内置 API 语义或 overlay：`zscope/semantics/`。
 - 快照策略和存储：`zscope/snapshots/`。
@@ -66,6 +79,7 @@ tests:
 
 ```bash
 python -m pytest -q tests/test_user_config_workbook.py tests/test_semantics_defaults.py
+python -m pytest -q tests/test_config_v2.py tests/test_config_migration.py tests/test_concurrency_config.py
 python -m pytest -q tests/test_snapshot_store.py tests/test_snapshot_refresh_decision_prompt.py
 python -m pytest -q tests/test_review_memory.py tests/test_issue_dedup.py
 ```
@@ -73,5 +87,5 @@ python -m pytest -q tests/test_review_memory.py tests/test_issue_dedup.py
 ## 权威源码和关联文档
 
 - 稳定入口见本文 frontmatter 的 `sources`。
-- 路径和配置示例见 `README.md`；状态分层见 `docs/architecture.md` 的“持久化与反馈平面”。
+- 路径和使用说明见 `README.md`，完整配置参考见根目录 `zscope.c_cpp.yaml` 与 `zscope.java.yaml`；状态分层见 `docs/architecture.md` 的“持久化与反馈平面”。
 - 不在模块文档中复制完整工作簿列定义或历史 schema 迁移记录。

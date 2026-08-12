@@ -1,5 +1,6 @@
 ---
 name: bounds_and_integer
+languages: [c_cpp]
 description: Audit buffer bounds, array indexing, and integer size conversions.
 category: memory_safety
 triggers:

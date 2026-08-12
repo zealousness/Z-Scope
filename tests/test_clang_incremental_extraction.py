@@ -11,6 +11,12 @@ class _FakeDB:
         self.purged = []
         self.commits = 0
         self.pending = []
+        self.metadata = {
+            "schema_version": "14",
+            "macro_extractor_version": ClangBackend.MACRO_EXTRACTOR_VERSION,
+            "type_extractor_version": ClangBackend.TYPE_EXTRACTOR_VERSION,
+        }
+        self.derived_dirty_reasons = []
 
     def register_tu_hash(self, file_path: str, file_hash: str):
         self.register_calls += 1
@@ -28,6 +34,29 @@ class _FakeDB:
     def mark_tu_pending(self, tu_id: int):
         self.pending.append(tu_id)
 
+    def get_metadata(self, key: str) -> str:
+        return self.metadata.get(key, "")
+
+    def set_metadata(self, key: str, value: str):
+        self.metadata[key] = value
+
+    def mark_derived_indexes_dirty(self, index_names=None, *, reason="base_facts_changed"):
+        self.derived_dirty_reasons.append(reason)
+
+    def derived_index_needs_rebuild(self, index_name: str, target_version: str) -> bool:
+        return False
+
+    def get_derived_index_state(self, index_name: str):
+        versions = {
+            ClangBackend.FUNCTION_SYMBOL_CONTEXT_INDEX: (
+                ClangBackend.SYMBOL_CONTEXT_EXTRACTOR_VERSION
+            ),
+            ClangBackend.FUNCTION_TYPE_REFS_INDEX: (
+                ClangBackend.FUNCTION_TYPE_REF_EXTRACTOR_VERSION
+            ),
+        }
+        return {"status": "current", "applied_version": versions[index_name]}
+
 
 class _SymbolDB:
     def insert_type(self, *args, **kwargs):
@@ -35,6 +64,122 @@ class _SymbolDB:
 
     def insert_type_member(self, *args, **kwargs):
         return None
+
+
+class _BackendSchedulingExtractor:
+    def __init__(
+        self,
+        *,
+        wait_result: bool = True,
+        base_fails: bool = False,
+        failing_derived: str = "",
+    ) -> None:
+        self.wait_result = wait_result
+        self.base_fails = base_fails
+        self.failing_derived = failing_derived
+        self.wait_calls = 0
+        self.base_calls = []
+        self.symbol_calls = 0
+        self.type_calls = 0
+        self.deleted_notifications = []
+        self.session_events = []
+
+    def wait_for_indexing(self, timeout: int, idle_threshold: float) -> bool:
+        self.wait_calls += 1
+        return self.wait_result
+
+    def notify_files_deleted(self, file_paths) -> None:
+        self.deleted_notifications.extend(Path(path).resolve() for path in file_paths)
+
+    def run_batch_extraction(
+        self,
+        file_list,
+        db,
+        batch_size=50,
+        progress_cb=None,
+        prescanned_tus=None,
+    ):
+        self.base_calls.append(dict(prescanned_tus or {}))
+        changed = [
+            (tu_id, needs_refresh)
+            for tu_id, needs_refresh in (prescanned_tus or {}).values()
+            if needs_refresh
+        ]
+        if self.base_fails:
+            return {
+                "total": len(file_list),
+                "success": 0,
+                "failed": len(changed) or 1,
+                "skipped": len(file_list) - len(changed),
+            }
+        for tu_id, _ in changed:
+            db.mark_tu_indexed(tu_id)
+        return {
+            "total": len(file_list),
+            "success": len(changed),
+            "failed": 0,
+            "skipped": len(file_list) - len(changed),
+        }
+
+    def rebuild_function_symbol_refs(self, db, *, use_staging=False) -> int:
+        assert use_staging is True
+        self.symbol_calls += 1
+        if self.failing_derived == ClangBackend.FUNCTION_SYMBOL_CONTEXT_INDEX:
+            raise RuntimeError("symbol rebuild failed")
+        return 0
+
+    def rebuild_function_type_refs(self, db, *, use_staging=False) -> int:
+        assert use_staging is True
+        self.type_calls += 1
+        if self.failing_derived == ClangBackend.FUNCTION_TYPE_REFS_INDEX:
+            raise RuntimeError("type rebuild failed")
+        return 0
+
+    def get_last_derived_stats(self, index_name: str):
+        return {"index_name": index_name, "rows": 0}
+
+    def begin_derived_rebuild_session(self) -> None:
+        self.session_events.append("begin")
+
+    def end_derived_rebuild_session(self) -> None:
+        self.session_events.append("end")
+
+
+def _seed_indexed_tu(db: KnowledgeDB, source: Path) -> int:
+    tu_id, changed = db.register_tu_hash(
+        str(source.resolve()),
+        ClangExtractor._compute_file_hash(source),
+    )
+    assert changed is True
+    db.mark_tu_indexed(tu_id)
+    return int(tu_id)
+
+
+def _set_base_versions_current(db: KnowledgeDB) -> None:
+    db.set_metadata("macro_extractor_version", ClangBackend.MACRO_EXTRACTOR_VERSION)
+    db.set_metadata("type_extractor_version", ClangBackend.TYPE_EXTRACTOR_VERSION)
+
+
+def _set_derived_current(db: KnowledgeDB, index_name: str, version: str) -> None:
+    db.begin_derived_index_rebuild(index_name, version)
+    db.prepare_derived_index_staging(index_name)
+    db.finalize_derived_index_rebuild(index_name, version, {"rows": 0})
+
+
+def _scheduling_backend(
+    tmp_path,
+    monkeypatch,
+    db: KnowledgeDB,
+    extractor: _BackendSchedulingExtractor,
+    files,
+) -> ClangBackend:
+    backend = ClangBackend()
+    backend._source_path = tmp_path
+    backend._db = db
+    backend._extractor = extractor
+    monkeypatch.setattr(backend, "_collect_source_files", lambda: list(files))
+    monkeypatch.setattr(backend, "_ensure_extractor", lambda: True)
+    return backend
 
 
 def test_clang_extractor_qualifies_class_scoped_cpp_symbols(tmp_path, monkeypatch) -> None:
@@ -451,7 +596,33 @@ def test_clang_extractor_rebuilds_function_global_and_macro_refs(tmp_path, monke
 
         extractor = ClangExtractor(project_root=tmp_path)
         monkeypatch.setattr(extractor, "open_document", lambda _path: False)
-        monkeypatch.setattr(extractor, "get_definition", lambda *args, **kwargs: [])
+
+        def definition_for_token(_file_path, line, character=0):
+            raw_line = source.read_text(encoding="utf-8").splitlines()[line]
+            token = raw_line[character:]
+            if token.startswith("g_state"):
+                return [
+                    {
+                        "uri": source.as_uri(),
+                        "range": {
+                            "start": {"line": 1, "character": 4},
+                            "end": {"line": 1, "character": 11},
+                        },
+                    }
+                ]
+            if token.startswith("STATE_SET"):
+                return [
+                    {
+                        "uri": source.as_uri(),
+                        "range": {
+                            "start": {"line": 0, "character": 8},
+                            "end": {"line": 0, "character": 17},
+                        },
+                    }
+                ]
+            return []
+
+        monkeypatch.setattr(extractor, "get_definition", definition_for_token)
 
         assert extractor.rebuild_function_symbol_refs(db) == 5
 
@@ -870,9 +1041,7 @@ def test_clang_backend_refreshes_unchanged_files_when_macro_metadata_missing(
     assert backend._db.pending == [61]
     assert backend._extractor.received_prescanned_tus == {str(source.resolve()): (61, True)}
     assert backend._db.metadata["macro_extractor_version"] == "2"
-    assert backend._db.metadata["symbol_context_extractor_version"] == "2"
     assert backend._db.metadata["type_extractor_version"] == "1"
-    assert backend._db.metadata["function_type_ref_extractor_version"] == "2"
     assert backend._status == "ready"
 
 
@@ -990,3 +1159,301 @@ def test_clang_backend_force_refreshes_callers_of_deleted_tu(
     assert backend._extractor.received_prescanned_tus == {str(caller.resolve()): (51, True)}
     assert backend._extractor.deleted_notifications == [deleted.resolve()]
     assert backend._status == "ready"
+
+
+def test_clang_backend_schema_v14_recovers_base_without_tu_reextraction(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "cached.c"
+    source.write_text("int cached(void) { return 0; }\n", encoding="utf-8")
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        _seed_indexed_tu(db, source)
+        # Simulate a prior process dying after durably entering the derived phase.
+        db.begin_derived_index_rebuild(
+            ClangBackend.FUNCTION_SYMBOL_CONTEXT_INDEX,
+            ClangBackend.SYMBOL_CONTEXT_EXTRACTOR_VERSION,
+        )
+        db.set_metadata(
+            "symbol_context_extractor_version",
+            ClangBackend.SYMBOL_CONTEXT_EXTRACTOR_VERSION,
+        )
+        db.set_metadata(
+            "function_type_ref_extractor_version",
+            ClangBackend.FUNCTION_TYPE_REF_EXTRACTOR_VERSION,
+        )
+        extractor = _BackendSchedulingExtractor()
+        monkeypatch.setattr(
+            extractor,
+            "run_batch_extraction",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("schema-v14 recovery must not run base extraction")
+            ),
+        )
+        monkeypatch.setattr(
+            extractor,
+            "extract_tu",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("schema-v14 recovery must not extract a TU")
+            ),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            extractor,
+            "get_document_symbols",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("schema-v14 recovery must not request documentSymbol")
+            ),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            db,
+            "purge_tu_data",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("schema-v14 recovery must not purge an unchanged TU")
+            ),
+        )
+        monkeypatch.setattr(
+            db,
+            "mark_tu_pending",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("schema-v14 recovery must not mark an unchanged TU pending")
+            ),
+        )
+        backend = _scheduling_backend(tmp_path, monkeypatch, db, extractor, [source])
+
+        assert backend._run_full_extraction() is True
+
+        assert extractor.base_calls == []
+        assert extractor.symbol_calls == 1
+        assert extractor.type_calls == 1
+        assert extractor.session_events == ["begin", "end"]
+        assert db.get_metadata("macro_extractor_version") == ClangBackend.MACRO_EXTRACTOR_VERSION
+        assert db.get_metadata("type_extractor_version") == ClangBackend.TYPE_EXTRACTOR_VERSION
+        assert db.get_pending_tus() == []
+        assert (
+            db.get_metadata("symbol_context_extractor_version")
+            == ClangBackend.SYMBOL_CONTEXT_EXTRACTOR_VERSION
+        )
+        assert (
+            db.get_metadata("function_type_ref_extractor_version")
+            == ClangBackend.FUNCTION_TYPE_REF_EXTRACTOR_VERSION
+        )
+        assert backend.status() == "ready"
+    finally:
+        db.close()
+
+
+def test_clang_backend_schema_v14_recovery_normalizes_relative_tu_paths(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "src" / "relative.c"
+    source.parent.mkdir()
+    source.write_text("int relative(void) { return 0; }\n", encoding="utf-8")
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        file_hash = ClangExtractor._compute_file_hash(source)
+        db._conn.execute(
+            "INSERT INTO translation_units (file_path, file_hash, status) "
+            "VALUES (?, ?, 'indexed')",
+            ("src/relative.c", file_hash),
+        )
+        db.commit()
+        extractor = _BackendSchedulingExtractor()
+        backend = _scheduling_backend(tmp_path, monkeypatch, db, extractor, [source])
+
+        assert backend._run_full_extraction() is True
+        assert extractor.base_calls == []
+        assert db.get_pending_tus() == []
+    finally:
+        db.close()
+
+
+def test_clang_backend_derived_version_bump_does_not_mark_tu_pending(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "stable.c"
+    source.write_text("int stable(void) { return 0; }\n", encoding="utf-8")
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        _seed_indexed_tu(db, source)
+        _set_base_versions_current(db)
+        _set_derived_current(
+            db,
+            ClangBackend.FUNCTION_SYMBOL_CONTEXT_INDEX,
+            ClangBackend.SYMBOL_CONTEXT_EXTRACTOR_VERSION,
+        )
+        _set_derived_current(db, ClangBackend.FUNCTION_TYPE_REFS_INDEX, "older")
+        extractor = _BackendSchedulingExtractor()
+        monkeypatch.setattr(
+            extractor,
+            "run_batch_extraction",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("derived-only refresh must not run base extraction")
+            ),
+        )
+        backend = _scheduling_backend(tmp_path, monkeypatch, db, extractor, [source])
+
+        assert backend._run_full_extraction() is True
+
+        assert extractor.base_calls == []
+        assert extractor.symbol_calls == 0
+        assert extractor.type_calls == 1
+        assert db.get_pending_tus() == []
+    finally:
+        db.close()
+
+
+def test_clang_backend_source_change_runs_base_then_both_derived(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "changed.c"
+    source.write_text("int changed(void) { return 0; }\n", encoding="utf-8")
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        _seed_indexed_tu(db, source)
+        _set_base_versions_current(db)
+        _set_derived_current(
+            db,
+            ClangBackend.FUNCTION_SYMBOL_CONTEXT_INDEX,
+            ClangBackend.SYMBOL_CONTEXT_EXTRACTOR_VERSION,
+        )
+        _set_derived_current(
+            db,
+            ClangBackend.FUNCTION_TYPE_REFS_INDEX,
+            ClangBackend.FUNCTION_TYPE_REF_EXTRACTOR_VERSION,
+        )
+        source.write_text("int changed(void) { return 1; }\n", encoding="utf-8")
+        extractor = _BackendSchedulingExtractor()
+        backend = _scheduling_backend(tmp_path, monkeypatch, db, extractor, [source])
+
+        assert backend._run_full_extraction() is True
+
+        assert len(extractor.base_calls) == 1
+        assert extractor.base_calls[0][str(source.resolve())][1] is True
+        assert extractor.symbol_calls == 1
+        assert extractor.type_calls == 1
+        assert db.get_pending_tus() == []
+    finally:
+        db.close()
+
+
+def test_clang_backend_pending_tu_runs_base_even_when_hash_is_unchanged(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "pending.c"
+    source.write_text("int pending(void) { return 0; }\n", encoding="utf-8")
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        tu_id = _seed_indexed_tu(db, source)
+        _set_base_versions_current(db)
+        db.mark_tu_pending(tu_id)
+        extractor = _BackendSchedulingExtractor()
+        backend = _scheduling_backend(tmp_path, monkeypatch, db, extractor, [source])
+
+        assert backend._run_full_extraction() is True
+
+        assert len(extractor.base_calls) == 1
+        assert extractor.base_calls[0][str(source.resolve())] == (tu_id, True)
+        assert extractor.symbol_calls == 1
+        assert extractor.type_calls == 1
+    finally:
+        db.close()
+
+
+def test_clang_backend_base_failure_keeps_derived_dirty_and_reports_error(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "broken.c"
+    source.write_text("int broken(void) { return 0; }\n", encoding="utf-8")
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        _set_base_versions_current(db)
+        extractor = _BackendSchedulingExtractor(base_fails=True)
+        backend = _scheduling_backend(tmp_path, monkeypatch, db, extractor, [source])
+
+        assert backend._run_full_extraction() is False
+
+        assert extractor.symbol_calls == 0
+        assert extractor.type_calls == 0
+        assert backend.status() == "error"
+        assert (
+            db.get_derived_index_state(ClangBackend.FUNCTION_SYMBOL_CONTEXT_INDEX)["status"]
+            == "dirty"
+        )
+        assert (
+            db.get_derived_index_state(ClangBackend.FUNCTION_TYPE_REFS_INDEX)["status"] == "dirty"
+        )
+    finally:
+        db.close()
+
+
+def test_clang_backend_partial_derived_failure_preserves_independent_state(
+    tmp_path, monkeypatch
+) -> None:
+    source = tmp_path / "derived.c"
+    source.write_text("int derived(void) { return 0; }\n", encoding="utf-8")
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        _seed_indexed_tu(db, source)
+        _set_base_versions_current(db)
+        extractor = _BackendSchedulingExtractor(
+            failing_derived=ClangBackend.FUNCTION_TYPE_REFS_INDEX
+        )
+        backend = _scheduling_backend(tmp_path, monkeypatch, db, extractor, [source])
+
+        assert backend._run_full_extraction() is False
+
+        assert (
+            db.get_derived_index_state(ClangBackend.FUNCTION_SYMBOL_CONTEXT_INDEX)["status"]
+            == "current"
+        )
+        type_state = db.get_derived_index_state(ClangBackend.FUNCTION_TYPE_REFS_INDEX)
+        assert type_state["status"] == "failed"
+        assert "type rebuild failed" in type_state["last_error"]
+        assert extractor.session_events == ["begin", "end"]
+        assert backend.status() == "error"
+    finally:
+        db.close()
+
+
+def test_clang_backend_wait_for_indexing_timeout_is_terminal(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "timeout.c"
+    source.write_text("int timeout(void) { return 0; }\n", encoding="utf-8")
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        _set_base_versions_current(db)
+        extractor = _BackendSchedulingExtractor(wait_result=False)
+        backend = _scheduling_backend(tmp_path, monkeypatch, db, extractor, [source])
+
+        assert backend._run_full_extraction() is False
+        assert extractor.base_calls == []
+        assert extractor.symbol_calls == 0
+        assert extractor.type_calls == 0
+        assert backend.status() == "error"
+    finally:
+        db.close()
+
+
+def test_clang_backend_empty_project_finalizes_empty_derived_without_clangd(
+    tmp_path, monkeypatch
+) -> None:
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+    try:
+        extractor = _BackendSchedulingExtractor()
+        backend = _scheduling_backend(tmp_path, monkeypatch, db, extractor, [])
+
+        def fail_start():
+            raise AssertionError("empty project must not start clangd")
+
+        monkeypatch.setattr(backend, "_ensure_extractor", fail_start)
+
+        assert backend._run_full_extraction() is True
+
+        assert extractor.wait_calls == 0
+        assert extractor.base_calls == []
+        assert (
+            db.get_derived_index_state(ClangBackend.FUNCTION_SYMBOL_CONTEXT_INDEX)["status"]
+            == "current"
+        )
+        assert (
+            db.get_derived_index_state(ClangBackend.FUNCTION_TYPE_REFS_INDEX)["status"] == "current"
+        )
+    finally:
+        db.close()

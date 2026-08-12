@@ -75,7 +75,7 @@ class JavaUnifiedBackend(CodeBackend):
             self._signal_backend_names,
             joern_path=str(self._joern_cfg["joern_path"]),
             joern_host=str(self._joern_cfg["joern_host"]),
-            joern_port=int(self._joern_cfg["joern_port"]),
+            joern_port=int(str(self._joern_cfg["joern_port"])),
             joern_heap_size=str(self._joern_cfg["joern_heap_size"]),
             user_config=kwargs.get("user_config"),
             provider_commands=self._signal_provider_commands,
@@ -95,6 +95,14 @@ class JavaUnifiedBackend(CodeBackend):
                         )
                 except Exception as exc:
                     logger.warning("Java signal provider %s failed: %s", provider.name, exc)
+            if ready_count != len(self._providers):
+                self._status = "error"
+                logger.error(
+                    "Java unified backend requires every configured signal provider: %d/%d ready",
+                    ready_count,
+                    len(self._providers),
+                )
+                return False
         self._status = "ready"
         logger.info(
             "Java unified backend ready: structure=%s signal_providers=%d/%d",

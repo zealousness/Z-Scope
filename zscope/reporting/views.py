@@ -63,8 +63,7 @@ def needs_review_observations(items: Iterable[Any]) -> List[Dict[str, Any]]:
             and str(issue.get("candidate_disposition") or "").lower()
             not in OPERATIONAL_DISPOSITIONS
             and (
-                str(issue.get("validation_status") or "").lower()
-                in NEEDS_REVIEW_STATUSES
+                str(issue.get("validation_status") or "").lower() in NEEDS_REVIEW_STATUSES
                 or str(issue.get("candidate_disposition") or "").lower()
                 in NEEDS_REVIEW_DISPOSITIONS
             )
@@ -123,9 +122,7 @@ def coalesce_review_observations(
         primary = _compact_observation(group[0])
         evidence_pack = primary.get("evidence_pack")
         if isinstance(evidence_pack, dict):
-            primary["evidence_pack"] = compact_validation_evidence_pack(
-                evidence_pack
-            )
+            primary["evidence_pack"] = compact_validation_evidence_pack(evidence_pack)
         occurrence_uids: List[str] = []
         entries: List[str] = []
         entry_paths: List[Any] = []
@@ -177,15 +174,15 @@ def coalesce_review_observations(
             raw_occurrences = item.get("occurrences")
             if isinstance(raw_occurrences, list):
                 occurrences.extend(
-                    deepcopy(value)
-                    for value in raw_occurrences
-                    if isinstance(value, dict)
+                    deepcopy(value) for value in raw_occurrences if isinstance(value, dict)
                 )
 
         def stable_unique(values: Iterable[Any]) -> List[Any]:
             unique: Dict[str, Any] = {}
             for value in values:
-                fingerprint = _record_fingerprint(value) if isinstance(value, dict) else _stable_value(value)
+                fingerprint = (
+                    _record_fingerprint(value) if isinstance(value, dict) else _stable_value(value)
+                )
                 unique.setdefault(fingerprint, value)
             return [unique[name] for name in sorted(unique)]
 
@@ -230,7 +227,11 @@ def review_governance_summary(
     attached_count: int = 0,
 ) -> Dict[str, Any]:
     observations = issue_dicts(items)
-    canonical = canonical_review if canonical_review is not None else coalesce_review_observations(observations)
+    canonical = (
+        canonical_review
+        if canonical_review is not None
+        else coalesce_review_observations(observations)
+    )
     occurrence_ids: set[str] = set()
     fallback_occurrences = 0
     operational_keys: set[str] = set()
@@ -249,30 +250,26 @@ def review_governance_summary(
             if reason == "validation_not_completed":
                 validation_not_completed_count += 1
         status = str(item.get("status") or "").lower()
-        if (
-            str(item.get("record_role") or "") == "validation_obligation"
-            and status in {"pending", "queued", "planned", "running"}
-        ):
+        if str(item.get("record_role") or "") == "validation_obligation" and status in {
+            "pending",
+            "queued",
+            "planned",
+            "running",
+        }:
             pending_validation_count += 1
         is_operational = (
             disposition in OPERATIONAL_DISPOSITIONS
             or str(item.get("record_role") or "") == "operational_obligation"
         )
-        is_security_review = (
-            not is_operational
-            and (
-                disposition == "needs_review"
-                or str(item.get("validation_status") or "").lower()
-                in NEEDS_REVIEW_STATUSES
-            )
+        is_security_review = not is_operational and (
+            disposition == "needs_review"
+            or str(item.get("validation_status") or "").lower() in NEEDS_REVIEW_STATUSES
         )
         if is_security_review:
             security_projection_count += 1
             values = _list_values(item, "occurrence_uids", "occurrence_uid")
             if values:
-                occurrence_ids.update(
-                    str(value) for value in values if str(value)
-                )
+                occurrence_ids.update(str(value) for value in values if str(value))
             else:
                 fallback_occurrences += 1
         if is_operational:
@@ -341,11 +338,7 @@ def _same_root_cause(default_issue: Dict[str, Any], review_issue: Dict[str, Any]
 
     default_resource = issue_resource_signature(default_issue)
     review_resource = issue_resource_signature(review_issue)
-    if (
-        default_resource
-        and review_resource
-        and default_resource == review_resource
-    ):
+    if default_resource and review_resource and default_resource == review_resource:
         return True
 
     def identity(issue: Dict[str, Any], key: str) -> str:
@@ -434,9 +427,18 @@ def _same_path_attribution(default_issue: Dict[str, Any], review_issue: Dict[str
 
     default_entry = value(default_issue, "entry_function")
     review_entry = value(review_issue, "entry_function")
-    default_sink = value(default_issue, "sink_function") or str(default_issue.get("function") or "").lower()
-    review_sink = value(review_issue, "sink_function") or str(review_issue.get("function") or "").lower()
-    if default_entry and default_entry == review_entry and default_sink and default_sink == review_sink:
+    default_sink = (
+        value(default_issue, "sink_function") or str(default_issue.get("function") or "").lower()
+    )
+    review_sink = (
+        value(review_issue, "sink_function") or str(review_issue.get("function") or "").lower()
+    )
+    if (
+        default_entry
+        and default_entry == review_entry
+        and default_sink
+        and default_sink == review_sink
+    ):
         return True
 
     default_path = default_issue.get("call_path")
@@ -691,9 +693,15 @@ def build_report_views(
     }
 
 
-def findings_for_view(report: Dict[str, Any], view: str = DEFAULT_REPORT_VIEW) -> List[Dict[str, Any]]:
+def findings_for_view(
+    report: Dict[str, Any], view: str = DEFAULT_REPORT_VIEW
+) -> List[Dict[str, Any]]:
     """Read findings from a report view, falling back to legacy report shapes."""
-    normalized_view = view if view in {DEFAULT_REPORT_VIEW, WITH_NEEDS_REVIEW_REPORT_VIEW} else DEFAULT_REPORT_VIEW
+    normalized_view = (
+        view
+        if view in {DEFAULT_REPORT_VIEW, WITH_NEEDS_REVIEW_REPORT_VIEW}
+        else DEFAULT_REPORT_VIEW
+    )
     report_views = report.get("report_views")
     if isinstance(report_views, dict):
         selected = report_views.get(normalized_view)
@@ -708,27 +716,34 @@ def findings_for_view(report: Dict[str, Any], view: str = DEFAULT_REPORT_VIEW) -
             and isinstance(report.get("findings"), list)
             and report.get("findings")
         ):
-            default_issues = [
-                item for item in report["findings"] if isinstance(item, dict)
-            ]
+            default_issues = [item for item in report["findings"] if isinstance(item, dict)]
     else:
         default_issues = []
         results = report.get("results")
         if isinstance(results, dict):
             for result in results.values():
                 if isinstance(result, dict) and isinstance(result.get("issues"), list):
-                    default_issues.extend(item for item in result["issues"] if isinstance(item, dict))
+                    default_issues.extend(
+                        item for item in result["issues"] if isinstance(item, dict)
+                    )
         if isinstance(report.get("function_results"), list):
             for result in report["function_results"]:
                 if isinstance(result, dict) and isinstance(result.get("issues"), list):
-                    default_issues.extend(item for item in result["issues"] if isinstance(item, dict))
+                    default_issues.extend(
+                        item for item in result["issues"] if isinstance(item, dict)
+                    )
 
     if normalized_view == DEFAULT_REPORT_VIEW:
         return default_issues
 
-    metadata = report.get("metadata") if isinstance(report.get("metadata"), dict) else {}
-    observations = metadata.get("audit_observations") if isinstance(metadata, dict) else []
-    return build_report_views(default_issues, observations)[WITH_NEEDS_REVIEW_REPORT_VIEW]["issues"]
+    raw_metadata = report.get("metadata")
+    metadata: Dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
+    raw_observations = metadata.get("audit_observations")
+    observations = raw_observations if isinstance(raw_observations, list) else []
+    issues = build_report_views(default_issues, observations)[WITH_NEEDS_REVIEW_REPORT_VIEW][
+        "issues"
+    ]
+    return [item for item in issues if isinstance(item, dict)]
 
 
 def report_view_summary(report: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -737,9 +752,11 @@ def report_view_summary(report: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     if not isinstance(views, dict):
         views = build_report_views(
             report.get("issues", []),
-            (report.get("metadata") or {}).get("audit_observations", [])
-            if isinstance(report.get("metadata"), dict)
-            else [],
+            (
+                (report.get("metadata") or {}).get("audit_observations", [])
+                if isinstance(report.get("metadata"), dict)
+                else []
+            ),
         )
     summary: Dict[str, Dict[str, Any]] = {}
     for name in (DEFAULT_REPORT_VIEW, WITH_NEEDS_REVIEW_REPORT_VIEW):
@@ -756,8 +773,7 @@ def report_view_summary(report: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
                 for issue in issues
                 if isinstance(issue, dict)
                 and (
-                    str(issue.get("validation_status") or "").lower()
-                    in NEEDS_REVIEW_STATUSES
+                    str(issue.get("validation_status") or "").lower() in NEEDS_REVIEW_STATUSES
                     or str(issue.get("candidate_disposition") or "").lower()
                     in NEEDS_REVIEW_DISPOSITIONS
                 )

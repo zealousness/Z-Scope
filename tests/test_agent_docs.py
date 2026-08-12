@@ -19,7 +19,7 @@ HANDOFF_DOCS = (
     ROOT / "AGENTS.md",
     MODULE_DIR / "README.md",
     *MODULE_DOCS,
-    ROOT / "test" / "range" / "Z_SCOPE_TEST_PLAN.md",
+    ROOT / "docs" / "range-benchmark.md",
 )
 MOJIBAKE_MARKERS = (
     "锛",
@@ -113,16 +113,16 @@ def test_root_config_and_runtime_agent_boundaries_are_explicit() -> None:
 
 
 def test_range_plan_distinguishes_linux_wsl_and_windows() -> None:
-    text = _read_utf8(ROOT / "test" / "range" / "Z_SCOPE_TEST_PLAN.md")
+    text = _read_utf8(ROOT / "docs" / "range-benchmark.md")
     for phrase in (
-        "Native Linux",
+        "Linux",
         "Windows",
-        "WSL-only runner",
-        "native Windows",
+        "WSL",
+        "Windows",
         "benchmark/ground_truth.json",
     ):
         assert phrase in text
-    assert "must not flow from either step into the scan or LLM context" in text
+    assert "health/index/scan 环境不含 truth 路径" in text
 
 
 def test_repository_markdown_encoding_configuration() -> None:

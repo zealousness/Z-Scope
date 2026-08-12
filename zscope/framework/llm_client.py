@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import ssl
+import statistics
 import threading
 import time
 import shutil
@@ -62,6 +63,7 @@ class _UsageTelemetryState:
     total_tokens: int = 0
     estimated_calls: int = 0
     provider_reported_calls: int = 0
+    successful_call_durations_seconds: List[float] = field(default_factory=list)
 
 
 _ENDPOINT_CAPACITY_CONDITION = threading.Condition()
@@ -293,6 +295,9 @@ class LLMClient:
         with self._usage_lock:
             usage = self._usage_telemetry
             successful_calls = usage.successful_calls
+            durations = sorted(usage.successful_call_durations_seconds)
+            p95_index = max(0, (95 * len(durations) + 99) // 100 - 1) if durations else 0
+            duration_total = sum(durations)
             return {
                 "successful_calls": successful_calls,
                 "prompt_tokens": usage.prompt_tokens,
@@ -303,9 +308,23 @@ class LLMClient:
                 "provider_usage_coverage": (
                     usage.provider_reported_calls / successful_calls if successful_calls else 0.0
                 ),
+                "successful_call_wall_seconds_total": duration_total,
+                "successful_call_wall_seconds_mean": (
+                    duration_total / len(durations) if durations else 0.0
+                ),
+                "successful_call_wall_seconds_p50": (
+                    statistics.median(durations) if durations else 0.0
+                ),
+                "successful_call_wall_seconds_p95": (durations[p95_index] if durations else 0.0),
+                "successful_call_wall_seconds_max": max(durations, default=0.0),
             }
 
-    def _record_successful_usage(self, usage: Dict[str, Any]) -> None:
+    def _record_successful_usage(
+        self,
+        usage: Dict[str, Any],
+        *,
+        duration_seconds: Optional[float] = None,
+    ) -> None:
         def _token_count(value: Any, fallback: int = 0) -> int:
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 return fallback
@@ -328,6 +347,10 @@ class LLMClient:
                 telemetry.estimated_calls += 1
             else:
                 telemetry.provider_reported_calls += 1
+            if duration_seconds is not None:
+                telemetry.successful_call_durations_seconds.append(
+                    max(0.0, float(duration_seconds))
+                )
 
     def _has_successful_call(self) -> bool:
         """Return whether this configured client has already authenticated successfully."""
@@ -785,6 +808,7 @@ class LLMClient:
                     url = self._chat_completion_url(endpoint.url)
 
                     if self._transport == "curl":
+                        request_started = time.monotonic()
                         assembled_message, finish_reason, provider_usage = (
                             self._curl_chat_completion(
                                 url,
@@ -802,7 +826,10 @@ class LLMClient:
                         if provider_usage:
                             usage.update(provider_usage)
                             usage["estimated"] = False
-                        self._record_successful_usage(usage)
+                        self._record_successful_usage(
+                            usage,
+                            duration_seconds=time.monotonic() - request_started,
+                        )
                         logger.info(
                             f"[LLM API Trace] Model: {model} | "
                             f"Prompt ~{prompt_tokens:,} tk | "
@@ -847,6 +874,7 @@ class LLMClient:
                                 if request_timeout is None
                                 else max(0.1, min(request_timeout, remaining))
                             )
+                    request_started = time.monotonic()
                     response = self._session_for_thread().post(
                         url, json=payload, timeout=request_timeout, stream=True
                     )
@@ -863,7 +891,10 @@ class LLMClient:
                             "total_tokens": prompt_tokens + completion_tokens,
                             "estimated": True,
                         }
-                        self._record_successful_usage(usage)
+                        self._record_successful_usage(
+                            usage,
+                            duration_seconds=time.monotonic() - request_started,
+                        )
 
                         logger.info(
                             f"[LLM API Trace] Model: {model} | "
@@ -2375,7 +2406,8 @@ class LLMClient:
         prompt_messages: List[Dict[str, Any]],
         assistant_message: Dict[str, Any],
     ) -> tuple[int, int]:
-        usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+        raw_usage = response.get("usage")
+        usage: Dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
         prompt_tokens = usage.get("prompt_tokens")
         completion_tokens = usage.get("completion_tokens")
         if not isinstance(prompt_tokens, int):

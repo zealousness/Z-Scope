@@ -62,13 +62,11 @@ class SvfValueFlowCandidateGenerator:
         sink_func = str(bug.get("sink_func") or bug_type or "svf_sink")
         tool = str(bug.get("tool") or "saber")
         svf_group = str(bug.get("svf_group") or "default")
-        svf_groups = [
-            str(group)
-            for group in (bug.get("svf_groups") or [svf_group])
-            if str(group)
-        ]
+        svf_groups = [str(group) for group in (bug.get("svf_groups") or [svf_group]) if str(group)]
         rule = f"svf_value_flow_{self._normalize_key(bug_type)}"
-        candidate_id = self._candidate_id(defect_class, func, file_path, line, rule, source_func, sink_func)
+        candidate_id = self._candidate_id(
+            defect_class, func, file_path, line, rule, source_func, sink_func
+        )
         location = f"{file_path}:{line}" if file_path else f"{func}:{line}"
         positive = [
             f"{tool} reported `{bug_type}` at {location}",
@@ -77,7 +75,9 @@ class SvfValueFlowCandidateGenerator:
         if bug.get("signature"):
             positive.append(f"Clang function signature: {bug.get('signature')}")
         if bug.get("func_start") or bug.get("func_end"):
-            positive.append(f"Containing function range: {bug.get('func_start', 0)}-{bug.get('func_end', 0)}")
+            positive.append(
+                f"Containing function range: {bug.get('func_start', 0)}-{bug.get('func_end', 0)}"
+            )
         backend_path = self._normalize_backend_path(bug)
         if backend_path:
             positive.append("Backend value-flow path: " + self._format_backend_path(backend_path))
@@ -112,13 +112,20 @@ class SvfValueFlowCandidateGenerator:
             snippet = str(source_path.get("reported_snippet") or "").strip()
             if snippet:
                 positive.append("Source snippet near SVF location: " + self._one_line(snippet))
-            flow = source_path.get("source_level_flow") if isinstance(source_path.get("source_level_flow"), dict) else {}
+            raw_flow = source_path.get("source_level_flow")
+            flow: Dict[str, Any] = raw_flow if isinstance(raw_flow, dict) else {}
             events = flow.get("events") if isinstance(flow.get("events"), list) else []
             if events:
                 positive.append("Source-level flow events: " + self._format_flow_events(events))
-            edges = flow.get("expression_edges") if isinstance(flow.get("expression_edges"), list) else []
+            edges = (
+                flow.get("expression_edges")
+                if isinstance(flow.get("expression_edges"), list)
+                else []
+            )
             if edges:
-                positive.append("Source-level expression edges: " + self._format_expression_edges(edges))
+                positive.append(
+                    "Source-level expression edges: " + self._format_expression_edges(edges)
+                )
         evidence_pack = {
             "candidate_id": candidate_id,
             "candidate_source": "svf_value_flow",
@@ -162,11 +169,23 @@ class SvfValueFlowCandidateGenerator:
             "suggested_fix": "Validate the reported flow, then fix the ownership, lifetime, or failure-path contract.",
             "confidence": confidence,
             "rule_confidence": confidence,
-            "impact_level": "high" if defect_class in {"use_after_free", "double_free"} else "medium",
-            "reasoning": self._readable_reasoning(defect_class, bug_type, func, location, source_func, sink_func),
+            "impact_level": (
+                "high" if defect_class in {"use_after_free", "double_free"} else "medium"
+            ),
+            "reasoning": self._readable_reasoning(
+                defect_class, bug_type, func, location, source_func, sink_func
+            ),
             "source": source_func,
             "sink": sink_func,
-            "dedup_key": "|".join([defect_class, file_path.replace("\\", "/").lower(), str(line), source_func, sink_func]),
+            "dedup_key": "|".join(
+                [
+                    defect_class,
+                    file_path.replace("\\", "/").lower(),
+                    str(line),
+                    source_func,
+                    sink_func,
+                ]
+            ),
             "positive_evidence": positive,
             "negative_evidence": negative,
             "evidence_pack": evidence_pack,
@@ -263,7 +282,9 @@ class SvfValueFlowCandidateGenerator:
             or []
         )
         if isinstance(raw, str):
-            rows: Iterable[Any] = [part.strip() for part in re.split(r"\s*(?:->|=>|\n)\s*", raw) if part.strip()]
+            rows: Iterable[Any] = [
+                part.strip() for part in re.split(r"\s*(?:->|=>|\n)\s*", raw) if part.strip()
+            ]
         elif isinstance(raw, list):
             rows = raw
         else:
@@ -271,15 +292,40 @@ class SvfValueFlowCandidateGenerator:
         result: List[Dict[str, Any]] = []
         for idx, item in enumerate(rows):
             if isinstance(item, dict):
-                code = str(item.get("code") or item.get("statement") or item.get("expr") or item.get("node") or "")
+                code = str(
+                    item.get("code")
+                    or item.get("statement")
+                    or item.get("expr")
+                    or item.get("node")
+                    or ""
+                )
                 function = str(item.get("function") or item.get("func") or item.get("method") or "")
-                file_path = str(item.get("file") or item.get("filename") or item.get("file_path") or "")
+                file_path = str(
+                    item.get("file") or item.get("filename") or item.get("file_path") or ""
+                )
                 line = int(item.get("line") or item.get("lineNumber") or 0)
-                ssa_node = str(item.get("ssa_node") or item.get("ssa") or item.get("node_id") or item.get("id") or "")
-                llvm_value = str(item.get("llvm_value") or item.get("value") or item.get("ir") or "")
-                points_to = item.get("points_to") or item.get("pointsTo") or item.get("pointees") or []
-                alias_set = item.get("alias_set") or item.get("aliasSet") or item.get("aliases") or []
-                object_id = str(item.get("object_id") or item.get("objectId") or item.get("allocation_site") or "")
+                ssa_node = str(
+                    item.get("ssa_node")
+                    or item.get("ssa")
+                    or item.get("node_id")
+                    or item.get("id")
+                    or ""
+                )
+                llvm_value = str(
+                    item.get("llvm_value") or item.get("value") or item.get("ir") or ""
+                )
+                points_to = (
+                    item.get("points_to") or item.get("pointsTo") or item.get("pointees") or []
+                )
+                alias_set = (
+                    item.get("alias_set") or item.get("aliasSet") or item.get("aliases") or []
+                )
+                object_id = str(
+                    item.get("object_id")
+                    or item.get("objectId")
+                    or item.get("allocation_site")
+                    or ""
+                )
             else:
                 code = str(item)
                 function = ""
@@ -327,7 +373,9 @@ class SvfValueFlowCandidateGenerator:
 
     @staticmethod
     def _candidate_id(*parts: Any) -> str:
-        digest = hashlib.sha1("|".join(str(part) for part in parts).encode("utf-8")).hexdigest()[:12]
+        digest = hashlib.sha1("|".join(str(part) for part in parts).encode("utf-8")).hexdigest()[
+            :12
+        ]
         return f"SVF_VALUE_FLOW_{digest}"
 
     @staticmethod
@@ -336,11 +384,7 @@ class SvfValueFlowCandidateGenerator:
 
     @staticmethod
     def _compact_bug(bug: Dict[str, Any]) -> Dict[str, Any]:
-        return {
-            str(key): value
-            for key, value in bug.items()
-            if value not in (None, "", [], {})
-        }
+        return {str(key): value for key, value in bug.items() if value not in (None, "", [], {})}
 
     @staticmethod
     def _dedupe(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

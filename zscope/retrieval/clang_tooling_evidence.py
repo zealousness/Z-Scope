@@ -15,7 +15,11 @@ import shlex
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
+
+
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return cast(Dict[str, Any], value) if isinstance(value, dict) else {}
 
 
 class ClangToolingEvidenceProvider:
@@ -39,9 +43,7 @@ class ClangToolingEvidenceProvider:
         self.compile_commands_path = Path(compile_commands_path) if compile_commands_path else None
         self.clang_path = clang_path
         self.execute = bool(
-            os.environ.get("ZSCOPE_ENABLE_CLANG_TOOLING") == "1"
-            if execute is None
-            else execute
+            os.environ.get("ZSCOPE_ENABLE_CLANG_TOOLING") == "1" if execute is None else execute
         )
         self.timeout = timeout
         self._commands: Optional[List[Dict[str, Any]]] = None
@@ -87,7 +89,11 @@ class ClangToolingEvidenceProvider:
         target = self._normalize_path(file_path)
         for row in self._load_compile_commands():
             row_file = self._normalize_path(str(row.get("file") or ""))
-            if row_file == target or row_file.endswith("/" + target) or target.endswith("/" + row_file):
+            if (
+                row_file == target
+                or row_file.endswith("/" + target)
+                or target.endswith("/" + row_file)
+            ):
                 return row
         return {}
 
@@ -104,7 +110,11 @@ class ClangToolingEvidenceProvider:
             return self._commands
         if isinstance(data, dict) and isinstance(data.get("commands"), list):
             data = data["commands"]
-        self._commands = [dict(item) for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+        self._commands = (
+            [dict(item) for item in data if isinstance(item, dict)]
+            if isinstance(data, list)
+            else []
+        )
         return self._commands
 
     def _tool_command(self, compile_row: Dict[str, Any], *, ast: bool) -> List[str]:
@@ -114,7 +124,14 @@ class ClangToolingEvidenceProvider:
         source_file = str(compile_row.get("file") or args[-1])
         filtered = self._filter_compile_args(args)
         if ast:
-            return [self.clang_path, "-Xclang", "-ast-dump=json", "-fsyntax-only", *filtered, source_file]
+            return [
+                self.clang_path,
+                "-Xclang",
+                "-ast-dump=json",
+                "-fsyntax-only",
+                *filtered,
+                source_file,
+            ]
         return [
             self.clang_path,
             "--analyze",
@@ -268,17 +285,15 @@ class ClangToolingEvidenceProvider:
     def _call_expr_summary(cls, node: Dict[str, Any]) -> Dict[str, Any]:
         inner = node.get("inner") if isinstance(node.get("inner"), list) else []
         args = inner[1:] if inner else []
-        argument_refs = [
-            cls._decl_refs_in_node(arg)
-            for arg in args
-            if isinstance(arg, dict)
-        ]
+        argument_refs = [cls._decl_refs_in_node(arg) for arg in args if isinstance(arg, dict)]
         return {
             "callee": cls._first_decl_ref_name(node),
             "line": cls._loc_line(node),
             "result_type": cls._qual_type(node),
             "arg_count": len(args),
-            "argument_kinds": [str(arg.get("kind") or "") for arg in args if isinstance(arg, dict)][:8],
+            "argument_kinds": [str(arg.get("kind") or "") for arg in args if isinstance(arg, dict)][
+                :8
+            ],
             "argument_refs": argument_refs[:8],
             "first_argument_refs": argument_refs[0] if argument_refs else [],
         }
@@ -321,16 +336,26 @@ class ClangToolingEvidenceProvider:
             elif callee in cls._COPY_SINKS:
                 facts.append(cls._matcher_fact("clang_ast_copy_size_relation", "bounds", call))
             if callee in cls._FORMAT_SINKS:
-                facts.append(cls._matcher_fact("clang_ast_format_string_control", "format_string", call))
+                facts.append(
+                    cls._matcher_fact("clang_ast_format_string_control", "format_string", call)
+                )
             if callee in cls._COMMAND_SINKS:
-                facts.append(cls._matcher_fact("clang_ast_command_string_control", "command_injection", call))
+                facts.append(
+                    cls._matcher_fact("clang_ast_command_string_control", "command_injection", call)
+                )
             if callee in cls._RESOURCE_ACQUIRES:
                 acquire_count += 1
-                facts.append(cls._matcher_fact("clang_ast_resource_acquire_call", "resource_lifecycle", call))
+                facts.append(
+                    cls._matcher_fact("clang_ast_resource_acquire_call", "resource_lifecycle", call)
+                )
             if callee in cls._RESOURCE_RELEASES:
                 release_count += 1
-                facts.append(cls._matcher_fact("clang_ast_resource_release_call", "resource_lifecycle", call))
-                first_refs = [str(item) for item in call.get("first_argument_refs") or [] if str(item)]
+                facts.append(
+                    cls._matcher_fact("clang_ast_resource_release_call", "resource_lifecycle", call)
+                )
+                first_refs = [
+                    str(item) for item in call.get("first_argument_refs") or [] if str(item)
+                ]
                 if first_refs:
                     resource = first_refs[0]
                     previous = released.get(resource)
@@ -426,8 +451,12 @@ class ClangToolingEvidenceProvider:
             "parse_ok": bool(blocks),
             "function": func_name,
             "block_count": len(block_list),
-            "entry_blocks": [block["id"] for block in block_list if "ENTRY" in block.get("label", "")],
-            "exit_blocks": [block["id"] for block in block_list if "EXIT" in block.get("label", "")],
+            "entry_blocks": [
+                block["id"] for block in block_list if "ENTRY" in block.get("label", "")
+            ],
+            "exit_blocks": [
+                block["id"] for block in block_list if "EXIT" in block.get("label", "")
+            ],
             "edge_count": sum(len(block.get("successors", [])) for block in block_list),
             "blocks": [
                 {
@@ -461,7 +490,7 @@ class ClangToolingEvidenceProvider:
     def _first_decl_ref_name(cls, node: Any) -> str:
         for child in cls._walk_ast(node):
             if child.get("kind") == "DeclRefExpr" and child.get("referencedDecl"):
-                ref = child.get("referencedDecl") if isinstance(child.get("referencedDecl"), dict) else {}
+                ref = _as_dict(child.get("referencedDecl"))
                 return str(ref.get("name") or child.get("name") or "")
             if child.get("kind") == "DeclRefExpr" and child.get("name"):
                 return str(child.get("name") or "")
@@ -484,17 +513,17 @@ class ClangToolingEvidenceProvider:
 
     @staticmethod
     def _qual_type(node: Dict[str, Any]) -> str:
-        type_data = node.get("type") if isinstance(node.get("type"), dict) else {}
+        type_data = _as_dict(node.get("type"))
         return str(type_data.get("qualType") or "")
 
     @staticmethod
     def _loc_line(node: Dict[str, Any]) -> int:
-        loc = node.get("loc") if isinstance(node.get("loc"), dict) else {}
+        loc = _as_dict(node.get("loc"))
         line = loc.get("line")
         if isinstance(line, int):
             return line
-        range_data = node.get("range") if isinstance(node.get("range"), dict) else {}
-        begin = range_data.get("begin") if isinstance(range_data.get("begin"), dict) else {}
+        range_data = _as_dict(node.get("range"))
+        begin = _as_dict(range_data.get("begin"))
         line = begin.get("line")
         return int(line) if isinstance(line, int) else 0
 

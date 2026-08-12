@@ -341,7 +341,9 @@ def test_validation_pipeline_keeps_structural_uncertain_as_needs_review() -> Non
 
     outcome = pipeline.apply_validator_result(
         issue,
-        {"reasoning": "Plausible structural lifetime risk, but current callers do not prove exploitability."},
+        {
+            "reasoning": "Plausible structural lifetime risk, but current callers do not prove exploitability."
+        },
         verdict="uncertain",
         score_data=_score(0.71),
     )
@@ -371,7 +373,9 @@ def test_validation_pipeline_keeps_permission_uncertain_as_needs_review() -> Non
 
     outcome = pipeline.apply_validator_result(
         issue,
-        {"reasoning": "Plausible permission issue, but current deployment may not expose this mode."},
+        {
+            "reasoning": "Plausible permission issue, but current deployment may not expose this mode."
+        },
         verdict="uncertain",
         score_data=_score(0.7),
     )
@@ -399,7 +403,9 @@ def test_validation_pipeline_keeps_strongly_disproved_permission_rejected() -> N
 
     outcome = pipeline.apply_validator_result(
         issue,
-        {"reasoning": "Rejected: guard dominates all paths and all paths are protected by a later fchmod using requested permission."},
+        {
+            "reasoning": "Rejected: guard dominates all paths and all paths are protected by a later fchmod using requested permission."
+        },
         verdict="rejected",
         score_data=_score(0.8),
     )
@@ -635,7 +641,9 @@ def test_validation_pipeline_downgrades_structural_rejection_to_needs_review() -
 
     outcome = pipeline.apply_validator_result(
         issue,
-        {"reasoning": "Rejected because the current callback in this sample is not attacker-controlled."},
+        {
+            "reasoning": "Rejected because the current callback in this sample is not attacker-controlled."
+        },
         verdict="rejected",
         score_data=_score(0.82),
     )
@@ -667,7 +675,9 @@ def test_validation_pipeline_downgrades_protocol_count_sink_rejection_to_needs_r
 
     outcome = pipeline.apply_validator_result(
         issue,
-        {"reasoning": "Rejected because the current sample does not prove external attacker control."},
+        {
+            "reasoning": "Rejected because the current sample does not prove external attacker control."
+        },
         verdict="rejected",
         score_data=_score(0.82),
     )
@@ -677,7 +687,9 @@ def test_validation_pipeline_downgrades_protocol_count_sink_rejection_to_needs_r
     assert issue["validation_status"] == "needs_review"
 
 
-def test_validation_pipeline_downgrades_post_release_global_deref_rejection_to_needs_review() -> None:
+def test_validation_pipeline_downgrades_post_release_global_deref_rejection_to_needs_review() -> (
+    None
+):
     pipeline = ValidationPipeline(FakeUserConfig())
     issue = {
         "id": "ISSUE_PBUF_UAF",
@@ -687,7 +699,10 @@ def test_validation_pipeline_downgrades_post_release_global_deref_rejection_to_n
         "function": "_runtime_release_packet_pool",
         "location": "src/lifecycle.c:2351",
         "sink": "return g_runtime_pbuf_pool->active_tasks",
-        "positive_evidence": ["g_runtime_pbuf_pool is released", "g_runtime_pbuf_pool is dereferenced after release"],
+        "positive_evidence": [
+            "g_runtime_pbuf_pool is released",
+            "g_runtime_pbuf_pool is dereferenced after release",
+        ],
         "negative_evidence": ["no quiescence guard before release"],
         "evidence_pack": {
             "path": {"complete_in_function": True},
@@ -758,7 +773,9 @@ def test_validation_pipeline_keeps_transferred_resource_rejected() -> None:
 
     outcome = pipeline.apply_validator_result(
         issue,
-        {"reasoning": "Rejected because ownership is transferred to a global owner and inserted into the global tree."},
+        {
+            "reasoning": "Rejected because ownership is transferred to a global owner and inserted into the global tree."
+        },
         verdict="rejected",
         score_data=_score(0.82),
     )
@@ -846,9 +863,11 @@ def test_analyzer_keeps_pre_validation_suppression_as_audit_observation() -> Non
     user_config.baseline = {"status": "false_positive", "match_strategy": "stable_fingerprint"}
     analyzer = object.__new__(Analyzer)
     analyzer.config = SimpleNamespace(
-        project=SimpleNamespace(
-            agents=[SimpleNamespace(name="validator_agent", enabled=False)]
-        )
+        project=SimpleNamespace(agents=[SimpleNamespace(name="validator_agent", enabled=False)]),
+        concurrency=SimpleNamespace(
+            validator_workers=1,
+            evidence_completion_workers=1,
+        ),
     )
     analyzer.validation_pipeline = ValidationPipeline(user_config)
     state = {

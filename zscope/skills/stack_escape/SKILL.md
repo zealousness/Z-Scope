@@ -1,5 +1,6 @@
 ---
 name: stack_escape
+languages: [c_cpp]
 description: Audit escaping stack addresses and asynchronous lifetime bugs.
 category: lifetime
 triggers:

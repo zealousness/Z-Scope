@@ -79,6 +79,7 @@ SHEET_HEADERS: Dict[str, List[str]] = {
     ],
 }
 
+
 class UserConfigWorkbook:
     """Read and write the XLSX user configuration workbook."""
 
@@ -97,7 +98,7 @@ class UserConfigWorkbook:
             if self._rows_cache is not None and self._rows_cache_key == cache_key:
                 return self._clone_rows(self._rows_cache)
 
-        rows = {name: [] for name in SHEET_HEADERS}
+        rows: Dict[str, List[Dict[str, str]]] = {name: [] for name in SHEET_HEADERS}
         if self.path.exists():
             rows = _read_xlsx(self.path)
 
@@ -209,7 +210,11 @@ class UserConfigWorkbook:
         next_id = 1
         rows_by_sheet = self.read_rows()
         for sheet in SYMBOL_SHEETS:
-            if category and category != sheet and not (category == "memory" and sheet == "resource"):
+            if (
+                category
+                and category != sheet
+                and not (category == "memory" and sheet == "resource")
+            ):
                 continue
             for row in rows_by_sheet.get(sheet, []):
                 if not _is_active(row):
@@ -279,7 +284,7 @@ class UserConfigWorkbook:
                     current += 1
 
     def list_pointer_targets(self) -> List[Dict[str, Any]]:
-        rows = []
+        rows: List[Dict[str, Any]] = []
         for row in self.read_rows().get("pointer_targets", []):
             if not _is_active(row):
                 continue
@@ -307,7 +312,8 @@ class UserConfigWorkbook:
             (
                 item
                 for item in sheet
-                if item.get("pointer_location") == pointer_location and item.get("scope", "*") == scope
+                if item.get("pointer_location") == pointer_location
+                and item.get("scope", "*") == scope
             ),
             None,
         )
@@ -343,20 +349,16 @@ class UserConfigWorkbook:
             self.write_rows(rows)
 
     def list_dispatchers(self) -> List[Dict[str, Any]]:
-        return [
-            dict(row)
-            for row in self.read_rows().get("dispatcher", [])
-            if _is_active(row)
-        ]
+        return [dict(row) for row in self.read_rows().get("dispatcher", []) if _is_active(row)]
 
     def list_module_lifecycle(self) -> List[Dict[str, Any]]:
         return [
-            dict(row)
-            for row in self.read_rows().get("module_lifecycle", [])
-            if _is_active(row)
+            dict(row) for row in self.read_rows().get("module_lifecycle", []) if _is_active(row)
         ]
 
-    def get_function_intent(self, func_name: str, file_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def get_function_intent(
+        self, func_name: str, file_path: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         for row in self.read_rows().get("function_intents", []):
             if not _is_active(row) or row.get("symbol_name") != func_name:
                 continue
@@ -399,7 +401,9 @@ class UserConfigWorkbook:
                 "caller_constraints": json.dumps(caller_constraints or {}, ensure_ascii=False),
                 "concurrency_group": concurrency_group,
                 "concurrent_with": json.dumps(concurrent_with or [], ensure_ascii=False),
-                "intents": _intent_text(caller_constraints, concurrency_group, concurrent_with, notes),
+                "intents": _intent_text(
+                    caller_constraints, concurrency_group, concurrent_with, notes
+                ),
             }
         )
         self.write_rows(rows)
@@ -430,12 +434,16 @@ class UserConfigWorkbook:
         return deepcopy(rows)
 
 
-def _normalize_workbook_shape(rows_by_sheet: Dict[str, List[Dict[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
+def _normalize_workbook_shape(
+    rows_by_sheet: Dict[str, List[Dict[str, Any]]],
+) -> Dict[str, List[Dict[str, Any]]]:
     normalized = {name: list(rows_by_sheet.get(name, [])) for name in SHEET_HEADERS}
     return _collapse_symbol_rows(normalized)
 
 
-def _collapse_symbol_rows(rows_by_sheet: Dict[str, List[Dict[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
+def _collapse_symbol_rows(
+    rows_by_sheet: Dict[str, List[Dict[str, Any]]],
+) -> Dict[str, List[Dict[str, Any]]]:
     for sheet in SYMBOL_SHEETS:
         by_name: Dict[str, Dict[str, Any]] = {}
         for row in rows_by_sheet.get(sheet, []):
@@ -469,7 +477,9 @@ def _workbook_symbol_to_db(row: Dict[str, str], sheet: str) -> Dict[str, Any]:
         "library": "",
         "description": row.get("description", ""),
         "memory_behavior": json.dumps(_memory_behavior_for_kind(kind, sheet), ensure_ascii=False),
-        "concurrency_behavior": json.dumps(_concurrency_behavior_for_kind(kind, sheet), ensure_ascii=False),
+        "concurrency_behavior": json.dumps(
+            _concurrency_behavior_for_kind(kind, sheet), ensure_ascii=False
+        ),
         "return_semantics": _return_semantics_for_kind(kind),
     }
 
@@ -725,7 +735,10 @@ def _read_xlsx(path: Path) -> Dict[str, List[Dict[str, str]]]:
             headers = [item.strip() for item in matrix[0]]
             parsed_rows = []
             for values in matrix[1:]:
-                row = {headers[idx]: values[idx] if idx < len(values) else "" for idx in range(len(headers))}
+                row = {
+                    headers[idx]: values[idx] if idx < len(values) else ""
+                    for idx in range(len(headers))
+                }
                 if any(str(value).strip() for value in row.values()):
                     parsed_rows.append(row)
             rows_by_sheet[name].extend(parsed_rows)
@@ -747,7 +760,7 @@ def _read_sheet_matrix(xml_bytes: bytes, shared: List[str]) -> List[List[str]]:
                 text = "".join(t.text or "" for t in cell.findall(".//m:t", ns))
             else:
                 value_el = cell.find("m:v", ns)
-                raw = value_el.text if value_el is not None else ""
+                raw = str(value_el.text or "") if value_el is not None else ""
                 if cell_type == "s" and raw.isdigit():
                     text = shared[int(raw)] if int(raw) < len(shared) else ""
                 else:
@@ -772,7 +785,9 @@ def _read_shared_strings(zf: zipfile.ZipFile) -> List[str]:
         return []
     root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
     ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
-    return ["".join(t.text or "" for t in si.findall(".//m:t", ns)) for si in root.findall("m:si", ns)]
+    return [
+        "".join(t.text or "" for t in si.findall(".//m:t", ns)) for si in root.findall("m:si", ns)
+    ]
 
 
 def _read_workbook_rels(zf: zipfile.ZipFile) -> Dict[str, str]:
@@ -850,10 +865,10 @@ def _styles_xml() -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        "<fonts count=\"1\"><font><sz val=\"11\"/><name val=\"Calibri\"/></font></fonts>"
-        "<fills count=\"1\"><fill><patternFill patternType=\"none\"/></fill></fills>"
-        "<borders count=\"1\"><border/></borders>"
-        "<cellStyleXfs count=\"1\"><xf/></cellStyleXfs>"
-        "<cellXfs count=\"1\"><xf xfId=\"0\"/></cellXfs>"
+        '<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>'
+        '<fills count="1"><fill><patternFill patternType="none"/></fill></fills>'
+        '<borders count="1"><border/></borders>'
+        '<cellStyleXfs count="1"><xf/></cellStyleXfs>'
+        '<cellXfs count="1"><xf xfId="0"/></cellXfs>'
         "</styleSheet>"
     )

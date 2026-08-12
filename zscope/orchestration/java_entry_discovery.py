@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from ..common.utils import matches_configured_path
+from ..common.utils import matches_interface_path
 from ..retrieval.code_index import CodeIndex
 from .entry_discovery import EntryCandidate, EntryDiscoveryResult
 
@@ -81,15 +81,14 @@ class JavaEntryDiscovery:
         self,
         code_index: CodeIndex,
         max_functions: int = 10000,
-        header_files: Optional[List[str]] = None,
+        interface_files: Optional[List[str]] = None,
         project_root: Optional[Path] = None,
         source_root: Optional[Path] = None,
         search_root: Optional[Path] = None,
     ):
         self.code_index = code_index
         self.max_functions = max_functions
-        # Java reuses header_files as optional source path filters for compatibility.
-        self.path_filters = header_files or []
+        self.interface_files = interface_files or []
         self.project_root = Path(project_root).resolve() if project_root else None
         self.source_root = Path(source_root).resolve() if source_root else self.project_root
         self.search_root = Path(search_root).resolve() if search_root else None
@@ -105,7 +104,9 @@ class JavaEntryDiscovery:
             file_path = str(impl.get("file") or "")
             if file_path and not file_path.endswith(".java"):
                 continue
-            if self.path_filters and not matches_configured_path(file_path, self.path_filters):
+            if self.interface_files and not matches_interface_path(
+                file_path, self.interface_files, self.search_root
+            ):
                 continue
             if not self._is_in_search_root(file_path):
                 continue

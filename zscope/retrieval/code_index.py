@@ -92,10 +92,15 @@ class CodeIndex:
         self.include_paths = [Path(p).absolute() for p in (include_paths or [])]
         self.exclude_paths = [Path(p).absolute() for p in (exclude_paths or [])]
         self.backend_name = indexing_config.backend if indexing_config else "regex"
-        self.language = self._normalize_project_language(
-            getattr(indexing_config, "joern_language", None)
-            or getattr(indexing_config, "language", None)
-            or "c_cpp"
+        self._require_configured_backend = bool(
+            indexing_config is not None
+            and backend is None
+            and str(self.backend_name or "regex").lower() != "regex"
+        )
+        self.language = (
+            "java"
+            if str(self.backend_name or "").lower() in {"java_source", "java_unified", "joern"}
+            else "c_cpp"
         )
         self._capability_lock = threading.RLock()
         self._engine_capabilities: Dict[str, Dict[str, Any]] = {
@@ -125,9 +130,7 @@ class CodeIndex:
         self._macro_definition_index_lock = threading.Lock()
         self._global_definition_index_lock = threading.Lock()
         self._file_lines_cache: Dict[str, Tuple[str, ...]] = {}
-        self._function_impl_cache: Dict[
-            Tuple[str, Optional[int], bool, str], Dict[str, Any]
-        ] = {}
+        self._function_impl_cache: Dict[Tuple[str, Optional[int], bool, str], Dict[str, Any]] = {}
         self._macro_definition_index: Optional[Dict[str, List[Dict[str, Any]]]] = None
         self._global_definition_index: Optional[Dict[str, List[Dict[str, Any]]]] = None
         self._macro_definition_miss_cache: set[str] = set()
@@ -145,6 +148,7 @@ class CodeIndex:
         # 向后兼容：如果传入了 joern_client，包装为 JoernBackend
         if self._backend is None and joern_client is not None:
             from .joern_backend import JoernBackend
+
             self._backend = JoernBackend(joern_client=joern_client)
             self._backend._status = "ready"
 
@@ -198,37 +202,18 @@ class CodeIndex:
     def _create_backend(self, indexing_config, wait_for_cpg: bool) -> Optional[CodeBackend]:
         """根据 indexing_config 创建对应的后端实例。"""
         backend_name = indexing_config.backend if indexing_config else "regex"
-        if backend_name in {"", "auto", "language_auto"}:
-            backend_name = "java_unified" if self.language == "java" else "unified"
 
         if backend_name == "joern":
             cfg = indexing_config
-            language = self._normalize_project_language(
-                getattr(cfg, "joern_language", "c_cpp") if cfg else "c_cpp"
+            from .java_joern_backend import JavaJoernBackend
+
+            language = "java"
+            jb = JavaJoernBackend(
+                joern_path=cfg.joern_path if cfg else "joern",
+                host=cfg.joern_server_host if cfg else "127.0.0.1",
+                port=cfg.joern_server_port if cfg else 8080,
+                heap_size=cfg.joern_heap_size if cfg else "8g",
             )
-            if language == "java":
-                from .java_joern_backend import JavaJoernBackend
-
-                jb = JavaJoernBackend(
-                    joern_path=cfg.joern_path if cfg else "joern",
-                    host=cfg.joern_server_host if cfg else "127.0.0.1",
-                    port=cfg.joern_server_port if cfg else 8080,
-                    heap_size=cfg.joern_heap_size if cfg else "8g",
-                )
-            else:
-                from .joern_backend import JoernBackend
-
-                logger.warning(
-                    "C/C++ Joern backend is deprecated in Z-SCOPE 1.x and will be removed in 2.0; "
-                    "use indexing.backend=unified, clang, or regex"
-                )
-                jb = JoernBackend(
-                    joern_path=cfg.joern_path if cfg else "joern",
-                    host=cfg.joern_server_host if cfg else "127.0.0.1",
-                    port=cfg.joern_server_port if cfg else 8080,
-                    heap_size=cfg.joern_heap_size if cfg else "8g",
-                    language="c",
-                )
             cc_path = str(self.compile_commands_path) if self.compile_commands_path else None
             ok = jb.initialize(
                 str(self.source_root),
@@ -240,8 +225,7 @@ class CodeIndex:
                 exclude_paths=self.exclude_paths,
             )
             if not ok and wait_for_cpg:
-                logger.warning("Backend initialization failed, falling back to regex")
-                return None
+                raise RuntimeError(f"{backend_name} backend initialization failed")
             return jb
 
         if backend_name == "java_source":
@@ -263,8 +247,7 @@ class CodeIndex:
                 exclude_paths=self.exclude_paths,
             )
             if not ok and wait_for_cpg:
-                logger.warning("Java source backend init failed, falling back to regex")
-                return None
+                raise RuntimeError("java_source backend initialization failed")
             self.language = "java"
             return java_backend
 
@@ -272,7 +255,7 @@ class CodeIndex:
             from .java_unified_backend import JavaUnifiedBackend
 
             cfg = indexing_config
-            java_backend = JavaUnifiedBackend(
+            java_unified_backend = JavaUnifiedBackend(
                 structure_frontend=(
                     getattr(cfg, "java_structure_frontend", "auto") if cfg else "auto"
                 ),
@@ -285,15 +268,11 @@ class CodeIndex:
                     getattr(cfg, "java_signal_provider_commands", {}) if cfg else {}
                 ),
                 joern_path=getattr(cfg, "joern_path", "joern") if cfg else "joern",
-                joern_host=(
-                    getattr(cfg, "joern_server_host", "127.0.0.1")
-                    if cfg
-                    else "127.0.0.1"
-                ),
+                joern_host=(getattr(cfg, "joern_server_host", "127.0.0.1") if cfg else "127.0.0.1"),
                 joern_port=getattr(cfg, "joern_server_port", 8080) if cfg else 8080,
                 joern_heap_size=getattr(cfg, "joern_heap_size", "8g") if cfg else "8g",
             )
-            ok = java_backend.initialize(
+            ok = java_unified_backend.initialize(
                 str(self.source_root),
                 project_root=self.project_root,
                 wait=wait_for_cpg,
@@ -301,13 +280,13 @@ class CodeIndex:
                 exclude_paths=self.exclude_paths,
             )
             if not ok and wait_for_cpg:
-                logger.warning("Java unified backend init failed, falling back to regex")
-                return None
+                raise RuntimeError("java_unified backend initialization failed")
             self.language = "java"
-            return java_backend
+            return java_unified_backend
 
         if backend_name == "clang":
             from .clang_backend import ClangBackend
+
             cfg = indexing_config
             cb = ClangBackend(
                 clangd_path=cfg.clangd_path if cfg else "clangd",
@@ -325,12 +304,12 @@ class CodeIndex:
                 exclude_paths=self.exclude_paths,
             )
             if not ok and wait_for_cpg:
-                logger.warning("Clang backend initialization failed, falling back to regex")
-                return None
+                raise RuntimeError("clang backend initialization failed")
             return cb
 
         if backend_name == "unified":
             from .unified_backend import UnifiedBackend
+
             cfg = indexing_config
             ub = UnifiedBackend(
                 clangd_path=cfg.clangd_path if cfg else "clangd",
@@ -366,17 +345,15 @@ class CodeIndex:
                 defer_svf=self._defer_svf,
             )
             if not ok and wait_for_cpg:
-                logger.warning("Unified backend init failed, falling back to regex")
-                return None
+                raise RuntimeError("unified backend initialization failed")
             return ub
 
-        # regex 模式不需要后端
-        return None
+        if backend_name == "regex":
+            return None
+        raise ValueError(f"unsupported indexing backend: {backend_name!r}")
 
     def _java_structure_db_path(self, indexing_config: Any) -> str:
-        configured = str(
-            getattr(indexing_config, "java_structure_db_path", "") or ""
-        ).strip()
+        configured = str(getattr(indexing_config, "java_structure_db_path", "") or "").strip()
         if configured:
             path = Path(configured)
             return str(path if path.is_absolute() else (self.project_root / path).resolve())
@@ -394,7 +371,11 @@ class CodeIndex:
             return True
         if self._backend and hasattr(self._backend, "wait_for_ready"):
             if not self._backend.wait_for_ready(timeout=timeout):
-                logger.warning("Backend build failed or timed out, falling back to regex")
+                if self._require_configured_backend:
+                    raise RuntimeError(
+                        f"configured {self.backend_name} backend failed or timed out"
+                    )
+                logger.warning("Backend build failed or timed out")
                 self._set_engine_capability(
                     "index",
                     status="degraded",
@@ -432,16 +413,15 @@ class CodeIndex:
             status="complete" if ok else "failed",
             reason="" if ok else "svf_execution_failed",
         )
+        if not ok and self._require_configured_backend:
+            raise RuntimeError("configured unified backend failed SVF enrichment")
         return ok
 
     def capability_status(self) -> Dict[str, Dict[str, Any]]:
         """Return truthful configured/active engine health for report schema v2."""
         self._refresh_capability_status()
         with self._capability_lock:
-            return {
-                name: dict(details)
-                for name, details in self._engine_capabilities.items()
-            }
+            return {name: dict(details) for name, details in self._engine_capabilities.items()}
 
     def _refresh_capability_status(self, *, initial: bool = False) -> None:
         configured = str(self.backend_name or "regex").lower()
@@ -511,6 +491,7 @@ class CodeIndex:
     def joern_client(self) -> Optional[Any]:
         """向后兼容：返回 JoernClient（仅 Joern 后端可用）。"""
         from .joern_backend import JoernBackend
+
         if isinstance(self._backend, JoernBackend):
             return self._backend.joern_client
         return None
@@ -534,7 +515,11 @@ class CodeIndex:
                     aliases = info.get("aliases") if isinstance(info.get("aliases"), list) else None
                     self._add_function_index_entry(str(raw_name), info, aliases=aliases)
             else:
-                logger.warning("Backend index returned empty, falling back to regex")
+                if self._require_configured_backend:
+                    raise RuntimeError(
+                        f"configured {self.backend_name} backend returned an empty index"
+                    )
+                logger.warning("Backend index returned empty, using regex index")
                 self._backend_index_fallback = True
                 self._set_engine_capability(
                     "index",
@@ -627,11 +612,9 @@ class CodeIndex:
     def _same_function_location(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
         left_file = str(left.get("file") or left.get("filename") or "").replace("\\", "/")
         right_file = str(right.get("file") or right.get("filename") or "").replace("\\", "/")
-        return (
-            left_file == right_file
-            and int(left.get("start_line") or left.get("lineNumber") or 0)
-            == int(right.get("start_line") or right.get("lineNumber") or 0)
-        )
+        return left_file == right_file and int(
+            left.get("start_line") or left.get("lineNumber") or 0
+        ) == int(right.get("start_line") or right.get("lineNumber") or 0)
 
     def _register_function_alias(self, alias: str, index_key: str) -> None:
         normalized = self._normalize_function_query(alias)
@@ -782,9 +765,11 @@ class CodeIndex:
             if "is_static" in method:
                 method_record["is_static"] = method.get("is_static")
             self._add_function_index_entry(
-                method_full_name
-                if method_record["language"] == "java"
-                else str(method.get("name") or candidate),
+                (
+                    method_full_name
+                    if method_record["language"] == "java"
+                    else str(method.get("name") or candidate)
+                ),
                 method_record,
                 aliases=[str(method.get("name") or ""), method_full_name.split(":", 1)[0]],
             )
@@ -852,7 +837,9 @@ class CodeIndex:
                 if key in self._function_index
             ]
 
-    def _function_file_resolution_cache_key(self, func_name: str, file_path: str) -> Tuple[str, str]:
+    def _function_file_resolution_cache_key(
+        self, func_name: str, file_path: str
+    ) -> Tuple[str, str]:
         return (
             self._normalize_function_query(func_name),
             self._normalize_path_hint(file_path),
@@ -909,25 +896,22 @@ class CodeIndex:
             return False
         stored = stored.lstrip("./")
         hint = hint.lstrip("./")
-        return (
-            stored == hint
-            or stored.endswith(f"/{hint}")
-            or hint.endswith(f"/{stored}")
-        )
+        return stored == hint or stored.endswith(f"/{hint}") or hint.endswith(f"/{stored}")
 
     def _is_path_allowed(self, p: Path) -> bool:
         """Check if a path passes include/exclude filters."""
+
         def is_subpath(child: Path, parent: Path) -> bool:
             try:
                 # Use absolute() instead of resolve() to avoid symlink physical path jumping out of bounds
                 c_str = str(child.absolute())
                 p_str = str(parent.absolute())
-                
+
                 # Case-insensitive ONLY on Windows
-                if os.name == 'nt':
+                if os.name == "nt":
                     c_str = c_str.lower()
                     p_str = p_str.lower()
-                    
+
                 sep = os.sep
                 if not p_str.endswith(sep):
                     p_str += sep
@@ -939,7 +923,7 @@ class CodeIndex:
             for ex in self.exclude_paths:
                 if is_subpath(p, ex):
                     return False
-                    
+
         if self.include_paths:
             in_include = False
             for inc in self.include_paths:
@@ -948,7 +932,7 @@ class CodeIndex:
                     break
             if not in_include:
                 return False
-                
+
         return True
 
     def _normalize_cpp_function_name(self, name: str) -> str:
@@ -1294,9 +1278,7 @@ class CodeIndex:
                     "end_line": end_line,
                     "signature": parsed.get("signature") or f"{func_name}(...)",
                     "params": parsed.get("params", ""),
-                    "is_static": bool(
-                        re.search(r"\bstatic\b", before_brace.split("(", 1)[0])
-                    ),
+                    "is_static": bool(re.search(r"\bstatic\b", before_brace.split("(", 1)[0])),
                 },
             )
             pending_signature = []
@@ -1432,10 +1414,7 @@ class CodeIndex:
 
     def _clone_function_impl(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """Copy function implementation payloads before exposing cached data."""
-        return {
-            str(key): self._clone_function_impl_value(value)
-            for key, value in result.items()
-        }
+        return {str(key): self._clone_function_impl_value(value) for key, value in result.items()}
 
     @classmethod
     def _clone_function_impl_value(cls, value: Any) -> Any:
@@ -1507,13 +1486,8 @@ class CodeIndex:
         size = self._shared_cache_value_size(value)
         self._shared_cache_lru[lru_key] = size
         self._shared_cache_bytes += size - previous
-        while (
-            self._shared_cache_bytes > self._shared_cache_budget_bytes
-            and self._shared_cache_lru
-        ):
-            (evict_namespace, evict_key), evict_size = self._shared_cache_lru.popitem(
-                last=False
-            )
+        while self._shared_cache_bytes > self._shared_cache_budget_bytes and self._shared_cache_lru:
+            (evict_namespace, evict_key), evict_size = self._shared_cache_lru.popitem(last=False)
             self._shared_cache_bytes = max(0, self._shared_cache_bytes - evict_size)
             if evict_namespace == "file":
                 self._file_lines_cache.pop(evict_key, None)
@@ -1524,9 +1498,7 @@ class CodeIndex:
         with self._cache_lock:
             self._function_impl_cache.clear()
             self._shared_cache_lru = OrderedDict(
-                (key, size)
-                for key, size in self._shared_cache_lru.items()
-                if key[0] != "function"
+                (key, size) for key, size in self._shared_cache_lru.items() if key[0] != "function"
             )
             self._shared_cache_bytes = sum(self._shared_cache_lru.values())
             self._function_file_resolution_cache.clear()
@@ -1596,9 +1568,7 @@ class CodeIndex:
         results = []
         with self._cache_lock:
             impl_info = dict(self._function_index.get(index_key) or {})
-        lookup_name = str(
-            impl_info.get("qualified_name") or impl_info.get("name") or func_name
-        )
+        lookup_name = str(impl_info.get("qualified_name") or impl_info.get("name") or func_name)
         for block in index.get(lookup_name, []):
             block_file = self._resolve_file_path(str(block.get("file") or ""))
             if block_file == implementation_file and block.get("start_line") == impl_info.get(
@@ -1693,9 +1663,7 @@ class CodeIndex:
             if strict_matches:
                 selected_match = strict_matches[0]
             else:
-                location_name, inferred_file, _, _ = self._function_location_query_parts(
-                    raw_query
-                )
+                location_name, inferred_file, _, _ = self._function_location_query_parts(raw_query)
                 if location_name:
                     macro_results = self._find_macro_impls(
                         raw_query,
@@ -1746,9 +1714,11 @@ class CodeIndex:
                 self._macro_impl_index_name(macro_result),
                 max_lines,
                 bool(include_context),
-                self._source_fingerprint(self._resolve_file_path(macro_file))
-                if macro_file
-                else f"epoch={self._index_epoch}",
+                (
+                    self._source_fingerprint(self._resolve_file_path(macro_file))
+                    if macro_file
+                    else f"epoch={self._index_epoch}"
+                ),
             )
             cached_result = self._get_cached_function_impl(macro_cache_key)
             if cached_result is not None:
@@ -1768,18 +1738,18 @@ class CodeIndex:
                 logger.warning("Function '%s' has no indexed source file", raw_query)
             return None
 
-        file_path = self._resolve_file_path(func_info["file"])
+        source_path = self._resolve_file_path(func_info["file"])
         cache_key = (
             lookup_name,
             max_lines,
             bool(include_context),
-            self._source_fingerprint(file_path),
+            self._source_fingerprint(source_path),
         )
         cached_result = self._get_cached_function_impl(cache_key)
         if cached_result is not None:
             return cached_result
         try:
-            lines = self._read_file_lines(file_path)
+            lines = self._read_file_lines(source_path)
             is_java_method = func_info.get("language") == "java" or self.language == "java"
             total_lines = len(lines)
             raw_start_line = int(func_info.get("start_line") or 0)
@@ -1817,14 +1787,14 @@ class CodeIndex:
             if include_context and not is_java_method:
                 comment_blocks = self._find_function_declaration_comments(
                     lookup_name,
-                    file_path,
+                    source_path,
                 )
                 impl_comment = self._find_leading_c_comment_block(lines, raw_start_line)
                 if impl_comment:
                     comment_blocks.append(
                         self._comment_block_payload(
                             kind="implementation",
-                            file_path=file_path,
+                            file_path=source_path,
                             lines=lines,
                             block=impl_comment,
                         )
@@ -1846,9 +1816,7 @@ class CodeIndex:
             elif self._backend:
                 backend_lookup = str(func_info.get("qualified_name") or lookup_name)
                 callee_data = self._backend.get_method_callees(backend_lookup)
-                callees = self._filter_callee_names(
-                    c["name"] for c in callee_data if c.get("name")
-                )
+                callees = self._filter_callee_names(c["name"] for c in callee_data if c.get("name"))
             else:
                 callees = self._filter_callee_names(extract_function_calls(code))
 
@@ -1856,22 +1824,19 @@ class CodeIndex:
                 "func_name": str(
                     func_info.get("qualified_name") or func_info.get("name") or raw_query
                 ),
-                "file": self._normalize_path(file_path),
+                "file": self._normalize_path(source_path),
                 "index_name": lookup_name,
                 "language": func_info.get("language") or self.language,
                 "start_line": raw_start_line,
                 "end_line": (
-                    raw_end_line
-                    if max_lines is None
-                    else min(raw_end_line, start + max_lines + 1)
+                    raw_end_line if max_lines is None else min(raw_end_line, start + max_lines + 1)
                 ),
                 "code": code,
                 "callees": callees,
                 "signature": func_info.get("signature", f"{raw_query}(...)"),
                 "is_static": self._function_record_is_static(func_info),
                 "truncated": (
-                    max_lines is not None
-                    and (raw_end_line - raw_start_line + 1) > max_lines
+                    max_lines is not None and (raw_end_line - raw_start_line + 1) > max_lines
                 ),
                 "comment_blocks": comment_blocks,
                 "declaration_only": not has_function_body,
@@ -1920,7 +1885,12 @@ class CodeIndex:
             lines = self._read_file_lines(full_path)
             total_lines = len(lines)
             if total_lines == 0:
-                return {"file": self._normalize_path(full_path), "start_line": 1, "end_line": 0, "code": ""}
+                return {
+                    "file": self._normalize_path(full_path),
+                    "start_line": 1,
+                    "end_line": 0,
+                    "code": "",
+                }
             if start_line is None or start_line < 1:
                 start_line = 1
             try:
@@ -1939,7 +1909,12 @@ class CodeIndex:
             end = min(total_lines, end_line)
             code_lines = lines[start:end]
             code = "".join(f"{start + i + 1} | {line}" for i, line in enumerate(code_lines))
-            return {"file": self._normalize_path(full_path), "start_line": start_line, "end_line": end_line, "code": code}
+            return {
+                "file": self._normalize_path(full_path),
+                "start_line": start_line,
+                "end_line": end_line,
+                "code": code,
+            }
         except Exception as e:
             logger.error(f"Failed to read file snippet: {e}")
             return None
@@ -2067,25 +2042,14 @@ class CodeIndex:
         )
         return [
             {
-                "function_name": str(
-                    info.get("qualified_name")
-                    or info.get("name")
-                    or index_key
-                ),
+                "function_name": str(info.get("qualified_name") or info.get("name") or index_key),
                 "file_path": self._normalize_index_file_value(
                     str(info.get("file") or info.get("filename") or "")
                 ),
                 "index_name": str(info.get("index_name") or index_key),
-                "start_line": self._safe_int(
-                    info.get("start_line") or info.get("lineNumber")
-                ),
-                "end_line": self._safe_int(
-                    info.get("end_line") or info.get("lineNumberEnd")
-                ),
-                "signature": str(
-                    info.get("signature")
-                    or f"{info.get('name') or index_key}(...)"
-                ),
+                "start_line": self._safe_int(info.get("start_line") or info.get("lineNumber")),
+                "end_line": self._safe_int(info.get("end_line") or info.get("lineNumberEnd")),
+                "signature": str(info.get("signature") or f"{info.get('name') or index_key}(...)"),
                 "is_static": self._function_record_is_static(info),
             }
             for index_key, info in matches
@@ -2111,8 +2075,7 @@ class CodeIndex:
         strict_matches = self._find_function_matches(raw_query, file_path=file_path)
         if strict_matches:
             return [
-                self._function_info_payload(index_key, info)
-                for index_key, info in strict_matches
+                self._function_info_payload(index_key, info) for index_key, info in strict_matches
             ]
 
         location_name, _, _, _ = self._function_location_query_parts(raw_query)
@@ -2126,10 +2089,7 @@ class CodeIndex:
                 exact_location_only=True,
             )
             if exact_macro_impls:
-                return [
-                    self._macro_function_info_payload(impl)
-                    for impl in exact_macro_impls
-                ]
+                return [self._macro_function_info_payload(impl) for impl in exact_macro_impls]
 
         fallback_matches = self._find_function_matches(
             raw_query,
@@ -2138,8 +2098,7 @@ class CodeIndex:
         )
         if fallback_matches:
             return [
-                self._function_info_payload(index_key, info)
-                for index_key, info in fallback_matches
+                self._function_info_payload(index_key, info) for index_key, info in fallback_matches
             ]
 
         macro_impls = self._find_macro_impls(
@@ -2395,11 +2354,7 @@ class CodeIndex:
             masked_line = self._mask_function_info_source_line(source_line)
             for token in re.finditer(r"\b[A-Za-z_]\w*\b", masked_line):
                 name = token.group(0)
-                if (
-                    name == macro_name
-                    or name in parameters
-                    or name in preprocessor_tokens
-                ):
+                if name == macro_name or name in parameters or name in preprocessor_tokens:
                     continue
                 if self._function_info_field_access(
                     masked_line,
@@ -2502,11 +2457,7 @@ class CodeIndex:
         info: Dict[str, Any],
     ) -> Dict[str, Any]:
         raw_file = str(info.get("file") or info.get("filename") or "")
-        function_name = str(
-            info.get("name")
-            or info.get("qualified_name")
-            or index_key
-        )
+        function_name = str(info.get("name") or info.get("qualified_name") or index_key)
         payload = {
             "function_name": function_name,
             "file_path": self._normalize_index_file_value(raw_file),
@@ -2570,9 +2521,7 @@ class CodeIndex:
             return self._function_info_type_context_regex(index_key, raw_file, start_line)
         with self._cache_lock:
             info = self._function_index.get(index_key) or {}
-        backend_lookup = str(
-            info.get("qualified_name") or info.get("name") or index_key
-        )
+        backend_lookup = str(info.get("qualified_name") or info.get("name") or index_key)
         getter = getattr(self._backend, "get_function_type_context", None)
         if not callable(getter):
             return {"referenced_types": []}
@@ -2660,7 +2609,9 @@ class CodeIndex:
                 )
             ]
             if len(definitions) != 1:
-                reason = "type_definition_not_found" if not definitions else "type_definition_ambiguous"
+                reason = (
+                    "type_definition_not_found" if not definitions else "type_definition_ambiguous"
+                )
                 entry = unresolved.setdefault(
                     (name, reason),
                     {
@@ -2709,8 +2660,7 @@ class CodeIndex:
                 re.S,
             ),
             re.compile(
-                r"\b(?P<kind>struct|union|enum|class)\s+(?P<name>[A-Za-z_]\w*)\s*"
-                r"\{.*?\}\s*;",
+                r"\b(?P<kind>struct|union|enum|class)\s+(?P<name>[A-Za-z_]\w*)\s*" r"\{.*?\}\s*;",
                 re.S,
             ),
             re.compile(
@@ -2743,9 +2693,7 @@ class CodeIndex:
                         or "typedef"
                     )
                     item = {
-                        "type_index_name": (
-                            f"{name}@{normalized_file}:{start_line}-{end_line}"
-                        ),
+                        "type_index_name": (f"{name}@{normalized_file}:{start_line}-{end_line}"),
                         "name": name,
                         "kind": kind,
                         "file_path": normalized_file,
@@ -2784,8 +2732,7 @@ class CodeIndex:
                     candidates = [
                         candidate.resolve()
                         for candidate in self.source_root.rglob(Path(include_text).name)
-                        if candidate.is_file()
-                        and tuple(candidate.parts[-len(suffix):]) == suffix
+                        if candidate.is_file() and tuple(candidate.parts[-len(suffix) :]) == suffix
                     ]
                 unique = sorted(set(candidates))
                 if len(unique) != 1:
@@ -2855,9 +2802,7 @@ class CodeIndex:
                 item_end,
                 str(raw_item.get("full_definition") or ""),
             )
-            reference_kinds = self._normalized_type_reference_kinds(
-                raw_item.get("reference_kinds")
-            )
+            reference_kinds = self._normalized_type_reference_kinds(raw_item.get("reference_kinds"))
             reference_lines = self._normalized_line_list(raw_item.get("reference_lines"))
             if not name or not file_path or item_start <= 0 or not full_definition:
                 add_unresolved(
@@ -2891,10 +2836,11 @@ class CodeIndex:
         candidates = sorted(
             normalized.values(),
             key=lambda item: (
-                0
-                if {"return", "parameter", "function_pointer"}
-                & set(item["reference_kinds"])
-                else 1,
+                (
+                    0
+                    if {"return", "parameter", "function_pointer"} & set(item["reference_kinds"])
+                    else 1
+                ),
                 item["type_index_name"],
             ),
         )
@@ -2918,9 +2864,7 @@ class CodeIndex:
             if definition_bytes + item_bytes > REFERENCED_TYPES_DEFINITION_BYTES_LIMIT:
                 truncated = True
                 continue
-            returned.append(
-                {key: value for key, value in item.items() if key != "_name"}
-            )
+            returned.append({key: value for key, value in item.items() if key != "_name"})
             definition_bytes += item_bytes
 
         returned.sort(key=lambda item: item["type_index_name"])
@@ -2981,9 +2925,7 @@ class CodeIndex:
         try:
             with self._cache_lock:
                 info = self._function_index.get(index_key) or {}
-            backend_lookup = str(
-                info.get("qualified_name") or info.get("name") or index_key
-            )
+            backend_lookup = str(info.get("qualified_name") or info.get("name") or index_key)
             getter = getattr(self._backend, "get_function_info_callers", None)
             if callable(getter):
                 try:
@@ -2999,9 +2941,7 @@ class CodeIndex:
             target_matches = self._find_function_matches(backend_lookup)
             if len(target_matches) > 1:
                 callers = [
-                    row
-                    for row in callers
-                    if self._function_info_call_type(row) != "indirect"
+                    row for row in callers if self._function_info_call_type(row) != "indirect"
                 ]
         except Exception as exc:
             logger.debug("Caller lookup failed for %s: %s", index_key, exc)
@@ -3017,9 +2957,7 @@ class CodeIndex:
         try:
             with self._cache_lock:
                 info = self._function_index.get(index_key) or {}
-            backend_lookup = str(
-                info.get("qualified_name") or info.get("name") or index_key
-            )
+            backend_lookup = str(info.get("qualified_name") or info.get("name") or index_key)
             getter = getattr(self._backend, "get_function_info_callees", None)
             if callable(getter):
                 try:
@@ -3098,7 +3036,7 @@ class CodeIndex:
         )
         rows: List[Dict[str, Any]] = []
         function_name = str(info.get("name") or info.get("qualified_name") or index_key)
-        for offset, raw_line in enumerate(lines[start_line - 1:end_line]):
+        for offset, raw_line in enumerate(lines[start_line - 1 : end_line]):
             absolute_line = start_line + offset
             for name in self._filter_callee_names(extract_function_calls(raw_line)):
                 if name == function_name:
@@ -3119,8 +3057,9 @@ class CodeIndex:
         callee_file: str = "",
     ) -> str:
         return str(
-            self._function_info_callee_descriptor(callee_name, callee_file)[1]
-            .get("callee_index_name")
+            self._function_info_callee_descriptor(callee_name, callee_file)[1].get(
+                "callee_index_name"
+            )
             or ""
         )
 
@@ -3155,9 +3094,7 @@ class CodeIndex:
             try:
                 with self._cache_lock:
                     info = self._function_index.get(index_key) or {}
-                backend_lookup = str(
-                    info.get("qualified_name") or info.get("name") or index_key
-                )
+                backend_lookup = str(info.get("qualified_name") or info.get("name") or index_key)
                 getter = getattr(self._backend, "get_function_symbol_context", None)
                 if not callable(getter):
                     return context
@@ -3181,9 +3118,7 @@ class CodeIndex:
             raw_macros,
             extra_macros or [],
         )
-        globals_result.sort(
-            key=lambda item: (item["name"], item["file_path"], item["line"])
-        )
+        globals_result.sort(key=lambda item: (item["name"], item["file_path"], item["line"]))
 
         context["referenced_globals"] = globals_result[:FUNCTION_INFO_GLOBALS_LIMIT]
         context["referenced_macros"] = macros_result[:FUNCTION_INFO_MACROS_LIMIT]
@@ -3212,9 +3147,7 @@ class CodeIndex:
             "file_path": self._normalize_index_file_value(str(item.get("file_path") or "")),
             "line": self._safe_int(item.get("line")),
             "storage_class": storage_class,
-            "qualifiers": self._normalize_function_info_qualifiers(
-                item.get("qualifiers")
-            ),
+            "qualifiers": self._normalize_function_info_qualifiers(item.get("qualifiers")),
             "initializer": str(item.get("initializer") or ""),
             "access": access,
             "reference_lines": self._normalized_line_list(item.get("reference_lines")),
@@ -3229,11 +3162,7 @@ class CodeIndex:
         else:
             raw_values = []
         selected = {part for part in raw_values if part}
-        return [
-            qualifier
-            for qualifier in FUNCTION_INFO_QUALIFIER_ORDER
-            if qualifier in selected
-        ]
+        return [qualifier for qualifier in FUNCTION_INFO_QUALIFIER_ORDER if qualifier in selected]
 
     def _normalize_function_info_macro(self, item: Dict[str, Any]) -> Dict[str, Any]:
         macro_index_name = self._macro_index_name_from_record(item)
@@ -3348,7 +3277,7 @@ class CodeIndex:
             len(lines),
             max(start_line, self._safe_int(info.get("end_line") or info.get("lineNumberEnd"))),
         )
-        body_lines = lines[start_line - 1:end_line]
+        body_lines = lines[start_line - 1 : end_line]
         local_names = self._function_info_regex_local_names(
             "".join(body_lines),
             str(info.get("signature") or ""),
@@ -3365,9 +3294,13 @@ class CodeIndex:
             masked_line = self._mask_function_info_source_line(raw_line)
             for match in re.finditer(r"\b[A-Za-z_]\w*\b", masked_line):
                 name = match.group(0)
-                if name in globals_index and name not in local_names and not self._function_info_field_access(
-                    masked_line,
-                    match.start(),
+                if (
+                    name in globals_index
+                    and name not in local_names
+                    and not self._function_info_field_access(
+                        masked_line,
+                        match.start(),
+                    )
                 ):
                     record = self._preferred_function_info_record(globals_index[name], raw_file)
                     key = (name, str(record.get("file_path") or ""))
@@ -3390,7 +3323,7 @@ class CodeIndex:
                 if name in macros_index:
                     record = self._preferred_function_info_record(macros_index[name], raw_file)
                     if bool(record.get("is_function_like")) and not re.match(
-                        r"\s*\(", masked_line[match.end():]
+                        r"\s*\(", masked_line[match.end() :]
                     ):
                         continue
                     key = (name, str(record.get("file_path") or ""))
@@ -3415,10 +3348,12 @@ class CodeIndex:
         ranked = sorted(
             records,
             key=lambda record: (
-                0
-                if str(record.get("file_path") or "").replace("\\", "/").lstrip("./")
-                == normalized_file
-                else 1,
+                (
+                    0
+                    if str(record.get("file_path") or "").replace("\\", "/").lstrip("./")
+                    == normalized_file
+                    else 1
+                ),
                 str(record.get("file_path") or ""),
                 int(record.get("line") or 0),
             ),
@@ -3429,7 +3364,7 @@ class CodeIndex:
     def _function_info_regex_local_names(body: str, signature: str) -> set[str]:
         names: set[str] = set()
         if "(" in signature and ")" in signature:
-            params = signature[signature.find("(") + 1:signature.rfind(")")]
+            params = signature[signature.find("(") + 1 : signature.rfind(")")]
             for parameter in params.split(","):
                 identifiers = re.findall(r"\b[A-Za-z_]\w*\b", parameter)
                 if identifiers and identifiers[-1] not in {"void", "const", "volatile"}:
@@ -3525,9 +3460,7 @@ class CodeIndex:
         for entry in groups.values():
             entry["callsite_lines"] = sorted(entry["callsite_lines"])
             entry["call_type"] = [
-                call_type
-                for call_type in ("direct", "indirect")
-                if call_type in entry["call_type"]
+                call_type for call_type in ("direct", "indirect") if call_type in entry["call_type"]
             ]
         return list(groups.values())
 
@@ -3570,7 +3503,9 @@ class CodeIndex:
                     # An SVF function-level target without a source-mapped pointer callsite
                     # remains a diagnostic fact only; exposing it would fabricate LLM evidence.
                     continue
-            callee_file = str(row.get("filename") or row.get("callee_file") or row.get("file") or "")
+            callee_file = str(
+                row.get("filename") or row.get("callee_file") or row.get("file") or ""
+            )
             if not callee_file and callee_name:
                 callee_file = self._function_file_for_query(callee_name)
             kind, descriptor = self._function_info_callee_descriptor(
@@ -3599,18 +3534,21 @@ class CodeIndex:
             else:
                 group_key = str(descriptor["callee_name"])
                 groups = external_groups if kind == "external" else unresolved_groups
-            entry = groups.get(group_key)
-            if entry is None:
-                entry = {
+            group_entry = groups.get(group_key)
+            if group_entry is None:
+                group_entry = {
                     **descriptor,
                     "direct_callsite_lines": [],
                     "indirect_callsites": [],
                 }
-                groups[group_key] = entry
+                groups[group_key] = group_entry
             if call_type == "direct":
-                self._append_direct_callsite_line(entry, row)
-            elif indirect_callsite is not None and indirect_callsite not in entry["indirect_callsites"]:
-                entry["indirect_callsites"].append(indirect_callsite)
+                self._append_direct_callsite_line(group_entry, row)
+            elif (
+                indirect_callsite is not None
+                and indirect_callsite not in group_entry["indirect_callsites"]
+            ):
+                group_entry["indirect_callsites"].append(indirect_callsite)
         for groups in (project_groups, external_groups, unresolved_groups):
             for entry in groups.values():
                 entry["direct_callsite_lines"] = sorted(entry["direct_callsite_lines"])
@@ -3908,9 +3846,7 @@ class CodeIndex:
         raw_limit = requested_limit
         max_raw_limit = 1_000_000
         while True:
-            records = list(
-                self._backend.get_callees(backend_lookup, limit=raw_limit) or []
-            )
+            records = list(self._backend.get_callees(backend_lookup, limit=raw_limit) or [])
             filtered = self._filter_callee_records(records)
             if (
                 len(filtered) >= requested_limit
@@ -3988,7 +3924,9 @@ class CodeIndex:
             return []
         return self._backend.find_function_pointers(func_name)
 
-    def get_header_declared_functions(self, header_files: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    def get_header_declared_functions(
+        self, header_files: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
         """Get functions declared in header files (public API)."""
         results: List[Dict[str, Any]] = []
         if self._backend:
@@ -4015,7 +3953,9 @@ class CodeIndex:
             deduped[key] = {"name": name, "filename": filename, "lineNumber": line_no}
         return list(deduped.values())
 
-    def _get_header_funcs_regex(self, header_files: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    def _get_header_funcs_regex(
+        self, header_files: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
         func_decl_re = re.compile(
             r"^\s*(?:extern\s+)?"
             r"(?:(?:const|volatile|struct|enum|union|unsigned|signed|long|short)\s+)*"
@@ -4038,22 +3978,26 @@ class CodeIndex:
                         continue
                     name = parsed["name"]
                     if self._resolve_function_name(name) in self._function_index:
-                        results.append({
-                            "name": name,
-                            "filename": self._normalize_path(fp),
-                            "lineNumber": line_no,
-                        })
+                        results.append(
+                            {
+                                "name": name,
+                                "filename": self._normalize_path(fp),
+                                "lineNumber": line_no,
+                            }
+                        )
                 for m in func_decl_re.finditer(content):
                     name = m.group("name")
-                    line_no = content[:m.start()].count("\n") + 1
+                    line_no = content[: m.start()].count("\n") + 1
                     if self._enclosing_cpp_type_name(lines, line_no):
                         continue
                     if self._resolve_function_name(name) in self._function_index:
-                        results.append({
-                            "name": name,
-                            "filename": self._normalize_path(fp),
-                            "lineNumber": line_no,
-                        })
+                        results.append(
+                            {
+                                "name": name,
+                                "filename": self._normalize_path(fp),
+                                "lineNumber": line_no,
+                            }
+                        )
         return results
 
     @staticmethod
@@ -4092,11 +4036,7 @@ class CodeIndex:
             return []
 
         records: List[Dict[str, Any]] = []
-        getter = (
-            getattr(self._backend, "get_macro_definitions", None)
-            if self._backend
-            else None
-        )
+        getter = getattr(self._backend, "get_macro_definitions", None) if self._backend else None
         if callable(getter):
             try:
                 records = [
@@ -4117,8 +4057,10 @@ class CodeIndex:
         if not records:
             with self._cache_lock:
                 known_missing = clean_name in self._macro_definition_miss_cache
-            regex_records = [] if known_missing else list(
-                self._get_macro_definition_index().get(clean_name, [])
+            regex_records = (
+                []
+                if known_missing
+                else list(self._get_macro_definition_index().get(clean_name, []))
             )
             if not regex_records and not known_missing:
                 with self._cache_lock:
@@ -4136,8 +4078,7 @@ class CodeIndex:
             records = [
                 record
                 for record in records
-                if self._safe_int(record.get("line") or record.get("start_line"), 1)
-                == query_start
+                if self._safe_int(record.get("line") or record.get("start_line"), 1) == query_start
                 and self._macro_record_end_line(record) == query_end
             ]
 

@@ -1,0 +1,3582 @@
+rule_catalog_version: 1
+rules:
+- id: java_sql_statement_execute
+  language: java
+  engine: java_local
+  defect_class: sql_injection
+  cwe: CWE-89
+  skill: java_injection
+  default_severity: high
+  revision: 1
+  status: stable
+  title: SQL execute
+  summary: SQL 执行 API 使用动态参数，可能存在 SQL 注入或错误的参数化使用。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_unchecked_pointer_backtrack
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: buffer_underflow
+  cwe: CWE-127
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Unchecked Pointer Backtrack
+  summary: A legacy polymorphic detector for buffer underread and buffer underwrite sinks.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: java_jdbc_concatenated_sql
+  language: java
+  engine: java_local
+  defect_class: sql_injection
+  cwe: CWE-89
+  skill: java_injection
+  default_severity: high
+  revision: 1
+  status: stable
+  title: concatenated JDBC SQL string
+  summary: JDBC/JdbcTemplate SQL 字符串由外部参数拼接构造。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_jdbc_fake_prepared_statement
+  language: java
+  engine: java_local
+  defect_class: sql_injection
+  cwe: CWE-89
+  skill: java_injection
+  default_severity: high
+  revision: 1
+  status: stable
+  title: PreparedStatement from dynamic SQL variable
+  summary: PreparedStatement 使用已经拼接好的 SQL 变量创建，可能是伪预编译。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_mybatis_dollar_substitution
+  language: java
+  engine: java_local
+  defect_class: sql_injection
+  cwe: CWE-89
+  skill: java_injection
+  default_severity: high
+  revision: 1
+  status: stable
+  title: MyBatis ${}
+  summary: MyBatis `${}` 文本替换会把输入直接拼入 SQL。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_jpa_dynamic_query
+  language: java
+  engine: java_local
+  defect_class: jpa_injection
+  cwe: CWE-89
+  skill: java_injection
+  default_severity: high
+  revision: 1
+  status: stable
+  title: JPA/JPQL query construction
+  summary: JPA/JPQL/NativeQuery 可能使用字符串拼接构造查询。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_nosql_query_injection
+  language: java
+  engine: java_local
+  defect_class: nosql_injection
+  cwe: CWE-943
+  skill: java_injection
+  default_severity: high
+  revision: 1
+  status: stable
+  title: NoSQL/raw query construction
+  summary: MongoDB/Elasticsearch 等 NoSQL 查询可能拼接外部输入或 raw JSON。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_command_execution
+  language: java
+  engine: java_local
+  defect_class: command_injection
+  cwe: CWE-78
+  skill: java_injection
+  default_severity: high
+  revision: 1
+  status: stable
+  title: process execution
+  summary: 进程执行 API 可能接收外部可控命令或参数。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_path_traversal_file_api
+  language: java
+  engine: java_local
+  defect_class: path_traversal
+  cwe: CWE-22
+  skill: java_web_security
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: file/path API
+  summary: 文件路径 API 可能使用外部输入构造路径，存在路径穿越风险。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_ssrf_http_client
+  language: java
+  engine: java_local
+  defect_class: ssrf
+  cwe: CWE-918
+  skill: java_web_security
+  default_severity: high
+  revision: 1
+  status: stable
+  title: outbound URL/client
+  summary: 出站 HTTP/URL API 可能使用外部可控地址，存在 SSRF 风险。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_file_upload_path
+  language: java
+  engine: java_local
+  defect_class: file_upload
+  cwe: CWE-434
+  skill: java_web_security
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: file upload handling
+  summary: 文件上传处理可能信任原始文件名、类型或直接写入目标路径。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_object_deserialization
+  language: java
+  engine: java_local
+  defect_class: unsafe_deserialization
+  cwe: CWE-502
+  skill: java_deserialization
+  default_severity: high
+  revision: 1
+  status: stable
+  title: object deserialization
+  summary: 对象反序列化或 Jackson default typing 可能处理不可信数据。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_third_party_deserialization
+  language: java
+  engine: java_local
+  defect_class: unsafe_deserialization
+  cwe: CWE-502
+  skill: java_deserialization
+  default_severity: high
+  revision: 1
+  status: stable
+  title: third-party deserialization
+  summary: Fastjson/Jackson/XStream/SnakeYAML 等反序列化入口可能处理不可信数据。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_xxe_factory
+  language: java
+  engine: java_local
+  defect_class: xxe
+  cwe: CWE-611
+  skill: java_deserialization
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: XML parser factory
+  summary: XML 解析器工厂可能未禁用外部实体，存在 XXE 风险。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_xmldecoder_readobject
+  language: java
+  engine: java_local
+  defect_class: unsafe_deserialization
+  cwe: CWE-502
+  skill: java_deserialization
+  default_severity: high
+  revision: 1
+  status: stable
+  title: XMLDecoder deserialization
+  summary: XMLDecoder 会实例化并调用 XML 中描述的对象/方法，处理不可信 XML 时可导致代码执行。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_template_injection
+  language: java
+  engine: java_local
+  defect_class: template_injection
+  cwe: CWE-94
+  skill: java_injection
+  default_severity: high
+  revision: 1
+  status: stable
+  title: template rendering
+  summary: 模板内容或表达式若来自外部输入，可能导致服务端模板注入。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_sensitive_logging
+  language: java
+  engine: java_local
+  defect_class: sensitive_log
+  cwe: CWE-532
+  skill: java_web_security
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: sensitive logging
+  summary: 日志输出可能包含密码、token、cookie 或 Authorization 等敏感信息。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_header_injection
+  language: java
+  engine: java_local
+  defect_class: header_injection
+  cwe: CWE-113
+  skill: java_web_security
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: HTTP header write
+  summary: 响应头值可能来自外部输入，存在响应拆分或不安全 header 写入风险。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_insecure_cookie_flags
+  language: java
+  engine: java_local
+  defect_class: insecure_cookie
+  cwe: CWE-614
+  skill: java_web_security
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: cookie creation
+  summary: 认证或会话 Cookie 可能缺少 HttpOnly/Secure/SameSite 属性。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_cors_wildcard
+  language: java
+  engine: java_local
+  defect_class: cors_misconfiguration
+  cwe: CWE-942
+  skill: java_web_security
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: permissive CORS
+  summary: CORS 来源配置过宽，可能允许任意站点读取敏感响应。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_spring_security_permit_all
+  language: java
+  engine: java_local
+  defect_class: authz_bypass
+  cwe: CWE-862
+  skill: java_authz
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Spring Security broad allow/disable
+  summary: Spring Security 配置可能过宽或禁用 CSRF，导致认证/授权绕过。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_sensitive_state_change_missing_authz
+  language: java
+  engine: java_local
+  defect_class: authz_bypass
+  cwe: CWE-862
+  skill: java_authz
+  default_severity: high
+  revision: 1
+  status: stable
+  title: sensitive state-changing operation
+  summary: 敏感状态变更操作可能缺少认证、授权或对象归属检查。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_missing_object_authorization
+  language: java
+  engine: java_local
+  defect_class: authz_bypass
+  cwe: CWE-639
+  skill: java_authz
+  default_severity: high
+  revision: 1
+  status: stable
+  title: object lookup without owner check
+  summary: 对象级查询可能直接使用外部传入的用户、订单或账户标识，缺少 owner/tenant/principal 校验。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_filter_unconditional_chain
+  language: java
+  engine: java_local
+  defect_class: authz_bypass
+  cwe: CWE-862
+  skill: java_authz
+  default_severity: high
+  revision: 1
+  status: stable
+  title: servlet filter chain continuation
+  summary: Servlet filter 在认证失败、缺失或未验证 token 时仍继续调用 FilterChain.doFilter。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_weak_crypto
+  language: java
+  engine: java_local
+  defect_class: weak_crypto
+  cwe: CWE-327
+  skill: java_crypto
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: weak crypto primitive
+  summary: 使用弱加密算法、模式或摘要，可能导致机密性/完整性不足。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_crypto_fixed_iv_or_salt
+  language: java
+  engine: java_local
+  defect_class: crypto_misuse
+  cwe: CWE-329
+  skill: java_crypto
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: fixed IV/salt/seed
+  summary: 加密 IV、GCM nonce、KDF salt 或 SecureRandom seed 可能固定或可预测。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_jwt_verification_misuse
+  language: java
+  engine: java_local
+  defect_class: jwt_misuse
+  cwe: CWE-347
+  skill: java_web_security
+  default_severity: high
+  revision: 1
+  status: stable
+  title: JWT verification
+  summary: JWT 可能只解码不验签、允许 none 算法或硬编码签名密钥。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_manual_close_resource
+  language: java
+  engine: java_local
+  defect_class: resource_leak
+  cwe: CWE-772
+  skill: java_resource_lifecycle
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: closeable resource allocation
+  summary: Closeable/AutoCloseable 资源创建后可能未被 try-with-resources 或 finally 关闭。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_resource_exhaustion_read_all
+  language: java
+  engine: java_local
+  defect_class: resource_exhaustion
+  cwe: CWE-400
+  skill: java_resource_lifecycle
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: unbounded memory read
+  summary: 一次性读取外部输入可能导致内存耗尽或请求放大。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_regex_dos
+  language: java
+  engine: java_local
+  defect_class: regex_dos
+  cwe: CWE-1333
+  skill: java_web_security
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: regex evaluation
+  summary: 外部可控正则或高复杂度正则可能造成 ReDoS。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_reflection_dynamic_call
+  language: java
+  engine: java_local
+  defect_class: reflection_injection
+  cwe: CWE-470
+  skill: java_injection
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: reflection call
+  summary: 反射类名、方法名或参数若可控，可能绕过预期边界执行危险代码。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_dynamic_class_loading
+  language: java
+  engine: java_local
+  defect_class: dynamic_class_loading
+  cwe: CWE-470
+  skill: java_injection
+  default_severity: high
+  revision: 1
+  status: stable
+  title: dynamic class loading
+  summary: 动态类加载路径或字节码若可控，可能导致插件/代码加载风险。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_classpath_resource_traversal
+  language: java
+  engine: java_local
+  defect_class: path_traversal
+  cwe: CWE-22
+  skill: java_web_security
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: classpath/resource lookup
+  summary: 类路径或 Web 资源查找可能使用外部输入构造资源路径。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_temp_file_risk
+  language: java
+  engine: java_local
+  defect_class: temp_file_risk
+  cwe: CWE-377
+  skill: java_resource_lifecycle
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: temporary file handling
+  summary: Temporary file handling / 临时文件创建、权限或清理策略可能不安全。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_insecure_file_permissions
+  language: java
+  engine: java_local
+  defect_class: insecure_file_permission
+  cwe: CWE-732
+  skill: java_resource_lifecycle
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: insecure file permission
+  summary: 文件或目录权限可能被设置为 ownerOnly=false 或 world-readable/writable/executable。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_shared_mutable_static_state
+  language: java
+  engine: java_local
+  defect_class: concurrency_race
+  cwe: CWE-362
+  skill: java_concurrency
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: shared mutable state
+  summary: 单例/静态共享可变对象可能导致线程安全问题或跨请求状态污染。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_jndi_lookup
+  language: java
+  engine: java_local
+  defect_class: jndi_injection
+  cwe: CWE-74
+  skill: java_injection
+  default_severity: high
+  revision: 1
+  status: stable
+  title: JNDI lookup
+  summary: JNDI lookup 可能使用外部可控名称，导致远程资源解析或历史 JNDI 注入风险。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_ldap_search_filter
+  language: java
+  engine: java_local
+  defect_class: ldap_injection
+  cwe: CWE-90
+  skill: java_injection
+  default_severity: high
+  revision: 1
+  status: stable
+  title: LDAP search/filter
+  summary: LDAP 查询过滤器可能拼接外部输入，存在 LDAP 注入风险。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_expression_or_script_eval
+  language: java
+  engine: java_local
+  defect_class: code_injection
+  cwe: CWE-94
+  skill: java_injection
+  default_severity: high
+  revision: 1
+  status: stable
+  title: expression/script evaluation
+  summary: 表达式或脚本解释器可能执行外部可控表达式。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_open_redirect
+  language: java
+  engine: java_local
+  defect_class: open_redirect
+  cwe: CWE-601
+  skill: java_web_security
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: HTTP redirect
+  summary: 重定向目标可能由外部输入控制，造成开放重定向或钓鱼跳转。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_xpath_expression_concat
+  language: java
+  engine: java_local
+  defect_class: xpath_injection
+  cwe: CWE-643
+  skill: java_injection
+  default_severity: high
+  revision: 1
+  status: stable
+  title: XPath expression evaluation
+  summary: XPath 表达式可能由外部输入拼接构造，导致 XPath 注入。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_druid_monitor_exposure
+  language: java
+  engine: java_local
+  defect_class: sensitive_info_exposure
+  cwe: CWE-200
+  skill: java_web_security
+  default_severity: high
+  revision: 1
+  status: stable
+  title: public management/monitor endpoint
+  summary: Druid、Actuator 或 Swagger 等管理/文档入口可能公开暴露敏感运行信息。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_zip_entry_path_traversal
+  language: java
+  engine: java_local
+  defect_class: path_traversal
+  cwe: CWE-22
+  skill: java_web_security
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: archive entry path
+  summary: 压缩包条目名可能包含 `../` 或绝对路径，解压时造成 Zip Slip。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_weak_random_security
+  language: java
+  engine: java_local
+  defect_class: weak_random
+  cwe: CWE-338
+  skill: java_crypto
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: predictable random
+  summary: 安全敏感 token、密钥或验证码若使用可预测随机数会降低安全性。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_tls_verification_disabled
+  language: java
+  engine: java_local
+  defect_class: insecure_tls
+  cwe: CWE-295
+  skill: java_web_security
+  default_severity: high
+  revision: 1
+  status: stable
+  title: TLS verification bypass
+  summary: TLS 证书或主机名校验可能被禁用。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_hardcoded_secret
+  language: java
+  engine: java_local
+  defect_class: secret_exposure
+  cwe: CWE-798
+  skill: java_web_security
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: hardcoded secret
+  summary: 源码或配置文件中可能硬编码 password、token、secret 或访问密钥。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_reflected_xss_response_body
+  language: java
+  engine: java_local
+  defect_class: xss
+  cwe: CWE-79
+  skill: java_web_security
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: reflected response body
+  summary: Controller 直接把请求参数返回到响应体，前端或浏览器 HTML 解析时可能触发反射型 XSS。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_stored_xss_persistent_content
+  language: java
+  engine: java_local
+  defect_class: xss
+  cwe: CWE-79
+  skill: java_web_security
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: stored XSS persistence
+  summary: 用户输入或 User-Agent 被持久化，后续页面若不安全渲染会触发存储型 XSS。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: java_template_utext_xss
+  language: java
+  engine: java_local
+  defect_class: xss
+  cwe: CWE-79
+  skill: java_web_security
+  default_severity: medium
+  revision: 1
+  status: stable
+  title: template unescaped HTML model attribute
+  summary: 用户输入进入模板 HTML 模型字段，若模板使用 th:utext 等不转义输出会触发 XSS。
+  required_capabilities:
+  - source_text
+  - java_structure
+  aliases: []
+  legacy_id: true
+- id: arithmetic_size_before_sink
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: integer_overflow
+  cwe: CWE-190
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Arithmetic Size Before Sink
+  summary: Built-in cpp_regex detector for integer overflow.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: borrowed_pointer_returned_after_unlock
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: use_after_free
+  cwe: CWE-416
+  skill: temporal_memory
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Borrowed Pointer Returned After Unlock
+  summary: Built-in cpp_regex detector for use after free.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: callback_while_lock_held
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: held_lock_callback
+  cwe: CWE-667
+  skill: concurrency_lock_order
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Callback While Lock Held
+  summary: Built-in cpp_regex detector for held lock callback.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: calloc_product_overflow
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: integer_overflow
+  cwe: CWE-190
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Calloc Product Overflow
+  summary: Built-in cpp_regex detector for integer overflow.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: cond_wait_guarded_by_if
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: lost_wakeup
+  cwe: CWE-366
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Cond Wait Guarded By If
+  summary: Built-in cpp_regex detector for lost wakeup.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: decoded_control_field_ignored
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: protocol_validation
+  cwe: CWE-20
+  skill: ownership_contract
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Decoded Control Field Ignored
+  summary: Built-in cpp_regex detector for protocol validation.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: derived_protocol_length_reaches_copy_without_input_bound
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: bounds
+  cwe: CWE-125
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Derived Protocol Length Reaches Copy Without Input Bound
+  summary: Built-in cpp_regex detector for bounds.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: direct_realloc_assignment
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: realloc_misuse
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Direct Realloc Assignment
+  summary: Built-in cpp_regex detector for realloc misuse.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: double_checked_global_without_atomic
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: double_checked_locking
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Double Checked Global Without Atomic
+  summary: Built-in cpp_regex detector for double checked locking.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: error_path_allocation_not_released
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Error Path Allocation Not Released
+  summary: Built-in cpp_regex detector for memory leak.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: error_probe_can_return_success
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: unchecked_return
+  cwe: CWE-252
+  skill: null_and_failure
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Error Probe Can Return Success
+  summary: Built-in cpp_regex detector for unchecked return.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: external_length_field_reaches_copy
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: bounds
+  cwe: CWE-125
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: External Length Field Reaches Copy
+  summary: Built-in cpp_regex detector for bounds.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: fd_closed_without_invalidation
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: stale_fd
+  cwe: CWE-672
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Fd Closed Without Invalidation
+  summary: Built-in cpp_regex detector for stale fd.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: free_non_owner_pointer
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: invalid_free
+  cwe: CWE-590
+  skill: temporal_memory
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Free Non Owner Pointer
+  summary: Built-in cpp_regex detector for invalid free.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: global_callback_context_borrowed_under_lock
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: use_after_free
+  cwe: CWE-416
+  skill: temporal_memory
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Global Callback Context Borrowed Under Lock
+  summary: Built-in cpp_regex detector for use after free.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: global_state_not_restored_on_error
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: state_inconsistency
+  cwe: CWE-672
+  skill: ownership_contract
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Global State Not Restored On Error
+  summary: Built-in cpp_regex detector for state inconsistency.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: header_length_subtraction_reaches_copy
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: bounds
+  cwe: CWE-125
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Header Length Subtraction Reaches Copy
+  summary: Built-in cpp_regex detector for bounds.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: inline_allocation_size_overflow
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: integer_overflow
+  cwe: CWE-190
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Inline Allocation Size Overflow
+  summary: Built-in cpp_regex detector for integer overflow.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: lookup_like_call_under_held_lock
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: deadlock
+  cwe: CWE-833
+  skill: concurrency_lock_order
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Lookup Like Call Under Held Lock
+  summary: Built-in cpp_regex detector for deadlock.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: mapping_unmapped_without_pointer_clear
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: use_after_free
+  cwe: CWE-416
+  skill: temporal_memory
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Mapping Unmapped Without Pointer Clear
+  summary: Built-in cpp_regex detector for use after free.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: member_allocation_not_released_with_parent
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Member Allocation Not Released With Parent
+  summary: Built-in cpp_regex detector for memory leak.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: negative_length_cast_to_size_t
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: signed_unsigned
+  cwe: CWE-195
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Negative Length Cast To Size T
+  summary: Built-in cpp_regex detector for signed unsigned.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: nonliteral_format_string
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: format_string
+  cwe: CWE-134
+  skill: string_and_format
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Nonliteral Format String
+  summary: Built-in cpp_regex detector for format string.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: object_published_before_initialization
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: object_publication
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Object Published Before Initialization
+  summary: Built-in cpp_regex detector for object publication.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: object_published_by_helper_before_initialization
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: object_publication
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Object Published By Helper Before Initialization
+  summary: Built-in cpp_regex detector for object publication.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: partial_struct_sent
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: uninitialized_read
+  cwe: CWE-457
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Partial Struct Sent
+  summary: Built-in cpp_regex detector for uninitialized read.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: path_check_before_open
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: toctou
+  cwe: CWE-367
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Path Check Before Open
+  summary: Built-in cpp_regex detector for toctou.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: recv_retry_without_backoff
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: busy_loop
+  cwe: CWE-835
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Recv Retry Without Backoff
+  summary: Built-in cpp_regex detector for busy loop.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: refcount_update_after_unlock
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: refcount_race
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Refcount Update After Unlock
+  summary: Built-in cpp_regex detector for refcount race.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: return_stack_address
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: stack_escape
+  cwe: CWE-562
+  skill: stack_escape
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Return Stack Address
+  summary: Built-in cpp_regex detector for stack escape.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: return_while_lock_held
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: missing_unlock
+  cwe: CWE-667
+  skill: concurrency_lock_order
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Return While Lock Held
+  summary: Built-in cpp_regex detector for missing unlock.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: same_expression_freed_twice
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: double_free
+  cwe: CWE-415
+  skill: temporal_memory
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Same Expression Freed Twice
+  summary: Built-in cpp_regex detector for double free.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: same_function_allocation_not_released
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Same Function Allocation Not Released
+  summary: Built-in cpp_regex detector for memory leak.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: same_pointer_freed_twice
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: double_free
+  cwe: CWE-415
+  skill: temporal_memory
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Same Pointer Freed Twice
+  summary: Built-in cpp_regex detector for double free.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: sizeof_index_write
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: off_by_one
+  cwe: CWE-193
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Sizeof Index Write
+  summary: Built-in cpp_regex detector for off by one.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: stack_address_to_retaining_api
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: stack_escape
+  cwe: CWE-562
+  skill: stack_escape
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Stack Address To Retaining Api
+  summary: Built-in cpp_regex detector for stack escape.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: stack_address_to_thread
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: stack_escape
+  cwe: CWE-562
+  skill: stack_escape
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Stack Address To Thread
+  summary: Built-in cpp_regex detector for stack escape.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: system_with_constructed_command
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: command_injection
+  cwe: CWE-78
+  skill: string_and_format
+  default_severity: high
+  revision: 1
+  status: stable
+  title: System With Constructed Command
+  summary: Built-in cpp_regex detector for command injection.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: truncated_key_used_for_route_insert
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: key_truncation
+  cwe: CWE-187
+  skill: string_and_format
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Truncated Key Used For Route Insert
+  summary: Built-in cpp_regex detector for key truncation.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: unaligned_integer_pointer_cast
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: alignment
+  cwe: CWE-704
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Unaligned Integer Pointer Cast
+  summary: Built-in cpp_regex detector for alignment.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: unbounded_vla_or_stack_array
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: stack_overflow
+  cwe: CWE-121
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Unbounded Vla Or Stack Array
+  summary: Built-in cpp_regex detector for stack overflow.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: unchecked_insert_after_ownership_handoff
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Unchecked Insert After Ownership Handoff
+  summary: Built-in cpp_regex detector for memory leak.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: unchecked_strchr_result
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: null_pointer_dereference
+  cwe: CWE-476
+  skill: null_and_failure
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Unchecked Strchr Result
+  summary: Built-in cpp_regex detector for null pointer dereference.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: unsynchronized_shared_flag_or_counter
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: race
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Unsynchronized Shared Flag Or Counter
+  summary: Built-in cpp_regex detector for race.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: write_without_sigpipe_handling
+  language: c_cpp
+  engine: cpp_regex
+  defect_class: sigpipe_unhandled
+  cwe: CWE-404
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Write Without Sigpipe Handling
+  summary: Built-in cpp_regex detector for sigpipe unhandled.
+  required_capabilities:
+  - source_text
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_acquire_without_release_on_exit
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Acquire Without Release On Exit
+  summary: Built-in cpp_clang_cfg detector for memory leak.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_active_owner_destroy_without_quiescence
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: premature_destroy
+  cwe: CWE-416
+  skill: temporal_memory
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Active Owner Destroy Without Quiescence
+  summary: Built-in cpp_clang_cfg detector for premature destroy.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_alloc_result_deref_without_null_guard
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: null_pointer_dereference
+  cwe: CWE-476
+  skill: null_and_failure
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Alloc Result Deref Without Null Guard
+  summary: Built-in cpp_clang_cfg detector for null pointer dereference.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_allocation_result_used_without_null_check
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: unchecked_allocation
+  cwe: CWE-690
+  skill: null_and_failure
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Allocation Result Used Without Null Check
+  summary: Built-in cpp_clang_cfg detector for unchecked allocation.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_allocation_size_arithmetic_without_overflow_guard
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: integer_overflow
+  cwe: CWE-190
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Allocation Size Arithmetic Without Overflow Guard
+  summary: Allocation size arithmetic reaches an allocator without a visible overflow guard.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_borrowed_pointer_returned_after_unlock
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: use_after_free
+  cwe: CWE-416
+  skill: temporal_memory
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Borrowed Pointer Returned After Unlock
+  summary: Built-in cpp_clang_cfg detector for use after free.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_callback_while_lock_held
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: held_lock_callback
+  cwe: CWE-667
+  skill: concurrency_lock_order
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Callback While Lock Held
+  summary: Built-in cpp_clang_cfg detector for held lock callback.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_cond_wait_guarded_by_if
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: lost_wakeup
+  cwe: CWE-366
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Cond Wait Guarded By If
+  summary: Built-in cpp_clang_cfg detector for lost wakeup.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_container_unlink_without_release
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Container Unlink Without Release
+  summary: Built-in cpp_clang_cfg detector for memory leak.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_double_checked_global_without_atomic
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: double_checked_locking
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Double Checked Global Without Atomic
+  summary: Built-in cpp_clang_cfg detector for double checked locking.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_external_length_field_reaches_copy
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: bounds
+  cwe: CWE-125
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: External Length Field Reaches Copy
+  summary: Built-in cpp_clang_cfg detector for bounds.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_external_size_allocation_without_limit
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: resource_allocation_without_limits
+  cwe: CWE-770
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: External Size Allocation Without Limit
+  summary: Built-in cpp_clang_cfg detector for resource allocation without limits.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_fd_closed_without_owner_invalidation
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: stale_fd
+  cwe: CWE-672
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Fd Closed Without Owner Invalidation
+  summary: Built-in cpp_clang_cfg detector for stale fd.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_fd_open_return_without_close
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: fd_leak
+  cwe: CWE-775
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Fd Open Return Without Close
+  summary: Built-in cpp_clang_cfg detector for fd leak.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_file_type_validation_after_mapping_size_check
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: file_type_validation
+  cwe: CWE-20
+  skill: ownership_contract
+  default_severity: high
+  revision: 1
+  status: stable
+  title: File Type Validation After Mapping Size Check
+  summary: Built-in cpp_clang_cfg detector for file type validation.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_fixed_byte_limit_before_spec_count_check
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: size_limit_mismatch
+  cwe: CWE-131
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Fixed Byte Limit Before Spec Count Check
+  summary: Built-in cpp_clang_cfg detector for size limit mismatch.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_free_derived_pointer_alias
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: invalid_free
+  cwe: CWE-590
+  skill: temporal_memory
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Free Derived Pointer Alias
+  summary: Built-in cpp_clang_cfg detector for invalid free.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_free_non_owner_pointer_expression
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: invalid_free
+  cwe: CWE-590
+  skill: temporal_memory
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Free Non Owner Pointer Expression
+  summary: Built-in cpp_clang_cfg detector for invalid free.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_full_key_lookup_truncated_key_insert
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: key_truncation
+  cwe: CWE-187
+  skill: string_and_format
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Full Key Lookup Truncated Key Insert
+  summary: Built-in cpp_clang_cfg detector for key truncation.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_global_callback_stores_borrowed_object
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: use_after_free
+  cwe: CWE-416
+  skill: temporal_memory
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Global Callback Stores Borrowed Object
+  summary: Built-in cpp_clang_cfg detector for use after free.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_global_dynamic_array_resize_without_lock
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: dynamic_array_race
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Global Dynamic Array Resize Without Lock
+  summary: Built-in cpp_clang_cfg detector for dynamic array race.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_global_mapping_unmapped_without_invalidation
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: use_after_free
+  cwe: CWE-416
+  skill: temporal_memory
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Global Mapping Unmapped Without Invalidation
+  summary: Built-in cpp_clang_cfg detector for use after free.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_global_pointer_length_pair_published_without_lock
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: unsynchronized_shared_state
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Global Pointer Length Pair Published Without Lock
+  summary: Built-in cpp_clang_cfg detector for unsynchronized shared state.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_global_state_not_restored_on_error
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: state_inconsistency
+  cwe: CWE-672
+  skill: ownership_contract
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Global State Not Restored On Error
+  summary: Built-in cpp_clang_cfg detector for state inconsistency.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_global_state_written_with_and_without_lock
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: unsynchronized_shared_state
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Global State Written With And Without Lock
+  summary: Built-in cpp_clang_cfg detector for unsynchronized shared state.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_header_length_reaches_copy_without_wire_bound
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: bounds
+  cwe: CWE-125
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Header Length Reaches Copy Without Wire Bound
+  summary: Built-in cpp_clang_cfg detector for bounds.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_heap_thread_argument_owner_not_released
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Heap Thread Argument Owner Not Released
+  summary: Built-in cpp_clang_cfg detector for memory leak.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_incomplete_owned_member_cleanup
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: incomplete_cleanup
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Incomplete Owned Member Cleanup
+  summary: Built-in cpp_clang_cfg detector for incomplete cleanup.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_log_error_path_allocation_not_released
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Log Error Path Allocation Not Released
+  summary: Built-in cpp_clang_cfg detector for memory leak.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_macro_guarded_lock_may_compile_to_noop
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: race
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Macro Guarded Lock May Compile To Noop
+  summary: Built-in cpp_clang_cfg detector for race.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_narrowed_allocation_original_length_copy
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: heap_overflow
+  cwe: CWE-122
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Narrowed Allocation Original Length Copy
+  summary: Built-in cpp_clang_cfg detector for heap overflow.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_narrowing_size_cast_without_range_guard
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: integer_overflow
+  cwe: CWE-190
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Narrowing Size Cast Without Range Guard
+  summary: Built-in cpp_clang_cfg detector for integer overflow.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_negative_length_cast_to_size_t
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: signed_unsigned
+  cwe: CWE-195
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Negative Length Cast To Size T
+  summary: Built-in cpp_clang_cfg detector for signed unsigned.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_nonliteral_format_string
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: format_string
+  cwe: CWE-134
+  skill: string_and_format
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Nonliteral Format String
+  summary: Built-in cpp_clang_cfg detector for format string.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_object_published_before_initialization
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: object_publication
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Object Published Before Initialization
+  summary: Built-in cpp_clang_cfg detector for object publication.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_offset_length_copy_without_source_bound
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: buffer_overread
+  cwe: CWE-126
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Offset Length Copy Without Source Bound
+  summary: Built-in cpp_clang_cfg detector for buffer overread.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_out_param_used_before_success_check
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: bad_parameter_or_api_misuse
+  cwe: CWE-252
+  skill: null_and_failure
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Out Param Used Before Success Check
+  summary: Built-in cpp_clang_cfg detector for bad parameter or api misuse.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_parent_release_without_owned_member_cleanup
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Parent Release Without Owned Member Cleanup
+  summary: Built-in cpp_clang_cfg detector for memory leak.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_parsed_protocol_version_is_ignored
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: version_filtering
+  cwe: CWE-20
+  skill: ownership_contract
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Parsed Protocol Version Is Ignored
+  summary: Built-in cpp_clang_cfg detector for version filtering.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_partial_aggregate_sent_with_sizeof
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: uninitialized_read
+  cwe: CWE-457
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Partial Aggregate Sent With Sizeof
+  summary: Built-in cpp_clang_cfg detector for uninitialized read.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_path_check_before_open
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: toctou
+  cwe: CWE-367
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Path Check Before Open
+  summary: Built-in cpp_clang_cfg detector for toctou.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_path_state_key_generation_before_locked_registration
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: key_generation_race
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Path State Key Generation Before Locked Registration
+  summary: Built-in cpp_clang_cfg detector for key generation race.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_pointer_may_be_uninitialized_before_use
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: uninitialized_pointer
+  cwe: CWE-824
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Pointer May Be Uninitialized Before Use
+  summary: Built-in cpp_clang_cfg detector for uninitialized pointer.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_probe_error_branch_can_return_success_status
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: unchecked_return
+  cwe: CWE-252
+  skill: null_and_failure
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Probe Error Branch Can Return Success Status
+  summary: Built-in cpp_clang_cfg detector for unchecked return.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_protocol_units_length_reaches_copy_without_packet_bound
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: bounds
+  cwe: CWE-125
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Protocol Units Length Reaches Copy Without Packet Bound
+  summary: Built-in cpp_clang_cfg detector for bounds.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_raw_fd_revalidated_as_encoded
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: fd_encoding_mismatch
+  cwe: CWE-587
+  skill: ownership_contract
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Raw Fd Revalidated As Encoded
+  summary: Built-in cpp_clang_cfg detector for fd encoding mismatch.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_realloc_lost_original
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: realloc_misuse
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Realloc Lost Original
+  summary: Built-in cpp_clang_cfg detector for realloc misuse.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_recv_retry_loop_without_timeout_or_budget
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: busy_loop
+  cwe: CWE-835
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Recv Retry Loop Without Timeout Or Budget
+  summary: Built-in cpp_clang_cfg detector for busy loop.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_refcount_update_after_unlock
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: refcount_race
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Refcount Update After Unlock
+  summary: Built-in cpp_clang_cfg detector for refcount race.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_registry_unlink_free_after_unlock
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: race
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Registry Unlink Free After Unlock
+  summary: Built-in cpp_clang_cfg detector for race.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_requested_permission_not_applied_to_mode
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: permission
+  cwe: CWE-732
+  skill: ownership_contract
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Requested Permission Not Applied To Mode
+  summary: Built-in cpp_clang_cfg detector for permission.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_return_with_lock_held
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: missing_unlock
+  cwe: CWE-667
+  skill: concurrency_lock_order
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Return With Lock Held
+  summary: Built-in cpp_clang_cfg detector for missing unlock.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_role_specific_release_argument_mismatch
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Role Specific Release Argument Mismatch
+  summary: Built-in cpp_clang_cfg detector for memory leak.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_same_object_released_twice
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: double_free
+  cwe: CWE-415
+  skill: temporal_memory
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Same Object Released Twice
+  summary: Built-in cpp_clang_cfg detector for double free.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_shared_resource_freed_without_refcount_protocol
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: missing_refcount
+  cwe: CWE-772
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Shared Resource Freed Without Refcount Protocol
+  summary: Built-in cpp_clang_cfg detector for missing refcount.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_shell_command_concat_env
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: command_injection
+  cwe: CWE-78
+  skill: string_and_format
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Shell Command Concat Env
+  summary: Built-in cpp_clang_cfg detector for command injection.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_size_addition_without_overflow_guard
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: integer_overflow
+  cwe: CWE-190
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Size Addition Without Overflow Guard
+  summary: Built-in cpp_clang_cfg detector for integer overflow.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_sizeof_index_write
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: off_by_one
+  cwe: CWE-193
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Sizeof Index Write
+  summary: Built-in cpp_clang_cfg detector for off by one.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_slot_overwrite_without_existing_owner_cleanup
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Slot Overwrite Without Existing Owner Cleanup
+  summary: Built-in cpp_clang_cfg detector for memory leak.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_stack_address_passed_to_thread
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: stack_escape
+  cwe: CWE-562
+  skill: stack_escape
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Stack Address Passed To Thread
+  summary: Built-in cpp_clang_cfg detector for stack escape.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_system_with_nonliteral_command
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: command_injection
+  cwe: CWE-78
+  skill: string_and_format
+  default_severity: high
+  revision: 1
+  status: stable
+  title: System With Nonliteral Command
+  summary: Built-in cpp_clang_cfg detector for command injection.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_timer_callback_object_lock_without_scheduler_lock
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: deadlock
+  cwe: CWE-833
+  skill: concurrency_lock_order
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Timer Callback Object Lock Without Scheduler Lock
+  summary: Built-in cpp_clang_cfg detector for deadlock.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_unaligned_integer_pointer_cast
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: alignment
+  cwe: CWE-704
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Unaligned Integer Pointer Cast
+  summary: Built-in cpp_clang_cfg detector for alignment.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_unbounded_count_indexes_fixed_array
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: out_of_bounds_write
+  cwe: CWE-787
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Unbounded Count Indexes Fixed Array
+  summary: Built-in cpp_clang_cfg detector for out of bounds write.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_unbounded_vla_or_stack_array
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: stack_overflow
+  cwe: CWE-121
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Unbounded Vla Or Stack Array
+  summary: Built-in cpp_clang_cfg detector for stack overflow.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_unchecked_insert_after_ownership_handoff
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Unchecked Insert After Ownership Handoff
+  summary: Built-in cpp_clang_cfg detector for memory leak.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_unchecked_object_offset_deref
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: out_of_range_pointer_offset
+  cwe: CWE-823
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Unchecked Object Offset Deref
+  summary: Built-in cpp_clang_cfg detector for out of range pointer offset.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_unchecked_param_indexes_fixed_global_array
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: bounds
+  cwe: CWE-125
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Unchecked Param Indexes Fixed Global Array
+  summary: Built-in cpp_clang_cfg detector for bounds.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_unchecked_strchr_result
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: null_pointer_dereference
+  cwe: CWE-476
+  skill: null_and_failure
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Unchecked Strchr Result
+  summary: Built-in cpp_clang_cfg detector for null pointer dereference.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_unlock_without_matching_lock
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: lock_protocol_violation
+  cwe: CWE-832
+  skill: concurrency_lock_order
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Unlock Without Matching Lock
+  summary: Built-in cpp_clang_cfg detector for lock protocol violation.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_unsynchronized_shared_flag_or_counter
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: race
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Unsynchronized Shared Flag Or Counter
+  summary: Built-in cpp_clang_cfg detector for race.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_use_after_release
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: use_after_free
+  cwe: CWE-416
+  skill: temporal_memory
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Use After Release
+  summary: Built-in cpp_clang_cfg detector for use after free.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_wide_count_before_magic_reaches_memory_sink
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: bounds
+  cwe: CWE-125
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Wide Count Before Magic Reaches Memory Sink
+  summary: Built-in cpp_clang_cfg detector for bounds.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_wide_count_read_without_magic_guard
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: protocol_validation
+  cwe: CWE-20
+  skill: ownership_contract
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Wide Count Read Without Magic Guard
+  summary: Built-in cpp_clang_cfg detector for protocol validation.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_cfg_wire_integer_cast_to_pointer_deref
+  language: c_cpp
+  engine: cpp_clang_cfg
+  defect_class: untrusted_pointer
+  cwe: CWE-822
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Wire Integer Cast To Pointer Deref
+  summary: Built-in cpp_clang_cfg detector for untrusted pointer.
+  required_capabilities:
+  - source_text
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_ast_command_string_control
+  language: c_cpp
+  engine: cpp_clang_matcher
+  defect_class: command_injection
+  cwe: CWE-78
+  skill: string_and_format
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Command String Control
+  summary: Built-in cpp_clang_matcher detector for command injection.
+  required_capabilities:
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_ast_copy_size_relation
+  language: c_cpp
+  engine: cpp_clang_matcher
+  defect_class: bounds
+  cwe: CWE-125
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Copy Size Relation
+  summary: Built-in cpp_clang_matcher detector for bounds.
+  required_capabilities:
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_ast_format_string_control
+  language: c_cpp
+  engine: cpp_clang_matcher
+  defect_class: format_string
+  cwe: CWE-134
+  skill: string_and_format
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Format String Control
+  summary: Built-in cpp_clang_matcher detector for format string.
+  required_capabilities:
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_ast_release_then_call_argument_use
+  language: c_cpp
+  engine: cpp_clang_matcher
+  defect_class: use_after_free
+  cwe: CWE-416
+  skill: temporal_memory
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Release Then Call Argument Use
+  summary: Built-in cpp_clang_matcher detector for use after free.
+  required_capabilities:
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_ast_resource_balance_summary
+  language: c_cpp
+  engine: cpp_clang_matcher
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Resource Balance Summary
+  summary: Built-in cpp_clang_matcher detector for memory leak.
+  required_capabilities:
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_ast_same_argument_released_twice
+  language: c_cpp
+  engine: cpp_clang_matcher
+  defect_class: double_free
+  cwe: CWE-415
+  skill: temporal_memory
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Same Argument Released Twice
+  summary: Built-in cpp_clang_matcher detector for double free.
+  required_capabilities:
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: clang_ast_unbounded_copy_sink
+  language: c_cpp
+  engine: cpp_clang_matcher
+  defect_class: bounds
+  cwe: CWE-125
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Unbounded Copy Sink
+  summary: Built-in cpp_clang_matcher detector for bounds.
+  required_capabilities:
+  - clang_structure
+  aliases: []
+  legacy_id: true
+- id: cached_group_pointer_reused_across_partition_index
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: logic_error
+  cwe: CWE-682
+  skill: ownership_contract
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Cached Group Pointer Reused Across Partition Index
+  summary: Built-in cpp_graph detector for logic error.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: callback_allocator_pair_not_enforced
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: alloc_free_mismatch
+  cwe: CWE-762
+  skill: ownership_contract
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Callback Allocator Pair Not Enforced
+  summary: Built-in cpp_graph detector for alloc free mismatch.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: callback_can_free_current_event_before_reacquire
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: callback_self_destroy_race
+  cwe: CWE-416
+  skill: temporal_memory
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Callback Can Free Current Event Before Reacquire
+  summary: Built-in cpp_graph detector for callback self destroy race.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: callee_path_state_checked_separately_from_key_generation
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: key_generation_race
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Callee Path State Checked Separately From Key Generation
+  summary: Built-in cpp_graph detector for key generation race.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: caller_limit_indexes_fixed_local_array
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: bounds
+  cwe: CWE-125
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Caller Limit Indexes Fixed Local Array
+  summary: Built-in cpp_graph detector for bounds.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: caller_limit_indexes_fixed_member_array
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: bounds
+  cwe: CWE-125
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Caller Limit Indexes Fixed Member Array
+  summary: Built-in cpp_graph detector for bounds.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: cas_result_ignored_before_slot_publication
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: slot_race
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Cas Result Ignored Before Slot Publication
+  summary: Built-in cpp_graph detector for slot race.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: child_list_cleanup_omitted
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Child List Cleanup Omitted
+  summary: Built-in cpp_graph detector for memory leak.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: cleanup_contract_type_mismatch
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: type_confusion
+  cwe: CWE-843
+  skill: ownership_contract
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Cleanup Contract Type Mismatch
+  summary: Built-in cpp_graph detector for type confusion.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: composed_string_copied_to_member_buffer_without_bound
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: stack_overflow
+  cwe: CWE-121
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Composed String Copied To Member Buffer Without Bound
+  summary: Built-in cpp_graph detector for stack overflow.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: container_unlink_free_after_unlock
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: race
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Container Unlink Free After Unlock
+  summary: Built-in cpp_graph detector for race.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: container_unlink_without_release
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Container Unlink Without Release
+  summary: Built-in cpp_graph detector for memory leak.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: cross_domain_counter_passed_to_callback_contract
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: semantic_mismatch
+  cwe: CWE-628
+  skill: ownership_contract
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Cross Domain Counter Passed To Callback Contract
+  summary: Built-in cpp_graph detector for semantic mismatch.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: cross_function_lock_order_inversion
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: deadlock
+  cwe: CWE-833
+  skill: concurrency_lock_order
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Cross Function Lock Order Inversion
+  summary: Built-in cpp_graph detector for deadlock.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: cross_function_recursive_lock
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: deadlock
+  cwe: CWE-833
+  skill: concurrency_lock_order
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Cross Function Recursive Lock
+  summary: Built-in cpp_graph detector for deadlock.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: destroy_shared_pool_while_active_tasks_remain
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: premature_destroy
+  cwe: CWE-416
+  skill: temporal_memory
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Destroy Shared Pool While Active Tasks Remain
+  summary: Built-in cpp_graph detector for premature destroy.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: encoded_or_reliable_fd_passed_to_raw_fd_contract
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: fd_type_mismatch
+  cwe: CWE-628
+  skill: ownership_contract
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Encoded Or Reliable Fd Passed To Raw Fd Contract
+  summary: Built-in cpp_graph detector for fd type mismatch.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: full_key_lookup_truncated_insert
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: key_truncation
+  cwe: CWE-187
+  skill: string_and_format
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Full Key Lookup Truncated Insert
+  summary: Built-in cpp_graph detector for key truncation.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: global_container_registration_without_cleanup_path
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Global Container Registration Without Cleanup Path
+  summary: Built-in cpp_graph detector for memory leak.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: global_registration_slot_checked_before_lock
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: registration_race
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Global Registration Slot Checked Before Lock
+  summary: Built-in cpp_graph detector for registration race.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: heap_thread_argument_not_released
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Heap Thread Argument Not Released
+  summary: Built-in cpp_graph detector for memory leak.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: insert_failure_leaves_stale_tree_node
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: use_after_free
+  cwe: CWE-416
+  skill: temporal_memory
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Insert Failure Leaves Stale Tree Node
+  summary: Built-in cpp_graph detector for use after free.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: log_inside_poisoned_traversal
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: log_amplification
+  cwe: CWE-400
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Log Inside Poisoned Traversal
+  summary: Built-in cpp_graph detector for log amplification.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: lookup_before_insert_lock
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: shared_memory_race
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Lookup Before Insert Lock
+  summary: Built-in cpp_graph detector for shared memory race.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: mutable_global_mode_drives_callback_without_lock
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: global_mode_race
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Mutable Global Mode Drives Callback Without Lock
+  summary: Built-in cpp_graph detector for global mode race.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: nested_mutex_cleanup_omitted
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Nested Mutex Cleanup Omitted
+  summary: Built-in cpp_graph detector for memory leak.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: paired_child_list_cleanup_omitted
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Paired Child List Cleanup Omitted
+  summary: Built-in cpp_graph detector for memory leak.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: paired_free_wrapper_omits_dynamic_member
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Paired Free Wrapper Omits Dynamic Member
+  summary: Built-in cpp_graph detector for memory leak.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: paired_full_key_lookup_truncated_insert
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: key_truncation
+  cwe: CWE-187
+  skill: string_and_format
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Paired Full Key Lookup Truncated Insert
+  summary: Built-in cpp_graph detector for key truncation.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: paired_global_registration_cleanup_omitted
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Paired Global Registration Cleanup Omitted
+  summary: Built-in cpp_graph detector for memory leak.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: paired_nested_mutex_cleanup_omitted
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Paired Nested Mutex Cleanup Omitted
+  summary: Built-in cpp_graph detector for memory leak.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: paired_self_referential_traversal_log_amplification
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: log_amplification
+  cwe: CWE-400
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Paired Self Referential Traversal Log Amplification
+  summary: Built-in cpp_graph detector for log amplification.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: partial_stack_struct_copied_to_output
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: uninitialized_output
+  cwe: CWE-457
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Partial Stack Struct Copied To Output
+  summary: Built-in cpp_graph detector for uninitialized output.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: partial_state_machine_publication
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: state_machine
+  cwe: CWE-672
+  skill: ownership_contract
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Partial State Machine Publication
+  summary: Built-in cpp_graph detector for state machine.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: path_state_checked_separately_from_key_generation
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: key_generation_race
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Path State Checked Separately From Key Generation
+  summary: Built-in cpp_graph detector for key generation race.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: peer_write_without_sigpipe_handling
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: sigpipe_unhandled
+  cwe: CWE-404
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Peer Write Without Sigpipe Handling
+  summary: Built-in cpp_graph detector for sigpipe unhandled.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: protocol_mismatch_accepted_under_non_strict_auth
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: protocol_mixup
+  cwe: CWE-346
+  skill: ownership_contract
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Protocol Mismatch Accepted Under Non Strict Auth
+  summary: Built-in cpp_graph detector for protocol mixup.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: published_before_member_initialization
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: object_publication
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Published Before Member Initialization
+  summary: Built-in cpp_graph detector for object publication.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: queued_local_event_without_scheduler_wakeup
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: lost_wakeup
+  cwe: CWE-366
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Queued Local Event Without Scheduler Wakeup
+  summary: Built-in cpp_graph detector for lost wakeup.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: registered_global_object_missing_release_hook
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Registered Global Object Missing Release Hook
+  summary: Built-in cpp_graph detector for memory leak.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: regular_file_size_check_applied_to_device_mapping
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: file_type_validation
+  cwe: CWE-20
+  skill: ownership_contract
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Regular File Size Check Applied To Device Mapping
+  summary: Built-in cpp_graph detector for file type validation.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: role_specific_release_uses_hardcoded_role
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Role Specific Release Uses Hardcoded Role
+  summary: Built-in cpp_graph detector for memory leak.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: same_function_helper_alloc_wrapper_member_leak
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Same Function Helper Alloc Wrapper Member Leak
+  summary: Built-in cpp_graph detector for memory leak.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: self_referential_list_link
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: infinite_loop
+  cwe: CWE-835
+  skill: ownership_contract
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Self Referential List Link
+  summary: Built-in cpp_graph detector for infinite loop.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: signal_path_mutates_shared_state_or_logs
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: signal_race
+  cwe: CWE-479
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Signal Path Mutates Shared State Or Logs
+  summary: Built-in cpp_graph detector for signal race.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: signal_path_uses_locking_and_formatting
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: signal_deadlock
+  cwe: CWE-833
+  skill: concurrency_lock_order
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Signal Path Uses Locking And Formatting
+  summary: Built-in cpp_graph detector for signal deadlock.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: single_reader_field_under_shared_reader_count
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: reader_state_race
+  cwe: CWE-362
+  skill: shared_state_race
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Single Reader Field Under Shared Reader Count
+  summary: Built-in cpp_graph detector for reader state race.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: timer_callback_cascade_wait
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: deadlock
+  cwe: CWE-833
+  skill: concurrency_lock_order
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Timer Callback Cascade Wait
+  summary: Built-in cpp_graph detector for deadlock.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: unchecked_ownership_transfer_return_loses_node
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: memory_leak
+  cwe: CWE-401
+  skill: resource_lifecycle
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Unchecked Ownership Transfer Return Loses Node
+  summary: Built-in cpp_graph detector for memory leak.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: unchecked_param_indexes_fixed_global_array
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: bounds
+  cwe: CWE-125
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Unchecked Param Indexes Fixed Global Array
+  summary: Built-in cpp_graph detector for bounds.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true
+- id: wire_bitmap_ctz_without_endian_normalization
+  language: c_cpp
+  engine: cpp_graph
+  defect_class: byte_order_logic
+  cwe: CWE-682
+  skill: bounds_and_integer
+  default_severity: high
+  revision: 1
+  status: stable
+  title: Wire Bitmap Ctz Without Endian Normalization
+  summary: Built-in cpp_graph detector for byte order logic.
+  required_capabilities:
+  - source_text
+  - call_graph
+  aliases: []
+  legacy_id: true

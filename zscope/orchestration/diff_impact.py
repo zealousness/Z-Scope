@@ -11,9 +11,9 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Sequence, Tuple, cast
 
-from ..common.utils import matches_configured_path, normalize_path
+from ..common.utils import matches_interface_path, normalize_path
 from ..config.function_entry import FunctionEntry
 from ..retrieval.code_index import CodeIndex
 from .entry_discovery import API_PROMPT, COMM_PROMPT, INPUT_PROMPT, THREAD_PROMPT, EntryDiscovery
@@ -23,9 +23,7 @@ logger = logging.getLogger(__name__)
 
 SOURCE_EXTENSIONS = {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".ph", ".inc", ".inl"}
 HEADER_EXTENSIONS = {".h", ".hpp", ".ph", ".inc", ".inl"}
-HUNK_RE = re.compile(
-    r"^@@\s+-\d+(?:,\d+)?\s+\+(?P<start>\d+)(?:,(?P<count>\d+))?\s+@@"
-)
+HUNK_RE = re.compile(r"^@@\s+-\d+(?:,\d+)?\s+\+(?P<start>\d+)(?:,(?P<count>\d+))?\s+@@")
 CALL_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
 INPUT_RE = re.compile(
     r"\b(?:recv|recvfrom|recvmsg|read|readv|fread|fgets|getline|getenv|"
@@ -215,7 +213,7 @@ class DiffImpactPlanner:
         base_ref: str,
         head_ref: str = "HEAD",
         component: str = "default",
-        header_files: Optional[Sequence[str]] = None,
+        interface_files: Optional[Sequence[str]] = None,
         strategy: str = "semantic_obligation",
         llm_triage: str = "on_demand",
         llm_triage_selector: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
@@ -242,7 +240,7 @@ class DiffImpactPlanner:
         self.base_ref = base_ref
         self.head_ref = head_ref or "HEAD"
         self.component = component or "default"
-        self.header_files = list(header_files or [])
+        self.interface_files = list(interface_files or [])
         self.strategy = strategy or "semantic_obligation"
         self.llm_triage = llm_triage or "on_demand"
         self.llm_triage_selector = llm_triage_selector
@@ -255,7 +253,7 @@ class DiffImpactPlanner:
         self._caller_cache: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
         self._entry_discovery = EntryDiscovery(
             code_index,
-            header_files=self.header_files or None,
+            interface_files=self.interface_files or None,
             project_root=self.project_root,
             source_root=self.source_root,
         )
@@ -471,10 +469,12 @@ class DiffImpactPlanner:
             )
 
         for header_change in self._map_changed_header_declarations(changed_ranges):
-            key = (header_change.function_name, header_change.file_path)
-            by_key.setdefault(key, header_change)
+            header_key = (header_change.function_name, header_change.file_path)
+            by_key.setdefault(header_key, header_change)
 
-        return sorted(by_key.values(), key=lambda item: (item.file_path, item.start_line, item.function_name))
+        return sorted(
+            by_key.values(), key=lambda item: (item.file_path, item.start_line, item.function_name)
+        )
 
     def _map_changed_header_declarations(
         self,
@@ -498,7 +498,9 @@ class DiffImpactPlanner:
                     continue
                 resolved = self._resolve_candidate_file(decl_file)
                 file_ranges = ranges_by_file.get(self._abs_key(resolved))
-                if not file_ranges or not any(item.overlaps(decl_line, decl_line) for item in file_ranges):
+                if not file_ranges or not any(
+                    item.overlaps(decl_line, decl_line) for item in file_ranges
+                ):
                     continue
                 impl = self._get_impl(name)
                 if not impl:
@@ -515,7 +517,9 @@ class DiffImpactPlanner:
                 )
         return changed
 
-    def _build_semantic_selection(self, changed_functions: Sequence[ChangedFunction]) -> Dict[str, Any]:
+    def _build_semantic_selection(
+        self, changed_functions: Sequence[ChangedFunction]
+    ) -> Dict[str, Any]:
         entries_by_key: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
         obligations: List[Dict[str, Any]] = []
         coverage: List[Dict[str, Any]] = []
@@ -596,7 +600,10 @@ class DiffImpactPlanner:
             )
             focus["context_callers"] = sorted(
                 focus.get("context_callers") or [],
-                key=lambda value: (value.get("function_name", ""), "/".join(value.get("path") or [])),
+                key=lambda value: (
+                    value.get("function_name", ""),
+                    "/".join(value.get("path") or []),
+                ),
             )
             entries.append(
                 FunctionEntry(
@@ -617,7 +624,8 @@ class DiffImpactPlanner:
 
     def _build_entries(self, changed_functions: Sequence[ChangedFunction]) -> List[FunctionEntry]:
         """Compatibility wrapper for tests and callers that only need entries."""
-        return self._build_semantic_selection(changed_functions)["entries"]
+        entries = self._build_semantic_selection(changed_functions)["entries"]
+        return cast(List[FunctionEntry], entries)
 
     def _classify_change_intent(self, changed: ChangedFunction) -> str:
         if changed.change_kind == "header_declaration":
@@ -643,7 +651,11 @@ class DiffImpactPlanner:
         if UNLOCK_RE.search(semantic_text):
             return "lock_release_change"
         if RELEASE_RE.search(semantic_text):
-            return "destroy_or_unregister_change" if re.search(r"destroy|unregister|remove|delete|cleanup", semantic_text, re.I) else "resource_release_change"
+            return (
+                "destroy_or_unregister_change"
+                if re.search(r"destroy|unregister|remove|delete|cleanup", semantic_text, re.I)
+                else "resource_release_change"
+            )
         if LOCK_RE.search(semantic_text):
             return "lifecycle_contract_change"
         if ACQUIRE_RE.search(semantic_text):
@@ -681,8 +693,16 @@ class DiffImpactPlanner:
                 "candidate": candidate,
                 "root_function": candidate["function_name"],
                 "root_kind": self._root_kind_for_intent(intent, candidate),
-                "coverage_status": "scanned_as_root" if candidate["function_name"] == changed.function_name else "covered_by_entry",
-                "reason": "scanned_as_semantic_root" if candidate["function_name"] == changed.function_name else "covered_by_semantic_root",
+                "coverage_status": (
+                    "scanned_as_root"
+                    if candidate["function_name"] == changed.function_name
+                    else "covered_by_entry"
+                ),
+                "reason": (
+                    "scanned_as_semantic_root"
+                    if candidate["function_name"] == changed.function_name
+                    else "covered_by_semantic_root"
+                ),
                 "selection_reason": self._selection_reason_for_intent(intent),
                 "stop_reason": "forward_semantic_root",
                 "primary_path": primary_path,
@@ -722,17 +742,25 @@ class DiffImpactPlanner:
                 "candidate": candidate,
                 "root_function": candidate["function_name"],
                 "root_kind": root.get("root_kind", "semantic_root"),
-                "coverage_status": "scanned_as_root" if candidate["function_name"] == changed.function_name else "covered_by_entry",
+                "coverage_status": (
+                    "scanned_as_root"
+                    if candidate["function_name"] == changed.function_name
+                    else "covered_by_entry"
+                ),
                 "reason": root.get("reason", "covered_by_semantic_root"),
-                "selection_reason": root.get("selection_reason", "Selected nearest semantic root for changed sink."),
+                "selection_reason": root.get(
+                    "selection_reason", "Selected nearest semantic root for changed sink."
+                ),
                 "stop_reason": root.get("stop_reason", "upstream_semantic_root"),
-                "primary_path": root.get("path") or [candidate["function_name"], changed.function_name],
+                "primary_path": root.get("path")
+                or [candidate["function_name"], changed.function_name],
                 "primary_path_refs": root.get("path_refs") or [],
                 "paths": [root.get("path") or [candidate["function_name"], changed.function_name]],
                 "path_refs": [root.get("path_refs") or []],
                 "context_callers": self._dedupe_context_callers(context_callers),
                 "context_functions": self._context_function_names(context_callers),
-                "llm_triage": triage_meta or {
+                "llm_triage": triage_meta
+                or {
                     "mode": self.llm_triage,
                     "status": "not_invoked",
                 },
@@ -759,13 +787,16 @@ class DiffImpactPlanner:
                 changed.file_path,
             ),
             "context_functions": [],
-            "llm_triage": triage_meta or {
+            "llm_triage": triage_meta
+            or {
                 "mode": self.llm_triage,
                 "status": "not_invoked",
             },
         }
 
-    def _find_best_upstream_root(self, changed: ChangedFunction, intent: str) -> Optional[Dict[str, Any]]:
+    def _find_best_upstream_root(
+        self, changed: ChangedFunction, intent: str
+    ) -> Optional[Dict[str, Any]]:
         max_depth = self._max_depth_for_intent(intent)
         changed_ref = self._changed_ref(changed)
         queue: Deque[Tuple[FunctionRef, List[FunctionRef], int]] = deque(
@@ -822,7 +853,13 @@ class DiffImpactPlanner:
         )
         if not candidates:
             return None
-        candidates.sort(key=lambda item: (-int(item["score"]), int(item["depth"]), item["candidate"]["function_name"]))
+        candidates.sort(
+            key=lambda item: (
+                -int(item["score"]),
+                int(item["depth"]),
+                item["candidate"]["function_name"],
+            )
+        )
         return candidates[0]
 
     def _run_llm_triage_if_needed(
@@ -874,7 +911,9 @@ class DiffImpactPlanner:
         try:
             result = self.llm_triage_selector(request) or {}
         except Exception as exc:
-            logger.debug("Diff impact LLM triage selector failed for %s: %s", changed.function_name, exc)
+            logger.debug(
+                "Diff impact LLM triage selector failed for %s: %s", changed.function_name, exc
+            )
             failed = dict(base_meta)
             failed.update({"status": "failed", "error": str(exc)})
             return failed
@@ -890,9 +929,7 @@ class DiffImpactPlanner:
             "direction": str(result.get("direction") or self._intent_direction(intent)),
             "recommended_root": str(result.get("recommended_root") or ""),
             "context_functions": [
-                str(item)
-                for item in (result.get("context_functions") or [])
-                if str(item).strip()
+                str(item) for item in (result.get("context_functions") or []) if str(item).strip()
             ],
             "confidence": float(result.get("confidence") or 0.0),
             "stop_reason": str(result.get("stop_reason") or "llm_triage"),
@@ -933,12 +970,16 @@ class DiffImpactPlanner:
             "candidate": candidate,
             "root_function": candidate["function_name"],
             "root_kind": candidate.get("exposure") or "llm_triage_root",
-            "coverage_status": "scanned_as_root"
-            if candidate["function_name"] == changed.function_name
-            else "covered_by_entry",
-            "reason": "llm_triage_recommended_root"
-            if candidate["function_name"] != changed.function_name
-            else "scanned_as_semantic_root",
+            "coverage_status": (
+                "scanned_as_root"
+                if candidate["function_name"] == changed.function_name
+                else "covered_by_entry"
+            ),
+            "reason": (
+                "llm_triage_recommended_root"
+                if candidate["function_name"] != changed.function_name
+                else "scanned_as_semantic_root"
+            ),
             "selection_reason": (
                 "LLM triage selected this root for high fan-out or ambiguous static evidence; "
                 "the triage result only guides scan-root selection."
@@ -1031,15 +1072,15 @@ class DiffImpactPlanner:
                 caller_ref = self._caller_ref(caller)
                 if not caller_ref or caller_ref.key in visited:
                     continue
-                path_refs = changed_to_current_path + [caller_ref]
+                traversal_refs = changed_to_current_path + [caller_ref]
                 if caller_ref.function_name == root_name:
-                    ordered_refs = list(reversed(path_refs))
+                    ordered_refs = list(reversed(traversal_refs))
                     return (
                         [ref.function_name for ref in ordered_refs],
                         self._path_ref_dicts(ordered_refs),
                     )
                 visited.add(caller_ref.key)
-                queue.append((caller_ref, path_refs, depth + 1))
+                queue.append((caller_ref, traversal_refs, depth + 1))
         fallback_path, fallback_refs = self._candidate_changed_path(
             {"function_name": root_name},
             changed,
@@ -1075,13 +1116,40 @@ class DiffImpactPlanner:
         score = 0
 
         if ACQUIRE_RE.search(text):
-            score = max(score, 100 if intent in {"resource_release_change", "destroy_or_unregister_change", "ownership_transfer_change"} else 70)
+            score = max(
+                score,
+                (
+                    100
+                    if intent
+                    in {
+                        "resource_release_change",
+                        "destroy_or_unregister_change",
+                        "ownership_transfer_change",
+                    }
+                    else 70
+                ),
+            )
         if TRANSFER_RE.search(text):
-            score = max(score, 92 if intent in {"resource_release_change", "ownership_transfer_change", "container_registration_change"} else 70)
+            score = max(
+                score,
+                (
+                    92
+                    if intent
+                    in {
+                        "resource_release_change",
+                        "ownership_transfer_change",
+                        "container_registration_change",
+                    }
+                    else 70
+                ),
+            )
         if INPUT_RE.search(text):
             score = max(score, 95 if intent == "sink_or_check_change" else 72)
         if THREAD_RE.search(text):
-            score = max(score, 88 if intent in {"lock_release_change", "destroy_or_unregister_change"} else 70)
+            score = max(
+                score,
+                88 if intent in {"lock_release_change", "destroy_or_unregister_change"} else 70,
+            )
         if DISPATCH_RE.search(text):
             score = max(score, 82 if intent == "dispatcher_route_change" else 42)
         if LOCK_RE.search(text):
@@ -1090,7 +1158,9 @@ class DiffImpactPlanner:
         if external:
             exposure = str(external.get("exposure") or "")
             if "communication" in exposure or "other_user_input" in exposure:
-                score = max(score, 90 if intent in {"sink_or_check_change", "input_boundary_change"} else 68)
+                score = max(
+                    score, 90 if intent in {"sink_or_check_change", "input_boundary_change"} else 68
+                )
             elif "thread" in exposure:
                 score = max(score, 84)
             elif "api" in exposure:
@@ -1120,7 +1190,9 @@ class DiffImpactPlanner:
             "confidence": 0.76,
         }
 
-    def _external_or_synthetic_candidate(self, changed: ChangedFunction, intent: str) -> Dict[str, Any]:
+    def _external_or_synthetic_candidate(
+        self, changed: ChangedFunction, intent: str
+    ) -> Dict[str, Any]:
         external = self._classify_external_entry(changed.function_name, changed.file_path)
         if external:
             return external
@@ -1138,7 +1210,11 @@ class DiffImpactPlanner:
         exposure = str(candidate.get("exposure") or "")
         if exposure:
             return exposure
-        if intent in {"resource_acquire_change", "resource_release_change", "destroy_or_unregister_change"}:
+        if intent in {
+            "resource_acquire_change",
+            "resource_release_change",
+            "destroy_or_unregister_change",
+        }:
             return "resource_owner"
         if intent in {"ownership_transfer_change", "container_registration_change"}:
             return "ownership_transfer"
@@ -1150,7 +1226,9 @@ class DiffImpactPlanner:
             return "dispatcher"
         return "synthetic_internal_diff_entry"
 
-    def _semantic_kind_for_function(self, func_name: str, impl: Optional[Dict[str, Any]] = None) -> str:
+    def _semantic_kind_for_function(
+        self, func_name: str, impl: Optional[Dict[str, Any]] = None
+    ) -> str:
         impl = impl if impl is not None else (self._get_impl(func_name) or {})
         text = f"{func_name}\n{EntryDiscovery._strip_code_for_call_search(str(impl.get('code') or ''))}"
         if INPUT_RE.search(text):
@@ -1166,14 +1244,22 @@ class DiffImpactPlanner:
         return ""
 
     def _semantic_root_prompt(self, intent: str) -> str:
-        if intent in {"resource_acquire_change", "resource_release_change", "destroy_or_unregister_change"}:
+        if intent in {
+            "resource_acquire_change",
+            "resource_release_change",
+            "destroy_or_unregister_change",
+        }:
             return (
                 "Diff semantic root for resource lifecycle. Audit ownership creation, transfer, "
                 "failure paths, and paired release/destroy behavior around the changed function."
             )
         if intent in {"input_boundary_change", "sink_or_check_change"}:
             return "Diff semantic root for input/data-flow impact. Audit source validation, size checks, parsing, and sink reachability."
-        if intent in {"lock_release_change", "lifecycle_contract_change", "thread_or_callback_entry_change"}:
+        if intent in {
+            "lock_release_change",
+            "lifecycle_contract_change",
+            "thread_or_callback_entry_change",
+        }:
             return "Diff semantic root for concurrency/lifecycle impact. Audit lock pairing, callback/thread reachability, and shared-state ownership."
         if intent == "dispatcher_route_change":
             return "Diff semantic root for dispatcher/routing impact. Audit branch selection, handler resource contracts, and state transitions."
@@ -1181,13 +1267,17 @@ class DiffImpactPlanner:
 
     def _selection_reason_for_intent(self, intent: str) -> str:
         if intent == "new_external_api":
-            return "Changed declaration is externally visible; scan the API itself as a forward root."
+            return (
+                "Changed declaration is externally visible; scan the API itself as a forward root."
+            )
         if intent == "resource_acquire_change":
             return "Changed function appears to acquire or create a resource; scan it as the ownership root."
         if intent == "input_boundary_change":
             return "Changed function appears to receive untrusted input; scan it as the input boundary."
         if intent == "dispatcher_route_change":
-            return "Changed function appears to route handlers or state; scan it as a dispatcher root."
+            return (
+                "Changed function appears to route handlers or state; scan it as a dispatcher root."
+            )
         if intent == "thread_or_callback_entry_change":
             return "Changed function appears to create thread/callback execution; scan it as a concurrency root."
         if intent in BIDIRECTIONAL_INTENTS:
@@ -1199,7 +1289,9 @@ class DiffImpactPlanner:
         if intent in {"resource_release_change", "destroy_or_unregister_change"}:
             return f"Selected `{root}` as the nearest resource owner/acquire root for a changed release/destroy path."
         if intent == "sink_or_check_change":
-            return f"Selected `{root}` as the nearest input/source root for a changed sink/check path."
+            return (
+                f"Selected `{root}` as the nearest input/source root for a changed sink/check path."
+            )
         if intent == "lock_release_change":
             return f"Selected `{root}` as the nearest concurrency root for a changed unlock/release path."
         return f"Selected `{root}` as the nearest semantic root."
@@ -1385,14 +1477,16 @@ class DiffImpactPlanner:
             if not name or name == root_name:
                 continue
             ref = refs[pos] if pos < len(refs) else {}
-            context.append({
-                "function_name": name,
-                "file_path": str(ref.get("file_path") or ""),
-                "path": list(path),
-                "path_refs": refs,
-                "exposure": "caller_context",
-                "reason": "caller_above_selected_root",
-            })
+            context.append(
+                {
+                    "function_name": name,
+                    "file_path": str(ref.get("file_path") or ""),
+                    "path": list(path),
+                    "path_refs": refs,
+                    "exposure": "caller_context",
+                    "reason": "caller_above_selected_root",
+                }
+            )
         return context
 
     @staticmethod
@@ -1421,7 +1515,11 @@ class DiffImpactPlanner:
 
     def _looks_like_thin_facade(self, func_name: str, impl: Dict[str, Any]) -> bool:
         code = EntryDiscovery._strip_code_for_call_search(str(impl.get("code") or ""))
-        call_names = [name for name in CALL_RE.findall(code) if name not in {"if", "for", "while", "switch", "return", "sizeof"}]
+        call_names = [
+            name
+            for name in CALL_RE.findall(code)
+            if name not in {"if", "for", "while", "switch", "return", "sizeof"}
+        ]
         if len(set(call_names)) <= 1 and re.search(r"\breturn\s+[A-Za-z_]\w+\s*\(", code):
             return True
         nonempty = [
@@ -1429,9 +1527,21 @@ class DiffImpactPlanner:
             for line in code.splitlines()
             if line.strip() and not line.strip().startswith(("/*", "*", "//"))
         ]
-        return len(nonempty) <= 4 and len(set(call_names)) <= 1 and not any(
-            pattern.search(code)
-            for pattern in (INPUT_RE, THREAD_RE, DISPATCH_RE, ACQUIRE_RE, RELEASE_RE, LOCK_RE, UNLOCK_RE)
+        return (
+            len(nonempty) <= 4
+            and len(set(call_names)) <= 1
+            and not any(
+                pattern.search(code)
+                for pattern in (
+                    INPUT_RE,
+                    THREAD_RE,
+                    DISPATCH_RE,
+                    ACQUIRE_RE,
+                    RELEASE_RE,
+                    LOCK_RE,
+                    UNLOCK_RE,
+                )
+            )
         )
 
     @staticmethod
@@ -1720,7 +1830,7 @@ class DiffImpactPlanner:
         for item in context_callers or []:
             if not isinstance(item, dict):
                 continue
-            key = (
+            context_key = (
                 str(item.get("function_name") or ""),
                 str(item.get("file_path") or ""),
                 tuple(str(node) for node in (item.get("path") or [])),
@@ -1734,10 +1844,10 @@ class DiffImpactPlanner:
                     if isinstance(ref, dict)
                 ),
             )
-            if not key[0] or key in existing_context_keys:
+            if not context_key[0] or context_key in existing_context_keys:
                 continue
             focus["context_callers"].append(dict(item))
-            existing_context_keys.add(key)
+            existing_context_keys.add(context_key)
 
     def _custom_prompt(self, base_prompt: str, focus: Dict[str, Any]) -> str:
         changed_names = ", ".join(
@@ -1775,14 +1885,19 @@ class DiffImpactPlanner:
                 }
 
     def _get_impl(self, func_name: str, file_path: str = "") -> Optional[Dict[str, Any]]:
-        kwargs = {
-            "include_context": False,
-            "warn_missing": False,
-        }
-        if file_path:
-            kwargs["file_path"] = file_path
         try:
-            return self.code_index.get_function_impl(func_name, **kwargs)
+            if file_path:
+                return self.code_index.get_function_impl(
+                    func_name,
+                    file_path=file_path,
+                    include_context=False,
+                    warn_missing=False,
+                )
+            return self.code_index.get_function_impl(
+                func_name,
+                include_context=False,
+                warn_missing=False,
+            )
         except TypeError:
             try:
                 return self.code_index.get_function_impl(func_name, warn_missing=False)
@@ -1825,10 +1940,7 @@ class DiffImpactPlanner:
         if not name:
             return None
         file_path = str(
-            caller.get("filename")
-            or caller.get("file_path")
-            or caller.get("caller_file")
-            or ""
+            caller.get("filename") or caller.get("file_path") or caller.get("caller_file") or ""
         )
         return self._function_ref(name, file_path)
 
@@ -1870,7 +1982,10 @@ class DiffImpactPlanner:
                 continue
             name = str(item.get("name") or "")
             filename = str(item.get("filename") or "")
-            if not name or (self.header_files and not matches_configured_path(filename, self.header_files)):
+            if not name or (
+                self.interface_files
+                and not matches_interface_path(filename, self.interface_files, self.repo_root)
+            ):
                 continue
             declarations.setdefault(name, []).append(dict(item))
         self._header_declarations = declarations

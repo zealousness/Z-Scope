@@ -1,5 +1,6 @@
 ---
 name: shared_state_race
+languages: [c_cpp]
 description: Audit shared global/static/heap state accessed without synchronization.
 category: concurrency
 triggers:

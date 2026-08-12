@@ -4,10 +4,18 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any, Dict, List
+from typing import Any, Dict, List, cast
 
 
 RESOURCE_ACQUIRE_KINDS = {"allocator", "calloc", "reallocator", "resource", "resource_acquire"}
+
+
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return cast(Dict[str, Any], value) if isinstance(value, dict) else {}
+
+
+def _as_list(value: Any) -> List[Any]:
+    return cast(List[Any], value) if isinstance(value, list) else []
 
 
 def resource_release_pairs_from_overlay(overlay: Dict[str, Any]) -> List[tuple[str, str, str]]:
@@ -115,7 +123,7 @@ def joern_rule_match_to_candidate(match: Any, entry_func: str = "") -> Dict[str,
     candidate_id = f"JOERN_{defect_class.upper()}_{func}_{line}_{uuid.uuid5(uuid.NAMESPACE_URL, rule_id).hex[:8]}"
     source = str(data.get("rule_name") or rule_id)
     sink = str(data.get("code_snippet") or data.get("code") or rule_id)
-    evidence_items = data.get("evidence") if isinstance(data.get("evidence"), list) else []
+    evidence_items = _as_list(data.get("evidence"))
     positive = [f"Joern CPG rule `{rule_id}` matched `{func}` at {file_path}:{line}"]
     for item in evidence_items[:6]:
         positive.append(json.dumps(item, ensure_ascii=False, default=str))
@@ -153,7 +161,9 @@ def joern_rule_match_to_candidate(match: Any, entry_func: str = "") -> Dict[str,
         "suggested_fix": "Validate the CPG path and repair the missing release, lifetime, or protocol operation.",
         "confidence": confidence,
         "rule_confidence": confidence,
-        "impact_level": "high" if defect_class in {"use_after_free", "double_free", "memory_leak"} else "medium",
+        "impact_level": (
+            "high" if defect_class in {"use_after_free", "double_free", "memory_leak"} else "medium"
+        ),
         "reasoning": "Joern CPG candidate normalized into Z-SCOPE evidence pack.",
         "source": source,
         "sink": sink,
@@ -173,9 +183,9 @@ def java_provider_signal_to_candidate(
     defect_class = class_from_joern_category(
         str(signal.get("category") or signal.get("defect_class") or rule_id)
     )
-    source = signal.get("source") if isinstance(signal.get("source"), dict) else {}
-    sink = signal.get("sink") if isinstance(signal.get("sink"), dict) else {}
-    path = signal.get("path") if isinstance(signal.get("path"), list) else []
+    source = _as_dict(signal.get("source"))
+    sink = _as_dict(signal.get("sink"))
+    path = _as_list(signal.get("path"))
     file_path = str(sink.get("file") or source.get("file") or "")
     line = int(sink.get("line") or source.get("line") or 0)
     func = str(
@@ -320,7 +330,10 @@ def class_from_joern_category(category: str) -> str:
             return normalized
     if any(word in text for word in ("code injection", "expression", "script", "eval")):
         return "code_injection"
-    if any(word in text for word in ("integer", "divide", "division", "modulo", "shift", "wrap", "trunc")):
+    if any(
+        word in text
+        for word in ("integer", "divide", "division", "modulo", "shift", "wrap", "trunc")
+    ):
         return "integer_overflow"
     if any(word in text for word in ("leak", "resource", "alloc", "memory")):
         return "memory_leak"

@@ -1,5 +1,6 @@
 ---
 name: snapshot_refresh_decision
+languages: [c_cpp, java]
 description: Decide whether an existing function snapshot must be refreshed after code changes.
 category: modeling
 triggers:

@@ -58,11 +58,12 @@ def prepare(project: Path, output: Path) -> None:
         raise click.ClickException(
             f"Maven dependency resolution failed with exit code {proc.returncode}"
         )
-    manifest = {"format": 1, "project": str(pom), "files": _hashes(destination)}
+    files = _hashes(destination)
+    manifest = {"format": 1, "project": str(pom), "files": files}
     (destination / MANIFEST).write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    click.echo(f"Prepared {len(manifest['files'])} files in {destination}")
+    click.echo(f"Prepared {len(files)} files in {destination}")
 
 
 @main.command("install")

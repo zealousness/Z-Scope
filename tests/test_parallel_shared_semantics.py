@@ -6,6 +6,7 @@ import pytest
 from zscope.config.config import (
     AgentConfig,
     AnalysisConfig,
+    ConcurrencyConfig,
     IndexingConfig,
     LLMConfig,
     ProjectConfig,
@@ -16,6 +17,7 @@ from zscope.core.analysis import analyzer as analyzer_module
 from zscope.orchestration import parallel_analyzer as parallel_module
 from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
 from zscope.orchestration.subagents import SubAgentTicket
+from zscope.rules.catalog import RuleCatalogError
 from zscope.semantics.models import LocalPatternSemantics
 
 
@@ -32,13 +34,13 @@ def _config(tmp_path: Path) -> ZScopeConfig:
         analysis=AnalysisConfig(
             snapshot_dir=str(tmp_path / "snapshots"),
             user_config_db=str(tmp_path / "user-config"),
-            parallel_workers=3,
         ),
         project=ProjectConfig(
             project_root=tmp_path,
             source_root=tmp_path,
             agents=[AgentConfig(name="vulnerability_analyzer", task="audit")],
         ),
+        concurrency=ConcurrencyConfig(entry_workers=3),
     )
 
 
@@ -414,6 +416,10 @@ int worker(void) {
             return [{"name": "worker", "file": "src/demo.c"}] if name.startswith("entry_") else []
 
     config = _config(tmp_path)
+    # This pass deliberately exercises the Clang CFG detector.  Rule
+    # governance now excludes that engine when the weak ``regex`` backend is
+    # selected, so make the required structure capability explicit here.
+    config.indexing.backend = "unified"
     config.analysis.project_deterministic_fact_pass_v1 = True
     config.analysis.decision_fact_graph_v1 = True
     config.analysis.decision_context_v32 = True
@@ -428,7 +434,58 @@ int worker(void) {
     state = parallel._project_fact_pass_state
     assert state["status"] == "complete"
     assert state["reachable_functions"] == 3
+    assert state["rule_candidate_counts"] == {
+        "by_engine": {"cpp_clang_cfg": 2},
+        "by_rule": {"clang_cfg_stack_address_passed_to_thread": 2},
+        "total": 2,
+    }
     records = parallel._candidate_ledger.records()
     stack_records = [record for record in records if record.defect_class == "stack_escape"]
     assert len(stack_records) == 1
     assert len(stack_records[0].occurrence_uids) == 2
+    assert stack_records[0].ticket.skill == "stack_escape"
+    candidate_payload = stack_records[0].ticket.evidence["candidate_payload"]
+    assert candidate_payload["candidate_kind"] == "deterministic_rule"
+    assert candidate_payload["rule_engine"] == "cpp_clang_cfg"
+    assert candidate_payload["rule_revision"] == 1
+    assert candidate_payload["rule_catalog_sha256"]
+
+
+def test_project_deterministic_fact_pass_rejects_unregistered_rule_before_ledger(
+    tmp_path, monkeypatch
+) -> None:
+    class SingleFunctionCodeIndex:
+        def get_function_impl(self, name, **_kwargs):
+            return {
+                "name": name,
+                "index_name": f"{name}@src/demo.c",
+                "file": "src/demo.c",
+                "code": "int entry(void) { return 0; }",
+            }
+
+        def get_callees(self, _name, limit=0):
+            del limit
+            return []
+
+    class UnknownRuleGenerator:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def generate_issues(self, *_args, **_kwargs):
+            return [{"rule_id": "not_registered", "defect_class": "stack_escape"}]
+
+    config = _config(tmp_path)
+    config.indexing.backend = "unified"
+    parallel = ParallelAnalyzer(config, code_index=SingleFunctionCodeIndex())
+    parallel._shared_local_pattern_semantics = LocalPatternSemantics()
+    parallel._shared_semantic_overlay = {}
+    monkeypatch.setattr(
+        parallel_module,
+        "ClangAstCfgCandidateGenerator",
+        UnknownRuleGenerator,
+    )
+
+    with pytest.raises(RuleCatalogError, match="unknown c_cpp rule id"):
+        parallel._run_project_deterministic_fact_pass([FunctionEntry("entry")])
+
+    assert parallel._candidate_ledger.records() == []

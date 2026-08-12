@@ -1,5 +1,6 @@
 ---
 name: java_authz
+languages: [java]
 description: Audit Java authentication, authorization, tenant, and object-level access control checks.
 category: java_security
 triggers:

@@ -4,3 +4,8 @@ root = true
 charset = utf-8
 end_of_line = lf
 insert_final_newline = true
+
+[*.{py,yaml,yml,json,toml,c,h,java,xml,sh}]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true

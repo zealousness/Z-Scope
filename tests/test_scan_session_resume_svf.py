@@ -14,11 +14,12 @@ from zscope.config.function_entry import FunctionEntry
 from zscope.orchestration import scan_session as scan_session_module
 from zscope.orchestration.parallel_analyzer import ParallelAnalyzer
 from zscope.orchestration.scan_session import ScanSessionRunner
+from zscope.rules.extensions import preflight_rules
 from zscope.snapshots.store import SnapshotStore
 
 
 def _config(tmp_path: Path) -> ZScopeConfig:
-    return ZScopeConfig(
+    config = ZScopeConfig(
         llm=LLMConfig(),
         llms={"default": LLMConfig()},
         indexing=IndexingConfig(backend="unified"),
@@ -29,6 +30,8 @@ def _config(tmp_path: Path) -> ZScopeConfig:
             compile_commands_path=tmp_path / "compile_commands.json",
         ),
     )
+    preflight_rules(config)
+    return config
 
 
 def test_review_counts_separate_visible_findings_from_manifest_obligations() -> None:
@@ -444,7 +447,7 @@ def test_resume_does_not_skip_entry_when_only_other_path_has_final_report(
     tmp_path: Path,
 ) -> None:
     cfg = _config(tmp_path)
-    store = SnapshotStore(Path(cfg.analysis.snapshot_dir))
+    store = SnapshotStore.from_config(cfg)
     left_index = "handle_request@src/a.c:10-10"
     right_index = "handle_request@src/b.c:20-20"
     store.save_snapshot(
@@ -504,7 +507,7 @@ def test_resume_does_not_skip_entry_when_only_other_path_has_final_report(
 
 def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    store = SnapshotStore(Path(cfg.analysis.snapshot_dir))
+    store = SnapshotStore.from_config(cfg)
     reports = {
         "src/a.c": {
             "schema_version": 2,
@@ -578,7 +581,7 @@ def test_resume_merges_duplicate_function_reports_by_entry_path(tmp_path: Path) 
 
 def test_resume_does_not_skip_when_symbol_context_changed(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    store = SnapshotStore(Path(cfg.analysis.snapshot_dir))
+    store = SnapshotStore.from_config(cfg)
     file_path = "src/a.c"
     index_name = "handle_request@src/a.c:10-10"
     old_macro = {
@@ -627,7 +630,7 @@ def test_resume_does_not_skip_when_symbol_context_changed(tmp_path: Path) -> Non
 
 def test_resume_does_not_skip_when_type_context_changed(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    store = SnapshotStore(Path(cfg.analysis.snapshot_dir))
+    store = SnapshotStore.from_config(cfg)
     file_path = "src/a.c"
     index_name = "handle_request@src/a.c:10-10"
     old_type = {

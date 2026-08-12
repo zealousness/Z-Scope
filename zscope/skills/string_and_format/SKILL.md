@@ -1,5 +1,6 @@
 ---
 name: string_and_format
+languages: [c_cpp]
 description: Audit C string termination, format strings, and text parsing hazards.
 category: input_memory_safety
 triggers:

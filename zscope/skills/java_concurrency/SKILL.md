@@ -1,5 +1,6 @@
 ---
 name: java_concurrency
+languages: [java]
 description: Audit Java shared mutable state, unsafe publication, races, and lock/async hazards.
 category: java_concurrency
 triggers:

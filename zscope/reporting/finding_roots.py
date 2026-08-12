@@ -70,14 +70,15 @@ def project_finding_roots(
     attached_ids: set[int] = set()
     for group in attachment_buckets.values():
         confirmed = [
-            item for item in group
+            item
+            for item in group
             if str(item.get("candidate_disposition") or "").lower() == "confirmed"
             and isinstance(item.get("decision_proof"), Mapping)
-            and str(item["decision_proof"].get("completeness") or "").lower()
-            == "complete"
+            and str(item["decision_proof"].get("completeness") or "").lower() == "complete"
         ]
         review = [
-            item for item in group
+            item
+            for item in group
             if str(item.get("candidate_disposition") or "").lower() == "needs_review"
         ]
         if not confirmed or not review:
@@ -103,11 +104,7 @@ def project_finding_roots(
         for signature, group in exact_sink_buckets.items()
         if len(group) > 1 and any(_has_exact_sink_anchor_proof(item) for item in group)
     }
-    exact_sink_item_ids = {
-        id(item)
-        for group in exact_sink_groups.values()
-        for item in group
-    }
+    exact_sink_item_ids = {id(item) for group in exact_sink_groups.values() for item in group}
     for signature, group in exact_sink_groups.items():
         buckets[f"exact-sink:{signature}"] = group
     for item in copied:
@@ -130,15 +127,12 @@ def project_finding_roots(
     for signature in sorted(buckets):
         group = sorted(buckets[signature], key=_primary_sort_key)
         primary = group[0]
-        root_uid = "ROOT_" + hashlib.sha256(
-            f"{FINDING_ROOT_VERSION}|{signature}".encode("utf-8")
-        ).hexdigest()[:32]
+        root_uid = (
+            "ROOT_"
+            + hashlib.sha256(f"{FINDING_ROOT_VERSION}|{signature}".encode("utf-8")).hexdigest()[:32]
+        )
         subjects = sorted(
-            {
-                subject
-                for subject in (_subject_identity(item) for item in group)
-                if subject
-            }
+            {subject for subject in (_subject_identity(item) for item in group) if subject}
         )
         primary["finding_root_version"] = FINDING_ROOT_VERSION
         primary["finding_root_uid"] = root_uid
@@ -151,18 +145,10 @@ def project_finding_roots(
         primary["finding_root_alias_count"] = len(group) - 1
         primary["alias_occurrence_uids"] = _unique_strings(
             list(primary.get("alias_occurrence_uids") or [])
-            + [
-                occurrence
-                for item in group[1:]
-                for occurrence in _occurrence_uids(item)
-            ]
+            + [occurrence for item in group[1:] for occurrence in _occurrence_uids(item)]
         )
         primary["occurrence_uids"] = _unique_strings(
-            [
-                occurrence
-                for item in group
-                for occurrence in _occurrence_uids(item)
-            ]
+            [occurrence for item in group for occurrence in _occurrence_uids(item)]
         )
         primary["occurrence_count"] = len(primary["occurrence_uids"])
         projected.append(primary)
@@ -174,9 +160,7 @@ def project_finding_roots(
             alias["validation_status"] = "deduplicated_alias"
             alias["finding_root_version"] = FINDING_ROOT_VERSION
             alias["finding_root_uid"] = root_uid
-            alias["finding_root_primary_candidate_uid"] = str(
-                primary.get("candidate_uid") or ""
-            )
+            alias["finding_root_primary_candidate_uid"] = str(primary.get("candidate_uid") or "")
             alias["finding_root_primary_validation_cluster_uid"] = str(
                 primary.get("validation_cluster_uid") or ""
             )
@@ -189,15 +173,18 @@ def project_finding_roots(
         for item in projected
     }
     for primary_key, aliases in attached_to_primary.items():
-        primary = projected_by_candidate.get(primary_key)
-        if primary is None:
+        attached_primary = projected_by_candidate.get(primary_key)
+        if attached_primary is None:
             continue
-        root_uid = str(primary.get("finding_root_uid") or "")
+        root_uid = str(attached_primary.get("finding_root_uid") or "")
         if not root_uid:
-            root_uid = "ROOT_" + hashlib.sha256(
-                f"{FINDING_ROOT_VERSION}|attachment|{primary_key}".encode("utf-8")
-            ).hexdigest()[:32]
-            primary["finding_root_version"] = FINDING_ROOT_VERSION
+            root_uid = (
+                "ROOT_"
+                + hashlib.sha256(
+                    f"{FINDING_ROOT_VERSION}|attachment|{primary_key}".encode("utf-8")
+                ).hexdigest()[:32]
+            )
+            attached_primary["finding_root_version"] = FINDING_ROOT_VERSION
             primary["finding_root_uid"] = root_uid
         subjects = sorted(
             {
@@ -232,9 +219,7 @@ def project_finding_roots(
             alias["validation_status"] = "deduplicated_alias"
             alias["finding_root_version"] = FINDING_ROOT_VERSION
             alias["finding_root_uid"] = root_uid
-            alias["finding_root_primary_candidate_uid"] = str(
-                primary.get("candidate_uid") or ""
-            )
+            alias["finding_root_primary_candidate_uid"] = str(primary.get("candidate_uid") or "")
             alias["finding_root_primary_validation_cluster_uid"] = str(
                 primary.get("validation_cluster_uid") or ""
             )
@@ -253,8 +238,7 @@ def project_finding_roots(
     root_count = sum(
         1
         for item in projected
-        if str(item.get("candidate_disposition") or "").lower()
-        in _DISPLAY_DISPOSITIONS
+        if str(item.get("candidate_disposition") or "").lower() in _DISPLAY_DISPOSITIONS
     )
     return FindingRootProjection(tuple(projected), root_count, alias_count)
 
@@ -304,12 +288,11 @@ def _attachment_signature(item: Mapping[str, Any]) -> str:
 def _root_signature(item: Mapping[str, Any]) -> str:
     proof = item.get("decision_proof")
     proof = proof if isinstance(proof, Mapping) else {}
-    family = str(
-        item.get("defect_family")
-        or item.get("defect_class")
-        or item.get("category")
-        or ""
-    ).strip().lower()
+    family = (
+        str(item.get("defect_family") or item.get("defect_class") or item.get("category") or "")
+        .strip()
+        .lower()
+    )
     file_path = _posix_path(str(item.get("file_path") or ""))
     function = str(item.get("function") or item.get("function_name") or "")
     fact_slice = item.get("decision_fact_slice")
@@ -334,20 +317,12 @@ def _root_signature(item: Mapping[str, Any]) -> str:
     proof_kind = str(proof.get("proof_kind") or "").lower()
     proof_complete = str(proof.get("completeness") or "").lower() == "complete"
     composite = (
-        family in _CLEANUP_FAMILIES
-        and proof_complete
-        and proof_kind in _COMPOSITE_PROOF_KINDS
+        family in _CLEANUP_FAMILIES and proof_complete and proof_kind in _COMPOSITE_PROOF_KINDS
     )
     canonical_subject = _canonical_subject(_subject_identity(item))
-    subject = (
-        ""
-        if composite or family in _REGION_SCOPED_FAMILIES
-        else canonical_subject
-    )
+    subject = "" if composite or family in _REGION_SCOPED_FAMILIES else canonical_subject
     root_region = (
-        canonical_subject
-        if family in _REGION_SCOPED_FAMILIES and canonical_subject
-        else region
+        canonical_subject if family in _REGION_SCOPED_FAMILIES and canonical_subject else region
     )
     # Review roots have no decision proof.  Requiring the complete decision
     # evidence hash prevents nearby lines or similarly worded descriptions
@@ -408,22 +383,30 @@ def _exact_sink_root_signature(item: Mapping[str, Any]) -> str:
     pack = pack if isinstance(pack, Mapping) else {}
     nested = pack.get("security_obligation")
     nested = nested if isinstance(nested, Mapping) else {}
-    family = str(
-        obligation.get("defect_family")
-        or nested.get("defect_family")
-        or item.get("defect_family")
-        or item.get("defect_class")
-        or item.get("category")
-        or ""
-    ).strip().lower()
+    family = (
+        str(
+            obligation.get("defect_family")
+            or nested.get("defect_family")
+            or item.get("defect_family")
+            or item.get("defect_class")
+            or item.get("category")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
     if family not in _EXACT_SINK_ROOT_PROOF_KINDS:
         return ""
-    shape = str(
-        obligation.get("obligation_shape")
-        or nested.get("obligation_shape")
-        or item.get("obligation_shape")
-        or ""
-    ).strip().lower()
+    shape = (
+        str(
+            obligation.get("obligation_shape")
+            or nested.get("obligation_shape")
+            or item.get("obligation_shape")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
     if shape != "sink_sensitive":
         return ""
     sink = obligation.get("sink_uid") or nested.get("sink_uid") or item.get("sink_identity")
@@ -459,13 +442,17 @@ def _has_exact_sink_anchor_proof(item: Mapping[str, Any]) -> bool:
     proof = proof if isinstance(proof, Mapping) else {}
     obligation = item.get("security_obligation")
     obligation = obligation if isinstance(obligation, Mapping) else {}
-    family = str(
-        obligation.get("defect_family")
-        or item.get("defect_family")
-        or item.get("defect_class")
-        or item.get("category")
-        or ""
-    ).strip().lower()
+    family = (
+        str(
+            obligation.get("defect_family")
+            or item.get("defect_family")
+            or item.get("defect_class")
+            or item.get("category")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
     return (
         str(proof.get("outcome") or "").lower() == "confirm"
         and str(proof.get("completeness") or "").lower() == "complete"

@@ -56,6 +56,7 @@ def compute_code_hash(code: str) -> str:
     """Compute SHA256 hash of code content."""
     return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
+
 def sanitize_func_name(func_name: str) -> str:
     """
     Sanitize function name passed by LLM.
@@ -65,13 +66,14 @@ def sanitize_func_name(func_name: str) -> str:
     if not func_name:
         return ""
     # Remove everything from '(' onwards
-    name = str(func_name).split('(')[0].strip()
+    name = str(func_name).split("(")[0].strip()
     # If the LLM passed a full signature snippet, take the last word
     # e.g. "static inline void* my_func"
     name = name.split()[-1]
     # Remove pointer asterisks
-    name = name.strip('*&')
+    name = name.strip("*&")
     return name
+
 
 def compute_semantic_fingerprint(code: str) -> str:
     """
@@ -201,6 +203,35 @@ def matches_configured_path(path: str, patterns: Optional[Sequence[str]]) -> boo
     return False
 
 
+def matches_interface_path(
+    path: str,
+    patterns: Optional[Sequence[str]],
+    search_root: Optional[Union[str, Path]] = None,
+) -> bool:
+    """Match public ``interface_files`` using literal paths and POSIX globs only."""
+
+    if not patterns:
+        return True
+    normalized = str(path or "").replace("\\", "/")
+    relative = normalized
+    if search_root and normalized:
+        try:
+            relative = Path(path).resolve().relative_to(Path(search_root).resolve()).as_posix()
+        except (OSError, ValueError):
+            relative = normalized
+    for raw_pattern in patterns:
+        pattern = str(raw_pattern or "").strip().replace("\\", "/")
+        if not pattern:
+            continue
+        pattern = pattern.removeprefix("./")
+        for candidate in (relative, normalized):
+            if candidate == pattern or candidate.endswith(f"/{pattern}"):
+                return True
+            if _matches_path_glob(candidate, pattern):
+                return True
+    return False
+
+
 def _matches_path_glob(path: str, pattern: str) -> bool:
     if not any(ch in pattern for ch in "*?["):
         return False
@@ -214,7 +245,15 @@ def _path_glob_to_regex(pattern: str) -> str:
     while i < len(pattern):
         char = pattern[i]
         if char == "*":
-            parts.append("[^/]*")
+            if i + 1 < len(pattern) and pattern[i + 1] == "*":
+                i += 1
+                if i + 1 < len(pattern) and pattern[i + 1] == "/":
+                    parts.append("(?:.*/)?")
+                    i += 1
+                else:
+                    parts.append(".*")
+            else:
+                parts.append("[^/]*")
         elif char == "?":
             parts.append("[^/]")
         elif char == "[":
@@ -244,7 +283,7 @@ def extract_function_calls(code: str) -> list[str]:
     # Match function calls: word followed by (
     pattern = r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\("
     matches = re.findall(pattern, code)
-    
+
     return [m for m in matches if is_likely_function_call_identifier(m)]
 
 
@@ -290,13 +329,14 @@ def extract_json_blocks(text: str) -> list[dict]:
     Handles nested structures, markdown blocks, and partial truncation.
     """
     import json
+
     results = []
-    
+
     # Strategy 1: Find all markdown code blocks (greedy)
     md_blocks = re.findall(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text)
     # Also try even more greedy version if that misses
     md_blocks += re.findall(r"```(?:json)?\n?(\{[\s\S]*\})\n?```", text)
-    
+
     for block in md_blocks:
         try:
             data = json.loads(block)
@@ -304,10 +344,10 @@ def extract_json_blocks(text: str) -> list[dict]:
                 results.append(data)
         except:
             # Try to fix partial truncation at the end of a block
-            for k in range(len(block)-1, 0, -1):
-                if block[k] == '}':
+            for k in range(len(block) - 1, 0, -1):
+                if block[k] == "}":
                     try:
-                        data = json.loads(block[:k+1])
+                        data = json.loads(block[: k + 1])
                         if isinstance(data, dict) and data not in results:
                             results.append(data)
                         break
@@ -317,24 +357,24 @@ def extract_json_blocks(text: str) -> list[dict]:
     # Strategy 2: Find the largest balanced { ... } blocks
     # This is more robust for raw text with JSON
     for i in range(len(text)):
-        if text[i] == '{':
+        if text[i] == "{":
             # Try from end of string to find the matching }
             for j in range(len(text) - 1, i, -1):
-                if text[j] == '}':
+                if text[j] == "}":
                     candidate = text[i : j + 1]
                     try:
                         data = json.loads(candidate)
                         if isinstance(data, dict) and data not in results:
                             results.append(data)
-                        break # Found the largest possible object starting at i
+                        break  # Found the largest possible object starting at i
                     except:
                         continue
-                        
+
     # Strategy 3: Aggressive recovery for truncated JSON
     # If no results yet, or we want to be safe, try fixing text that starts with { but never ends
     if not results:
         for i in range(len(text)):
-            if text[i] == '{':
+            if text[i] == "{":
                 candidate = text[i:]
                 # Try adding 1 to 5 closing braces at the very end of the string
                 for k in range(1, 6):
@@ -342,7 +382,7 @@ def extract_json_blocks(text: str) -> list[dict]:
                         data = json.loads(candidate + "}" * k)
                         if isinstance(data, dict):
                             results.append(data)
-                            return results # Found one, good enough
+                            return results  # Found one, good enough
                     except:
                         continue
                 # Also try adding } after the last meaningful character if there is trailing noise
@@ -356,5 +396,5 @@ def extract_json_blocks(text: str) -> list[dict]:
                             return results
                     except:
                         continue
-    
+
     return results

@@ -1,4 +1,4 @@
-"""Environment diagnostics for online and offline Z-SCOPE profiles."""
+"""Backend-aware environment diagnostics for strict Z-SCOPE config v2."""
 
 from __future__ import annotations
 
@@ -19,6 +19,106 @@ def _check(name: str, ok: bool, detail: str, *, required: bool = True) -> Dict[s
     return {"name": name, "ok": bool(ok), "required": required, "detail": detail}
 
 
+def _resolve_tool(command: str) -> Optional[str]:
+    candidate = Path(str(command or "")).expanduser()
+    if candidate.is_file():
+        return str(candidate.resolve())
+    return shutil.which(str(command or ""))
+
+
+def _append_tool(
+    checks: List[Dict[str, Any]], name: str, command: str, *, required: bool = True
+) -> None:
+    found = _resolve_tool(command)
+    checks.append(
+        _check(
+            f"tool:{name}",
+            found is not None,
+            found or f"{command!r} not found",
+            required=required,
+        )
+    )
+
+
+def _java_build_tool(project_root: Path) -> str:
+    for wrapper in ("mvnw", "mvnw.cmd"):
+        if (project_root / wrapper).is_file():
+            return str(project_root / wrapper)
+    if (project_root / "pom.xml").is_file():
+        return "mvn"
+    for wrapper in ("gradlew", "gradlew.bat"):
+        if (project_root / wrapper).is_file():
+            return str(project_root / wrapper)
+    if any((project_root / name).is_file() for name in ("build.gradle", "build.gradle.kts")):
+        return "gradle"
+    return "mvn"
+
+
+def _configured_checks(config: Any, checks: List[Dict[str, Any]]) -> None:
+    project = config.project
+    indexing = config.indexing
+    backend = indexing.backend
+    if project.language == "c_cpp":
+        if backend in {"clang", "unified"}:
+            _append_tool(checks, "clangd", indexing.clangd_path)
+            compile_commands = project.compile_commands_path
+            checks.append(
+                _check(
+                    "compile_commands",
+                    bool(compile_commands and Path(compile_commands).is_file()),
+                    str(compile_commands or "not configured"),
+                )
+            )
+        if backend == "unified":
+            for name, command in (
+                ("gclang", indexing.gclang_path),
+                ("get-bc", indexing.get_bc_path),
+                ("llvm-link", indexing.llvm_link_path),
+                ("llvm-nm", "llvm-nm"),
+            ):
+                _append_tool(checks, name, command)
+            if indexing.svf_bin_dir:
+                svf_dir = Path(indexing.svf_bin_dir).expanduser()
+                for name in ("wpa", "saber"):
+                    candidates = [svf_dir / name, svf_dir / f"{name}.exe"]
+                    found = next((path for path in candidates if path.is_file()), None)
+                    checks.append(
+                        _check(
+                            f"tool:{name}",
+                            found is not None,
+                            str(found or candidates[0]),
+                        )
+                    )
+            else:
+                _append_tool(checks, "wpa", "wpa")
+                _append_tool(checks, "saber", "saber")
+            linux = platform.system().lower() == "linux"
+            release = platform.release().lower()
+            checks.append(
+                _check(
+                    "linux-userland",
+                    linux,
+                    f"{platform.system()} {platform.release()}"
+                    + (" (WSL)" if "microsoft" in release else ""),
+                )
+            )
+        return
+
+    _append_tool(checks, "java", "java")
+    if backend in {"java_source", "java_unified"}:
+        build_tool = _java_build_tool(project.project_root)
+        _append_tool(checks, Path(build_tool).name, build_tool)
+    if backend == "joern" or "joern" in indexing.java_signal_backends:
+        _append_tool(checks, "joern", indexing.joern_path)
+    if backend == "java_unified":
+        for provider in indexing.java_signal_backends:
+            if provider == "joern":
+                continue
+            command = indexing.java_signal_provider_commands.get(provider) or []
+            executable = command[0] if command else provider
+            _append_tool(checks, f"java-provider:{provider}", executable)
+
+
 @click.command()
 @click.option(
     "--config", "config_path", type=click.Path(exists=True, dir_okay=False, path_type=Path)
@@ -31,73 +131,90 @@ def _check(name: str, ok: bool, detail: str, *, required: bool = True) -> Dict[s
 )
 @click.option("--json-output", is_flag=True, help="Emit machine-readable diagnostics.")
 def main(config_path: Optional[Path], profile: str, json_output: bool) -> None:
-    """Check Python, toolchains, configuration, cache, and directory access."""
+    """Check config v2, selected backend, toolchain, paths, and runtime provenance."""
 
     checks: List[Dict[str, Any]] = []
-    py_version = platform.python_version()
     checks.append(
         _check(
             "python>=3.9",
             sys.version_info >= (3, 9),
-            f"{py_version} ({sys.executable})",
+            f"{platform.python_version()} ({sys.executable})",
         )
     )
     checks.append(
         _check(
             "recommended-python",
             sys.version_info[:2] == (3, 13),
-            "CPython 3.13 is the bundled/recommended runtime; 3.9-3.14 are verified",
+            "CPython 3.13 is recommended; 3.9-3.14 are supported",
             required=False,
         )
     )
-    system = platform.system().lower()
-    release = platform.release().lower()
-    linux_userland = system == "linux"
-    checks.append(
-        _check(
-            "linux-userland",
-            linux_userland,
-            f"{platform.system()} {platform.release()}"
-            + (" (WSL)" if "microsoft" in release else ""),
-        )
-    )
 
-    language = "auto"
     config = None
+    effective_profile = profile
     if config_path:
         try:
             config = ConfigLoader.load(str(config_path))
-            language = config.project.language
-            checks.append(_check("configuration", True, str(config_path.resolve())))
+            effective_profile = "java" if config.project.language == "java" else "cpp"
+            checks.append(
+                _check(
+                    "configuration",
+                    True,
+                    f"{config_path.resolve()} (v{config.user_config_version})",
+                )
+            )
+            checks.append(
+                _check(
+                    "runtime-spec",
+                    bool(config.runtime_provenance.sha256),
+                    f"v{config.runtime_provenance.version} "
+                    f"{config.runtime_provenance.sha256[:12]} "
+                    f"{config.runtime_provenance.source_path}",
+                )
+            )
+            rule_provenance = config.rule_catalog_provenance
+            checks.append(
+                _check(
+                    "rule-catalog",
+                    bool(getattr(rule_provenance, "catalog_sha256", ""))
+                    and bool(getattr(rule_provenance, "effective_sha256", "")),
+                    "catalog="
+                    f"{getattr(rule_provenance, 'catalog_sha256', '')[:12]} "
+                    "effective="
+                    f"{getattr(rule_provenance, 'effective_sha256', '')[:12]}",
+                )
+            )
+            for index, warning in enumerate(config.rule_validation_warnings, start=1):
+                checks.append(
+                    _check(
+                        f"rule-catalog-warning:{index}",
+                        False,
+                        str(warning),
+                        required=False,
+                    )
+                )
         except Exception as exc:
             checks.append(_check("configuration", False, str(exc)))
-    if profile == "auto":
-        profile = "java" if language == "java" else "cpp"
+    elif profile == "auto":
+        effective_profile = "cpp"
 
-    required_tools = []
-    optional_tools = []
-    if profile in {"cpp", "all"}:
-        required_tools.extend(["gcc", "cmake", "clangd"])
-        optional_tools.extend(["gclang", "get-bc"])
-    if profile in {"java", "all"}:
-        required_tools.extend(["java", "mvn", "joern"])
-        optional_tools.append("codeql")
-    for tool in dict.fromkeys(required_tools):
-        found = shutil.which(tool)
-        checks.append(_check(f"tool:{tool}", found is not None, found or "not found on PATH"))
-    for tool in dict.fromkeys(optional_tools):
-        found = shutil.which(tool)
-        checks.append(
-            _check(f"tool:{tool}", found is not None, found or "not found on PATH", required=False)
-        )
-
-    directories = [
-        Path(os.environ.get("Z_SCOPE_CONFIG_HOME", "~/.config/zscope")).expanduser(),
-        Path(os.environ.get("Z_SCOPE_CACHE_HOME", "~/.cache/zscope")).expanduser(),
-    ]
     if config is not None:
-        directories.append(Path(config.project.project_root))
-    for directory in directories:
+        _configured_checks(config, checks)
+        directories = [
+            config.project.project_root,
+            Path(config.analysis.snapshot_dir),
+            Path(config.indexing.knowledge_db_path).parent,
+        ]
+    else:
+        directories = [Path.cwd()]
+        if effective_profile in {"cpp", "all"}:
+            for tool in ("clangd", "gclang", "get-bc", "llvm-link", "wpa", "saber"):
+                _append_tool(checks, tool, tool)
+        if effective_profile in {"java", "all"}:
+            for tool in ("java", "mvn", "joern"):
+                _append_tool(checks, tool, tool)
+
+    for directory in dict.fromkeys(Path(path) for path in directories):
         parent = directory if directory.exists() else directory.parent
         checks.append(
             _check(
@@ -107,8 +224,13 @@ def main(config_path: Optional[Path], profile: str, json_output: bool) -> None:
             )
         )
 
+    payload = {
+        "profile": effective_profile,
+        "backend": getattr(getattr(config, "indexing", None), "backend", ""),
+        "checks": checks,
+    }
     if json_output:
-        click.echo(json.dumps({"profile": profile, "checks": checks}, ensure_ascii=False, indent=2))
+        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         for item in checks:
             status = "PASS" if item["ok"] else ("WARN" if not item["required"] else "FAIL")

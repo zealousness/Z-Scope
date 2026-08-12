@@ -1,13 +1,13 @@
-# Z-SCOPE generic Java benchmark config.
+# Canonical Java Range benchmark configuration. Runtime entries contain no
+# expected rule, CWE, truth ID, or audit-hint metadata.
+config_version: 2
 
 llms:
   default:
-    provider: openai
-    base_url: "https://open.bigmodel.cn/api/paas/v4/"
-    models:
-      - "glm-5.1"
+    base_urls: ["${Z_SCOPE_LLM_BASE_URL}"]
+    models: ["${Z_SCOPE_LLM_MODEL}"]
     api_key: ${Z_SCOPE_API_KEY}
-    temperature: 0.1
+    base_url_max_concurrent_requests: 4
     max_tokens: 8192
     max_retries: 4
     retry_until_available: true
@@ -18,59 +18,27 @@ project:
   source_root: .
   language: java
   entry_functions_list: benchmark/entries.json
-
   entry_discovery:
     enabled: false
+    search_root: .
+    interface_files: ["src/**/*.java"]
+    max_entries: 200
+    max_functions: 10000
 
-  agents:
-    - name: semantic_modeler
-      enabled: true
-      llm_ref: default
-
-    - name: vulnerability_analyzer
-      enabled: true
-      llm_ref: default
-      can_spawn_subagents: true
-      task: >
-        Audit this full Java category benchmark for command injection, SQL/JPA/
-        NoSQL/LDAP/JNDI injection, SSRF, unsafe file upload, path traversal,
-        authorization bypass, unsafe Java and third-party deserialization, XXE,
-        template/expression/code injection, open redirect, header/cookie/CORS
-        misconfiguration, weak crypto/JWT/random/TLS misuse, sensitive logging,
-        hardcoded secrets, resource lifecycle bugs, resource exhaustion, regex
-        DoS, concurrency races, reflection, dynamic class loading, classpath
-        resource traversal, and insecure file/runtime input handling.
-        Treat CLI args, public API parameters, message payloads, environment
-        variables, system properties, stdin, file contents, controller request
-        parameters, request bodies, multipart files, headers, filter inputs, and
-        interceptor inputs as potentially untrusted. Use source evidence,
-        SootUp/WALA/Joern provider evidence, call paths, and Java
-        framework/runtime semantics. Treat provider signals as evidence only;
-        validate reachability, guards, sanitizers, framework bindings, and
-        exploitability before reporting. Do not rely on benchmark answer-key
-        files.
-
-    - name: validator_agent
-      enabled: true
-      llm_ref: default
-
-    - name: issue_reconciler_agent
-      enabled: true
-      llm_ref: default
+scan:
+  # Empty activates every Java-applicable Skill; non-empty text narrows focus.
+  task: ""
 
 indexing:
   backend: java_unified
   java:
-    structure:
-      frontend: auto
-      backends: [sootup, wala]
-    # CodeQL remains BYO and is enabled only through explicit user configuration.
+    structure_frontend: auto
     signals: [joern]
-    structure_db_path: .zscope_knowledge/java_structure.db
-  knowledge_db_path: .zscope_knowledge/code_knowledge.db
 
-analysis:
-  snapshot_dir: test/java_range/.zscope_snapshots
-  enable_subagent_workers: true
-  max_premodel_depth: 3
-  max_premodel_callees: 16
+concurrency:
+  entry_workers: 4
+  validator_workers: 2
+  investigator_workers: 1
+  evidence_completion_workers: 2
+  index_workers: 4
+  llm_max_inflight: 4

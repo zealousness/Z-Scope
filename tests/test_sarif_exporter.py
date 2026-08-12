@@ -35,7 +35,7 @@ def test_save_sarif_report_exports_zscope_issue(tmp_path: Path) -> None:
     data = json.loads(output.read_text(encoding="utf-8"))
     assert data["version"] == "2.1.0"
     result = data["runs"][0]["results"][0]
-    assert result["ruleId"] == "CWE-401:same_function_allocation_not_released"
+    assert result["ruleId"] == "same_function_allocation_not_released"
     assert result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] == "src/demo.c"
     assert result["properties"]["zscope"]["candidate_id"] == "RULE_DEMO"
     assert result["properties"]["zscope"]["candidate_source"] == "regex_local_rule"
@@ -43,6 +43,82 @@ def test_save_sarif_report_exports_zscope_issue(tmp_path: Path) -> None:
     assert result["properties"]["zscope"]["stable_fingerprint"]
     assert "zscopeStableIssueFingerprint" in result["partialFingerprints"]
     assert result["codeFlows"]
+    descriptor = data["runs"][0]["tool"]["driver"]["rules"][0]
+    assert descriptor["id"] == "same_function_allocation_not_released"
+    assert descriptor["properties"]["cwe"] == "CWE-401"
+    assert "CWE-401" in descriptor["properties"]["tags"]
+    assert (
+        descriptor["properties"]["legacyRuleId"] == "CWE-401:same_function_allocation_not_released"
+    )
+
+
+def test_sarif_prefers_canonical_rule_id_and_exports_rule_metadata(tmp_path: Path) -> None:
+    report = {
+        "issues": [
+            {
+                "id": "ISSUE_1",
+                "location": "src/demo.c:42",
+                "rule_id": "clang_cfg_use_after_release",
+                "rule": "legacy_use_after_release",
+                "defect_class": "use_after_free",
+                "cwe": "CWE-416",
+                "rule_engine": "cpp_clang_cfg",
+                "rule_revision": 3,
+                "skill": "temporal_memory",
+                "rule_catalog_sha256": "catalog-sha256",
+                "description": "released object is used",
+            }
+        ]
+    }
+
+    path = save_sarif_report(report, tmp_path / "canonical.sarif")
+    run = json.loads(path.read_text(encoding="utf-8"))["runs"][0]
+    result = run["results"][0]
+    descriptor = run["tool"]["driver"]["rules"][0]
+
+    assert result["ruleId"] == "clang_cfg_use_after_release"
+    assert descriptor["id"] == "clang_cfg_use_after_release"
+    assert descriptor["properties"] == {
+        "tags": ["security", "use-after-free", "CWE-416"],
+        "legacyRuleId": "CWE-416:legacy_use_after_release",
+        "cwe": "CWE-416",
+        "rule_engine": "cpp_clang_cfg",
+        "rule_revision": 3,
+        "skill": "temporal_memory",
+        "rule_catalog_sha256": "catalog-sha256",
+    }
+
+
+def test_sarif_reads_rule_metadata_from_evidence_descriptor(tmp_path: Path) -> None:
+    report = {
+        "issues": [
+            {
+                "location": "src/Demo.java:7",
+                "rule_id": "java_sql_statement_execute",
+                "rule": "java_sql_statement_execute",
+                "defect_class": "sql_injection",
+                "cwe": "CWE-89",
+                "evidence_pack": {
+                    "rule_descriptor": {
+                        "rule_engine": "java_local",
+                        "rule_revision": 2,
+                        "skill": "java_injection",
+                        "rule_catalog_sha256": "java-catalog-sha256",
+                    }
+                },
+            }
+        ]
+    }
+
+    path = save_sarif_report(report, tmp_path / "nested-metadata.sarif")
+    descriptor = json.loads(path.read_text(encoding="utf-8"))["runs"][0]["tool"]["driver"]["rules"][
+        0
+    ]
+
+    assert descriptor["properties"]["rule_engine"] == "java_local"
+    assert descriptor["properties"]["rule_revision"] == 2
+    assert descriptor["properties"]["skill"] == "java_injection"
+    assert descriptor["properties"]["rule_catalog_sha256"] == "java-catalog-sha256"
 
 
 def test_sarif_stable_fingerprint_survives_line_shift(tmp_path: Path) -> None:
@@ -91,8 +167,6 @@ def test_sarif_does_not_export_operational_obligations(tmp_path: Path) -> None:
     }
 
     path = save_sarif_report(report, tmp_path / "operational.sarif")
-    results = json.loads(path.read_text(encoding="utf-8"))["runs"][0][
-        "results"
-    ]
+    results = json.loads(path.read_text(encoding="utf-8"))["runs"][0]["results"]
 
     assert results == []

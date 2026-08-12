@@ -10,7 +10,16 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Pattern, Sequence
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Pattern, Sequence
+
+from .cpp_domains import (
+    ResolvedRuleDescriptor,
+    resolve_emitter_descriptor,
+    resolve_rule_descriptor,
+)
+
+if TYPE_CHECKING:
+    from ...orchestration.subagents import SubAgentTicket
 
 
 @dataclass(frozen=True)
@@ -55,6 +64,9 @@ class JavaRuleCandidateGenerator:
         "hasRole",
         "hasAuthority",
     )
+
+    def __init__(self, rule_policy: Optional[Any] = None):
+        self.rule_policy = rule_policy
 
     _RULES: Sequence[JavaRule] = (
         JavaRule(
@@ -845,7 +857,6 @@ class JavaRuleCandidateGenerator:
         ),
     )
 
-    _SKILL_BY_CLASS = {rule.defect_class: rule.skill for rule in _RULES}
     _RESOURCE_BY_CLASS = {
         "sql_injection": "database",
         "jpa_injection": "database",
@@ -902,7 +913,19 @@ class JavaRuleCandidateGenerator:
             if not line.text:
                 continue
             for rule in self._RULES:
-                if allowed is not None and rule.skill not in allowed:
+                should_emit, descriptor = resolve_emitter_descriptor(
+                    self.rule_policy,
+                    rule.rule_id,
+                    defect_class=rule.defect_class,
+                    language="java",
+                )
+                if not should_emit:
+                    continue
+                if (
+                    allowed is not None
+                    and descriptor is not None
+                    and descriptor.skill not in allowed
+                ):
                     continue
                 if not rule.pattern.search(line.text):
                     continue
@@ -910,7 +933,15 @@ class JavaRuleCandidateGenerator:
                     continue
                 negative = self._guard_evidence(lines, line.index, rule)
                 issues.append(
-                    self._issue_for_rule(func_name, file_path, lines, line, rule, negative)
+                    self._issue_for_rule(
+                        func_name,
+                        file_path,
+                        lines,
+                        line,
+                        rule,
+                        descriptor,
+                        negative,
+                    )
                 )
 
         deduped: Dict[str, Dict[str, Any]] = {}
@@ -923,9 +954,19 @@ class JavaRuleCandidateGenerator:
 
         defect_class = str(issue.get("defect_class") or "unknown")
         evidence = dict(issue.get("evidence_pack") or {})
+        rule_id = str(issue.get("rule_id") or issue.get("rule") or "")
+        descriptor = resolve_rule_descriptor(
+            self.rule_policy,
+            rule_id,
+            defect_class=defect_class,
+            language="java",
+        )
         return SubAgentTicket(
             id=str(issue.get("candidate_id") or issue.get("id")),
-            skill=self._SKILL_BY_CLASS.get(defect_class, "java_web_security"),
+            skill=str(
+                issue.get("skill")
+                or (descriptor.skill if descriptor is not None else "java_web_security")
+            ),
             task=(
                 f"Verify Java local-rule {defect_class} candidate. Confirm source "
                 "controllability, sink reachability, sanitizers/guards, framework entry "
@@ -954,8 +995,11 @@ class JavaRuleCandidateGenerator:
         lines: List[JavaLine],
         line: JavaLine,
         rule: JavaRule,
+        descriptor: Optional[ResolvedRuleDescriptor],
         negative: List[str],
     ) -> Dict[str, Any]:
+        cwe = descriptor.cwe if descriptor is not None else ""
+        skill = descriptor.skill if descriptor is not None else ""
         sink = self._sink_expression(line.text, rule)
         candidate_id = self._candidate_id(
             func_name, file_path, rule.defect_class, line.number, sink
@@ -966,11 +1010,14 @@ class JavaRuleCandidateGenerator:
             f"Matched source line: {line.text}",
         ]
         guard_status = "needs_validation" if negative else "insufficient_or_absent"
-        evidence_pack = {
+        evidence_pack: Dict[str, Any] = {
             "candidate_id": candidate_id,
             "candidate_source": "java_local_rule",
             "defect_class": rule.defect_class,
             "rule": rule.rule_id,
+            "rule_id": descriptor.rule_id if descriptor is not None else rule.rule_id,
+            "cwe": cwe,
+            "skill": skill,
             "rule_confidence": rule.confidence,
             "language": "java",
             "source": {
@@ -1227,7 +1274,15 @@ class JavaRuleCandidateGenerator:
                     "deterministic Java XSS sink rule evidence",
                     "request-derived value reaches response, persistence, or unescaped template model without local escaping",
                 ]
-        reasoning = self._reasoning(rule, func_name, location, sink, positive, negative)
+        reasoning = self._reasoning(
+            rule,
+            cwe,
+            func_name,
+            location,
+            sink,
+            positive,
+            negative,
+        )
         dedup_key = "|".join(
             [
                 rule.defect_class,
@@ -1248,7 +1303,9 @@ class JavaRuleCandidateGenerator:
             "candidate_source": "java_local_rule",
             "evidence_checker": "java_local_rule_checker",
             "rule": rule.rule_id,
-            "cwe": rule.cwe,
+            "rule_id": descriptor.rule_id if descriptor is not None else rule.rule_id,
+            "cwe": cwe,
+            "skill": skill,
             "description": rule.description,
             "root_cause": rule.root_cause,
             "suggested_fix": rule.suggested_fix,
@@ -1320,7 +1377,7 @@ class JavaRuleCandidateGenerator:
                 if code.startswith("@"):
                     line = value.get("lineNumber", value.get("line", fallback_line))
                     try:
-                        number = int(line)
+                        number = int(line) if line is not None else fallback_line
                     except (TypeError, ValueError):
                         number = fallback_line
                     entries.append((number if number > 0 else fallback_line, code))
@@ -1649,6 +1706,7 @@ class JavaRuleCandidateGenerator:
     @staticmethod
     def _reasoning(
         rule: JavaRule,
+        cwe: str,
         func_name: str,
         location: str,
         sink: str,
@@ -1656,7 +1714,7 @@ class JavaRuleCandidateGenerator:
         negative: List[str],
     ) -> str:
         lines = [
-            f"Java 本地规则 `{rule.rule_id}` 在 `{func_name}` 的 `{location}` 命中 `{rule.defect_class}`（{rule.cwe}）候选。",
+            f"Java 本地规则 `{rule.rule_id}` 在 `{func_name}` 的 `{location}` 命中 `{rule.defect_class}`（{cwe}）候选。",
             f"问题判断：{rule.description}",
             f"汇点/操作：`{sink}`。",
             "保护状态："

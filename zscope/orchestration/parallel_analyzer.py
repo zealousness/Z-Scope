@@ -63,6 +63,8 @@ from ..reporting.views import (
 )
 from ..reporting.schema import apply_report_schema_v2, coalesce_terminal_candidates
 from ..reporting.assembler import ReportAssembler
+from ..rules.extensions import preflight_rules
+from ..rules.catalog import serialize_effective_rules
 
 logger = logging.getLogger(__name__)
 
@@ -125,15 +127,9 @@ class ParallelAnalyzer:
         maintain_mode: bool = False,
         cancellation_token: Optional[CancellationToken] = None,
     ):
+        preflight_rules(config)
         self.base_config = config
-        self.max_workers = max(
-            1,
-            int(
-                getattr(config.analysis, "entry_workers", 0)
-                or config.analysis.parallel_workers
-                or 1
-            ),
-        )
+        self.max_workers = config.concurrency.entry_workers
         self.force_ignore_history = force_ignore_history
         self.maintain_mode = maintain_mode
         self._shared_llm_clients = self._build_shared_llm_clients(config)
@@ -160,9 +156,11 @@ class ParallelAnalyzer:
                 indexing_config=config.indexing,
                 include_paths=config.project.include_paths,
                 exclude_paths=config.project.exclude_paths,
-                svf_parallel_workers=config.analysis.parallel_workers,
+                svf_parallel_workers=(
+                    config.concurrency.svf_workers or config.concurrency.index_workers
+                ),
             )
-        self.snapshot_store = SnapshotStore(Path(config.analysis.snapshot_dir))
+        self.snapshot_store = SnapshotStore.from_config(config)
         db_dir = (
             Path(config.analysis.user_config_db)
             if config.analysis.user_config_db
@@ -246,10 +244,8 @@ class ParallelAnalyzer:
         self._cancellation_token.raise_if_cancelled()
         scheduler = ScanScheduler(
             entry_workers=self.max_workers,
-            validator_workers=(getattr(self.base_config.analysis, "validator_workers", 0) or 4),
-            investigator_workers=(
-                getattr(self.base_config.analysis, "investigator_workers", 0) or 2
-            ),
+            validator_workers=self.base_config.concurrency.validator_workers,
+            investigator_workers=self.base_config.concurrency.investigator_workers,
         )
         self._scheduler = scheduler
 
@@ -272,14 +268,7 @@ class ParallelAnalyzer:
                         raise RuntimeError(
                             "Global semantic modeling did not complete; entry analysis was not started."
                         )
-                if bool(
-                    getattr(
-                        self.base_config.analysis,
-                        "project_deterministic_fact_pass_v1",
-                        False,
-                    )
-                ):
-                    self._run_project_deterministic_fact_pass(entries)
+                self._run_project_deterministic_fact_pass(entries)
         except Exception:
             scheduler.shutdown(wait=True, cancel_futures=True)
             self._scheduler = None
@@ -379,7 +368,7 @@ class ParallelAnalyzer:
             if self._last_scan_budget_metadata["scan_budget_exceeded"]:
                 logger.warning(
                     "Scan budget exceeded: budget=%.2fs overrun=%.2fs " "policy=%s outcome=%s",
-                    float(scan_budget_seconds),
+                    float(str(scan_budget_seconds)),
                     self._last_scan_budget_metadata["scan_budget_overrun_seconds"],
                     budget_exhaustion_policy,
                     ("completed"),
@@ -400,11 +389,7 @@ class ParallelAnalyzer:
         # ``object.__new__`` to exercise report projection only.  Those paths
         # have no configuration or batch lifecycle, so retain the pre-v3
         # per-entry behavior instead of assuming scan-level validation.
-        analysis = getattr(getattr(self, "base_config", None), "analysis", None)
-        return bool(
-            getattr(analysis, "candidate_lifecycle_v3", True)
-            and getattr(analysis, "global_validation_group_queue", True)
-        )
+        return True
 
     def _run_scan_validation_queue(self) -> None:
         """Validate each frozen v3 obligation once after all entries discover it.
@@ -681,6 +666,7 @@ class ParallelAnalyzer:
             "reachable_functions": 0,
             "analyzed_functions": 0,
             "candidate_count": 0,
+            "rule_candidate_counts": {"by_engine": {}, "by_rule": {}, "total": 0},
             "unresolved_internal_functions": 0,
             "failures": [],
         }
@@ -688,6 +674,7 @@ class ParallelAnalyzer:
             self._get_shared_local_pattern_semantics(),
             semantic_overlay=self._get_shared_semantic_overlay(),
             tooling_evidence_provider=None,
+            rule_policy=self.base_config.effective_rules.policy,
         )
         helper = Analyzer(
             self.base_config,
@@ -841,6 +828,25 @@ class ParallelAnalyzer:
                     issue["project_fact_pass_v1"] = True
                     emitted.append(issue)
                 if emitted:
+                    emitted = helper._annotate_candidate_issues(
+                        emitted,
+                        checker=helper._local_candidate_checker(),
+                        path_kind="project_deterministic_fact_pass",
+                    )
+                if emitted:
+                    project_rule_counts = state["rule_candidate_counts"]
+                    for issue in emitted:
+                        if str(issue.get("candidate_kind") or "") != "deterministic_rule":
+                            continue
+                        rule_id = str(issue.get("rule_id") or issue.get("rule") or "")
+                        engine = str(issue.get("rule_engine") or "")
+                        if rule_id:
+                            by_rule = project_rule_counts["by_rule"]
+                            by_rule[rule_id] = by_rule.get(rule_id, 0) + 1
+                        if engine:
+                            by_engine = project_rule_counts["by_engine"]
+                            by_engine[engine] = by_engine.get(engine, 0) + 1
+                        project_rule_counts["total"] += 1
                     helper._register_candidate_issues(
                         {
                             "candidate_ledger": self._candidate_ledger,
@@ -892,7 +898,7 @@ class ParallelAnalyzer:
                 base_url_max_concurrent_requests=getattr(
                     llm_cfg, "base_url_max_concurrent_requests", 0
                 ),
-                global_max_concurrent_requests=getattr(config.analysis, "llm_max_inflight", 8),
+                global_max_concurrent_requests=config.concurrency.llm_max_inflight,
                 supports_structured_output=getattr(llm_cfg, "supports_structured_output", False),
             )
         return clients
@@ -1369,7 +1375,7 @@ class ParallelAnalyzer:
                         self.code_index,
                         self.user_config,
                         self.snapshot_store,
-                        self.base_config.project.exclude_paths,
+                        (Path(path) for path in self.base_config.project.exclude_paths),
                     ).build()
         return self._shared_local_pattern_semantics
 
@@ -1420,10 +1426,10 @@ class ParallelAnalyzer:
         Returns:
             Combined report dict
         """
-        all_issues = []
-        all_observations = []
+        all_issues: List[Dict[str, Any]] = []
+        all_observations: List[Dict[str, Any]] = []
         all_terminal_states: List[Dict[str, Any]] = []
-        function_summaries = []
+        function_summaries: List[Dict[str, Any]] = []
         total_duration = 0.0
         base_config = getattr(self, "base_config", None)
         project_config = getattr(base_config, "project", None)
@@ -1433,10 +1439,28 @@ class ParallelAnalyzer:
         )
         source_root = str(getattr(project_config, "source_root", "") or "")
         batch_run_id = str(getattr(self, "run_id", "") or "")
+        rule_candidate_counts: Dict[str, Any] = {
+            "by_engine": {},
+            "by_rule": {},
+            "total": 0,
+        }
         all_terminal_states.extend(self._deferred_entry_terminal_states(project_id, project_root))
 
         for entry_key, result in results.items():
             total_duration += result.duration_seconds
+            result_rule_counts = (
+                result.metadata.get("rule_candidate_counts", {})
+                if isinstance(result.metadata, dict)
+                else {}
+            )
+            if isinstance(result_rule_counts, dict):
+                for dimension in ("by_engine", "by_rule"):
+                    values = result_rule_counts.get(dimension)
+                    if not isinstance(values, dict):
+                        continue
+                    target = rule_candidate_counts[dimension]
+                    for key, value in values.items():
+                        target[str(key)] = target.get(str(key), 0) + int(value or 0)
             all_terminal_states.extend(
                 item for item in result.candidate_terminal_states if isinstance(item, dict)
             )
@@ -1543,22 +1567,17 @@ class ParallelAnalyzer:
             for item in final_records
             if item.get("validation_cluster_uid")
         }
-        analysis_config = getattr(base_config, "analysis", None)
-        canonical_projection_state = {
+        canonical_projection_state: Dict[str, Any] = {
             "candidate_lifecycle_snapshot": ledger_snapshot,
-            "finding_root_v1_enabled": bool(getattr(analysis_config, "finding_root_v1", False)),
+            "finding_root_v1_enabled": True,
         }
-        canonical_outcomes = ReportAssembler._canonical_outcome_items(canonical_projection_state)
-        canonical_projection = (
-            bool(getattr(analysis_config, "candidate_lifecycle_v3", True))
-            and bool(
-                getattr(analysis_config, "canonical_outcome_projection", True)
-                # A missing/empty ledger snapshot is not a canonical outcome set.
-                # This happens in compatibility callers and lightweight report-only
-                # flows; dropping their ordinary findings would be a false clean scan.
-            )
-            and bool(canonical_outcomes)
+        canonical_outcomes = (
+            ReportAssembler._canonical_outcome_items(canonical_projection_state) or []
         )
+        # A missing/empty ledger snapshot is not a canonical outcome set. This
+        # still protects report-only helpers while the stable scan path always
+        # uses canonical projection.
+        canonical_projection = bool(canonical_outcomes)
         if canonical_projection:
             # A scan-level outcome is authoritative.  Per-entry reports may
             # have been assembled before another entry completed the shared
@@ -1709,6 +1728,15 @@ class ParallelAnalyzer:
             for entry_key, result in results.items()
         }
         project_fact_state = dict(getattr(self, "_project_fact_pass_state", {}) or {})
+        project_rule_counts = project_fact_state.get("rule_candidate_counts")
+        if isinstance(project_rule_counts, dict):
+            for dimension in ("by_engine", "by_rule"):
+                values = project_rule_counts.get(dimension)
+                if not isinstance(values, dict):
+                    continue
+                target = rule_candidate_counts[dimension]
+                for key, value in values.items():
+                    target[str(key)] = target.get(str(key), 0) + int(value or 0)
         if project_fact_state:
             engine_capabilities["__project_deterministic_fact_pass__"] = {
                 "project_deterministic_fact_pass": {
@@ -1731,7 +1759,17 @@ class ParallelAnalyzer:
             if bool(result.error) or str(result.verdict).lower() == "error"
         )
 
+        rule_candidate_counts["by_engine"] = dict(
+            sorted(rule_candidate_counts["by_engine"].items())
+        )
+        rule_candidate_counts["by_rule"] = dict(sorted(rule_candidate_counts["by_rule"].items()))
+        rule_candidate_counts["total"] = sum(rule_candidate_counts["by_rule"].values())
+        effective_rules = getattr(base_config, "effective_rules", None)
         combined_report = {
+            "rule_catalog": (
+                serialize_effective_rules(effective_rules) if effective_rules is not None else {}
+            ),
+            "rule_candidate_counts": rule_candidate_counts,
             "type": "parallel_analysis_report",
             "summary": {
                 "functions_analyzed": len(results),
@@ -1824,6 +1862,33 @@ class ParallelAnalyzer:
                     ),
                     "",
                 ),
+                "config_hash": next(
+                    (
+                        str(result.metadata.get("config_hash") or "")
+                        for result in results.values()
+                        if isinstance(result.metadata, dict) and result.metadata.get("config_hash")
+                    ),
+                    "",
+                ),
+                "effective_rules_sha256": str(
+                    getattr(
+                        getattr(base_config, "rule_catalog_provenance", None),
+                        "effective_sha256",
+                        "",
+                    )
+                    or ""
+                ),
+                "rule_catalog": (
+                    serialize_effective_rules(effective_rules)
+                    if effective_rules is not None
+                    else {}
+                ),
+                "rule_candidate_counts": rule_candidate_counts,
+                "runtime_spec": (
+                    dict(vars(getattr(base_config, "runtime_provenance", None)))
+                    if getattr(base_config, "runtime_provenance", None) is not None
+                    else {}
+                ),
                 "audit_observation_count": len(unique_observations),
                 "audit_observations": unique_observations,
                 "report_view_summary": view_summary,
@@ -1888,7 +1953,7 @@ class ParallelAnalyzer:
                 "engine_capabilities": engine_capabilities,
                 "canonical_outcome_projection": canonical_projection,
                 "candidate_ledger_summary": ledger_snapshot.get("summary", {}),
-                "finding_root_v1_enabled": bool(getattr(analysis_config, "finding_root_v1", False)),
+                "finding_root_v1_enabled": True,
                 "finding_root_count": int(
                     canonical_projection_state.get("finding_root_count", 0) or 0
                 ),
@@ -2003,20 +2068,20 @@ class ParallelAnalyzer:
             "static_audit_observation_count",
             "static_suppressed_count",
         )
-        summary = {key: 0 for key in keys}
+        summary: Dict[str, Any] = {key: 0 for key in keys}
         for result in results.values():
             metadata = result.metadata if isinstance(result.metadata, dict) else {}
-            perf = (
-                metadata.get("validation_performance")
-                if isinstance(metadata.get("validation_performance"), dict)
-                else {}
-            )
+            raw_perf = metadata.get("validation_performance")
+            perf: Dict[str, Any] = raw_perf if isinstance(raw_perf, dict) else {}
             for key in keys:
                 try:
                     summary[key] += int(perf.get(key, 0) or 0)
                 except (TypeError, ValueError):
                     continue
-        global_state = getattr(self, "_global_validation_state", {}) or {}
+        raw_global_state = getattr(self, "_global_validation_state", {})
+        global_state: Dict[str, Any] = (
+            raw_global_state if isinstance(raw_global_state, dict) else {}
+        )
         for key in keys:
             try:
                 summary[key] += int(global_state.get(key, 0) or 0)
@@ -2143,7 +2208,7 @@ class ParallelAnalyzer:
             )
             row["refs"].append(str(ref))
 
-        totals = {
+        totals: Dict[str, Any] = {
             "successful_calls": 0,
             "prompt_tokens": 0,
             "completion_tokens": 0,
@@ -2152,6 +2217,10 @@ class ParallelAnalyzer:
             "provider_reported_calls": 0,
         }
         per_client: List[Dict[str, Any]] = []
+        call_wall_seconds_total = 0.0
+        call_wall_seconds_p50 = 0.0
+        call_wall_seconds_p95 = 0.0
+        call_wall_seconds_max = 0.0
         for row in unique.values():
             snapshotter = getattr(row["client"], "usage_snapshot", None)
             if not callable(snapshotter):
@@ -2160,6 +2229,21 @@ class ParallelAnalyzer:
             snapshot = dict(raw) if isinstance(raw, dict) else {}
             for key in totals:
                 totals[key] += int(snapshot.get(key) or 0)
+            call_wall_seconds_total += float(
+                snapshot.get("successful_call_wall_seconds_total") or 0.0
+            )
+            call_wall_seconds_p50 = max(
+                call_wall_seconds_p50,
+                float(snapshot.get("successful_call_wall_seconds_p50") or 0.0),
+            )
+            call_wall_seconds_p95 = max(
+                call_wall_seconds_p95,
+                float(snapshot.get("successful_call_wall_seconds_p95") or 0.0),
+            )
+            call_wall_seconds_max = max(
+                call_wall_seconds_max,
+                float(snapshot.get("successful_call_wall_seconds_max") or 0.0),
+            )
             per_client.append(
                 {
                     "llm_refs": sorted(set(row["refs"])),
@@ -2172,6 +2256,16 @@ class ParallelAnalyzer:
             (totals["provider_reported_calls"] / successful_calls if successful_calls else 0.0),
             4,
         )
+        totals["successful_call_wall_seconds_total"] = round(call_wall_seconds_total, 4)
+        totals["successful_call_wall_seconds_mean"] = round(
+            call_wall_seconds_total / successful_calls if successful_calls else 0.0,
+            4,
+        )
+        # Benchmarks normally use one effective profile. For multiple clients these are
+        # conservative maxima; per-client distributions remain available below.
+        totals["successful_call_wall_seconds_p50"] = round(call_wall_seconds_p50, 4)
+        totals["successful_call_wall_seconds_p95"] = round(call_wall_seconds_p95, 4)
+        totals["successful_call_wall_seconds_max"] = round(call_wall_seconds_max, 4)
         return {
             **totals,
             "accounting_scope": "successful_response_boundary",
@@ -2256,8 +2350,8 @@ class ParallelAnalyzer:
                 }:
                     return "incremental"
 
-        affected_path_nodes = set()
-        affected_path_pairs = set()
+        affected_path_nodes: Set[str] = set()
+        affected_path_pairs: Set[tuple[str, str]] = set()
         saw_path_refs = False
         for path_item in diff_focus.get("affected_paths") or []:
             if not isinstance(path_item, dict):
@@ -3083,7 +3177,7 @@ class ParallelAnalyzer:
         return applied, rejected
 
     @staticmethod
-    def _issue_rank(issue: Dict[str, Any]) -> tuple[int, float, int]:
+    def _issue_rank(issue: Dict[str, Any]) -> tuple[int, int, int, int, float, int]:
         return issue_rank(issue)
 
     @classmethod

@@ -119,7 +119,8 @@ class FunctionListLoader:
         *,
         require_declared_mode: bool = False,
     ) -> bool:
-        diff_impact = data.get("diff_impact") if isinstance(data.get("diff_impact"), dict) else {}
+        raw_diff_impact = data.get("diff_impact")
+        diff_impact: Dict[str, Any] = raw_diff_impact if isinstance(raw_diff_impact, dict) else {}
         declared = any(
             cls._is_diff_mode_value(value)
             for value in (
@@ -238,7 +239,8 @@ class FunctionListLoader:
         if not isinstance(data, dict):
             raise ValueError(f"JSON root must be an object, got {type(data).__name__}")
 
-        diff_impact = data.get("diff_impact") if isinstance(data.get("diff_impact"), dict) else {}
+        raw_diff_impact = data.get("diff_impact")
+        diff_impact: Dict[str, Any] = raw_diff_impact if isinstance(raw_diff_impact, dict) else {}
         is_diff_impact = FunctionListLoader._is_diff_impact_payload(data)
 
         if "functions" not in data:
@@ -257,8 +259,10 @@ class FunctionListLoader:
             try:
                 function_name = func_data.get("function_name", "")
                 file_path = func_data.get("file_path")
+                raw_diff_focus = func_data.get("diff_focus")
+                normalized_diff_focus = raw_diff_focus if isinstance(raw_diff_focus, dict) else {}
                 diff_focus = FunctionListLoader._normalize_diff_focus(
-                    func_data.get("diff_focus"),
+                    normalized_diff_focus,
                     diff_impact,
                     is_diff_impact=is_diff_impact,
                     function_name=str(function_name or ""),

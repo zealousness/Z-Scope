@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional
 
-_JSON_SCHEMA_TYPES = {
+_JSON_SCHEMA_TYPES: Dict[str, Any] = {
     "string": str,
     "integer": int,
     "number": (int, float),
@@ -49,7 +49,7 @@ def validate_function_arguments(
             continue
         property_schema = properties.get(name) or {}
         schema_type = property_schema.get("type")
-        expected = _JSON_SCHEMA_TYPES.get(schema_type)
+        expected = _JSON_SCHEMA_TYPES.get(schema_type) if isinstance(schema_type, str) else None
         if expected is not None:
             valid = isinstance(value, expected)
             if schema_type in {"integer", "number"} and isinstance(value, bool):

@@ -1,8 +1,10 @@
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+
 import zscope.orchestration.specs as specs_module
-from zscope.orchestration.specs import SpecRegistry
+from zscope.orchestration.specs import SkillSpec, SpecRegistry
 
 
 def _write_spec_package(root: Path) -> None:
@@ -17,7 +19,7 @@ def _write_spec_package(root: Path) -> None:
         encoding="utf-8",
     )
     (skill_dir / "SKILL.md").write_text(
-        "---\nname: demo_skill\n---\nskill body\n",
+        "---\nname: demo_skill\nlanguages: [c_cpp]\n---\nskill body\n",
         encoding="utf-8",
     )
     (workflow_dir / "default.yaml").write_text(
@@ -75,3 +77,66 @@ def test_spec_registry_loads_package_specs_once_under_concurrency(
     assert all(registry.get_agent("demo_agent") is not None for registry in registries)
     assert all(registry.get_skill("demo_skill") is not None for registry in registries)
     assert len(read_paths) == 2
+
+
+def test_builtin_skills_declare_strict_language_scopes() -> None:
+    registry = SpecRegistry()
+    c_cpp = {
+        "bounds_and_integer",
+        "concurrency_lock_order",
+        "null_and_failure",
+        "ownership_contract",
+        "resource_lifecycle",
+        "shared_state_race",
+        "stack_escape",
+        "string_and_format",
+        "temporal_memory",
+    }
+    java = {
+        "java_authz",
+        "java_concurrency",
+        "java_crypto",
+        "java_deserialization",
+        "java_injection",
+        "java_resource_lifecycle",
+        "java_web_security",
+    }
+    shared = {
+        "code_semantic_modeling",
+        "evidence_validation",
+        "snapshot_refresh_decision",
+    }
+
+    assert set(registry.skills) == c_cpp | java | shared
+    assert {name for name, spec in registry.skills.items() if spec.languages == ["c_cpp"]} == c_cpp
+    assert {name for name, spec in registry.skills.items() if spec.languages == ["java"]} == java
+    assert {
+        name for name, spec in registry.skills.items() if spec.languages == ["c_cpp", "java"]
+    } == shared
+
+
+@pytest.mark.parametrize(
+    ("languages_line", "message"),
+    [
+        ("", "must be a non-empty YAML list"),
+        ("languages: c_cpp\n", "must be a non-empty YAML list"),
+        ("languages: []\n", "must be a non-empty YAML list"),
+        ("languages: [python]\n", "unsupported skill language"),
+        ("languages: [c_cpp, c_cpp]\n", "duplicate skill language"),
+        ("languages: [c_cpp, 1]\n", "must be a non-empty string"),
+    ],
+)
+def test_skill_spec_rejects_invalid_language_metadata(
+    tmp_path: Path,
+    languages_line: str,
+    message: str,
+) -> None:
+    path = tmp_path / "skills" / "demo" / "SKILL.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        f"---\nname: demo\n{languages_line}---\nskill body\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        SkillSpec.from_markdown(path)

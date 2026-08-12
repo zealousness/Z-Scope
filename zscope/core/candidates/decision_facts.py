@@ -97,7 +97,15 @@ def normalize_subject(value: Any) -> str:
     """Return a field-sensitive object identity, never a display-only name."""
 
     if isinstance(value, Mapping):
-        for key in ("access_path", "field_path", "resource", "object", "variable", "name", "expression"):
+        for key in (
+            "access_path",
+            "field_path",
+            "resource",
+            "object",
+            "variable",
+            "name",
+            "expression",
+        ):
             if value.get(key) not in (None, ""):
                 value = value[key]
                 break
@@ -167,10 +175,7 @@ def _decision_code_hash(
             return text
 
     snippet = str(
-        issue.get("code_snippet")
-        or issue.get("source_snippet")
-        or pack.get("code_snippet")
-        or ""
+        issue.get("code_snippet") or issue.get("source_snippet") or pack.get("code_snippet") or ""
     ).strip()
     function = str(
         issue.get("function_signature")
@@ -281,7 +286,7 @@ class DecisionFactGraph:
         self.source_fingerprint = str(source_fingerprint or "")
         self.facts = tuple(sorted(facts, key=lambda item: item.fact_uid))
         self.edges = tuple(sorted(edges, key=lambda item: item.edge_uid))
-        self._by_kind = {}
+        self._by_kind: Dict[str, list[DecisionFact]] = {}
         for fact in self.facts:
             self._by_kind.setdefault(fact.fact_kind, []).append(fact)
 
@@ -371,7 +376,13 @@ class DecisionFactGraph:
             if not isinstance(event, Mapping):
                 continue
             kind = str(event.get("kind") or "event").strip().lower()
-            subject = event.get("access_path") or event.get("field_path") or event.get("variable") or event.get("object") or event.get("expression")
+            subject = (
+                event.get("access_path")
+                or event.get("field_path")
+                or event.get("variable")
+                or event.get("object")
+                or event.get("expression")
+            )
             event_facts.append(
                 add_fact(
                     f"event:{kind}",
@@ -395,27 +406,75 @@ class DecisionFactGraph:
                 "guard",
                 subject=guard_data.get("variable") or condition,
                 node=guard_data.get("cfg_node") or guard_data.get("line"),
-                attributes={"condition": str(condition or ""), "terminating": guard_data.get("terminating")},
+                attributes={
+                    "condition": str(condition or ""),
+                    "terminating": guard_data.get("terminating"),
+                },
             )
         for sanitizer in _values(value.get("sanitizers") or pack.get("sanitizers")):
-            add_fact("sanitizer", subject=sanitizer, attributes={"value": sanitizer}, producer="value_flow")
-        for constraint in _values(value.get("ranges") or value.get("length_constraints") or pack.get("length_constraints")):
-            add_fact("value_range", subject=constraint, attributes={"constraint": constraint}, producer="value_flow")
+            add_fact(
+                "sanitizer",
+                subject=sanitizer,
+                attributes={"value": sanitizer},
+                producer="value_flow",
+            )
+        for constraint in _values(
+            value.get("ranges") or value.get("length_constraints") or pack.get("length_constraints")
+        ):
+            add_fact(
+                "value_range",
+                subject=constraint,
+                attributes={"constraint": constraint},
+                producer="value_flow",
+            )
         for check in _values(value.get("overflow_checks") or pack.get("overflow_checks")):
-            add_fact("overflow_check", subject=check, attributes={"check": check}, producer="value_flow")
+            add_fact(
+                "overflow_check", subject=check, attributes={"check": check}, producer="value_flow"
+            )
         for item in _values(ownership.get("aliases")):
             add_fact("alias", subject=item, attributes={"alias": item}, producer="ownership")
         for item in _values(ownership.get("transitions")):
-            add_fact("ownership_transition", subject=ownership.get("resource") or issue.get("resource"), attributes={"transition": item}, producer="ownership")
+            add_fact(
+                "ownership_transition",
+                subject=ownership.get("resource") or issue.get("resource"),
+                attributes={"transition": item},
+                producer="ownership",
+            )
         for item in _values(ownership.get("transfer") or pack.get("ownership_transfer")):
-            add_fact("ownership_transfer", subject=ownership.get("resource") or issue.get("resource"), attributes={"transfer": item}, producer="ownership")
+            add_fact(
+                "ownership_transfer",
+                subject=ownership.get("resource") or issue.get("resource"),
+                attributes={"transfer": item},
+                producer="ownership",
+            )
         for item in _values(ownership.get("cleanup_paths") or pack.get("cleanup_paths")):
-            add_fact("cleanup_path", subject=ownership.get("resource") or issue.get("resource"), attributes={"path": item}, producer="ownership")
+            add_fact(
+                "cleanup_path",
+                subject=ownership.get("resource") or issue.get("resource"),
+                attributes={"path": item},
+                producer="ownership",
+            )
         for item in _values(concurrency.get("lockset") or pack.get("lockset")):
-            add_fact("lockset", subject=concurrency.get("object") or issue.get("thread_object"), attributes={"lock": item}, producer="concurrency")
+            add_fact(
+                "lockset",
+                subject=concurrency.get("object") or issue.get("thread_object"),
+                attributes={"lock": item},
+                producer="concurrency",
+            )
         for item in _values(concurrency.get("happens_before") or pack.get("happens_before")):
-            add_fact("happens_before", subject=concurrency.get("object") or issue.get("thread_object"), attributes={"edge": item}, producer="concurrency")
-        for key, kind in (("preconditions", "contract_precondition"), ("postconditions", "contract_postcondition"), ("error_paths", "error_path"), ("caller_responsibility", "caller_responsibility"), ("cleanup_responsibility", "cleanup_responsibility")):
+            add_fact(
+                "happens_before",
+                subject=concurrency.get("object") or issue.get("thread_object"),
+                attributes={"edge": item},
+                producer="concurrency",
+            )
+        for key, kind in (
+            ("preconditions", "contract_precondition"),
+            ("postconditions", "contract_postcondition"),
+            ("error_paths", "error_path"),
+            ("caller_responsibility", "caller_responsibility"),
+            ("cleanup_responsibility", "cleanup_responsibility"),
+        ):
             for item in _values(contract.get(key) or pack.get(key)):
                 add_fact(kind, subject=item, attributes={"value": item}, producer="contract")
 
@@ -447,7 +506,10 @@ class DecisionFactGraph:
                 if source is None or target is None:
                     continue
                 edge = DecisionFactEdge(
-                    edge_uid="EDGE_" + _digest({"source": source.fact_uid, "relation": relation, "target": target.fact_uid}),
+                    edge_uid="EDGE_"
+                    + _digest(
+                        {"source": source.fact_uid, "relation": relation, "target": target.fact_uid}
+                    ),
                     source_fact_uid=source.fact_uid,
                     relation=str(relation),
                     target_fact_uid=target.fact_uid,
@@ -483,16 +545,8 @@ class DecisionFactGraph:
         """
 
         fragments = [cls.from_issue(issue) for issue in issues if isinstance(issue, Mapping)]
-        facts = {
-            fact.fact_uid: fact
-            for fragment in fragments
-            for fact in fragment.facts
-        }
-        edges = {
-            edge.edge_uid: edge
-            for fragment in fragments
-            for edge in fragment.edges
-        }
+        facts = {fact.fact_uid: fact for fragment in fragments for fact in fragment.facts}
+        edges = {edge.edge_uid: edge for fragment in fragments for edge in fragment.edges}
         resolved_project = project_id or next(
             (fragment.project_id for fragment in fragments if fragment.project_id),
             "",
@@ -506,7 +560,9 @@ class DecisionFactGraph:
             "",
         )
         resolved_fingerprint = source_fingerprint or _digest(
-            sorted(fragment.source_fingerprint for fragment in fragments if fragment.source_fingerprint),
+            sorted(
+                fragment.source_fingerprint for fragment in fragments if fragment.source_fingerprint
+            ),
             length=64,
         )
         return cls(
@@ -524,7 +580,8 @@ class DecisionFactGraph:
     ) -> DecisionFactSlice:
         subject = obligation.subject_uid
         selected = [
-            fact for fact in self.facts
+            fact
+            for fact in self.facts
             if not subject or not fact.subject_uid or fact.subject_uid == subject
         ]
         # Source and sink are decision facts for a sink-sensitive obligation
@@ -532,14 +589,15 @@ class DecisionFactGraph:
         selected.extend(
             fact
             for fact in self.facts
-            if fact.fact_kind in obligation.required_fact_kinds
-            and fact not in selected
+            if fact.fact_kind in obligation.required_fact_kinds and fact not in selected
         )
         if not selected:
             selected = list(self.facts)
         selected_ids = {fact.fact_uid for fact in selected}
         fact_kinds = {fact.fact_kind for fact in selected}
-        missing = tuple(sorted(kind for kind in obligation.required_fact_kinds if kind not in fact_kinds))
+        missing = tuple(
+            sorted(kind for kind in obligation.required_fact_kinds if kind not in fact_kinds)
+        )
         if any(fact.completeness == "failed" for fact in selected):
             coverage = "failed"
         elif selected and not missing and all(fact.completeness == "complete" for fact in selected):
@@ -549,8 +607,16 @@ class DecisionFactGraph:
         return DecisionFactSlice(
             obligation_uid=obligation.obligation_uid,
             fact_uids=tuple(sorted(selected_ids)),
-            edge_uids=tuple(sorted(edge.edge_uid for edge in self.edges if edge.source_fact_uid in selected_ids and edge.target_fact_uid in selected_ids)),
-            dependency_code_hashes=tuple(sorted({fact.code_hash for fact in selected if fact.code_hash})),
+            edge_uids=tuple(
+                sorted(
+                    edge.edge_uid
+                    for edge in self.edges
+                    if edge.source_fact_uid in selected_ids and edge.target_fact_uid in selected_ids
+                )
+            ),
+            dependency_code_hashes=tuple(
+                sorted({fact.code_hash for fact in selected if fact.code_hash})
+            ),
             coverage=coverage,
             missing_fact_kinds=missing,
             assumptions=(),
@@ -657,7 +723,9 @@ def obligation_shape_for_issue(issue: Mapping[str, Any]) -> str:
 
 def required_fact_kinds_for_issue(issue: Mapping[str, Any]) -> tuple[str, ...]:
     pack = _mapping(issue.get("evidence_pack"))
-    explicit = issue.get("obligation_required_fact_kinds") or pack.get("obligation_required_fact_kinds")
+    explicit = issue.get("obligation_required_fact_kinds") or pack.get(
+        "obligation_required_fact_kinds"
+    )
     if isinstance(explicit, Sequence) and not isinstance(explicit, str):
         return tuple(sorted({str(item) for item in explicit if str(item)}))
     rule = str(issue.get("rule") or pack.get("rule") or "").lower()
@@ -694,6 +762,7 @@ def _canonical_source_for_obligation(
     ast_cfg = _mapping(pack.get("ast_cfg"))
     events = [item for item in ast_cfg.get("events") or [] if isinstance(item, Mapping)]
     defect = str(defect_family or "").lower()
+    source_kinds: tuple[str, ...]
     if any(token in defect for token in ("lock", "unlock")):
         source_kinds = ("lock", "acquire_lock", "caller_held_lock")
     elif any(token in defect for token in ("leak", "allocation", "null_pointer")):
@@ -733,9 +802,7 @@ def _canonical_source_for_obligation(
     if not ranked:
         return normalize_subject(fallback_source_uid)
     line, kind, identity = sorted(ranked)[0]
-    function = normalize_subject(
-        issue.get("function_signature") or issue.get("function") or ""
-    )
+    function = normalize_subject(issue.get("function_signature") or issue.get("function") or "")
     return f"{function}:{line}:{kind}:{identity}"
 
 
@@ -752,10 +819,18 @@ def security_obligation_for(
     shape = obligation_shape_for_issue(issue)
     path = _mapping(_mapping(issue.get("evidence_pack")).get("path"))
     ast_cfg = _mapping(_mapping(issue.get("evidence_pack")).get("ast_cfg"))
-    guards = ast_cfg.get("condition_guards") or _mapping(issue.get("evidence_pack")).get("guards") or []
-    path_constraints = path.get("path_constraints") or _mapping(issue.get("evidence_pack")).get("path_constraints") or []
+    guards = (
+        ast_cfg.get("condition_guards") or _mapping(issue.get("evidence_pack")).get("guards") or []
+    )
+    path_constraints = (
+        path.get("path_constraints")
+        or _mapping(issue.get("evidence_pack")).get("path_constraints")
+        or []
+    )
     region = {
-        "function": str(issue.get("function_signature") or issue.get("function") or path.get("function") or ""),
+        "function": str(
+            issue.get("function_signature") or issue.get("function") or path.get("function") or ""
+        ),
         "source_line": path.get("source_line") or issue.get("source_line"),
         "branch": path.get("decision_region") or issue.get("decision_region"),
         # Guard/branch facts are decision facts for a source-centric resource
@@ -822,10 +897,7 @@ def deterministic_proofs_from_facts(
     code_hash = next(iter(fact_slice.dependency_code_hashes), "")
     if not complete or not code_hash:
         return []
-    event_kinds = {
-        str(event.get("kind") or "").strip().lower()
-        for event in events
-    }
+    event_kinds = {str(event.get("kind") or "").strip().lower() for event in events}
     subject = obligation.subject_uid or obligation.source_uid
     fact_ids = list(fact_slice.fact_uids)
     if not fact_ids:
@@ -889,9 +961,19 @@ def deterministic_proofs_from_facts(
                 line,
             )
         )
-    release_lines = [line for kind, item_subject, line in normalized_events if kind in {"free", "release", "deallocate"} and (not subject or item_subject == subject)]
-    deref_lines = [line for kind, item_subject, line in normalized_events if kind in {"deref", "use", "access"} and (not subject or item_subject == subject)]
-    if any(release < deref for release in release_lines for deref in deref_lines if release and deref):
+    release_lines = [
+        line
+        for kind, item_subject, line in normalized_events
+        if kind in {"free", "release", "deallocate"} and (not subject or item_subject == subject)
+    ]
+    deref_lines = [
+        line
+        for kind, item_subject, line in normalized_events
+        if kind in {"deref", "use", "access"} and (not subject or item_subject == subject)
+    ]
+    if any(
+        release < deref for release in release_lines for deref in deref_lines if release and deref
+    ):
         results.append(
             proof(
                 "confirm",
@@ -1004,7 +1086,13 @@ def attach_decision_facts(
             defect_family=str(issue.get("defect_class") or issue.get("category") or ""),
             source_uid=str(issue.get("source_identity") or issue.get("source") or ""),
             sink_uid=str(issue.get("sink_identity") or issue.get("sink") or ""),
-            subject_uid=str(issue.get("resource_identity") or issue.get("resource") or issue.get("thread_object") or issue.get("source_identity") or ""),
+            subject_uid=str(
+                issue.get("resource_identity")
+                or issue.get("resource")
+                or issue.get("thread_object")
+                or issue.get("source_identity")
+                or ""
+            ),
         )
     graph = graph or DecisionFactGraph.from_issue(issue)
     fact_slice = graph.slice_for(obligation)
@@ -1039,19 +1127,16 @@ def attach_decision_facts(
             # Candidate generation remains unchanged until the new obligation
             # contracts demonstrate that no known true positive is lost.
             "candidate_promotion_eligible": (
-                fact_slice.coverage == "complete"
-                and not fact_slice.missing_fact_kinds
+                fact_slice.coverage == "complete" and not fact_slice.missing_fact_kinds
             ),
             "candidate_promotion_reason": (
                 "structured_security_obligation_complete"
-                if fact_slice.coverage == "complete"
-                and not fact_slice.missing_fact_kinds
+                if fact_slice.coverage == "complete" and not fact_slice.missing_fact_kinds
                 else "missing_required_decision_facts"
             ),
             "candidate_promotion_terminal_status": (
                 "candidate"
-                if fact_slice.coverage == "complete"
-                and not fact_slice.missing_fact_kinds
+                if fact_slice.coverage == "complete" and not fact_slice.missing_fact_kinds
                 # During the feature-flag shadow rollout this remains an
                 # auditable lead rather than a report-time deletion.  The
                 # promotion decision is made once, before ledger insertion.
