@@ -82,6 +82,100 @@ def _score(final_score: float) -> dict[str, float]:
     }
 
 
+def _shadow_discovery_issue(**overrides):
+    issue = {
+        "id": "SHADOW_1",
+        "candidate_source": "active_discovery",
+        "rollout_visibility": "shadow",
+        "rollout_stage": "semantic_shadow",
+        "attribution": {
+            "schema_version": "zscope.finding-attribution.v1",
+            "discovered_by": ["llm_active_discovery"],
+            "discovery_details": [],
+            "decided_by": "unresolved",
+            "decision_level": "none",
+        },
+    }
+    issue.update(overrides)
+    return issue
+
+
+def test_shadow_discovery_verified_model_result_never_promotes_to_default_issue() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = _shadow_discovery_issue()
+
+    outcome = pipeline.apply_validator_result(
+        issue,
+        {
+            "reasoning": "model found an exploitable path",
+            "positive_evidence": ["path:1"],
+            "blocking_negative_evidence": False,
+        },
+        verdict="verified",
+        score_data=_score(1.0),
+    )
+
+    assert outcome.report_bucket is None
+    assert outcome.memory_status is None
+    assert issue["candidate_disposition"] == "shadow_observation"
+    assert issue["validation_status"] == "shadow"
+    assert issue["rollout_shadow_model_verdict"] == "verified"
+
+
+def test_shadow_discovery_complete_proof_is_telemetry_not_promotion() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = _shadow_discovery_issue(
+        deterministic_proofs=[
+            {
+                "outcome": "confirm",
+                "proof_kind": "deterministic_cfg_obligation_path",
+                "producer_engine": "clang_ast_cfg_obligation_prover",
+                "fact_ids": ["cfg:1", "cfg:2"],
+                "code_hash": "code-v1",
+                "facts": ["source_to_sink_complete", "event_path_complete"],
+                "completeness": "complete",
+            }
+        ]
+    )
+
+    outcome = pipeline.apply_deterministic_prevalidation(issue, _score(1.0))
+
+    assert outcome is not None
+    assert outcome.report_bucket is None
+    assert issue["candidate_disposition"] == "shadow_observation"
+    assert issue["rollout_shadow_evidence_outcome"] == "confirmed_by_proof"
+
+
+def test_non_shadow_producer_on_merged_group_preserves_normal_proof_authority() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = _shadow_discovery_issue(
+        attribution={
+            "schema_version": "zscope.finding-attribution.v1",
+            "discovered_by": ["llm_active_discovery", "deterministic_rule"],
+            "discovery_details": [],
+            "decided_by": "unresolved",
+            "decision_level": "none",
+        },
+        deterministic_proofs=[
+            {
+                "outcome": "confirm",
+                "proof_kind": "deterministic_cfg_obligation_path",
+                "producer_engine": "clang_ast_cfg_obligation_prover",
+                "fact_ids": ["cfg:1", "cfg:2"],
+                "code_hash": "code-v1",
+                "facts": ["source_to_sink_complete", "event_path_complete"],
+                "completeness": "complete",
+            }
+        ],
+    )
+
+    outcome = pipeline.apply_deterministic_prevalidation(issue, _score(1.0))
+
+    assert outcome is not None
+    assert outcome.report_bucket == "issues"
+    assert issue["candidate_disposition"] == "confirmed"
+
+
 def test_validation_pipeline_reports_high_score_verified_issue() -> None:
     pipeline = ValidationPipeline(FakeUserConfig())
     issue = {"id": "ISSUE_3", "confidence": 0.4}
@@ -856,6 +950,33 @@ def test_validation_pipeline_score_components_use_evidence_and_history() -> None
     assert score["validation_confidence"] == 0.9
     assert score["history_feedback"] == 1.0
     assert score["final_score"] == 0.89
+
+
+def test_v3_closed_facts_feed_path_and_contract_scores() -> None:
+    pipeline = ValidationPipeline(FakeUserConfig())
+    issue = {
+        "rule_confidence": 0.8,
+        "source": "request.length",
+        "sink": "memcpy",
+        "v3_evidence_closure": {
+            "complete": True,
+            "resolved_fact_kinds": ["source_sink_reachability", "caller_contract"],
+            "fact_uids": ["FACT_V3_PATH", "FACT_V3_CONTRACT"],
+        },
+    }
+
+    score = pipeline.score_components(
+        issue,
+        {
+            "pass": "investigation_synthesis",
+            "verdict": "verified",
+            "blocking_negative_evidence": False,
+        },
+    )
+
+    assert score["path_completeness"] == 1.0
+    assert score["contract_consistency"] == 0.8
+    assert score["validation_confidence"] == 0.85
 
 
 def test_analyzer_keeps_pre_validation_suppression_as_audit_observation() -> None:

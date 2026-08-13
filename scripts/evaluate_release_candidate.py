@@ -7,8 +7,21 @@ import argparse
 import hashlib
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from zscope.benchmarking.attestation import load_balanced_attestation
+from zscope.benchmarking.policy import DEFAULT_BENCHMARK_POLICY
+from zscope.benchmarking.isolation import validate_oci_execution_evidence
+from zscope.benchmarking.replay_bundle import (
+    ReplayBundleError,
+    load_validator_replay_bundle,
+)
 
 try:
     from scripts.verify_release_assets import ReleaseAssetError, verify_release_assets
@@ -17,7 +30,6 @@ except ModuleNotFoundError:  # Direct execution sets sys.path[0] to scripts/.
     from verify_release_assets import ReleaseAssetError, verify_release_assets
     from verify_release_version import package_version
 
-ROOT = Path(__file__).resolve().parents[1]
 SCAN_INPUT_ALLOWED_ROOTS = {
     "cpp": {"src", "include", "internal"},
     "java": {"src"},
@@ -27,25 +39,30 @@ SCAN_INPUT_ALLOWED_FILES = {
     "java": {"pom.xml", "README.md", "entries.json"},
 }
 CPP_FORMAL_LIMITS = {
-    "confirmed_tp": (("confirmed_tp",), ">=", 85.0),
-    "confirmed_precision_percent": (
-        ("confirmed_precision_percent", "precision"),
-        ">=",
-        95.0,
+    "total_tokens": (
+        ("total_tokens", "tokens"),
+        *DEFAULT_BENCHMARK_POLICY.range_gates["per_run_tokens"],
     ),
-    "with_review_tp": (("with_review_tp",), ">=", 134.0),
-    "with_review_raw_fp": (("with_review_raw_fp",), "<=", 100.0),
-    "needs_review": (("needs_review",), "<=", 150.0),
-    "total_tokens": (("total_tokens", "tokens"), "<=", 6_000_000.0),
-    "scan_wall_seconds": (("scan_wall_seconds", "wall_seconds"), "<=", 3600.0),
+    "provider_usage_coverage": (
+        ("provider_usage_coverage",),
+        *DEFAULT_BENCHMARK_POLICY.range_gates["provider_usage_coverage"],
+    ),
+    "explicit_attribution_coverage": (
+        ("explicit_attribution_coverage",),
+        *DEFAULT_BENCHMARK_POLICY.range_gates["explicit_attribution_coverage"],
+    ),
+    "protocol_anomaly_count": (
+        ("protocol_anomaly_count",),
+        *DEFAULT_BENCHMARK_POLICY.range_gates["protocol_anomaly_count"],
+    ),
+    "telemetry_complete_rate": (
+        ("telemetry_complete_rate",),
+        *DEFAULT_BENCHMARK_POLICY.range_gates["telemetry_complete_rate"],
+    ),
 }
-CPP_SEALED_LIMITS = {
-    "sealed_confirmed_recall_delta_pp": (
-        ("sealed_confirmed_recall_delta_pp",),
-        ">=",
-        -2.0,
-    ),
-    "sealed_precision_delta_pp": (("sealed_precision_delta_pp",), ">=", -2.0),
+CPP_RANGE_AGGREGATE_LIMITS = {
+    name: ((name,), operator, threshold)
+    for name, (operator, threshold) in DEFAULT_BENCHMARK_POLICY.range_gates.items()
 }
 
 
@@ -170,19 +187,46 @@ def _evaluate_formal_artifact(
             "cold_runs": len(runs),
         }
     )
-    if aggregate.get("schema_version") != "zscope.formal-benchmark.v2":
+    formal_schema = aggregate.get("schema_version")
+    if formal_schema not in {
+        "zscope.formal-benchmark.v2",
+        DEFAULT_BENCHMARK_POLICY.formal_schema_version,
+    }:
         hard_blockers.append(f"{language}:formal_artifact_schema_invalid")
     if aggregate.get("language") != language:
         hard_blockers.append(f"{language}:formal_artifact_language_mismatch")
     if aggregate.get("git_sha") != release_sha:
         hard_blockers.append(f"{language}:benchmark_sha_not_release_sha")
-    if not isinstance(raw_runs, list) or len(runs) != 5:
+    if (
+        not isinstance(raw_runs, list)
+        or len(runs) != DEFAULT_BENCHMARK_POLICY.minimum_formal_trials
+    ):
         hard_blockers.append(f"{language}:formal_artifact_run_count_invalid")
     if aggregate.get("cold_runs") != len(runs) or aggregate.get("all_completed") is not True:
         hard_blockers.append(f"{language}:formal_artifact_incomplete")
     if aggregate.get("passed") is not True:
         hard_blockers.append(f"{language}:numeric_gate_failed")
     current_frontend = aggregate.get("mode") is not None
+    # Historical v2 remains readable for audit, but cannot authorize a new release.
+    if formal_schema != DEFAULT_BENCHMARK_POLICY.formal_schema_version:
+        hard_blockers.append(f"{language}:formal_artifact_schema_not_current")
+    if formal_schema == DEFAULT_BENCHMARK_POLICY.formal_schema_version:
+        policy = aggregate.get("benchmark_policy")
+        if not isinstance(policy, dict) or policy.get("sha256") != DEFAULT_BENCHMARK_POLICY.sha256:
+            hard_blockers.append(f"{language}:benchmark_policy_mismatch")
+        range_gate_metrics = aggregate.get("range_gate_metrics")
+        if not isinstance(range_gate_metrics, dict):
+            hard_blockers.append(f"{language}:range_aggregate_metrics_missing")
+        else:
+            hard_blockers.extend(
+                _metric_gate_failures(
+                    range_gate_metrics,
+                    CPP_RANGE_AGGREGATE_LIMITS,
+                    prefix=f"{language}:aggregate",
+                )
+            )
+        if aggregate.get("range_gate_failures"):
+            hard_blockers.append(f"{language}:range_aggregate_gate_failed")
     if current_frontend and (
         aggregate.get("mode") != "formal" or aggregate.get("release_eligible") is not True
     ):
@@ -226,6 +270,40 @@ def _evaluate_formal_artifact(
         if not complete or leaked_truth:
             hard_blockers.append(f"{language}:run_{run_number}_incomplete")
         if current_frontend:
+            artifact_hashes = run.get("artifact_hashes")
+            expected_artifact_names = {
+                "report.json",
+                "score.json",
+                "input-manifest.json",
+                "tool-health.json",
+                "validator-replay-bundle.json",
+            }
+            if DEFAULT_BENCHMARK_POLICY.requirements.get(
+                "require_call_level_usage_events_for_release", False
+            ):
+                expected_artifact_names.add("llm_usage_events.jsonl")
+            hash_rows = artifact_hashes.get("files") if isinstance(artifact_hashes, dict) else None
+            if (
+                not isinstance(artifact_hashes, dict)
+                or artifact_hashes.get("schema_version") != "zscope.formal-run-artifact-hashes.v1"
+                or not isinstance(hash_rows, dict)
+                or set(hash_rows) != expected_artifact_names
+            ):
+                hard_blockers.append(f"{language}:run_{run_number}_artifact_hashes_invalid")
+            else:
+                for artifact_name, expected_sha256 in hash_rows.items():
+                    artifact_path = run_dir / artifact_name
+                    if (
+                        not isinstance(expected_sha256, str)
+                        or len(expected_sha256) != 64
+                        or any(character not in "0123456789abcdef" for character in expected_sha256)
+                        or not artifact_path.is_file()
+                        or artifact_path.is_symlink()
+                        or _sha256(artifact_path) != expected_sha256
+                    ):
+                        hard_blockers.append(
+                            f"{language}:run_{run_number}_artifact_hash_mismatch:{artifact_name}"
+                        )
             if completeness.get(
                 "input_manifest_present"
             ) is not True or not _validate_scan_input_manifest(
@@ -245,6 +323,22 @@ def _evaluate_formal_artifact(
             ).lower()
             if "ground_truth" in scan_phase_text or "benchmark/ground_truth" in scan_phase_text:
                 hard_blockers.append(f"{language}:run_{run_number}_truth_isolation_invalid")
+            replay_path = run_dir / "validator-replay-bundle.json"
+            replay_metadata = run.get("validator_replay_bundle")
+            try:
+                replay_bundle = load_validator_replay_bundle(replay_path)
+            except ReplayBundleError:
+                hard_blockers.append(f"{language}:run_{run_number}_validator_replay_bundle_invalid")
+            else:
+                if (
+                    completeness.get("validator_replay_bundle_present") is not True
+                    or not isinstance(replay_metadata, dict)
+                    or replay_metadata.get("bundle_sha256") != replay_bundle.get("bundle_sha256")
+                    or replay_metadata.get("answer_material_present") is not False
+                ):
+                    hard_blockers.append(
+                        f"{language}:run_{run_number}_validator_replay_bundle_mismatch"
+                    )
         try:
             archived_summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
         except (OSError, ValueError, json.JSONDecodeError):
@@ -254,7 +348,41 @@ def _evaluate_formal_artifact(
         if run.get("queue_empty") is not True or run.get("gate_failures"):
             hard_blockers.append(f"{language}:run_{run_number}_numeric_gate_failed")
         metrics = run.get("metrics", {})
-        if language == "cpp" and isinstance(metrics, dict):
+        if formal_schema == DEFAULT_BENCHMARK_POLICY.formal_schema_version:
+            run_policy = run.get("benchmark_policy")
+            if (
+                not isinstance(run_policy, dict)
+                or run_policy.get("sha256") != DEFAULT_BENCHMARK_POLICY.sha256
+            ):
+                hard_blockers.append(f"{language}:run_{run_number}_policy_mismatch")
+            isolation = run.get("isolation")
+            truth_path = (
+                ROOT / "test" / "range" / "benchmark" / "ground_truth.json"
+                if language == "cpp"
+                else ROOT / "test" / "java_range" / "benchmark" / "ground_truth.json"
+            )
+            isolation_errors = validate_oci_execution_evidence(
+                isolation if isinstance(isolation, dict) else None,
+                repository_checkout=ROOT,
+                truth_paths=(truth_path,),
+            )
+            if (
+                DEFAULT_BENCHMARK_POLICY.requirements.get(
+                    "require_oci_isolation_for_release", False
+                )
+                and isolation_errors
+            ):
+                hard_blockers.append(f"{language}:run_{run_number}_oci_isolation_missing")
+            if (
+                not isinstance(metrics, dict)
+                or metrics.get("token_conservation_passed") is not True
+            ):
+                hard_blockers.append(f"{language}:run_{run_number}_token_conservation_failed")
+        if (
+            formal_schema == DEFAULT_BENCHMARK_POLICY.formal_schema_version
+            and language == "cpp"
+            and isinstance(metrics, dict)
+        ):
             hard_blockers.extend(
                 _metric_gate_failures(
                     metrics,
@@ -263,23 +391,9 @@ def _evaluate_formal_artifact(
                 )
             )
 
-    if seen_runs != set(range(1, 6)):
+    if seen_runs != set(range(1, DEFAULT_BENCHMARK_POLICY.minimum_formal_trials + 1)):
         hard_blockers.append(f"{language}:formal_artifact_run_identity_invalid")
 
-    if language == "cpp":
-        sealed_failures = []
-        for run in runs:
-            run_number = run.get("run") if isinstance(run, dict) else "unknown"
-            metrics = run.get("metrics", {}) if isinstance(run, dict) else {}
-            sealed_failures.extend(
-                _metric_gate_failures(
-                    metrics if isinstance(metrics, dict) else {},
-                    CPP_SEALED_LIMITS,
-                    prefix=f"{language}:run_{run_number}",
-                )
-            )
-        if aggregate.get("sealed_set_verified") is not True or sealed_failures:
-            rc_blockers.append(f"{language}:sealed_set_not_verified")
     if aggregate.get("performance_outliers"):
         advisories.append(f"{language}:performance_outlier_present")
     return result
@@ -294,6 +408,8 @@ def evaluate_candidate(
     asset_dir: Optional[Path] = None,
     smoke_evidence: Optional[Path] = None,
     formal_artifacts: Optional[Dict[str, Path]] = None,
+    balanced_attestation: Optional[Path] = None,
+    balanced_attestation_workflow_run_id: str = "",
 ) -> Dict[str, Any]:
     provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
     hard_blockers: List[str] = []
@@ -335,6 +451,10 @@ def evaluate_candidate(
                 )
             )
             continue
+        if required:
+            # Archived v2 runs remain inspectable, but policy v1 permits only a
+            # current formal-v3 workflow artifact to authorize a new release.
+            hard_blockers.append(f"{language}:formal_artifact_required")
         archive_path = (ROOT / str(item["archive"])).resolve()
         archive = json.loads(archive_path.read_text(encoding="utf-8"))
         result = {
@@ -347,8 +467,6 @@ def evaluate_candidate(
         }
         if archive.get("benchmark_git_sha") != item.get("git_sha"):
             hard_blockers.append(f"{language}:provenance_archive_sha_mismatch")
-        if required and archive.get("benchmark_git_sha") != release_sha:
-            hard_blockers.append(f"{language}:benchmark_sha_not_release_sha")
         runs = archive.get("runs", [])
         if len(runs) < 5:
             hard_blockers.append(f"{language}:fewer_than_five_runs")
@@ -367,36 +485,6 @@ def evaluate_candidate(
                 )
             ):
                 hard_blockers.append(f"{language}:run_{run.get('run')}_incomplete")
-        gate = archive.get("gate", {})
-        if required and gate.get("numeric_gates_passed") is not True:
-            hard_blockers.append(f"{language}:numeric_gate_failed")
-        if required and language == "cpp":
-            limits = {
-                "confirmed_tp": (">=", 85.0),
-                "confirmed_precision_percent": (">=", 95.0),
-                "with_review_tp": (">=", 134.0),
-                "with_review_raw_fp": ("<=", 100.0),
-                "needs_review": ("<=", 150.0),
-                "total_tokens": ("<=", 6_000_000.0),
-                "wall_seconds": ("<=", 3600.0),
-            }
-            for run in runs:
-                metrics = run.get("metrics", {})
-                for metric, (operator, threshold) in limits.items():
-                    try:
-                        value = float(metrics[metric])
-                    except (KeyError, TypeError, ValueError):
-                        hard_blockers.append(f"{language}:run_{run.get('run')}_{metric}_missing")
-                        continue
-                    failed = (operator == ">=" and value < threshold) or (
-                        operator == "<=" and value > threshold
-                    )
-                    if failed:
-                        hard_blockers.append(
-                            f"{language}:run_{run.get('run')}_{metric}_gate_failed"
-                        )
-        if required and gate.get("sealed_set_verified") is not True:
-            rc_blockers.append(f"{language}:sealed_set_not_verified")
         if archive.get("performance_analysis", {}).get("outlier_runs"):
             advisories.append(f"{language}:performance_outlier_present")
         benchmark_results.append(result)
@@ -404,6 +492,27 @@ def evaluate_candidate(
     known_languages = {str(item.get("language")) for item in provenance.get("benchmarks", [])}
     for language in formal_artifacts.keys() - known_languages:
         hard_blockers.append(f"{language}:unexpected_formal_artifact")
+
+    attestation_result: Optional[Dict[str, Any]] = None
+    requires_cpp = any(
+        bool(item.get("required_for_release")) and str(item.get("language")) == "cpp"
+        for item in provenance.get("benchmarks", [])
+    )
+    if requires_cpp and DEFAULT_BENCHMARK_POLICY.requirements.get(
+        "require_sealed_attestation_for_release", False
+    ):
+        if balanced_attestation is None:
+            rc_blockers.append("balanced_default_attestation_missing")
+        elif not str(balanced_attestation_workflow_run_id or "").strip():
+            rc_blockers.append("balanced_default_attestation_workflow_run_id_missing")
+        else:
+            attestation_result = load_balanced_attestation(
+                balanced_attestation,
+                release_sha=release_sha,
+                workflow_run_id=balanced_attestation_workflow_run_id,
+            )
+            if attestation_result.get("passed") is not True:
+                rc_blockers.append("balanced_default_attestation_invalid")
 
     asset_result: Optional[Dict[str, Any]] = None
     if asset_dir is None:
@@ -449,6 +558,7 @@ def evaluate_candidate(
         "benchmarks": benchmark_results,
         "assets": asset_result,
         "offline_smoke": smoke_result,
+        "balanced_default_attestation": attestation_result,
         "hard_blockers": hard_blockers,
         "rc_blockers": rc_blockers,
         "advisories": advisories,
@@ -468,6 +578,16 @@ def main() -> None:
     parser.add_argument("--tag", default="")
     parser.add_argument("--asset-dir", type=Path)
     parser.add_argument("--offline-smoke-evidence", type=Path)
+    parser.add_argument(
+        "--balanced-default-attestation",
+        type=Path,
+        help="Independent sealed+shadow zscope.balanced-default-attestation.v1 JSON",
+    )
+    parser.add_argument(
+        "--balanced-attestation-workflow-run-id",
+        default="",
+        help="Protected workflow run ID that issued the balanced-default attestation",
+    )
     parser.add_argument(
         "--formal-artifact",
         action="append",
@@ -498,6 +618,8 @@ def main() -> None:
         asset_dir=args.asset_dir,
         smoke_evidence=args.offline_smoke_evidence,
         formal_artifacts=formal_artifacts,
+        balanced_attestation=args.balanced_default_attestation,
+        balanced_attestation_workflow_run_id=args.balanced_attestation_workflow_run_id,
     )
     rendered = json.dumps(report, indent=2) + "\n"
     if args.output:

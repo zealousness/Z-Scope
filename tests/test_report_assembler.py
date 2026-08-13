@@ -72,6 +72,10 @@ def test_report_assembler_builds_views_and_persists(tmp_path: Path) -> None:
     assert saved["completeness"] == "complete"
     assert saved["run_manifest"]["run_id"] == "RUN1"
     assert "report_view_summary" in saved["metadata"]
+    funnel = saved["metadata"]["candidate_funnel"]
+    assert funnel["schema_version"] == "zscope.candidate-funnel.v1"
+    assert funnel["stages"]["reported_findings"]["count"] == 1
+    assert funnel["contract"]["linear_conversion_rates_valid"] is False
     assert (tmp_path / "report.json").exists()
     assert (tmp_path / "report.md").exists()
     assert snapshot_store.saved["index_name"] == "entry@src/demo.c:1-20"
@@ -314,4 +318,6 @@ def test_report_assembler_marks_undrained_validation_queue_incomplete(
     assert saved["run_manifest"]["valid"] is False
     assert saved["run_manifest"]["validation_queue_drained"] is False
     assert saved["run_manifest"]["release_gate_status"]["runtime_valid"] is False
-    assert "validation_queue_not_drained" in saved["run_manifest"]["release_gate_status"]["blockers"]
+    assert (
+        "validation_queue_not_drained" in saved["run_manifest"]["release_gate_status"]["blockers"]
+    )

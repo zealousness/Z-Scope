@@ -26,6 +26,8 @@ analysis:
   max_premodel_callees: 20
   trivial_function_max_lines: 5
   enable_subagent_workers: false
+  # Rollout starts in shadow mode; release policy controls promotion to active.
+  security_semantic_enrichment_mode: shadow
   max_subagent_tickets: 4
   subagent_max_turns: 20
   request_deadline_seconds: 120

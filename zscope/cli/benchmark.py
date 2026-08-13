@@ -28,6 +28,12 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--language", choices=("c_cpp", "java"), required=True)
     run.add_argument("--mode", choices=("smoke", "trial", "formal"), required=True)
     run.add_argument("--runs", type=int)
+    run.add_argument(
+        "--scan-depth",
+        choices=("fast", "balanced", "deep"),
+        default="fast",
+        help="Select the analysis depth; token use is measured after the run.",
+    )
     run.add_argument("--output", type=Path)
     run.add_argument("--dry-run", action="store_true")
     clean = commands.add_parser("clean", help="preview or remove generated fixture artifacts")
@@ -111,6 +117,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 runs=args.runs,
                 output=args.output,
                 dry_run=args.dry_run,
+                scan_depth=args.scan_depth,
             )
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     except BenchmarkError as exc:

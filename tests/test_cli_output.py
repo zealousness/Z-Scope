@@ -66,11 +66,13 @@ def test_cli_passes_task_id_to_scan_session(tmp_path: Path, monkeypatch) -> None
     config_path.write_text("project: {}\n", encoding="utf-8")
     captured = {}
 
-    fake_config = SimpleNamespace(project=SimpleNamespace(project_root=tmp_path, source_root=tmp_path))
+    fake_config = SimpleNamespace(
+        project=SimpleNamespace(project_root=tmp_path, source_root=tmp_path)
+    )
 
     class FakeConfigLoader:
         @staticmethod
-        def load(path):
+        def load(path, **_overrides):
             captured["config_path"] = path
             return fake_config
 

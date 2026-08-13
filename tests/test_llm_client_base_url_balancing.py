@@ -64,6 +64,26 @@ def test_llm_client_balances_base_urls_by_recent_load(monkeypatch) -> None:
     ]
 
 
+def test_streaming_requests_explicitly_request_terminal_provider_usage(monkeypatch) -> None:
+    client = LLMClient(
+        api_key="test",
+        base_url="http://usage.example/v1",
+        models=["unit-model"],
+    )
+    payloads = []
+
+    def fake_post(_url, **kwargs):
+        payloads.append(kwargs["json"])
+        return _FakeResponse()
+
+    monkeypatch.setattr(client.session, "post", fake_post)
+
+    client.chat_completion([{"role": "user", "content": "hello"}])
+
+    assert payloads[0]["stream"] is True
+    assert payloads[0]["stream_options"] == {"include_usage": True}
+
+
 def test_llm_client_falls_back_to_another_base_url_after_rate_limit(monkeypatch) -> None:
     client = LLMClient(
         api_key="test",

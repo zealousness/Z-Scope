@@ -1,12 +1,12 @@
 # 规则开发与治理
 
-本文面向内置 Java/C/C++ 检测器、YAML rule pack 和第三方 Python provider 的开发者。普通用户只需在 `zscope.yaml` 中引用 pack/provider 或禁用已知规则；内置目录不是 public YAML 的一部分。
+本文面向内置 Java/C/C++ 检测器、YAML rule pack 和第三方 Python provider 的开发者。普通用户只需在 `zscope.yaml` 中引用 pack/provider，或用 `rules.enabled_ids`/`disabled_ids` 显式控制规则；内置目录不是 public YAML 的一部分。
 
 ## 先区分四类机制
 
 | 机制 | 用途 | 身份 | 如何关闭 |
 |------|------|------|----------|
-| 确定性规则 | Regex、Clang CFG/matcher、Graph、Java local、YAML pack 或 Python 算法产生可重现候选 | 必须有目录内 canonical `rule_id` | `rules.disabled_ids` |
+| 确定性规则 | Regex、Clang CFG/matcher、Graph、Java local、YAML pack 或 Python 算法产生可重现候选 | 必须有目录内 canonical `rule_id` 与 revision | `rules.disabled_ids`；实验规则可由 `rules.enabled_ids` 显式启用 |
 | Backend signal | SVF/Saber、Joern 或 Java signal provider 产生的原生后端事实 | `candidate_kind: backend_signal`，保留 `signal_source` 和 `native_rule_id` | 修改 `indexing` 后端/信号源 |
 | Skill trigger | 把任务或候选路由给合适的 Agent/Deep Worker | Skill ID，不是规则 ID | `scan.task` 与内部路由策略 |
 | Finding suppression | 记住人工确认的误报/例外 | finding 稳定身份与 scope | Web 或用户配置状态 |
@@ -15,10 +15,10 @@
 
 ## 内置规则目录
 
-`zscope/rules/builtin_catalog.yaml` 只管理元数据；AST/CFG、Graph 等检测算法继续使用 Python。目录在扫描前与实现、Skill 和当前 backend 能力一起预检，任一未登记 ID、重复 ID/alias、CWE 错误或 Skill 语言错配都会终止扫描。
+`zscope/rules/builtin_catalog.yaml` 只管理元数据；`zscope/rules/qualification_registry.yaml` 保存与 `(rule_id, revision)` 绑定的资格证据；AST/CFG、Graph 等检测算法继续使用 Python。目录在扫描前与资格记录、实现、Skill 和当前 backend 能力一起预检，任一未登记 ID、重复 ID/alias、CWE 错误或 Skill 语言错配都会终止扫描。
 
 ```yaml
-rule_catalog_version: 1
+rule_catalog_version: 2
 rules:
   - id: clang_cfg_use_after_release
     language: c_cpp
@@ -29,6 +29,7 @@ rules:
     default_severity: high
     revision: 1
     status: stable
+    default_enabled: true
     title: Use after release
     summary: Released object is subsequently used on a feasible local path.
     required_capabilities: [source_text, clang_structure]
@@ -40,7 +41,7 @@ rules:
 
 - `language` 只能是 `c_cpp` 或 `java`。
 - 内置 `engine` 只能是 `cpp_regex`、`cpp_clang_cfg`、`cpp_clang_matcher`、`cpp_graph` 或 `java_local`。YAML pack 与 provider 的 engine/source 由注册器赋值，扩展不得冒充内置引擎。
-- `status` 只能是 `stable`、`experimental` 或 `deprecated`；它是状态说明，不是 disabled-by-default 开关。
+- `status` 只能是 `stable`、`experimental` 或 `deprecated`；`default_enabled` 是独立的执行开关。新内置规则默认 `experimental + default_enabled: false`，取得当前 revision 的 qualified 记录后才能晋升为 stable/default-enabled。
 - `revision` 必须是正整数。规则语义、CWE、Skill、required capability 或验证要求变化时必须递增。
 - `required_capabilities` 从代码定义的固定能力集选取；不要自由造字符串。
 - 已有 ID 始终作为 canonical ID，并保留 `legacy_id: true`。新内置 ID 使用 `zscope.<language>.<engine>.<slug>`；外部规则不得占用 `zscope.` 命名空间。
@@ -75,6 +76,7 @@ CWE、defect class 与 Skill 以规则目录为唯一真源，生成器不应再
 3. 至少一个正例和一个反例，并在需要时增加候选 golden/snapshot。
 4. 目录与实现一致性测试，覆盖 language、CWE、Skill、capability 和 disabled 行为。
 5. 如果 raw candidate、Worker 路由或最终报告发生变化，按 Range/Java benchmark 协议补做回归。
+6. 更新当前 revision 的 qualification 证据；只有单元测试或 Range 证据的规则必须保持 experimental/default-disabled。
 
 仅修正实现 bug 但保持完全相同的规则契约时，实现源码摘要本身会改变 effective hash；是否递增 revision 应以候选语义/验证要求是否变化为准。
 
@@ -163,7 +165,34 @@ rules:
 
 相对 pack 路径按 `project.root` 解析。两份根目录参考 YAML 在没有扩展/禁用需求时省略空 `rules` 区块。
 
-`disabled_ids` 对 Java local、C/C++ Regex、Clang CFG/matcher、Graph、YAML pack 和 Python provider 全局生效。未知 ID、重复 ID 或跨语言 ID 会报出完整字段路径和近似建议。同语言但当前 backend 不会运行的规则可以禁用，`validate` 会输出“当前 backend 不适用”警告。
+`disabled_ids` 对 Java local、C/C++ Regex、Clang CFG/matcher、Graph、YAML pack 和 Python provider 全局生效，并优先于 `enabled_ids`；同一 ID 同时出现在两表时以禁用为准。表内重复、未知 ID 或跨语言 ID 会严格报错；同语言但当前 backend 不会运行的规则可以禁用，`validate` 会输出“当前 backend 不适用”警告。
+
+## Stable 资格门禁
+
+`qualification_registry.yaml` 的证据哈希必须对应当前 revision。`qualified` 记录还必须能在同目录的 `qualification_evidence/<rule_id>.r<revision>.json` 解引用；加载器校验 manifest SHA、descriptor commitment，并从逐案例记录重新计算所有计数和 precision，不能只信任 registry 里的汇总数字。
+
+`zscope.rule-qualification-evidence.v1` 的 `leakage_lint`、每个 `metamorphic_cases` / `external_cases` 条目以及每个 `vulnerable_fixed_pairs` 条目都必须同时提供 `artifact_path` 和 `artifact_sha256`。`artifact_path` 是相对 `qualification_evidence/` 根目录的规范 POSIX 相对路径：不接受绝对路径、Windows drive、反斜杠、`.` / `..`、重复分隔符或符号链接/reparse point。加载器要求目标是 evidence root 内的实际普通文件，并重新计算文件字节的 SHA-256；缺失、越界、链接或哈希不符都会使预检 fail closed。只有 artifact 通过这些检查后，对应布尔值和案例结果才参与资格指标计算。
+
+Stable 规则至少满足：
+
+- 标识符重命名、wrapper 提取/内联、宏或等价分支重排三类语义保持变换仍能命中；安全修复变体不命中。
+- 至少 3 个无关项目或模式家族，累计至少 10 个 external positive 与 20 个 near-miss negative。
+- vulnerable/fixed 版本成对一致，external raw precision 至少 90%。
+- 单测、metamorphic、外部正反例、pair 与证据 artifact 均有可校验哈希；任一过期、失败或缺失使资格变为 pending/failed。
+
+Range 只作为分布内开发回归，不能单独为规则取得 stable 资格。对历史默认规则应一次性执行结构泄漏 lint 和变形测试；不能通过可移植性验证的规则改为 `experimental + default_enabled: false`，仍可由用户显式启用做定向审计。
+
+扫描完成后，可将报告与 truth 成对交给资格审计脚本，核对哪些确定性规则实际参与了 benchmark TP：
+
+```bash
+python scripts/audit_rule_qualifications.py \
+  --benchmark-report report.json \
+  --benchmark-truth benchmark/ground_truth.json \
+  --view default \
+  --output rule_qualification_audit.json
+```
+
+`--benchmark-report` 与 `--benchmark-truth` 必须同时提供；`--view` 可选 `default` 或 `with_needs_review`。该步骤复用统一 scorer 的 `matched_issue_indices`，只能在扫描完成且答案隔离解除后运行。输出会 canonicalize alias，列出每条参与规则的 TP 数、truth ID、当前 revision、资格状态、证据验证状态和默认启用状态，并单列目录未知 detector。一个 TP 可以同时归因到多条规则，因此 per-rule TP count 有重叠，不能相加后当作 distinct TP。省略 benchmark 参数时，脚本仍只输出原有目录和资格状态审计。
 
 SVF/Joern/provider 原生信号不是目录规则 ID，不能写入 `disabled_ids`。如需停止信号源，修改 `indexing`；如需抑制已确认误报，使用 finding suppression。
 
@@ -188,13 +217,14 @@ zscope-config validate --config zscope.yaml
 zscope-doctor --config zscope.yaml
 ```
 
-`zscope`、`zscope-config validate`、`zscope-doctor`、Web、批量扫描和 MCP 复用同一预检工厂。扫描前会完成目录/Skill/pack/provider/disabled ID 的全局校验，再生成不可变 `EffectiveRuleSet`。Analyzer 保留防御性预检，避免第三方直接调用绕过入口校验。
+`zscope`、`zscope-config validate`、`zscope-doctor`、Web、批量扫描和 MCP 复用同一预检工厂。扫描前会完成目录/qualification/Skill/pack/provider/enabled/disabled ID 的全局校验，再生成不可变 `EffectiveRuleSet`。Analyzer 保留防御性预检，避免第三方直接调用绕过入口校验。
 
 最低测试集应包括：
 
 - 目录 schema、重复键、ID/alias 冲突、CWE、revision、Skill/language 和 capability 校验。
 - 每条规则的正例、反例与必要的 candidate golden。
 - 启用与禁用路径，确认禁用候选不进入 merge、ledger、Worker、Validator、JSON、Markdown 或 SARIF。
+- qualification revision/hash 过期、pending/failed 默认隔离，以及 experimental 显式启用路径。
 - pack/provider 冲突、跨语言输出、Candidate ID 错配和旧 provider 协议拒绝。
 - descriptor、实现、disabled IDs、pack 或 provider revision 变化时，effective/config/cache/Validator fingerprint 随之变化。
 

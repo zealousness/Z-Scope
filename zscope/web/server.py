@@ -1,11 +1,12 @@
 import http.server
 import json
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .._version import __version__
 from .dashboard_server import DashboardHttpServer
 from . import services as web_services
+from ..orchestration.scan_request import ScanRequestError, ScanRequestService
 
 PORT = 8000
 WEB_DIR = Path(__file__).parent / "static"
@@ -20,6 +21,7 @@ _user_config_service = web_services.UserConfigService()
 _cpg_service = web_services.CpgService()
 _source_snippet_service = web_services.SourceSnippetService()
 _report_feedback_service = web_services.ReportFeedbackService()
+_scan_request_service = None
 
 
 def persist_validation_feedback(updates):
@@ -64,6 +66,15 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json(_config_service.read_text())
             except OSError as exc:
                 self._send_json({"content": "", "error": str(exc)}, status=500)
+        elif parsed.path == "/api/scan/status":
+            if _scan_request_service is None:
+                self._send_json({"error": "scan service is unavailable"}, status=503)
+                return
+            try:
+                scan_id = (parse_qs(parsed.query).get("scan_id") or [""])[0]
+                self._send_json(_scan_request_service.status(scan_id))
+            except ScanRequestError as exc:
+                self._send_json({"error": str(exc)}, status=404)
         elif parsed.path == "/api/rules":
             try:
                 self._send_json(_rule_service.payload(parsed.query))
@@ -132,6 +143,32 @@ class ZScopeHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json({"success": False, "error": str(exc)}, status=500)
                 return
             self._send_json(response_payload)
+        elif self.path == "/api/scan":
+            if _scan_request_service is None:
+                self._send_json(
+                    {"success": False, "error": "scan service is unavailable"}, status=503
+                )
+                return
+            if not isinstance(payload, dict):
+                self._send_json(
+                    {"success": False, "error": "request must be an object"}, status=400
+                )
+                return
+            unknown = sorted(set(payload) - {"scan_depth"})
+            if unknown:
+                self._send_json(
+                    {"success": False, "error": f"unsupported scan request fields: {unknown}"},
+                    status=400,
+                )
+                return
+            try:
+                response = _scan_request_service.start(
+                    scan_depth=payload.get("scan_depth"),
+                )
+            except (ScanRequestError, ValueError) as exc:
+                self._send_json({"success": False, "error": str(exc)}, status=400)
+                return
+            self._send_json({"success": True, **response}, status=202)
         elif self.path == "/api/build_cpg":
             self._handle_build_cpg(payload)
         elif self.path == "/api/clear_warnings":
@@ -268,12 +305,19 @@ def run_server(
     project_config=None,
     snapshot_store=None,
     config_path=None,
+    scan_depth=None,
     host="0.0.0.0",
     port=PORT,
 ):
-    global _config_service, _rule_service, _workbook_service, _user_config_service, _cpg_service, _source_snippet_service, _report_feedback_service
-    config_file_path = Path(config_path).resolve() if config_path else None
-    _config_service = web_services.ConfigService(config_file_path, default_name=CONFIG_FILENAME)
+    global _config_service, _rule_service, _workbook_service, _user_config_service, _cpg_service, _source_snippet_service, _report_feedback_service, _scan_request_service
+    config_file_path = (
+        Path(config_path).resolve() if config_path else Path(CONFIG_FILENAME).resolve()
+    )
+    _config_service = web_services.ConfigService(
+        config_file_path,
+        default_name=CONFIG_FILENAME,
+        scan_depth=scan_depth,
+    )
     _rule_service = web_services.RuleService(config_file_path, default_name=CONFIG_FILENAME)
     _workbook_service = web_services.WorkbookService(user_config_store)
     _user_config_service = web_services.UserConfigService(user_config_store)
@@ -283,6 +327,10 @@ def run_server(
         user_config_store,
         snapshot_store,
         report_filename=REPORT_FILENAME,
+    )
+    _scan_request_service = ScanRequestService(
+        config_file_path,
+        default_scan_depth=scan_depth,
     )
     DashboardHttpServer(
         handler_class=ZScopeHandler,

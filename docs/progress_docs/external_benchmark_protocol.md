@@ -46,12 +46,12 @@ python scripts/external_benchmark.py run-prepared \
 ```
 
 Each run writes `summary.json`, `evaluation.json`, and `evaluation_views.json`.
-`summary.json` uses schema `zscope.benchmark.v3` and includes environment
+`summary.json` uses schema `zscope.benchmark.v4` and includes environment
 metadata, default and `with_needs_review` metrics, trajectory references,
 cost metrics, final-answer/final-outcome separation, and a deterministic grader
 rubric.
 
-`zscope.benchmark.v3` also records `matched_pairs` with the truth id, matched
+`zscope.benchmark.v4` also records `matched_pairs` with the truth id, matched
 issue index, issue identity, and the reason each issue matched. The scorer
 accepts primary or secondary function anchors, structured `entry_function` /
 `sink_function` / `call_path` attribution, category/CWE aliases for custom
@@ -183,6 +183,44 @@ python scripts/external_benchmark.py prepare-magma \
 ```
 
 In all three prepare commands, `0` means "all matched cases/bugs", not zero
-cases. Pair formal suites with `run-prepared --run-kind formal` or
-`run-matrix --run-kind formal`.
+cases.
+
+Formal external execution currently permits only `full_zscope_pipeline`. The
+pure-model and candidate-layer arms remain available as non-release `sample`
+experiments; they cannot claim formal isolation. A five-trial formal invocation
+is:
+
+```bash
+export Z_SCOPE_BENCHMARK_OCI_RUNTIME=podman
+export Z_SCOPE_BENCHMARK_OCI_IMAGE='registry.example/zscope@sha256:<64-hex>'
+export Z_SCOPE_BENCHMARK_OCI_NETWORK=zscope-model-only
+export Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER=zscope-model-proxy
+export Z_SCOPE_LLM_BASE_URL=https://model.internal/v1
+export Z_SCOPE_LLM_MODEL=glm-5.1
+export Z_SCOPE_API_KEY='...'
+
+python scripts/external_benchmark.py run-matrix \
+  --suite-root benchmarks/external/workspace/juliet_memory_formal \
+  --conditions full_zscope_pipeline \
+  --trials 5 \
+  --run-kind formal
+```
+
+Formal execution creates a temporary workspace outside the repository checkout.
+It copies the project into an answer-free sealed input, validates and separately
+copies `entries.json`, rewrites config and compile-command paths to container
+paths, and clones the sealed project to writable `/zscope-cache/project`.
+`RootlessOciExecutor` mounts only the sealed input read-only plus disjoint writable
+artifact/cache directories; the repository checkout, suite `benchmark/`
+directory, truth and scorer are never mounted. It then records actual runtime,
+image, mount, security and endpoint-only network inspection evidence and calls
+`require_release_isolation`. Missing rootless support, an unpinned image, mount
+drift, an unverified network/proxy, answer metadata or a symlink fails closed.
+The run archives `formal-scan-input-manifest.json` with per-file hashes and
+`isolation.json` with the inspected execution evidence.
+
+Only after the inspected scanner container exits is its report copied back and
+the host scorer allowed to load `ground_truth.json`. The resulting summary marks
+`isolation.scoring_execution=host_after_scanner_exit`; capability-only
+`oci_capability` output is not accepted as formal evidence.
 

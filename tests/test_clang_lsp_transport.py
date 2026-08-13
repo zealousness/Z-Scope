@@ -1,4 +1,6 @@
+import json
 import os
+import queue
 import threading
 import time
 from pathlib import Path
@@ -413,3 +415,356 @@ def test_lsp_position_encoding_converts_python_offsets(tmp_path, monkeypatch) ->
     extractor._position_encoding = "utf-16"
     extractor.get_references(source, 0, 6)
     assert calls[-1][1]["position"]["character"] == len("int 名称".encode("utf-16-le")) // 2
+
+
+class _LiveProcess:
+    def __init__(self, stdin, *, stdout=None, stderr=None) -> None:
+        self.stdin = stdin
+        self.stdout = stdout
+        self.stderr = stderr
+        self.alive = True
+
+    def poll(self):
+        return None if self.alive else 0
+
+    def terminate(self) -> None:
+        self.alive = False
+
+    def wait(self, timeout):
+        self.alive = False
+        return 0
+
+
+def _install_writer(extractor, process):
+    outbound = queue.Queue()
+    extractor.process = process
+    extractor._generation = 1
+    extractor._writer_queue = outbound
+    extractor._running = True
+    extractor._transport_closed = False
+    writer = threading.Thread(target=extractor._writer_loop, args=(process, 1, outbound))
+    writer.start()
+    return outbound, writer
+
+
+def test_writer_queue_keeps_blocked_pipe_inside_request_deadline(tmp_path) -> None:
+    extractor = ClangExtractor(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+    recorded = bytearray()
+
+    class BlockingStdin:
+        def write(self, payload):
+            entered.set()
+            assert release.wait(1)
+            recorded.extend(payload)
+            return len(payload)
+
+        @staticmethod
+        def flush() -> None:
+            pass
+
+    outbound, writer = _install_writer(extractor, _LiveProcess(BlockingStdin()))
+    try:
+        assert extractor.send_notification("hold", {"名字": "值"}) is True
+        assert entered.wait(0.2)
+        started_at = time.monotonic()
+        assert extractor.send_request("blocked", {}, timeout=0.03) is None
+        assert time.monotonic() - started_at < 0.25
+    finally:
+        release.set()
+        outbound.put(None)
+        writer.join(1)
+
+    assert not writer.is_alive()
+    metrics = extractor.get_transport_metrics()
+    assert metrics["messages_enqueued"] >= 1
+    assert metrics["messages_written"] >= 1
+    assert metrics["payload_bytes_enqueued"] > 0
+    assert metrics["payload_bytes_written"] > 0
+    assert metrics["wire_bytes_enqueued"] > metrics["payload_bytes_enqueued"]
+    assert metrics["average_write_latency_ms"] >= 0
+    assert metrics["expired_before_write"] == 1
+
+    decoded = []
+    wire = bytes(recorded)
+    while wire:
+        header_end = wire.index(b"\r\n\r\n")
+        declared = int(wire[:header_end].split(b":", 1)[1].strip())
+        body_start = header_end + 4
+        body = wire[body_start : body_start + declared]
+        assert len(body) == declared
+        decoded.append(json.loads(body))
+        wire = wire[body_start + declared :]
+    assert [message["method"] for message in decoded] == ["hold", "$/cancelRequest"]
+
+
+def test_writer_failure_wakes_pending_request(tmp_path) -> None:
+    extractor = ClangExtractor(tmp_path)
+
+    class BrokenStdin:
+        @staticmethod
+        def write(_payload):
+            raise BrokenPipeError
+
+        @staticmethod
+        def flush() -> None:
+            pass
+
+    _outbound, writer = _install_writer(extractor, _LiveProcess(BrokenStdin()))
+    started_at = time.monotonic()
+    assert extractor.send_request("probe", {}, timeout=5) is None
+    writer.join(1)
+
+    assert time.monotonic() - started_at < 0.5
+    assert extractor._transport_closed is True
+    assert extractor.get_transport_metrics()["write_failures"] == 1
+
+
+def test_reader_frames_fragmented_large_utf8_payload_with_bytearray(
+    tmp_path, monkeypatch
+) -> None:
+    extractor = ClangExtractor(tmp_path)
+    result = {"名字": "值", "blob": "x" * 100_000}
+    body = json.dumps(
+        {"jsonrpc": "2.0", "id": 41, "result": result}, ensure_ascii=False
+    ).encode("utf-8")
+    wire = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
+    chunks = iter(wire[index : index + 997] for index in range(0, len(wire), 997))
+
+    class FakeStdout:
+        @staticmethod
+        def fileno() -> int:
+            return 77
+
+    process = _LiveProcess(None, stdout=FakeStdout())
+    extractor.process = process
+    extractor._generation = 4
+    extractor._running = True
+    extractor._transport_closed = False
+    extractor._pending_requests[41] = None
+    monkeypatch.setattr(os, "read", lambda _fd, _size: next(chunks, b""))
+
+    extractor._read_loop(process, 4)
+
+    assert extractor._pending_requests[41]["result"] == result
+    metrics = extractor.get_transport_metrics()
+    assert metrics["reader_bytes"] == len(wire)
+    assert metrics["reader_messages"] == 1
+    assert metrics["reader_payload_bytes"] == len(body)
+    assert metrics["reader_max_payload_bytes"] == len(body)
+
+
+def test_stale_reader_eof_cannot_close_new_process_generation(tmp_path) -> None:
+    extractor = ClangExtractor(tmp_path)
+
+    class FakeStdout:
+        @staticmethod
+        def fileno() -> int:
+            return 88
+
+    current = _LiveProcess(None)
+    stale = _LiveProcess(None, stdout=FakeStdout())
+    extractor.process = current
+    extractor._generation = 2
+    extractor._running = True
+    extractor._transport_closed = False
+
+    extractor._read_loop(stale, 1)
+
+    assert extractor._running is True
+    assert extractor._transport_closed is False
+    assert extractor.process is current
+
+
+def test_health_checks_process_liveness_and_stop_joins_threads(tmp_path) -> None:
+    extractor = ClangExtractor(tmp_path)
+    process = _LiveProcess(None)
+    extractor.process = process
+    extractor._initialized = True
+    extractor._running = True
+    extractor._transport_closed = False
+    assert extractor.is_healthy() is True
+    process.alive = False
+    assert extractor.is_healthy() is False
+
+    joined = []
+
+    class Joinable:
+        def join(self, timeout):
+            joined.append(timeout)
+
+    extractor._writer_thread = Joinable()
+    extractor._reader_thread = Joinable()
+    extractor._stderr_thread = Joinable()
+    extractor.stop()
+    assert len(joined) == 3
+
+
+def test_start_replaces_dead_process_with_new_generation(tmp_path, monkeypatch) -> None:
+    extractor = ClangExtractor(tmp_path)
+    stale = _LiveProcess(None)
+    stale.alive = False
+    replacement = _LiveProcess(object(), stdout=object(), stderr=object())
+    extractor.process = stale
+    extractor._generation = 7
+    extractor._running = True
+    extractor._initialized = True
+
+    class NoopThread:
+        def __init__(self, **_kwargs):
+            pass
+
+        @staticmethod
+        def start() -> None:
+            pass
+
+        @staticmethod
+        def join(timeout) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "zscope.retrieval.clang_extractor.subprocess.Popen",
+        lambda *_args, **_kwargs: replacement,
+    )
+    monkeypatch.setattr("zscope.retrieval.clang_extractor.threading.Thread", NoopThread)
+    monkeypatch.setattr("zscope.retrieval.clang_extractor.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        extractor,
+        "send_request",
+        lambda method, _params, timeout=120: {"capabilities": {}}
+        if method == "initialize"
+        else None,
+    )
+    monkeypatch.setattr(extractor, "send_notification", lambda _method, _params: True)
+
+    assert extractor.start() is True
+    assert extractor.process is replacement
+    assert extractor._generation == 8
+    assert extractor.is_healthy() is True
+
+
+def test_document_leases_are_thread_safe_and_emit_only_edge_notifications(
+    tmp_path, monkeypatch
+) -> None:
+    extractor = ClangExtractor(tmp_path)
+    source = tmp_path / "lease.c"
+    source.write_text("int value;\n", encoding="utf-8")
+    notifications = []
+    notifications_lock = threading.Lock()
+
+    def notify(method, params):
+        with notifications_lock:
+            notifications.append((method, params))
+        return True
+
+    monkeypatch.setattr(extractor, "send_notification", notify)
+    open_results = []
+    open_threads = [
+        threading.Thread(target=lambda: open_results.append(extractor.open_document(source)))
+        for _ in range(8)
+    ]
+    for thread in open_threads:
+        thread.start()
+    for thread in open_threads:
+        thread.join(1)
+
+    assert open_results == [True] * 8
+    assert extractor._opened_documents[source.resolve().as_uri()] == 8
+    assert [item[0] for item in notifications] == ["textDocument/didOpen"]
+
+    close_threads = [
+        threading.Thread(target=lambda: extractor.close_document(source)) for _ in range(8)
+    ]
+    for thread in close_threads:
+        thread.start()
+    for thread in close_threads:
+        thread.join(1)
+
+    assert extractor._opened_documents == {}
+    assert [item[0] for item in notifications] == [
+        "textDocument/didOpen",
+        "textDocument/didClose",
+    ]
+
+
+def test_source_lines_cache_reuses_split_result_and_invalidates_on_change(tmp_path) -> None:
+    extractor = ClangExtractor(tmp_path)
+    source = tmp_path / "cached.c"
+    source.write_text("first\nsecond\n", encoding="utf-8")
+
+    first = extractor._read_source_lines(source)
+    second = extractor._read_source_lines(source)
+    assert first is second
+
+    source.write_text("first\nsecond changed\n", encoding="utf-8")
+    third = extractor._read_source_lines(source)
+    assert third is not first
+    assert third == ["first\n", "second changed\n"]
+
+
+def test_file_status_wait_is_optional_and_tracks_building_to_idle(tmp_path) -> None:
+    extractor = ClangExtractor(tmp_path)
+    source = tmp_path / "status.c"
+    uri = source.resolve().as_uri()
+
+    assert extractor.wait_for_file_idle(source, timeout=0.01) is True
+    assert extractor.wait_for_file_idle(source, timeout=0.01, require_notification=True) is False
+
+    extractor._dispatch_message(
+        {
+            "jsonrpc": "2.0",
+            "method": "textDocument/clangd.fileStatus",
+            "params": {"uri": uri, "state": "building"},
+        }
+    )
+    timer = threading.Timer(
+        0.02,
+        lambda: extractor._dispatch_message(
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/clangd.fileStatus",
+                "params": {"uri": uri, "state": "idle"},
+            }
+        ),
+    )
+    timer.start()
+    assert extractor.wait_for_file_idle(source, timeout=0.5) is True
+    timer.join(1)
+    assert extractor.get_file_status(source) == "idle"
+
+
+def test_symbol_info_ast_and_range_helpers(tmp_path, monkeypatch) -> None:
+    extractor = ClangExtractor(tmp_path)
+    source = tmp_path / "extensions.c"
+    source.write_text("int 名称;\n", encoding="utf-8")
+    extractor._position_encoding = "utf-8"
+    calls = []
+
+    def request(method, params, timeout=120):
+        calls.append((method, params, timeout))
+        if method == "textDocument/symbolInfo":
+            return [{"usr": "c:@名称"}]
+        return {"kind": "TranslationUnit"}
+
+    monkeypatch.setattr(extractor, "send_request", request)
+    assert extractor.get_symbol_info(source, 0, 6) == {"usr": "c:@名称"}
+    requested_range = {
+        "start": {"line": 0, "character": len("int ".encode("utf-8"))},
+        "end": {"line": 0, "character": len("int 名称".encode("utf-8"))},
+    }
+    assert extractor.get_ast(source, requested_range) == {"kind": "TranslationUnit"}
+    assert extractor._lsp_range_to_python(source, requested_range) == {
+        "start": {"line": 0, "character": 4},
+        "end": {"line": 0, "character": 6},
+    }
+    assert calls[0][0] == "textDocument/symbolInfo"
+    assert calls[0][1]["position"]["character"] == len("int 名称".encode("utf-8"))
+    assert calls[1] == (
+        "textDocument/ast",
+        {"textDocument": {"uri": source.resolve().as_uri()}, "range": requested_range},
+        60,
+    )
+    capabilities = extractor._client_capabilities()["textDocument"]
+    assert capabilities["symbolInfo"] == {}
+    assert capabilities["ast"] == {}

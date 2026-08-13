@@ -119,3 +119,33 @@ def test_recorder_writes_each_session_to_independent_files(tmp_path):
     assert "FIRST_REQUEST" in first.md_path.read_text(encoding="utf-8")
     assert "SECOND_REQUEST" not in first.md_path.read_text(encoding="utf-8")
     assert "SECOND_REQUEST" in second.md_path.read_text(encoding="utf-8")
+
+
+def test_recorder_never_persists_provider_reasoning_content(tmp_path):
+    recorder = ConversationRecorder(tmp_path)
+    session = recorder.begin_session(agent_name="validator_agent", label="v3")
+
+    recorder.record_exchange(
+        session,
+        iteration=1,
+        request_messages=[
+            {"role": "assistant", "content": "prior", "reasoning_content": "SECRET_PRIOR"}
+        ],
+        response_message={
+            "role": "assistant",
+            "content": "structured result",
+            "reasoning_content": "SECRET_CURRENT",
+        },
+        finish_reason="stop",
+        model="unit-model",
+        prompt_tokens=10,
+        completion_tokens=5,
+    )
+    recorder.record_session_end(session, iterations=1, context_tokens=15)
+
+    md_text = session.md_path.read_text(encoding="utf-8")
+    jsonl_text = session.jsonl_path.read_text(encoding="utf-8")
+    assert "structured result" in md_text
+    assert "SECRET_PRIOR" not in md_text + jsonl_text
+    assert "SECRET_CURRENT" not in md_text + jsonl_text
+    assert "reasoning_content" not in jsonl_text

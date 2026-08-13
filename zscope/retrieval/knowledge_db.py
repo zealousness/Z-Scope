@@ -19,6 +19,7 @@ class KnowledgeDB:
     """SQLite-backed code knowledge store."""
 
     SCHEMA_VERSION = "14"
+    SUPPORTS_DEFERRED_TU_COMMITS = True
     DERIVED_INDEX_SYMBOL_CONTEXT = "function_symbol_context"
     DERIVED_INDEX_TYPE_REFS = "function_type_refs"
     DERIVED_INDEX_NAMES = (
@@ -86,10 +87,17 @@ class KnowledgeDB:
         return value
 
     def _invalidate_callgraph_query_cache(self) -> None:
+        batch_active = bool(getattr(self._thread_local, "tu_facts_batch_active", False))
+        if batch_active and bool(
+            getattr(self._thread_local, "tu_facts_batch_callgraph_invalidated", False)
+        ):
+            return
         with self._query_cache_lock:
             self._callgraph_cache_version += 1
             self._callee_cache.clear()
             self._indirect_callee_cache.clear()
+        if batch_active:
+            self._thread_local.tu_facts_batch_callgraph_invalidated = True
 
     def callgraph_cache_stats(self) -> Dict[str, int]:
         with self._query_cache_lock:
@@ -297,6 +305,7 @@ class KnowledgeDB:
                 UNIQUE(name, file_path, start_line)
             );
             CREATE INDEX IF NOT EXISTS idx_functions_name ON functions(name);
+            CREATE INDEX IF NOT EXISTS idx_functions_tu ON functions(tu_id);
 
             CREATE TABLE IF NOT EXISTS type_definitions (
                 id          INTEGER PRIMARY KEY,
@@ -310,6 +319,7 @@ class KnowledgeDB:
                 UNIQUE(name, kind, file_path)
             );
             CREATE INDEX IF NOT EXISTS idx_types_name ON type_definitions(name);
+            CREATE INDEX IF NOT EXISTS idx_types_tu ON type_definitions(tu_id);
 
             CREATE TABLE IF NOT EXISTS type_members (
                 id          INTEGER PRIMARY KEY,
@@ -334,6 +344,7 @@ class KnowledgeDB:
             );
             CREATE INDEX IF NOT EXISTS idx_call_caller ON call_edges(caller_name);
             CREATE INDEX IF NOT EXISTS idx_call_callee ON call_edges(callee_name);
+            CREATE INDEX IF NOT EXISTS idx_call_caller_file ON call_edges(caller_file);
 
             CREATE TABLE IF NOT EXISTS macro_definitions (
                 id          INTEGER PRIMARY KEY,
@@ -349,6 +360,7 @@ class KnowledgeDB:
                 UNIQUE(macro_index_name)
             );
             CREATE INDEX IF NOT EXISTS idx_macros_name ON macro_definitions(name);
+            CREATE INDEX IF NOT EXISTS idx_macros_file ON macro_definitions(file_path);
 
             CREATE TABLE IF NOT EXISTS global_variables (
                 id          INTEGER PRIMARY KEY,
@@ -363,6 +375,7 @@ class KnowledgeDB:
                 definition_kind TEXT DEFAULT 'unknown',
                 UNIQUE(name, file_path)
             );
+            CREATE INDEX IF NOT EXISTS idx_globals_file ON global_variables(file_path);
 
             CREATE TABLE IF NOT EXISTS function_symbol_refs (
                 id          INTEGER PRIMARY KEY,
@@ -386,6 +399,10 @@ class KnowledgeDB:
                 ON function_symbol_refs(function_name, function_file);
             CREATE INDEX IF NOT EXISTS idx_symbol_refs_symbol
                 ON function_symbol_refs(symbol_name, symbol_kind);
+            CREATE INDEX IF NOT EXISTS idx_symbol_refs_function_file
+                ON function_symbol_refs(function_file);
+            CREATE INDEX IF NOT EXISTS idx_symbol_refs_symbol_file
+                ON function_symbol_refs(symbol_file);
 
             CREATE TABLE IF NOT EXISTS function_macro_refs (
                 id          INTEGER PRIMARY KEY,
@@ -436,6 +453,8 @@ class KnowledgeDB:
                 is_system   INTEGER DEFAULT 0,
                 UNIQUE(source_file, included_file, line)
             );
+            CREATE INDEX IF NOT EXISTS idx_include_source ON include_edges(source_file);
+            CREATE INDEX IF NOT EXISTS idx_include_included ON include_edges(included_file);
 
             CREATE TABLE IF NOT EXISTS metadata (
                 key         TEXT PRIMARY KEY,
@@ -485,6 +504,7 @@ class KnowledgeDB:
                 )
             );
             CREATE INDEX IF NOT EXISTS idx_taint_type ON taint_signatures(bug_type);
+            CREATE INDEX IF NOT EXISTS idx_taint_file ON taint_signatures(file_path);
 
             CREATE TABLE IF NOT EXISTS ir_statements (
                 id          INTEGER PRIMARY KEY,
@@ -510,6 +530,8 @@ class KnowledgeDB:
                 condition   TEXT DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_ir_cfg_func ON ir_cfg_edges(function);
+            CREATE INDEX IF NOT EXISTS idx_ir_cfg_from_stmt ON ir_cfg_edges(from_stmt);
+            CREATE INDEX IF NOT EXISTS idx_ir_cfg_to_stmt ON ir_cfg_edges(to_stmt);
 
             CREATE TABLE IF NOT EXISTS ir_def_use_edges (
                 id          INTEGER PRIMARY KEY,
@@ -521,6 +543,8 @@ class KnowledgeDB:
                 confidence  REAL DEFAULT 0.5
             );
             CREATE INDEX IF NOT EXISTS idx_ir_du_var ON ir_def_use_edges(variable);
+            CREATE INDEX IF NOT EXISTS idx_ir_du_def_stmt ON ir_def_use_edges(def_stmt);
+            CREATE INDEX IF NOT EXISTS idx_ir_du_use_stmt ON ir_def_use_edges(use_stmt);
 
             CREATE TABLE IF NOT EXISTS ir_resource_events (
                 id          INTEGER PRIMARY KEY,
@@ -538,6 +562,7 @@ class KnowledgeDB:
             );
             CREATE INDEX IF NOT EXISTS idx_ir_resource_candidate ON ir_resource_events(candidate_id);
             CREATE INDEX IF NOT EXISTS idx_ir_resource_object ON ir_resource_events(object_id);
+            CREATE INDEX IF NOT EXISTS idx_ir_resource_file ON ir_resource_events(file_path);
 
             CREATE TABLE IF NOT EXISTS ir_lock_events (
                 id          INTEGER PRIMARY KEY,
@@ -554,6 +579,7 @@ class KnowledgeDB:
             );
             CREATE INDEX IF NOT EXISTS idx_ir_lock_candidate ON ir_lock_events(candidate_id);
             CREATE INDEX IF NOT EXISTS idx_ir_lock_id ON ir_lock_events(lock_id);
+            CREATE INDEX IF NOT EXISTS idx_ir_lock_file ON ir_lock_events(file_path);
 
             CREATE TABLE IF NOT EXISTS ir_shared_accesses (
                 id          INTEGER PRIMARY KEY,
@@ -570,6 +596,7 @@ class KnowledgeDB:
             );
             CREATE INDEX IF NOT EXISTS idx_ir_shared_candidate ON ir_shared_accesses(candidate_id);
             CREATE INDEX IF NOT EXISTS idx_ir_shared_object ON ir_shared_accesses(object_id);
+            CREATE INDEX IF NOT EXISTS idx_ir_shared_file ON ir_shared_accesses(file_path);
 
             CREATE TABLE IF NOT EXISTS ir_path_slices (
                 id          INTEGER PRIMARY KEY,
@@ -583,6 +610,8 @@ class KnowledgeDB:
                 score_components TEXT DEFAULT '{}'
             );
             CREATE INDEX IF NOT EXISTS idx_ir_path_func ON ir_path_slices(function);
+            CREATE INDEX IF NOT EXISTS idx_ir_path_source_stmt ON ir_path_slices(source_stmt);
+            CREATE INDEX IF NOT EXISTS idx_ir_path_sink_stmt ON ir_path_slices(sink_stmt);
 
             CREATE TABLE IF NOT EXISTS function_contracts (
                 id          INTEGER PRIMARY KEY,
@@ -772,6 +801,36 @@ class KnowledgeDB:
             len(macro_rows),
             migrated_macros,
         )
+        # Schema-v14 performance indexes are additive: keep the schema version stable
+        # while ensuring existing v14 databases receive the same purge/include indexes
+        # as newly-created databases. This runs after compatibility columns/tables are
+        # present (notably call_edges.callee_file and the taint table replacement).
+        c.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_functions_tu ON functions(tu_id);
+            CREATE INDEX IF NOT EXISTS idx_types_tu ON type_definitions(tu_id);
+            CREATE INDEX IF NOT EXISTS idx_call_caller_file ON call_edges(caller_file);
+            CREATE INDEX IF NOT EXISTS idx_call_callee_file ON call_edges(callee_file);
+            CREATE INDEX IF NOT EXISTS idx_macros_file ON macro_definitions(file_path);
+            CREATE INDEX IF NOT EXISTS idx_globals_file ON global_variables(file_path);
+            CREATE INDEX IF NOT EXISTS idx_symbol_refs_function_file
+                ON function_symbol_refs(function_file);
+            CREATE INDEX IF NOT EXISTS idx_symbol_refs_symbol_file
+                ON function_symbol_refs(symbol_file);
+            CREATE INDEX IF NOT EXISTS idx_include_source ON include_edges(source_file);
+            CREATE INDEX IF NOT EXISTS idx_include_included ON include_edges(included_file);
+            CREATE INDEX IF NOT EXISTS idx_taint_file ON taint_signatures(file_path);
+            CREATE INDEX IF NOT EXISTS idx_ir_cfg_from_stmt ON ir_cfg_edges(from_stmt);
+            CREATE INDEX IF NOT EXISTS idx_ir_cfg_to_stmt ON ir_cfg_edges(to_stmt);
+            CREATE INDEX IF NOT EXISTS idx_ir_du_def_stmt ON ir_def_use_edges(def_stmt);
+            CREATE INDEX IF NOT EXISTS idx_ir_du_use_stmt ON ir_def_use_edges(use_stmt);
+            CREATE INDEX IF NOT EXISTS idx_ir_resource_file ON ir_resource_events(file_path);
+            CREATE INDEX IF NOT EXISTS idx_ir_lock_file ON ir_lock_events(file_path);
+            CREATE INDEX IF NOT EXISTS idx_ir_shared_file ON ir_shared_accesses(file_path);
+            CREATE INDEX IF NOT EXISTS idx_ir_path_source_stmt ON ir_path_slices(source_stmt);
+            CREATE INDEX IF NOT EXISTS idx_ir_path_sink_stmt ON ir_path_slices(sink_stmt);
+            """
+        )
         c.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
             ("schema_version", self.SCHEMA_VERSION),
@@ -792,7 +851,13 @@ class KnowledgeDB:
         ).fetchone()
         return cast(int, row["id"])
 
-    def register_tu_hash(self, file_path: str, file_hash: str) -> tuple:
+    def register_tu_hash(
+        self,
+        file_path: str,
+        file_hash: str,
+        *,
+        commit: bool = True,
+    ) -> tuple:
         """注册 TU 并检查哈希。返回 (tu_id, changed: bool)。"""
         row = self._conn.execute(
             "SELECT id, file_hash, status FROM translation_units WHERE file_path = ?",
@@ -813,7 +878,8 @@ class KnowledgeDB:
                     reason="translation_unit_hash_changed",
                     commit=False,
                 )
-            self._conn.commit()
+            if commit:
+                self._conn.commit()
             return (tu_id, True)
         else:
             self._conn.execute(
@@ -825,7 +891,8 @@ class KnowledgeDB:
                 reason="translation_unit_added",
                 commit=False,
             )
-            self._conn.commit()
+            if commit:
+                self._conn.commit()
             row = self._conn.execute(
                 "SELECT id FROM translation_units WHERE file_path = ?",
                 (file_path,),
@@ -878,29 +945,39 @@ class KnowledgeDB:
             related.update(str(r["caller_file"] or "") for r in incoming)
 
         if symbols:
-            symbol_placeholders = ",".join("?" for _ in symbols)
-            incoming_by_name = self._conn.execute(
-                f"SELECT DISTINCT caller_file FROM call_edges "
-                f"WHERE callee_name IN ({symbol_placeholders})",
-                tuple(sorted(symbols)),
-            ).fetchall()
-            related.update(str(r["caller_file"] or "") for r in incoming_by_name)
+            sorted_symbols = sorted(symbols)
+            for offset in range(0, len(sorted_symbols), 50):
+                symbol_chunk = sorted_symbols[offset : offset + 50]
+                symbol_placeholders = ",".join("?" for _ in symbol_chunk)
+                incoming_by_name = self._conn.execute(
+                    "SELECT DISTINCT caller_file FROM call_edges "
+                    f"WHERE callee_name IN ({symbol_placeholders})",
+                    tuple(symbol_chunk),
+                ).fetchall()
+                related.update(str(r["caller_file"] or "") for r in incoming_by_name)
 
         include_hints = set(path_variants)
         deleted_name = Path(fp).name
         if deleted_name:
             include_hints.add(deleted_name)
-        include_rows = self._conn.execute(
-            "SELECT DISTINCT source_file, included_file FROM include_edges"
-        ).fetchall()
-        for include_row in include_rows:
-            included = str(include_row["included_file"] or "")
-            if included in include_hints or any(
-                self._paths_match_hint(variant, included)
-                or self._paths_match_hint(included, variant)
-                for variant in path_variants
-            ):
-                related.add(str(include_row["source_file"] or ""))
+        indexed_hint_set: set[str] = set()
+        for value in include_hints:
+            raw_hint = str(value or "").replace("\\", "/")
+            if not raw_hint:
+                continue
+            variants = {raw_hint, raw_hint.lstrip("./")}
+            indexed_hint_set.update(variants)
+            indexed_hint_set.update(item.replace("/", "\\") for item in variants)
+        indexed_hints = sorted(indexed_hint_set)
+        for hint_chunk_start in range(0, len(indexed_hints), 50):
+            hint_chunk = indexed_hints[hint_chunk_start : hint_chunk_start + 50]
+            hint_placeholders = ",".join("?" for _ in hint_chunk)
+            include_rows = self._conn.execute(
+                "SELECT DISTINCT source_file FROM include_edges "
+                f"WHERE included_file IN ({hint_placeholders})",
+                tuple(hint_chunk),
+            ).fetchall()
+            related.update(str(row["source_file"] or "") for row in include_rows)
 
         related = {item for item in related if item and item not in path_variants}
         return {
@@ -909,21 +986,35 @@ class KnowledgeDB:
             "related_files": sorted(related),
         }
 
-    def delete_tu(self, tu_id: int) -> Dict[str, Any]:
+    def delete_tu(self, tu_id: int, *, commit: bool = True) -> Dict[str, Any]:
         """Delete a translation unit and all file-owned facts from the database."""
         impact = self.get_tu_delete_impact(tu_id)
-        self.purge_tu_data(tu_id, purge_incoming_refs=True)
+        self.purge_tu_data(tu_id, purge_incoming_refs=True, commit=False)
         self._conn.execute("DELETE FROM translation_units WHERE id = ?", (tu_id,))
-        self._conn.commit()
+        if commit:
+            self._conn.commit()
         return impact
 
-    def purge_tu_data(self, tu_id: int, purge_incoming_refs: bool = False):
+    def purge_tu_data(
+        self,
+        tu_id: int,
+        purge_incoming_refs: bool = False,
+        *,
+        commit: bool = True,
+    ):
         """清除某 TU 关联的所有提取数据。"""
         self._invalidate_callgraph_query_cache()
-        self.mark_derived_indexes_dirty(
-            reason="translation_unit_purged",
-            commit=False,
+        batch_active = bool(getattr(self._thread_local, "tu_facts_batch_active", False))
+        batch_already_dirty = bool(
+            getattr(self._thread_local, "tu_facts_batch_derived_dirty", False)
         )
+        if not batch_active or not batch_already_dirty:
+            self.mark_derived_indexes_dirty(
+                reason="translation_unit_purged",
+                commit=False,
+            )
+            if batch_active:
+                self._thread_local.tu_facts_batch_derived_dirty = True
         deleted_svf_rows = 0
         self._conn.execute(
             "DELETE FROM function_type_refs WHERE function_id IN "
@@ -944,13 +1035,17 @@ class KnowledgeDB:
             fp = row["file_path"]
             path_variants = self._path_variants(fp)
             placeholders = ",".join("?" for _ in path_variants)
-            stmt_rows = self._conn.execute(
-                f"SELECT id, function FROM ir_statements WHERE file_path IN ({placeholders})",
+            stmt_id_stage = "zscope_purge_statement_ids"
+            self._conn.execute(
+                f"CREATE TEMP TABLE IF NOT EXISTS {stmt_id_stage} ("
+                "id INTEGER PRIMARY KEY, function TEXT NOT NULL DEFAULT '')"
+            )
+            self._conn.execute(f"DELETE FROM {stmt_id_stage}")
+            self._conn.execute(
+                f"INSERT INTO {stmt_id_stage} (id, function) "
+                "SELECT id, function FROM ir_statements "
+                f"WHERE file_path IN ({placeholders})",
                 path_variants,
-            ).fetchall()
-            stmt_ids = [int(r["id"]) for r in stmt_rows]
-            stmt_functions = sorted(
-                {str(r["function"] or "") for r in stmt_rows if str(r["function"] or "")}
             )
             self._conn.execute(
                 f"DELETE FROM call_edges WHERE caller_file IN ({placeholders})",
@@ -997,33 +1092,26 @@ class KnowledgeDB:
                 path_variants,
             )
             deleted_svf_rows += max(0, int(cursor.rowcount or 0))
-            if stmt_ids:
-                stmt_placeholders = ",".join("?" for _ in stmt_ids)
-                self._conn.execute(
-                    f"DELETE FROM ir_cfg_edges WHERE from_stmt IN ({stmt_placeholders}) "
-                    f"OR to_stmt IN ({stmt_placeholders})",
-                    stmt_ids + stmt_ids,
-                )
-                self._conn.execute(
-                    f"DELETE FROM ir_def_use_edges WHERE def_stmt IN ({stmt_placeholders}) "
-                    f"OR use_stmt IN ({stmt_placeholders})",
-                    stmt_ids + stmt_ids,
-                )
-                self._conn.execute(
-                    f"DELETE FROM ir_path_slices WHERE source_stmt IN ({stmt_placeholders}) "
-                    f"OR sink_stmt IN ({stmt_placeholders})",
-                    stmt_ids + stmt_ids,
-                )
-            if stmt_functions:
-                function_placeholders = ",".join("?" for _ in stmt_functions)
-                self._conn.execute(
-                    f"DELETE FROM ir_cfg_edges WHERE function IN ({function_placeholders})",
-                    stmt_functions,
-                )
-                self._conn.execute(
-                    f"DELETE FROM ir_path_slices WHERE function IN ({function_placeholders})",
-                    stmt_functions,
-                )
+            self._conn.execute(
+                f"DELETE FROM ir_cfg_edges WHERE from_stmt IN (SELECT id FROM {stmt_id_stage}) "
+                f"OR to_stmt IN (SELECT id FROM {stmt_id_stage})"
+            )
+            self._conn.execute(
+                f"DELETE FROM ir_def_use_edges WHERE def_stmt IN (SELECT id FROM {stmt_id_stage}) "
+                f"OR use_stmt IN (SELECT id FROM {stmt_id_stage})"
+            )
+            self._conn.execute(
+                f"DELETE FROM ir_path_slices WHERE source_stmt IN (SELECT id FROM {stmt_id_stage}) "
+                f"OR sink_stmt IN (SELECT id FROM {stmt_id_stage})"
+            )
+            self._conn.execute(
+                f"DELETE FROM ir_cfg_edges WHERE function IN "
+                f"(SELECT DISTINCT function FROM {stmt_id_stage} WHERE function != '')"
+            )
+            self._conn.execute(
+                f"DELETE FROM ir_path_slices WHERE function IN "
+                f"(SELECT DISTINCT function FROM {stmt_id_stage} WHERE function != '')"
+            )
             for table in (
                 "ir_statements",
                 "ir_resource_events",
@@ -1034,6 +1122,7 @@ class KnowledgeDB:
                     f"DELETE FROM {table} WHERE file_path IN ({placeholders})",
                     path_variants,
                 )
+            self._conn.execute(f"DELETE FROM {stmt_id_stage}")
         self._conn.execute(
             "DELETE FROM type_members WHERE type_id IN "
             "(SELECT id FROM type_definitions WHERE tu_id = ?)", (tu_id,),
@@ -1054,7 +1143,8 @@ class KnowledgeDB:
                 deleted_svf_rows,
                 generation,
             )
-        self._conn.commit()
+        if commit:
+            self._conn.commit()
 
     @staticmethod
     def _path_variants(file_path: str) -> tuple[str, ...]:
@@ -1073,14 +1163,80 @@ class KnowledgeDB:
             pass
         return tuple(sorted(item for item in variants if item))
 
-    def mark_tu_indexed(self, tu_id: int):
+    def mark_tu_indexed(self, tu_id: int, *, commit: bool = True):
         self._conn.execute(
             "UPDATE translation_units SET status = 'indexed', index_time = ? WHERE id = ?",
             (time.time(), tu_id),
         )
-        self._conn.commit()
+        if commit:
+            self._conn.commit()
 
-    def mark_tu_pending(self, tu_id: int):
+    @contextmanager
+    def replace_tu_facts_transaction(self, tu_id: int) -> Iterator[None]:
+        """Atomically replace all base facts owned by one translation unit.
+
+        The caller writes the replacement facts inside this context without
+        committing. Until the savepoint is released, readers retain the last
+        committed facts; any exception or process interruption rolls the purge
+        and partial replacement back together.
+        """
+        conn = self._conn
+        savepoint = f"replace_tu_facts_{threading.get_ident()}_{int(tu_id)}"
+        savepoint_active = False
+        batch_dirty_before = bool(
+            getattr(self._thread_local, "tu_facts_batch_derived_dirty", False)
+        )
+        try:
+            conn.execute(f"SAVEPOINT {savepoint}")
+            savepoint_active = True
+            self.purge_tu_data(tu_id, commit=False)
+            yield
+            self.mark_tu_indexed(tu_id, commit=False)
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            savepoint_active = False
+            if not bool(getattr(self._thread_local, "tu_facts_batch_active", False)):
+                conn.commit()
+        except BaseException:
+            if savepoint_active:
+                conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                if bool(getattr(self._thread_local, "tu_facts_batch_active", False)):
+                    self._thread_local.tu_facts_batch_derived_dirty = batch_dirty_before
+            else:
+                conn.rollback()
+            raise
+
+    @contextmanager
+    def replace_tu_facts_batch_transaction(self) -> Iterator[None]:
+        """Publish multiple TU replacements in one transaction.
+
+        Each :meth:`replace_tu_facts_transaction` nested inside this context keeps
+        its own savepoint. A caller may catch one TU failure and continue; an
+        exception escaping this outer context rolls the whole batch back.
+        """
+        conn = self._conn
+        if bool(getattr(self._thread_local, "tu_facts_batch_active", False)):
+            raise RuntimeError("nested TU facts batch transactions are not supported")
+        if conn.in_transaction:
+            raise RuntimeError("TU facts batch transaction requires a clean connection")
+        self._thread_local.tu_facts_batch_active = True
+        self._thread_local.tu_facts_batch_derived_dirty = False
+        self._thread_local.tu_facts_batch_callgraph_invalidated = False
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+            except BaseException:
+                conn.rollback()
+                raise
+            else:
+                conn.commit()
+        finally:
+            self._thread_local.tu_facts_batch_active = False
+            self._thread_local.tu_facts_batch_derived_dirty = False
+            self._thread_local.tu_facts_batch_callgraph_invalidated = False
+
+    def mark_tu_pending(self, tu_id: int, *, commit: bool = True):
         self._conn.execute(
             "UPDATE translation_units SET status = 'pending', last_modified = ? WHERE id = ?",
             (time.time(), tu_id),
@@ -1089,7 +1245,8 @@ class KnowledgeDB:
             reason="translation_unit_pending",
             commit=False,
         )
-        self._conn.commit()
+        if commit:
+            self._conn.commit()
 
     def get_pending_tus(self) -> List[Dict[str, Any]]:
         rows = self._conn.execute(
@@ -1539,7 +1696,7 @@ class KnowledgeDB:
                     conn.execute("DELETE FROM function_symbol_refs")
                     conn.execute("DELETE FROM function_macro_refs")
                     conn.execute(
-                        "INSERT OR REPLACE INTO function_symbol_refs "
+                        "INSERT INTO function_symbol_refs "
                         "(function_name, function_file, symbol_name, symbol_kind, symbol_file, "
                         "reference_line, access_kind) "
                         f"SELECT function_name, function_file, symbol_name, symbol_kind, "
@@ -1547,24 +1704,21 @@ class KnowledgeDB:
                         f"FROM {self._DERIVED_SYMBOL_REF_STAGE}"
                     )
                     conn.execute(
-                        "INSERT OR REPLACE INTO function_macro_refs "
+                        "INSERT INTO function_macro_refs "
                         "(function_id, macro_id, reference_line) "
                         f"SELECT function_id, macro_id, reference_line "
                         f"FROM {self._DERIVED_MACRO_REF_STAGE}"
                     )
-                    conn.execute(f"DELETE FROM {self._DERIVED_SYMBOL_REF_STAGE}")
-                    conn.execute(f"DELETE FROM {self._DERIVED_MACRO_REF_STAGE}")
                 else:
                     conn.execute("DELETE FROM function_type_refs")
                     conn.execute(
-                        "INSERT OR REPLACE INTO function_type_refs "
+                        "INSERT INTO function_type_refs "
                         "(function_id, type_id, type_index_name, referenced_name, "
                         "reference_file, reference_line, reference_kind, resolution_reason) "
                         f"SELECT function_id, type_id, type_index_name, referenced_name, "
                         f"reference_file, reference_line, reference_kind, resolution_reason "
                         f"FROM {self._DERIVED_TYPE_REF_STAGE}"
                     )
-                    conn.execute(f"DELETE FROM {self._DERIVED_TYPE_REF_STAGE}")
                 self._write_derived_index_state_uncommitted(canonical, state)
                 conn.execute(f"RELEASE SAVEPOINT {savepoint}")
                 savepoint_active = False
@@ -1575,6 +1729,17 @@ class KnowledgeDB:
                     conn.execute(f"RELEASE SAVEPOINT {savepoint}")
                 conn.rollback()
                 raise
+            try:
+                for table_name in required_staging:
+                    conn.execute(f"DELETE FROM {table_name}")
+                conn.commit()
+            except sqlite3.Error as exc:
+                conn.rollback()
+                logger.debug(
+                    "Unable to clear published derived staging index=%s: %s",
+                    canonical,
+                    exc,
+                )
             return dict(state)
 
     def fail_derived_index_rebuild(
@@ -1799,6 +1964,15 @@ class KnowledgeDB:
             ),
         )
 
+    def insert_global_variables_batch(self, rows: List[tuple]) -> None:
+        if rows:
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO global_variables "
+                "(name, type_str, file_path, line, is_extern, storage_class, qualifiers, "
+                "initializer, definition_kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+
     def get_global_variables(self) -> List[Dict[str, Any]]:
         rows = self._conn.execute(
             "SELECT name, type_str, file_path, line, is_extern, storage_class, "
@@ -1812,6 +1986,15 @@ class KnowledgeDB:
             "SELECT id, macro_index_name, name, file_path, line, start_line, end_line, "
             "definition, is_function_like FROM macro_definitions "
             "ORDER BY macro_index_name"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_macro_definition_records(self) -> List[Dict[str, Any]]:
+        """Return macro identities for derived refs without loading macro bodies."""
+        rows = self._conn.execute(
+            "SELECT id, macro_index_name, name, file_path, line, start_line, end_line, "
+            "is_function_like FROM macro_definitions "
+            "ORDER BY name, file_path, line"
         ).fetchall()
         return [dict(row) for row in rows]
 
@@ -2087,6 +2270,40 @@ class KnowledgeDB:
         ).fetchone()
         return row["id"] if row else -1
 
+    def insert_types_with_members_batch(self, rows: List[tuple], tu_id: int) -> None:
+        """Insert all type definitions/members for one TU with three SQL batches."""
+        if not rows:
+            return
+        self._conn.executemany(
+            "INSERT OR REPLACE INTO type_definitions "
+            "(name, kind, file_path, start_line, end_line, full_definition, tu_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [(*row[:6], int(tu_id)) for row in rows],
+        )
+        identities = self._conn.execute(
+            "SELECT id, name, kind, file_path FROM type_definitions WHERE tu_id = ?",
+            (int(tu_id),),
+        ).fetchall()
+        ids = {
+            (str(row["name"]), str(row["kind"]), str(row["file_path"])): int(row["id"])
+            for row in identities
+        }
+        member_rows: List[tuple] = []
+        for row in rows:
+            type_id = ids.get((str(row[0]), str(row[1]), str(row[2])))
+            if type_id is None:
+                continue
+            member_rows.extend(
+                (type_id, str(name), str(member_type), int(offset_idx))
+                for name, member_type, offset_idx in row[6]
+            )
+        if member_rows:
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO type_members "
+                "(type_id, member_name, member_type, offset_idx) VALUES (?, ?, ?, ?)",
+                member_rows,
+            )
+
     def insert_type_member(self, type_id: int, member_name: str,
                            member_type: str = "", offset_idx: int = 0):
         self._conn.execute(
@@ -2152,43 +2369,172 @@ class KnowledgeDB:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_type_definition_records(self) -> List[Dict[str, Any]]:
+        """Return lightweight type identities for derived-reference rebuilding."""
+        rows = self._conn.execute(
+            "SELECT id, name, kind, file_path, start_line, end_line, tu_id, "
+            "CASE WHEN COALESCE(full_definition, '') != '' THEN 1 ELSE 0 END AS has_definition "
+            "FROM type_definitions ORDER BY name, file_path, start_line, end_line, kind"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_transitive_include_closure(self, source_file: str) -> List[str]:
         """Return normalized non-system files transitively visible from source_file."""
         return self.get_transitive_include_closures((source_file,)).get(str(source_file), [])
+
+    def insert_include_edges_batch(self, rows: Iterable[tuple]) -> None:
+        """Insert include edges in one SQLite batch, ignoring duplicate facts."""
+        self._conn.executemany(
+            "INSERT OR IGNORE INTO include_edges "
+            "(source_file, included_file, line, is_system) VALUES (?, ?, ?, ?)",
+            rows,
+        )
 
     def get_transitive_include_closures(
         self,
         source_files: Iterable[str],
     ) -> Dict[str, List[str]]:
-        """Return include closures for many sources after building the graph once."""
+        """Return closures using one graph read and memoized SCC condensation."""
         requested = [str(source_file) for source_file in source_files]
         rows = self._conn.execute(
             "SELECT source_file, included_file FROM include_edges "
             "WHERE is_system = 0 ORDER BY source_file, included_file"
         ).fetchall()
-        graph: Dict[str, List[str]] = {}
+        graph: Dict[str, set[str]] = {}
         for row in rows:
-            source = str(row["source_file"] or "").replace("\\", "/").lstrip("./")
-            included = str(row["included_file"] or "").replace("\\", "/").lstrip("./")
+            source = self._normalize_include_graph_path(str(row["source_file"] or ""))
+            included = self._normalize_include_graph_path(str(row["included_file"] or ""))
             if source and included:
-                graph.setdefault(source, []).append(included)
+                graph.setdefault(source, set()).add(included)
+                graph.setdefault(included, set())
+
+        # Iterative Kosaraju SCC turns an include graph with cycles into a DAG
+        # without consuming Python recursion depth on long include chains.
+        ordered_neighbors = {
+            node: tuple(sorted(neighbors)) for node, neighbors in graph.items()
+        }
+        reverse_graph: Dict[str, set[str]] = {node: set() for node in graph}
+        for source, included_files in graph.items():
+            for included in included_files:
+                reverse_graph[included].add(source)
+
+        visited: set[str] = set()
+        finish_order: List[str] = []
+        for start in sorted(graph):
+            if start in visited:
+                continue
+            visited.add(start)
+            pending: List[Tuple[str, Iterator[str]]] = [
+                (start, iter(ordered_neighbors[start]))
+            ]
+            while pending:
+                node, neighbors = pending[-1]
+                try:
+                    neighbor = next(neighbors)
+                except StopIteration:
+                    finish_order.append(node)
+                    pending.pop()
+                    continue
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    pending.append((neighbor, iter(ordered_neighbors[neighbor])))
+
+        components: List[Tuple[str, ...]] = []
+        assigned: set[str] = set()
+        for start in reversed(finish_order):
+            if start in assigned:
+                continue
+            component: List[str] = []
+            pending_nodes = [start]
+            assigned.add(start)
+            while pending_nodes:
+                node = pending_nodes.pop()
+                component.append(node)
+                for neighbor in reverse_graph[node]:
+                    if neighbor not in assigned:
+                        assigned.add(neighbor)
+                        pending_nodes.append(neighbor)
+            components.append(tuple(sorted(component)))
+
+        component_by_node: Dict[str, int] = {}
+        for component_id, completed_component in enumerate(components):
+            for node in completed_component:
+                component_by_node[node] = component_id
+        component_edges: Dict[int, set[int]] = {idx: set() for idx in range(len(components))}
+        for source, included_files in graph.items():
+            source_component = component_by_node[source]
+            for included in included_files:
+                target_component = component_by_node[included]
+                if source_component != target_component:
+                    component_edges[source_component].add(target_component)
+
+        closure_cache: Dict[int, frozenset[str]] = {}
+
+        def component_closure(component_id: int) -> frozenset[str]:
+            cached = closure_cache.get(component_id)
+            if cached is not None:
+                return cached
+            active = {component_id}
+            pending_components: List[Tuple[int, Iterator[int]]] = [
+                (component_id, iter(component_edges[component_id]))
+            ]
+            while pending_components:
+                current, children = pending_components[-1]
+                try:
+                    child = next(children)
+                except StopIteration:
+                    closure = set(components[current])
+                    for child in component_edges[current]:
+                        closure.update(closure_cache[child])
+                    closure_cache[current] = frozenset(closure)
+                    active.remove(current)
+                    pending_components.pop()
+                    continue
+                if child in closure_cache:
+                    continue
+                if child in active:
+                    raise RuntimeError("include component graph unexpectedly contains a cycle")
+                active.add(child)
+                pending_components.append((child, iter(component_edges[child])))
+            return closure_cache[component_id]
+
+        # Resolve exact normalized paths in O(1). For legacy absolute-vs-relative
+        # rows, suffix aliases retain the prior matching semantics without scanning
+        # every graph node for each requested source.
+        exact_nodes = set(graph)
+        suffix_index: Dict[str, set[str]] = {}
+        for node in exact_nodes:
+            parts = node.split("/")
+            for offset in range(len(parts)):
+                suffix_index.setdefault("/".join(parts[offset:]), set()).add(node)
 
         result: Dict[str, List[str]] = {}
         for source_file in requested:
-            clean_source = str(source_file or "").replace("\\", "/").lstrip("./")
-            roots = [key for key in graph if self._paths_match_hint(key, clean_source)]
+            clean_source = self._normalize_include_graph_path(source_file)
+            if clean_source in exact_nodes:
+                roots = {clean_source}
+            else:
+                roots = set(suffix_index.get(clean_source, ()))
+                if not roots and clean_source:
+                    clean_parts = clean_source.split("/")
+                    for offset in range(1, len(clean_parts)):
+                        candidate = "/".join(clean_parts[offset:])
+                        if candidate in exact_nodes:
+                            roots.add(candidate)
+            closure: set[str] = set()
+            for root in roots:
+                closure.update(component_closure(component_by_node[root]))
             if not roots and clean_source:
-                roots = [clean_source]
-            visited: set[str] = set()
-            pending = list(roots)
-            while pending:
-                current = pending.pop()
-                if current in visited:
-                    continue
-                visited.add(current)
-                pending.extend(item for item in graph.get(current, []) if item not in visited)
-            result[source_file] = sorted(visited)
+                closure.add(clean_source)
+            result[source_file] = sorted(closure)
         return result
+
+    @staticmethod
+    def _normalize_include_graph_path(path: str) -> str:
+        value = str(path or "").replace("\\", "/").strip()
+        while value.startswith("./"):
+            value = value[2:]
+        return value.rstrip("/")
 
     def replace_function_type_refs(self, rows: List[tuple]) -> None:
         """Atomically replace all direct function-to-type reference facts."""
@@ -2895,6 +3241,9 @@ class KnowledgeDB:
 
     def commit(self):
         self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
 
     def stats(self) -> Dict[str, int]:
         result = {}

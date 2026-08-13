@@ -6,7 +6,7 @@ v1.3.1 是 C/C++ 稳定化、离线交付和 Python 3.9 兼容版本，同时落
 
 ## 核心特性
 
-- **多智能体分治与声明式编排**：采用 `AGENT.md` 与 `SKILL.md` 契约定义各智能体与技能。支持 `语义建模 Agent`、`漏洞扫描 Agent`、`Issue Reconciler Agent`、`验证 Agent` 以及隔离上下文的聚焦型 `Deep Worker` 独立协作。分析流程由 `zscope/workflows/*.yaml` 与 `WorkflowRunner` 驱动实际执行步骤，而不是仅作为提示词上下文注入。
+- **自适应语义发现与分层验证**：确定性/backend 候选走低成本快车道；balanced/deep 额外构建 Security Semantic Map，并用 candidate-blind coverage-gap worker 主动提出 hypothesis。所有来源统一进入全局 Candidate Ledger，再由 V0 确定性 proof、V1 单次结构化判定、V2 定向补证复判和高风险 V3 短调查闭合。
 - **Task 驱动的漏洞 Skill 选择**：`scan.task` 只表达用户审计重点。空串启用当前语言全部适用 Skill；非空文本会结合本地规则与可选 LLM 语义路由选择漏洞方向。
 - **三种运行模式**：全新扫描（默认）、断点续扫（`--resume`）、增量维护（`--maintain`）。Workflow 选择由 CLI 运行模式控制，不允许在 `zscope.yaml` 中配置。另支持告警验证模式；C/C++ 的 `--mode ruledriven` 仅作为 1.x 弃用兼容入口。
 - **Diff impact 增量影响扫描**：支持 `--diff-base/--diff-head`、`--diff-repo-root` 与可重复 `--diff-path`。内置稳定策略按变更意图生成义务并选择最小必要扫描 root，写出 `entry_functions_diff.json`、覆盖摘要和增量相关性标注。
@@ -14,9 +14,9 @@ v1.3.1 是 C/C++ 稳定化、离线交付和 Python 3.9 兼容版本，同时落
 - **可审阅用户配置工作簿**：`user_config.xlsx` 与 `--infer-user-config` 可从源码、函数式宏、语义快照中生成 resource/lock/dispatcher/module lifecycle/pointer target/function intent 候选；v1.2 会用默认 LLM 并行筛选、修订或丢弃候选行。运行时只注入当前函数真正引用到的用户配置，降低上下文噪声。
 - **证据优先的候选流水线**：`CandidatePipeline` 汇总本地规则、Clang AST/CFG、SVF/Saber、跨函数图候选与 KnowledgeDB/Joern 后端信号。v1.2 继续扩展协议/运行时形态，覆盖 fd 表示契约、raw/encoded fd 混用、EAGAIN/EINTR 无预算重试、协议元素数与字节数错配、宏锁可能编译为空、部分资源初始化失败回滚等模式。
 - **跨语言规则治理**：Java 与 C/C++ 内置确定性检测器、YAML pack 和 Python provider 共用严格规则目录、canonical ID、Skill 校验与 `EffectiveRuleSet`；SVF/Saber、Joern 等仍保持 backend signal 身份。
-- **风险自适应预算**：`RiskBudgetPlanner` 按入口复杂度、调用扇出、后端/图候选和历史缺陷生成每个入口的 `effective_budget`；稳定上限与 Agent 策略来自内置 RuntimeSpec，而不是用户 YAML。
+- **扫描级 token 计量**：公共 `fast / balanced / deep` 档位共享线程安全的 call-level usage 账本；账本按 provider usage 结算，但不参与请求准入。2M/12M/30M 仅是 Range Benchmark 完成后的成本验收线。
 - **验证组终态与确定性 proof**：`CandidateEnvelope v3.3`、`DecisionFact`、`SecurityObligation` 和 scan-level validation group 共同保证每个安全义务只验证一次，并闭合为 `confirmed`、`rejected_with_proof`、`needs_review`、`engine_failed` 或 `interrupted`。只有完整、可追溯且无冲突的 proof 能改变安全终态；引擎故障不会伪装成漏洞。
-- **有界 Validator 证据协议**：`ValidatorEvidenceSlice v2` 只传递 canonical occurrence、结构化 source/sink/object、一个代表性入口路径、决策事实和精确代码片段；alias 只传数量与 UID。Validator 首轮必须给出终态或类型化缺失事实请求，补证后最多再响应一次，不再进行开放式多轮代码探索。
+- **Validator v3 证据协议**：每个 validation cluster 只传 bounded `ValidatorEvidenceSlice v3`。V1 是无工具、严格 schema 的单次判定；随后按 security obligation 一次补齐全部可本地解析的必需事实，有事实增量时只运行一次无工具 V2。balanced 对 high/critical 或外部可达的未闭合候选开放 V3，deep 对全部无确定性反证的非 shadow 未闭合候选开放 V3；每个 cluster 只有一个最长 50 次模型迭代的连续会话，只能使用只读白名单工具，且只有可引用事实完全闭合后才能进入默认视图。
 - **本地与实验性远程 MCP Server**：原生内置 Model Context Protocol (MCP) stdio Server；同时提供实验性的 Streamable HTTP 传输。远程绑定必须显式配置 bearer token 环境变量与客户端 allowlist，避免把代码索引和工具总线无保护暴露到网络。
 - **多模型配置、endpoint 池与路由**：支持多个 LLM profile；用户可把 modeling、analysis、validation 三类资源映射到 profile。同一 profile 可配置多个 `base_urls` 及 endpoint 限流。
 - **按语言隔离的可插拔后端**：C/C++ 默认 `unified`，Java 默认 `java_unified`；Regex/Clang/Java source 等弱后端必须显式选择，深度后端失败不会自动降级。
@@ -29,7 +29,7 @@ v1.3.1 是 C/C++ 稳定化、离线交付和 Python 3.9 兼容版本，同时落
 - **自动报告备份护城河**：每次批量生成或覆盖 JSON 分析主报告前，自动创建带时间戳的增量备份至 `.zscope_knowledge/backups/` 目录。
 - **严格编译与类型检查**：开发环境支持 `compileall` 强制编译检查和 `mypy` 静态类型检查，避免 Python 解释执行到冷门分支时才暴露错误。
 - **Benchmark 与发布门禁**：内置 C/C++ 与 Java Range fixture 统一通过 `zscope-benchmark` 的 `smoke`、`trial`、`formal` 三模式执行。扫描输入采用严格 allowlist，truth 只在独立评分阶段可见；历史结果保存在带哈希归档中，不作为当前版本事实。
-- **严格 public config v2**：`zscope.yaml` 只保留 LLM、项目范围、入口发现、审计重点、后端拓扑、SVF 规划、并发和规则扩展；Agent、缓存、报告、预算和稳定算法默认值由可审计 RuntimeSpec 提供。
+- **严格 public config v2**：`zscope.yaml` 只保留 LLM、项目范围、入口发现、审计重点、scan depth、后端拓扑、SVF 规划、并发和规则扩展；Agent 轮数、缓存、报告和稳定算法默认值由可审计 RuntimeSpec 提供。
 
 ## 系统架构
 
@@ -58,16 +58,18 @@ CodeIndex (可插拔后端 + per-run cache) + SnapshotStore + UserConfigStore(XL
           │  ├─ JavaSource/UnifiedBackend — Java source + SootUp/WALA/Joern signals
           │  └─ RegexBackend    — 正则回退
           │
-          ├─→ 证据候选层 (CandidatePipeline + CandidateLedger + issue_identity + semantic dedup)
-          ├─→ 风险自适应预算 (RiskBudgetPlanner → effective_budget)
+          ├─→ 确定性候选快车道 (CandidatePipeline)
+          ├─→ Security Semantic Map → Coverage-gap Planner → candidate-blind hypotheses
+          ├─→ 全局 CandidateLedger (跨入口去重 + freeze)
+          ├─→ ScanTokenUsageLedger (逐调用计量，不参与运行时限流)
           ├─→ 工具总线 (ToolsRuntime + ToolPolicy) ── 外部 MCP 集成
           │
           ▼
-多智能体管线 (agents/ + skills/)
-语义建模 Agent → [漏洞扫描 Agent ⇌ Deep Worker] → Issue Reconciler → 验证 Agent
+分层验证 (agents/ + skills/)
+V0 deterministic proof → V1 structured decision → V2 evidence delta recheck → V3 bounded investigation
           │
           ▼
-ValidationRunner (fast-path + parallel) + ReviewMemory + ReportAssembler + 语义去重 + SARIF 导出 + Web 反馈闭环
+ReviewMemory + ReportAssembler + 归因/预算审计 + SARIF 导出 + Web 反馈闭环
 ```
 
 ## 数据安全与审计留痕
@@ -220,8 +222,25 @@ tar xzf llvm.tar.gz -C ~/.local/svf/
 
 ```bash
 export PATH="$HOME/go/bin:/usr/lib/llvm-18/bin:$HOME/.local/svf/SVF-linux-x86_64/bin:$PATH"
+export LD_LIBRARY_PATH="$HOME/.local/svf/SVF-linux-x86_64/lib:$HOME/.local/svf/llvm-18.1.0.obj/lib:${LD_LIBRARY_PATH:-}"
 export LLVM_COMPILER=clang
 export LLVM_CC_NAME=clang-18
+```
+
+`LD_LIBRARY_PATH` 中的 LLVM 目录必须与下载的 SVF 配套包一致。若 `svf_bin_dir` 已配置，Z-SCOPE 会尝试发现相邻的 `lib` 与 `llvm-*.obj/lib`；仅把 `wpa`/`saber` 加入 `PATH` 时仍应显式设置该变量。可用以下命令在真正执行扫描的 Linux/WSL 用户态验证：
+
+```bash
+for tool in clang clangd gclang get-bc llvm-link llvm-nm wpa saber; do
+  command -v "$tool" || { echo "missing tool: $tool" >&2; exit 1; }
+done
+if ldd "$(command -v wpa)" | grep -q 'not found'; then
+  ldd "$(command -v wpa)" >&2
+  exit 1
+fi
+if ldd "$(command -v saber)" | grep -q 'not found'; then
+  ldd "$(command -v saber)" >&2
+  exit 1
+fi
 ```
 
 **C/C++ `zscope.yaml` 配置片段**（unified 模式；完整参考见 [`zscope.c_cpp.yaml`](zscope.c_cpp.yaml)）：
@@ -272,7 +291,15 @@ zscope-init --project-root . --output zscope.yaml
 zscope-init --project-root . --language c_cpp --no-interactive --output zscope.yaml
 ```
 
-生成后填写 `Z_SCOPE_LLM_BASE_URL`、`Z_SCOPE_LLM_MODEL` 和 `Z_SCOPE_API_KEY`，依次执行：
+生成后在执行 Z-SCOPE 的同一用户态显式设置 `Z_SCOPE_LLM_BASE_URL`、`Z_SCOPE_LLM_MODEL` 和 `Z_SCOPE_API_KEY`。不要把真实密钥写入仓库配置或提交到 Git：
+
+```bash
+export Z_SCOPE_LLM_BASE_URL='https://provider.example/v1'
+export Z_SCOPE_LLM_MODEL='your-model-id'
+export Z_SCOPE_API_KEY='your-secret-from-a-secret-store'
+```
+
+然后依次执行：
 
 ```bash
 zscope-config validate --config zscope.yaml
@@ -318,6 +345,8 @@ project:
     max_functions: 10000
 
 scan:
+  # fast | balanced | deep；当前省略时为 fast。Java 暂只允许 fast。
+  depth: fast
   # 空串启用当前语言全部适用 Skill；非空文本仅指定审计重点。
   task: ""
   # 可选；未配置的角色使用 llms.default。
@@ -339,8 +368,9 @@ concurrency:
   llm_max_inflight: 4
 ```
 
-并发字段必须是正整数，不接受 `0`、`-1` 或 `unlimited`。
-`llm_max_inflight` 是进程级上限，仍会与 LLM profile 的 endpoint 并发/速率上限共同生效。请按 CPU、内存、SVF 峰值和 LLM 配额主动校准。
+并发字段必须是正整数。`llm_max_inflight` 是进程级上限，仍会与 LLM profile 的 endpoint 并发/速率上限共同生效。请按 CPU、内存、SVF 峰值和 LLM 配额主动校准。
+
+CLI 的 `--scan-depth fast|balanced|deep` 可覆盖本次运行，优先级固定为 CLI > YAML > 打包默认。档位决定启用哪些分析阶段及其结构化工作量边界，但不会设置 scan-wide token 硬上限。C/C++ 在质量门禁完成前省略 depth 仍是 fast；Java 显式请求 balanced/deep 会直接报错，不会降级。2M/12M/30M 等 token 数只存在于 Range Benchmark policy 中，作为扫描完成后的成本验收线。
 
 C/C++ 的 SVF 项目规划继续由用户决定：
 
@@ -416,11 +446,13 @@ rules:
     - security-rules/acme.yaml
   providers:
     - acme_rules
+  # 默认关闭的 experimental 规则可显式启用。
+  enabled_ids: []
   disabled_ids:
     - clang_cfg_use_after_release
 ```
 
-`disabled_ids` 统一覆盖 Java local、C/C++ Regex、Clang CFG/matcher、Graph、YAML pack 和 Python provider。未知、重复或跨语言 ID 会严格失败。禁用一条规则不会抑制 SVF/Saber、Joern/Java provider 后端信号，也不会阻止 LLM 独立发现同一问题。后端信号通过 `indexing` 关闭；已确认误报通过 finding suppression 管理。
+`disabled_ids` 统一覆盖 Java local、C/C++ Regex、Clang CFG/matcher、Graph、YAML pack 和 Python provider，并优先于 `enabled_ids`；同一 ID 同时出现在两表时以禁用为准。单表内重复、未知或跨语言 ID 会严格失败。新内置规则默认 experimental/default-disabled，只有当前 revision 通过 qualification 后才能 stable/default-enabled。禁用一条规则不会抑制 SVF/Saber、Joern/Java provider 后端信号，也不会阻止 LLM 独立发现同一问题。后端信号通过 `indexing` 关闭；已确认误报通过 finding suppression 管理。
 
 ```bash
 # 查看当前配置的有效规则、来源与启停原因
@@ -442,6 +474,9 @@ zscope-rules test security-rules/acme.yaml
 ```bash
 # 单入口模式：从 entry_function 开始分析
 zscope -c zscope.yaml --verbose
+
+# 本轮启用 C/C++ balanced；token 只在扫描完成后计量
+zscope -c zscope.yaml --scan-depth balanced
 
 # 批量扫描模式：从 entry_functions_list JSON 开始
 zscope -c zscope.yaml
@@ -505,15 +540,17 @@ zscope --build-index -c zscope.yaml
 | `entry_functions_list.json` | `--discover-entries` 或 `project.entry_discovery.enabled` 生成的候选入口列表 |
 | `entry_functions_diff.json` | `--diff-base` 生成的差异影响入口列表，包含 `diff_impact.path_filters`、`analysis_obligations`、`coverage_summary`、`function_coverage` 和每个入口的 `diff_focus` |
 | `.zscope_snapshots/` | 语义快照缓存（加速重复扫描） |
+| `.zscope_snapshots/security_map.db` | 只读 Security Semantic Map sidecar；与历史函数 snapshot 分离 |
+| `.zscope_snapshots/security_semantic_map.json` | 本轮安全语义地图、coverage、unknown/conflict 与 audit unit 的只读导出（balanced/deep；实际目录取 `runtime.analysis.snapshot_dir`） |
 | `.zscope_snapshots/user_config.xlsx` | `--infer-user-config` 生成的人工可审阅用户配置工作簿 |
 | `.zscope_snapshots/user_config.state.db` | 配置告警、finding suppression 与 baseline 的旁路状态库（若 `project.user_config_file` 指向其他 workbook，则与该 workbook 同名） |
 | `.zscope_knowledge/code_knowledge.db` | 代码索引、SVF/Saber 信号和候选证据 IR |
 | `.zscope_bc/bitcode_scope_<group>.json` | SVF 入口裁剪计划，记录选中的源码、bitcode、可达函数、link variants、重复符号和回退原因；WSL/NTFS 场景可能重定向到 Linux 原生临时目录 |
 | `.zscope_bc/entry_cluster_layout_<group>.json` / `bitcode_manifest.json` | SVF 入口聚类布局与 bitcode/link 缓存 manifest，用于复用未变化的聚类和构建产物 |
 
-单函数最终报告的 `metadata` 会记录 `rule_catalog`、按 engine/rule 聚合的已产生候选数、`candidate_signal_summary`、`candidate_ledger_summary`、`semantic_dedup_summary`、`effective_budget`、`budget_scores`、`budget_reasons`、`diff_focus`、`report_view_summary`、`audit_observation_count`、`audit_observations`、累计 token、Validator fast-path 和工具调用统计。批量 diff impact 报告还会记录 `metadata.diff_relevance_summary` 和 `metadata.diff_impact_coverage`。`report_views.default` 只包含默认可报告问题，`report_views.with_needs_review` 会额外包含需要人工复核的观察项。确定性 `issues[]` 还会带 canonical `rule_id`、engine、revision、Skill 和 catalog 引用；SARIF `ruleId` 直接使用 canonical ID，历史 `CWE:rule` 组合值保留在 `properties.legacyRuleId`。
+单函数最终报告的 `metadata` 会记录 effective scan depth、实际 consumed token、按 agent/stage 的 usage、finish reason、候选漏斗、发现/决策归因、Validator verdict transition、Security Semantic Map coverage、主动发现单元，以及现有 rule/candidate/diff/report-view 统计。`report_views.default` 只包含默认可报告问题，`report_views.with_needs_review` 会额外包含需要人工复核的观察项。没有确定性反证时，LLM 的 rejected 也只能成为 needs-review，不能被静默隐藏。
 
-退出码：默认漏洞报告中的 `issues` 非空返回 `1`，无缺陷返回 `0`。`needs_review` / `uncertain` 观察项不会单独拉高退出码，适合 CI/CD 只阻断已验证或高分问题。
+退出码：完整扫描中，默认漏洞报告的 `issues` 非空返回 `1`，无缺陷返回 `0`。阶段因超时、取消、工具失败等原因未完成时，结果仍会保存并标记 `completeness=partial`，CLI 返回 `2`；fast 中未请求的语义/主动发现阶段不会触发 partial。token 成本超出 Benchmark 预期不会截断产品扫描。
 
 ### Step 4：启动 Web 仪表盘（可选）
 
@@ -521,6 +558,8 @@ zscope --build-index -c zscope.yaml
 zscope --dashboard -c zscope.yaml
 # 可选：zscope --dashboard -c zscope.yaml --dashboard-host 127.0.0.1 --dashboard-port 8000
 ```
+
+Dashboard 的 `POST /api/scan` 可按请求传入 `scan_depth`，并以 `GET /api/scan/status?scan_id=...` 查询 effective depth、实际 token usage 与最终 completeness；服务拒绝任意命令、环境或输出路径字段。MCP 对应提供 `zscope.scan.run` / `zscope.scan.status`，以及只读的 `zscope://reports/latest` 与 `zscope://rules/effective`。
 
 仪表盘提供五个主要页面：
 
@@ -607,7 +646,7 @@ zscope-benchmark run --language java --mode smoke
 # 正式运行至少五轮；C/C++ 在 Windows 上自动转入 WSL
 zscope-benchmark run --language c_cpp --mode formal --runs 5
 
-# 外部 benchmark 协议：准备好的 suite 会输出 zscope.benchmark.v3 summary/evaluation
+# 外部 benchmark 协议：新结果输出 zscope.benchmark.v4，formal 聚合为 zscope.formal-benchmark.v3
 python scripts/external_benchmark.py run-prepared --suite-root benchmarks/external/workspace/<suite> --condition candidate_layer --run-kind smoke
 ```
 

@@ -11,6 +11,8 @@ from urllib.parse import parse_qs
 
 from ..config.config import ConfigLoader, yaml
 from ..config.user_config_workbook import SHEET_HEADERS
+from ..framework.llm_usage import scan_token_usage_snapshot
+from ..orchestration.rollout import rollout_runtime_policy
 from ..reporting.views import (
     DEFAULT_REPORT_VIEW,
     WITH_NEEDS_REVIEW_REPORT_VIEW,
@@ -143,9 +145,16 @@ def empty_report() -> Dict[str, Any]:
 class ConfigService:
     """Read and write the structured dashboard config document."""
 
-    def __init__(self, config_path: Optional[Path] = None, *, default_name: str = "zscope.yaml"):
+    def __init__(
+        self,
+        config_path: Optional[Path] = None,
+        *,
+        default_name: str = "zscope.yaml",
+        scan_depth: Optional[str] = None,
+    ):
         self.config_path = Path(config_path).resolve() if config_path else None
         self.default_name = default_name
+        self.scan_depth = scan_depth
 
     @property
     def path(self) -> Path:
@@ -173,14 +182,26 @@ class ConfigService:
         self._validate_and_replace(header + text)
 
     def structured_payload(self) -> Dict[str, Any]:
+        effective = None
         if self.path.exists():
-            ConfigLoader.load(str(self.path))
+            overrides: Dict[str, Any] = {}
+            if self.scan_depth is not None:
+                overrides["scan_depth"] = self.scan_depth
+            effective = ConfigLoader.load(str(self.path), **overrides)
         document = self.load_document()
-        return {
+        payload: Dict[str, Any] = {
             "config": document,
             "config_version": document.get("config_version"),
             "language": (document.get("project") or {}).get("language"),
         }
+        if effective is not None:
+            payload["effective_scan"] = {
+                "depth": effective.scan.depth,
+                "depth_source": effective.scan.depth_source,
+                "rollout": rollout_runtime_policy(effective),
+            }
+            payload["llm_usage"] = scan_token_usage_snapshot(effective)
+        return payload
 
     def read_text(self) -> Dict[str, str]:
         path = self.path

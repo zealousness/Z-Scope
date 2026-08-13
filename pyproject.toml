@@ -47,8 +47,10 @@ include = ["zscope*"]
 
 [tool.setuptools.package-data]
 zscope = [
+    "benchmarking/*.json",
     "config/*.yaml",
     "rules/*.yaml",
+    "rules/qualification_evidence/*.json",
     "agents/*/AGENT.md",
     "skills/*/SKILL.md",
     "skills/*/references/*.md",

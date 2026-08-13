@@ -38,10 +38,11 @@ def test_build_report_views_includes_all_actionable_review_observations() -> Non
     assert views["default"]["issue_count"] == 1
     assert views["with_needs_review"]["issue_count"] == 3
     assert views["with_needs_review"]["included_needs_review_count"] == 2
-    assert {
-        issue["id"]
-        for issue in views["with_needs_review"]["issues"]
-    } == {"ISSUE_1", "REVIEW_1", "UNCERTAIN_1"}
+    assert {issue["id"] for issue in views["with_needs_review"]["issues"]} == {
+        "ISSUE_1",
+        "REVIEW_1",
+        "UNCERTAIN_1",
+    }
 
 
 def test_build_report_views_attaches_duplicate_needs_review_observations() -> None:
@@ -294,7 +295,10 @@ def test_needs_review_numeric_category_variant_attaches_by_root() -> None:
 
     assert with_review["issue_count"] == 1
     assert with_review["attached_needs_review_count"] == 1
-    assert with_review["issues"][0]["related_needs_review_observations"][0]["id"] == "ISSUE_INTEGER_OVERFLOW"
+    assert (
+        with_review["issues"][0]["related_needs_review_observations"][0]["id"]
+        == "ISSUE_INTEGER_OVERFLOW"
+    )
 
 
 def test_parallel_combined_report_exposes_needs_review_view() -> None:
@@ -331,6 +335,9 @@ def test_parallel_combined_report_exposes_needs_review_view() -> None:
     assert report["summary"]["total_issues"] == 1
     assert report["summary"]["total_issues_with_needs_review"] == 2
     assert report["metadata"]["audit_observation_count"] == 1
+    assert report["metadata"]["candidate_funnel"]["schema_version"] == (
+        "zscope.candidate-funnel.v1"
+    )
     assert len(findings_for_view(report, "default")) == 1
     assert len(findings_for_view(report, "with_needs_review")) == 2
 
@@ -546,7 +553,26 @@ def test_operational_obligations_do_not_become_security_review_findings() -> Non
 
     assert with_review["issue_count"] == 0
     assert with_review["included_needs_review_count"] == 0
-    assert (
-        with_review["needs_review_governance"]["operational_obligation_count"]
-        == 1
+    assert with_review["needs_review_governance"]["operational_obligation_count"] == 1
+
+
+def test_validator_v3_outcome_summary_reports_fact_success_and_transitions() -> None:
+    summary = ParallelAnalyzer._validator_v3_outcome_summary(
+        [
+            {
+                "validator_fact_resolution": {"status": "completed_partial"},
+                "validator_pass_history": [
+                    {"pass": "initial", "verdict": "uncertain"},
+                    {"pass": "evidence_recheck", "verdict": "verified"},
+                ],
+            },
+            {"validator_fact_resolution": {"status": "unsupported"}},
+        ]
     )
+
+    assert summary["validator_fact_request_count"] == 2
+    assert summary["validator_fact_resolution_success_count"] == 1
+    assert summary["validator_fact_resolution_success_rate"] == 0.5
+    assert summary["validator_verdict_transitions"] == {
+        "initial:uncertain->evidence_recheck:verified": 1
+    }

@@ -11,19 +11,31 @@ import platform
 import random
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, cast
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, cast
 
 from zscope._version import __version__
 from zscope.common.issue_identity import issues_may_share_root_cause, stable_issue_fingerprint
+from zscope.benchmarking.policy import DEFAULT_BENCHMARK_POLICY
+from zscope.benchmarking.attestation import validate_balanced_attestation
+from zscope.benchmarking.isolation import validate_oci_execution_evidence
+from zscope.reporting.attribution import (
+    FINDING_ATTRIBUTION_SCHEMA_VERSION,
+    FindingAttribution,
+    finding_attribution_mapping_errors,
+)
 
 
-SCHEMA_VERSION = "zscope.benchmark.v3"
+SCHEMA_VERSION = "zscope.benchmark.v4"
 INTEGRITY_SCHEMA_VERSION = "zscope.benchmark.integrity.v1"
+ATTRIBUTION_SCHEMA_VERSION = FINDING_ATTRIBUTION_SCHEMA_VERSION
+USAGE_LEDGER_SCHEMA_VERSION = "zscope.llm-usage-ledger.v1"
+CANDIDATE_FUNNEL_SCHEMA_VERSION = "zscope.candidate-funnel.v1"
 SOURCE_FILE_SUFFIXES = {
     ".c",
     ".cc",
@@ -36,23 +48,8 @@ SOURCE_FILE_SUFFIXES = {
     ".i",
 }
 
-MIN_RELEASE_TRIALS = 5
+MIN_RELEASE_TRIALS = DEFAULT_BENCHMARK_POLICY.minimum_formal_trials
 DEFAULT_BOOTSTRAP_SAMPLES = 2000
-RELEASE_THRESHOLDS = {
-    "actionable_precision": 0.70,
-    "distinct_root_recall": 0.80,
-    "high_critical_recall": 0.90,
-    "safe_entry_alert_rate": 0.10,
-    "per_cwe_recall": 0.65,
-    "per_cwe_min_samples": 20,
-    "actionable_f1_stdev": 0.02,
-    "true_positive_jaccard": 0.90,
-    "alert_jaccard": 0.80,
-    "median_wall_time_seconds": 3600.0,
-    "median_billable_tokens": 30_000_000.0,
-    "median_report_tail_seconds": 120.0,
-    "tokens_per_true_positive_reduction": 0.30,
-}
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -198,6 +195,8 @@ def build_benchmark_artifact_manifest(
         "entries_sha256": sha256_file(entries_path),
         "source_manifest_sha256": source_manifest["sha256"],
         "source_file_count": source_manifest["file_count"],
+        "benchmark_policy_sha256": DEFAULT_BENCHMARK_POLICY.sha256,
+        "benchmark_policy_id": DEFAULT_BENCHMARK_POLICY.policy_id,
     }
 
 
@@ -206,7 +205,7 @@ def issue_identity(issue: Dict[str, Any]) -> str:
 
     stable = stable_issue_fingerprint(issue)
     if stable:
-        return stable
+        return str(stable)
 
     parts = [
         str(issue.get("dedup_key") or issue.get("id") or ""),
@@ -235,6 +234,496 @@ def issue_identity_record(issue: Dict[str, Any]) -> Dict[str, Any]:
         or issue.get("finding_kind"),
         "baseline_match_strategy": issue.get("baseline_match_strategy"),
         "suppression_source": issue.get("suppression_source"),
+        "attribution": finding_attribution(issue),
+    }
+
+
+def finding_attribution(issue: Dict[str, Any]) -> Dict[str, Any]:
+    """Return explicit or conservatively inferred discovery/decision provenance."""
+
+    explicit = issue.get("attribution") or issue.get("finding_attribution")
+    if isinstance(explicit, dict):
+        parsed = FindingAttribution.from_mapping(explicit)
+        errors = finding_attribution_mapping_errors(explicit)
+        return {
+            "schema_version": ATTRIBUTION_SCHEMA_VERSION,
+            "discovered_by": list(parsed.discovered_by) or ["unknown"],
+            "decided_by": parsed.decided_by,
+            "decision_level": parsed.decision_level,
+            "attribution_inferred": False,
+            "inferred": False,
+            "valid": not errors,
+            "errors": errors,
+        }
+
+    pack = _as_dict(issue.get("evidence_pack"))
+    source_values = {
+        str(value).strip().lower()
+        for value in (
+            issue.get("candidate_source"),
+            issue.get("candidate_kind"),
+            issue.get("finding_kind"),
+            pack.get("candidate_source"),
+        )
+        if value
+    }
+    source_values.update(
+        str(value).strip().lower() for value in (issue.get("evidence_sources") or []) if value
+    )
+    discovered = set()
+    if any("llm" in value or "active_audit" in value for value in source_values):
+        discovered.add("llm_active_discovery")
+    if any(
+        "backend_signal" in value
+        or value.startswith("svf")
+        or value.startswith("saber")
+        or value.startswith("joern")
+        for value in source_values
+    ):
+        discovered.add("backend_signal")
+    if (
+        issue.get("rule")
+        or issue.get("rule_id")
+        or "deterministic_rule" in source_values
+        or any("rule" in value or "clang_ast" in value for value in source_values)
+    ):
+        discovered.add("deterministic_rule")
+
+    disposition = str(
+        issue.get("candidate_disposition")
+        or issue.get("terminal_disposition")
+        or issue.get("validation_status")
+        or ""
+    ).lower()
+    if (
+        issue.get("decision_proof")
+        or issue.get("proof_provider")
+        or issue.get("deterministic_prevalidation_decision")
+        or issue.get("validator_avoided") is True
+    ):
+        decided = "deterministic_proof"
+        level = "V0"
+    elif issue.get("dynamic_reproduction") or issue.get("reproduction_evidence"):
+        decided = "dynamic_reproduction"
+        level = "V4"
+    elif disposition in {"validated", "verified", "confirmed"}:
+        decided = "validator_llm"
+        level = "V1"
+    else:
+        decided = "unresolved"
+        level = "none"
+    return {
+        "schema_version": ATTRIBUTION_SCHEMA_VERSION,
+        "discovered_by": sorted(discovered) or ["unknown"],
+        "decided_by": decided,
+        "decision_level": level,
+        "attribution_inferred": True,
+        "inferred": True,
+        "valid": True,
+        "errors": [],
+    }
+
+
+def attribution_summary(
+    issues: Sequence[Dict[str, Any]],
+    *,
+    matched_issue_indices: Iterable[int],
+    raw_false_positive_indices: Iterable[int],
+) -> Dict[str, Any]:
+    """Aggregate multi-source discovery independently from terminal decisions."""
+
+    matched = set(matched_issue_indices)
+    raw_fp = set(raw_false_positive_indices)
+    discovery: Dict[str, Dict[str, int]] = {}
+    exclusive_discovery: Dict[str, Dict[str, int]] = {}
+    decision: Dict[str, Dict[str, int]] = {}
+    decision_level: Dict[str, Dict[str, int]] = {}
+    intersections: Dict[str, Dict[str, int]] = {}
+    explicit = 0
+    for index, issue in enumerate(issues):
+        value = finding_attribution(issue)
+        explicit += int(value.get("attribution_inferred") is False and value.get("valid") is True)
+        outcome = (
+            "true_positive"
+            if index in matched
+            else "raw_false_positive" if index in raw_fp else "other"
+        )
+        for source in value["discovered_by"]:
+            row = discovery.setdefault(
+                source, {"issues": 0, "true_positives": 0, "raw_false_positives": 0}
+            )
+            row["issues"] += 1
+            row["true_positives"] += int(outcome == "true_positive")
+            row["raw_false_positives"] += int(outcome == "raw_false_positive")
+            key = f"{source}|{value['decided_by']}"
+            cross = intersections.setdefault(
+                key, {"issues": 0, "true_positives": 0, "raw_false_positives": 0}
+            )
+            cross["issues"] += 1
+            cross["true_positives"] += int(outcome == "true_positive")
+            cross["raw_false_positives"] += int(outcome == "raw_false_positive")
+        if len(value["discovered_by"]) == 1:
+            source = value["discovered_by"][0]
+            exclusive = exclusive_discovery.setdefault(
+                source,
+                {"issues": 0, "true_positives": 0, "raw_false_positives": 0},
+            )
+            exclusive["issues"] += 1
+            exclusive["true_positives"] += int(outcome == "true_positive")
+            exclusive["raw_false_positives"] += int(outcome == "raw_false_positive")
+        decided = decision.setdefault(
+            value["decided_by"], {"issues": 0, "true_positives": 0, "raw_false_positives": 0}
+        )
+        decided["issues"] += 1
+        decided["true_positives"] += int(outcome == "true_positive")
+        decided["raw_false_positives"] += int(outcome == "raw_false_positive")
+        level = decision_level.setdefault(
+            str(value["decision_level"]),
+            {"issues": 0, "true_positives": 0, "raw_false_positives": 0},
+        )
+        level["issues"] += 1
+        level["true_positives"] += int(outcome == "true_positive")
+        level["raw_false_positives"] += int(outcome == "raw_false_positive")
+    return {
+        "schema_version": ATTRIBUTION_SCHEMA_VERSION,
+        "issue_count": len(issues),
+        "explicit_count": explicit,
+        "inferred_count": len(issues) - explicit,
+        "explicit_coverage": round(explicit / len(issues), 4) if issues else 1.0,
+        "by_discovery": discovery,
+        "exclusive_by_discovery": exclusive_discovery,
+        "by_decision": decision,
+        "by_decision_level": decision_level,
+        "by_discovery_and_decision": intersections,
+        "counting_contract": "discovery is a set and may overlap; decision is terminal and exclusive",
+    }
+
+
+def candidate_funnel(report: Mapping[str, Any]) -> Dict[str, Any]:
+    """Summarize candidate flow while keeping occurrence/group/finding units explicit."""
+
+    manifest = _as_dict(report.get("run_manifest"))
+    summary = _as_dict(report.get("summary"))
+    validation_performance = _as_dict(summary.get("validation_performance"))
+    governance = _as_dict(report.get("needs_review_governance"))
+    raw_terminal = report.get("candidate_terminal_states")
+    terminal = (
+        [item for item in raw_terminal or [] if isinstance(item, dict)]
+        if isinstance(raw_terminal, list)
+        else []
+    )
+    issues = report_issues(dict(report), view="default")
+    views = report.get("report_views")
+    review_view = _as_dict(views.get("with_needs_review")) if isinstance(views, dict) else {}
+    review_issues = review_view.get("issues")
+    review_issues = (
+        [item for item in review_issues if isinstance(item, dict)]
+        if isinstance(review_issues, list)
+        else []
+    )
+
+    def first_numeric(*sources: tuple[Mapping[str, Any], str]) -> tuple[Optional[int], str]:
+        for owner, key in sources:
+            value = owner.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return int(value), key
+        return None, "unavailable"
+
+    raw_occurrences, raw_source = first_numeric(
+        (summary, "scan_level_raw_occurrence_count"),
+        (manifest, "raw_occurrence_count"),
+        (governance, "raw_occurrence_count"),
+    )
+    candidate_ids = {
+        str(item.get("candidate_uid") or _as_dict(item.get("issue")).get("candidate_uid") or "")
+        for item in terminal
+        if str(item.get("candidate_uid") or _as_dict(item.get("issue")).get("candidate_uid") or "")
+    }
+    group_ids = {
+        str(item.get("validation_cluster_uid") or "")
+        for item in terminal
+        if str(item.get("validation_cluster_uid") or "")
+    }
+    manifest_groups, manifest_group_source = first_numeric(
+        (manifest, "canonical_validation_group_count"),
+        (manifest, "unique_security_obligation_count"),
+        (summary, "validation_group_count"),
+    )
+    canonical_groups = len(group_ids) if group_ids else manifest_groups
+    canonical_source = "candidate_terminal_states" if group_ids else manifest_group_source
+
+    by_decision: Dict[str, int] = {}
+    by_decision_level: Dict[str, int] = {}
+    by_discovery: Dict[str, int] = {}
+    exclusive_by_discovery: Dict[str, int] = {}
+    intersections: Dict[str, int] = {}
+    reached_by_level: Dict[str, int] = {f"V{level}": 0 for level in range(5)}
+    transition_counts: Dict[str, int] = {}
+    drop_reasons: Dict[str, int] = {}
+    v3_counts = {"eligible": 0, "entered": 0, "confirmed": 0}
+    v3_by_source_terminal: Dict[str, int] = {}
+    v3_by_risk_layer: Dict[str, Dict[str, int]] = {}
+    v3_by_fact_kind: Dict[str, Dict[str, int]] = {}
+    invoked_groups: set[str] = set()
+    for index, item in enumerate(terminal):
+        issue = {
+            **_as_dict(item.get("issue")),
+            **{key: value for key, value in item.items() if key != "issue"},
+        }
+        attribution = finding_attribution(issue)
+        decision = str(attribution["decided_by"])
+        by_decision[decision] = by_decision.get(decision, 0) + 1
+        level = str(attribution["decision_level"])
+        by_decision_level[level] = by_decision_level.get(level, 0) + 1
+        history = issue.get("validator_pass_history")
+        history = history if isinstance(history, list) else []
+        history_passes = {
+            str(entry.get("pass") or "") for entry in history if isinstance(entry, Mapping)
+        }
+        disposition = str(
+            item.get("candidate_disposition")
+            or issue.get("candidate_disposition")
+            or item.get("status")
+            or ""
+        ).lower()
+        schema_version = str(item.get("candidate_schema_version") or "").lower()
+        reached: set[str] = set()
+        if not (
+            schema_version == "zscope.entry-candidate.v1"
+            or (
+                disposition in {"engine_failed", "interrupted", "deferred_budget"}
+                and not issue.get("deterministic_prevalidation_decision")
+                and not issue.get("validator_pass_history")
+                and int(item.get("validation_attempt_count") or 0) == 0
+            )
+        ):
+            reached.add("V0")
+        if (
+            int(
+                item.get("validation_attempt_count") or issue.get("validator_invocation_count") or 0
+            )
+            > 0
+            or decision == "validator_llm"
+            or level in {"V1", "V2", "V3", "V4"}
+            or "initial" in history_passes
+        ):
+            reached.add("V1")
+        # V3 may follow V1 directly when deterministic fact resolution adds no
+        # evidence delta.  A terminal V3 attribution therefore does not prove
+        # that the stateless V2 model pass was reached.
+        if level == "V2" or "evidence_recheck" in history_passes:
+            reached.add("V2")
+        if level in {"V3", "V4"} or "investigation_synthesis" in history_passes:
+            reached.add("V3")
+        if level == "V4" or str(issue.get("dynamic_reproduction_status") or ""):
+            reached.add("V4")
+        for reached_level in reached:
+            reached_by_level[reached_level] += 1
+        for current, following in zip(("V0", "V1", "V2", "V3"), ("V1", "V2", "V3", "V4")):
+            if current in reached and following in reached:
+                key = f"{current}->{following}"
+                transition_counts[key] = transition_counts.get(key, 0) + 1
+        if "V1" in reached and "V3" in reached and "V2" not in reached:
+            transition_counts["V1->V3"] = transition_counts.get("V1->V3", 0) + 1
+        terminal_level = (
+            max(reached, key=lambda value: int(value[1:])) if reached else "pre_validation"
+        )
+        terminal_reason = str(
+            issue.get("stop_reason")
+            or _as_dict(issue.get("validator_policy_outcome")).get("stop_reason")
+            or item.get("candidate_disposition")
+            or decision
+            or "unknown"
+        )
+        terminal_transition = f"{terminal_level}->terminal:{terminal_reason}"
+        transition_counts[terminal_transition] = transition_counts.get(terminal_transition, 0) + 1
+        drop_reasons[terminal_reason] = drop_reasons.get(terminal_reason, 0) + 1
+        cluster = str(item.get("validation_cluster_uid") or f"terminal:{index}")
+        if int(item.get("validation_attempt_count") or 0) > 0 or decision == "validator_llm":
+            invoked_groups.add(cluster)
+        for source in attribution["discovered_by"]:
+            by_discovery[source] = by_discovery.get(source, 0) + 1
+            key = f"{source}|{decision}"
+            intersections[key] = intersections.get(key, 0) + 1
+        if len(attribution["discovered_by"]) == 1:
+            source = attribution["discovered_by"][0]
+            exclusive_by_discovery[source] = exclusive_by_discovery.get(source, 0) + 1
+
+        v3_eligibility = _as_dict(issue.get("validator_v3_eligibility"))
+        v3_eligible = v3_eligibility.get("eligible") is True
+        v3_entered = issue.get("validator_v3_entered") is True or "V3" in reached
+        v3_confirmed = bool(
+            v3_entered
+            and (
+                issue.get("validator_v3_confirmed") is True
+                or disposition in {"confirmed", "validated"}
+            )
+        )
+        if v3_eligible:
+            v3_counts["eligible"] += 1
+        if v3_entered:
+            v3_counts["entered"] += 1
+        if v3_confirmed:
+            v3_counts["confirmed"] += 1
+        if v3_entered:
+            sources = attribution["discovered_by"] or ["unknown"]
+            for source in sources:
+                key = f"{source}|{disposition or 'unknown'}"
+                v3_by_source_terminal[key] = v3_by_source_terminal.get(key, 0) + 1
+        risk_layer = str(v3_eligibility.get("severity") or "unknown")
+        risk_counts = v3_by_risk_layer.setdefault(
+            risk_layer,
+            {"eligible": 0, "entered": 0, "confirmed": 0},
+        )
+        if v3_eligible:
+            risk_counts["eligible"] += 1
+        if v3_entered:
+            risk_counts["entered"] += 1
+        if v3_confirmed:
+            risk_counts["confirmed"] += 1
+        raw_fact_kinds = v3_eligibility.get("required_fact_kinds")
+        if not isinstance(raw_fact_kinds, list):
+            closure = _as_dict(issue.get("v3_evidence_closure"))
+            raw_fact_kinds = closure.get("resolved_fact_kinds")
+        fact_kinds = (
+            sorted({str(value) for value in raw_fact_kinds if str(value)})
+            if isinstance(raw_fact_kinds, list)
+            else []
+        )
+        for fact_kind in fact_kinds:
+            fact_counts = v3_by_fact_kind.setdefault(
+                fact_kind,
+                {"eligible": 0, "entered": 0, "confirmed": 0},
+            )
+            if v3_eligible:
+                fact_counts["eligible"] += 1
+            if v3_entered:
+                fact_counts["entered"] += 1
+            if v3_confirmed:
+                fact_counts["confirmed"] += 1
+
+    unique_count: Optional[int] = len(candidate_ids) if candidate_ids else None
+    if unique_count is None:
+        unique_count, unique_source = first_numeric(
+            (summary, "unique_candidate_count"),
+            (manifest, "unique_security_obligation_count"),
+        )
+    else:
+        unique_source = "candidate_terminal_states"
+
+    def stage(count: Optional[int], *, unit: str, source: str) -> Dict[str, Any]:
+        return {
+            "count": count,
+            "available": count is not None,
+            "unit": unit,
+            "source": source,
+        }
+
+    prevalidation = _as_dict(summary.get("deterministic_prevalidation"))
+    v0_decision_count, v0_decision_source = first_numeric(
+        (summary, "deterministic_prevalidation_total"),
+        (prevalidation, "total"),
+        (prevalidation, "candidate_count"),
+        (validation_performance, "deterministic_prevalidation_decision_count"),
+    )
+    v0_count = reached_by_level.get("V0") if terminal else None
+    v0_source = "candidate_terminal_states.lifecycle" if terminal else "unavailable"
+    v1_count = len(invoked_groups) if terminal else None
+    v2_count = reached_by_level.get("V2") if terminal else None
+    v3_count = reached_by_level.get("V3") if terminal else None
+    v4_count = reached_by_level.get("V4") if terminal else None
+
+    return {
+        "schema_version": CANDIDATE_FUNNEL_SCHEMA_VERSION,
+        "stages": {
+            "raw_occurrences": stage(
+                raw_occurrences,
+                unit="occurrence",
+                source=raw_source,
+            ),
+            "unique_candidates": stage(
+                unique_count,
+                unit="candidate",
+                source=unique_source,
+            ),
+            "canonical_validation_groups": stage(
+                canonical_groups,
+                unit="validation_group",
+                source=canonical_source,
+            ),
+            "v0_prevalidation": stage(
+                v0_count,
+                unit="validation_group",
+                source=v0_source,
+            ),
+            "v0_deterministic_decisions": stage(
+                v0_decision_count,
+                unit="validation_group",
+                source=v0_decision_source,
+            ),
+            "v1_initial_decision": stage(
+                v1_count,
+                unit="validation_group",
+                source="candidate_terminal_states.validator_pass_history",
+            ),
+            "v2_evidence_recheck": stage(
+                v2_count,
+                unit="validation_group",
+                source="candidate_terminal_states.validator_pass_history",
+            ),
+            "v3_targeted_investigation": stage(
+                v3_count,
+                unit="validation_group",
+                source="candidate_terminal_states.validator_pass_history",
+            ),
+            "v4_dynamic_reproduction": stage(
+                v4_count,
+                unit="validation_group",
+                source="reserved_not_implemented",
+            ),
+            "validator_invoked_groups": stage(
+                len(invoked_groups) if terminal else None,
+                unit="validation_group",
+                source="candidate_terminal_states.validation_attempt_count",
+            ),
+            "reported_findings": stage(
+                len(issues),
+                unit="finding",
+                source="default_report_view",
+            ),
+            "reported_with_review": stage(
+                len(review_issues) if review_view else None,
+                unit="finding",
+                source="with_needs_review_report_view",
+            ),
+        },
+        "canonical_group_attribution": {
+            "by_discovery": dict(sorted(by_discovery.items())),
+            "exclusive_by_discovery": dict(sorted(exclusive_by_discovery.items())),
+            "by_decision": dict(sorted(by_decision.items())),
+            "by_decision_level": dict(sorted(by_decision_level.items())),
+            "reached_by_level": dict(sorted(reached_by_level.items())),
+            "transition_counts": dict(sorted(transition_counts.items())),
+            "drop_reason": dict(sorted(drop_reasons.items())),
+            "by_discovery_and_decision": dict(sorted(intersections.items())),
+            "counting_contract": (
+                "discovery counts overlap; decision counts are terminal and exclusive"
+            ),
+        },
+        "v3_investigation": {
+            **v3_counts,
+            "by_source_terminal": dict(sorted(v3_by_source_terminal.items())),
+            "by_risk_layer": {key: dict(value) for key, value in sorted(v3_by_risk_layer.items())},
+            "by_fact_kind": {key: dict(value) for key, value in sorted(v3_by_fact_kind.items())},
+            "unit": "validation_group",
+        },
+        "contract": {
+            "linear_conversion_rates_valid": False,
+            "reason": (
+                "stages intentionally use occurrence, candidate, validation-group, and "
+                "finding units; compare like units only"
+            ),
+        },
     }
 
 
@@ -422,6 +911,7 @@ def score_report(
                 "truth_id": truth_id,
                 "issue_index": issue_index,
                 "issue_identity": issue_identity(issue),
+                "attribution": finding_attribution(issue),
                 "match": pair.get("match") or {},
                 "score": pair.get("score") or 0,
             }
@@ -525,7 +1015,7 @@ def score_report(
             "true_positives": matched_count,
             "recall": round(matched_count / len(group), 4),
         }
-    return {
+    result = {
         "schema_version": SCHEMA_VERSION,
         "benchmark": truth.get("benchmark", "unknown"),
         "suite": truth.get("suite", "unknown"),
@@ -536,11 +1026,6 @@ def score_report(
         "alerted_safe_entry_count": len(alerted_safe_entries),
         "alerted_safe_entries": alerted_safe_entries,
         "safe_entry_alert_rate": (
-            round(standard_false_positive_rate, 4)
-            if standard_false_positive_rate is not None
-            else None
-        ),
-        "standard_false_positive_rate": (
             round(standard_false_positive_rate, 4)
             if standard_false_positive_rate is not None
             else None
@@ -561,9 +1046,6 @@ def score_report(
         "effective_f1": round(f1, 4),
         "precision": round(precision, 4),
         "false_discovery_rate": round(false_discovery_rate, 4),
-        # Deprecated compatibility alias. This has always been a false-discovery
-        # rate because benchmark reports do not enumerate true negatives.
-        "false_positive_rate": round(false_discovery_rate, 4),
         "recall": round(recall, 4),
         "distinct_root_recall": round(recall, 4),
         "high_critical_recall": (
@@ -590,6 +1072,11 @@ def score_report(
         "false_positive_issue_records_raw": raw_fp_issue_records,
         "duplicate_of_matched_issue_records": duplicate_records,
         "false_positive_audit": fp_audit,
+        "attribution": attribution_summary(
+            issues,
+            matched_issue_indices=matched_issues,
+            raw_false_positive_indices=raw_fp_indices,
+        ),
         "match_diagnostics": _match_diagnostics(
             potential_pairs,
             matched_truth_indices,
@@ -614,12 +1101,17 @@ def score_report(
             "primary_precision_metric": "actionable_precision",
             "primary_f1_metric": "actionable_f1",
             "primary_recall_metric": "distinct_root_recall",
-            "standard_false_positive_rate_metric": (
-                "safe_entry_alert_rate" if safe_entries else "unavailable"
-            ),
+            "safe_unit_rate_metric": ("safe_entry_alert_rate" if safe_entries else "unavailable"),
             "legacy_precision_metric": "precision (root-cause/effective; duplicates excluded)",
         },
     }
+    if standard_false_positive_rate is not None:
+        # Classical false-positive-rate names are emitted only when the suite
+        # provides an explicit safe-unit denominator.  Range has no such units,
+        # so its unmatched-alert ratio remains a false-discovery rate.
+        result["standard_false_positive_rate"] = round(standard_false_positive_rate, 4)
+        result["scoring_contract"]["standard_false_positive_rate_metric"] = "safe_entry_alert_rate"
+    return result
 
 
 def _select_max_weight_pairs(
@@ -1012,12 +1504,279 @@ def collect_environment_metadata(
     }
 
 
+def aggregate_usage_ledger(
+    report: Dict[str, Any],
+    *,
+    usage_spans: Optional[Sequence[Mapping[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Aggregate one response-boundary usage span per unique provider call."""
+
+    metadata = _as_dict(report.get("metadata"))
+    summary = _as_dict(report.get("summary"))
+    raw_spans: Any = list(usage_spans) if usage_spans is not None else report.get("llm_usage_spans")
+    if not isinstance(raw_spans, list):
+        raw_spans = metadata.get("llm_usage_spans")
+    if not isinstance(raw_spans, list):
+        raw_spans = summary.get("llm_usage_spans")
+    if not isinstance(raw_spans, list):
+        raw_spans = []
+    if not raw_spans:
+        existing = _usage_attribution_snapshot(report)
+        if existing:
+            return _aggregate_usage_snapshot(existing)
+
+    errors: List[str] = []
+    seen: Set[str] = set()
+    totals = {
+        "prompt_tokens": 0,
+        "cached_prompt_tokens": 0,
+        "completion_tokens": 0,
+        "reasoning_tokens": 0,
+        "total_tokens": 0,
+        "tool_call_count": 0,
+        "new_fact_count": 0,
+    }
+    by_agent: Dict[str, Dict[str, int]] = {}
+    by_stage: Dict[str, Dict[str, int]] = {}
+    provider_reported = 0
+    finish_reasons: Dict[str, int] = {}
+
+    def normalized_values(span: Mapping[str, Any], *, index: int) -> Dict[str, int]:
+        result: Dict[str, int] = {}
+        for key in totals:
+            value = span.get(key, 0)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                errors.append(f"span[{index}].{key} must be a non-negative integer")
+                value = 0
+            result[key] = value
+        return result
+
+    def add(target: Dict[str, int], values: Mapping[str, int]) -> None:
+        for key, value in values.items():
+            target[key] = target.get(key, 0) + value
+
+    for index, raw in enumerate(raw_spans):
+        if not isinstance(raw, dict):
+            errors.append(f"span[{index}] is not an object")
+            continue
+        call_id = str(raw.get("call_id") or "")
+        if not call_id:
+            errors.append(f"span[{index}] has no call_id")
+            continue
+        if call_id in seen:
+            errors.append(f"duplicate call_id: {call_id}")
+            continue
+        seen.add(call_id)
+        values = normalized_values(raw, index=index)
+        for required_key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            if required_key not in raw:
+                errors.append(f"span[{index}] has no {required_key}")
+        add(totals, values)
+        agent = str(raw.get("agent") or "")
+        stage = str(raw.get("stage") or "")
+        if not agent:
+            errors.append(f"span[{index}] has no agent")
+            agent = "unknown"
+        if not stage:
+            errors.append(f"span[{index}] has no stage")
+            stage = "unknown"
+        add(by_agent.setdefault(agent, {}), values)
+        add(by_stage.setdefault(stage, {}), values)
+        provider_reported += int(
+            raw.get("provider_reported") is True or raw.get("estimated") is False
+        )
+        if raw.get("provider_reported") is not True and raw.get("estimated") is not False:
+            errors.append(f"span[{index}] is not provider-reported")
+        finish = str(raw.get("finish_reason") or "")
+        if not finish:
+            errors.append(f"span[{index}] has no finish_reason")
+            finish = "unknown"
+        finish_reasons[finish] = finish_reasons.get(finish, 0) + 1
+        expected_total = values["prompt_tokens"] + values["completion_tokens"]
+        if values["total_tokens"] != expected_total:
+            errors.append(f"span[{index}] total_tokens does not equal prompt+completion")
+        if values["cached_prompt_tokens"] > values["prompt_tokens"]:
+            errors.append(f"span[{index}] cached_prompt_tokens exceeds prompt_tokens")
+
+    conservation = all(
+        totals[key]
+        == sum(row.get(key, 0) for row in by_agent.values())
+        == sum(row.get(key, 0) for row in by_stage.values())
+        for key in totals
+    )
+    if not conservation:
+        errors.append("usage aggregation does not conserve totals")
+    call_count = len(seen)
+    return {
+        "schema_version": USAGE_LEDGER_SCHEMA_VERSION,
+        "source": "response_usage_spans",
+        "present": bool(raw_spans),
+        "complete": bool(raw_spans) and not errors and provider_reported == call_count,
+        "call_count": call_count,
+        "provider_reported_call_count": provider_reported,
+        "provider_usage_coverage": round(provider_reported / call_count if call_count else 0.0, 4),
+        "totals": totals,
+        "by_agent": by_agent,
+        "by_stage": by_stage,
+        "finish_reasons": finish_reasons,
+        "conservation_passed": conservation,
+        "telemetry_complete": bool(raw_spans) and not errors,
+        "errors": list(dict.fromkeys(errors)),
+    }
+
+
+def _usage_attribution_snapshot(report: Mapping[str, Any]) -> Dict[str, Any]:
+    metadata = _as_dict(report.get("metadata"))
+    summary = _as_dict(report.get("summary"))
+    manifest = _as_dict(report.get("run_manifest"))
+    metadata_usage = _as_dict(metadata.get("llm_usage")) or _as_dict(metadata.get("llm_budget"))
+    summary_usage = _as_dict(summary.get("llm_usage")) or _as_dict(summary.get("llm_budget"))
+    metadata_scan_usage = _as_dict(metadata_usage.get("scan_token_usage"))
+    summary_scan_usage = _as_dict(summary_usage.get("scan_token_usage"))
+    candidates = (
+        (report.get("llm_usage_attribution"), report),
+        (manifest.get("llm_usage_attribution"), manifest),
+        (metadata_scan_usage.get("usage_attribution"), metadata_scan_usage),
+        (summary_scan_usage.get("usage_attribution"), summary_scan_usage),
+        (metadata_usage.get("usage_attribution"), metadata_usage),
+        (summary_usage.get("usage_attribution"), summary_usage),
+    )
+    for value, owner in candidates:
+        if isinstance(value, dict) and isinstance(value.get("totals"), dict):
+            result = dict(value)
+            if "telemetry_complete" not in result:
+                result["telemetry_complete"] = (
+                    owner.get("telemetry_complete") is True
+                    or metadata_usage.get("telemetry_complete") is True
+                    or summary_usage.get("telemetry_complete") is True
+                )
+            return result
+    return {}
+
+
+def _aggregate_usage_snapshot(snapshot: Mapping[str, Any]) -> Dict[str, Any]:
+    """Normalize the scan budget manager's already de-duplicated aggregation."""
+
+    errors: List[str] = []
+    numeric_fields = (
+        "request_count",
+        "successful_calls",
+        "denied_requests",
+        "failed_or_unknown_calls",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "provider_reported_calls",
+        "estimated_or_conservative_calls",
+        "budget_violation_count",
+        "cached_prompt_tokens",
+        "reasoning_tokens",
+        "retry_count",
+        "repair_count",
+        "tool_call_count",
+        "new_fact_count",
+        "duration_ms",
+    )
+
+    def normalize_row(raw: Any, *, path: str) -> Dict[str, int]:
+        value = raw if isinstance(raw, dict) else {}
+        if not isinstance(raw, dict):
+            errors.append(f"{path} is not an object")
+        result: Dict[str, int] = {}
+        for field in numeric_fields:
+            item = value.get(field, 0)
+            if isinstance(item, bool) or not isinstance(item, int) or item < 0:
+                errors.append(f"{path}.{field} must be a non-negative integer")
+                item = 0
+            result[field] = item
+        return result
+
+    totals = normalize_row(snapshot.get("totals"), path="totals")
+
+    def normalize_dimension(name: str) -> Dict[str, Dict[str, int]]:
+        raw_dimension = snapshot.get(name)
+        if not isinstance(raw_dimension, dict) or not raw_dimension:
+            errors.append(f"{name} is missing")
+            return {}
+        return {
+            str(key or "unattributed"): normalize_row(
+                value,
+                path=f"{name}.{key or 'unattributed'}",
+            )
+            for key, value in raw_dimension.items()
+        }
+
+    by_agent = normalize_dimension("by_agent")
+    by_stage = normalize_dimension("by_stage")
+    by_finish_reason = normalize_dimension("by_finish_reason")
+    conservation_fields = (
+        "request_count",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+    )
+    conservation = bool(by_agent and by_stage) and all(
+        totals[field]
+        == sum(row[field] for row in by_agent.values())
+        == sum(row[field] for row in by_stage.values())
+        for field in conservation_fields
+    )
+    if not conservation:
+        errors.append("usage aggregation does not conserve totals")
+    if totals["total_tokens"] < totals["prompt_tokens"] + totals["completion_tokens"]:
+        errors.append("totals.total_tokens is below prompt_tokens+completion_tokens")
+    successful = totals["successful_calls"]
+    provider_reported = totals["provider_reported_calls"]
+    if provider_reported > successful:
+        errors.append("provider_reported_calls exceeds successful_calls")
+    provider_coverage = provider_reported / successful if successful else 0.0
+    telemetry_complete = snapshot.get("telemetry_complete") is True
+    if not telemetry_complete:
+        errors.append("usage telemetry persistence is incomplete")
+    complete = (
+        not errors
+        and successful > 0
+        and provider_reported == successful
+        and totals["failed_or_unknown_calls"] == 0
+        and totals["budget_violation_count"] == 0
+    )
+    canonical_totals = {
+        "prompt_tokens": totals["prompt_tokens"],
+        "cached_prompt_tokens": totals["cached_prompt_tokens"],
+        "completion_tokens": totals["completion_tokens"],
+        "reasoning_tokens": totals["reasoning_tokens"],
+        "total_tokens": totals["total_tokens"],
+        "tool_call_count": totals["tool_call_count"],
+        "new_fact_count": totals["new_fact_count"],
+        **totals,
+    }
+    return {
+        "schema_version": USAGE_LEDGER_SCHEMA_VERSION,
+        "source": "scan_token_usage_attribution",
+        "present": True,
+        "complete": complete,
+        "call_count": totals["request_count"],
+        "provider_reported_call_count": provider_reported,
+        "provider_usage_coverage": round(provider_coverage, 4),
+        "totals": canonical_totals,
+        "by_agent": by_agent,
+        "by_stage": by_stage,
+        "finish_reasons": {
+            key: row["request_count"] for key, row in sorted(by_finish_reason.items())
+        },
+        "conservation_passed": conservation,
+        "telemetry_complete": telemetry_complete,
+        "errors": list(dict.fromkeys(errors)),
+    }
+
+
 def build_cost_metrics(
     report: Dict[str, Any],
     evaluation: Dict[str, Any],
     *,
     wall_time_seconds: float = 0.0,
 ) -> Dict[str, Any]:
+    ledger = aggregate_usage_ledger(report)
     metadata = _collect_metadata(report)
     context_tokens = _sum_numeric(metadata, ("context_tokens",))
     cumulative_tokens = _sum_numeric(metadata, ("cumulative_total_tokens",))
@@ -1031,12 +1790,17 @@ def build_cost_metrics(
             "final_report_seconds",
         ),
     )
-    billable_tokens = cumulative_tokens or context_tokens
+    ledger_tokens = int(_as_dict(ledger.get("totals")).get("total_tokens") or 0)
+    billable_tokens = ledger_tokens or cumulative_tokens or context_tokens
     verified = max(1, int(evaluation.get("true_positives") or 0))
     return {
         "context_tokens": context_tokens,
         "cumulative_total_tokens": cumulative_tokens,
         "billable_tokens": billable_tokens,
+        "accounting_mode": (
+            str(ledger.get("source")) if ledger.get("present") else "legacy_aggregate"
+        ),
+        "usage_ledger": ledger,
         "tool_calls": tool_calls,
         "wall_time_seconds": round(wall_time_seconds, 4),
         "report_tail_seconds": report_tail_seconds,
@@ -1128,6 +1892,56 @@ def grade_trial(
     }
 
 
+def _build_release_evidence(report: Mapping[str, Any]) -> Dict[str, Any]:
+    """Extract scanner-owned invariants; independent attestations are never inferred."""
+
+    manifest = _as_dict(report.get("run_manifest"))
+    summary = _as_dict(report.get("summary"))
+    metadata = _as_dict(report.get("metadata"))
+    terminal = report.get("candidate_terminal_states")
+    terminal_items = (
+        [item for item in terminal or [] if isinstance(item, dict)]
+        if isinstance(terminal, list)
+        else []
+    )
+    silent_rejections = 0
+    for item in terminal_items:
+        disposition = str(
+            item.get("candidate_disposition")
+            or item.get("terminal_disposition")
+            or item.get("validation_status")
+            or ""
+        ).lower()
+        if disposition not in {"rejected", "false_positive", "dismissed"}:
+            continue
+        if not (item.get("decision_proof") or item.get("rejection_proof")):
+            silent_rejections += 1
+    completeness = str(
+        report.get("completeness")
+        or manifest.get("completeness")
+        or summary.get("completeness")
+        or ""
+    ).lower()
+    benchmark_ablation = _as_dict(metadata.get("benchmark_ablation")) or _as_dict(
+        summary.get("benchmark_ablation")
+    )
+    return {
+        "queue_drained": manifest.get("validation_queue_drained") is True,
+        "protocol_anomaly_count": int(summary.get("validator_protocol_exhausted_count") or 0),
+        "budget_limited": False,
+        "silent_rejection_without_proof_count": silent_rejections,
+        "validator_arm": str(manifest.get("validator_experiment_arm") or ""),
+        "baseline_frozen": manifest.get("validator_baseline_frozen") is True,
+        "benchmark_ablation": benchmark_ablation or None,
+        # Sealed/shadow attestations are supplied by the independent evaluator,
+        # never copied from scanner-controlled output.
+        "sealed_attested": False,
+        "shadow_attested": False,
+        "active_discovery_exclusive_projects": [],
+        "active_discovery_exclusive_cwe_families": [],
+    }
+
+
 def build_trial_summary(
     *,
     suite_root: Path,
@@ -1181,10 +1995,13 @@ def build_trial_summary(
         "run_kind": run_kind,
         "trial_index": trial_index,
         "run_dir": run_dir.as_posix(),
+        "benchmark_policy": DEFAULT_BENCHMARK_POLICY.as_dict(),
         "environment": environment,
         "evaluation_views": evaluation_views,
         "evaluation": default_eval,
+        "candidate_funnel": candidate_funnel(report),
         "cost": cost,
+        "release_evidence": _build_release_evidence(report),
         "trajectory": trajectory,
         "grader": grader,
         "artifact_manifest": artifact_manifest,
@@ -1211,6 +2028,9 @@ def aggregate_trial_summaries(
     bootstrap_samples: int = DEFAULT_BOOTSTRAP_SAMPLES,
     confidence_level: float = 0.95,
     require_improvement_claim: bool = False,
+    balanced_attestation: Optional[Mapping[str, Any]] = None,
+    balanced_attestation_workflow_run_id: str = "",
+    release_sha: str = "",
 ) -> Dict[str, Any]:
     summaries = [summary for summary in summaries if isinstance(summary, dict)]
     by_condition: Dict[str, List[Dict[str, Any]]] = {}
@@ -1353,6 +2173,7 @@ def aggregate_trial_summaries(
         }
     result = {
         "schema_version": SCHEMA_VERSION,
+        "benchmark_policy": DEFAULT_BENCHMARK_POLICY.as_dict(),
         "trial_count": len(summaries),
         "bootstrap": {
             "method": "nonparametric_resampling_with_replacement",
@@ -1370,6 +2191,9 @@ def aggregate_trial_summaries(
         bootstrap_samples=bootstrap_samples,
         confidence_level=confidence_level,
         require_improvement_claim=require_improvement_claim,
+        balanced_attestation=balanced_attestation,
+        balanced_attestation_workflow_run_id=balanced_attestation_workflow_run_id,
+        release_sha=release_sha,
     )
     return result
 
@@ -1468,6 +2292,7 @@ def _release_trial_errors(summary: Dict[str, Any]) -> List[str]:
         "config_sha256",
         "entries_sha256",
         "source_manifest_sha256",
+        "benchmark_policy_sha256",
     )
     if not isinstance(manifest, dict):
         errors.append("artifact manifest is missing")
@@ -1475,6 +2300,24 @@ def _release_trial_errors(summary: Dict[str, Any]) -> List[str]:
         missing = [key for key in required_hashes if len(str(manifest.get(key) or "")) != 64]
         if missing:
             errors.append(f"artifact hashes missing: {', '.join(missing)}")
+    if DEFAULT_BENCHMARK_POLICY.requirements.get("require_oci_isolation_for_release", False):
+        isolation = summary.get("isolation")
+        isolation_errors = validate_oci_execution_evidence(
+            isolation if isinstance(isolation, dict) else None
+        )
+        if isolation_errors:
+            errors.append("OCI isolation is not release-verified: " + "; ".join(isolation_errors))
+    replay = summary.get("validator_replay_bundle")
+    if (
+        not isinstance(replay, dict)
+        or replay.get("schema_version") != "zscope.validator-replay-bundle.v1"
+        or len(str(replay.get("bundle_sha256") or "")) != 64
+        or replay.get("answer_material_present") is not False
+    ):
+        errors.append("answer-free validator replay bundle is missing")
+    release_evidence = summary.get("release_evidence")
+    if isinstance(release_evidence, dict) and release_evidence.get("benchmark_ablation"):
+        errors.append("semantic/discovery ablation artifacts are not release eligible")
     return errors
 
 
@@ -1496,6 +2339,7 @@ def _artifact_protocol_signature(summary: Dict[str, Any]) -> tuple[str, ...]:
             "config_sha256",
             "entries_sha256",
             "source_manifest_sha256",
+            "benchmark_policy_sha256",
         )
     ) + (
         str(environment.get("backend") or ""),
@@ -1514,6 +2358,7 @@ def _artifact_dataset_signature(summary: Dict[str, Any]) -> tuple[str, ...]:
             "scorer_sha256",
             "entries_sha256",
             "source_manifest_sha256",
+            "benchmark_policy_sha256",
         )
     )
 
@@ -1625,12 +2470,24 @@ def evaluate_release_readiness(
     bootstrap_samples: int = DEFAULT_BOOTSTRAP_SAMPLES,
     confidence_level: float = 0.95,
     require_improvement_claim: bool = False,
+    balanced_attestation: Optional[Mapping[str, Any]] = None,
+    balanced_attestation_workflow_run_id: str = "",
+    release_sha: str = "",
 ) -> Dict[str, Any]:
+    del conditions, baseline_tokens_per_tp  # retained for API compatibility
     summaries = [item for item in summaries if isinstance(item, dict)]
     trial_protocol = _trial_protocol_status(summaries)
     target_items = [
         item
         for item in summaries
+        if str(item.get("condition") or "") == CONDITION_FULL_ZSCOPE
+        and _is_valid_release_trial(item)
+    ]
+    baseline_candidates = [item for item in (baseline_summaries or []) if isinstance(item, dict)]
+    baseline_protocol = _trial_protocol_status(baseline_candidates) if baseline_candidates else None
+    baseline_items = [
+        item
+        for item in baseline_candidates
         if str(item.get("condition") or "") == CONDITION_FULL_ZSCOPE
         and _is_valid_release_trial(item)
     ]
@@ -1641,98 +2498,107 @@ def evaluate_release_readiness(
             "reason": "no valid formal cold full-pipeline trials",
             "trial_protocol": trial_protocol,
             "hard_gates": {},
-            "optional_gates": {},
-            "improvement_claim": {
-                "status": "not_evaluated",
-                "passed": False,
-                "reason": "baseline and current paired trials are unavailable",
-            },
+            "non_regression_readiness": {"status": "not_evaluated", "passed": False},
         }
 
-    def eval_values(key: str, *, fallback: str = "") -> List[float]:
-        values = _summary_numeric_values(target_items, "evaluation", key)
-        return values or (
-            _summary_numeric_values(target_items, "evaluation", fallback) if fallback else []
-        )
+    def numbers(items: Sequence[Dict[str, Any]], section: str, key: str) -> List[float]:
+        return _summary_numeric_values(items, section, key)
 
-    precision_stats = _series_stats(
-        eval_values("actionable_precision"),
-        bootstrap_samples=bootstrap_samples,
-        confidence_level=confidence_level,
+    def evaluation_numbers(
+        items: Sequence[Dict[str, Any]], key: str, fallback: str = ""
+    ) -> List[float]:
+        values = numbers(items, "evaluation", key)
+        return values or (numbers(items, "evaluation", fallback) if fallback else [])
+
+    def median_or_none(values: Sequence[float]) -> Optional[float]:
+        return float(statistics.median(values)) if len(values) == len(target_items) else None
+
+    tp_values = evaluation_numbers(target_items, "true_positives")
+    token_values = numbers(target_items, "cost", "billable_tokens")
+    recalls = evaluation_numbers(target_items, "distinct_root_recall", "recall")
+    fdrs = evaluation_numbers(
+        target_items, "actionable_false_discovery_rate", "false_discovery_rate"
     )
-    recall_stats = _series_stats(
-        eval_values("distinct_root_recall", fallback="recall"),
-        bootstrap_samples=bootstrap_samples,
-        confidence_level=confidence_level,
-    )
-    high_stats = _series_stats(
-        eval_values("high_critical_recall"),
-        bootstrap_samples=bootstrap_samples,
-        confidence_level=confidence_level,
-    )
-    safe_stats = _series_stats(
-        eval_values("safe_entry_alert_rate"),
-        bootstrap_samples=bootstrap_samples,
-        confidence_level=confidence_level,
-    )
-    actionable_f1_stats = _series_stats(
-        eval_values("actionable_f1"),
-        bootstrap_samples=bootstrap_samples,
-        confidence_level=confidence_level,
-    )
-    wall_stats = _series_stats(
-        _summary_numeric_values(target_items, "cost", "wall_time_seconds", positive_only=True),
-        bootstrap_samples=bootstrap_samples,
-        confidence_level=confidence_level,
-        ci_statistic="median",
-    )
-    token_stats = _series_stats(
-        _summary_numeric_values(target_items, "cost", "billable_tokens", positive_only=True),
-        bootstrap_samples=bootstrap_samples,
-        confidence_level=confidence_level,
-        ci_statistic="median",
-    )
-    token_per_tp_stats = _series_stats(
-        _summary_numeric_values(
-            target_items,
-            "cost",
-            "tokens_per_verified_issue",
-            positive_only=True,
-        ),
-        bootstrap_samples=bootstrap_samples,
-        confidence_level=confidence_level,
-        ci_statistic="median",
-    )
-    report_tail_stats = _series_stats(
-        _summary_numeric_values(target_items, "cost", "report_tail_seconds"),
-        bootstrap_samples=bootstrap_samples,
-        confidence_level=confidence_level,
-        ci_statistic="median",
-    )
-    issue_sets = [
-        set(item.get("evaluation", {}).get("issue_identities") or []) for item in target_items
-    ]
     tp_sets = [
         set(item.get("evaluation", {}).get("true_positive_truth_ids") or [])
         for item in target_items
     ]
-    tp_jaccard = _mean_pairwise_jaccard(tp_sets)
-    alert_jaccard = _mean_pairwise_jaccard(issue_sets)
-    cwe_stats = _aggregate_cwe_series(
-        target_items,
-        bootstrap_samples=bootstrap_samples,
-        confidence_level=confidence_level,
+    evidence_rows = [_as_dict(item.get("release_evidence")) for item in target_items]
+    usage_ledgers = [
+        _as_dict(_as_dict(item.get("cost")).get("usage_ledger")) for item in target_items
+    ]
+    attribution_rows = [
+        _as_dict(_as_dict(item.get("evaluation")).get("attribution")) for item in target_items
+    ]
+
+    baseline_fdrs = evaluation_numbers(
+        baseline_items, "actionable_false_discovery_rate", "false_discovery_rate"
     )
-    eligible_cwes = {
-        cwe: row
-        for cwe, row in cwe_stats.items()
-        if int(row.get("sample_count") or 0) >= int(RELEASE_THRESHOLDS["per_cwe_min_samples"])
+
+    def paired_delta_pp(current: Sequence[float], baseline: Sequence[float]) -> Optional[float]:
+        if (
+            len(current) != len(target_items)
+            or len(baseline) != len(baseline_items)
+            or not baseline
+        ):
+            return None
+        return round(
+            (float(statistics.median(current)) - float(statistics.median(baseline))) * 100.0,
+            8,
+        )
+
+    range_actuals: Dict[str, Optional[float]] = {
+        "median_confirmed_tp": median_or_none(tp_values),
+        "median_tokens": median_or_none(token_values),
+        "per_run_tokens": max(token_values) if len(token_values) == len(target_items) else None,
+        "actionable_fdr_delta_vs_arm_a_pp": paired_delta_pp(fdrs, baseline_fdrs),
+        "true_positive_jaccard": _mean_pairwise_jaccard(tp_sets),
+        "recall_range_pp": (
+            (max(recalls) - min(recalls)) * 100.0
+            if len(recalls) == len(target_items) and recalls
+            else None
+        ),
+        "provider_usage_coverage": (
+            min(float(row.get("provider_usage_coverage") or 0.0) for row in usage_ledgers)
+            if usage_ledgers
+            else None
+        ),
+        "explicit_attribution_coverage": (
+            min(float(row.get("explicit_coverage") or 0.0) for row in attribution_rows)
+            if attribution_rows
+            else None
+        ),
+        "queue_drained_rate": (
+            sum(row.get("queue_drained") is True for row in evidence_rows) / len(evidence_rows)
+            if evidence_rows
+            else None
+        ),
+        "token_conservation_rate": (
+            sum(row.get("conservation_passed") is True for row in usage_ledgers)
+            / len(usage_ledgers)
+            if usage_ledgers
+            else None
+        ),
+        "telemetry_complete_rate": (
+            sum(row.get("telemetry_complete") is True for row in usage_ledgers) / len(usage_ledgers)
+            if usage_ledgers
+            else None
+        ),
+        "protocol_anomaly_count": (
+            sum(int(row.get("protocol_anomaly_count") or 0) for row in evidence_rows)
+            if evidence_rows
+            else None
+        ),
     }
-    failing_cwes = {
-        cwe: row
-        for cwe, row in eligible_cwes.items()
-        if float(row.get("mean") or 0.0) < RELEASE_THRESHOLDS["per_cwe_recall"]
-    }
+
+    def gate_set(
+        actuals: Mapping[str, Optional[float]],
+        policy_gates: Mapping[str, tuple[str, float]],
+    ) -> Dict[str, Any]:
+        return {
+            name: _metric_gate(actual=actuals.get(name), threshold=threshold, operator=operator)
+            for name, (operator, threshold) in policy_gates.items()
+        }
 
     hard_gates: Dict[str, Any] = {
         "trial_protocol": {
@@ -1743,211 +2609,161 @@ def evaluate_release_readiness(
             "passed": bool(trial_protocol.get("passed")),
             "details": trial_protocol,
         },
-        "actionable_precision": _metric_gate(
-            actual=precision_stats.get("mean") if precision_stats["values"] else None,
-            threshold=RELEASE_THRESHOLDS["actionable_precision"],
-            operator=">=",
-            statistics=precision_stats,
-        ),
-        "distinct_root_recall": _metric_gate(
-            actual=recall_stats.get("mean") if recall_stats["values"] else None,
-            threshold=RELEASE_THRESHOLDS["distinct_root_recall"],
-            operator=">=",
-            statistics=recall_stats,
-        ),
-        "high_critical_recall": _metric_gate(
-            actual=(
-                high_stats.get("mean") if len(high_stats["values"]) == len(target_items) else None
-            ),
-            threshold=RELEASE_THRESHOLDS["high_critical_recall"],
-            operator=">=",
-            statistics=high_stats,
-        ),
-        "safe_entry_alert_rate": _metric_gate(
-            actual=(
-                safe_stats.get("mean") if len(safe_stats["values"]) == len(target_items) else None
-            ),
-            threshold=RELEASE_THRESHOLDS["safe_entry_alert_rate"],
-            operator="<=",
-            statistics=safe_stats,
-        ),
-        "per_cwe_recall": {
-            "actual": (
-                min(float(row.get("mean") or 0.0) for row in eligible_cwes.values())
-                if eligible_cwes
-                else None
-            ),
-            "threshold": RELEASE_THRESHOLDS["per_cwe_recall"],
-            "operator": ">=",
-            "available": True,
-            "passed": not failing_cwes,
-            "details": {
-                "minimum_samples": RELEASE_THRESHOLDS["per_cwe_min_samples"],
-                "eligible": eligible_cwes,
-                "failing": failing_cwes,
-            },
-        },
-        "actionable_f1_stdev": _metric_gate(
-            actual=(
-                float(actionable_f1_stats.get("stdev") or 0.0)
-                if actionable_f1_stats["values"]
-                else None
-            ),
-            threshold=RELEASE_THRESHOLDS["actionable_f1_stdev"],
-            operator="<=",
-            statistics=actionable_f1_stats,
-        ),
-        "true_positive_jaccard": _metric_gate(
-            actual=tp_jaccard,
-            threshold=RELEASE_THRESHOLDS["true_positive_jaccard"],
-            operator=">=",
-        ),
-        "alert_jaccard": _metric_gate(
-            actual=alert_jaccard,
-            threshold=RELEASE_THRESHOLDS["alert_jaccard"],
-            operator=">=",
-        ),
-        "median_wall_time_seconds": _metric_gate(
-            actual=(
-                wall_stats.get("median") if len(wall_stats["values"]) == len(target_items) else None
-            ),
-            threshold=RELEASE_THRESHOLDS["median_wall_time_seconds"],
-            operator="<=",
-            statistics=wall_stats,
-        ),
-        "median_billable_tokens": _metric_gate(
-            actual=(
-                token_stats.get("median")
-                if len(token_stats["values"]) == len(target_items)
-                else None
-            ),
-            threshold=RELEASE_THRESHOLDS["median_billable_tokens"],
-            operator="<=",
-            statistics=token_stats,
-        ),
-        "median_report_tail_seconds": _metric_gate(
-            actual=(
-                report_tail_stats.get("median")
-                if len(report_tail_stats["values"]) == len(target_items)
-                else None
-            ),
-            threshold=RELEASE_THRESHOLDS["median_report_tail_seconds"],
-            operator="<=",
-            statistics=report_tail_stats,
-        ),
+        **gate_set(range_actuals, DEFAULT_BENCHMARK_POLICY.range_gates),
     }
 
-    provided_baseline_summaries = [
-        item for item in (baseline_summaries or []) if isinstance(item, dict)
-    ]
-    baseline_protocol = (
-        _trial_protocol_status(provided_baseline_summaries) if provided_baseline_summaries else None
-    )
-    baseline_items = [
-        item
-        for item in provided_baseline_summaries
-        if str(item.get("condition") or "") == CONDITION_FULL_ZSCOPE
-        and _is_valid_release_trial(item)
-    ]
-    baseline_token_value = (
-        float(baseline_tokens_per_tp)
-        if isinstance(baseline_tokens_per_tp, (int, float))
-        and not isinstance(baseline_tokens_per_tp, bool)
-        and float(baseline_tokens_per_tp) > 0
-        else None
-    )
-    if (
-        baseline_token_value is None
-        and baseline_items
-        and baseline_protocol is not None
-        and baseline_protocol.get("passed")
-    ):
-        baseline_token_stats = _series_stats(
-            _summary_numeric_values(
-                baseline_items,
-                "cost",
-                "tokens_per_verified_issue",
-                positive_only=True,
-            ),
-            bootstrap_samples=bootstrap_samples,
-            confidence_level=confidence_level,
-            ci_statistic="median",
+    if isinstance(balanced_attestation, Mapping) and release_sha:
+        attestation_result = validate_balanced_attestation(
+            balanced_attestation,
+            release_sha=release_sha,
+            workflow_run_id=balanced_attestation_workflow_run_id,
         )
-        if baseline_token_stats["values"]:
-            baseline_token_value = float(baseline_token_stats["median"])
-    current_token_value = (
-        float(token_per_tp_stats["median"]) if token_per_tp_stats["values"] else None
-    )
-    if baseline_token_value is not None:
-        reduction = (
-            (baseline_token_value - current_token_value) / baseline_token_value
-            if current_token_value is not None
+        raw_balanced_metrics = balanced_attestation.get("metrics")
+    else:
+        attestation_result = {
+            "passed": False,
+            "errors": ["balanced attestation and release_sha are required"],
+        }
+        raw_balanced_metrics = None
+    raw_balanced_metrics = raw_balanced_metrics if isinstance(raw_balanced_metrics, Mapping) else {}
+    balanced_actuals: Dict[str, Optional[float]] = {
+        name: (
+            float(raw_balanced_metrics[name])
+            if isinstance(raw_balanced_metrics.get(name), (int, float))
+            and not isinstance(raw_balanced_metrics.get(name), bool)
             else None
         )
-        token_baseline_gate = _metric_gate(
-            actual=reduction,
-            threshold=RELEASE_THRESHOLDS["tokens_per_true_positive_reduction"],
-            operator=">=",
-            statistics=token_per_tp_stats,
-            details={
-                "baseline_tokens_per_true_positive": baseline_token_value,
-                "current_tokens_per_true_positive": current_token_value,
-            },
+        for name in DEFAULT_BENCHMARK_POLICY.sealed_delta_gates
+    }
+    hard_gates.update(gate_set(balanced_actuals, DEFAULT_BENCHMARK_POLICY.sealed_delta_gates))
+    baseline_evidence = [_as_dict(item.get("release_evidence")) for item in baseline_items]
+    arm_a_attested = bool(
+        baseline_protocol
+        and baseline_protocol.get("passed")
+        and baseline_evidence
+        and all(
+            row.get("validator_arm") == "A" and row.get("baseline_frozen") is True
+            for row in baseline_evidence
         )
-        hard_gates["tokens_per_true_positive_reduction"] = token_baseline_gate
-    elif provided_baseline_summaries and baseline_protocol is not None:
-        token_baseline_gate = {
-            "status": "invalid_baseline",
-            "passed": False,
-            "available": False,
-            "reason": "frozen baseline summaries failed the five-trial protocol",
-            "details": baseline_protocol,
-        }
-        hard_gates["tokens_per_true_positive_reduction"] = token_baseline_gate
-    else:
-        token_baseline_gate = {
-            "status": "not_evaluated",
-            "passed": True,
-            "reason": "no frozen baseline was supplied",
-        }
-
-    if (
-        provided_baseline_summaries
-        and baseline_protocol is not None
-        and not baseline_protocol.get("passed")
+    )
+    hard_gates["arm_a_baseline_attested"] = {
+        "available": baseline_protocol is not None,
+        "passed": arm_a_attested,
+        "details": baseline_protocol,
+    }
+    for key, requirement in (
+        ("public_external_attested", "require_public_external_attestation_for_release"),
+        ("sealed_attested", "require_sealed_attestation_for_release"),
+        ("shadow_attested", "require_shadow_attestation_for_release"),
     ):
-        improvement_claim = {
-            "status": "invalid_baseline",
-            "passed": False,
-            "reason": "baseline summaries failed the five-trial cold protocol",
-            "trial_protocol": baseline_protocol,
-        }
-    else:
-        improvement_claim = evaluate_improvement_claim(
-            target_items,
-            baseline_items,
-            bootstrap_samples=bootstrap_samples,
-            confidence_level=confidence_level,
-        )
+        if DEFAULT_BENCHMARK_POLICY.requirements.get(requirement, False):
+            hard_gates[key] = {
+                "available": balanced_attestation is not None,
+                "passed": attestation_result.get("passed") is True,
+                "details": attestation_result,
+            }
+
+    improvement_claim = evaluate_improvement_claim(
+        target_items,
+        baseline_items,
+        bootstrap_samples=bootstrap_samples,
+        confidence_level=confidence_level,
+    )
     if require_improvement_claim:
         hard_gates["improvement_claim"] = {
             **improvement_claim,
             "available": improvement_claim.get("status") != "not_evaluated",
         }
+    non_regression = evaluate_non_regression_readiness(target_items, baseline_items)
     passed = all(bool(gate.get("passed")) for gate in hard_gates.values())
     return {
         "status": "passed" if passed else "failed",
         "passed": passed,
         "target_condition": CONDITION_FULL_ZSCOPE,
-        "thresholds": dict(RELEASE_THRESHOLDS),
+        "benchmark_policy": DEFAULT_BENCHMARK_POLICY.as_dict(),
         "trial_protocol": trial_protocol,
         "hard_gates": hard_gates,
-        "optional_gates": {
-            "tokens_per_true_positive_reduction": token_baseline_gate,
-        },
+        "range_actuals": range_actuals,
+        "balanced_default_actuals": balanced_actuals,
+        "balanced_default_attestation": attestation_result,
+        "non_regression_readiness": non_regression,
         "improvement_claim": improvement_claim,
         "require_improvement_claim": require_improvement_claim,
     }
+
+
+def evaluate_non_regression_readiness(
+    current_summaries: Sequence[Dict[str, Any]],
+    baseline_summaries: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Evaluate post-rollout releases against the frozen previous release."""
+
+    def median_metric(items: Sequence[Dict[str, Any]], section: str, key: str) -> Optional[float]:
+        values = _summary_numeric_values(items, section, key, positive_only=False)
+        return float(statistics.median(values)) if len(values) == len(items) and values else None
+
+    def delta_pp(key: str, fallback: str = "") -> Optional[float]:
+        current = median_metric(current_summaries, "evaluation", key)
+        baseline = median_metric(baseline_summaries, "evaluation", key)
+        if (current is None or baseline is None) and fallback:
+            current = median_metric(current_summaries, "evaluation", fallback)
+            baseline = median_metric(baseline_summaries, "evaluation", fallback)
+        return (
+            round((current - baseline) * 100.0, 8)
+            if current is not None and baseline is not None
+            else None
+        )
+
+    current_efficiency = median_metric(current_summaries, "cost", "tokens_per_verified_issue")
+    baseline_efficiency = median_metric(baseline_summaries, "cost", "tokens_per_verified_issue")
+    growth = (
+        current_efficiency / baseline_efficiency - 1.0
+        if current_efficiency is not None
+        and baseline_efficiency is not None
+        and baseline_efficiency > 0
+        else None
+    )
+    actuals = {
+        "sealed_recall_delta_pp": delta_pp("distinct_root_recall", "recall"),
+        "sealed_precision_delta_pp": delta_pp("actionable_precision", "precision"),
+        "sealed_high_critical_recall_delta_pp": delta_pp("high_critical_recall"),
+        "tokens_per_kloc_or_tp_growth": growth,
+    }
+    gates = {
+        name: _metric_gate(actual=actuals[name], threshold=threshold, operator=operator)
+        for name, (operator, threshold) in DEFAULT_BENCHMARK_POLICY.non_regression_gates.items()
+    }
+    passed = bool(current_summaries and baseline_summaries) and all(
+        bool(gate.get("passed")) for gate in gates.values()
+    )
+    return {
+        "status": "passed" if passed else "failed",
+        "passed": passed,
+        "actuals": actuals,
+        "gates": gates,
+    }
+
+
+def select_validator_arm(arms: Mapping[str, Mapping[str, Any]]) -> Optional[str]:
+    """Select the lowest-token passing arm when recall differs by <1pp."""
+
+    eligible = {
+        name: row
+        for name, row in arms.items()
+        if row.get("passed") is True
+        and isinstance(row.get("median_recall"), (int, float))
+        and isinstance(row.get("median_tokens"), (int, float))
+    }
+    if not eligible:
+        return None
+    best_recall = max(float(row["median_recall"]) for row in eligible.values())
+    tie_pp = float(DEFAULT_BENCHMARK_POLICY.matrix_thresholds["arm_recall_tie_pp"])
+    contenders = {
+        name: row
+        for name, row in eligible.items()
+        if (best_recall - float(row["median_recall"])) * 100.0 < tie_pp
+    }
+    return min(contenders, key=lambda name: (float(contenders[name]["median_tokens"]), name))
 
 
 def evaluate_improvement_claim(

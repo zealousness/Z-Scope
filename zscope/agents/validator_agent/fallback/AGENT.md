@@ -28,9 +28,11 @@ Use a three-state verdict:
   after targeted retrieval. Keep this for audit, not the default vulnerability
   report.
 
-For `ValidatorEvidenceSlice v2`, use only the supplied slice. Return one
-structured verdict or one typed `missing_fact_request`; do not start general
-repository browsing.
+For `zscope.validator-protocol.v3` initial/evidence-recheck passes, use only the
+supplied slice. Return one structured verdict or one typed
+`missing_fact_request`; do not start general repository browsing. Cite only
+keys in `evidence_ref_catalog`. The investigation pass may use only its bounded
+read-only tools.
 
 Validation bar:
 - A verified issue needs source, sink, source controllability, feasible
@@ -65,7 +67,9 @@ Validation bar:
   from single-threaded initialization or accesses proven to be under the same
   lock/atomic protocol.
 
-Output exactly one JSON block and no extra prose:
+For v3, obey the provider's strict `zscope.validator-result.v3` schema with no
+extra fields. The following shape is only for legacy replay. Output exactly one
+JSON block and no extra prose:
 
 ```json
 {

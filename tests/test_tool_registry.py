@@ -12,6 +12,7 @@ EXPECTED_TOOL_NAMES = [
     "get_function_impl",
     "get_function_info",
     "get_function_snapshot",
+    "get_security_semantics",
     "list_known_functions",
     "get_file_snippet",
     "get_callers",
@@ -276,6 +277,6 @@ def test_analyzer_uses_registry_backend_grouping() -> None:
     base_names = [tool.name for tool in base_tools]
 
     assert advanced_names == EXPECTED_TOOL_NAMES
-    assert base_names == EXPECTED_TOOL_NAMES[:7]
+    assert base_names == EXPECTED_TOOL_NAMES[:8]
     assert advanced_tools[2].resolver is not None
     assert base_tools[2].resolver is None

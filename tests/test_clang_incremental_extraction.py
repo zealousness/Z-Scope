@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 
 from zscope.retrieval.clang_backend import ClangBackend
@@ -662,6 +663,12 @@ def test_clang_extractor_writes_macro_definitions_for_tu(tmp_path, monkeypatch) 
     monkeypatch.setattr(extractor, "open_document", lambda _path: True)
     monkeypatch.setattr(extractor, "close_document", lambda _path: None)
     monkeypatch.setattr(extractor, "get_document_symbols", lambda _path: [])
+    monkeypatch.setattr(
+        "zscope.retrieval.clang_extractor.time.sleep",
+        lambda _seconds: (_ for _ in ()).throw(
+            AssertionError("extract_tu must not use a fixed readiness sleep")
+        ),
+    )
 
     db = MacroDB()
 
@@ -815,10 +822,16 @@ def test_regex_call_extraction_classifies_member_and_local_function_pointers(
         encoding="utf-8",
     )
     extractor = ClangExtractor(project_root=tmp_path)
+    definition_calls = []
+
+    def definition_for_call(*args):
+        definition_calls.append(args)
+        return [{"targetUri": source.as_uri()}]
+
     monkeypatch.setattr(
         extractor,
         "get_definition",
-        lambda *args: [{"targetUri": source.as_uri()}],
+        definition_for_call,
     )
 
     rows = []
@@ -829,9 +842,10 @@ def test_regex_call_extraction_classifies_member_and_local_function_pointers(
     assert by_name[("cb", 6)] == ("indirect", "function_pointer_field")
     assert by_name[("local_callback", 7)] == ("indirect", "function_pointer_variable")
     assert by_name[("local_callback", 8)] == ("indirect", "function_pointer_variable")
+    assert len(definition_calls) == 1
 
 
-def test_run_batch_extraction_uses_prescanned_tus_without_rehashing(
+def test_run_batch_extraction_uses_prescanned_tus_without_eager_purge_or_rehashing(
     tmp_path, monkeypatch
 ) -> None:
     changed_file = tmp_path / "changed.c"
@@ -866,8 +880,10 @@ def test_run_batch_extraction_uses_prescanned_tus_without_rehashing(
 
     assert stats == {"total": 2, "success": 1, "failed": 0, "skipped": 1}
     assert extracted == [(changed_file.resolve(), 11)]
-    assert db.purged == [11]
-    assert db.commits == 1
+    # The real extract_tu publishes through an atomic replace transaction.  The
+    # scheduler must not destroy old facts before clangd has produced new ones.
+    assert db.purged == []
+    assert db.commits == 0
     assert db.register_calls == 0
 
 
@@ -890,7 +906,146 @@ def test_run_batch_extraction_keeps_legacy_hash_register_path(tmp_path, monkeypa
 
     assert stats == {"total": 1, "success": 0, "failed": 0, "skipped": 1}
     assert db.register_calls == 1
-    assert db.commits == 1
+    assert db.commits == 0
+
+
+def test_run_batch_extraction_uses_bounded_cross_file_concurrency(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    sources = []
+    prescanned = {}
+    for index in range(4):
+        source = tmp_path / f"unit_{index}.c"
+        source.write_text(f"int unit_{index}(void) {{ return {index}; }}\n", encoding="utf-8")
+        resolved = source.resolve()
+        sources.append(resolved)
+        prescanned[str(resolved)] = (index + 1, True)
+
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+    concurrent = threading.Event()
+
+    def fake_extract_tu(self, file_path, db, tu_id, progress_cb=None):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+            if active >= 2:
+                concurrent.set()
+        assert concurrent.wait(1.0), "changed TUs were processed serially"
+        with lock:
+            active -= 1
+        return True
+
+    monkeypatch.setattr(ClangExtractor, "extract_tu", fake_extract_tu)
+    extractor = ClangExtractor(project_root=tmp_path, max_threads=4)
+
+    stats = extractor.run_batch_extraction(
+        sources,
+        _FakeDB(),
+        batch_size=4,
+        prescanned_tus=prescanned,
+    )
+
+    assert stats == {"total": 4, "success": 4, "failed": 0, "skipped": 0}
+    assert 2 <= max_active <= 4
+
+
+def test_run_batch_extraction_collects_concurrently_and_publishes_in_one_batch(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    sources = [tmp_path / "first.c", tmp_path / "second.c"]
+    for source in sources:
+        source.write_text("int value(void) { return 1; }\n", encoding="utf-8")
+    prescanned = {
+        str(source.resolve()): (index + 1, True)
+        for index, source in enumerate(sources)
+    }
+    events = []
+    active_calls = 0
+    max_active_calls = 0
+    call_lock = threading.Lock()
+    calls_concurrent = threading.Event()
+
+    class BatchDB(_FakeDB):
+        def replace_tu_facts_batch_transaction(self):
+            class Transaction:
+                def __enter__(inner_self):
+                    events.append("batch_begin")
+
+                def __exit__(inner_self, exc_type, exc, traceback):
+                    events.append("batch_end")
+
+            return Transaction()
+
+    extractor = ClangExtractor(project_root=tmp_path, max_threads=2)
+
+    def collect(file_path, _db, tu_id, *, defer_call_queries=False):
+        assert defer_call_queries is True
+        events.append(("collect", Path(file_path).name, tu_id))
+        return {
+            "func_rows": [],
+            "call_rows": [],
+            "type_rows": [],
+            "global_rows": [],
+            "macro_rows": [],
+            "include_rows": [],
+            "_call_work": [
+                (
+                    Path(file_path),
+                    Path(file_path).stem,
+                    Path(file_path).name,
+                    1,
+                    1,
+                    {},
+                    set(),
+                )
+            ],
+        }
+
+    def publish(_db, tu_id, **facts):
+        assert all(isinstance(rows, list) for rows in facts.values())
+        events.append(("publish", tu_id))
+
+    monkeypatch.setattr(extractor, "_collect_tu_facts", collect)
+    monkeypatch.setattr(extractor, "_publish_tu_facts", publish)
+
+    def collect_calls(work):
+        nonlocal active_calls, max_active_calls
+        with call_lock:
+            active_calls += 1
+            max_active_calls = max(max_active_calls, active_calls)
+            if active_calls >= 2:
+                calls_concurrent.set()
+        assert calls_concurrent.wait(1.0), "call hierarchy work was processed serially"
+        with call_lock:
+            active_calls -= 1
+        return []
+
+    monkeypatch.setattr(extractor, "_extract_deferred_call_edges", collect_calls)
+
+    def index_barrier():
+        events.append("index_barrier")
+        return True
+
+    stats = extractor.run_batch_extraction(
+        sources,
+        BatchDB(),
+        batch_size=2,
+        prescanned_tus=prescanned,
+        index_barrier=index_barrier,
+    )
+
+    assert stats == {"total": 2, "success": 2, "failed": 0, "skipped": 0}
+    assert [event[0] for event in events[:2]] == ["collect", "collect"]
+    assert events[2] == "index_barrier"
+    assert events[3] == "batch_begin"
+    assert events[-1] == "batch_end"
+    assert max_active_calls == 2
+    assert extractor.get_last_base_stats()["files_extracted"] == 2
 
 
 def test_clang_backend_passes_prescanned_tus_to_batch_extraction(
@@ -978,7 +1133,9 @@ def test_clang_backend_collect_source_files_scans_each_root_once_and_filters(
         allowed_header.resolve(),
         allowed_inline.resolve(),
     }
-    assert [pattern for _, pattern in calls] == ["*", "*"]
+    # The project root covers the nested include root, so the filesystem tree is
+    # traversed once while include/exclude filters still select the same files.
+    assert [pattern for _, pattern in calls] == ["*"]
 
 
 def test_clang_backend_refreshes_unchanged_files_when_macro_metadata_missing(
@@ -1037,7 +1194,9 @@ def test_clang_backend_refreshes_unchanged_files_when_macro_metadata_missing(
 
     assert backend._run_full_extraction() is True
 
-    assert backend._db.cleared_macros == 1
+    # Each refreshed TU now purges and replaces its own macros atomically; a
+    # preflight full-table clear would destroy valid old facts on interruption.
+    assert backend._db.cleared_macros == 0
     assert backend._db.pending == [61]
     assert backend._extractor.received_prescanned_tus == {str(source.resolve()): (61, True)}
     assert backend._db.metadata["macro_extractor_version"] == "2"
@@ -1330,6 +1489,66 @@ def test_clang_backend_source_change_runs_base_then_both_derived(tmp_path, monke
         assert extractor.symbol_calls == 1
         assert extractor.type_calls == 1
         assert db.get_pending_tus() == []
+    finally:
+        db.close()
+
+
+def test_clang_backend_combines_both_derived_scans_and_recovers_only_failed_index(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "combined.c"
+    source.write_text("int combined(void) { return 0; }\n", encoding="utf-8")
+    db = KnowledgeDB(str(tmp_path / "knowledge.db"))
+
+    class CombinedExtractor(_BackendSchedulingExtractor):
+        def __init__(self) -> None:
+            super().__init__()
+            self.combined_calls = 0
+
+        def rebuild_function_derived_refs(self, target_db, *, use_staging=False):
+            assert target_db is db
+            assert use_staging is True
+            self.combined_calls += 1
+            return {
+                "counts": {
+                    ClangBackend.FUNCTION_SYMBOL_CONTEXT_INDEX: 0,
+                    ClangBackend.FUNCTION_TYPE_REFS_INDEX: 0,
+                },
+                "errors": {
+                    ClangBackend.FUNCTION_TYPE_REFS_INDEX: RuntimeError(
+                        "injected type failure"
+                    )
+                },
+            }
+
+    try:
+        _seed_indexed_tu(db, source)
+        _set_base_versions_current(db)
+        combined = CombinedExtractor()
+        backend = _scheduling_backend(tmp_path, monkeypatch, db, combined, [source])
+
+        assert backend._run_full_extraction() is False
+        assert combined.combined_calls == 1
+        assert combined.symbol_calls == 0
+        assert combined.type_calls == 0
+        assert db.get_derived_index_state(
+            ClangBackend.FUNCTION_SYMBOL_CONTEXT_INDEX
+        )["status"] == "current"
+        assert db.get_derived_index_state(ClangBackend.FUNCTION_TYPE_REFS_INDEX)[
+            "status"
+        ] == "failed"
+
+        recovery = _BackendSchedulingExtractor()
+        backend._extractor = recovery
+
+        assert backend._run_full_extraction() is True
+        assert recovery.base_calls == []
+        assert recovery.symbol_calls == 0
+        assert recovery.type_calls == 1
+        assert db.get_derived_index_state(ClangBackend.FUNCTION_TYPE_REFS_INDEX)[
+            "status"
+        ] == "current"
     finally:
         db.close()
 

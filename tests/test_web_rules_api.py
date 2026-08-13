@@ -70,7 +70,7 @@ def test_rule_service_returns_shared_serialization_and_filters(
 
     payload = service.payload("status=enabled&q=CWE-416")
 
-    assert payload["schema_version"] == "zscope.rule-catalog.v1"
+    assert payload["schema_version"] == "zscope.rule-catalog.v2"
     assert payload["catalog_sha256"] == "1" * 64
     assert payload["effective_sha256"]
     assert payload["language"] == "c_cpp"
@@ -83,7 +83,8 @@ def test_rule_service_returns_shared_serialization_and_filters(
     }
     assert payload["catalog_summary"]["total"] == 3
     assert [rule["id"] for rule in payload["rules"]] == ["test.enabled"]
-    assert payload["rules"][0]["effective_reason"] == "enabled"
+    assert payload["rules"][0]["effective_reason"] == "enabled_by_default"
+    assert payload["rules"][0]["qualification_state"] == "not_required"
     assert payload["facets"]["engines"] == ["cpp_clang_cfg", "cpp_regex"]
 
 

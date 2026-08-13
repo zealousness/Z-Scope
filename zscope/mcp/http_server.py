@@ -7,6 +7,7 @@ import logging
 import os
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union, cast
 from urllib.parse import urlparse
 
@@ -43,9 +44,7 @@ class ZScopeStreamableHttpServer(ThreadingHTTPServer):
         self.endpoint = endpoint if endpoint.startswith("/") else f"/{endpoint}"
         self.auth_token = auth_token
         self.client_allowlist = {
-            str(item).strip()
-            for item in (client_allowlist or ())
-            if str(item).strip()
+            str(item).strip() for item in (client_allowlist or ()) if str(item).strip()
         }
 
     def server_close(self) -> None:
@@ -244,6 +243,7 @@ def run_http_server(
     endpoint: str = "/mcp",
     auth_token_env: str = "",
     client_allowlist: Optional[Sequence[str]] = None,
+    scan_depth: Optional[str] = None,
 ) -> None:
     auth_token = os.environ.get(auth_token_env, "") if auth_token_env else ""
     errors = validate_remote_mcp_server_options(
@@ -254,8 +254,11 @@ def run_http_server(
     )
     if errors:
         raise ValueError("; ".join(errors))
-    config = ConfigLoader.load(config_path)
-    provider = ZScopeMcpProvider(config)
+    config = ConfigLoader.load(
+        config_path,
+        scan_depth=scan_depth,
+    )
+    provider = ZScopeMcpProvider(config, config_path=Path(config_path))
     server = create_http_server(
         host,
         port,

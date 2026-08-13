@@ -13,11 +13,122 @@ import zscope.core.analysis.analyzer as analyzer_module
 from zscope.cli.cli import main as zscope_main
 from zscope.config.config import ConfigLoader
 from zscope.core.analysis.analyzer import Analyzer
+from zscope.core.validation.pipeline import ValidationPipeline
 from zscope.core.validation.runner import ValidationRunner
+from zscope.framework.base import AgentResponse
 from zscope.reporting.report import FinalReport
-from zscope.reporting.schema import build_run_manifest
+from zscope.reporting.schema import build_run_manifest, exit_code_for_report
 from zscope.rules.catalog import EffectiveRuleSet, RuleCatalog, RuleCatalogError
 from zscope.rules.analyzer import RuleDrivenAnalyzer
+
+
+class _RuleValidationMemory:
+    def __init__(self) -> None:
+        self.rows: list[tuple[str, str]] = []
+
+    def is_false_positive(self, _func: str, _location: str, _category: str) -> bool:
+        return False
+
+    def get_finding_baseline_for_issue(self, _issue: dict[str, Any], _dedup_key: str) -> None:
+        return None
+
+    def get_finding_baseline(self, _dedup_key: str) -> None:
+        return None
+
+    def upsert_finding_baseline(
+        self, dedup_key: str, status: str, _issue: dict[str, Any] | None = None
+    ) -> None:
+        self.rows.append((dedup_key, status))
+
+
+class _RuleValidationCodeIndex:
+    backend = None
+    backend_name = "joern"
+
+    def get_function_impl(self, _func: str, warn_missing: bool = False) -> dict[str, str]:
+        del warn_missing
+        return {"code": "void entry(void) { sink(); }"}
+
+    def get_file_snippet(self, _path: str, _start: int, _end: int) -> str:
+        return "sink();"
+
+    def get_callers(self, _func: str, limit: int = 8) -> list[Any]:
+        del limit
+        return []
+
+    def get_callees(self, _func: str, limit: int = 12) -> list[Any]:
+        del limit
+        return []
+
+
+def _rule_validation_analyzer(
+    tmp_path: Path,
+    validator: Any,
+    *,
+    depth: str = "fast",
+) -> RuleDrivenAnalyzer:
+    analyzer = RuleDrivenAnalyzer.__new__(RuleDrivenAnalyzer)
+    analyzer.config = SimpleNamespace(
+        project=SimpleNamespace(
+            project_root=tmp_path,
+            entry_function="",
+            agents=[
+                SimpleNamespace(
+                    name="validator_agent",
+                    enabled=True,
+                    llm_ref="default",
+                )
+            ],
+        ),
+        analysis=SimpleNamespace(
+            snapshot_dir=tmp_path / "snapshots",
+            validation_deadline_seconds=30,
+            validation_cache_entries=0,
+        ),
+        concurrency=SimpleNamespace(
+            validator_workers=1,
+            evidence_completion_workers=1,
+        ),
+        scan=SimpleNamespace(
+            depth=depth,
+            llm_profiles=SimpleNamespace(validation="default"),
+        ),
+    )
+    analyzer.code_index = _RuleValidationCodeIndex()
+    analyzer.snapshot_store = SimpleNamespace(load_snapshot=lambda _name: None)
+    analyzer.user_config = _RuleValidationMemory()
+    analyzer.validation_pipeline = ValidationPipeline(analyzer.user_config)
+    analyzer.llm_clients = {"default": object()}
+    analyzer._validator_agent_factory = lambda *_args, **_kwargs: validator
+    analyzer._get_tools = lambda _agent=None: []
+    analyzer._tool_policy_for_agent = lambda _agent=None: None
+    analyzer._attach_agent_contract = lambda _context, _agent: None
+    analyzer._last_validation_state = {}
+    analyzer.validation_runner = analyzer._make_validation_runner()
+    return analyzer
+
+
+def _rule_validator_result(
+    input_data: dict[str, Any],
+    *,
+    verdict: str,
+    validation_pass: str,
+    missing_fact_request: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "zscope.validator-result.v3",
+        "candidate_uid": input_data["finding_uid"],
+        "validation_cluster_uid": input_data["validation_cluster_uid"],
+        "pass": validation_pass,
+        "verdict": verdict,
+        "reasoning": "bounded rule-driven validation",
+        "positive_evidence": ["backend signal and code context"],
+        "negative_evidence": [],
+        "evidence_refs": [],
+        "blocking_negative_evidence": False,
+        "missing_fact_request": missing_fact_request,
+        "stop_reason": "missing_fact" if missing_fact_request else "decision_complete",
+    }
 
 
 def _config(root: Path, *, disabled_ids: list[str] | None = None) -> dict[str, Any]:
@@ -268,6 +379,31 @@ def test_effective_rule_hash_changes_config_and_validator_cache_identity(
     assert runner._build_validation_environment_fingerprint() != validator_hash_before
 
 
+def test_validator_stage_profile_overrides_legacy_agent_llm_ref(tmp_path: Path) -> None:
+    config = ConfigLoader.load(str(_write_config(tmp_path)))
+    config.llms["validation-stage"] = config.llms["default"]
+    config.scan.llm_profiles.validation = "validation-stage"
+    validator_cfg = next(
+        agent for agent in config.project.agents if agent.name == "validator_agent"
+    )
+    validator_cfg.llm_ref = "default"
+
+    selected: list[Any] = []
+    runner = ValidationRunner.__new__(ValidationRunner)
+    runner.config = config
+    runner.llm_clients = {
+        "default": object(),
+        "validation-stage": object(),
+    }
+    runner.get_tools = lambda _name: []
+    runner.tool_policy_for_agent = lambda _name: None
+    runner.validator_agent_factory = lambda client, _tools, **_kwargs: selected.append(client)
+
+    runner._build_validator_agent()
+
+    assert selected == [runner.llm_clients["validation-stage"]]
+
+
 def test_report_contract_exposes_catalog_and_deduplicated_candidate_counts() -> None:
     state = {
         "_candidate_signal_cache": {
@@ -364,7 +500,7 @@ def test_rule_driven_report_keeps_catalog_provenance_and_backend_signal_boundary
         [],
     )
 
-    assert report["rule_catalog"]["schema_version"] == "zscope.rule-catalog.v1"
+    assert report["rule_catalog"]["schema_version"] == "zscope.rule-catalog.v2"
     assert len(report["metadata"]["effective_rules_sha256"]) == 64
     assert report["rule_candidate_counts"] == {
         "total": 0,
@@ -372,3 +508,260 @@ def test_rule_driven_report_keeps_catalog_provenance_and_backend_signal_boundary
         "by_rule": {},
     }
     assert report["metadata"]["backend_signal_counts"] == {"joern.native.query": 1}
+    assert report["metadata"]["candidate_funnel"]["schema_version"] == (
+        "zscope.candidate-funnel.v1"
+    )
+
+
+def test_rule_driven_validator_rejection_is_explicit_needs_review(tmp_path: Path) -> None:
+    class RejectingValidator:
+        def run(self, input_data: dict[str, Any]) -> AgentResponse:
+            return AgentResponse(
+                success=True,
+                data=_rule_validator_result(
+                    input_data,
+                    verdict="rejected",
+                    validation_pass="initial",
+                ),
+            )
+
+    analyzer = _rule_validation_analyzer(tmp_path, RejectingValidator())
+    issues = analyzer._validate_matches(
+        "entry",
+        [
+            {
+                "rule_id": "joern.native.query",
+                "function": "entry",
+                "file_path": "src/demo.c",
+                "line_number": 7,
+                "description": "native signal",
+                "category": "backend_signal",
+            }
+        ],
+    )
+
+    assert len(issues) == 1
+    issue = issues[0]
+    assert issue["model_verdict"] == "rejected"
+    assert issue["candidate_disposition"] == "needs_review"
+    assert issue["validation_status"] == "needs_review"
+    assert issue["attribution"]["discovered_by"] == ["backend_signal"]
+    assert issue["attribution"]["decided_by"] == "unresolved"
+    assert issue["attribution"]["decision_level"] == "V1"
+
+
+def test_rule_driven_deduplicates_equivalent_cross_rule_backend_signals(
+    tmp_path: Path,
+) -> None:
+    class CountingValidator:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, input_data: dict[str, Any]) -> AgentResponse:
+            self.calls += 1
+            return AgentResponse(
+                success=True,
+                data=_rule_validator_result(
+                    input_data,
+                    verdict="verified",
+                    validation_pass="initial",
+                ),
+            )
+
+    validator = CountingValidator()
+    analyzer = _rule_validation_analyzer(tmp_path, validator)
+    issues = analyzer._validate_matches(
+        "entry",
+        [
+            {
+                "rule_id": "joern.native.query.a",
+                "rule_name": "native query A",
+                "function": "entry",
+                "file_path": "src/demo.c",
+                "line_number": 7,
+                "description": "first detector provenance",
+                "category": "use_after_free",
+                "candidate_uid": "CAND_PRODUCER_A",
+                "validation_cluster_uid": "VCL_PRODUCER_A",
+            },
+            {
+                "rule_id": "joern.native.query.b",
+                "rule_name": "native query B",
+                "function": "entry",
+                "file_path": "src/demo.c",
+                "line_number": 7,
+                "description": "second detector provenance",
+                "category": "use_after_free",
+                "candidate_uid": "CAND_PRODUCER_B",
+                "validation_cluster_uid": "VCL_PRODUCER_B",
+            },
+        ],
+    )
+
+    assert validator.calls == 1
+    assert len(issues) == 1
+    issue = issues[0]
+    aliases = issue["backend_signal_provenance_aliases"]
+    assert {item["native_rule_id"] for item in aliases} == {
+        "joern.native.query.a",
+        "joern.native.query.b",
+    }
+    assert issue["grouped_candidate_count"] == 2
+    assert issue["validation_group_alias_count"] == 1
+    assert issue["validator_invocation_count"] == 1
+    assert issue["attribution"]["discovered_by"] == ["backend_signal"]
+    assert {item["native_rule_id"] for item in issue["attribution"]["discovery_details"]} == {
+        "joern.native.query.a",
+        "joern.native.query.b",
+    }
+
+    state = analyzer._last_validation_state
+    assert state["candidate_discovery_frozen"] is True
+    assert state["scan_level_raw_occurrence_count"] == 2
+    assert state["validation_group_count"] == 1
+    assert state["validation_group_merged_count"] == 1
+    assert state["candidate_ledger_summary"]["validation_group_count"] == 1
+    assert state["candidate_ledger_summary"]["duplicates_merged"] == 1
+    assert len(state["candidate_terminal_states"]) == 1
+    terminal_issue = state["candidate_terminal_states"][0]["issue"]
+    assert {
+        item["native_rule_id"] for item in terminal_issue["backend_signal_provenance_aliases"]
+    } == {"joern.native.query.a", "joern.native.query.b"}
+
+    analyzer.effective_rules = EffectiveRuleSet.build(
+        RuleCatalog.builtin(), language="java", backend="joern"
+    )
+    analyzer.report_generator = SimpleNamespace(
+        save_json_report=lambda _report: None,
+        save_markdown_report=lambda _report: None,
+    )
+    report = analyzer._build_report(issues, [])
+    funnel = report["metadata"]["candidate_funnel"]["stages"]
+    assert funnel["raw_occurrences"]["count"] == 2
+    assert funnel["canonical_validation_groups"]["count"] == 1
+    assert funnel["validator_invoked_groups"]["count"] == 1
+    assert report["metadata"]["backend_signal_counts"] == {
+        "joern.native.query.a": 1,
+        "joern.native.query.b": 1,
+    }
+
+
+def test_rule_driven_uses_shared_v0_without_calling_validator(tmp_path: Path) -> None:
+    class UnexpectedValidator:
+        def run(self, _input_data: dict[str, Any]) -> AgentResponse:
+            raise AssertionError("V0 proof must avoid the Validator")
+
+    analyzer = _rule_validation_analyzer(tmp_path, UnexpectedValidator())
+    issues = analyzer._validate_matches(
+        "entry",
+        [
+            {
+                "rule_id": "joern.native.query",
+                "function": "entry",
+                "file_path": "src/demo.c",
+                "line_number": 7,
+                "description": "native signal",
+                "category": "backend_signal",
+                "deterministic_proofs": [
+                    {
+                        "outcome": "confirm",
+                        "proof_kind": "deterministic_cfg_obligation_path",
+                        "producer_engine": "joern_fact_prover",
+                        "fact_ids": ["fact:source", "fact:sink"],
+                        "code_hash": "body-v1",
+                        "facts": ["source_to_sink_complete", "event_path_complete"],
+                        "completeness": "complete",
+                    }
+                ],
+            }
+        ],
+    )
+
+    assert issues[0]["candidate_disposition"] == "confirmed"
+    assert issues[0]["validator_invocation_count"] == 0
+    assert issues[0]["attribution"]["discovered_by"] == ["backend_signal"]
+    assert issues[0]["attribution"]["decided_by"] == "deterministic_proof"
+    assert issues[0]["attribution"]["decision_level"] == "V0"
+    assert analyzer._last_validation_state["validator_avoided_count"] == 1
+
+
+def test_rule_driven_uses_fact_resolution_v2_and_eligible_v3(tmp_path: Path) -> None:
+    class LayeredValidator:
+        def __init__(self) -> None:
+            self.passes: list[str] = []
+            self.investigations = 0
+
+        def run(self, input_data: dict[str, Any]) -> AgentResponse:
+            validation_pass = str(input_data["validation_pass"])
+            self.passes.append(validation_pass)
+            request = (
+                {
+                    "fact_kind": "caller_contract",
+                    "subject_uid": "entry",
+                    "function_uid": "entry",
+                    "reason": "caller contract is missing",
+                }
+                if validation_pass == "initial"
+                else None
+            )
+            return AgentResponse(
+                success=True,
+                data=_rule_validator_result(
+                    input_data,
+                    verdict="uncertain",
+                    validation_pass=validation_pass,
+                    missing_fact_request=request,
+                ),
+            )
+
+        def investigate(
+            self,
+            input_data: dict[str, Any],
+            *,
+            max_iterations: int,
+        ) -> AgentResponse:
+            self.investigations += 1
+            assert max_iterations == 50
+            return AgentResponse(
+                success=True,
+                data=_rule_validator_result(
+                    input_data,
+                    verdict="verified",
+                    validation_pass="investigation_synthesis",
+                ),
+            )
+
+    validator = LayeredValidator()
+    analyzer = _rule_validation_analyzer(tmp_path, validator, depth="balanced")
+    issues = analyzer._validate_matches(
+        "entry",
+        [
+            {
+                "rule_id": "joern.native.query",
+                "function": "entry",
+                "file_path": "src/demo.c",
+                "line_number": 7,
+                "description": "native signal",
+                "category": "backend_signal",
+                "impact_level": "critical",
+                "externally_reachable": True,
+                "fact_completion_by_kind": {
+                    "caller_contract": [
+                        {
+                            "kind": "caller_contract",
+                            "value": "entry is externally reachable",
+                        }
+                    ]
+                },
+            }
+        ],
+    )
+
+    assert validator.passes == ["initial", "evidence_recheck"]
+    assert validator.investigations == 1
+    issue = issues[0]
+    assert issue["validator_fact_resolution"]["status"] == "completed_partial"
+    assert issue["validator_result_pass"] == "investigation_synthesis"
+    assert issue["validator_invocation_count"] == 3
+    assert issue["attribution"]["discovered_by"] == ["backend_signal"]
+    assert issue["attribution"]["decision_level"] == "V3"

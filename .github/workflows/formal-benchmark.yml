@@ -26,6 +26,16 @@ jobs:
       - name: Resolve canonical benchmark SHA
         id: benchmark-source
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Verify immutable scanner image provenance
+        env:
+          SCANNER_IMAGE: ${{ vars.Z_SCOPE_BENCHMARK_OCI_IMAGE }}
+          EXPECTED_REVISION: ${{ steps.benchmark-source.outputs.sha }}
+        run: |
+          [[ "$SCANNER_IMAGE" =~ @sha256:[0-9a-f]{64}$ ]] || {
+            echo "scanner image must be digest-pinned" >&2
+            exit 1
+          }
+          test "$(podman image inspect "$SCANNER_IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$EXPECTED_REVISION"
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
@@ -39,6 +49,13 @@ jobs:
           Z_SCOPE_API_KEY: ${{ secrets.Z_SCOPE_BENCHMARK_API_KEY }}
           Z_SCOPE_LLM_BASE_URL: ${{ vars.Z_SCOPE_BENCHMARK_LLM_BASE_URL }}
           Z_SCOPE_LLM_MODEL: ${{ vars.Z_SCOPE_BENCHMARK_LLM_MODEL }}
+          Z_SCOPE_BENCHMARK_OCI_RUNTIME: podman
+          # Protected environment variables must use an immutable
+          # repository@sha256:<64-hex> scanner image and a pre-attested
+          # rootless internal network with exactly one endpoint proxy.
+          Z_SCOPE_BENCHMARK_OCI_IMAGE: ${{ vars.Z_SCOPE_BENCHMARK_OCI_IMAGE }}
+          Z_SCOPE_BENCHMARK_OCI_NETWORK: ${{ vars.Z_SCOPE_BENCHMARK_OCI_NETWORK }}
+          Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER: ${{ vars.Z_SCOPE_BENCHMARK_OCI_MODEL_PROXY_CONTAINER }}
         run: |
           language='${{ inputs.language }}'
           if [ "$language" = cpp ]; then language=c_cpp; fi

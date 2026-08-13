@@ -1,14 +1,85 @@
+import hashlib
 import json
 import logging
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from ..base import JsonOutputSpec, JsonToolAgent
 from ...tools.policy import ToolPolicy
 from ...framework.base import AgentResponse
 from ...framework.llm_client import LLMClient
 from ...common.utils import extract_json_blocks
+from ...common.validator_protocol import (
+    VALIDATOR_PROTOCOL_VERSION as VALIDATOR_PROTOCOL_V3,
+    VALIDATOR_RESULT_VERSION,
+    ValidatorResultV3,
+    parse_validator_result_v3,
+    validator_result_schema_v3,
+)
 
 logger = logging.getLogger(__name__)
+
+_NON_EVIDENCE_TOOL_RESULT_KEYS = frozenset(
+    {
+        "args",
+        "arguments",
+        "duration",
+        "duration_ms",
+        "elapsed",
+        "elapsed_ms",
+        "error",
+        "message",
+        "metadata",
+        "query",
+        "request",
+        "success",
+        "timestamp",
+        "tool",
+        "tool_name",
+        "trace",
+    }
+)
+
+
+def _tool_result_evidence_atoms(value: Any, path: Tuple[str, ...] = ()) -> set[str]:
+    """Return stable evidence leaves while ignoring request echoes/telemetry.
+
+    V3 may stop after two completed model rounds contribute neither new tool
+    evidence nor an obligation-closing fact.  Comparing whole response hashes
+    is insufficient because a provider may echo a new query or timestamp
+    around the same empty payload.  Atomic evidence leaves make that progress
+    check semantic enough to catch empty and rewrapped duplicate results
+    without interpreting the evidence itself.
+    """
+
+    atoms: set[str] = set()
+    if isinstance(value, Mapping):
+        if value.get("success") is False:
+            return atoms
+        for raw_key, nested in value.items():
+            key = str(raw_key).strip().lower().replace("-", "_")
+            if key in _NON_EVIDENCE_TOOL_RESULT_KEYS:
+                continue
+            atoms.update(_tool_result_evidence_atoms(nested, (*path, key)))
+        return atoms
+    if isinstance(value, (list, tuple, set, frozenset)):
+        for nested in value:
+            atoms.update(_tool_result_evidence_atoms(nested, path))
+        return atoms
+    if isinstance(value, str):
+        text = " ".join(value.strip().split())
+        if not text or text.lower() in {"none", "null", "not found", "no results", "unknown"}:
+            return atoms
+        payload = "/".join(path) + "=" + text
+        atoms.add(hashlib.sha256(payload.encode("utf-8")).hexdigest())
+        return atoms
+    if isinstance(value, bool) or value is None:
+        return atoms
+    if isinstance(value, (int, float)) and value != 0:
+        leaf = path[-1] if path else ""
+        if leaf in {"line", "column", "start_line", "end_line", "address", "offset"}:
+            payload = "/".join(path) + "=" + str(value)
+            atoms.add(hashlib.sha256(payload.encode("utf-8")).hexdigest())
+    return atoms
 
 
 class ValidatorAgent(JsonToolAgent):
@@ -30,6 +101,8 @@ class ValidatorAgent(JsonToolAgent):
 
     def run(self, input_data: Dict[str, Any], max_retries: int = 2) -> AgentResponse:
         if isinstance(input_data.get("evidence_slice"), dict):
+            if input_data["evidence_slice"].get("protocol_version") == VALIDATOR_PROTOCOL_V3:
+                return self._run_validator_v3_protocol(input_data)
             return self._run_evidence_slice_protocol(input_data)
 
         finding = input_data.get("finding")
@@ -37,9 +110,8 @@ class ValidatorAgent(JsonToolAgent):
         evidence_pack = input_data.get("evidence_pack")
         evidence_text = ""
         if evidence_pack:
-            evidence_text = (
-                "\n\nCompact Evidence Pack:\n"
-                + json.dumps(evidence_pack, ensure_ascii=False, indent=2)
+            evidence_text = "\n\nCompact Evidence Pack:\n" + json.dumps(
+                evidence_pack, ensure_ascii=False, indent=2
             )
         prompt = (
             f"Suspected Finding:\n{finding}"
@@ -153,6 +225,652 @@ class ValidatorAgent(JsonToolAgent):
             metadata=dict(token_metadata, validator_last_error_type=last_error),
         )
 
+    def _run_validator_v3_protocol(self, input_data: Dict[str, Any]) -> AgentResponse:
+        """Run V1/V2 as one direct, strict structured completion.
+
+        This path deliberately bypasses ``run_conversation_with_tools``.  The
+        single-turn protocol must not inherit the generic loop's final-turn
+        injection, history continuation, or open-ended tool behavior.
+        """
+
+        evidence_slice = input_data["evidence_slice"]
+        obligation = evidence_slice.get("obligation")
+        obligation = obligation if isinstance(obligation, dict) else {}
+        candidate_uid = str(input_data.get("finding_uid") or obligation.get("candidate_uid") or "")
+        cluster_uid = str(
+            input_data.get("validation_cluster_uid")
+            or obligation.get("validation_cluster_uid")
+            or ""
+        )
+        expected_pass = str(
+            input_data.get("validation_pass") or evidence_slice.get("validation_pass") or "initial"
+        )
+        catalog = evidence_slice.get("evidence_ref_catalog")
+        allowed_refs = list(catalog) if isinstance(catalog, dict) else []
+        token_metadata: Dict[str, Any] = {
+            "context_tokens": 0,
+            "cumulative_prompt_tokens": 0,
+            "cumulative_completion_tokens": 0,
+            "cumulative_total_tokens": 0,
+            "iterations": 0,
+            "tool_call_count": 0,
+            "validator_session_count": 1,
+            "validator_api_call_count": 0,
+            "validator_turn_count": 0,
+            "validator_repair_attempted": 0,
+            "validator_repair_accepted": 0,
+            "validator_length_retry_count": 0,
+            "evidence_slice_token_count": int(input_data.get("evidence_slice_token_count") or 0),
+        }
+        prompt = self._validator_v3_prompt(evidence_slice, expected_pass)
+        messages = self._messages(input_data, prompt)
+        evidence_delta = evidence_slice.get("evidence_delta")
+        new_fact_count = self._v3_evidence_delta_count(evidence_delta)
+
+        response, result = self._direct_v3_completion(
+            messages,
+            trace_label=(
+                f"validator_v3; pass={expected_pass}; call_kind={expected_pass}; "
+                f"candidate_uid={candidate_uid[:120]}; "
+                f"validation_cluster_uid={cluster_uid[:120]}; "
+                f"new_fact_count={new_fact_count}"
+            ),
+            max_tokens=8192,
+        )
+        if response is None or result is None:
+            self._finalize_slice_metadata(token_metadata)
+            return AgentResponse(
+                success=False,
+                data={},
+                error="Validator v3 direct structured completion failed.",
+                metadata=token_metadata,
+            )
+        self._merge_v3_response_metadata(token_metadata, response, messages, result)
+        parsed = self._extract_v3_result(
+            result,
+            candidate_uid=candidate_uid,
+            cluster_uid=cluster_uid,
+            expected_pass=expected_pass,
+            allowed_refs=allowed_refs,
+        )
+        finish_reason = str(result.get("finish_reason") or "")
+        if parsed is not None:
+            self._finalize_slice_metadata(token_metadata)
+            token_metadata["validator_protocol"] = VALIDATOR_PROTOCOL_V3
+            token_metadata["validator_pass"] = expected_pass
+            token_metadata["finish_reason"] = finish_reason
+            return AgentResponse(success=True, data=parsed, metadata=token_metadata)
+
+        stop_reason = "output_truncated" if finish_reason == "length" else "malformed_output"
+        fallback = self._v3_uncertain_result(
+            candidate_uid,
+            cluster_uid,
+            expected_pass,
+            stop_reason=stop_reason,
+            reasoning=(
+                "The single Validator pass reached the provider output limit; targeted "
+                "investigation may recover from structured evidence."
+                if stop_reason == "output_truncated"
+                else "The single Validator pass did not satisfy the strict v3 schema; "
+                "targeted investigation may recover from structured evidence."
+            ),
+        )
+        token_metadata["validator_protocol_exhausted"] = 1
+        token_metadata["validator_stop_reason"] = stop_reason.upper()
+        token_metadata["finish_reason"] = finish_reason
+        self._finalize_slice_metadata(token_metadata)
+        return AgentResponse(success=True, data=fallback, metadata=token_metadata)
+
+    @staticmethod
+    def _v3_evidence_delta_count(value: Any) -> int:
+        if not isinstance(value, dict) or not value:
+            return 0
+        count = 0
+        for key in ("facts", "decision_facts", "proofs", "path_edges", "semantic_claims"):
+            items = value.get(key)
+            if isinstance(items, list):
+                count += len(items)
+            elif isinstance(items, dict):
+                count += len(items)
+        return count or 1
+
+    @staticmethod
+    def _validator_v3_prompt(
+        evidence_slice: Dict[str, Any],
+        validation_pass: str,
+        *,
+        compact: bool = False,
+    ) -> str:
+        directive = (
+            "Return the smallest valid object; keep reasoning under 600 characters. "
+            if compact
+            else ""
+        )
+        return (
+            f"Validator v3 pass={validation_pass}. Use only the supplied evidence. "
+            "Every evidence_refs value must be a key in evidence_ref_catalog. Return "
+            "uncertain with at most one missing_fact_request when one supported fact "
+            "would decide the obligation. Do not invent a fact, candidate, or cluster UID. "
+            f"{directive}Return exactly one object matching schema_version="
+            f"{VALIDATOR_RESULT_VERSION}.\n\n"
+            + json.dumps(evidence_slice, ensure_ascii=False, separators=(",", ":"))
+        )
+
+    def _direct_v3_completion(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        trace_label: str,
+        max_tokens: int,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        chat_completion = getattr(self.llm_client, "chat_completion", None)
+        if not callable(chat_completion):
+            # Compatibility for test/third-party clients that predate the
+            # direct API. Product LLMClient always takes the branch above.
+            try:
+                legacy = self._run_tool_conversation(
+                    messages,
+                    max_iterations=1,
+                    trace_label=f"{trace_label}; compatibility_adapter=1",
+                    additional_tools_schema=[
+                        self._final_json_tool_schema(self._validation_json_output_spec_v3())
+                    ],
+                    terminal_tool_name="emit_validator_result_v3",
+                    terminal_tool_required=True,
+                )
+            except Exception:
+                return None, None
+            synthetic_message = legacy.get("message") or {
+                "role": "assistant",
+                "content": legacy.get("content", ""),
+            }
+            synthetic = {
+                "choices": [
+                    {
+                        "finish_reason": legacy.get("finish_reason"),
+                        "message": synthetic_message,
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": legacy.get("cumulative_prompt_tokens", 0),
+                    "completion_tokens": legacy.get("cumulative_completion_tokens", 0),
+                },
+            }
+            return synthetic, {
+                **legacy,
+                "message": synthetic_message,
+            }
+
+        spec = self._validation_json_output_spec_v3()
+        response_format = (
+            self._json_response_format(spec)
+            if bool(getattr(self.llm_client, "supports_structured_output", False))
+            else None
+        )
+        if response_format:
+            response_format["json_schema"]["strict"] = True
+        tool = self._final_json_tool_schema(spec)
+        kwargs: Dict[str, Any] = {
+            "max_tokens": max_tokens,
+            "trace_agent": self.name,
+            "trace_label": trace_label,
+            "trace_iteration": 1,
+        }
+        if response_format:
+            kwargs["response_format"] = response_format
+        else:
+            kwargs["tools"] = [tool]
+            kwargs["tool_choice"] = {
+                "type": "function",
+                "function": {"name": spec.final_tool_name},
+            }
+        try:
+            response = chat_completion(messages, **kwargs)
+        except Exception as exc:
+            # Provider capability selection is fixed before the call.  A
+            # profile that declares native JSON-schema support must not turn a
+            # failed V1/V2 attempt into an unplanned second HTTP attempt.  A
+            # provider without that capability already takes the one-terminal-
+            # tool branch above.
+            logger.warning("Validator v3 direct completion failed: %s", exc)
+            return None, None
+        choices = response.get("choices") or []
+        if not choices or not isinstance(choices[0], dict):
+            return response, None
+        choice = choices[0]
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            message = {"role": "assistant", "content": ""}
+        result = {
+            "content": str(message.get("content") or ""),
+            "message": message,
+            "conversation": [*messages, message],
+            "reasoning_content": message.get("reasoning_content"),
+            "finish_reason": choice.get("finish_reason"),
+            "provider_model": response.get("model"),
+        }
+        return response, result
+
+    def _extract_v3_result(
+        self,
+        result: Dict[str, Any],
+        *,
+        candidate_uid: str,
+        cluster_uid: str,
+        expected_pass: str,
+        allowed_refs: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        spec = self._validation_json_output_spec_v3()
+        values: List[Any] = list(
+            self._final_tool_payloads(result, result.get("conversation", []), spec)
+        )
+        # Provider reasoning metadata is deliberately excluded from the
+        # terminal protocol.  It may be preserved in-memory between bounded
+        # V3 turns, but only public assistant content or the required terminal
+        # tool may become a ValidatorResult.
+        text_sources = [str(result.get("content") or "")]
+        for message in reversed(list(result.get("conversation", []))):
+            if isinstance(message, dict) and message.get("role") == "assistant":
+                text_sources.append(str(message.get("content") or ""))
+        for text in (value for value in text_sources if value):
+            values.extend(extract_json_blocks(text))
+        for value in values:
+            parsed = parse_validator_result_v3(
+                value,
+                candidate_uid=candidate_uid,
+                validation_cluster_uid=cluster_uid,
+                expected_pass=expected_pass,
+                allowed_evidence_refs=allowed_refs,
+            )
+            if parsed is not None:
+                return parsed.to_dict()
+        return None
+
+    @staticmethod
+    def _merge_v3_response_metadata(
+        metadata: Dict[str, Any],
+        response: Dict[str, Any],
+        messages: List[Dict[str, Any]],
+        result: Dict[str, Any],
+    ) -> None:
+        message = result.get("message")
+        message = message if isinstance(message, dict) else {}
+        ValidatorAgent._merge_chat_response_metadata(metadata, response, messages, message)
+        metadata["validator_api_call_count"] = (
+            int(metadata.get("validator_api_call_count", 0) or 0) + 1
+        )
+
+    @staticmethod
+    def _v3_uncertain_result(
+        candidate_uid: str,
+        cluster_uid: str,
+        validation_pass: str,
+        *,
+        stop_reason: str,
+        reasoning: str,
+    ) -> Dict[str, Any]:
+        return ValidatorResultV3(
+            candidate_uid=candidate_uid or "unknown-candidate",
+            validation_cluster_uid=cluster_uid or "unknown-cluster",
+            validation_pass=validation_pass,
+            verdict="uncertain",
+            reasoning=reasoning,
+            positive_evidence=(),
+            negative_evidence=(),
+            evidence_refs=(),
+            blocking_negative_evidence=False,
+            missing_fact_request=None,
+            stop_reason=stop_reason,
+        ).to_dict()
+
+    @classmethod
+    def _validation_json_output_spec_v3(cls) -> JsonOutputSpec:
+        return JsonOutputSpec(
+            type_name="validator_result_v3",
+            schema=validator_result_schema_v3(),
+            final_tool_name="emit_validator_result_v3",
+            final_tool_description="Emit the strict Z-Scope ValidatorResult v3 object.",
+            validator=lambda data: parse_validator_result_v3(data) is not None,
+            metadata_prefix="validator",
+        )
+
+    def investigate(
+        self,
+        input_data: Dict[str, Any],
+        *,
+        max_iterations: int = 50,
+    ) -> AgentResponse:
+        """Run one continuous, tool-backed V3 investigation session."""
+
+        evidence_slice = input_data.get("evidence_slice")
+        if not isinstance(evidence_slice, dict):
+            return AgentResponse(
+                success=False, data={}, error="Missing Validator v3 evidence slice."
+            )
+        obligation = evidence_slice.get("obligation")
+        obligation = obligation if isinstance(obligation, dict) else {}
+        candidate_uid = str(input_data.get("finding_uid") or obligation.get("candidate_uid") or "")
+        cluster_uid = str(
+            input_data.get("validation_cluster_uid")
+            or obligation.get("validation_cluster_uid")
+            or ""
+        )
+        catalog = evidence_slice.get("evidence_ref_catalog")
+        allowed_refs = set(catalog) if isinstance(catalog, dict) else set()
+        decision_facts = evidence_slice.get("decision_facts")
+        decision_facts = decision_facts if isinstance(decision_facts, dict) else {}
+        raw_missing = decision_facts.get("missing_fact_kinds")
+        allowed_fact_kinds = {
+            str(value).strip().lower()
+            for value in (raw_missing if isinstance(raw_missing, list) else [])
+            if str(value).strip()
+        }
+        if not allowed_fact_kinds:
+            allowed_fact_kinds = {
+                "guard_dominance",
+                "caller_contract",
+                "source_controllability",
+                "ownership_transfer",
+                "cleanup_coverage",
+                "lockset",
+                "happens_before",
+                "object_identity",
+                "value_range",
+                "source_sink_reachability",
+                "signal_context",
+                "container_reachability",
+                "type_layout",
+            }
+        iteration_limit = max(1, min(50, int(max_iterations or 50)))
+        aggregate: Dict[str, Any] = {
+            "context_tokens": 0,
+            "cumulative_prompt_tokens": 0,
+            "cumulative_completion_tokens": 0,
+            "cumulative_total_tokens": 0,
+            "iterations": 0,
+            "tool_call_count": 0,
+            "validator_session_count": 1,
+            "validator_api_call_count": 0,
+            "validator_turn_count": 0,
+            "validator_investigation_trajectory_count": 0,
+        }
+        spec = self._validation_json_output_spec_v3()
+        terminal_schema = self._final_json_tool_schema(spec)
+        fact_tool_name = "record_validator_investigation_fact"
+        fact_tool_schema = {
+            "type": "function",
+            "function": {
+                "name": fact_tool_name,
+                "description": (
+                    "Record one evidence-backed fact resolved by prior read-only tool results. "
+                    "This only updates the current Validator session."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "fact_kind": {
+                            "type": "string",
+                            "enum": sorted(allowed_fact_kinds),
+                        },
+                        "evidence_refs": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 8,
+                            "items": {"type": "string"},
+                        },
+                        "summary": {"type": "string", "minLength": 1, "maxLength": 1000},
+                    },
+                    "required": ["fact_kind", "evidence_refs", "summary"],
+                },
+            },
+        }
+        prompt = (
+            "Targeted Validator V3 investigation. Use only the supplied read-only repository "
+            "tools. There is no independent tool-query quota, but the entire session has at "
+            f"most {iteration_limit} model iterations. Every useful repository result returns "
+            "a TOOLFACT evidence_ref (raw evidence progress, not an obligation-closing fact). "
+            "When it resolves a required fact, call "
+            f"{fact_tool_name} with that TOOLFACT ref before the final decision. The final "
+            "evidence_refs must cite recorded FACT_V3 refs or supplied catalog refs. A rejected "
+            "verdict requires blocking evidence; missing context is uncertain. Finish with one "
+            "strict investigation_synthesis result.\n\n"
+            + json.dumps(evidence_slice, ensure_ascii=False, separators=(",", ":"))
+        )
+        messages = self._messages(input_data, prompt)
+        tool_result_hashes: set[str] = set()
+        tool_call_signatures: set[str] = set()
+        evidence_atoms: set[str] = set()
+        tool_fact_catalog: Dict[str, Dict[str, Any]] = {}
+        investigation_facts: List[Dict[str, Any]] = []
+        consecutive_no_evidence_fact_iterations = 0
+        current_model_iteration = 0
+        last_started_iteration = 0
+        evidence_facts_at_iteration_start = 0
+        no_new_evidence_fact_stop = False
+
+        def evidence_location(args: Any, result: Dict[str, Any]) -> Dict[str, Any]:
+            arguments = args if isinstance(args, dict) else {}
+            data = result.get("data") if isinstance(result, dict) else None
+            data = data if isinstance(data, dict) else {}
+            return {
+                "file": str(arguments.get("file_path") or data.get("file_path") or ""),
+                "function": str(arguments.get("func_name") or data.get("function") or ""),
+                "start_line": arguments.get("start_line") or data.get("start_line"),
+                "end_line": arguments.get("end_line") or data.get("end_line"),
+            }
+
+        def session_executor(name: str, args: Any) -> Dict[str, Any]:
+            nonlocal no_new_evidence_fact_stop
+            if name == fact_tool_name:
+                if not isinstance(args, dict):
+                    return {"success": False, "error": "fact arguments must be an object"}
+                fact_kind = str(args.get("fact_kind") or "").strip().lower()
+                refs = args.get("evidence_refs")
+                refs = [str(value) for value in refs] if isinstance(refs, list) else []
+                if fact_kind not in allowed_fact_kinds:
+                    return {"success": False, "error": "unsupported investigation fact kind"}
+                if not refs or any(ref not in tool_fact_catalog for ref in refs):
+                    return {
+                        "success": False,
+                        "error": "investigation facts must cite prior TOOLFACT refs",
+                    }
+                summary = str(args.get("summary") or "").strip()
+                if not summary or len(summary) > 1000:
+                    return {"success": False, "error": "fact summary is invalid"}
+                backing = [tool_fact_catalog[ref] for ref in refs]
+                payload = {
+                    "cluster": cluster_uid,
+                    "fact_kind": fact_kind,
+                    "evidence_refs": sorted(refs),
+                    "summary": summary,
+                    "dependency_hashes": sorted(
+                        {str(value.get("dependency_code_hash") or "") for value in backing}
+                    ),
+                }
+                fact_uid = (
+                    "FACT_V3_"
+                    + hashlib.sha256(
+                        json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+                    ).hexdigest()[:32]
+                )
+                fact = {
+                    "fact_uid": fact_uid,
+                    "fact_kind": fact_kind,
+                    "summary": summary,
+                    "evidence_refs": sorted(refs),
+                    "producer_engine": "validator_readonly_tool_session",
+                    "dependency_code_hash": hashlib.sha256(
+                        "\n".join(payload["dependency_hashes"]).encode("utf-8")
+                    ).hexdigest(),
+                    "locations": [value.get("location") for value in backing],
+                    "origin": "validator_tool_evidence",
+                }
+                if not any(value.get("fact_uid") == fact_uid for value in investigation_facts):
+                    investigation_facts.append(fact)
+                allowed_refs.add(fact_uid)
+                return {"success": True, "fact": fact}
+
+            stable_args = json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
+            signature = hashlib.sha256(f"{name}:{stable_args}".encode("utf-8")).hexdigest()
+            if signature in tool_call_signatures:
+                return {
+                    "success": False,
+                    "error": "validator_v3_duplicate_tool_query",
+                }
+            tool_call_signatures.add(signature)
+            if no_new_evidence_fact_stop:
+                return {
+                    "success": False,
+                    "error": "validator_v3_no_new_evidence_fact_stop; emit the final result",
+                }
+            tool_result = self._tool_executor(name, args)
+            stable_result = json.dumps(
+                tool_result,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+                separators=(",", ":"),
+            )
+            fingerprint = hashlib.sha256(stable_result.encode("utf-8")).hexdigest()
+            result_atoms = _tool_result_evidence_atoms(tool_result)
+            new_atoms = result_atoms - evidence_atoms
+            if fingerprint in tool_result_hashes or not new_atoms:
+                result = dict(tool_result) if isinstance(tool_result, dict) else {}
+                result["validator_new_evidence"] = False
+                result["instruction"] = (
+                    "This result is only an observation. Record a structured fact if it closes "
+                    "an obligation gap; otherwise synthesize from existing facts."
+                )
+                return result
+            tool_result_hashes.add(fingerprint)
+            evidence_atoms.update(new_atoms)
+            ref = (
+                "TOOLFACT_"
+                + hashlib.sha256(
+                    f"{cluster_uid}:{name}:{stable_args}:{fingerprint}".encode("utf-8")
+                ).hexdigest()[:32]
+            )
+            record = {
+                "evidence_ref": ref,
+                "tool_name": name,
+                "arguments_hash": hashlib.sha256(stable_args.encode("utf-8")).hexdigest(),
+                "result_hash": fingerprint,
+                "dependency_code_hash": fingerprint,
+                "location": evidence_location(args, tool_result),
+            }
+            tool_fact_catalog[ref] = record
+            allowed_refs.add(ref)
+            result = dict(tool_result) if isinstance(tool_result, dict) else {"data": tool_result}
+            result["evidence_ref"] = ref
+            result["validator_new_evidence"] = True
+            result["instruction"] = (
+                f"If this resolves a required fact, call {fact_tool_name} citing {ref}."
+            )
+            return result
+
+        def set_model_iteration(iteration: int) -> None:
+            nonlocal current_model_iteration
+            current_model_iteration = max(0, int(iteration or 0))
+
+        def start_model_iteration(iteration: int) -> bool:
+            """Stop only after two rounds add no structured tool/final fact.
+
+            A repository tool result with a stable source and evidence record
+            is a fact for investigation-progress purposes.  It is not by
+            itself an obligation-closing promotion fact; that still requires
+            a ``FACT_V3`` record with an allowed fact kind.
+            """
+
+            nonlocal consecutive_no_evidence_fact_iterations
+            nonlocal current_model_iteration
+            nonlocal evidence_facts_at_iteration_start
+            nonlocal last_started_iteration
+            nonlocal no_new_evidence_fact_stop
+            normalized = max(1, int(iteration or 1))
+            if normalized <= last_started_iteration:
+                return no_new_evidence_fact_stop
+            current_evidence_fact_count = len(tool_fact_catalog) + len(investigation_facts)
+            if last_started_iteration:
+                if current_evidence_fact_count > evidence_facts_at_iteration_start:
+                    consecutive_no_evidence_fact_iterations = 0
+                else:
+                    consecutive_no_evidence_fact_iterations += 1
+                evidence_facts_at_iteration_start = current_evidence_fact_count
+            else:
+                evidence_facts_at_iteration_start = current_evidence_fact_count
+            last_started_iteration = normalized
+            current_model_iteration = normalized
+            no_new_evidence_fact_stop = consecutive_no_evidence_fact_iterations >= 2
+            return no_new_evidence_fact_stop
+
+        setattr(session_executor, "_zscope_set_iteration", set_model_iteration)
+        setattr(session_executor, "_zscope_start_iteration", start_model_iteration)
+
+        def terminal_handler(payload: Dict[str, Any]) -> Dict[str, Any]:
+            parsed = parse_validator_result_v3(
+                payload,
+                candidate_uid=candidate_uid,
+                validation_cluster_uid=cluster_uid,
+                expected_pass="investigation_synthesis",
+                allowed_evidence_refs=sorted(allowed_refs),
+            )
+            if parsed is None:
+                return {"valid": False, "error": "invalid ValidatorResult v3 payload"}
+            return {"valid": True, "payload": parsed.to_dict()}
+
+        try:
+            result = self._run_tool_conversation(
+                messages,
+                max_iterations=iteration_limit,
+                trace_label=(
+                    "validator_v3_investigation; call_kind=targeted_investigation; "
+                    f"candidate_uid={candidate_uid[:120]}; "
+                    f"validation_cluster_uid={cluster_uid[:120]}"
+                ),
+                additional_tools_schema=[fact_tool_schema, terminal_schema],
+                terminal_tool_name=spec.final_tool_name,
+                terminal_tool_handler=terminal_handler,
+                terminal_tool_required=True,
+                tool_executor=session_executor,
+                preserve_reasoning_metadata=True,
+            )
+        except Exception as exc:
+            logger.warning("Validator V3 investigation failed: %s", exc)
+            result = {}
+        self._merge_result_metadata(aggregate, result)
+        aggregate["validator_api_call_count"] = int(aggregate.get("iterations", 0) or 0)
+        aggregate["validator_investigation_trajectory_count"] = 1
+        aggregate["validator_investigation_facts"] = investigation_facts
+        aggregate["validator_tool_fact_catalog"] = tool_fact_catalog
+        aggregate["validator_investigation_tool_fact_count"] = len(tool_fact_catalog)
+        aggregate["new_fact_count"] = len(investigation_facts)
+        aggregate["consecutive_no_new_evidence_fact_iterations"] = (
+            consecutive_no_evidence_fact_iterations
+        )
+        aggregate["validator_no_new_evidence_fact_stop"] = no_new_evidence_fact_stop
+        parsed = self._extract_v3_result(
+            result,
+            candidate_uid=candidate_uid,
+            cluster_uid=cluster_uid,
+            expected_pass="investigation_synthesis",
+            allowed_refs=sorted(allowed_refs),
+        )
+        self._finalize_slice_metadata(aggregate)
+        if parsed is None:
+            return AgentResponse(
+                success=True,
+                data=self._v3_uncertain_result(
+                    candidate_uid,
+                    cluster_uid,
+                    "investigation_synthesis",
+                    stop_reason="investigation_exhausted",
+                    reasoning="Targeted investigation ended without a valid terminal decision.",
+                ),
+                metadata=aggregate,
+            )
+        return AgentResponse(success=True, data=parsed, metadata=aggregate)
+
     def _run_evidence_slice_protocol(
         self,
         input_data: Dict[str, Any],
@@ -185,9 +903,7 @@ class ValidatorAgent(JsonToolAgent):
             "validator_session_count": 1,
             "validator_api_call_count": 0,
             "multi_turn_outlier_count": 0,
-            "evidence_slice_token_count": int(
-                input_data.get("evidence_slice_token_count") or 0
-            ),
+            "evidence_slice_token_count": int(input_data.get("evidence_slice_token_count") or 0),
         }
         try:
             result = self._run_tool_conversation(
@@ -287,9 +1003,9 @@ class ValidatorAgent(JsonToolAgent):
                 ),
             }
         )
-        token_metadata["validator_fast_path_attempted"] = int(
-            token_metadata.get("validator_fast_path_attempted", 0) or 0
-        ) + 1
+        token_metadata["validator_fast_path_attempted"] = (
+            int(token_metadata.get("validator_fast_path_attempted", 0) or 0) + 1
+        )
         try:
             result = self._run_tool_conversation(
                 fast_messages,
@@ -308,9 +1024,9 @@ class ValidatorAgent(JsonToolAgent):
         )
         if not parsed or not self._accept_fast_path_result(parsed):
             return None
-        token_metadata["validator_fast_path_accepted"] = int(
-            token_metadata.get("validator_fast_path_accepted", 0) or 0
-        ) + 1
+        token_metadata["validator_fast_path_accepted"] = (
+            int(token_metadata.get("validator_fast_path_accepted", 0) or 0) + 1
+        )
         parsed["validator_fast_path"] = True
         return parsed
 
@@ -416,15 +1132,15 @@ class ValidatorAgent(JsonToolAgent):
                                 "source_sink_reachability",
                                 "signal_context",
                                 "container_reachability",
-                                "type_layout"
-                            ]
+                                "type_layout",
+                            ],
                         },
                         "subject_uid": {"type": "string"},
                         "function_uid": {"type": "string"},
-                        "reason": {"type": "string"}
+                        "reason": {"type": "string"},
                     },
                     "required": ["fact_kind", "reason"],
-                    "additionalProperties": False
+                    "additionalProperties": False,
                 },
             },
             "required": ["type", "verdict", "reasoning", "blocking_negative_evidence"],
@@ -481,13 +1197,15 @@ class ValidatorAgent(JsonToolAgent):
             messages,
             assistant_message,
         )
-        target["context_tokens"] = int(target.get("context_tokens", 0) or 0) + LLMClient.estimate_tokens(messages)
-        target["cumulative_prompt_tokens"] = int(
-            target.get("cumulative_prompt_tokens", 0) or 0
-        ) + prompt_tokens
-        target["cumulative_completion_tokens"] = int(
-            target.get("cumulative_completion_tokens", 0) or 0
-        ) + completion_tokens
+        target["context_tokens"] = int(
+            target.get("context_tokens", 0) or 0
+        ) + LLMClient.estimate_tokens(messages)
+        target["cumulative_prompt_tokens"] = (
+            int(target.get("cumulative_prompt_tokens", 0) or 0) + prompt_tokens
+        )
+        target["cumulative_completion_tokens"] = (
+            int(target.get("cumulative_completion_tokens", 0) or 0) + completion_tokens
+        )
         target["cumulative_total_tokens"] = int(
             target.get("cumulative_prompt_tokens", 0) or 0
         ) + int(target.get("cumulative_completion_tokens", 0) or 0)
@@ -541,7 +1259,8 @@ class ValidatorAgent(JsonToolAgent):
             len(content or ""),
             result.get("tool_call_count", 0),
             json_blocks_found,
-            result.get("provider_model") or (getattr(self.llm_client, "models", []) or ["unknown"])[0],
+            result.get("provider_model")
+            or (getattr(self.llm_client, "models", []) or ["unknown"])[0],
         )
 
     @staticmethod
@@ -624,9 +1343,7 @@ class ValidatorAgent(JsonToolAgent):
         # override substitutable so a malformed/truncated response becomes a
         # bounded protocol outcome rather than an operational TypeError.
         if json_output_spec is not None:
-            count = len(
-                list(self._final_tool_payloads(result, conversation, json_output_spec))
-            )
+            count = len(list(self._final_tool_payloads(result, conversation, json_output_spec)))
         else:
             count = len(list(self._validation_result_tool_payloads(result, conversation)))
         for text in self._text_sources(content, result, conversation):

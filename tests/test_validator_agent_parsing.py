@@ -1,10 +1,42 @@
 import json
 
-from zscope.agents.validator_agent.agent import ValidatorAgent
+from zscope.agents.validator_agent.agent import ValidatorAgent, _tool_result_evidence_atoms
 
 
 def _agent() -> ValidatorAgent:
     return ValidatorAgent.__new__(ValidatorAgent)
+
+
+def test_v3_tool_evidence_atoms_ignore_empty_and_request_echoes() -> None:
+    assert (
+        _tool_result_evidence_atoms(
+            {"success": True, "query": "different symbol", "results": [], "duration_ms": 2}
+        )
+        == set()
+    )
+    assert (
+        _tool_result_evidence_atoms(
+            {"success": False, "error": "not found", "results": ["misleading"]}
+        )
+        == set()
+    )
+
+
+def test_v3_tool_evidence_atoms_detect_new_program_facts() -> None:
+    first = _tool_result_evidence_atoms(
+        {"success": True, "results": [{"file": "src/demo.c", "line": 12, "code": "sink(x);"}]}
+    )
+    rewrapped = _tool_result_evidence_atoms(
+        {
+            "success": True,
+            "query": "another request",
+            "metadata": {"timestamp": "later"},
+            "results": [{"file": "src/demo.c", "line": 12, "code": "sink(x);"}],
+        }
+    )
+
+    assert first
+    assert rewrapped == first
 
 
 def test_validator_agent_accepts_wrapped_validation_result() -> None:
@@ -52,7 +84,9 @@ def test_validator_agent_normalizes_legacy_boolean_result() -> None:
 
 
 def test_validator_agent_does_not_accept_embedded_finding_verdict() -> None:
-    content = '{"finding": {"id": "ISSUE_3", "verdict": "verified"}, "notes": "not a validator result"}'
+    content = (
+        '{"finding": {"id": "ISSUE_3", "verdict": "verified"}, "notes": "not a validator result"}'
+    )
 
     assert _agent()._extract_validation_payload(content, {}, []) is None
 

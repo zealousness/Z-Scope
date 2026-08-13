@@ -319,6 +319,12 @@ class ReportAssembler:
                 governance.get("displayed_review_count") or 0
             ) + int(governance.get("operational_obligation_count") or 0)
         final_report.metadata["report_view_summary"] = report_view_summary(final_report.to_dict())
+        # Keep the lifecycle funnel in the product artifact as well as the
+        # benchmark score.  The local import avoids making reporting module
+        # import-time initialization depend on the benchmark package.
+        from ..benchmarking.protocol import candidate_funnel
+
+        final_report.metadata["candidate_funnel"] = candidate_funnel(final_report.to_dict())
 
     def persist(self, state: Dict[str, Any], *, write_root_reports: bool = True) -> Dict[str, Any]:
         final_report = state["final_report"]
@@ -363,6 +369,7 @@ class ReportAssembler:
             blockers.append("report_invariant_failed")
         if str(state.get("budget_exhaustion_policy") or "observe") != "observe":
             blockers.append("budget_policy_not_observe_only")
+        llm_usage = state.get("llm_usage")
         return {
             "validator_session_count": int(state.get("validator_session_count", 0) or 0),
             "validator_api_call_count": int(state.get("validator_api_call_count", 0) or 0),
@@ -376,6 +383,7 @@ class ReportAssembler:
             "fact_query_cache_hit_count": int(state.get("fact_query_cache_hit_count", 0) or 0),
             "budget_exhaustion_policy": str(state.get("budget_exhaustion_policy") or "observe"),
             "validation_queue_drained": drained,
+            "llm_usage": dict(llm_usage) if isinstance(llm_usage, dict) else {},
             "release_gate_status": {
                 "runtime_valid": not blockers,
                 "quality_evaluation_pending": True,
@@ -483,6 +491,12 @@ class ReportAssembler:
                         "validator_invocation_count",
                         "rejected_with_proof_count",
                         "cluster_fragmentation_count",
+                        "attribution",
+                        "model_verdict",
+                        "policy_disposition",
+                        "validator_result_pass",
+                        "validator_pass_history",
+                        "validator_policy_outcome",
                         "function",
                         "location",
                         "line",
@@ -532,6 +546,7 @@ class ReportAssembler:
             "engine_failed",
             "interrupted",
             "deduplicated_alias",
+            "shadow_observation",
         }
         if disposition not in terminal_statuses:
             disposition = status if status in terminal_statuses else "needs_review"
@@ -618,14 +633,19 @@ class ReportAssembler:
             for item in terminal_states
             if str(item.get("candidate_disposition") or "").lower() == "needs_review"
         )
+        reportable_terminal_states = [
+            item
+            for item in terminal_states
+            if str(item.get("candidate_disposition") or "").lower() != "shadow_observation"
+        ]
         clusters = {
             str(item.get("validation_cluster_uid") or "")
-            for item in terminal_states
+            for item in reportable_terminal_states
             if item.get("validation_cluster_uid")
         }
         security_terminal_count = sum(
             1
-            for item in terminal_states
+            for item in reportable_terminal_states
             if str(item.get("record_role") or "") != "operational_obligation"
         )
         terminal_items = [item for item in terminal_states if isinstance(item, dict)]
@@ -644,7 +664,7 @@ class ReportAssembler:
         )
         obligation_uids = {
             str(item.get("obligation_uid") or item.get("candidate_uid") or "")
-            for item in terminal_items
+            for item in reportable_terminal_states
             if str(item.get("record_role") or "") != "operational_obligation"
         }
         valid = not canonical_enabled or (
@@ -661,6 +681,11 @@ class ReportAssembler:
             "terminal_confirmed_count": terminal_confirmed,
             "displayed_review_count": review_count,
             "terminal_review_count": terminal_review,
+            "shadow_observation_count": sum(
+                1
+                for item in terminal_states
+                if str(item.get("candidate_disposition") or "").lower() == "shadow_observation"
+            ),
             "canonical_validation_group_count": len(clusters),
             "validation_group_alias_count": sum(
                 len(item.get("alias_occurrence_uids") or []) for item in terminal_items

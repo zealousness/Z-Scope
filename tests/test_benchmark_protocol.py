@@ -24,13 +24,20 @@ from zscope.benchmarking.protocol import (
     build_trial_summary,
     collect_environment_metadata,
     evaluate_improvement_claim,
+    evaluate_non_regression_readiness,
     issue_identity,
     issue_identity_record,
     issue_matches,
     classify_false_positive_record,
     score_report,
     score_report_views,
+    select_validator_arm,
     _select_max_weight_pairs,
+)
+from zscope.benchmarking.policy import DEFAULT_BENCHMARK_POLICY
+from zscope.benchmarking.attestation import (
+    ATTESTATION_SCHEMA_VERSION,
+    finalize_balanced_attestation,
 )
 from zscope.reporting.report import Issue
 
@@ -268,7 +275,9 @@ def test_score_report_classifies_duplicate_of_matched_separately() -> None:
     assert scored["root_cause_precision"] == 1.0
     assert scored["root_cause_f1"] == 1.0
     assert scored["false_discovery_rate"] == 0.0
-    assert scored["false_positive_rate"] == scored["false_discovery_rate"]
+    assert "false_positive_rate" not in scored
+    assert "standard_false_positive_rate" not in scored
+    assert "standard_false_positive_rate_metric" not in scored["scoring_contract"]
     assert raw_scored["false_positives"] == 1
     assert raw_scored["precision"] == raw_scored["actionable_precision"] == 0.5
     assert scored["false_positive_audit"]["counts"][FP_AUDIT_DUPLICATE_OF_GT] == 1
@@ -356,6 +365,8 @@ def test_standard_false_positive_rate_uses_known_safe_entries() -> None:
     assert result["scoring_contract"]["standard_false_positive_rate_metric"] == (
         "safe_entry_alert_rate"
     )
+    assert result["scoring_contract"]["safe_unit_rate_metric"] == "safe_entry_alert_rate"
+    assert "false_positive_rate" not in result
 
 
 def test_score_report_emits_high_critical_and_per_cwe_recall() -> None:
@@ -1119,19 +1130,23 @@ def _release_summary(
     trial_index: int,
     *,
     actionable_precision: float = 0.75,
+    actionable_fdr: float = 0.05,
+    true_positives: int = 112,
     recall: float = 0.82,
     high_critical_recall: float = 0.92,
     safe_entry_alert_rate: float = 0.05,
     actionable_f1: float = 0.78,
     cwe_recall: float = 0.70,
     wall_time_seconds: float = 3500.0,
-    billable_tokens: float = 29_000_000.0,
+    billable_tokens: float = 9_000_000.0,
     report_tail_seconds: float = 100.0,
     tokens_per_verified_issue: float = 100.0,
     issue_identities: list[str] | None = None,
     true_positive_truth_ids: list[str] | None = None,
     cache_mode: str = "isolated_cold",
     integrity_status: str = "passed",
+    validator_arm: str = "",
+    baseline_frozen: bool = False,
 ) -> dict:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -1147,15 +1162,83 @@ def _release_summary(
             "cache_mode": cache_mode,
             "chain_sha256": "a" * 64,
         },
+        "isolation": {
+            "mode": "oci",
+            "runtime": "podman",
+            "runtime_path": "/usr/bin/podman",
+            "available": True,
+            "rootless_verified": True,
+            "image_digest_verified": True,
+            "execution_verified": True,
+            "actual_inspection_collected": True,
+            "release_capable": True,
+            "truth_mounted": False,
+            "repository_mounted": False,
+            "scanner_cwd_isolated": True,
+            "mounts_verified": True,
+            "security_verified": True,
+            "network_restriction_verified": True,
+            "network_mode": "model-endpoint-only",
+            "network_policy_sha256": "6" * 64,
+            "image": "registry.example/zscope@sha256:" + "a" * 64,
+            "scanner_cwd": "/zscope-input",
+            "mounts": [
+                {
+                    "source": "/sealed/input",
+                    "destination": "/zscope-input",
+                    "purpose": "scan_input",
+                    "read_only": True,
+                },
+                {
+                    "source": "/sealed/output",
+                    "destination": "/zscope-output",
+                    "purpose": "artifact_output",
+                    "read_only": False,
+                },
+                {
+                    "source": "/sealed/cache",
+                    "destination": "/zscope-cache",
+                    "purpose": "cache",
+                    "read_only": False,
+                },
+            ],
+            "required_phases": ["scan"],
+            "phase_executions": [
+                {
+                    "phase": "scan",
+                    "inspect_verified": True,
+                    "security_verified": True,
+                    "network_peers_verified": True,
+                    "network_contract_verified": True,
+                    "proxy_verified": True,
+                    "scanner_labels_verified": True,
+                    "image_verified": True,
+                    "unexpected_mount_count": 0,
+                    "container_inspect_sha256": "7" * 64,
+                    "network_inspect_sha256": "8" * 64,
+                    "proxy_inspect_sha256": "9" * 64,
+                }
+            ],
+            "errors": [],
+        },
+        "validator_replay_bundle": {
+            "schema_version": "zscope.validator-replay-bundle.v1",
+            "group_count": 2,
+            "bundle_sha256": "b" * 64,
+            "answer_material_present": False,
+        },
         "artifact_manifest": {
             "truth_sha256": "1" * 64,
             "scorer_sha256": "2" * 64,
             "config_sha256": "3" * 64,
             "entries_sha256": "4" * 64,
             "source_manifest_sha256": "5" * 64,
+            "benchmark_policy_sha256": DEFAULT_BENCHMARK_POLICY.sha256,
         },
         "evaluation": {
+            "true_positives": true_positives,
             "actionable_precision": actionable_precision,
+            "actionable_false_discovery_rate": actionable_fdr,
             "precision": actionable_precision,
             "distinct_root_recall": recall,
             "recall": recall,
@@ -1173,22 +1256,123 @@ def _release_summary(
             "issue_identities": issue_identities or ["issue-a", "issue-b"],
             "true_positive_truth_ids": true_positive_truth_ids or ["BUG-1", "BUG-2"],
             "false_positive_issue_identities": [],
+            "attribution": {"explicit_coverage": 1.0},
         },
         "cost": {
             "wall_time_seconds": wall_time_seconds,
             "billable_tokens": billable_tokens,
             "report_tail_seconds": report_tail_seconds,
             "tokens_per_verified_issue": tokens_per_verified_issue,
+            "usage_ledger": {
+                "provider_usage_coverage": 1.0,
+                "conservation_passed": True,
+                "telemetry_complete": True,
+            },
+        },
+        "release_evidence": {
+            "queue_drained": True,
+            "protocol_anomaly_count": 0,
+            "budget_limited": False,
+            "silent_rejection_without_proof_count": 0,
+            "sealed_attested": True,
+            "shadow_attested": True,
+            "shadow_precision_at_25": 0.75,
+            "shadow_high_critical_precision": 0.85,
+            "active_discovery_exclusive_projects": ["p1", "p2", "p3"],
+            "active_discovery_exclusive_cwe_families": ["CWE-119", "CWE-401"],
+            "validator_arm": validator_arm,
+            "baseline_frozen": baseline_frozen,
         },
     }
 
 
+def _balanced_attestation() -> dict:
+    metrics = {
+        "sealed_confirmed_recall_delta_pp": 3.0,
+        "sealed_actionable_precision_delta_pp": -1.0,
+        "sealed_high_critical_recall_delta_pp": 0.0,
+        "semantic_blind_review_unit_count": 100,
+        "semantic_critical_contract_recall": 0.85,
+        "semantic_unsupported_claim_rate": 0.05,
+        "semantic_warm_cache_llm_call_reduction": 0.80,
+        "active_discovery_exclusive_project_count": 3,
+        "active_discovery_exclusive_cwe_family_count": 2,
+        "safe_entry_alert_rate": 0.1,
+        "safe_entry_alert_rate_delta_pp": 1.0,
+        "shadow_precision_at_25": 0.7,
+        "shadow_high_critical_precision": 0.8,
+        "incomplete_scan_rate": 0.05,
+        "silent_rejection_without_proof_count": 0,
+    }
+    return finalize_balanced_attestation(
+        {
+            "schema_version": ATTESTATION_SCHEMA_VERSION,
+            "attestation_id": "test-attestation",
+            "issued_at": "2026-08-12T12:00:00Z",
+            "issuer": {
+                "team": "independent-test",
+                "independent_test_team": True,
+                "signed_by": "review-board",
+            },
+            "bindings": {
+                "dataset_sha256": "1" * 64,
+                "truth_sha256": "2" * 64,
+                "scanner_bundle_sha256": "3" * 64,
+                "scorer_sha256": "4" * 64,
+                "git_sha": "f" * 40,
+                "config_sha256": "5" * 64,
+                "rules_sha256": "6" * 64,
+                "policy_sha256": DEFAULT_BENCHMARK_POLICY.sha256,
+                "model_spec_sha256": "7" * 64,
+                "baseline_sha256": "8" * 64,
+                "public_external_aggregate_sha256": "9" * 64,
+            },
+            "coverage": {
+                "sealed_project_count": 6,
+                "domain_count": 3,
+                "vulnerable_fixed_pair_count": 120,
+                "safe_audit_unit_count": 1200,
+                "max_project_share": 0.25,
+                "max_cwe_share": 0.25,
+                "rotation_fraction": 0.2,
+                "shadow_project_count": 3,
+                "public_external_suite_count": 3,
+            },
+            "metrics": metrics,
+            "evidence": {
+                "protected_artifact": True,
+                "workflow_run_id": "test-run",
+                "all_alerts_double_blind_reviewed": True,
+                "all_disagreements_adjudicated": True,
+                "public_external_formal_passed": True,
+                "public_external_suites": ["Juliet", "SV-COMP", "Magma"],
+            },
+        }
+    )
+
+
 def test_release_readiness_passes_every_explicit_hard_gate() -> None:
     summaries = [_release_summary(index) for index in range(1, 6)]
+    baseline = [
+        _release_summary(
+            index,
+            actionable_precision=0.755,
+            actionable_fdr=0.045,
+            recall=0.78,
+            high_critical_recall=0.91,
+            safe_entry_alert_rate=0.04,
+            validator_arm="A",
+            baseline_frozen=True,
+        )
+        for index in range(1, 6)
+    ]
 
     aggregate = aggregate_trial_summaries(
         summaries,
-        baseline_tokens_per_tp=150.0,
+        baseline_summaries=baseline,
+        balanced_attestation=_balanced_attestation(),
+        balanced_attestation_workflow_run_id="test-run",
+        release_sha="f" * 40,
         bootstrap_samples=100,
     )
 
@@ -1197,18 +1381,37 @@ def test_release_readiness_passes_every_explicit_hard_gate() -> None:
     assert readiness["trial_protocol"]["paired_trial_count"] == 5
     required_gates = {
         "trial_protocol",
-        "actionable_precision",
-        "distinct_root_recall",
-        "high_critical_recall",
-        "safe_entry_alert_rate",
-        "per_cwe_recall",
-        "actionable_f1_stdev",
+        "median_confirmed_tp",
+        "median_tokens",
+        "per_run_tokens",
+        "actionable_fdr_delta_vs_arm_a_pp",
         "true_positive_jaccard",
-        "alert_jaccard",
-        "median_wall_time_seconds",
-        "median_billable_tokens",
-        "median_report_tail_seconds",
-        "tokens_per_true_positive_reduction",
+        "recall_range_pp",
+        "provider_usage_coverage",
+        "explicit_attribution_coverage",
+        "queue_drained_rate",
+        "token_conservation_rate",
+        "telemetry_complete_rate",
+        "protocol_anomaly_count",
+        "sealed_confirmed_recall_delta_pp",
+        "sealed_actionable_precision_delta_pp",
+        "sealed_high_critical_recall_delta_pp",
+        "semantic_blind_review_unit_count",
+        "semantic_critical_contract_recall",
+        "semantic_unsupported_claim_rate",
+        "semantic_warm_cache_llm_call_reduction",
+        "active_discovery_exclusive_project_count",
+        "active_discovery_exclusive_cwe_family_count",
+        "safe_entry_alert_rate",
+        "safe_entry_alert_rate_delta_pp",
+        "shadow_precision_at_25",
+        "shadow_high_critical_precision",
+        "incomplete_scan_rate",
+        "silent_rejection_without_proof_count",
+        "arm_a_baseline_attested",
+        "public_external_attested",
+        "sealed_attested",
+        "shadow_attested",
     }
     assert required_gates == set(readiness["hard_gates"])
     assert all(gate["passed"] for gate in readiness["hard_gates"].values())
@@ -1218,51 +1421,84 @@ def test_release_readiness_passes_every_explicit_hard_gate() -> None:
     assert precision_stats["bootstrap_ci"]["upper"] == 0.75
 
 
-@pytest.mark.parametrize(
-    ("gate_name", "overrides"),
-    [
-        ("actionable_precision", {"actionable_precision": 0.69}),
-        ("distinct_root_recall", {"recall": 0.79}),
-        ("high_critical_recall", {"high_critical_recall": 0.89}),
-        ("safe_entry_alert_rate", {"safe_entry_alert_rate": 0.11}),
-        ("per_cwe_recall", {"cwe_recall": 0.64}),
-        ("median_wall_time_seconds", {"wall_time_seconds": 3601.0}),
-        ("median_billable_tokens", {"billable_tokens": 30_000_001.0}),
-        ("median_report_tail_seconds", {"report_tail_seconds": 121.0}),
-    ],
-)
-def test_release_readiness_fails_each_metric_boundary(
-    gate_name: str,
-    overrides: dict,
-) -> None:
-    summaries = [_release_summary(index, **overrides) for index in range(1, 6)]
+def test_release_readiness_enforces_111_tp_and_two_token_caps() -> None:
+    baseline = [
+        _release_summary(
+            index,
+            recall=0.78,
+            actionable_fdr=0.045,
+            validator_arm="A",
+            baseline_frozen=True,
+        )
+        for index in range(1, 6)
+    ]
+    low_tp = [_release_summary(index, true_positives=110) for index in range(1, 6)]
+    readiness = aggregate_trial_summaries(
+        low_tp, baseline_summaries=baseline, bootstrap_samples=20
+    )["release_readiness"]
+    assert readiness["hard_gates"]["median_confirmed_tp"]["passed"] is False
+
+    high_median = [_release_summary(index, billable_tokens=10_000_001) for index in range(1, 6)]
+    readiness = aggregate_trial_summaries(
+        high_median, baseline_summaries=baseline, bootstrap_samples=20
+    )["release_readiness"]
+    assert readiness["hard_gates"]["median_tokens"]["passed"] is False
+
+    high_one = [_release_summary(index) for index in range(1, 6)]
+    high_one[0]["cost"]["billable_tokens"] = 12_000_001
+    readiness = aggregate_trial_summaries(
+        high_one, baseline_summaries=baseline, bootstrap_samples=20
+    )["release_readiness"]
+    assert readiness["hard_gates"]["per_run_tokens"]["passed"] is False
+
+
+def test_release_readiness_rejects_unfrozen_or_non_arm_a_baseline() -> None:
+    current = [_release_summary(index) for index in range(1, 6)]
+    wrong_baseline = [
+        _release_summary(index, validator_arm="B", baseline_frozen=True) for index in range(1, 6)
+    ]
 
     readiness = aggregate_trial_summaries(
-        summaries,
-        bootstrap_samples=50,
+        current,
+        baseline_summaries=wrong_baseline,
+        balanced_attestation=_balanced_attestation(),
+        balanced_attestation_workflow_run_id="test-run",
+        release_sha="f" * 40,
+        bootstrap_samples=20,
     )["release_readiness"]
 
-    assert readiness["status"] == "failed"
-    assert readiness["hard_gates"][gate_name]["passed"] is False
+    assert readiness["hard_gates"]["arm_a_baseline_attested"]["passed"] is False
 
 
 def test_release_readiness_enforces_stability_jaccard_and_five_cold_trials() -> None:
+    baseline = [
+        _release_summary(
+            index,
+            recall=0.78,
+            actionable_fdr=0.045,
+            validator_arm="A",
+            baseline_frozen=True,
+        )
+        for index in range(1, 6)
+    ]
     only_four = [_release_summary(index) for index in range(1, 5)]
     four_readiness = aggregate_trial_summaries(
         only_four,
+        baseline_summaries=baseline,
         bootstrap_samples=20,
     )["release_readiness"]
     assert four_readiness["hard_gates"]["trial_protocol"]["passed"] is False
 
-    unstable_f1 = [
-        _release_summary(index, actionable_f1=value)
-        for index, value in enumerate((0.70, 0.74, 0.78, 0.82, 0.86), start=1)
+    unstable_recall = [
+        _release_summary(index, recall=value)
+        for index, value in enumerate((0.80, 0.81, 0.82, 0.83, 0.84), start=1)
     ]
-    f1_readiness = aggregate_trial_summaries(
-        unstable_f1,
+    recall_readiness = aggregate_trial_summaries(
+        unstable_recall,
+        baseline_summaries=baseline,
         bootstrap_samples=20,
     )["release_readiness"]
-    assert f1_readiness["hard_gates"]["actionable_f1_stdev"]["passed"] is False
+    assert recall_readiness["hard_gates"]["recall_range_pp"]["passed"] is False
 
     unstable_alerts = [
         _release_summary(
@@ -1274,15 +1510,16 @@ def test_release_readiness_enforces_stability_jaccard_and_five_cold_trials() -> 
     ]
     jaccard_readiness = aggregate_trial_summaries(
         unstable_alerts,
+        baseline_summaries=baseline,
         bootstrap_samples=20,
     )["release_readiness"]
-    assert jaccard_readiness["hard_gates"]["alert_jaccard"]["passed"] is False
     assert jaccard_readiness["hard_gates"]["true_positive_jaccard"]["passed"] is False
 
     warm = [_release_summary(index) for index in range(1, 6)]
     warm[0] = _release_summary(1, cache_mode="warm")
     warm_readiness = aggregate_trial_summaries(
         warm,
+        baseline_summaries=baseline,
         bootstrap_samples=20,
     )["release_readiness"]
     assert warm_readiness["hard_gates"]["trial_protocol"]["passed"] is False
@@ -1295,6 +1532,7 @@ def test_paired_improvement_claim_and_frozen_token_baseline() -> None:
             actionable_f1=0.80,
             wall_time_seconds=100.0,
             tokens_per_verified_issue=100.0,
+            recall=0.82,
         )
         for index in range(1, 6)
     ]
@@ -1304,6 +1542,13 @@ def test_paired_improvement_claim_and_frozen_token_baseline() -> None:
             actionable_f1=0.74,
             wall_time_seconds=130.0,
             tokens_per_verified_issue=150.0,
+            recall=0.78,
+            actionable_precision=0.755,
+            actionable_fdr=0.045,
+            high_critical_recall=0.91,
+            safe_entry_alert_rate=0.04,
+            validator_arm="A",
+            baseline_frozen=True,
         )
         for index in range(1, 6)
     ]
@@ -1313,6 +1558,9 @@ def test_paired_improvement_claim_and_frozen_token_baseline() -> None:
     readiness = aggregate_trial_summaries(
         current,
         baseline_summaries=baseline,
+        balanced_attestation=_balanced_attestation(),
+        balanced_attestation_workflow_run_id="test-run",
+        release_sha="f" * 40,
         require_improvement_claim=True,
         bootstrap_samples=100,
     )["release_readiness"]
@@ -1321,9 +1569,7 @@ def test_paired_improvement_claim_and_frozen_token_baseline() -> None:
     assert readiness["improvement_claim"]["quality_gain_path"]["passed"]
     assert readiness["improvement_claim"]["quality_delta_percentage_points"] == 6.0
     assert readiness["improvement_claim"]["quality_delta_bootstrap_ci"]["lower"] > 0
-    token_gate = readiness["hard_gates"]["tokens_per_true_positive_reduction"]
-    assert token_gate["passed"]
-    assert token_gate["actual"] == pytest.approx(1 / 3, abs=0.0001)
+    assert readiness["non_regression_readiness"]["gates"]["tokens_per_kloc_or_tp_growth"]["passed"]
 
 
 def test_improvement_claim_accepts_speed_path_with_at_most_two_point_quality_loss() -> None:
@@ -1346,6 +1592,49 @@ def test_improvement_claim_accepts_speed_path_with_at_most_two_point_quality_los
     assert claim["performance_path"]["passed"]
     assert claim["quality_delta_percentage_points"] == pytest.approx(-1.0)
     assert claim["median_wall_time_reduction"] == 0.25
+
+
+def test_validator_arm_tie_break_uses_lowest_median_tokens_within_one_point() -> None:
+    selected = select_validator_arm(
+        {
+            "B": {"passed": True, "median_recall": 0.82, "median_tokens": 8_000_000},
+            "C": {"passed": True, "median_recall": 0.829, "median_tokens": 9_000_000},
+            "D": {"passed": False, "median_recall": 0.90, "median_tokens": 11_000_000},
+        }
+    )
+
+    assert selected == "B"
+
+
+def test_non_regression_enforces_two_points_and_twenty_five_percent_cost_growth() -> None:
+    baseline = [
+        _release_summary(
+            index,
+            recall=0.82,
+            actionable_precision=0.80,
+            high_critical_recall=0.90,
+            tokens_per_verified_issue=100,
+        )
+        for index in range(1, 6)
+    ]
+    current = [
+        _release_summary(
+            index,
+            recall=0.80,
+            actionable_precision=0.78,
+            high_critical_recall=0.88,
+            tokens_per_verified_issue=125,
+        )
+        for index in range(1, 6)
+    ]
+
+    result = evaluate_non_regression_readiness(current, baseline)
+
+    assert result["passed"] is True
+    current[0]["cost"]["tokens_per_verified_issue"] = 200
+    for item in current[1:]:
+        item["cost"]["tokens_per_verified_issue"] = 126
+    assert evaluate_non_regression_readiness(current, baseline)["passed"] is False
 
 
 def test_formal_matrix_rejects_too_few_or_warm_trials_before_execution(
@@ -1490,6 +1779,7 @@ def test_artifact_manifest_detects_source_changes(tmp_path: Path) -> None:
         "config_sha256",
         "entries_sha256",
         "source_manifest_sha256",
+        "benchmark_policy_sha256",
     ):
         assert len(str(before[key])) == 64
     assert before["source_manifest_sha256"] != after["source_manifest_sha256"]
@@ -1523,6 +1813,7 @@ def test_integrity_rejects_noncomplete_schema_v2_report(tmp_path: Path) -> None:
         "benchmark_manifest_sha256": "e" * 64,
         "entries_sha256": "f" * 64,
         "source_manifest_sha256": "1" * 64,
+        "benchmark_policy_sha256": DEFAULT_BENCHMARK_POLICY.sha256,
         "source_file_count": 1,
     }
 
@@ -1609,7 +1900,7 @@ def test_full_trial_uses_isolated_snapshot_cache_and_records_integrity(
             run_dir=run_dir,
             mode="zscope",
             condition=external_benchmark.CONDITION_FULL_ZSCOPE,
-            run_kind="formal",
+            run_kind="sample",
             trial_index=1,
             line_tolerance=2,
             view="default",
@@ -1661,7 +1952,7 @@ def test_full_trial_rejects_a_stale_report(
                 run_dir=run_dir,
                 mode="zscope",
                 condition=external_benchmark.CONDITION_FULL_ZSCOPE,
-                run_kind="formal",
+                run_kind="sample",
                 trial_index=1,
                 line_tolerance=2,
                 view="default",

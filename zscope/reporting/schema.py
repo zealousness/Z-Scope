@@ -11,7 +11,7 @@ from ..orchestration.candidate_envelope import CANDIDATE_SCHEMA_VERSION
 
 REPORT_SCHEMA_VERSION = 2
 FINDING_STATUSES = {"clean", "needs_review", "confirmed"}
-COMPLETENESS_STATUSES = {"complete", "degraded", "failed", "interrupted"}
+COMPLETENESS_STATUSES = {"complete", "partial", "degraded", "failed", "interrupted"}
 EXIT_POLICIES = {"review", "confirmed", "legacy"}
 
 
@@ -51,6 +51,7 @@ def coalesce_terminal_candidates(
         "deferred_budget": 50,
         "engine_failed": 60,
         "interrupted": 70,
+        "shadow_observation": 5,
     }
 
     def item_priority(item: Mapping[str, Any]) -> int:
@@ -143,6 +144,10 @@ def engine_failure_terminal_states(
                 "unavailable",
                 "fallback",
                 "pending",
+                "partial",
+                "budget_limited",
+                "skipped_budget",
+                "planned_no_llm_client",
             }:
                 engine = ".".join(path) or "unknown"
                 payload = {
@@ -158,7 +163,21 @@ def engine_failure_terminal_states(
                         sort_keys=True,
                     ).encode("utf-8")
                 ).hexdigest()[:24]
-                disposition = "interrupted" if status == "interrupted" else "engine_failed"
+                disposition = (
+                    "interrupted"
+                    if status == "interrupted"
+                    else (
+                        "deferred_budget"
+                        if status
+                        in {
+                            "partial",
+                            "budget_limited",
+                            "skipped_budget",
+                            "planned_no_llm_client",
+                        }
+                        else "engine_failed"
+                    )
+                )
                 terminal.append(
                     {
                         "candidate_uid": f"ENGINE_{digest}",
@@ -211,6 +230,7 @@ def finding_status(
             "interrupted",
             "rejected_with_proof",
             "deduplicated_alias",
+            "shadow_observation",
         }
         for issue in issue_dicts
     ):
@@ -320,9 +340,6 @@ def completeness_status(
     state: Mapping[str, Any],
     candidates: Iterable[Any] = (),
 ) -> str:
-    explicit = str(state.get("completeness") or state.get("scan_completeness") or "").lower()
-    if explicit in COMPLETENESS_STATUSES:
-        return explicit
     if state.get("interrupted") or state.get("_interrupted"):
         return "interrupted"
     if state.get("any_failure"):
@@ -332,6 +349,7 @@ def completeness_status(
         return "degraded"
     capability_values: list[str] = []
     capabilities = state.get("engine_capabilities") or state.get("backend_capabilities")
+    active_discovery = state.get("active_discovery")
 
     def collect_capability_statuses(value: Any) -> None:
         if isinstance(value, Mapping):
@@ -346,14 +364,29 @@ def completeness_status(
                 collect_capability_statuses(nested)
 
     collect_capability_statuses(capabilities)
+    collect_capability_statuses(active_discovery)
     if "interrupted" in capability_values:
         return "interrupted"
+    if any(
+        value
+        in {
+            "partial",
+            "budget_limited",
+            "skipped_budget",
+            "planned_no_llm_client",
+        }
+        for value in capability_values
+    ):
+        return "partial"
     if "failed" in capability_values:
         return "degraded"
     if any(
         value in {"degraded", "unavailable", "fallback", "pending"} for value in capability_values
     ):
         return "degraded"
+    explicit = str(state.get("completeness") or state.get("scan_completeness") or "").lower()
+    if explicit in COMPLETENESS_STATUSES:
+        return explicit
 
     dispositions = {
         str(item.get("candidate_disposition") or item.get("disposition") or "").lower()
@@ -485,6 +518,19 @@ def build_run_manifest(
         "rule_catalog": metadata.get("rule_catalog") or {},
         "rule_candidate_counts": metadata.get("rule_candidate_counts") or {},
         "workflow": metadata.get("workflow") or "",
+        "scan_depth": metadata.get("scan_depth") or "fast",
+        "effective_scan": metadata.get("effective_scan")
+        or {
+            "depth": metadata.get("scan_depth") or "fast",
+            "rollout": metadata.get("rollout") or {},
+        },
+        "rollout": metadata.get("rollout") or {},
+        "llm_usage": metadata.get("llm_usage") or {},
+        "llm_usage_attribution": (
+            (metadata.get("llm_usage") or {}).get("usage_attribution")
+            if isinstance(metadata.get("llm_usage"), Mapping)
+            else {}
+        ),
         "knowledge_db_version": metadata.get("knowledge_db_version") or "",
         "candidate_schema_version": CANDIDATE_SCHEMA_VERSION,
         "finding_status": finding,
@@ -689,6 +735,7 @@ def report_invariant_status(
         item
         for item in _dict_items(terminal_candidates)
         if str(item.get("record_role") or "") != "operational_obligation"
+        and str(item.get("candidate_disposition") or "").lower() != "shadow_observation"
     ]
     clusters = {
         str(item.get("validation_cluster_uid") or "")
@@ -727,6 +774,11 @@ def report_invariant_status(
         "terminal_confirmed_count": terminal_confirmed,
         "displayed_review_count": review,
         "terminal_review_count": terminal_review,
+        "shadow_observation_count": sum(
+            1
+            for item in terminal_items
+            if str(item.get("candidate_disposition") or "").lower() == "shadow_observation"
+        ),
         "canonical_validation_group_count": len(clusters),
         "validation_group_alias_count": sum(
             len(item.get("alias_occurrence_uids") or []) for item in terminal_items
@@ -754,12 +806,11 @@ def exit_code_for_report(
     policy = str(policy or "review").lower()
     if policy not in EXIT_POLICIES:
         raise ValueError(f"Unsupported exit policy: {policy}")
-    if policy == "legacy":
-        return 1 if int(legacy_issue_count or 0) > 0 else 0
-
     completeness = str(report.get("completeness") or "complete").lower()
     if completeness != "complete":
         return 2
+    if policy == "legacy":
+        return 1 if int(legacy_issue_count or 0) > 0 else 0
     finding = str(
         report.get("finding_status")
         or ("confirmed" if int(legacy_issue_count or 0) > 0 else "clean")

@@ -12,7 +12,9 @@ from ...snapshots.modeling_input import SemanticModelInputError, resolve_functio
 
 
 VALIDATOR_EVIDENCE_SLICE_VERSION = "zscope.validator-evidence-slice.v2"
+VALIDATOR_EVIDENCE_SLICE_V3 = "zscope.validator-evidence-slice.v3"
 VALIDATOR_PROTOCOL_VERSION = "zscope.validator-protocol.v2"
+VALIDATOR_PROTOCOL_V3 = "zscope.validator-protocol.v3"
 VALIDATOR_MISSING_FACT_KINDS = frozenset(
     {
         "guard_dominance",
@@ -417,7 +419,169 @@ def build_validator_evidence_slice_v2(
     }
 
 
-def _normalized_missing_fact_kinds(value: Any) -> List[str]:
+def build_validator_evidence_slice_v3(
+    issue: Mapping[str, Any],
+    evidence_pack: Mapping[str, Any],
+    issue_code: str,
+    *,
+    validation_pass: str = "initial",
+    evidence_delta: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build the readable, reference-addressable Validator v3 projection.
+
+    v2 deliberately committed most decision data by UID/hash.  That is useful
+    for audit identity but forces a model to guess what those facts mean.  v3
+    keeps the commitments and adds bounded fact payloads, path edges, semantic
+    claims, and a catalog of the only references a model may cite.
+    """
+
+    result = build_validator_evidence_slice_v2(issue, evidence_pack, issue_code)
+    result["schema_version"] = VALIDATOR_EVIDENCE_SLICE_V3
+    result["protocol_version"] = VALIDATOR_PROTOCOL_V3
+    result["validation_pass"] = validation_pass
+
+    pack = dict(evidence_pack or {})
+    fact_slice = issue.get("decision_fact_slice")
+    if not isinstance(fact_slice, Mapping):
+        fact_slice = {}
+    fact_payloads: Any = (
+        issue.get("decision_facts")
+        or fact_slice.get("facts")
+        or fact_slice.get("fact_payloads")
+        or pack.get("decision_facts")
+        or []
+    )
+    if isinstance(fact_payloads, Mapping):
+        fact_payloads = [
+            {"fact_uid": str(key), "payload": value}
+            for key, value in list(fact_payloads.items())[:32]
+        ]
+    elif not isinstance(fact_payloads, list):
+        fact_payloads = []
+    result["decision_facts"]["facts"] = [
+        _compact_validation_value(item, max_list_items=12, max_string_chars=1600)
+        for item in fact_payloads[:32]
+        if isinstance(item, Mapping)
+    ]
+
+    function_context = pack.get("function_context")
+    if not isinstance(function_context, Mapping):
+        function_context = {}
+    result["code"]["snapshot_summary"] = _compact_validation_value(
+        function_context.get("snapshot_summary") or {},
+        max_list_items=12,
+        max_string_chars=1600,
+    )
+    result["code"]["callers"] = _compact_validation_value(
+        function_context.get("callers") or [],
+        max_list_items=8,
+        max_string_chars=700,
+    )
+    result["code"]["callees"] = _compact_validation_value(
+        function_context.get("callees") or [],
+        max_list_items=12,
+        max_string_chars=700,
+    )
+
+    semantic_claims = (
+        issue.get("security_semantic_claims")
+        or pack.get("security_semantic_claims")
+        or pack.get("semantic_overlays")
+        or []
+    )
+    if isinstance(semantic_claims, Mapping):
+        semantic_claims = list(semantic_claims.values())
+    if not isinstance(semantic_claims, list):
+        semantic_claims = []
+    result["semantic_claims"] = [
+        _compact_validation_value(item, max_list_items=8, max_string_chars=1200)
+        for item in semantic_claims[:16]
+        if isinstance(item, Mapping)
+    ]
+    result["evidence_delta"] = _compact_validation_value(
+        dict(evidence_delta or {}),
+        max_list_items=24,
+        max_string_chars=1800,
+    )
+
+    catalog: Dict[str, Dict[str, Any]] = {}
+
+    def add_ref(ref: Any, kind: str, summary: Any = "") -> None:
+        normalized = str(ref or "").strip()
+        if not normalized or len(catalog) >= 128:
+            return
+        catalog.setdefault(
+            normalized,
+            {
+                "kind": kind,
+                "summary": _compact_validation_value(summary, max_string_chars=600),
+            },
+        )
+
+    decision = result.get("decision_facts") or {}
+    for ref in decision.get("fact_uids") or []:
+        add_ref(ref, "decision_fact")
+    for ref in decision.get("edge_uids") or []:
+        add_ref(ref, "path_edge")
+    for ref in decision.get("dependency_code_hashes") or []:
+        add_ref(ref, "code_hash")
+    for fact in decision.get("facts") or []:
+        if not isinstance(fact, Mapping):
+            continue
+        add_ref(
+            fact.get("fact_uid") or fact.get("uid") or fact.get("id"),
+            "decision_fact",
+            fact,
+        )
+    for proof in decision.get("deterministic_proofs") or []:
+        if not isinstance(proof, Mapping):
+            continue
+        for ref in proof.get("fact_ids") or []:
+            add_ref(ref, "proof_fact", proof.get("summary"))
+        add_ref(proof.get("code_hash"), "code_hash", proof.get("summary"))
+    for ref in pack.get("evidence_refs") or []:
+        add_ref(ref, "candidate_evidence")
+    for index, value in enumerate(result.get("evidence", {}).get("positive") or []):
+        add_ref(f"evidence:positive:{index}", "positive_evidence", value)
+    for index, value in enumerate(result.get("evidence", {}).get("negative") or []):
+        add_ref(f"evidence:negative:{index}", "negative_evidence", value)
+    path = result.get("canonical_occurrence", {}).get("representative_call_path") or []
+    for index, (caller, callee) in enumerate(zip(path, path[1:])):
+        add_ref(f"path-edge:{index}:{caller}->{callee}", "call_path", [caller, callee])
+    location = result.get("obligation", {}).get("location")
+    if location:
+        add_ref(f"location:{location}", "source_location", location)
+    for claim in result.get("semantic_claims") or []:
+        if not isinstance(claim, Mapping):
+            continue
+        add_ref(claim.get("claim_id"), "semantic_claim", claim)
+        for ref in claim.get("evidence_refs") or []:
+            add_ref(ref, "semantic_claim_evidence", claim.get("kind"))
+    delta = result.get("evidence_delta")
+    if isinstance(delta, Mapping):
+        for ref in delta.get("evidence_refs") or []:
+            add_ref(ref, "evidence_delta")
+        for fact in delta.get("facts") or []:
+            if isinstance(fact, Mapping):
+                add_ref(
+                    fact.get("fact_uid") or fact.get("uid") or fact.get("id"),
+                    "evidence_delta_fact",
+                    fact,
+                )
+    result["evidence_ref_catalog"] = catalog
+    return result
+
+
+def normalize_missing_fact_kinds(value: Any) -> List[str]:
+    """Project obligation vocabulary onto Validator/provider fact kinds.
+
+    Security obligations retain low-level event labels for provenance, while
+    evidence completion and V3 promotion operate on the fixed public fact
+    vocabulary.  Keeping this projection in one place prevents an event label
+    that no provider or Validator tool can emit from becoming an impossible
+    promotion requirement.
+    """
+
     raw_values = value if isinstance(value, list) else [value]
     result: List[str] = []
     aliases = {
@@ -437,6 +601,11 @@ def _normalized_missing_fact_kinds(value: Any) -> List[str]:
         if normalized not in result:
             result.append(normalized)
     return result
+
+
+# Private compatibility name for older in-module callers and historical
+# imports.  New code should use the public normalizer above.
+_normalized_missing_fact_kinds = normalize_missing_fact_kinds
 
 
 def category_validation_requirements(issue: Dict[str, Any]) -> List[str]:

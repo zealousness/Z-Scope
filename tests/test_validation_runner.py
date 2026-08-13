@@ -73,10 +73,12 @@ def _runner(
     scheduler=None,
     get_tools=None,
     concurrency=None,
+    scan=None,
 ):
     memory = memory if memory is not None else []
     config = SimpleNamespace(
         analysis=analysis,
+        scan=scan,
         concurrency=concurrency
         or SimpleNamespace(
             validator_workers=2,
@@ -136,6 +138,29 @@ def _issue(**overrides):
     return issue
 
 
+def _validator_v3_result(
+    *,
+    verdict="uncertain",
+    validation_pass="initial",
+    missing_fact_request=None,
+    stop_reason="decision_complete",
+):
+    return {
+        "schema_version": "zscope.validator-result.v3",
+        "candidate_uid": "CAND_V3",
+        "validation_cluster_uid": "VAL_V3",
+        "pass": validation_pass,
+        "verdict": verdict,
+        "reasoning": "bounded validator decision",
+        "positive_evidence": ["structured path"],
+        "negative_evidence": [],
+        "evidence_refs": [],
+        "blocking_negative_evidence": False,
+        "missing_fact_request": missing_fact_request,
+        "stop_reason": stop_reason,
+    }
+
+
 def test_validation_runner_cache_key_uses_stable_evidence_fingerprint_without_candidate_id() -> (
     None
 ):
@@ -177,6 +202,22 @@ def test_validation_runner_cache_is_scoped_to_runner_instance() -> None:
 
     assert first._validator_cache_get("same-candidate") == {"verdict": "verified"}
     assert second._validator_cache_get("same-candidate") is None
+
+
+@pytest.mark.parametrize(
+    "stop_reason",
+    [
+        "fact_timeout",
+        "malformed_output",
+        "output_truncated",
+    ],
+)
+def test_validation_runner_does_not_cache_transient_v3_results(stop_reason) -> None:
+    runner = _runner(None)
+    value = _validator_v3_result(stop_reason=stop_reason)
+
+    assert runner._validator_cache_put("transient", value) is False
+    assert runner._validator_cache_get("transient") is None
 
 
 def test_zero_sized_validation_cache_is_really_disabled() -> None:
@@ -357,8 +398,701 @@ def test_validation_runner_validates_issue_and_remembers_outcome() -> None:
     assert len(state["issues"]) == 1
     assert state["issues"][0]["validation_status"] == "validated"
     assert state["issues"][0]["validator_verdict"] == "verified"
+    assert state["issues"][0]["model_verdict"] == "verified"
+    assert state["issues"][0]["policy_disposition"] == "confirmed"
+    assert state["issues"][0]["attribution"]["discovered_by"] == []
+    assert state["issues"][0]["attribution"]["decided_by"] == "validator_llm"
     assert memory == [("ISSUE_1", "validated")]
     assert agent.inputs[0]["agent_contract"] == "validator_agent"
+
+
+def test_validation_runner_v2_recheck_sees_all_required_typed_fact_deltas_once() -> None:
+    request = {
+        "fact_kind": "value_range",
+        "subject_uid": "wire_len",
+        "function_uid": "sink_func",
+        "reason": "the caller bound is missing",
+    }
+    agent = FakeValidatorAgent(
+        [
+            AgentResponse(
+                success=True,
+                data=_validator_v3_result(
+                    missing_fact_request=request,
+                    stop_reason="missing_fact",
+                ),
+            ),
+            AgentResponse(
+                success=True,
+                data=_validator_v3_result(
+                    verdict="verified",
+                    validation_pass="evidence_recheck",
+                ),
+            ),
+        ]
+    )
+    issue = _issue(
+        candidate_uid="CAND_V3",
+        validation_cluster_uid="VAL_V3",
+        severity="medium",
+        impact_level="medium",
+        reachable_from_entry=False,
+        security_obligation={
+            "obligation_uid": "OBL_RANGE",
+            "subject_uid": "wire_len",
+            "required_fact_kinds": ["value_range", "guard_dominance"],
+        },
+        obligation_required_fact_kinds=["value_range", "guard_dominance"],
+        missing_fact_kinds=["value_range", "guard_dominance"],
+        fact_completion_by_kind={
+            "value_range": [
+                {
+                    "fact_uid": "FACT_RANGE",
+                    "kind": "value_range",
+                    "value": "wire_len <= destination_capacity",
+                }
+            ],
+            "guard_dominance": [
+                {
+                    "fact_uid": "FACT_GUARD",
+                    "kind": "guard_dominance",
+                    "value": "the size guard dominates the copy",
+                }
+            ],
+        },
+    )
+    state = _state(issue)
+
+    _runner(agent).run(state)
+
+    assert len(agent.inputs) == 2
+    assert agent.inputs[1]["validation_pass"] == "evidence_recheck"
+    delta = agent.inputs[1]["evidence_slice"]["evidence_delta"]
+    assert {fact["fact_uid"] for fact in delta["facts"]} == {
+        "FACT_RANGE",
+        "FACT_GUARD",
+    }
+    assert delta["fact_kinds"] == ["guard_dominance", "value_range"]
+    assert issue["validator_fact_resolution"]["status"] == "completed_partial"
+    assert issue["validator_pass_history"][-1]["pass"] == "evidence_recheck"
+    assert issue["evidence_completion_attempt_count"] == 2
+
+
+def test_validation_runner_does_not_recheck_without_evidence_delta() -> None:
+    agent = FakeValidatorAgent(
+        [
+            AgentResponse(
+                success=True,
+                data=_validator_v3_result(
+                    missing_fact_request={
+                        "fact_kind": "value_range",
+                        "subject_uid": "wire_len",
+                        "function_uid": "sink_func",
+                        "reason": "the caller bound is missing",
+                    },
+                    stop_reason="missing_fact",
+                ),
+            )
+        ]
+    )
+    issue = _issue(candidate_uid="CAND_V3", validation_cluster_uid="VAL_V3")
+    state = _state(issue)
+
+    _runner(agent).run(state)
+
+    assert len(agent.inputs) == 1
+    assert issue["validator_fact_resolution"]["status"] == "exhausted"
+    assert issue["validator_stop_reason"] == "no_evidence_gain"
+
+
+def test_validation_runner_maps_fact_provider_timeout_to_canonical_stop(monkeypatch) -> None:
+    request = {
+        "fact_kind": "value_range",
+        "subject_uid": "wire_len",
+        "function_uid": "sink_func",
+        "reason": "the caller bound is missing",
+    }
+    agent = FakeValidatorAgent(
+        [
+            AgentResponse(
+                success=True,
+                data=_validator_v3_result(
+                    missing_fact_request=request,
+                    stop_reason="missing_fact",
+                ),
+            )
+        ]
+    )
+    runner = _runner(agent)
+    runner._evidence_completion_queue.fact_timeout_seconds = 0.01
+
+    def slow_provider(*_args):
+        time.sleep(0.05)
+        return []
+
+    monkeypatch.setattr(
+        runner._evidence_completion_queue,
+        "_requested_completion_proofs",
+        slow_provider,
+    )
+    issue = _issue(candidate_uid="CAND_V3", validation_cluster_uid="VAL_V3")
+    state = _state(issue)
+
+    runner.run(state)
+
+    assert state["validation_queue_drained"] is True
+    assert issue["validator_fact_resolution"]["status"] == "timeout"
+    assert issue["validator_stop_reason"] == "fact_timeout"
+    assert issue["candidate_disposition"] == "needs_review"
+
+
+def test_balanced_runs_long_v3_for_high_risk_external_candidate() -> None:
+    request = {
+        "fact_kind": "value_range",
+        "subject_uid": "wire_len",
+        "function_uid": "sink_func",
+        "reason": "the caller bound is missing",
+    }
+
+    class InvestigatingValidator(FakeValidatorAgent):
+        def __init__(self):
+            super().__init__(
+                [
+                    AgentResponse(
+                        success=True,
+                        data=_validator_v3_result(
+                            missing_fact_request=request,
+                            stop_reason="missing_fact",
+                        ),
+                    ),
+                    AgentResponse(
+                        success=True,
+                        data=_validator_v3_result(validation_pass="evidence_recheck"),
+                    ),
+                ]
+            )
+            self.investigations = []
+
+        def investigate(self, input_data, **kwargs):
+            self.investigations.append((input_data, kwargs))
+            return AgentResponse(
+                success=True,
+                data=_validator_v3_result(
+                    verdict="verified",
+                    validation_pass="investigation_synthesis",
+                    stop_reason="investigation_complete",
+                ),
+            )
+
+    agent = InvestigatingValidator()
+    issue = _issue(
+        candidate_uid="CAND_V3",
+        validation_cluster_uid="VAL_V3",
+        severity="high",
+        reachable_from_entry=True,
+        security_obligation={
+            "obligation_uid": "OBL_RANGE",
+            "subject_uid": "wire_len",
+            "required_fact_kinds": ["value_range"],
+        },
+        obligation_required_fact_kinds=["value_range"],
+        missing_fact_kinds=["value_range"],
+        fact_completion_by_kind={
+            "value_range": [
+                {
+                    "fact_uid": "FACT_RANGE",
+                    "kind": "value_range",
+                    "value": "wire_len may exceed destination_capacity",
+                }
+            ]
+        },
+    )
+    state = _state(issue)
+
+    _runner(agent, scan=SimpleNamespace(depth="balanced")).run(state)
+
+    assert len(agent.investigations) == 1
+    assert agent.investigations[0][1] == {"max_iterations": 50}
+    assert issue["validator_pass_history"][-1]["pass"] == "investigation_synthesis"
+    assert issue["attribution"]["decision_level"] == "V3"
+
+
+def test_balanced_runs_v3_without_v2_when_local_fact_providers_add_no_delta() -> None:
+    class InvestigatingValidator(FakeValidatorAgent):
+        def __init__(self):
+            super().__init__([AgentResponse(success=True, data=_validator_v3_result())])
+            self.calls = []
+
+        def investigate(self, input_data, **kwargs):
+            self.calls.append((input_data, kwargs))
+            return AgentResponse(
+                success=True,
+                data=_validator_v3_result(
+                    validation_pass="investigation_synthesis",
+                    stop_reason="investigation_exhausted",
+                ),
+            )
+
+    agent = InvestigatingValidator()
+    state = _state(
+        _issue(
+            candidate_uid="CAND_V3",
+            validation_cluster_uid="VAL_V3",
+            severity="critical",
+            reachable_from_entry=True,
+            security_obligation={
+                "obligation_uid": "OBL_CALLER",
+                "subject_uid": "sink_func",
+                "required_fact_kinds": ["caller_contract"],
+            },
+            obligation_required_fact_kinds=["caller_contract"],
+            missing_fact_kinds=["caller_contract"],
+        )
+    )
+
+    _runner(agent, scan=SimpleNamespace(depth="balanced")).run(state)
+
+    assert len(agent.calls) == 1
+    assert agent.calls[0][1] == {"max_iterations": 50}
+    assert [entry["pass"] for entry in state["observations"][0]["validator_pass_history"]] == [
+        "initial",
+        "investigation_synthesis",
+    ]
+
+
+def test_balanced_does_not_run_v3_for_medium_risk_candidate() -> None:
+    class InvestigatingValidator(FakeValidatorAgent):
+        def __init__(self):
+            super().__init__([AgentResponse(success=True, data=_validator_v3_result())])
+            self.called = False
+
+        def investigate(self, input_data, **kwargs):
+            self.called = True
+            raise AssertionError("medium-risk candidate must not enter V3")
+
+    agent = InvestigatingValidator()
+    state = _state(
+        _issue(
+            candidate_uid="CAND_V3",
+            validation_cluster_uid="VAL_V3",
+            severity="medium",
+            impact_level="medium",
+            reachable_from_entry=False,
+            entry_function="",
+            evidence_pack={"path": {"complete": True, "complete_to_entry": False}},
+            security_obligation={
+                "obligation_uid": "OBL_RANGE",
+                "subject_uid": "wire_len",
+                "required_fact_kinds": ["value_range"],
+            },
+            obligation_required_fact_kinds=["value_range"],
+            missing_fact_kinds=["value_range"],
+        )
+    )
+    state["agent_context"]["entry_custom_prompt"] = "Internal repository helper"
+
+    _runner(agent, scan=SimpleNamespace(depth="balanced")).run(state)
+
+    assert agent.called is False
+
+
+def test_balanced_runs_v3_for_medium_candidate_when_explicitly_external() -> None:
+    class InvestigatingValidator(FakeValidatorAgent):
+        def __init__(self):
+            super().__init__([AgentResponse(success=True, data=_validator_v3_result())])
+            self.calls = 0
+
+        def investigate(self, input_data, **kwargs):
+            self.calls += 1
+            assert kwargs == {"max_iterations": 50}
+            return AgentResponse(
+                success=True,
+                data=_validator_v3_result(
+                    validation_pass="investigation_synthesis",
+                    stop_reason="investigation_exhausted",
+                ),
+            )
+
+    agent = InvestigatingValidator()
+    issue = _issue(
+        candidate_uid="CAND_V3",
+        validation_cluster_uid="VAL_V3",
+        severity="medium",
+        impact_level="medium",
+        externally_reachable=True,
+        security_obligation={
+            "obligation_uid": "OBL_RANGE",
+            "subject_uid": "wire_len",
+            "required_fact_kinds": ["value_range"],
+        },
+        obligation_required_fact_kinds=["value_range"],
+        missing_fact_kinds=["value_range"],
+    )
+
+    _runner(agent, scan=SimpleNamespace(depth="balanced")).run(_state(issue))
+
+    assert agent.calls == 1
+
+
+@pytest.mark.parametrize("error", ["malformed JSON output", "provider output truncated"])
+def test_balanced_recoverable_v1_failure_enters_v3(error) -> None:
+    class RecoveringValidator(FakeValidatorAgent):
+        def __init__(self):
+            super().__init__([AgentResponse(success=False, data={}, error=error)])
+            self.calls = 0
+
+        def investigate(self, input_data, **kwargs):
+            self.calls += 1
+            return AgentResponse(
+                success=True,
+                data=_validator_v3_result(
+                    validation_pass="investigation_synthesis",
+                    stop_reason="investigation_exhausted",
+                ),
+            )
+
+    agent = RecoveringValidator()
+    issue = _issue(
+        candidate_uid="CAND_V3",
+        validation_cluster_uid="VAL_V3",
+        severity="high",
+        impact_level="high",
+        externally_reachable=True,
+        security_obligation={
+            "obligation_uid": "OBL_RANGE",
+            "subject_uid": "wire_len",
+            "required_fact_kinds": ["value_range"],
+        },
+        obligation_required_fact_kinds=["value_range"],
+        missing_fact_kinds=["value_range"],
+    )
+
+    _runner(agent, scan=SimpleNamespace(depth="balanced")).run(_state(issue))
+
+    assert agent.calls == 1
+    assert issue["validator_result_pass"] == "investigation_synthesis"
+    assert issue["candidate_disposition"] == "needs_review"
+
+
+@pytest.mark.parametrize("verdict", ["rejected", "verified"])
+def test_balanced_escalates_unclosed_model_verdicts_to_v3(verdict) -> None:
+    class InvestigatingValidator(FakeValidatorAgent):
+        def __init__(self):
+            super().__init__(
+                [
+                    AgentResponse(
+                        success=True,
+                        data=_validator_v3_result(
+                            verdict=verdict,
+                            stop_reason="decision_complete",
+                        ),
+                    )
+                ]
+            )
+            self.calls = []
+
+        def investigate(self, input_data, **kwargs):
+            self.calls.append((input_data, kwargs))
+            return AgentResponse(
+                success=True,
+                data=_validator_v3_result(
+                    validation_pass="investigation_synthesis",
+                    stop_reason="investigation_exhausted",
+                ),
+            )
+
+    agent = InvestigatingValidator()
+    issue = _issue(
+        candidate_uid="CAND_V3",
+        validation_cluster_uid="VAL_V3",
+        severity="high",
+        impact_level="high",
+        reachable_from_entry=True,
+        externally_reachable=True,
+        confidence=0.1,
+        rule_confidence=0.1,
+        evidence_pack={"path": {"complete": False, "complete_to_entry": True}},
+        security_obligation={
+            "obligation_uid": "OBL_CALLER",
+            "subject_uid": "sink_func",
+            "required_fact_kinds": ["caller_contract"],
+        },
+        obligation_required_fact_kinds=["caller_contract"],
+        missing_fact_kinds=["caller_contract"],
+    )
+
+    _runner(agent, scan=SimpleNamespace(depth="balanced")).run(_state(issue))
+
+    assert len(agent.calls) == 1
+    assert agent.calls[0][1] == {"max_iterations": 50}
+    assert issue["validator_result_pass"] == "investigation_synthesis"
+    assert issue["candidate_disposition"] == "needs_review"
+
+
+def test_v3_tool_backed_fact_closure_reenters_promotion_policy() -> None:
+    class ClosingValidator(FakeValidatorAgent):
+        def __init__(self):
+            super().__init__([AgentResponse(success=True, data=_validator_v3_result())])
+            self.calls = 0
+
+        def investigate(self, input_data, **kwargs):
+            self.calls += 1
+            tool_ref = "TOOLFACT_RANGE"
+            fact_uid = "FACT_V3_RANGE"
+            return AgentResponse(
+                success=True,
+                data=_validator_v3_result(
+                    verdict="verified",
+                    validation_pass="investigation_synthesis",
+                    stop_reason="investigation_complete",
+                )
+                | {"evidence_refs": [fact_uid]},
+                metadata={
+                    "iterations": 4,
+                    "tool_call_count": 3,
+                    "validator_tool_fact_catalog": {
+                        tool_ref: {
+                            "evidence_ref": tool_ref,
+                            "tool_name": "get_data_flow",
+                            "dependency_code_hash": "tool-code-sha",
+                            "location": {
+                                "file": "src/demo.c",
+                                "function": "sink_func",
+                                "start_line": 10,
+                                "end_line": 14,
+                            },
+                        }
+                    },
+                    "validator_investigation_facts": [
+                        {
+                            "fact_uid": fact_uid,
+                            "fact_kind": "value_range",
+                            "summary": "wire_len may exceed destination capacity",
+                            "evidence_refs": [tool_ref],
+                            "producer_engine": "validator_readonly_tool_session",
+                            "dependency_code_hash": "tool-code-sha",
+                            "locations": [
+                                {
+                                    "file": "src/demo.c",
+                                    "function": "sink_func",
+                                    "start_line": 10,
+                                    "end_line": 14,
+                                }
+                            ],
+                        }
+                    ],
+                },
+            )
+
+    agent = ClosingValidator()
+    issue = _issue(
+        candidate_uid="CAND_V3",
+        validation_cluster_uid="VAL_V3",
+        severity="high",
+        impact_level="high",
+        reachable_from_entry=True,
+        decision_context_version="zscope.decision-context.v3.1",
+        source_identity="wire_len",
+        sink_identity="memcpy",
+        security_obligation={
+            "obligation_uid": "OBL_RANGE",
+            "subject_uid": "wire_len",
+            "required_fact_kinds": ["value_range"],
+        },
+        obligation_required_fact_kinds=["value_range"],
+        missing_fact_kinds=["value_range"],
+        decision_fact_slice={
+            "fact_uids": ["FACT_BASE"],
+            "dependency_code_hashes": ["base-code-sha"],
+            "missing_fact_kinds": ["value_range"],
+            "coverage": "partial",
+        },
+        decision_fact_coverage="partial",
+    )
+    state = _state(issue)
+
+    _runner(agent, scan=SimpleNamespace(depth="balanced")).run(state)
+
+    assert agent.calls == 1
+    assert state["issues"] == [issue]
+    assert issue["candidate_disposition"] == "confirmed"
+    assert issue["v3_evidence_closure"]["complete"] is True
+    assert issue["v3_evidence_closure"]["fact_uids"] == ["FACT_V3_RANGE"]
+    assert issue["decision_fact_coverage"] == "complete"
+    assert issue["missing_fact_kinds"] == []
+    assert issue["decision_fact_slice"]["facts"][0]["fact_uid"] == "FACT_V3_RANGE"
+    assert issue["v3_tool_fact_catalog"]["TOOLFACT_RANGE"]["tool_name"] == "get_data_flow"
+
+
+def test_v3_rejects_unbacked_fact_uid_from_default_promotion() -> None:
+    class ForgingValidator(FakeValidatorAgent):
+        def __init__(self):
+            super().__init__([AgentResponse(success=True, data=_validator_v3_result())])
+
+        def investigate(self, input_data, **kwargs):
+            return AgentResponse(
+                success=True,
+                data=_validator_v3_result(
+                    verdict="verified",
+                    validation_pass="investigation_synthesis",
+                    stop_reason="investigation_complete",
+                )
+                | {"evidence_refs": ["FACT_V3_FORGED"]},
+                metadata={
+                    "validator_investigation_facts": [
+                        {
+                            "fact_uid": "FACT_V3_FORGED",
+                            "fact_kind": "value_range",
+                            "summary": "invented bound",
+                            "evidence_refs": ["TOOLFACT_MISSING"],
+                            "producer_engine": "validator_readonly_tool_session",
+                            "dependency_code_hash": "invented-code-sha",
+                            "locations": [{"file": "src/demo.c", "start_line": 10}],
+                        }
+                    ],
+                    "validator_tool_fact_catalog": {},
+                },
+            )
+
+    issue = _issue(
+        candidate_uid="CAND_V3",
+        validation_cluster_uid="VAL_V3",
+        severity="high",
+        impact_level="high",
+        externally_reachable=True,
+        decision_context_version="zscope.decision-context.v3.1",
+        source_identity="wire_len",
+        sink_identity="memcpy",
+        security_obligation={
+            "obligation_uid": "OBL_RANGE",
+            "subject_uid": "wire_len",
+            "required_fact_kinds": ["value_range"],
+        },
+        obligation_required_fact_kinds=["value_range"],
+        missing_fact_kinds=["value_range"],
+        decision_fact_slice={
+            "fact_uids": ["FACT_BASE"],
+            "dependency_code_hashes": ["base-code-sha"],
+            "missing_fact_kinds": ["value_range"],
+            "coverage": "partial",
+        },
+        decision_fact_coverage="partial",
+    )
+
+    _runner(ForgingValidator(), scan=SimpleNamespace(depth="balanced")).run(_state(issue))
+
+    assert issue["candidate_disposition"] == "needs_review"
+    assert issue["v3_evidence_closure"]["complete"] is False
+    assert issue["v3_investigation_cited_fact_count"] == 0
+
+
+def test_v3_closure_normalizes_obligation_event_aliases() -> None:
+    issue = {
+        "missing_fact_kinds": ["event:shared_state_access", "lockset"],
+        "decision_fact_slice": {
+            "fact_uids": ["FACT_BASE"],
+            "dependency_code_hashes": ["base-code-sha"],
+            "missing_fact_kinds": ["event:shared_state_access", "lockset"],
+            "coverage": "partial",
+        },
+    }
+    fact = {
+        "fact_uid": "FACT_V3_LOCKSET",
+        "fact_kind": "lockset",
+        "summary": "the same mutex protects both accesses",
+        "evidence_refs": ["TOOLFACT_LOCKSET"],
+        "producer_engine": "validator_readonly_tool_session",
+        "dependency_code_hash": "lockset-code-sha",
+        "locations": [{"file": "src/demo.c", "start_line": 10}],
+    }
+
+    ValidationRunner._apply_v3_investigation_facts(
+        issue,
+        {"evidence_refs": ["FACT_V3_LOCKSET"]},
+        {
+            "validator_investigation_facts": [fact],
+            "validator_tool_fact_catalog": {
+                "TOOLFACT_LOCKSET": {
+                    "tool_name": "get_file_snippet",
+                    "dependency_code_hash": "lockset-code-sha",
+                }
+            },
+        },
+    )
+
+    assert issue["v3_evidence_closure"]["complete"] is True
+    assert issue["v3_evidence_closure"]["resolved_fact_kinds"] == ["lockset"]
+    assert issue["missing_fact_kinds"] == []
+
+
+def test_deep_runs_v3_for_every_unclosed_non_shadow_candidate() -> None:
+    request = {
+        "fact_kind": "value_range",
+        "subject_uid": "wire_len",
+        "function_uid": "sink_func",
+        "reason": "the caller bound is missing",
+    }
+
+    class InvestigatingValidator(FakeValidatorAgent):
+        def __init__(self):
+            super().__init__(
+                [
+                    AgentResponse(
+                        success=True,
+                        data=_validator_v3_result(
+                            missing_fact_request=request,
+                            stop_reason="missing_fact",
+                        ),
+                    ),
+                    AgentResponse(
+                        success=True,
+                        data=_validator_v3_result(validation_pass="evidence_recheck"),
+                    ),
+                ]
+            )
+            self.called = False
+
+        def investigate(self, input_data, **kwargs):
+            self.called = True
+            self.kwargs = kwargs
+            return AgentResponse(
+                success=True,
+                data=_validator_v3_result(
+                    validation_pass="investigation_synthesis",
+                    stop_reason="investigation_exhausted",
+                ),
+            )
+
+    agent = InvestigatingValidator()
+    issue = _issue(
+        candidate_uid="CAND_V3",
+        validation_cluster_uid="VAL_V3",
+        severity="medium",
+        risk_score=1,
+        reachable_from_entry=False,
+        security_obligation={
+            "obligation_uid": "OBL_RANGE",
+            "subject_uid": "wire_len",
+            "required_fact_kinds": ["value_range"],
+        },
+        obligation_required_fact_kinds=["value_range"],
+        missing_fact_kinds=["value_range"],
+        fact_completion_by_kind={
+            "value_range": [
+                {
+                    "fact_uid": "FACT_RANGE",
+                    "kind": "value_range",
+                    "value": "wire_len may exceed destination_capacity",
+                }
+            ]
+        },
+    )
+
+    _runner(agent, scan=SimpleNamespace(depth="deep")).run(_state(issue))
+
+    assert agent.called is True
+    assert agent.kwargs == {"max_iterations": 50}
+    assert issue["validator_result_pass"] == "investigation_synthesis"
 
 
 def test_validation_runner_always_skips_validator_for_prevalidation_proof() -> None:
@@ -385,6 +1119,8 @@ def test_validation_runner_always_skips_validator_for_prevalidation_proof() -> N
     assert state["issues"] == [issue]
     assert state["validator_avoided_count"] == 1
     assert state["deterministic_prevalidation_confirmed_count"] == 1
+    assert issue["attribution"]["decided_by"] == "deterministic_proof"
+    assert issue["attribution"]["decision_level"] == "V0"
 
 
 def test_stable_validator_evidence_slice_disables_open_ended_tools() -> None:
@@ -403,6 +1139,26 @@ def test_stable_validator_evidence_slice_disables_open_ended_tools() -> None:
     runner._build_validator_agent()
 
     assert captured["tools"] == []
+
+
+def test_balanced_validator_receives_readonly_v3_tools_but_v1_remains_direct() -> None:
+    captured = {}
+    readonly_tools = [object(), object()]
+
+    def factory(client, tools, **kwargs):
+        captured["tools"] = tools
+        return FakeValidatorAgent([])
+
+    runner = _runner(
+        FakeValidatorAgent([]),
+        validator_agent_factory=factory,
+        get_tools=lambda _agent_name: readonly_tools,
+        scan=SimpleNamespace(depth="balanced"),
+    )
+
+    runner._build_validator_agent()
+
+    assert captured["tools"] == readonly_tools
 
 
 def test_validation_runner_logs_needs_review_without_validated_label(caplog) -> None:
@@ -456,7 +1212,7 @@ def test_validation_runner_compacts_large_validator_payloads() -> None:
     assert "RAW_PAYLOAD_SHOULD_NOT_SURVIVE" not in serialized_slice
     assert "irrelevant_large_blob" not in serialized_slice
     assert validator_input["evidence_slice"]["evidence"]["positive"] == ["entry reaches sink"]
-    assert validator_input["validator_protocol"] == "zscope.validator-protocol.v2"
+    assert validator_input["validator_protocol"] == "zscope.validator-protocol.v3"
 
 
 def test_validation_runner_keeps_entry_root_rejection_without_proof_for_review() -> None:
@@ -481,6 +1237,7 @@ def test_validation_runner_keeps_entry_root_rejection_without_proof_for_review()
     assert state["issues"] == []
     assert len(state["observations"]) == 1
     assert state["observations"][0]["validation_status"] == "needs_review"
+    assert state["observations"][0]["attribution"]["decided_by"] == "unresolved"
     assert memory == [("ISSUE_2", "needs_review")]
 
 

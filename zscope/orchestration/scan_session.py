@@ -36,6 +36,7 @@ from .diff_impact import DiffImpactPlanner
 from .specs import SpecRegistry, WorkflowStep
 from .workflow_executor import WorkflowExecutor, WorkflowStepHandler
 from ..rules.extensions import preflight_rules
+from ..benchmarking.discovery_ablation import DiscoveryAblationRuntimeOverride
 
 logger = logging.getLogger(__name__)
 
@@ -80,12 +81,21 @@ class ScanSessionRunner:
         emit: Optional[Callable[[str], None]] = None,
         exit_policy: str = "review",
         task_id: str = "",
+        benchmark_ablation_override: Optional[DiscoveryAblationRuntimeOverride] = None,
     ) -> None:
+        if benchmark_ablation_override is not None:
+            benchmark_ablation_override.require_in_process_supported()
+            benchmark_ablation_override.attest_cold_runtime(
+                config,
+                resume=resume,
+                maintain=maintain,
+            )
         self.spec_registry = SpecRegistry(project_root=config.project.project_root)
         preflight_rules(config, spec_registry=self.spec_registry)
         self.config = config
         self.task_id = str(task_id or "").strip()
         self.task_slug = _task_slug(self.task_id)
+        self._benchmark_ablation_override = benchmark_ablation_override
         self.resume = resume
         self.maintain = maintain
         self.discover_entries = discover_entries
@@ -137,6 +147,10 @@ class ScanSessionRunner:
 
             if state.get("batch_mode"):
                 return self._run_batch(state, steps)
+            if self._benchmark_ablation_override is not None:
+                raise ValueError(
+                    "discovery ablation execution requires a frozen batch Candidate Ledger"
+                )
             return self._run_single(state)
         finally:
             code_index = state.get("code_index")
@@ -541,6 +555,7 @@ class ScanSessionRunner:
             force_ignore_history=not (self.resume or self.maintain),
             maintain_mode=self.maintain,
             cancellation_token=self._cancellation_token,
+            benchmark_ablation_override=self._benchmark_ablation_override,
         )
         state["parallel_analyzer"] = parallel_analyzer
         discovery_result = state.get("discovery_result")
@@ -788,6 +803,7 @@ class ScanSessionRunner:
                     "confirmed",
                     "rejected_with_proof",
                     "deduplicated_alias",
+                    "shadow_observation",
                 }
                 return sum(
                     int(count or 0)

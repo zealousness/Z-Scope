@@ -72,6 +72,7 @@ def test_zscope_init_generates_detected_strict_v2_config(tmp_path: Path, monkeyp
     assert config.project.language == "c_cpp"
     assert config.indexing.backend == "unified"
     assert config.concurrency.svf_workers == 2
+    assert config.scan.depth == "fast"
     assert "--plan-entries" in result.output
 
 
@@ -132,6 +133,35 @@ def test_doctor_checks_only_the_explicit_regex_backend(tmp_path: Path) -> None:
     assert "runtime-spec" in names
     assert "tool:clangd" not in names
     assert "tool:wpa" not in names
+
+
+def test_cli_forwards_scan_overrides_to_mcp_server(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "zscope.yaml"
+    path.write_text(json.dumps(_regex_config(tmp_path)), encoding="utf-8")
+    captured = {}
+
+    def fake_run_stdio_server(config_path: str, **kwargs) -> None:
+        captured["config_path"] = config_path
+        captured.update(kwargs)
+
+    monkeypatch.setattr("zscope.mcp.server.run_stdio_server", fake_run_stdio_server)
+
+    result = CliRunner().invoke(
+        zscope_main,
+        [
+            "--config",
+            str(path),
+            "--mcp-stdio",
+            "--scan-depth",
+            "deep",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "config_path": str(path),
+        "scan_depth": "deep",
+    }
 
 
 def test_plan_entries_builds_index_and_writes_preview_without_llm(tmp_path: Path) -> None:

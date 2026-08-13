@@ -1,0 +1,189 @@
+{
+  "schema_version": "zscope.validator-arm-catalog.v1",
+  "catalog_revision": 2,
+  "replay_schema_version": "zscope.validator-replay-bundle.v1",
+  "evidence_slice_schema_version": "zscope.validator-evidence-slice.v3",
+  "validator_protocol_version": "zscope.validator-protocol.v3",
+  "result_schema_version": "zscope.validator-result.v3",
+  "arms": [
+    {
+      "arm_id": "A",
+      "revision": 2,
+      "baseline": true,
+      "description": "Frozen generic-loop max_iterations=1 forced-final terminal bridge projected onto ValidatorResult v3.",
+      "protocol_mode": "legacy_single_turn_bridge",
+      "decision_policy": {
+        "initial_direct_calls": 1,
+        "max_mechanical_repair_calls": 0,
+        "fact_recheck_enabled": false,
+        "max_fact_requests": 0,
+        "require_new_fact_delta": true,
+        "investigation_enabled": false,
+        "investigation_gate": "disabled",
+        "investigation_trajectories": 0,
+        "max_tool_queries_per_trajectory": 0,
+        "tool_source": "frozen_replay_bundle_only",
+        "executor_usage_scope": "single_http_attempt",
+        "investigation_depth": "disabled",
+        "investigation_eligible_severities": [],
+        "investigation_risk_threshold": 0,
+        "investigation_max_cluster_percent": 0
+      },
+      "limits": {
+        "max_calls_per_group": 1,
+        "max_input_tokens": 12000,
+        "max_output_tokens": 8192,
+        "repair_output_tokens": 1024,
+        "expected_group_tokens": 20000,
+        "deadline_seconds": 120,
+        "concurrency": 1,
+        "expected_investigation_tokens": 0
+      },
+      "arm_spec_sha256": "8b1c3a4c8f68fc730994577fca57ba90701afef6372b88c874f750f689e70a3f"
+    },
+    {
+      "arm_id": "B",
+      "revision": 2,
+      "baseline": false,
+      "description": "Validator v3 direct decision with one mechanical format repair.",
+      "protocol_mode": "v3_direct",
+      "decision_policy": {
+        "initial_direct_calls": 1,
+        "max_mechanical_repair_calls": 1,
+        "fact_recheck_enabled": false,
+        "max_fact_requests": 0,
+        "require_new_fact_delta": true,
+        "investigation_enabled": false,
+        "investigation_gate": "disabled",
+        "investigation_trajectories": 0,
+        "max_tool_queries_per_trajectory": 0,
+        "tool_source": "frozen_replay_bundle_only",
+        "executor_usage_scope": "single_http_attempt",
+        "investigation_depth": "disabled",
+        "investigation_eligible_severities": [],
+        "investigation_risk_threshold": 0,
+        "investigation_max_cluster_percent": 0
+      },
+      "limits": {
+        "max_calls_per_group": 2,
+        "max_input_tokens": 12000,
+        "max_output_tokens": 8192,
+        "repair_output_tokens": 1024,
+        "expected_group_tokens": 22000,
+        "deadline_seconds": 120,
+        "concurrency": 1,
+        "expected_investigation_tokens": 0
+      },
+      "arm_spec_sha256": "bf42e64b2bfd6ee7efa1af01e9a45d4ade16bdb0fc840dbc381f1319c554647e"
+    },
+    {
+      "arm_id": "C",
+      "revision": 2,
+      "baseline": false,
+      "description": "Direct decision plus at most one stateless frozen-fact recheck.",
+      "protocol_mode": "v3_fact_recheck",
+      "decision_policy": {
+        "initial_direct_calls": 1,
+        "max_mechanical_repair_calls": 1,
+        "fact_recheck_enabled": true,
+        "max_fact_requests": 1,
+        "require_new_fact_delta": true,
+        "investigation_enabled": false,
+        "investigation_gate": "disabled",
+        "investigation_trajectories": 0,
+        "max_tool_queries_per_trajectory": 0,
+        "tool_source": "frozen_replay_bundle_only",
+        "executor_usage_scope": "single_http_attempt",
+        "investigation_depth": "disabled",
+        "investigation_eligible_severities": [],
+        "investigation_risk_threshold": 0,
+        "investigation_max_cluster_percent": 0
+      },
+      "limits": {
+        "max_calls_per_group": 4,
+        "max_input_tokens": 12000,
+        "max_output_tokens": 8192,
+        "repair_output_tokens": 1024,
+        "expected_group_tokens": 40000,
+        "deadline_seconds": 180,
+        "concurrency": 1,
+        "expected_investigation_tokens": 0
+      },
+      "arm_spec_sha256": "d598605da1ceb1333df6d334950926af21eea8a43b3b7c2897f245fa47d1c24f"
+    },
+    {
+      "arm_id": "D",
+      "revision": 2,
+      "baseline": false,
+      "description": "Balanced high-risk gate plus one two-query read-only trajectory over the frozen replay reservoir.",
+      "protocol_mode": "v3_bounded_investigation",
+      "decision_policy": {
+        "initial_direct_calls": 1,
+        "max_mechanical_repair_calls": 1,
+        "fact_recheck_enabled": true,
+        "max_fact_requests": 1,
+        "require_new_fact_delta": true,
+        "investigation_enabled": true,
+        "investigation_gate": "uncertain_after_fact_recheck",
+        "investigation_trajectories": 1,
+        "max_tool_queries_per_trajectory": 2,
+        "tool_source": "frozen_replay_bundle_only",
+        "executor_usage_scope": "single_http_attempt",
+        "investigation_depth": "balanced",
+        "investigation_eligible_severities": [
+          "critical",
+          "high"
+        ],
+        "investigation_risk_threshold": 80,
+        "investigation_max_cluster_percent": 5
+      },
+      "limits": {
+        "max_calls_per_group": 7,
+        "max_input_tokens": 12000,
+        "max_output_tokens": 8192,
+        "repair_output_tokens": 1024,
+        "expected_group_tokens": 100000,
+        "deadline_seconds": 300,
+        "concurrency": 1,
+        "expected_investigation_tokens": 80000
+      },
+      "arm_spec_sha256": "cf2200a6f39169b8ebdd96042be1c2ef4b943460b6ea62cfab6816c7f1a050bd"
+    },
+    {
+      "arm_id": "E",
+      "revision": 2,
+      "baseline": false,
+      "description": "Frozen legacy multi-turn Validator session used only as the 17M expected cost/recall upper-bound arm; the executor projects its final decision onto ValidatorResult v3 and aggregates provider usage for every internal HTTP attempt.",
+      "protocol_mode": "legacy_multi_turn_upper_bound",
+      "decision_policy": {
+        "initial_direct_calls": 1,
+        "max_mechanical_repair_calls": 0,
+        "fact_recheck_enabled": false,
+        "max_fact_requests": 0,
+        "require_new_fact_delta": true,
+        "investigation_enabled": false,
+        "investigation_gate": "delegated_to_legacy_session_executor",
+        "investigation_trajectories": 0,
+        "max_tool_queries_per_trajectory": 0,
+        "tool_source": "frozen_replay_bundle_only",
+        "executor_usage_scope": "aggregate_all_http_attempts_in_legacy_session",
+        "investigation_depth": "disabled",
+        "investigation_eligible_severities": [],
+        "investigation_risk_threshold": 0,
+        "investigation_max_cluster_percent": 0
+      },
+      "limits": {
+        "max_calls_per_group": 1,
+        "max_input_tokens": 12000,
+        "max_output_tokens": 8192,
+        "repair_output_tokens": 1024,
+        "expected_group_tokens": 17000000,
+        "deadline_seconds": 1800,
+        "concurrency": 1,
+        "expected_investigation_tokens": 0
+      },
+      "arm_spec_sha256": "c65dc471ee12a3afdf2c2de86da9475ef68e88fadcb3967ed37d17aff597bbfa"
+    }
+  ],
+  "catalog_sha256": "1de1ddaa9cbbc84f35396aa815cc4d55d7965449091de751373393a98eadb5ac"
+}

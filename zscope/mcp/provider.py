@@ -11,11 +11,15 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlsplit
 
 from ..config.config import ZScopeConfig
+from ..framework.llm_usage import scan_token_usage_snapshot
 from ..snapshots.store import SnapshotStore
 from ..tools.policy import ToolPolicy, deny_sensitive_paths_hook
 from ..tools.runtime import ToolsRuntime
 from ..orchestration.entry_discovery import EntryDiscovery
+from ..orchestration.rollout import rollout_runtime_policy
+from ..orchestration.scan_request import ScanRequestError, ScanRequestService
 from ..retrieval.code_index import CodeIndex
+from ..rules.catalog import serialize_effective_rules
 from ..rules.extensions import preflight_rules
 
 
@@ -34,6 +38,8 @@ MCP_TOOL_ALIASES: Dict[str, str] = {
     "zscope.graph.get_deep_call_context": "get_deep_call_context",
     "zscope.knowledge.query": "query_knowledge",
     "zscope.entries.discover": "discover_entries",
+    "zscope.scan.run": "run_scan",
+    "zscope.scan.status": "scan_status",
 }
 
 MCP_RAW_TOOL_ALIASES: Dict[str, str] = {
@@ -52,6 +58,8 @@ class ZScopeMcpProvider:
         tools_runtime: Optional[ToolsRuntime] = None,
         tool_policy: Optional[ToolPolicy] = None,
         max_result_chars: int = 100000,
+        config_path: Optional[Path] = None,
+        scan_request_service: Optional[ScanRequestService] = None,
     ):
         preflight_rules(config)
         self.config = config
@@ -79,6 +87,17 @@ class ZScopeMcpProvider:
         )
         self.tool_policy = resolved_policy if tool_policy else self.tools_runtime.tool_policy
         self.max_result_chars = max(1000, int(max_result_chars or 100000))
+        self.scan_request_service = scan_request_service
+        if self.scan_request_service is None and config_path is not None:
+            requested_depth_source = str(getattr(config.scan, "requested_depth_source", "") or "")
+            self.scan_request_service = ScanRequestService(
+                Path(config_path),
+                default_scan_depth=(
+                    str(getattr(config.scan, "requested_depth", "") or "") or None
+                    if requested_depth_source == "cli"
+                    else None
+                ),
+            )
 
     def list_resources(self) -> List[Dict[str, Any]]:
         resources = [
@@ -104,6 +123,18 @@ class ZScopeMcpProvider:
                 "uri": "zscope://snapshots/list",
                 "name": "Snapshot List",
                 "description": "Function semantic snapshots and final reports known to snapshot.db.",
+                "mimeType": "application/json",
+            },
+            {
+                "uri": "zscope://reports/latest",
+                "name": "Latest Z-SCOPE Report",
+                "description": "Latest completed report including effective scan and token telemetry.",
+                "mimeType": "application/json",
+            },
+            {
+                "uri": "zscope://rules/effective",
+                "name": "Effective Rules",
+                "description": "Effective rule activation, provenance, and qualification state.",
                 "mimeType": "application/json",
             },
         ]
@@ -152,6 +183,10 @@ class ZScopeMcpProvider:
                     },
                 },
             )
+        if base_uri == "zscope://reports/latest":
+            return self._resource(uri, self._latest_report())
+        if base_uri == "zscope://rules/effective":
+            return self._resource(uri, serialize_effective_rules(self.config.effective_rules))
         raise KeyError(f"Unknown resource: {uri}")
 
     def list_prompts(self) -> List[Dict[str, Any]]:
@@ -225,6 +260,35 @@ class ZScopeMcpProvider:
                 {
                     "type": "function",
                     "function": {
+                        "name": "run_scan",
+                        "description": "Start one asynchronous Z-SCOPE scan with a bounded depth override.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "scan_depth": {
+                                    "type": "string",
+                                    "enum": ["fast", "balanced", "deep"],
+                                },
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "scan_status",
+                        "description": "Read status and token usage telemetry for an interface scan.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"scan_id": {"type": "string"}},
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
                         "name": "discover_entries",
                         "description": "Classify project exposure and return scan entry candidates.",
                         "parameters": {
@@ -274,6 +338,23 @@ class ZScopeMcpProvider:
                 },
             )
             return self._post_tool_result(requested_name, arguments, result, start)
+        if runtime_name in {"run_scan", "scan_status"}:
+            service = self.scan_request_service
+            if service is None:
+                result = {"success": False, "error": "scan service is unavailable"}
+            else:
+                try:
+                    data = (
+                        service.start(
+                            scan_depth=arguments.get("scan_depth"),
+                        )
+                        if runtime_name == "run_scan"
+                        else service.status(str(arguments.get("scan_id") or ""))
+                    )
+                    result = {"success": True, "data": data}
+                except ScanRequestError as exc:
+                    result = {"success": False, "error": str(exc)}
+            return self._post_tool_result(requested_name, arguments, result, start)
         result = self._bounded_tool_result(
             requested_name,
             self.tools_runtime.execute_tool(
@@ -301,6 +382,12 @@ class ZScopeMcpProvider:
         }
 
     def _config_dict(self) -> Dict[str, Any]:
+        rollout = rollout_runtime_policy(self.config)
+        effective_scan = {
+            "depth": self.config.scan.depth,
+            "depth_source": self.config.scan.depth_source,
+            "rollout": rollout,
+        }
         return {
             "project": {
                 "root": str(self.config.project.project_root),
@@ -312,6 +399,9 @@ class ZScopeMcpProvider:
             },
             "analysis": self.config.analysis.__dict__,
             "indexing": self.config.indexing.__dict__,
+            "scan": dict(effective_scan),
+            "effective_scan": effective_scan,
+            "llm_usage": scan_token_usage_snapshot(self.config),
         }
 
     def _knowledge_stats(self) -> Dict[str, Any]:
@@ -335,6 +425,22 @@ class ZScopeMcpProvider:
                 except sqlite3.Error:
                     counts[table] = -1
         return {"available": True, "path": str(db_path), "counts": counts}
+
+    def _latest_report(self) -> Dict[str, Any]:
+        for name in ("zscope_batch_report.json", "report.json"):
+            path = self.config.project.project_root / name
+            if not path.is_file():
+                continue
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                return {"available": False, "path": str(path), "error": str(exc)}
+            return {
+                "available": isinstance(value, dict),
+                "path": str(path),
+                "report": value if isinstance(value, dict) else {},
+            }
+        return {"available": False, "path": ""}
 
     def _query_knowledge(self, sql: str, params: List[Any], limit: int = 100) -> Dict[str, Any]:
         safety_error = self._validate_readonly_sql(sql)
