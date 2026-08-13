@@ -1,0 +1,44 @@
+{
+  "schema_version": "zscope.range.pilot-artifact-manifest.v1",
+  "run_id": "range_v3_evidence_closure_balanced_20260813_pilot7_run_01",
+  "git_sha": "5e741706c481ffe2f0d98dfefa0321309950e289",
+  "raw_artifacts_committed": false,
+  "raw_artifact_policy": "Large raw reports, logs, answer-free replay input and call-level usage remain in the gitignored local benchmark-artifacts directory. Only hashes and aggregate metrics are archived.",
+  "artifacts": [
+    {
+      "name": "input-manifest.json",
+      "bytes": 3484,
+      "sha256": "8450b82dab10f022ad1da3f63e5077205a29b79caf4f9a95ef20e348a7c2e9e8"
+    },
+    {
+      "name": "llm_usage_events.jsonl",
+      "bytes": 1646203,
+      "sha256": "338b9b5a4108225fbce67ef4ce9349e42300885a33b94c7bc62974dacaec3d9f"
+    },
+    {
+      "name": "report.json",
+      "bytes": 119386757,
+      "sha256": "e3a231f6b57689f431edf02092dfb2df53e0ec20a8e8c8de46f877900c7d9233"
+    },
+    {
+      "name": "score.json",
+      "bytes": 1769598,
+      "sha256": "63b3a0ab5cf4e2781d215739c65499fe8c7c40f4cfdafaa7d5810e5b9a8d55b6"
+    },
+    {
+      "name": "summary.json",
+      "bytes": 2091266,
+      "sha256": "e19f9eb7087851ff8e44b8debc84d0ef38c3d1c912d9564aac7d4f47d8e47317"
+    },
+    {
+      "name": "validator-replay-bundle.json",
+      "bytes": 8869719,
+      "sha256": "94b09ba54abeb75171c6778f3bfbb4c4a304523192dadec3c0441fd094a0286f"
+    },
+    {
+      "name": "zscope.execution.yaml",
+      "bytes": 1201,
+      "sha256": "fe8147342a5ead7ad3aeec05adcc02c780aae9ffeec18b779b487cdabdce7b56"
+    }
+  ]
+}

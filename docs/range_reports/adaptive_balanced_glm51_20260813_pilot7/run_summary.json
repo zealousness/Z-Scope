@@ -1,0 +1,248 @@
+{
+  "schema_version": "zscope.range.pilot-summary.v1",
+  "run_id": "range_v3_evidence_closure_balanced_20260813_pilot7_run_01",
+  "run_kind": "cold_trial",
+  "formal": false,
+  "release_eligible": false,
+  "language": "c_cpp",
+  "backend": "unified",
+  "scan_depth": "balanced",
+  "model": "glm-5.1",
+  "git_sha": "5e741706c481ffe2f0d98dfefa0321309950e289",
+  "git_tree": "8c6cd72f549ee6f8abcc0fc6e08b91a9e4799e43",
+  "identities": {
+    "input_manifest_sha256": "3b0a42fbf70832cb8de6f4b48f1d57ace624329fbcc5ac3c0317dbe9e757b50f",
+    "config_sha256": "8acebc53150c009338821b4c96a761cd7c719182492c27824b086bc409373de7",
+    "runtime_spec_sha256": "cf14f6458e917b3fa5054c73c0d47319ef4c890e890d3a3d6a5db52869d65e0d",
+    "rule_catalog_sha256": "331b4d73c10cf787ae58dd2f8a6762c378a958b3977d7a7be1c12e807acf1ae6",
+    "rule_implementation_sha256": "ab08169a0f1e6b1432744218f92af96a2a9382677b09a3bccd05bd0cdaed616a",
+    "effective_rules_sha256": "5716b1a766bba5792c70c13a40490d08284b21f162c3f572c8681a82417e060b",
+    "benchmark_policy_sha256": "1782a9a430c6607d44bf41c5d670d84beada4f6a6b63681c21b66f52316a053c",
+    "validator_replay_bundle_sha256": "0b46ac389cb53daaab1ff2cb12102891a832ff44aa065f1071e8b5d85a664e13"
+  },
+  "completion": {
+    "completed": true,
+    "report_completeness": "complete",
+    "queue_drained": true,
+    "token_conservation_passed": true,
+    "provider_usage_coverage": 1.0,
+    "telemetry_complete_rate": 1.0,
+    "explicit_attribution_coverage": 1.0,
+    "protocol_anomaly_count": 0
+  },
+  "views": {
+    "default": {
+      "report_issue_count": 145,
+      "ground_truth_count": 136,
+      "true_positives": 124,
+      "false_negatives": 12,
+      "false_positives_raw": 21,
+      "false_positives_effective": 0,
+      "duplicate_of_matched_count": 21,
+      "recall": 0.9118,
+      "high_critical_recall": 0.9346,
+      "actionable_precision": 0.8552,
+      "effective_precision": 1.0,
+      "actionable_f1": 0.8826,
+      "effective_f1": 0.9538,
+      "actionable_false_discovery_rate": 0.1448,
+      "effective_false_discovery_rate": 0.0,
+      "tp_by_decision_level": {
+        "V0": 57,
+        "V1": 8,
+        "V2": 0,
+        "V3": 59
+      },
+      "tp_by_decider": {
+        "deterministic_proof": 57,
+        "validator_llm": 67
+      },
+      "tp_by_discovery": {
+        "deterministic_rule": 124,
+        "backend_signal": 0,
+        "llm_active_discovery": 0
+      }
+    },
+    "with_needs_review": {
+      "report_issue_count": 236,
+      "ground_truth_count": 136,
+      "true_positives": 135,
+      "false_negatives": 1,
+      "false_positives_raw": 101,
+      "false_positives_effective": 5,
+      "duplicate_of_matched_count": 96,
+      "recall": 0.9926,
+      "high_critical_recall": 0.9907,
+      "actionable_precision": 0.572,
+      "effective_precision": 0.9643,
+      "actionable_f1": 0.7258,
+      "effective_f1": 0.9783,
+      "actionable_false_discovery_rate": 0.428,
+      "effective_false_discovery_rate": 0.0357
+    }
+  },
+  "candidate_funnel": {
+    "raw_occurrences": 372,
+    "unique_candidates": 270,
+    "canonical_validation_groups": 272,
+    "v0_deterministic_decisions": 96,
+    "v1_initial_decision": 272,
+    "v2_evidence_recheck": 0,
+    "v3_targeted_investigation": 135,
+    "validator_invoked_groups": 272,
+    "reported_default": 145,
+    "reported_with_review": 236,
+    "terminal": {
+      "confirmed": 145,
+      "needs_review": 91,
+      "rejected_with_proof": 33,
+      "deduplicated_alias": 3
+    }
+  },
+  "v3": {
+    "eligible_groups": 144,
+    "entered_groups": 135,
+    "confirmed_groups": 74,
+    "model_iterations": {
+      "minimum": 3,
+      "median": 7,
+      "p95": 17,
+      "maximum": 34,
+      "total": 1169
+    },
+    "tool_calls": {
+      "minimum": 4,
+      "median": 15,
+      "p95": 39,
+      "maximum": 61,
+      "total_from_pass_history": 2413
+    },
+    "structured_facts_from_pass_history": 267,
+    "evidence_closure": {
+      "required_facts_closed": 122,
+      "no_cited_tool_backed_fact": 13
+    },
+    "verdict_transitions": {
+      "initial_rejected_to_v3_rejected": 14,
+      "initial_rejected_to_v3_verified": 4,
+      "initial_uncertain_to_v3_rejected": 29,
+      "initial_uncertain_to_v3_uncertain": 8,
+      "initial_uncertain_to_v3_verified": 70,
+      "initial_verified_to_v3_rejected": 1,
+      "initial_verified_to_v3_verified": 9
+    }
+  },
+  "fact_resolution": {
+    "request_count": 176,
+    "deterministic_delta_success_count": 0,
+    "evidence_recheck_count": 0,
+    "note": "No deterministic evidence delta was produced, so the V2 no-history recheck was not invoked."
+  },
+  "llm_usage": {
+    "call_count": 1552,
+    "prompt_tokens": 18088860,
+    "completion_tokens": 2306459,
+    "total_tokens": 20395319,
+    "cached_prompt_tokens": 13719552,
+    "reasoning_tokens": 1615829,
+    "provider_reported_call_count": 1552,
+    "provider_usage_coverage": 1.0,
+    "by_agent": {
+      "semantic_modeler": {
+        "calls": 207,
+        "prompt_tokens": 1234125,
+        "completion_tokens": 300012,
+        "total_tokens": 1534137,
+        "tool_calls": 301
+      },
+      "validator_agent": {
+        "calls": 1345,
+        "prompt_tokens": 16854735,
+        "completion_tokens": 2006447,
+        "total_tokens": 18861182,
+        "tool_calls": 2739
+      },
+      "active_discovery": {
+        "calls": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "tool_calls": 0
+      }
+    },
+    "validator_by_call_kind": {
+      "initial": {
+        "calls": 176,
+        "prompt_tokens": 708094,
+        "completion_tokens": 640361,
+        "total_tokens": 1348455,
+        "tool_calls": 176
+      },
+      "evidence_recheck": {
+        "calls": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "tool_calls": 0
+      },
+      "targeted_investigation": {
+        "calls": 1169,
+        "prompt_tokens": 16146641,
+        "completion_tokens": 1366086,
+        "total_tokens": 17512727,
+        "tool_calls": 2563
+      }
+    },
+    "conservation_passed": true
+  },
+  "active_discovery": {
+    "enabled": true,
+    "planned_unit_count": 0,
+    "attempted_unit_count": 0,
+    "llm_discovery_call_count": 0,
+    "hypothesis_count": 0,
+    "registered_occurrence_count": 0
+  },
+  "timing_seconds": {
+    "build": 0.8425,
+    "health": 1.9991,
+    "index": 11.8061,
+    "scan_phase": 7901.8687,
+    "scan_wall_from_report": 7884.34,
+    "score": 18.6126,
+    "end_to_end": 7949.2944,
+    "validation_queue": 7600.8286
+  },
+  "range_gate_observation": {
+    "recall_target_passed": true,
+    "confirmed_tp_target_passed": true,
+    "token_expectation_passed": false,
+    "actionable_precision_delta_target_passed": false,
+    "formal_gate_passed": false,
+    "failures": [
+      "single trial is not the required five-run formal experiment",
+      "total_tokens=20395319 exceeds the balanced 12000000 per-run performance expectation",
+      "actionable precision decreased by 3.27 percentage points versus local pilot6, exceeding the 1 point target",
+      "frozen Validator Arm-A baseline is not attached",
+      "179 default-enabled rules remain qualification-pending",
+      "external, sealed, shadow and real OCI attestations are not attached"
+    ]
+  },
+  "comparison_to_local_pilot6": {
+    "baseline_confirmed_tp": 103,
+    "current_confirmed_tp": 124,
+    "confirmed_tp_delta": 21,
+    "baseline_recall": 0.7574,
+    "current_recall": 0.9118,
+    "recall_delta_percentage_points": 15.44,
+    "baseline_total_tokens": 19552201,
+    "current_total_tokens": 20395319,
+    "token_delta": 843118,
+    "token_growth_rate": 0.0431,
+    "baseline_actionable_precision": 0.8879,
+    "current_actionable_precision": 0.8552,
+    "actionable_precision_delta_percentage_points": -3.27,
+    "baseline_effective_precision": 1.0,
+    "current_effective_precision": 1.0
+  }
+}
